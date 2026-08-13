@@ -13,11 +13,16 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, cast
 from .candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
     DECISION_CONTEXT_VERSION,
+    annotate_issue_identity,
     context_signature_for,
     occurrence_uid_for,
     validation_cluster_uid_for,
 )
 from .subagents import SubAgentTicket
+from ..reporting.attribution import (
+    FindingAttribution,
+    finding_attribution_mapping_errors,
+)
 
 
 TERMINAL_DISPOSITIONS = frozenset(
@@ -29,6 +34,7 @@ TERMINAL_DISPOSITIONS = frozenset(
         "engine_failed",
         "interrupted",
         "deduplicated_alias",
+        "shadow_observation",
     }
 )
 NONTERMINAL_STATUSES = frozenset({"pending", "queued", "planned", "running"})
@@ -37,6 +43,350 @@ NONTERMINAL_STATUSES = frozenset({"pending", "queued", "planned", "running"})
 def _as_dict(value: Any) -> Dict[str, Any]:
     """Narrow candidate evidence mappings while preserving mutability."""
     return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+@dataclass(frozen=True)
+class CandidateRegistrationResult:
+    """Summary returned by the shared candidate-to-ledger boundary."""
+
+    submitted_issue_count: int
+    registered_occurrence_count: int
+    new_validation_group_count: int
+    candidate_ids: Tuple[str, ...]
+
+
+class CandidateRegistrar:
+    """Canonical boundary for turning untrusted observations into obligations.
+
+    Producers are deliberately not allowed to mutate ledger lifecycle state.
+    In particular, an LLM discovery hypothesis enters as an open validation
+    obligation even if its source payload claims a confirmed verdict.  Only
+    the Validator-owned lifecycle path may later assign a terminal
+    disposition.
+    """
+
+    def __init__(
+        self,
+        ledger: "CandidateLedger",
+        *,
+        project_id: str = "",
+        project_root: str = "",
+        revision: str = "",
+        run_id: str = "",
+        decision_fact_cache: Any = None,
+    ) -> None:
+        self.ledger = ledger
+        self.project_id = str(project_id or ledger.project_id)
+        self.project_root = str(project_root or ledger.project_root)
+        self.revision = str(revision or ledger.revision)
+        self.run_id = str(run_id or "")
+        self.decision_fact_cache = decision_fact_cache
+
+    @staticmethod
+    def _ensure_explicit_attribution(issue: Dict[str, Any], *, producer_source: str) -> None:
+        """Attach a strict v1 attribution before the candidate enters the Ledger.
+
+        Existing producers may still describe provenance through legacy
+        ``candidate_source``/``candidate_kind``/rule fields.  Those fields stay
+        untouched and are used only to construct the explicit contract when it
+        is absent.  A producer that already supplies ``attribution`` must supply
+        a valid, versioned object; silently repairing a malformed explicit
+        object would make formal attribution coverage unauditable.
+        """
+
+        explicit = issue.get("attribution")
+        if explicit is not None:
+            if not isinstance(explicit, Mapping):
+                raise ValueError("candidate attribution must be an object")
+            errors = finding_attribution_mapping_errors(explicit)
+            if errors:
+                raise ValueError("invalid candidate attribution: " + "; ".join(errors))
+            issue["attribution"] = FindingAttribution.from_mapping(explicit).to_dict()
+            return
+
+        evidence_pack = issue.get("evidence_pack")
+        evidence_pack = evidence_pack if isinstance(evidence_pack, Mapping) else {}
+        evidence_sources = issue.get("evidence_sources")
+        legacy_evidence_sources: Tuple[Any, ...]
+        if isinstance(evidence_sources, str):
+            legacy_evidence_sources = (evidence_sources,)
+        elif isinstance(evidence_sources, (list, tuple, set, frozenset)):
+            legacy_evidence_sources = tuple(evidence_sources)
+        else:
+            legacy_evidence_sources = ()
+        raw_sources = [
+            producer_source,
+            issue.get("candidate_source"),
+            issue.get("candidate_kind"),
+            issue.get("finding_kind"),
+            issue.get("signal_source"),
+            evidence_pack.get("candidate_source"),
+            evidence_pack.get("signal_source"),
+            *legacy_evidence_sources,
+        ]
+        normalized = {
+            str(value or "").strip().lower().replace("-", "_") for value in raw_sources if value
+        }
+        discovered: set[str] = set()
+        if any(
+            "active_discovery" in value
+            or "llm_observation" in value
+            or value == "llm_active_discovery"
+            for value in normalized
+        ):
+            discovered.add("llm_active_discovery")
+        if any(
+            "backend_signal" in value or value.startswith(("svf", "saber", "joern"))
+            for value in normalized
+        ):
+            discovered.add("backend_signal")
+        if (
+            issue.get("rule")
+            or issue.get("rule_id")
+            or any(
+                value == "deterministic_rule"
+                or value.endswith("_rule")
+                or value.startswith(("clang_", "cpp_", "java_local"))
+                for value in normalized
+            )
+        ):
+            discovered.add("deterministic_rule")
+        if not discovered:
+            raise ValueError(
+                "candidate attribution cannot be inferred from legacy provenance fields"
+            )
+
+        detail_ids = {
+            "llm_active_discovery": str(
+                issue.get("audit_unit_uid")
+                or issue.get("audit_unit_id")
+                or issue.get("id")
+                or producer_source
+            ),
+            "backend_signal": str(
+                issue.get("signal_source") or issue.get("native_rule_id") or producer_source
+            ),
+            "deterministic_rule": str(issue.get("rule_id") or issue.get("rule") or producer_source),
+        }
+        issue["attribution"] = FindingAttribution(
+            discovered_by=tuple(discovered),
+            discovery_details=tuple(
+                {"kind": kind, "source_id": detail_ids[kind]} for kind in sorted(discovered)
+            ),
+        ).to_dict()
+
+    def register_issues(
+        self,
+        issues: Iterable[Dict[str, Any]],
+        *,
+        source: str,
+        default_entry_identity: str = "",
+        force_unconfirmed: bool = False,
+    ) -> CandidateRegistrationResult:
+        submitted = 0
+        occurrences = 0
+        new_groups = 0
+        candidate_ids: List[str] = []
+        for ordinal, issue in enumerate(issues):
+            if not isinstance(issue, dict):
+                continue
+            submitted += 1
+            entry_identity = str(
+                issue.get("entry_identity")
+                or issue.get("entry_function")
+                or issue.get("entry_func")
+                or default_entry_identity
+                or "__project__"
+            )
+            issue["entry_identity"] = entry_identity
+            self._ensure_explicit_attribution(issue, producer_source=source)
+            issue["record_role"] = "validation_obligation"
+            issue["decision_fact_graph_v1"] = True
+            issue["security_obligation_v1"] = True
+            issue["decision_context_v31"] = True
+            issue["decision_context_v32"] = True
+            issue["decision_context_v33"] = True
+            if force_unconfirmed:
+                # These fields are producer assertions, not proof.  Keeping
+                # them would allow an active-discovery model to bypass the
+                # shared Validator's only terminal-disposition boundary.
+                for key in (
+                    "confirmed",
+                    "is_confirmed",
+                    "status",
+                    "verdict",
+                    "terminal_disposition",
+                ):
+                    issue.pop(key, None)
+                issue["candidate_disposition"] = "needs_review"
+                issue["discovery_status"] = "hypothesis"
+
+            envelope = annotate_issue_identity(
+                issue,
+                project_id=self.project_id,
+                project_root=self.project_root,
+                revision=self.revision,
+                entry_function=entry_identity,
+                run_id=self.run_id,
+                ordinal=ordinal,
+                default_disposition="needs_review",
+                decision_fact_cache=self.decision_fact_cache,
+            )
+            if force_unconfirmed and str(issue.get("rollout_visibility") or "").lower() == "shadow":
+                # Decision-fact attachment owns its general promotion fields,
+                # but a release rollout shadow is a stronger, independent
+                # visibility gate.  Re-assert it at the registrar boundary so
+                # no producer or fact refresh can promote the hypothesis.
+                issue["candidate_promotion_eligible"] = False
+                issue["candidate_promotion_reason"] = "active_discovery_rollout_shadow"
+                issue["candidate_promotion_terminal_status"] = "shadow_observation"
+            evidence = dict(issue.get("evidence_pack") or {})
+            evidence.update(
+                {
+                    "candidate_id": str(issue.get("candidate_id") or issue.get("id") or ""),
+                    "candidate_schema_version": envelope.schema_version,
+                    "candidate_uid": envelope.candidate_uid,
+                    "occurrence_uid": envelope.occurrence_uid,
+                    "history_key": envelope.history_key,
+                    "obligation_uid": envelope.obligation_uid,
+                    "obligation_shape": envelope.obligation_shape,
+                    "decision_context_version": envelope.decision_context_version,
+                    "decision_fact_version": issue.get("decision_fact_version")
+                    or envelope.decision_fact_version,
+                    "decision_fact_coverage": issue.get("decision_fact_coverage"),
+                    "decision_fact_slice": deepcopy(issue.get("decision_fact_slice") or {}),
+                    "missing_fact_kinds": list(issue.get("missing_fact_kinds") or []),
+                    "security_obligation": deepcopy(issue.get("security_obligation") or {}),
+                    "candidate_promotion_eligible": issue.get("candidate_promotion_eligible"),
+                    "candidate_promotion_reason": issue.get("candidate_promotion_reason"),
+                    "candidate_promotion_terminal_status": issue.get(
+                        "candidate_promotion_terminal_status"
+                    ),
+                    "evidence_hash": envelope.evidence_hash,
+                    "decision_evidence_hash": envelope.decision_evidence_hash,
+                    "provenance_hash": envelope.provenance_hash,
+                    "validation_cluster_uid": envelope.validation_cluster_uid,
+                    "context_signature": envelope.context_signature,
+                    "entry_identity": entry_identity,
+                    "record_role": "validation_obligation",
+                    "defect_class": str(
+                        issue.get("defect_class")
+                        or issue.get("subcategory")
+                        or issue.get("category")
+                        or "security_review"
+                    ),
+                    "source": issue.get("source") or evidence.get("source"),
+                    "sink": issue.get("sink") or evidence.get("sink"),
+                    "resource": issue.get("resource_signature")
+                    or issue.get("resource")
+                    or evidence.get("resource"),
+                    "positive_evidence": issue.get("positive_evidence") or [],
+                    "negative_evidence": issue.get("negative_evidence") or [],
+                    "candidate_payload": {
+                        key: deepcopy(value)
+                        for key, value in issue.items()
+                        if key not in {"evidence_pack", "code_snippet", "candidate_payload"}
+                    },
+                }
+            )
+            raw_paths = issue.get("call_paths")
+            if isinstance(raw_paths, list) and raw_paths and isinstance(raw_paths[0], list):
+                call_paths = raw_paths
+            else:
+                raw_path = issue.get("call_path")
+                call_paths = [raw_path] if isinstance(raw_path, list) else []
+            if not call_paths:
+                entry_paths = issue.get("entry_paths")
+                if (
+                    isinstance(entry_paths, list)
+                    and entry_paths
+                    and isinstance(entry_paths[0], list)
+                ):
+                    call_paths = entry_paths
+            if not call_paths:
+                call_paths = [[entry_identity]]
+
+            for raw_path in call_paths:
+                call_path = [str(item) for item in raw_path if str(item)]
+                if not call_path:
+                    call_path = [entry_identity]
+                ticket = SubAgentTicket(
+                    id=str(issue.get("candidate_id") or issue.get("id") or envelope.run_issue_uid),
+                    skill=str(
+                        issue.get("skill")
+                        or issue.get("defect_class")
+                        or issue.get("subcategory")
+                        or issue.get("category")
+                        or "security_review"
+                    ),
+                    task=str(
+                        issue.get("description") or issue.get("root_cause") or "Validate candidate"
+                    ),
+                    trigger=str(
+                        issue.get("rule") or issue.get("sink") or issue.get("category") or ""
+                    ),
+                    line=self._line_number(issue),
+                    context_slice=str(issue.get("code_snippet") or ""),
+                    priority_score=self.priority_score(issue),
+                    priority_reasons=[str(source)],
+                    origin=str(issue.get("source") or issue.get("location") or ""),
+                    sink=str(issue.get("sink") or issue.get("location") or ""),
+                    resource_kind=str(
+                        issue.get("resource_signature") or issue.get("resource") or "unknown"
+                    ),
+                    source=str(issue.get("candidate_source") or source),
+                    evidence=dict(evidence),
+                )
+                record, is_new = self.ledger.add(
+                    ticket,
+                    source=str(issue.get("candidate_source") or source),
+                    call_path=call_path,
+                    record_role="validation_obligation",
+                    entry_identity=entry_identity,
+                )
+                occurrences += 1
+                if is_new:
+                    new_groups += 1
+                if record.candidate_id not in candidate_ids:
+                    candidate_ids.append(record.candidate_id)
+                if force_unconfirmed and record.disposition:
+                    raise RuntimeError(
+                        "candidate registrar assigned a terminal disposition to a hypothesis"
+                    )
+
+        return CandidateRegistrationResult(
+            submitted_issue_count=submitted,
+            registered_occurrence_count=occurrences,
+            new_validation_group_count=new_groups,
+            candidate_ids=tuple(candidate_ids),
+        )
+
+    @staticmethod
+    def _line_number(issue: Mapping[str, Any]) -> int:
+        explicit = issue.get("line")
+        if explicit not in (None, ""):
+            try:
+                return max(0, int(str(explicit)))
+            except (TypeError, ValueError):
+                pass
+        matches = re.findall(r":(\d+)(?::|\b)", str(issue.get("location") or ""))
+        return int(matches[-1]) if matches else 0
+
+    @staticmethod
+    def priority_score(issue: Mapping[str, Any]) -> int:
+        explicit = issue.get("priority_score")
+        if explicit not in (None, ""):
+            try:
+                return max(0, min(100, int(float(str(explicit)))))
+            except (TypeError, ValueError):
+                pass
+        severity = str(issue.get("impact_level") or "").lower()
+        base = {"critical": 95, "high": 85, "medium": 65, "low": 35}.get(severity, 60)
+        try:
+            confidence = float(issue.get("rule_confidence") or issue.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return max(base, min(100, int(round(confidence * 100))))
 
 
 @dataclass(frozen=True)
@@ -865,12 +1215,27 @@ class CandidateLedger:
                     if item not in existing:
                         existing.append(item)
             elif isinstance(existing, dict) and isinstance(value, dict):
-                for nested_key, nested_value in value.items():
-                    existing.setdefault(nested_key, nested_value)
+                CandidateLedger._merge_evidence_mapping(existing, value)
         primary.evidence = primary_evidence
         for value in secondary.priority_reasons:
             if value not in primary.priority_reasons:
                 primary.priority_reasons.append(value)
+
+    @staticmethod
+    def _merge_evidence_mapping(primary: Dict[str, Any], secondary: Mapping[str, Any]) -> None:
+        """Recursively preserve multi-producer attribution as set-like lists."""
+
+        for key, value in secondary.items():
+            if key not in primary or primary.get(key) in (None, "", [], {}):
+                primary[key] = deepcopy(value)
+                continue
+            existing = primary.get(key)
+            if isinstance(existing, list) and isinstance(value, list):
+                for item in value:
+                    if item not in existing:
+                        existing.append(deepcopy(item))
+            elif isinstance(existing, dict) and isinstance(value, Mapping):
+                CandidateLedger._merge_evidence_mapping(existing, value)
 
     @staticmethod
     def _normalize_project_id(value: Any) -> str:

@@ -21,9 +21,9 @@ class ClangBackend(CodeBackend):
     """
 
     MACRO_EXTRACTOR_VERSION = "2"
-    SYMBOL_CONTEXT_EXTRACTOR_VERSION = "3"
+    SYMBOL_CONTEXT_EXTRACTOR_VERSION = "4"
     TYPE_EXTRACTOR_VERSION = "1"
-    FUNCTION_TYPE_REF_EXTRACTOR_VERSION = "3"
+    FUNCTION_TYPE_REF_EXTRACTOR_VERSION = "4"
     FUNCTION_SYMBOL_CONTEXT_INDEX = "function_symbol_context"
     FUNCTION_TYPE_REFS_INDEX = "function_type_refs"
 
@@ -81,7 +81,14 @@ class ClangBackend(CodeBackend):
     def _ensure_extractor(self) -> bool:
         """按需启动 clangd 提取器（仅在有文件需要提取时调用）。"""
         if self._extractor is not None:
-            return True
+            health_check = getattr(self._extractor, "is_healthy", None)
+            if not callable(health_check) or bool(health_check()):
+                return True
+            logger.warning("Restarting an unhealthy clangd extractor")
+            try:
+                self._extractor.stop()
+            finally:
+                self._extractor = None
         if self._source_path is None:
             return False
         cc_dir = Path(self._compile_commands_path).parent if self._compile_commands_path else None
@@ -131,81 +138,147 @@ class ClangBackend(CodeBackend):
                 for tu in existing_tus
                 if normalize_db_path(str(tu.get("file_path") or "")) not in current_files
             ]
+            file_hashes: Dict[str, str] = {}
+            if file_list:
+                from concurrent.futures import ThreadPoolExecutor
+
+                resolved_files = [Path(fp).resolve() for fp in file_list]
+                hash_workers = min(
+                    max(1, int(self._max_threads or 1)),
+                    8,
+                    len(resolved_files),
+                )
+                if hash_workers == 1:
+                    hashes = map(ClangExtractor._compute_file_hash, resolved_files)
+                    file_hashes = {
+                        str(path): value for path, value in zip(resolved_files, hashes)
+                    }
+                else:
+                    with ThreadPoolExecutor(
+                        max_workers=hash_workers,
+                        thread_name_prefix="ClangHash",
+                    ) as executor:
+                        file_hashes = {
+                            str(path): value
+                            for path, value in zip(
+                                resolved_files,
+                                executor.map(
+                                    ClangExtractor._compute_file_hash,
+                                    resolved_files,
+                                ),
+                            )
+                        }
+            deferred_tu_commits = bool(
+                getattr(db, "SUPPORTS_DEFERRED_TU_COMMITS", False)
+            )
             force_refresh_paths: set[str] = set()
             deleted_paths: List[Path] = []
-            for tu in deleted_tus:
-                tu_id = int(tu["id"])
-                impact = db.get_tu_delete_impact(tu_id)
-                db.delete_tu(tu_id)
-                raw_path = str(tu.get("file_path") or "")
-                if raw_path:
-                    deleted_paths.append(Path(normalize_db_path(raw_path)))
-                for related in impact.get("related_files", []):
-                    related_key = normalize_db_path(str(related))
-                    related_path = current_files.get(related_key)
-                    if related_path is not None and self._is_path_allowed(related_path):
-                        force_refresh_paths.add(related_key)
-
             changed_count = 0
             prescanned_tus: Dict[str, Tuple[int, bool]] = {}
-            for fp in file_list:
-                fp = fp.resolve()
-                file_hash = ClangExtractor._compute_file_hash(fp)
-                existing_tu = existing_tus_by_path.get(normalize_db_path(str(fp)))
-                registered_path = (
-                    str(existing_tu.get("file_path") or str(fp))
-                    if existing_tu is not None
-                    else str(fp)
-                )
-                tu_id, changed = db.register_tu_hash(registered_path, file_hash)
-                if not changed and normalize_db_path(str(fp)) in force_refresh_paths:
-                    changed = True
-                    db.mark_tu_pending(tu_id)
-                prescanned_tus[str(fp)] = (tu_id, changed)
-                if changed:
-                    changed_count += 1
+            try:
+                for tu in deleted_tus:
+                    tu_id = int(tu["id"])
+                    if deferred_tu_commits:
+                        impact = db.delete_tu(tu_id, commit=False)
+                    else:
+                        impact = db.delete_tu(tu_id)
+                    raw_path = str(tu.get("file_path") or "")
+                    if raw_path:
+                        deleted_paths.append(Path(normalize_db_path(raw_path)))
+                    for related in impact.get("related_files", []):
+                        related_key = normalize_db_path(str(related))
+                        related_path = current_files.get(related_key)
+                        if related_path is not None and self._is_path_allowed(related_path):
+                            force_refresh_paths.add(related_key)
 
-            base_version_missing = not macro_version or not type_version
-            explicit_base_version_mismatch = bool(
-                (macro_version and macro_version != self.MACRO_EXTRACTOR_VERSION)
-                or (type_version and type_version != self.TYPE_EXTRACTOR_VERSION)
-            )
-            can_confirm_v14_base = self._can_confirm_v14_base_facts(
-                db,
-                existing_tus=existing_tus,
-                current_files=current_files,
-                prescanned_tus=prescanned_tus,
-                deleted_tus=deleted_tus,
-                base_version_missing=base_version_missing,
-                explicit_base_version_mismatch=explicit_base_version_mismatch,
-                source_root=source_root,
-            )
-            if can_confirm_v14_base:
-                logger.info(
-                    "Incremental: confirmed schema-v14 base facts for %d unchanged TUs",
-                    len(file_list),
-                )
-                self._mark_base_indexes_current(db)
-                macro_version = self.MACRO_EXTRACTOR_VERSION
-                type_version = self.TYPE_EXTRACTOR_VERSION
-
-            force_macro_refresh = macro_version != self.MACRO_EXTRACTOR_VERSION
-            force_type_refresh = type_version != self.TYPE_EXTRACTOR_VERSION
-
-            if force_macro_refresh or force_type_refresh:
-                for file_path, (tu_id, changed) in list(prescanned_tus.items()):
-                    if not changed:
-                        db.mark_tu_pending(tu_id)
-                        prescanned_tus[file_path] = (tu_id, True)
+                for fp in file_list:
+                    fp = fp.resolve()
+                    file_hash = file_hashes[str(fp)]
+                    existing_tu = existing_tus_by_path.get(normalize_db_path(str(fp)))
+                    registered_path = (
+                        str(existing_tu.get("file_path") or str(fp))
+                        if existing_tu is not None
+                        else str(fp)
+                    )
+                    if deferred_tu_commits:
+                        tu_id, changed = db.register_tu_hash(
+                            registered_path,
+                            file_hash,
+                            commit=False,
+                        )
+                    else:
+                        tu_id, changed = db.register_tu_hash(registered_path, file_hash)
+                    if not changed and normalize_db_path(str(fp)) in force_refresh_paths:
+                        changed = True
+                        if deferred_tu_commits:
+                            db.mark_tu_pending(tu_id, commit=False)
+                        else:
+                            db.mark_tu_pending(tu_id)
+                    prescanned_tus[str(fp)] = (tu_id, changed)
+                    if changed:
                         changed_count += 1
 
-            base_facts_changed = bool(deleted_tus or changed_count)
-            if base_facts_changed:
-                db.mark_derived_indexes_dirty(reason="base_facts_changed")
+                base_version_missing = not macro_version or not type_version
+                explicit_base_version_mismatch = bool(
+                    (macro_version and macro_version != self.MACRO_EXTRACTOR_VERSION)
+                    or (type_version and type_version != self.TYPE_EXTRACTOR_VERSION)
+                )
+                can_confirm_v14_base = self._can_confirm_v14_base_facts(
+                    db,
+                    existing_tus=existing_tus,
+                    current_files=current_files,
+                    prescanned_tus=prescanned_tus,
+                    deleted_tus=deleted_tus,
+                    base_version_missing=base_version_missing,
+                    explicit_base_version_mismatch=explicit_base_version_mismatch,
+                    source_root=source_root,
+                )
+                if can_confirm_v14_base:
+                    logger.info(
+                        "Incremental: confirmed schema-v14 base facts for %d unchanged TUs",
+                        len(file_list),
+                    )
+                    self._mark_base_indexes_current(
+                        db,
+                        commit=not deferred_tu_commits,
+                    )
+                    macro_version = self.MACRO_EXTRACTOR_VERSION
+                    type_version = self.TYPE_EXTRACTOR_VERSION
+
+                force_macro_refresh = macro_version != self.MACRO_EXTRACTOR_VERSION
+                force_type_refresh = type_version != self.TYPE_EXTRACTOR_VERSION
+
+                if force_macro_refresh or force_type_refresh:
+                    for file_path, (tu_id, changed) in list(prescanned_tus.items()):
+                        if not changed:
+                            if deferred_tu_commits:
+                                db.mark_tu_pending(tu_id, commit=False)
+                            else:
+                                db.mark_tu_pending(tu_id)
+                            prescanned_tus[file_path] = (tu_id, True)
+                            changed_count += 1
+
+                base_facts_changed = bool(deleted_tus or changed_count)
+                if base_facts_changed:
+                    if deferred_tu_commits:
+                        db.mark_derived_indexes_dirty(
+                            reason="base_facts_changed",
+                            commit=False,
+                        )
+                    else:
+                        db.mark_derived_indexes_dirty(reason="base_facts_changed")
+                if deferred_tu_commits:
+                    db.commit()
+            except BaseException:
+                if deferred_tu_commits:
+                    db.rollback()
+                raise
 
             derived_work = self._derived_indexes_needing_rebuild(db)
             needs_clangd = bool(file_list) and bool(changed_count or derived_work)
             extractor: Optional[ClangExtractor] = None
+            index_ready = False
+            supports_deferred_index_barrier = False
             if needs_clangd:
                 if not self._ensure_extractor():
                     self._status = "error"
@@ -214,30 +287,58 @@ class ClangBackend(CodeBackend):
                 if extractor is None:
                     self._status = "error"
                     return False
+                seed_project_files = getattr(extractor, "seed_project_file_index", None)
+                if callable(seed_project_files):
+                    seed_project_files(file_list)
                 if deleted_paths and hasattr(extractor, "notify_files_deleted"):
                     extractor.notify_files_deleted(deleted_paths)
-                if not extractor.wait_for_indexing(timeout=120, idle_threshold=3.0):
+                supports_deferred_index_barrier = isinstance(extractor, ClangExtractor)
+                if (
+                    not supports_deferred_index_barrier
+                    and not extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
+                ):
                     logger.error("clangd indexing did not become ready before the hard timeout")
                     self._status = "error"
                     return False
+                index_ready = not supports_deferred_index_barrier
+
+            def wait_for_index_once() -> bool:
+                nonlocal index_ready
+                if index_ready:
+                    return True
+                if extractor is None:
+                    return False
+                index_ready = bool(
+                    extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
+                )
+                if not index_ready:
+                    logger.error(
+                        "clangd indexing did not become ready before the hard timeout"
+                    )
+                return index_ready
 
             if changed_count:
                 assert extractor is not None
-                if force_macro_refresh:
-                    clear_macros = getattr(db, "clear_macro_definitions", None)
-                    if callable(clear_macros):
-                        clear_macros()
                 logger.info(
                     "Incremental: %d/%d TUs require base extraction",
                     changed_count,
                     len(file_list),
                 )
-                stats = extractor.run_batch_extraction(
-                    file_list,
-                    db,
-                    batch_size=self._batch_size,
-                    prescanned_tus=prescanned_tus,
-                )
+                if supports_deferred_index_barrier:
+                    stats = extractor.run_batch_extraction(
+                        file_list,
+                        db,
+                        batch_size=self._batch_size,
+                        prescanned_tus=prescanned_tus,
+                        index_barrier=wait_for_index_once,
+                    )
+                else:
+                    stats = extractor.run_batch_extraction(
+                        file_list,
+                        db,
+                        batch_size=self._batch_size,
+                        prescanned_tus=prescanned_tus,
+                    )
                 logger.info(
                     "Base extraction complete: %d extracted, %d skipped, %d failed",
                     stats["success"],
@@ -272,6 +373,9 @@ class ClangBackend(CodeBackend):
 
             # Base extraction may have dirtied otherwise-current derived indexes.
             derived_work = self._derived_indexes_needing_rebuild(db)
+            if derived_work and file_list and not wait_for_index_once():
+                self._status = "error"
+                return False
             derived_failed = False
             begin_session = getattr(extractor, "begin_derived_rebuild_session", None)
             end_session = getattr(extractor, "end_derived_rebuild_session", None)
@@ -280,62 +384,135 @@ class ClangBackend(CodeBackend):
                 if derived_work and extractor is not None and callable(begin_session):
                     begin_session()
                     session_started = True
-                for index_name, target_version, rebuild_method in derived_work:
+                combined_rebuild = getattr(extractor, "rebuild_function_derived_refs", None)
+                combined_names = {item[0] for item in derived_work}
+                use_combined = bool(
+                    file_list
+                    and extractor is not None
+                    and callable(combined_rebuild)
+                    and combined_names
+                    == {
+                        self.FUNCTION_SYMBOL_CONTEXT_INDEX,
+                        self.FUNCTION_TYPE_REFS_INDEX,
+                    }
+                )
+                if use_combined:
+                    assert callable(combined_rebuild)
+                    started_specs: List[Tuple[str, str, Any]] = []
                     try:
-                        db.begin_derived_index_rebuild(index_name, target_version)
-                        db.prepare_derived_index_staging(index_name)
-                        if file_list:
-                            if extractor is None:
-                                raise RuntimeError(
-                                    "clangd extractor unavailable for derived rebuild"
+                        for spec in derived_work:
+                            index_name, target_version, _rebuild_method = spec
+                            db.begin_derived_index_rebuild(index_name, target_version)
+                            started_specs.append(spec)
+                            db.prepare_derived_index_staging(index_name)
+                        combined_result = combined_rebuild(db, use_staging=True)
+                        counts = dict(combined_result.get("counts") or {})
+                        errors = dict(combined_result.get("errors") or {})
+                        for index_name, target_version, _rebuild_method in derived_work:
+                            error = errors.get(index_name)
+                            if error is not None:
+                                derived_failed = True
+                                exc = (
+                                    error
+                                    if isinstance(error, Exception)
+                                    else RuntimeError(str(error))
                                 )
-                            row_count = int(rebuild_method(extractor, db, use_staging=True))
-                            stats_getter = getattr(extractor, "get_last_derived_stats", None)
+                                self._record_derived_failure(
+                                    db,
+                                    extractor,
+                                    index_name,
+                                    target_version,
+                                    exc,
+                                )
+                                continue
+                            row_count = int(counts.get(index_name) or 0)
+                            stats_getter = getattr(
+                                extractor,
+                                "get_last_derived_stats",
+                                None,
+                            )
                             last_stats = (
                                 stats_getter(index_name)
                                 if callable(stats_getter)
                                 else {"rows": row_count}
                             )
-                        else:
-                            row_count = 0
-                            last_stats = {"rows": 0, "files": 0, "functions": 0}
-                        db.finalize_derived_index_rebuild(
-                            index_name,
-                            target_version,
-                            last_stats,
-                        )
-                        logger.info("Rebuilt derived index %s rows=%d", index_name, row_count)
+                            try:
+                                db.finalize_derived_index_rebuild(
+                                    index_name,
+                                    target_version,
+                                    last_stats,
+                                )
+                            except Exception as exc:
+                                derived_failed = True
+                                self._record_derived_failure(
+                                    db,
+                                    extractor,
+                                    index_name,
+                                    target_version,
+                                    exc,
+                                )
+                            else:
+                                logger.info(
+                                    "Rebuilt derived index %s rows=%d (combined pass)",
+                                    index_name,
+                                    row_count,
+                                )
                     except Exception as exc:
                         derived_failed = True
-                        logger.error("Derived index rebuild failed index=%s: %s", index_name, exc)
-                        discard_staging = getattr(db, "discard_derived_index_staging", None)
-                        if callable(discard_staging):
-                            try:
-                                discard_staging(index_name)
-                            except Exception as discard_exc:
-                                logger.error(
-                                    "Failed to discard derived staging index=%s: %s",
-                                    index_name,
-                                    discard_exc,
-                                )
-                        try:
-                            stats_getter = getattr(extractor, "get_last_derived_stats", None)
-                            last_stats = (
-                                stats_getter(index_name)
-                                if extractor is not None and callable(stats_getter)
-                                else {}
-                            )
-                            db.fail_derived_index_rebuild(
+                        for index_name, target_version, _method in (
+                            started_specs or derived_work
+                        ):
+                            self._record_derived_failure(
+                                db,
+                                extractor,
                                 index_name,
                                 target_version,
                                 exc,
+                            )
+                else:
+                    for index_name, target_version, rebuild_method in derived_work:
+                        try:
+                            db.begin_derived_index_rebuild(index_name, target_version)
+                            db.prepare_derived_index_staging(index_name)
+                            if file_list:
+                                if extractor is None:
+                                    raise RuntimeError(
+                                        "clangd extractor unavailable for derived rebuild"
+                                    )
+                                row_count = int(
+                                    rebuild_method(extractor, db, use_staging=True)
+                                )
+                                stats_getter = getattr(
+                                    extractor,
+                                    "get_last_derived_stats",
+                                    None,
+                                )
+                                last_stats = (
+                                    stats_getter(index_name)
+                                    if callable(stats_getter)
+                                    else {"rows": row_count}
+                                )
+                            else:
+                                row_count = 0
+                                last_stats = {"rows": 0, "files": 0, "functions": 0}
+                            db.finalize_derived_index_rebuild(
+                                index_name,
+                                target_version,
                                 last_stats,
                             )
-                        except Exception as state_exc:
-                            logger.error(
-                                "Failed to persist derived index failure index=%s: %s",
+                            logger.info(
+                                "Rebuilt derived index %s rows=%d",
                                 index_name,
-                                state_exc,
+                                row_count,
+                            )
+                        except Exception as exc:
+                            derived_failed = True
+                            self._record_derived_failure(
+                                db,
+                                extractor,
+                                index_name,
+                                target_version,
+                                exc,
                             )
             finally:
                 if session_started and callable(end_session):
@@ -350,6 +527,21 @@ class ClangBackend(CodeBackend):
             logger.error("Extraction failed: %s", e)
             self._status = "error"
             return False
+        finally:
+            # All public query methods below are SQLite-backed.  Releasing clangd
+            # after the build avoids retaining the project's AST/preamble cache for
+            # the rest of a long-running scan; a later refresh restarts it on demand.
+            extractor = self._extractor
+            health_check = getattr(extractor, "is_healthy", None)
+            stop = getattr(extractor, "stop", None)
+            if callable(health_check) and callable(stop):
+                try:
+                    stop()
+                except Exception as stop_exc:
+                    logger.debug("Failed to stop clangd after extraction: %s", stop_exc)
+                finally:
+                    if self._extractor is extractor:
+                        self._extractor = None
 
     @staticmethod
     def _metadata_value(db: Any, key: str) -> str:
@@ -361,19 +553,36 @@ class ClangBackend(CodeBackend):
         except Exception:
             return ""
 
-    def _mark_macro_index_current(self, db: Any) -> None:
+    def _mark_macro_index_current(self, db: Any, *, commit: bool = True) -> None:
         set_metadata = getattr(db, "set_metadata", None)
         if callable(set_metadata):
-            set_metadata("macro_extractor_version", self.MACRO_EXTRACTOR_VERSION)
+            if bool(getattr(db, "SUPPORTS_DEFERRED_TU_COMMITS", False)):
+                set_metadata(
+                    "macro_extractor_version",
+                    self.MACRO_EXTRACTOR_VERSION,
+                    commit=commit,
+                )
+            else:
+                set_metadata("macro_extractor_version", self.MACRO_EXTRACTOR_VERSION)
 
-    def _mark_type_index_current(self, db: Any) -> None:
+    def _mark_type_index_current(self, db: Any, *, commit: bool = True) -> None:
         set_metadata = getattr(db, "set_metadata", None)
         if callable(set_metadata):
-            set_metadata("type_extractor_version", self.TYPE_EXTRACTOR_VERSION)
+            if bool(getattr(db, "SUPPORTS_DEFERRED_TU_COMMITS", False)):
+                set_metadata(
+                    "type_extractor_version",
+                    self.TYPE_EXTRACTOR_VERSION,
+                    commit=commit,
+                )
+            else:
+                set_metadata("type_extractor_version", self.TYPE_EXTRACTOR_VERSION)
 
-    def _mark_base_indexes_current(self, db: Any) -> None:
-        self._mark_macro_index_current(db)
-        self._mark_type_index_current(db)
+    def _mark_base_indexes_current(self, db: Any, *, commit: bool = True) -> None:
+        deferred = bool(getattr(db, "SUPPORTS_DEFERRED_TU_COMMITS", False))
+        self._mark_macro_index_current(db, commit=False if deferred else commit)
+        self._mark_type_index_current(db, commit=False if deferred else commit)
+        if deferred and commit:
+            db.commit()
 
     def _can_confirm_v14_base_facts(
         self,
@@ -444,6 +653,41 @@ class ClangBackend(CodeBackend):
                 return False
         return True
 
+    @staticmethod
+    def _record_derived_failure(
+        db: Any,
+        extractor: Optional[ClangExtractor],
+        index_name: str,
+        target_version: str,
+        exc: Exception,
+    ) -> None:
+        logger.error("Derived index rebuild failed index=%s: %s", index_name, exc)
+        discard_staging = getattr(db, "discard_derived_index_staging", None)
+        if callable(discard_staging):
+            try:
+                discard_staging(index_name)
+            except Exception as discard_exc:
+                logger.error(
+                    "Failed to discard derived staging index=%s: %s",
+                    index_name,
+                    discard_exc,
+                )
+        try:
+            stats_getter = getattr(extractor, "get_last_derived_stats", None)
+            last_stats = stats_getter(index_name) if callable(stats_getter) else {}
+            db.fail_derived_index_rebuild(
+                index_name,
+                target_version,
+                exc,
+                last_stats,
+            )
+        except Exception as state_exc:
+            logger.error(
+                "Failed to persist derived index failure index=%s: %s",
+                index_name,
+                state_exc,
+            )
+
     def _is_path_allowed(self, p: Path) -> bool:
         """Check if a path passes include/exclude filters."""
         import os
@@ -489,14 +733,29 @@ class ClangBackend(CodeBackend):
             return []
         extensions = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".ph", ".inc", ".inl"}
 
-        bases_to_search = self._include_paths if self._include_paths else [self._source_path]
+        raw_bases = self._include_paths if self._include_paths else [self._source_path]
+        bases_to_search: List[Path] = []
+        for base in sorted({Path(value).resolve() for value in raw_bases}, key=lambda p: len(p.parts)):
+            covered = False
+            for parent in bases_to_search:
+                try:
+                    base.relative_to(parent)
+                    covered = True
+                    break
+                except ValueError:
+                    continue
+            if not covered:
+                bases_to_search.append(base)
 
         for base in bases_to_search:
-            for file_path in base.rglob("*"):
-                if file_path.suffix.lower() not in extensions:
-                    continue
-                if self._is_path_allowed(file_path):
-                    files.append(file_path.resolve())
+            try:
+                for file_path in base.rglob("*"):
+                    if file_path.suffix.lower() not in extensions:
+                        continue
+                    if self._is_path_allowed(file_path):
+                        files.append(file_path.resolve())
+            except (OSError, PermissionError) as exc:
+                logger.debug("Skipping unreadable source subtree %s: %s", base, exc)
 
         # Remove duplicates
         return sorted(list(set(files)))

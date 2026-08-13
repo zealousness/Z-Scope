@@ -36,7 +36,9 @@ def test_range_regex_candidate_coverage_when_available() -> None:
     assert result["actionable_f1"] >= 0.60
     assert result["threshold_metric_fields"]["precision"] == "actionable_precision"
     assert result["threshold_metric_fields"]["f1"] == "actionable_f1"
-    assert result["false_positive_rate"] == result["false_discovery_rate"]
+    assert "false_positive_rate" not in result
+    assert "standard_false_positive_rate" not in result
+    assert "false_discovery_rate" in result
     assert "duplicate_of_matched_count" in result
     assert "with_needs_review" in result["report_views"]
     assert result["graph_issue_count"] > 0
@@ -101,5 +103,3 @@ def test_range_scorer_counts_discoverable_same_location_even_with_category_drift
 
     assert result["true_positives"] == 1
     assert result["false_negatives"] == 0
-
-

@@ -50,6 +50,7 @@ def _descriptor(**overrides):
         "default_severity": "high",
         "revision": 1,
         "status": "stable",
+        "default_enabled": True,
         "title": "Sample rule",
         "summary": "Sample built-in rule.",
         "required_capabilities": ["source_text"],
@@ -63,7 +64,7 @@ def _descriptor(**overrides):
 def _write_catalog(path: Path, rules) -> Path:
     path.write_text(
         yaml.safe_dump(
-            {"rule_catalog_version": 1, "rules": rules},
+            {"rule_catalog_version": 2, "rules": rules},
             sort_keys=False,
             allow_unicode=True,
         ),
@@ -211,6 +212,68 @@ def test_effective_rule_set_applies_language_backend_and_strict_disabled_ids() -
         )
 
 
+def test_default_disabled_rule_requires_explicit_enable_and_disable_wins() -> None:
+    descriptor = RuleDescriptor(
+        id="zscope.c_cpp.cpp_regex.opt_in",
+        language="c_cpp",
+        engine="cpp_regex",
+        defect_class="bounds",
+        cwe="CWE-125",
+        skill="bounds_and_integer",
+        default_severity="high",
+        revision=1,
+        status="experimental",
+        title="Opt-in rule",
+        summary="Only enabled when explicitly selected.",
+        required_capabilities=("source_text",),
+        default_enabled=False,
+    )
+    catalog = RuleCatalog((descriptor,))
+
+    baseline = EffectiveRuleSet.build(catalog, language="c_cpp", backend="regex")
+    assert baseline.state_for(descriptor.id).reason == "disabled_by_default"
+
+    enabled = EffectiveRuleSet.build(
+        catalog,
+        language="c_cpp",
+        backend="regex",
+        enabled_ids=[descriptor.id],
+    )
+    assert enabled.state_for(descriptor.id).reason == "enabled_by_config"
+
+    disabled = EffectiveRuleSet.build(
+        catalog,
+        language="c_cpp",
+        backend="regex",
+        enabled_ids=[descriptor.id],
+        disabled_ids=[descriptor.id],
+    )
+    assert disabled.state_for(descriptor.id).reason == "disabled_by_config"
+
+
+def test_experimental_rule_cannot_be_default_enabled() -> None:
+    with pytest.raises(RuleCatalogError, match="must set default_enabled=false"):
+        RuleCatalog(
+            (
+                RuleDescriptor(
+                    id="zscope.c_cpp.cpp_regex.unsafe_default",
+                    language="c_cpp",
+                    engine="cpp_regex",
+                    defect_class="bounds",
+                    cwe="CWE-125",
+                    skill="bounds_and_integer",
+                    default_severity="high",
+                    revision=1,
+                    status="experimental",
+                    title="Unsafe default",
+                    summary="Experimental rule must remain opt-in.",
+                    required_capabilities=("source_text",),
+                    default_enabled=True,
+                ),
+            )
+        )
+
+
 def test_rule_policy_enriches_and_validates_catalog_metadata() -> None:
     catalog = RuleCatalog.builtin(skill_languages=SKILL_LANGUAGES)
     effective = EffectiveRuleSet.build(catalog, language="c_cpp", backend="unified")
@@ -264,7 +327,7 @@ def test_effective_rule_serialization_is_shared_and_complete() -> None:
         disabled_ids=["java_command_execution"],
     )
     payload = serialize_effective_rules(effective)
-    assert payload["schema_version"] == "zscope.rule-catalog.v1"
+    assert payload["schema_version"] == "zscope.rule-catalog.v2"
     assert payload["summary"] == {
         "total": 48,
         "enabled": 47,

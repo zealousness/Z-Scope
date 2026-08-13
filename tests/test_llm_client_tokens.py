@@ -656,6 +656,62 @@ def test_run_conversation_with_tools_compacts_old_tool_results(monkeypatch) -> N
     assert huge_two in full_transcript
 
 
+def test_bounded_conversation_can_replay_provider_reasoning_metadata(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "reasoning_content": "provider-chain-state",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            }
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "done"},
+                }
+            ],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 3},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[],
+        tool_executor=lambda name, args: {"success": True, "data": {"fact": 1}},
+        max_iterations=2,
+        preserve_reasoning_metadata=True,
+    )
+
+    assert any(message.get("reasoning_content") == "provider-chain-state" for message in calls[1])
+
+
 def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call(
     monkeypatch,
 ) -> None:

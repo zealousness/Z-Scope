@@ -128,6 +128,12 @@ class Issue:
     validator_invocation_count: Optional[int] = None
     rejected_with_proof_count: Optional[int] = None
     cluster_fragmentation_count: Optional[int] = None
+    attribution: Optional[Dict[str, Any]] = None
+    model_verdict: Optional[str] = None
+    policy_disposition: Optional[str] = None
+    validator_result_pass: Optional[str] = None
+    validator_pass_history: Optional[List[Dict[str, Any]]] = None
+    validator_policy_outcome: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(

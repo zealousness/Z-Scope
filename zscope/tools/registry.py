@@ -1,5 +1,6 @@
 """Construction helpers for the built-in analysis tools."""
 
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 from ..framework.base import BaseTool
@@ -14,6 +15,7 @@ from .function_pointers import FindFunctionPointersTool
 from .list_functions import ListFunctionsTool
 from .pointer_alias import QueryPointerAliasTool
 from .snapshot_tool import GetFunctionSnapshotTool
+from .security_semantics import GetSecuritySemanticsTool
 from .taint_reachability import VerifyTaintReachabilityTool
 from .type_info import GetTypeInfoTool
 
@@ -43,6 +45,9 @@ def build_tool_registry(
             code_index=code_index,
             resolver=snapshot_resolver,
             user_config=user_config,
+        ),
+        GetSecuritySemanticsTool(
+            Path(getattr(snapshot_store, "snapshot_dir", ".zscope_snapshots")) / "security_map.db"
         ),
         ListFunctionsTool(code_index),
         GetFileSnippetTool(code_index),

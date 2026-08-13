@@ -102,6 +102,18 @@ def test_knowledge_db_atomically_finalizes_staged_symbol_context(tmp_path: Path)
         assert state["applied_version"] == "7"
         assert state["last_stats"] == {"symbol_rows": 1, "macro_rows": 1}
         assert db.derived_index_needs_rebuild("function_symbol_context", "7") is False
+        assert (
+            db._conn.execute(
+                "SELECT COUNT(*) AS count FROM temp.zscope_stage_function_symbol_refs"
+            ).fetchone()["count"]
+            == 0
+        )
+        assert (
+            db._conn.execute(
+                "SELECT COUNT(*) AS count FROM temp.zscope_stage_function_macro_refs"
+            ).fetchone()["count"]
+            == 0
+        )
     finally:
         db.close()
 
@@ -175,6 +187,12 @@ def test_knowledge_db_atomically_finalizes_staged_function_type_refs(tmp_path: P
         state = db.get_derived_index_state("function_type_refs")
         assert state["status"] == "current"
         assert state["last_stats"] == {"type_rows": 1}
+        assert (
+            db._conn.execute(
+                "SELECT COUNT(*) AS count FROM temp.zscope_stage_function_type_refs"
+            ).fetchone()["count"]
+            == 0
+        )
     finally:
         db.close()
 
@@ -741,6 +759,396 @@ def test_knowledge_db_batches_transitive_include_closures(tmp_path: Path) -> Non
             "src/solo.c": ["src/solo.c"],
         }
         assert db.get_transitive_include_closure("src/b.c") == closures["src/b.c"]
+    finally:
+        db.close()
+
+
+def test_knowledge_db_include_closures_handle_cycles_diamonds_and_long_chains(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        rows = [
+            ("src/root.c", "include/left.h", 1, 0),
+            ("src/root.c", "include/right.h", 2, 0),
+            ("include/left.h", "include/shared.h", 1, 0),
+            ("include/right.h", "include/shared.h", 1, 0),
+            ("include/shared.h", "include/cycle-a.h", 1, 0),
+            ("include/cycle-a.h", "include/cycle-b.h", 1, 0),
+            ("include/cycle-b.h", "include/cycle-a.h", 1, 0),
+        ]
+        rows.extend(
+            (f"generated/{index}.h", f"generated/{index + 1}.h", 1, 0)
+            for index in range(1100)
+        )
+        db.insert_include_edges_batch(iter(rows))
+        db.commit()
+
+        closures = db.get_transitive_include_closures(
+            ["src/root.c", "/workspace/project/src/root.c", "generated/0.h"]
+        )
+        expected_root = [
+            "include/cycle-a.h",
+            "include/cycle-b.h",
+            "include/left.h",
+            "include/right.h",
+            "include/shared.h",
+            "src/root.c",
+        ]
+        assert closures["src/root.c"] == expected_root
+        assert closures["/workspace/project/src/root.c"] == expected_root
+        assert len(closures["generated/0.h"]) == 1101
+        assert closures["generated/0.h"][0] == "generated/0.h"
+        assert "generated/1100.h" in closures["generated/0.h"]
+    finally:
+        db.close()
+
+
+def test_knowledge_db_v14_adds_purge_and_include_indexes(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        expected = {
+            "functions": {"idx_functions_tu"},
+            "type_definitions": {"idx_types_tu"},
+            "call_edges": {"idx_call_caller_file", "idx_call_callee_file"},
+            "macro_definitions": {"idx_macros_file"},
+            "global_variables": {"idx_globals_file"},
+            "function_symbol_refs": {
+                "idx_symbol_refs_function_file",
+                "idx_symbol_refs_symbol_file",
+            },
+            "include_edges": {"idx_include_source", "idx_include_included"},
+            "taint_signatures": {"idx_taint_file"},
+            "ir_cfg_edges": {"idx_ir_cfg_from_stmt", "idx_ir_cfg_to_stmt"},
+            "ir_def_use_edges": {"idx_ir_du_def_stmt", "idx_ir_du_use_stmt"},
+            "ir_resource_events": {"idx_ir_resource_file"},
+            "ir_lock_events": {"idx_ir_lock_file"},
+            "ir_shared_accesses": {"idx_ir_shared_file"},
+            "ir_path_slices": {"idx_ir_path_source_stmt", "idx_ir_path_sink_stmt"},
+        }
+        for table, required_indexes in expected.items():
+            actual = {
+                str(row["name"])
+                for row in db._conn.execute(f'PRAGMA index_list("{table}")').fetchall()
+            }
+            assert required_indexes <= actual
+        assert db.get_metadata("schema_version") == "14"
+        assert KnowledgeDB.SCHEMA_VERSION == "14"
+        assert KnowledgeDB.SUPPORTS_DEFERRED_TU_COMMITS is True
+    finally:
+        db.close()
+
+
+def test_knowledge_db_type_definition_records_omit_large_definition_text(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_type(
+            "Payload",
+            "struct",
+            "include/payload.h",
+            10,
+            20,
+            full_definition="struct Payload { char bytes[8192]; };",
+        )
+        db.insert_type("Forward", "struct", "include/forward.h", 1, 1)
+        records = db.get_type_definition_records()
+
+        assert [row["name"] for row in records] == ["Forward", "Payload"]
+        assert all("full_definition" not in row for row in records)
+        assert records[0]["has_definition"] == 0
+        assert records[1]["has_definition"] == 1
+    finally:
+        db.close()
+
+
+def test_knowledge_db_macro_definition_records_omit_large_body(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_macro_definitions_batch(
+            [
+                (
+                    "LARGE_MACRO",
+                    "include/macros.h",
+                    1,
+                    1,
+                    "LARGE_MACRO@include/macros.h:1-1",
+                    "#define LARGE_MACRO " + ("x" * 8192),
+                    0,
+                )
+            ]
+        )
+        records = db.get_macro_definition_records()
+
+        assert records[0]["name"] == "LARGE_MACRO"
+        assert "definition" not in records[0]
+    finally:
+        db.close()
+
+
+def test_knowledge_db_batches_types_members_and_globals_for_one_tu(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        tu_id, _changed = db.register_tu_hash("src/types.c", "hash")
+        db.insert_types_with_members_batch(
+            [
+                (
+                    "Payload",
+                    "struct",
+                    "src/types.c",
+                    1,
+                    3,
+                    "struct Payload { int length; };",
+                    [("length", "int", 0)],
+                )
+            ],
+            tu_id,
+        )
+        db.insert_global_variables_batch(
+            [
+                (
+                    "payload_count",
+                    "int",
+                    "src/types.c",
+                    5,
+                    0,
+                    "global",
+                    "",
+                    "0",
+                    "definition",
+                )
+            ]
+        )
+        db.commit()
+
+        assert db.get_type_info("Payload")["members"] == [
+            {"member_name": "length", "member_type": "int", "offset_idx": 0}
+        ]
+        assert db.get_global_variables()[0]["name"] == "payload_count"
+    finally:
+        db.close()
+
+
+def test_knowledge_db_replace_tu_facts_transaction_commits_complete_replacement(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        tu_id, _changed = db.register_tu_hash("src/entry.c", "old-hash")
+        db.insert_function("old_entry", "src/entry.c", 1, 4, tu_id=tu_id)
+        db.insert_include_edges_batch([("src/entry.c", "include/old.h", 1, 0)])
+        db.mark_tu_indexed(tu_id)
+
+        with db.replace_tu_facts_transaction(tu_id):
+            db.insert_function("new_entry", "src/entry.c", 2, 8, tu_id=tu_id)
+            db.insert_include_edges_batch([("src/entry.c", "include/new.h", 1, 0)])
+
+        assert [row["name"] for row in db.get_function_records()] == ["new_entry"]
+        assert db.get_transitive_include_closure("src/entry.c") == [
+            "include/new.h",
+            "src/entry.c",
+        ]
+        status = db._conn.execute(
+            "SELECT status FROM translation_units WHERE id = ?", (tu_id,)
+        ).fetchone()["status"]
+        assert status == "indexed"
+    finally:
+        db.close()
+
+
+def test_knowledge_db_delete_impact_handles_many_function_names_without_bind_expansion(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        tu_id, _changed = db.register_tu_hash("src/large.c", "hash")
+        functions = [
+            (f"target_{index}", "src/large.c", index + 1, index + 1, "", 0, 0, 0, tu_id)
+            for index in range(1200)
+        ]
+        db.insert_functions_batch(functions)
+        db.insert_call_edges_batch(
+            [
+                (
+                    "caller",
+                    "src/caller.c",
+                    f"target_{index}",
+                    "src/large.c",
+                    index + 1,
+                    "direct",
+                    "function",
+                    "",
+                )
+                for index in range(1200)
+            ]
+        )
+        db.mark_tu_indexed(tu_id)
+        if hasattr(db._conn, "setlimit"):
+            db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 64)
+
+        impact = db.get_tu_delete_impact(tu_id)
+
+        assert len(impact["deleted_symbols"]) == 1200
+        assert impact["related_files"] == ["src/caller.c"]
+    finally:
+        db.close()
+
+
+def test_knowledge_db_replace_tu_facts_interrupt_restores_old_facts(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "knowledge.db"
+    db = KnowledgeDB(str(db_path))
+    tu_id, _changed = db.register_tu_hash("src/entry.c", "old-hash")
+    db.insert_function("old_entry", "src/entry.c", 1, 4, tu_id=tu_id)
+    db.insert_include_edges_batch([("src/entry.c", "include/old.h", 1, 0)])
+    db.mark_tu_indexed(tu_id)
+
+    with pytest.raises(KeyboardInterrupt):
+        with db.replace_tu_facts_transaction(tu_id):
+            db.insert_function("partial_entry", "src/entry.c", 2, 8, tu_id=tu_id)
+            db.insert_include_edges_batch([("src/entry.c", "include/partial.h", 1, 0)])
+            raise KeyboardInterrupt
+    db.close()
+
+    reopened = KnowledgeDB(str(db_path))
+    try:
+        assert [row["name"] for row in reopened.get_function_records()] == ["old_entry"]
+        assert reopened.get_transitive_include_closure("src/entry.c") == [
+            "include/old.h",
+            "src/entry.c",
+        ]
+        status = reopened._conn.execute(
+            "SELECT status FROM translation_units WHERE id = ?", (tu_id,)
+        ).fetchone()["status"]
+        assert status == "indexed"
+    finally:
+        reopened.close()
+
+
+def test_knowledge_db_batches_tu_replacements_with_one_commit_and_per_tu_savepoints(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        first_tu, _changed = db.register_tu_hash("src/first.c", "first")
+        second_tu, _changed = db.register_tu_hash("src/second.c", "second")
+        db.insert_function("first_old", "src/first.c", 1, 2, tu_id=first_tu)
+        db.insert_function("second_old", "src/second.c", 1, 2, tu_id=second_tu)
+        db.mark_tu_indexed(first_tu)
+        db.mark_tu_indexed(second_tu)
+
+        statements: list[str] = []
+        db._conn.set_trace_callback(statements.append)
+        with db.replace_tu_facts_batch_transaction():
+            with db.replace_tu_facts_transaction(first_tu):
+                db.insert_function("first_new", "src/first.c", 3, 4, tu_id=first_tu)
+            try:
+                with db.replace_tu_facts_transaction(second_tu):
+                    db.insert_function("second_partial", "src/second.c", 3, 4, tu_id=second_tu)
+                    raise RuntimeError("reject this TU")
+            except RuntimeError as exc:
+                assert str(exc) == "reject this TU"
+        db._conn.set_trace_callback(None)
+
+        assert [row["name"] for row in db.get_function_records()] == [
+            "first_new",
+            "second_old",
+        ]
+        assert sum(statement.strip().upper() == "COMMIT" for statement in statements) == 1
+        assert sum(statement.upper().startswith("SAVEPOINT REPLACE_TU_FACTS_") for statement in statements) == 2
+        assert sum(
+            statement.upper().startswith("ROLLBACK TO SAVEPOINT REPLACE_TU_FACTS_")
+            for statement in statements
+        ) == 1
+    finally:
+        db.close()
+
+
+def test_knowledge_db_tu_batch_exception_rolls_back_every_replacement(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        first_tu, _changed = db.register_tu_hash("src/first.c", "first")
+        second_tu, _changed = db.register_tu_hash("src/second.c", "second")
+        db.insert_function("first_old", "src/first.c", 1, 2, tu_id=first_tu)
+        db.insert_function("second_old", "src/second.c", 1, 2, tu_id=second_tu)
+        db.mark_tu_indexed(first_tu)
+        db.mark_tu_indexed(second_tu)
+
+        with pytest.raises(KeyboardInterrupt):
+            with db.replace_tu_facts_batch_transaction():
+                with db.replace_tu_facts_transaction(first_tu):
+                    db.insert_function("first_new", "src/first.c", 3, 4, tu_id=first_tu)
+                with db.replace_tu_facts_transaction(second_tu):
+                    db.insert_function("second_new", "src/second.c", 3, 4, tu_id=second_tu)
+                raise KeyboardInterrupt
+
+        assert [row["name"] for row in db.get_function_records()] == [
+            "first_old",
+            "second_old",
+        ]
+    finally:
+        db.close()
+
+
+def test_knowledge_db_deferred_tu_mutations_require_commit(tmp_path: Path) -> None:
+    db_path = tmp_path / "knowledge.db"
+    writer = KnowledgeDB(str(db_path))
+    reader = KnowledgeDB(str(db_path))
+    try:
+        tu_id, _changed = writer.register_tu_hash("src/entry.c", "hash", commit=False)
+        assert reader.get_all_tus() == []
+        writer.commit()
+        assert [row["id"] for row in reader.get_all_tus()] == [tu_id]
+
+        writer.mark_tu_indexed(tu_id, commit=False)
+        assert reader.get_all_tus()[0]["status"] == "pending"
+        writer.rollback()
+        assert writer.get_all_tus()[0]["status"] == "pending"
+
+        writer.delete_tu(tu_id, commit=False)
+        assert reader.get_all_tus()[0]["id"] == tu_id
+        writer.rollback()
+        assert writer.get_all_tus()[0]["id"] == tu_id
+    finally:
+        writer.close()
+        reader.close()
+
+
+def test_knowledge_db_purge_large_ir_tu_uses_temp_id_subquery(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        tu_id = db.register_tu("src/large.c", 1.0)
+        db._conn.executemany(
+            "INSERT INTO ir_statements "
+            "(file_path, line, function, normalized_code) VALUES (?, ?, ?, ?)",
+            [
+                ("src/large.c", line, "large", f"stmt-{line}")
+                for line in range(1, 1201)
+            ],
+        )
+        statement_ids = [
+            int(row["id"])
+            for row in db._conn.execute(
+                "SELECT id FROM ir_statements ORDER BY id"
+            ).fetchall()
+        ]
+        db._conn.executemany(
+            "INSERT INTO ir_cfg_edges (function, from_stmt, to_stmt) VALUES (?, ?, ?)",
+            [
+                ("large", statement_ids[index], statement_ids[index + 1])
+                for index in range(len(statement_ids) - 1)
+            ],
+        )
+        db.commit()
+        if hasattr(db._conn, "setlimit"):
+            db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 64)
+
+        db.purge_tu_data(tu_id)
+
+        assert db._conn.execute("SELECT COUNT(*) FROM ir_statements").fetchone()[0] == 0
+        assert db._conn.execute("SELECT COUNT(*) FROM ir_cfg_edges").fetchone()[0] == 0
     finally:
         db.close()
 

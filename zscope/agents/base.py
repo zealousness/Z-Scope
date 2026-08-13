@@ -142,6 +142,8 @@ class ToolCallingAgent(BaseAgent):
         terminal_tool_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_validator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_required: bool = False,
+        tool_executor: Optional[Callable[[str, Any], Dict[str, Any]]] = None,
+        preserve_reasoning_metadata: bool = False,
     ) -> Dict[str, Any]:
         tools_schema = list(self.tools_schema)
         if additional_tools_schema:
@@ -149,11 +151,13 @@ class ToolCallingAgent(BaseAgent):
         call_kwargs: Dict[str, Any] = {
             "messages": messages,
             "tools_schema": tools_schema,
-            "tool_executor": self._tool_executor,
+            "tool_executor": tool_executor or self._tool_executor,
             "max_iterations": max_iterations,
             "trace_agent": self.name,
             "trace_label": trace_label,
         }
+        if preserve_reasoning_metadata:
+            call_kwargs["preserve_reasoning_metadata"] = True
         if (
             terminal_tool_name
             or terminal_tool_handler

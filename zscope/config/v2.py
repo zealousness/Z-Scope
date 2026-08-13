@@ -42,6 +42,14 @@ from .config import (
 PUBLIC_CONFIG_VERSION = 2
 RUNTIME_SPEC_VERSION = 1
 ENV_PATTERN = re.compile(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+SCAN_DEPTHS = frozenset({"fast", "balanced", "deep"})
+SCAN_DEPTHS_BY_LANGUAGE = {
+    "c_cpp": SCAN_DEPTHS,
+    # Java balanced/deep require a separate quality gate.  Keeping the
+    # language gate here prevents a CLI override from bypassing public config
+    # validation while Java remains Preview.
+    "java": frozenset({"fast"}),
+}
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -236,6 +244,7 @@ def _validate_runtime_shape(raw: Mapping[str, Any], *, partial: bool) -> None:
             "max_premodel_callees",
             "trivial_function_max_lines",
             "enable_subagent_workers",
+            "security_semantic_enrichment_mode",
             "max_subagent_tickets",
             "subagent_max_turns",
             "request_deadline_seconds",
@@ -315,6 +324,10 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
         max_premodel_callees=integer("max_premodel_callees", 20, non_negative=True),
         trivial_function_max_lines=integer("trivial_function_max_lines", 5, non_negative=True),
         enable_subagent_workers=boolean("enable_subagent_workers", False),
+        security_semantic_enrichment_mode=_string(
+            data.get("security_semantic_enrichment_mode", "shadow"),
+            "runtime.analysis.security_semantic_enrichment_mode",
+        ),
         max_subagent_tickets=integer("max_subagent_tickets", 4, non_negative=True),
         subagent_max_turns=integer("subagent_max_turns", 20),
         request_deadline_seconds=deadline("request_deadline_seconds", 120.0),
@@ -610,9 +623,22 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
     return project
 
 
-def _parse_scan(raw: Any, llms: Mapping[str, LLMConfig]) -> ScanConfig:
+def _validated_scan_depth(value: Any, *, language: str, path: str) -> str:
+    depth = _string(value, path).lower()
+    if depth not in SCAN_DEPTHS:
+        raise ValueError(f"{path} must be fast, balanced, or deep")
+    allowed = SCAN_DEPTHS_BY_LANGUAGE.get(language, frozenset())
+    if depth not in allowed:
+        raise ValueError(
+            f"{path}={depth!r} is not currently available for "
+            f"project.language={language!r}; use 'fast'"
+        )
+    return depth
+
+
+def _parse_scan(raw: Any, llms: Mapping[str, LLMConfig], *, language: str) -> ScanConfig:
     data = _mapping(raw, "scan")
-    _check_keys(data, {"task", "llm_profiles"}, "scan")
+    _check_keys(data, {"task", "llm_profiles", "depth"}, "scan")
     profiles_data = _mapping(data.get("llm_profiles"), "scan.llm_profiles")
     _check_keys(profiles_data, {"modeling", "analysis", "validation"}, "scan.llm_profiles")
     profiles = ScanLLMProfiles(
@@ -625,10 +651,35 @@ def _parse_scan(raw: Any, llms: Mapping[str, LLMConfig]) -> ScanConfig:
     for role, ref in vars(profiles).items():
         if ref not in llms:
             raise ValueError(f"scan.llm_profiles.{role} references unknown llms profile {ref!r}")
+    depth_source = "config" if "depth" in data else "default"
+    depth = _validated_scan_depth(
+        data.get("depth", "fast"),
+        language=language,
+        path="scan.depth",
+    )
     return ScanConfig(
         task=_string(data.get("task", ""), "scan.task", allow_empty=True),
         llm_profiles=profiles,
+        depth=depth,
+        depth_source=depth_source,
     )
+
+
+def apply_scan_overrides(
+    config: EffectiveConfig,
+    *,
+    scan_depth: Optional[str] = None,
+) -> EffectiveConfig:
+    """Apply the CLI depth control after YAML parsing."""
+
+    if scan_depth is not None:
+        config.scan.depth = _validated_scan_depth(
+            scan_depth,
+            language=config.project.language,
+            path="--scan-depth",
+        )
+        config.scan.depth_source = "cli"
+    return config
 
 
 def _parse_concurrency(raw: Any, *, language: str) -> ConcurrencyConfig:
@@ -849,10 +900,13 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
 
 def _parse_rules(raw: Any) -> RulesConfig:
     data = _mapping(raw, "rules")
-    _check_keys(data, {"packs", "providers", "disabled_ids"}, "rules")
+    _check_keys(data, {"packs", "providers", "enabled_ids", "disabled_ids"}, "rules")
     return RulesConfig(
         packs=_string_list(data.get("packs", []), "rules.packs", deduplicate=False),
         providers=_string_list(data.get("providers", []), "rules.providers", deduplicate=False),
+        enabled_ids=_string_list(
+            data.get("enabled_ids", []), "rules.enabled_ids", deduplicate=False
+        ),
         disabled_ids=_string_list(
             data.get("disabled_ids", []), "rules.disabled_ids", deduplicate=False
         ),
@@ -920,7 +974,7 @@ def load_user_config_v2(config_path: Optional[str] = None) -> EffectiveConfig:
     runtime = load_runtime_spec()
     llms = _parse_llms(raw.get("llms"))
     project = _parse_project(raw.get("project"), language=language)
-    scan = _parse_scan(raw.get("scan"), llms)
+    scan = _parse_scan(raw.get("scan"), llms, language=language)
     concurrency = _parse_concurrency(raw.get("concurrency"), language=language)
     indexing = _parse_indexing(raw.get("indexing"), language=language, runtime=runtime)
     indexing.max_clangd_threads = concurrency.index_workers

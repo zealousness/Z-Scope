@@ -64,8 +64,7 @@ class ConversationRecorder:
         if flush_interval_seconds is None:
             try:
                 flush_interval_seconds = float(
-                    os.environ.get("Z_SCOPE_CONVERSATION_FLUSH_INTERVAL_SECONDS", "0")
-                    or 0
+                    os.environ.get("Z_SCOPE_CONVERSATION_FLUSH_INTERVAL_SECONDS", "0") or 0
                 )
             except ValueError:
                 flush_interval_seconds = 0.0
@@ -130,8 +129,10 @@ class ConversationRecorder:
                 "finish_reason": finish_reason,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
-                "request_messages": request_messages,
-                "response_message": response_message,
+                "request_messages": [
+                    self._without_reasoning_content(message) for message in request_messages
+                ],
+                "response_message": self._without_reasoning_content(response_message),
             }
             state.dirty = True
         self._rewrite_session_files(state)
@@ -266,7 +267,9 @@ class ConversationRecorder:
         finally:
             self._lock.release()
 
-    def _rewrite_session_files(self, state: _ConversationSessionState, *, force: bool = False) -> None:
+    def _rewrite_session_files(
+        self, state: _ConversationSessionState, *, force: bool = False
+    ) -> None:
         if not force:
             if not state.dirty or self.flush_interval_seconds <= 0:
                 return
@@ -294,11 +297,7 @@ class ConversationRecorder:
         exchange = state.latest_exchange
         if exchange:
             iteration_label = self._iteration_label(exchange.get("iteration"))
-            total_label = (
-                str(state.iterations)
-                if state.iterations is not None
-                else "pending"
-            )
+            total_label = str(state.iterations) if state.iterations is not None else "pending"
             prompt_tokens = exchange.get("prompt_tokens") or 0
             completion_tokens = exchange.get("completion_tokens") or 0
             parts.extend(
@@ -384,9 +383,9 @@ class ConversationRecorder:
                 {
                     "event": "tool_result_summary",
                     "session": self._session_dict(session),
-                    "timestamp": (
-                        state.last_tool_result_summary or {}
-                    ).get("timestamp", self._now()),
+                    "timestamp": (state.last_tool_result_summary or {}).get(
+                        "timestamp", self._now()
+                    ),
                     "tool_result_count": state.tool_result_count,
                     "last_tool_result": state.last_tool_result_summary,
                 }
@@ -396,9 +395,9 @@ class ConversationRecorder:
                 {
                     "event": "terminal_tool_summary",
                     "session": self._session_dict(session),
-                    "timestamp": (
-                        state.last_terminal_tool_summary or {}
-                    ).get("timestamp", self._now()),
+                    "timestamp": (state.last_terminal_tool_summary or {}).get(
+                        "timestamp", self._now()
+                    ),
                     "terminal_tool_call_count": state.terminal_tool_call_count,
                     "last_terminal_tool": state.last_terminal_tool_summary,
                 }
@@ -464,17 +463,8 @@ class ConversationRecorder:
         role = msg.get("role", "unknown")
         parts = [f"**{role}**\n\n"]
         content = msg.get("content")
-        reasoning_content = msg.get("reasoning_content")
-        if reasoning_content:
-            parts.append("<details><summary>Model reasoning_content (thinking)</summary>\n\n")
-            parts.append(str(reasoning_content))
-            parts.append("\n\n</details>\n\n")
         if content:
-            label = (
-                "**Model content (output)**"
-                if role == "assistant"
-                else "**Content**"
-            )
+            label = "**Model content (output)**" if role == "assistant" else "**Content**"
             parts.append(label)
             parts.append("\n\n")
             parts.append(str(content))
@@ -486,6 +476,16 @@ class ConversationRecorder:
         if msg.get("tool_call_id"):
             parts.append(f"Tool call id: `{msg.get('tool_call_id')}`\n\n")
         return "".join(parts).rstrip() + "\n"
+
+    @staticmethod
+    def _without_reasoning_content(message: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop provider thinking payloads before ordinary conversation persistence."""
+
+        return {
+            key: value
+            for key, value in dict(message or {}).items()
+            if key not in {"reasoning_content", "reasoning", "thinking"}
+        }
 
     @staticmethod
     def _fenced_json(value: Any) -> str:

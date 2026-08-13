@@ -14,7 +14,12 @@ from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
 from ..config.config import ConfigLoader
 from ..framework.conversation_recorder import enable_conversation_recording
+from ..framework.llm_usage import (
+    ensure_scan_token_usage_ledger,
+    scan_token_usage_snapshot,
+)
 from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner, _task_slug
+from ..orchestration.rollout import rollout_runtime_policy
 from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
 
 
@@ -147,6 +152,12 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
     default="",
     help="Optional scan task identifier. When set, task-specific reports include this ID in their file name and JSON metadata.",
 )
+@click.option(
+    "--scan-depth",
+    type=click.Choice(["fast", "balanced", "deep"]),
+    default=None,
+    help="Override scan.depth for this run. Java currently accepts fast only.",
+)
 def main(
     config: Path,
     verbose: bool,
@@ -176,6 +187,7 @@ def main(
     export_sarif: Optional[Path],
     exit_policy: str,
     task_id: str,
+    scan_depth: Optional[str],
 ):
     """
     Z-SCOPE: AI-powered defect detection for C/C++ and Java projects.
@@ -195,7 +207,7 @@ def main(
             raise click.ClickException(
                 "configuration not found; pass --config or create ./zscope.yaml"
             )
-        zscope_config = ConfigLoader.load(str(config))
+        zscope_config = ConfigLoader.load(str(config), scan_depth=scan_depth)
         cfg = zscope_config.indexing
         # 通过 CodeIndex 创建后端，保持统一入口
         dashboard_code_index = CodeIndex(
@@ -224,6 +236,7 @@ def main(
             project_config=zscope_config.project,
             snapshot_store=snapshot_store,
             config_path=config,
+            scan_depth=scan_depth,
             host=dashboard_host,
             port=dashboard_port,
         )
@@ -237,7 +250,7 @@ def main(
 
     code_index: Optional[CodeIndex] = None
     try:
-        zscope_config = ConfigLoader.load(str(config))
+        zscope_config = ConfigLoader.load(str(config), scan_depth=scan_depth)
         logger.info(f"Loaded configuration from: {config}")
         if task_id:
             click.echo(f"Task ID: {task_id}")
@@ -268,7 +281,10 @@ def main(
         if mcp_stdio:
             from ..mcp.server import run_stdio_server
 
-            run_stdio_server(str(config))
+            run_stdio_server(
+                str(config),
+                scan_depth=scan_depth,
+            )
             sys.exit(0)
 
         if mcp_http:
@@ -286,6 +302,7 @@ def main(
                     endpoint=mcp_endpoint,
                     auth_token_env=mcp_auth_token_env,
                     client_allowlist=mcp_client_allowlist,
+                    scan_depth=scan_depth,
                 )
             except ValueError as exc:
                 click.echo(f"Error: {exc}")
@@ -324,6 +341,7 @@ def main(
                 f"Screening user configuration candidates with LLM ({llm_workers} worker(s))..."
             )
             llm_cfg = zscope_config.llms.get("default") or next(iter(zscope_config.llms.values()))
+            token_usage_ledger = ensure_scan_token_usage_ledger(zscope_config)
             llm_client = LLMClient(
                 api_key=llm_cfg.api_key,
                 base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
@@ -340,6 +358,8 @@ def main(
                 ),
                 global_max_concurrent_requests=zscope_config.concurrency.llm_max_inflight,
                 supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
+                token_usage_ledger=token_usage_ledger,
+                llm_ref="default",
             )
             try:
                 generated, llm_stats = filter_user_config_rows_with_llm(
@@ -526,6 +546,7 @@ def main(
                 val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
             )
             llm_cfg = zscope_config.llms.get(val_llm_ref, zscope_config.llms["default"])
+            token_usage_ledger = ensure_scan_token_usage_ledger(zscope_config)
 
             llm_client = LLMClient(
                 api_key=llm_cfg.api_key,
@@ -543,6 +564,8 @@ def main(
                 ),
                 global_max_concurrent_requests=zscope_config.concurrency.llm_max_inflight,
                 supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
+                token_usage_ledger=token_usage_ledger,
+                llm_ref=val_llm_ref,
             )
             db_dir = (
                 Path(zscope_config.analysis.user_config_db)
@@ -599,9 +622,18 @@ def main(
                 if result.get("candidate_disposition") == "engine_failed"
             ]
             engine_status = "failed" if failed_results else "complete"
+            llm_usage = scan_token_usage_snapshot(zscope_config)
             alert_metadata = {
                 "workflow": "alert-verify",
                 "runtime_spec": dict(vars(zscope_config.runtime_provenance)),
+                "scan_depth": zscope_config.scan.depth,
+                "effective_scan": {
+                    "depth": zscope_config.scan.depth,
+                    "depth_source": zscope_config.scan.depth_source,
+                    "rollout": rollout_runtime_policy(zscope_config),
+                },
+                "rollout": rollout_runtime_policy(zscope_config),
+                "llm_usage": llm_usage,
             }
             verification_report = apply_report_schema_v2(
                 {
@@ -612,6 +644,7 @@ def main(
                 },
                 state={
                     "any_failure": bool(failed_results),
+                    "llm_usage": llm_usage,
                     "engine_capabilities": {
                         "alert_verifier": {
                             "status": engine_status,

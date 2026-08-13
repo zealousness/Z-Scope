@@ -5,10 +5,38 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Mapping, Optional, cast
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, cast
 
+from .evidence import normalize_missing_fact_kinds
 from .proofs import deterministic_decision_proof
+
+
+IssueFactProvider = Callable[[Mapping[str, Any]], Optional[Dict[str, Any]]]
+EvidenceFactProvider = Callable[
+    [Mapping[str, Any], Optional[Mapping[str, Any]]],
+    Optional[Dict[str, Any]],
+]
+
+
+SUPPORTED_FACT_KINDS = frozenset(
+    {
+        "guard_dominance",
+        "caller_contract",
+        "source_controllability",
+        "ownership_transfer",
+        "cleanup_coverage",
+        "lockset",
+        "happens_before",
+        "object_identity",
+        "value_range",
+        "source_sink_reachability",
+        "signal_context",
+        "container_reachability",
+        "type_layout",
+    }
+)
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
@@ -26,6 +54,32 @@ class EvidenceCompletionRequest:
     validation_cluster_uid: str
     missing_fact: str
     reason: str
+
+
+@dataclass(frozen=True)
+class EvidenceResolution:
+    """Result of the single typed FACT_RESOLUTION transition."""
+
+    request: EvidenceCompletionRequest
+    status: str
+    fact_kind: str
+    evidence_delta: Dict[str, Any]
+    evidence_delta_hash: str
+    proof_added: bool = False
+
+
+@dataclass(frozen=True)
+class EvidenceResolutionBatch:
+    """All deterministic fact work required by one security obligation."""
+
+    resolutions: tuple[EvidenceResolution, ...]
+    evidence_delta: Dict[str, Any]
+    evidence_delta_hash: str
+    proof_added: bool
+
+    @property
+    def has_evidence_delta(self) -> bool:
+        return bool(self.evidence_delta_hash and self.evidence_delta)
 
 
 class EvidenceCompletionQueue:
@@ -47,14 +101,716 @@ class EvidenceCompletionQueue:
         max_workers: int = 2,
         enable_v11_providers: bool = True,
         enable_v12_providers: bool = False,
+        fact_timeout_seconds: float = 5.0,
     ) -> None:
         self.enabled = bool(enabled)
         self.max_workers = max(1, int(max_workers or 2))
+        self.fact_timeout_seconds = max(0.001, float(fact_timeout_seconds))
+        self._fact_provider_executor = ThreadPoolExecutor(
+            max_workers=self.max_workers,
+            thread_name_prefix="zscope-fact-provider",
+        )
         # v1.1 providers are independently switchable while their transition
         # audit is running.  Existing v3 providers remain available so a
         # disabled rollout cannot change prior evidence semantics.
         self.enable_v11_providers = bool(enable_v11_providers)
         self.enable_v12_providers = bool(enable_v12_providers)
+
+    def resolve_requested_fact(
+        self,
+        issue: Dict[str, Any],
+        *,
+        validator_data: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]] = None,
+    ) -> Optional[EvidenceResolution]:
+        """Resolve exactly the fact kind named by an uncertain v3 result.
+
+        Providers are selected by fact kind.  This is intentionally separate
+        from the broad prevalidation sweep: a Validator request must not cause
+        every local prover to run again, and a response is allowed to trigger
+        this transition only once per cluster/fact/subject tuple.
+        """
+
+        if not self.enabled or str(validator_data.get("verdict") or "").lower() != "uncertain":
+            return None
+        raw_request = validator_data.get("missing_fact_request")
+        if not isinstance(raw_request, Mapping):
+            return None
+        fact_kind = str(raw_request.get("fact_kind") or "").strip().lower()
+        request = EvidenceCompletionRequest(
+            validation_cluster_uid=str(issue.get("validation_cluster_uid") or ""),
+            missing_fact=fact_kind,
+            reason=str(raw_request.get("reason") or "deterministic evidence incomplete"),
+        )
+        if fact_kind not in SUPPORTED_FACT_KINDS:
+            return self._resolution(issue, request, "unsupported", fact_kind, {})
+
+        attempt_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "cluster": request.validation_cluster_uid,
+                    "fact_kind": fact_kind,
+                    "subject_uid": str(raw_request.get("subject_uid") or ""),
+                    "function_uid": str(raw_request.get("function_uid") or ""),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        attempted = issue.setdefault("evidence_completion_request_hashes", [])
+        if not isinstance(attempted, list):
+            attempted = []
+            issue["evidence_completion_request_hashes"] = attempted
+        if attempt_key in attempted:
+            return self._resolution(issue, request, "duplicate_request", fact_kind, {})
+        attempted.append(attempt_key)
+        issue["evidence_completion_attempt_count"] = (
+            int(issue.get("evidence_completion_attempt_count") or 0) + 1
+        )
+
+        provider_status, generated, provider_error = self._run_requested_fact_providers(
+            fact_kind,
+            issue,
+            validation_evidence,
+        )
+        if provider_status != "completed":
+            issue["evidence_completion_status"] = provider_status
+            issue["evidence_completion_terminal_status"] = provider_status
+            issue["evidence_completion_missing_fact"] = fact_kind
+            if provider_error:
+                issue["evidence_completion_error"] = provider_error
+            return self._resolution(issue, request, provider_status, fact_kind, {})
+        proofs = self._authoritative_completion_proofs(issue, generated)
+        if issue.get("blocking_negative_evidence") is True:
+            proofs = [
+                proof for proof in proofs if str(proof.get("outcome") or "").lower() != "reject"
+            ]
+        facts = self._requested_fact_payloads(fact_kind, issue, validation_evidence)
+        facts, rejected_fact_uids = self._filter_requested_fact_uids(
+            facts,
+            validation_evidence,
+        )
+        if rejected_fact_uids:
+            issue["validator_missing_fact_request_rejected"] = "unknown_fact_uid"
+            issue["rejected_fact_uids"] = rejected_fact_uids
+            return self._resolution(issue, request, "unsupported", fact_kind, {})
+        facts = self._normalize_resolved_facts(
+            fact_kind,
+            facts,
+            issue,
+            validation_evidence,
+        )
+        delta: Dict[str, Any] = {"fact_kind": fact_kind, "facts": facts, "proofs": proofs}
+        refs: list[str] = []
+        for fact in facts:
+            if not isinstance(fact, Mapping):
+                continue
+            ref = fact.get("fact_uid") or fact.get("uid") or fact.get("id")
+            if ref:
+                refs.append(str(ref))
+        for proof in proofs:
+            refs.extend(str(ref) for ref in proof.get("fact_ids") or [] if str(ref))
+            if proof.get("code_hash"):
+                refs.append(str(proof["code_hash"]))
+        delta["evidence_refs"] = sorted(set(refs))
+
+        if proofs:
+            existing = issue.setdefault("deterministic_proofs", [])
+            if not isinstance(existing, list):
+                existing = []
+                issue["deterministic_proofs"] = existing
+            known = {
+                (str(item.get("outcome") or ""), str(item.get("proof_kind") or ""))
+                for item in existing
+                if isinstance(item, Mapping)
+            }
+            for proof in proofs:
+                identity = (str(proof.get("outcome") or ""), str(proof.get("proof_kind") or ""))
+                if identity not in known:
+                    existing.append(proof)
+                    known.add(identity)
+            issue["evidence_completion_status"] = "completed"
+            issue["evidence_completion_terminal_status"] = "completed_with_proof"
+            issue["evidence_completion_missing_fact"] = fact_kind
+            return self._resolution(
+                issue,
+                request,
+                "completed_with_proof",
+                fact_kind,
+                delta,
+                proof_added=True,
+            )
+        if facts:
+            existing_facts = issue.setdefault("evidence_completion_facts", [])
+            if not isinstance(existing_facts, list):
+                existing_facts = []
+                issue["evidence_completion_facts"] = existing_facts
+            existing_facts.extend(facts)
+            issue["evidence_completion_status"] = "completed_partial"
+            issue["evidence_completion_terminal_status"] = "completed_partial"
+            issue["evidence_completion_missing_fact"] = fact_kind
+            return self._resolution(issue, request, "completed_partial", fact_kind, delta)
+
+        issue["evidence_completion_status"] = "exhausted"
+        issue["evidence_completion_terminal_status"] = "exhausted"
+        issue["evidence_completion_missing_fact"] = fact_kind
+        return self._resolution(issue, request, "exhausted", fact_kind, {})
+
+    def resolve_required_facts(
+        self,
+        issue: Dict[str, Any],
+        *,
+        validator_data: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]] = None,
+    ) -> EvidenceResolutionBatch:
+        """Resolve every locally supported fact required by the obligation.
+
+        The model may still name one especially useful missing fact, but that
+        request is no longer the coverage boundary.  The immutable obligation
+        and its decision slice determine the remaining provider fan-out.
+        """
+
+        resolutions: list[EvidenceResolution] = []
+        raw_request = validator_data.get("missing_fact_request")
+        request = dict(raw_request) if isinstance(raw_request, Mapping) else {}
+        for fact_kind in self.required_resolution_fact_kinds(issue, validator_data):
+            synthetic = {
+                "verdict": "uncertain",
+                "missing_fact_request": {
+                    "fact_kind": fact_kind,
+                    "subject_uid": str(
+                        request.get("subject_uid")
+                        or issue.get("resource_identity")
+                        or issue.get("source_identity")
+                        or ""
+                    ),
+                    "function_uid": str(
+                        request.get("function_uid")
+                        or issue.get("function_signature")
+                        or issue.get("function")
+                        or ""
+                    ),
+                    "reason": str(
+                        request.get("reason") or f"security obligation requires {fact_kind}"
+                    ),
+                },
+            }
+            resolution = self.resolve_requested_fact(
+                issue,
+                validator_data=synthetic,
+                validation_evidence=validation_evidence,
+            )
+            if resolution is not None:
+                resolutions.append(resolution)
+
+        facts: list[Dict[str, Any]] = []
+        proofs: list[Dict[str, Any]] = []
+        evidence_refs: set[str] = set()
+        fact_kinds: set[str] = set()
+        proof_added = False
+        for resolution in resolutions:
+            proof_added = proof_added or resolution.proof_added
+            if not resolution.evidence_delta:
+                continue
+            fact_kinds.add(resolution.fact_kind)
+            facts.extend(
+                dict(value)
+                for value in resolution.evidence_delta.get("facts") or []
+                if isinstance(value, Mapping)
+            )
+            proofs.extend(
+                dict(value)
+                for value in resolution.evidence_delta.get("proofs") or []
+                if isinstance(value, Mapping)
+            )
+            evidence_refs.update(
+                str(value)
+                for value in resolution.evidence_delta.get("evidence_refs") or []
+                if str(value)
+            )
+
+        delta: Dict[str, Any] = {}
+        if facts or proofs:
+            delta = {
+                "fact_kinds": sorted(fact_kinds),
+                "facts": self._deduplicate_records(facts, "fact_uid"),
+                "proofs": self._deduplicate_records(proofs, "proof_kind"),
+                "evidence_refs": sorted(evidence_refs),
+                "resolution_statuses": [
+                    {"fact_kind": value.fact_kind, "status": value.status} for value in resolutions
+                ],
+            }
+        stable = json.dumps(delta, ensure_ascii=False, sort_keys=True, default=str)
+        delta_hash = hashlib.sha256(stable.encode("utf-8")).hexdigest() if delta else ""
+        issue["validator_fact_resolutions"] = [
+            {
+                "fact_kind": value.fact_kind,
+                "status": value.status,
+                "evidence_delta_hash": value.evidence_delta_hash,
+                "proof_added": value.proof_added,
+            }
+            for value in resolutions
+        ]
+        if proof_added:
+            aggregate_status = "completed_with_proof"
+        elif delta:
+            aggregate_status = "completed_partial"
+        elif any(value.status == "timeout" for value in resolutions):
+            aggregate_status = "timeout"
+        elif any(value.status == "provider_error" for value in resolutions):
+            aggregate_status = "provider_error"
+        elif resolutions:
+            aggregate_status = "exhausted"
+        else:
+            aggregate_status = "not_applicable"
+        issue["evidence_completion_status"] = aggregate_status
+        issue["evidence_completion_terminal_status"] = aggregate_status
+        if delta.get("facts"):
+            self._apply_fact_delta_to_decision_context(issue, delta["facts"])
+        return EvidenceResolutionBatch(
+            resolutions=tuple(resolutions),
+            evidence_delta=delta,
+            evidence_delta_hash=delta_hash,
+            proof_added=proof_added,
+        )
+
+    @staticmethod
+    def _apply_fact_delta_to_decision_context(
+        issue: Dict[str, Any],
+        facts: Iterable[Mapping[str, Any]],
+    ) -> None:
+        fact_slice = issue.get("decision_fact_slice")
+        fact_slice = dict(fact_slice) if isinstance(fact_slice, Mapping) else {}
+        missing = set(
+            normalize_missing_fact_kinds(
+                issue.get("missing_fact_kinds") or fact_slice.get("missing_fact_kinds") or []
+            )
+        )
+        fact_uids = {str(value) for value in fact_slice.get("fact_uids") or [] if str(value)}
+        code_hashes = {
+            str(value) for value in fact_slice.get("dependency_code_hashes") or [] if str(value)
+        }
+        fact_payloads = [
+            dict(value) for value in fact_slice.get("facts") or [] if isinstance(value, Mapping)
+        ]
+        known_payloads = {
+            str(value.get("fact_uid") or value.get("uid") or value.get("id") or "")
+            for value in fact_payloads
+        }
+        resolved: set[str] = set()
+        for fact in facts:
+            uid = str(fact.get("fact_uid") or "")
+            if uid:
+                fact_uids.add(uid)
+                if uid not in known_payloads:
+                    fact_payloads.append(dict(fact))
+                    known_payloads.add(uid)
+            dependency = str(fact.get("dependency_code_hash") or "")
+            if dependency:
+                code_hashes.add(dependency)
+            kind = str(fact.get("fact_kind") or fact.get("kind") or "")
+            if kind:
+                resolved.add(kind)
+            raw_satisfies = fact.get("satisfies_fact_kinds")
+            if isinstance(raw_satisfies, Sequence) and not isinstance(raw_satisfies, str):
+                resolved.update(str(value) for value in raw_satisfies if str(value))
+        remaining = sorted(missing - resolved)
+        fact_slice.update(
+            {
+                "fact_uids": sorted(fact_uids),
+                "dependency_code_hashes": sorted(code_hashes),
+                "missing_fact_kinds": remaining,
+                "coverage": "complete" if not remaining and fact_uids else "partial",
+                "facts": fact_payloads,
+            }
+        )
+        issue["decision_fact_slice"] = fact_slice
+        issue["missing_fact_kinds"] = remaining
+        issue["decision_fact_coverage"] = fact_slice["coverage"]
+        if fact_slice["coverage"] == "complete" and code_hashes:
+            issue["candidate_promotion_eligible"] = True
+            issue["candidate_promotion_reason"] = "required_local_facts_complete"
+
+    @staticmethod
+    def required_resolution_fact_kinds(
+        issue: Mapping[str, Any],
+        validator_data: Mapping[str, Any],
+    ) -> tuple[str, ...]:
+        """Map obligation facts to the narrow local provider vocabulary."""
+
+        ordered: list[str] = []
+
+        def add(value: Any) -> None:
+            normalized = str(value or "").strip().lower()
+            if normalized in SUPPORTED_FACT_KINDS and normalized not in ordered:
+                ordered.append(normalized)
+
+        raw_request = validator_data.get("missing_fact_request")
+        if isinstance(raw_request, Mapping):
+            add(raw_request.get("fact_kind"))
+
+        obligation = issue.get("security_obligation")
+        obligation = obligation if isinstance(obligation, Mapping) else {}
+        raw_missing = issue.get("missing_fact_kinds")
+        missing = (
+            list(raw_missing)
+            if isinstance(raw_missing, Sequence) and not isinstance(raw_missing, str)
+            else []
+        )
+        fact_slice = issue.get("decision_fact_slice")
+        if isinstance(fact_slice, Mapping):
+            slice_missing = fact_slice.get("missing_fact_kinds")
+            if isinstance(slice_missing, Sequence) and not isinstance(slice_missing, str):
+                missing.extend(slice_missing)
+        raw_required = issue.get("obligation_required_fact_kinds") or obligation.get(
+            "required_fact_kinds"
+        )
+        if isinstance(raw_required, Sequence) and not isinstance(raw_required, str):
+            missing.extend(raw_required)
+
+        category = str(issue.get("defect_class") or issue.get("category") or "").lower()
+        for raw_kind in missing:
+            kind = str(raw_kind or "").strip().lower()
+            add(kind)
+            if kind in {"event:shared_state_access", "event:lock", "event:unlock"}:
+                add("lockset")
+                add("happens_before")
+            elif kind in {"event:acquire", "event:exit", "event:release"}:
+                add("cleanup_coverage")
+                add("ownership_transfer")
+                add("caller_contract")
+            elif kind in {"source", "sink", "guard", "sanitizer"}:
+                add("source_controllability")
+                add("source_sink_reachability")
+                add("guard_dominance")
+                if any(token in category for token in ("bound", "overflow", "size", "index")):
+                    add("value_range")
+                    add("type_layout")
+
+        # Older candidates can carry a partial promotion status without an
+        # explicit missing-kind list.  Use the defect family only to select
+        # providers; it never creates a fact or proof by itself.
+        if not ordered and issue.get("candidate_promotion_eligible") is False:
+            if any(token in category for token in ("race", "lock", "thread", "concurr")):
+                add("lockset")
+                add("happens_before")
+            elif any(token in category for token in ("leak", "release", "ownership", "free")):
+                add("cleanup_coverage")
+                add("ownership_transfer")
+                add("caller_contract")
+            elif any(token in category for token in ("bound", "overflow", "size", "index")):
+                add("value_range")
+                add("guard_dominance")
+                add("source_sink_reachability")
+                add("type_layout")
+            else:
+                add("caller_contract")
+                add("source_sink_reachability")
+        return tuple(ordered)
+
+    @staticmethod
+    def _deduplicate_records(
+        records: Iterable[Mapping[str, Any]],
+        identity_key: str,
+    ) -> list[Dict[str, Any]]:
+        output: list[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for record in records:
+            identity = str(record.get(identity_key) or "")
+            if not identity:
+                identity = hashlib.sha256(
+                    json.dumps(record, ensure_ascii=False, sort_keys=True, default=str).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+            if identity in seen:
+                continue
+            seen.add(identity)
+            output.append(dict(record))
+        return output
+
+    @staticmethod
+    def _normalize_resolved_facts(
+        fact_kind: str,
+        facts: Iterable[Mapping[str, Any]],
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        """Attach auditable provenance to accepted local fact records."""
+
+        evidence = _as_mapping(validation_evidence)
+        function_context = _as_mapping(evidence.get("function_context"))
+        code = str(function_context.get("code") or "")
+        dependency_hash = str(
+            issue.get("dependency_code_hash")
+            or issue.get("code_hash")
+            or issue.get("source_fingerprint")
+            or evidence.get("dependency_code_hash")
+            or (hashlib.sha256(code.encode("utf-8")).hexdigest() if code else "")
+        )
+        location = {
+            "file": str(issue.get("file") or issue.get("file_path") or ""),
+            "function": str(issue.get("function_signature") or issue.get("function") or ""),
+            "line": issue.get("line") or issue.get("start_line"),
+        }
+        normalized: list[Dict[str, Any]] = []
+        for raw in facts:
+            fact = dict(raw)
+            stable = json.dumps(
+                {"kind": fact_kind, "fact": fact, "dependency": dependency_hash},
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            uid = str(fact.get("fact_uid") or fact.get("uid") or fact.get("id") or "")
+            if not uid:
+                uid = "FACT_LOCAL_" + hashlib.sha256(stable.encode("utf-8")).hexdigest()[:32]
+            raw_location = fact.get("location")
+            fact.update(
+                {
+                    "fact_uid": uid,
+                    "fact_kind": str(fact.get("fact_kind") or fact.get("kind") or fact_kind),
+                    "producer_engine": str(
+                        fact.get("producer_engine") or "local_deterministic_fact_provider"
+                    ),
+                    "location": (
+                        dict(raw_location) if isinstance(raw_location, Mapping) else location
+                    ),
+                    "dependency_code_hash": str(
+                        fact.get("dependency_code_hash") or dependency_hash
+                    ),
+                    "evidence_ref": uid,
+                    "origin": "deterministic_provider",
+                }
+            )
+            normalized.append(fact)
+        return normalized
+
+    def _run_requested_fact_providers(
+        self,
+        fact_kind: str,
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> tuple[str, list[Dict[str, Any]], str]:
+        """Run the named provider set behind a bounded exception-safe boundary."""
+
+        future = self._fact_provider_executor.submit(
+            lambda: list(
+                self._requested_completion_proofs(
+                    fact_kind,
+                    issue,
+                    validation_evidence,
+                )
+            )
+        )
+        try:
+            return "completed", future.result(timeout=self.fact_timeout_seconds), ""
+        except FuturesTimeoutError:
+            future.cancel()
+            return "timeout", [], "fact provider timed out"
+        except Exception as exc:
+            return "provider_error", [], f"{type(exc).__name__}: {exc}"[:500]
+
+    @staticmethod
+    def _resolution(
+        issue: Dict[str, Any],
+        request: EvidenceCompletionRequest,
+        status: str,
+        fact_kind: str,
+        delta: Dict[str, Any],
+        *,
+        proof_added: bool = False,
+    ) -> EvidenceResolution:
+        stable = json.dumps(delta, ensure_ascii=False, sort_keys=True, default=str)
+        delta_hash = hashlib.sha256(stable.encode("utf-8")).hexdigest() if delta else ""
+        issue["evidence_delta_hash"] = delta_hash
+        issue["evidence_resolution_status"] = status
+        return EvidenceResolution(
+            request=request,
+            status=status,
+            fact_kind=fact_kind,
+            evidence_delta=dict(delta),
+            evidence_delta_hash=delta_hash,
+            proof_added=proof_added,
+        )
+
+    @staticmethod
+    def _requested_fact_payloads(
+        fact_kind: str,
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        """Read backend-produced typed facts; never synthesize model evidence."""
+
+        sources = [
+            issue.get("fact_completion_by_kind"),
+            _as_mapping(issue.get("evidence_pack")).get("fact_completion_by_kind"),
+            _as_mapping(validation_evidence).get("fact_completion_by_kind"),
+        ]
+        result: list[Dict[str, Any]] = []
+        for source in sources:
+            if not isinstance(source, Mapping):
+                continue
+            raw = source.get(fact_kind)
+            values = raw if isinstance(raw, list) else [raw]
+            for item in values:
+                if isinstance(item, Mapping):
+                    result.append(dict(item))
+        return result[:32]
+
+    @staticmethod
+    def _filter_requested_fact_uids(
+        facts: Iterable[Mapping[str, Any]],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> tuple[list[Dict[str, Any]], list[str]]:
+        """Reject typed facts whose UID is absent from the trusted evidence slice.
+
+        Providers may add a new deterministic fact during resolution, so a
+        missing allow-list does not make every fact invalid.  When the slice
+        does advertise a catalog, however, a model/provider-supplied UID must
+        already be present there or be a content-addressed local fact with no
+        external UID.  This prevents a forged UID from entering V2 evidence.
+        """
+
+        evidence = _as_mapping(validation_evidence)
+        allowed: set[str] = set()
+        catalog = evidence.get("evidence_ref_catalog")
+        if isinstance(catalog, Mapping):
+            allowed.update(str(key) for key in catalog if str(key))
+        fact_slice = _as_mapping(evidence.get("decision_fact_slice"))
+        for key in ("fact_uids", "edge_uids"):
+            allowed.update(str(value) for value in _as_list(fact_slice.get(key)) if str(value))
+        if not allowed:
+            return [dict(fact) for fact in facts], []
+
+        accepted: list[Dict[str, Any]] = []
+        rejected: list[str] = []
+        for fact in facts:
+            uid = str(fact.get("fact_uid") or fact.get("uid") or fact.get("id") or "")
+            if uid and uid not in allowed:
+                rejected.append(uid)
+                continue
+            accepted.append(dict(fact))
+        return accepted, sorted(set(rejected))
+
+    def _requested_completion_proofs(
+        self,
+        fact_kind: str,
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Iterable[Dict[str, Any]]:
+        """Dispatch one fact kind to its narrow deterministic providers."""
+
+        with_evidence: Dict[str, list[EvidenceFactProvider]] = {
+            "guard_dominance": [self._guard_dominance_proof],
+            "caller_contract": [],
+            "source_controllability": [],
+            "ownership_transfer": [],
+            "cleanup_coverage": [
+                *(
+                    [
+                        self._failed_member_acquisition_cleanup_proof,
+                        self._incomplete_owner_cleanup_proof,
+                        self._lifecycle_protocol_confirmation_proof,
+                    ]
+                    if self.enable_v11_providers
+                    else []
+                ),
+            ],
+            "lockset": [
+                self._local_lock_dominance_proof,
+                *(
+                    [
+                        self._balanced_lock_protocol_proof,
+                        self._lock_held_on_failure_return_proof,
+                    ]
+                    if self.enable_v11_providers
+                    else []
+                ),
+            ],
+            "happens_before": [
+                self._local_lock_dominance_proof,
+                *([self._balanced_lock_protocol_proof] if self.enable_v11_providers else []),
+            ],
+            "object_identity": [self._distinct_object_identity_proof],
+            "value_range": (
+                [self._allocation_copy_capacity_proof] if self.enable_v11_providers else []
+            ),
+            "source_sink_reachability": [self._cfg_obligation_confirmation_proof],
+            "signal_context": [],
+            "container_reachability": (
+                [self._container_unlink_without_release_proof] if self.enable_v11_providers else []
+            ),
+            "type_layout": [],
+        }
+        issue_only: Dict[str, list[IssueFactProvider]] = {
+            "guard_dominance": [self._ast_guard_dominance_proof],
+            "caller_contract": [self._graph_contract_confirmation_proof],
+            "source_controllability": [],
+            "ownership_transfer": [
+                self._fd_transfer_or_failure_proof,
+                self._resource_transfer_proof,
+            ],
+            "cleanup_coverage": [],
+            "lockset": [],
+            "happens_before": [],
+            "object_identity": [],
+            "value_range": [self._allocation_context_proof],
+            "source_sink_reachability": [self._graph_contract_confirmation_proof],
+            "signal_context": [],
+            "container_reachability": [],
+            "type_layout": [self._array_shape_rejection_proof],
+        }
+        # Some providers have issue-only signatures despite producing a caller
+        # or graph fact.  Do not invoke the same function through both tables.
+        for issue_provider in issue_only.get(fact_kind, []):
+            generated = issue_provider(issue)
+            if generated is not None:
+                yield generated
+        for evidence_provider in with_evidence.get(fact_kind, []):
+            generated = evidence_provider(issue, validation_evidence)
+            if generated is not None:
+                yield generated
+
+        if not self.enable_v12_providers:
+            return
+        v12: Dict[str, list[EvidenceFactProvider]] = {
+            "guard_dominance": [self._fixed_array_guard_v12_rejection_proof],
+            "caller_contract": [self._external_allocation_v12_proof],
+            "source_controllability": [self._entry_parameter_system_sink_v12_proof],
+            "ownership_transfer": [
+                self._ownership_transfer_v12_rejection_proof,
+                self._caller_owned_field_transfer_v12_rejection_proof,
+            ],
+            "cleanup_coverage": [
+                self._exact_leak_path_v12_proof,
+                self._matching_release_before_exit_v12_rejection_proof,
+                self._zero_initialized_member_failure_v12_rejection_proof,
+            ],
+            "lockset": [
+                self._external_callback_under_lock_v12_proof,
+                self._single_shared_access_v12_rejection_proof,
+            ],
+            "happens_before": [self._external_callback_under_lock_v12_proof],
+            "object_identity": [self._caller_owned_field_transfer_v12_rejection_proof],
+            "value_range": [
+                self._allocation_overflow_v12_proof,
+                self._allocation_capacity_v12_rejection_proof,
+                self._exact_allocation_copy_v12_rejection_proof,
+                self._derived_allocation_bound_v12_rejection_proof,
+            ],
+            "source_sink_reachability": [self._entry_parameter_system_sink_v12_proof],
+            "signal_context": [self._signal_context_v12_proof],
+            "container_reachability": [self._self_referential_container_v12_proof],
+            "type_layout": [
+                self._fixed_array_guard_v12_rejection_proof,
+                self._derived_allocation_bound_v12_rejection_proof,
+            ],
+        }
+        for v12_provider in v12.get(fact_kind, []):
+            generated = v12_provider(issue, validation_evidence)
+            if generated is not None:
+                yield generated
 
     def complete(
         self,

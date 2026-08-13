@@ -1,0 +1,66 @@
+{
+  "schema_version": "zscope.benchmark-policy.v1",
+  "policy_id": "zscope-adaptive-balanced-default-v1",
+  "benchmark_schema_version": "zscope.benchmark.v4",
+  "formal_schema_version": "zscope.formal-benchmark.v3",
+  "minimum_formal_trials": 5,
+  "range_depth_token_expectations": {
+    "fast": {"median_tokens": 2000000.0, "per_run_tokens": 2000000.0},
+    "balanced": {"median_tokens": 10000000.0, "per_run_tokens": 12000000.0},
+    "deep": {"median_tokens": 30000000.0, "per_run_tokens": 30000000.0}
+  },
+  "range_gates": {
+    "median_confirmed_tp": {"operator": ">=", "threshold": 111.0},
+    "median_tokens": {"operator": "<=", "threshold": 10000000.0},
+    "per_run_tokens": {"operator": "<=", "threshold": 12000000.0},
+    "actionable_fdr_delta_vs_arm_a_pp": {"operator": "<=", "threshold": 1.0},
+    "true_positive_jaccard": {"operator": ">=", "threshold": 0.9},
+    "recall_range_pp": {"operator": "<=", "threshold": 2.0},
+    "provider_usage_coverage": {"operator": ">=", "threshold": 1.0},
+    "explicit_attribution_coverage": {"operator": ">=", "threshold": 0.99},
+    "queue_drained_rate": {"operator": ">=", "threshold": 1.0},
+    "token_conservation_rate": {"operator": ">=", "threshold": 1.0},
+    "telemetry_complete_rate": {"operator": ">=", "threshold": 1.0},
+    "protocol_anomaly_count": {"operator": "<=", "threshold": 0.0}
+  },
+  "sealed_delta_gates": {
+    "sealed_confirmed_recall_delta_pp": {"operator": ">=", "threshold": 3.0},
+    "sealed_actionable_precision_delta_pp": {"operator": ">=", "threshold": -1.0},
+    "sealed_high_critical_recall_delta_pp": {"operator": ">=", "threshold": 0.0},
+    "semantic_blind_review_unit_count": {"operator": ">=", "threshold": 100.0},
+    "semantic_critical_contract_recall": {"operator": ">=", "threshold": 0.85},
+    "semantic_unsupported_claim_rate": {"operator": "<=", "threshold": 0.05},
+    "semantic_warm_cache_llm_call_reduction": {"operator": ">=", "threshold": 0.8},
+    "active_discovery_exclusive_project_count": {"operator": ">=", "threshold": 3.0},
+    "active_discovery_exclusive_cwe_family_count": {"operator": ">=", "threshold": 2.0},
+    "safe_entry_alert_rate": {"operator": "<=", "threshold": 0.1},
+    "safe_entry_alert_rate_delta_pp": {"operator": "<=", "threshold": 1.0},
+    "shadow_precision_at_25": {"operator": ">=", "threshold": 0.7},
+    "shadow_high_critical_precision": {"operator": ">=", "threshold": 0.8},
+    "incomplete_scan_rate": {"operator": "<=", "threshold": 0.05},
+    "silent_rejection_without_proof_count": {"operator": "<=", "threshold": 0.0}
+  },
+  "non_regression_gates": {
+    "sealed_recall_delta_pp": {"operator": ">=", "threshold": -2.0},
+    "sealed_precision_delta_pp": {"operator": ">=", "threshold": -2.0},
+    "sealed_high_critical_recall_delta_pp": {"operator": ">=", "threshold": -2.0},
+    "tokens_per_kloc_or_tp_growth": {"operator": "<=", "threshold": 0.25}
+  },
+  "matrix_thresholds": {
+    "arm_recall_tie_pp": 1.0,
+    "rollout_days_per_stage": 7.0,
+    "rollout_projects_per_stage": 20.0,
+    "stable_observation_windows": 2.0
+  },
+  "requirements": {
+    "require_provider_usage_for_release": true,
+    "require_call_level_usage_events_for_release": true,
+    "require_qualified_default_rules_for_release": true,
+    "require_oci_isolation_for_release": true,
+    "require_explicit_finding_attribution": true,
+    "require_arm_a_baseline_for_release": true,
+    "require_public_external_attestation_for_release": true,
+    "require_sealed_attestation_for_release": true,
+    "require_shadow_attestation_for_release": true
+  }
+}

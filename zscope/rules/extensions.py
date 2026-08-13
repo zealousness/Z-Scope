@@ -25,6 +25,7 @@ from .catalog import (
     packaged_skill_languages,
 )
 from .implementation import validate_builtin_implementation
+from .qualification import QualificationRegistry
 
 RULE_PACK_VERSION = 1
 RULE_PROVIDER_ENTRY_POINT = "zscope.rule_providers"
@@ -222,6 +223,7 @@ class RuleRegistry:
         self,
         *,
         disabled_ids: Sequence[str] = (),
+        enabled_ids: Sequence[str] = (),
         reserved_ids: Optional[Sequence[str]] = None,
         catalog: Optional[RuleCatalog] = None,
         skill_languages: Optional[Mapping[str, Sequence[str]]] = None,
@@ -229,6 +231,7 @@ class RuleRegistry:
         self.catalog = catalog or RuleCatalog.builtin()
         self.skill_languages = dict(skill_languages or packaged_skill_languages())
         self.disabled_ids = {str(item) for item in disabled_ids}
+        self.enabled_ids = {str(item) for item in enabled_ids}
         self.reserved_ids = set(self.catalog.ids)
         if reserved_ids is not None:
             self.reserved_ids.update(str(item) for item in reserved_ids)
@@ -313,7 +316,13 @@ class RuleRegistry:
     def _rule_is_executable(self, rule_id: str, language: str) -> bool:
         effective = self._effective_rules
         if effective is None:
-            return rule_id not in self.disabled_ids
+            if rule_id in self.disabled_ids:
+                return False
+            descriptor = self._descriptors.get(rule_id) or self.catalog.get(rule_id)
+            return bool(
+                rule_id in self.enabled_ids
+                or (descriptor is not None and descriptor.default_enabled)
+            )
         if language != effective.language:
             return False
         state = effective.state_for(rule_id)
@@ -808,9 +817,11 @@ def preflight_rules(config: Any, *, spec_registry: Optional[Any] = None) -> Effe
     }
     catalog = RuleCatalog.builtin(skill_languages=skill_languages)
     validate_builtin_implementation(catalog)
+    qualification = QualificationRegistry.builtin(catalog=catalog)
     rules_config = config.rules
     registry = RuleRegistry(
         disabled_ids=tuple(rules_config.disabled_ids),
+        enabled_ids=tuple(getattr(rules_config, "enabled_ids", ()) or ()),
         catalog=catalog,
         skill_languages=skill_languages,
     )
@@ -836,13 +847,16 @@ def preflight_rules(config: Any, *, spec_registry: Optional[Any] = None) -> Effe
         language=config.project.language,
         backend=config.indexing.backend,
         disabled_ids=tuple(rules_config.disabled_ids),
+        enabled_ids=tuple(getattr(rules_config, "enabled_ids", ()) or ()),
         extension_sources=sources,
+        qualification_summary=qualification.summary(),
         extension_registry=registry,
     )
     registry.bind_effective_rules(effective)
     config.effective_rules = effective
     config.rule_catalog_provenance = effective.provenance
     config.rule_validation_warnings = list(effective.warnings)
+    config.rule_qualification = qualification
     return effective
 
 

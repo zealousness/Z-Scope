@@ -48,9 +48,12 @@ tests:
 - Java Spoon 默认复用已准备的本地 Maven 缓存，不隐式强制联网刷新；显式刷新只允许发生在联网准备阶段，sidecar 不得在目标项目遗留 `spoon.classpath.tmp`。
 - 日常 Joern WebSocket 查询必须有总量可控的超时和重试边界；CPG import 可以使用独立的长时限，不能把一小时等待传播到普通入口查询。
 - 基础增量索引只以文件哈希、TU 状态、删除影响和基础 extractor 版本为依据；`indexed + hash unchanged` 的 TU 不得因为派生索引版本或生命周期变化而重新执行 `extract_tu()`/`documentSymbol`。
-- `function_symbol_context` 与 `function_type_refs` 的 `dirty/in_progress/current/failed` 生命周期保存在 schema v14 的 metadata JSON 中。耗时扫描只能写 TEMP staging，派生事实与 `current` 状态必须在同一事务发布；中断恢复只重建非 current 的派生层。
+- `function_symbol_context` 与 `function_type_refs` 的 `dirty/in_progress/current/failed` 生命周期保存在 schema v14 的 metadata JSON 中。派生扫描按文件有界并发，worker 不得写 SQLite；只有调用线程可以分批写 TEMP staging，派生事实与 `current` 状态必须在同一事务发布；中断恢复只重建非 current 的派生层。
 - clangd JSON-RPC 必须使用单调时钟硬超时和事件唤醒，正确回复 server request，并以 work-done token 跟踪 background indexing；索引等待超时不得继续标记后端 ready。
 - symbol/type 引用应先使用逐文件 semantic tokens 和声明反向 references；只有仍然冲突的坐标才查询 definition，失败时不得按候选排序猜测绑定。
+- 基础 TU 刷新应把 clangd/源码收集与 SQLite 发布分开：跨文件查询使用有界并发，KnowledgeDB 由单写者按 TU SAVEPOINT、按批次单次提交；收集或发布失败不得先清空旧事实。
+- 派生引用必须使用有界、线程安全的缓存：两类派生索引同时失效时按文件合并为一次 semantic pass；同一声明的 references、symbol identity 和声明坐标查询使用 single-flight，锁不得跨越 clangd RPC；references 以规范坐标反向映射，重复声明按 clangd symbol identity 合并，semantic context 同时受文件数与估算字节预算约束，不能用全项目常驻内存换取 RPC 次数。
+- LSP transport 的读写、排队和等待都受同一 monotonic deadline 约束；死进程 generation、document lease、UTF position encoding 和 source-lines 缓存必须保持线程安全。
 - KnowledgeDB 写入新事实后必须使相关查询缓存失效。
 - Unified 的 Clang 与 SVF 结果必须通过稳定的文件、函数和位置坐标缝合。
 - bitcode 裁剪、符号闭包、共享/互斥 pool 和回退原因必须保留 manifest 供审计。

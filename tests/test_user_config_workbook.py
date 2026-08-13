@@ -264,7 +264,7 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
         def close(self):
             captured["closed"] = True
 
-    def fake_load(_path: str):
+    def fake_load(_path: str, **_kwargs):
         return SimpleNamespace(
             project=SimpleNamespace(
                 project_root=tmp_path,

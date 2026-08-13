@@ -8,6 +8,8 @@ covers:
 sources:
   - zscope/framework/base.py
   - zscope/framework/llm_client.py
+  - zscope/framework/llm_usage.py
+  - zscope/common/validator_protocol.py
   - zscope/agents/vulnerability_analyzer/AGENT.md
   - zscope/skills/evidence_validation/SKILL.md
   - zscope/tools/runtime.py
@@ -19,6 +21,7 @@ tests:
   - tests/test_tool_policy.py
   - tests/test_tool_registry.py
   - tests/test_llm_client_tokens.py
+  - tests/test_validator_v3_protocol.py
 ---
 
 # Agent 运行时
@@ -31,17 +34,23 @@ tests:
 
 ## 主入口和数据流
 
-- framework 基类定义 Agent 运行协议，`LLMClient` 处理 OpenAI 兼容 endpoint、重试、容量和 token 统计。
+- framework 基类定义 Agent 运行协议，`LLMClient` 处理 OpenAI 兼容 endpoint、重试、容量和 call 级 token 结算。一次扫描的所有 profile 共享同一个 `ScanTokenUsageLedger`；它只计量，不限流。
 - `zscope/agents/*/AGENT.md` 是产品运行时系统 prompt，由 spec registry 加载。
 - `zscope/skills/*/SKILL.md` 提供按风险领域激活的审计知识和检查策略。
 - Tool registry 暴露 schema，runtime 执行查询，ToolPolicy 根据 Agent 白名单、后端能力和敏感路径规则过滤。
 - Agent 输出回到分析/验证流水线，不能绕过统一 schema 和 issue identity 直接持久化最终报告。
+- Validator v3 的 V1/V2 使用无状态、严格 schema 的直接 chat completion；V1 不进入通用工具循环，V2 只携带原候选摘要和新增证据。V3 才能按档位使用有界只读工具轨迹。
+- 每个真实 HTTP attempt 在发出前原子预留估算 prompt 与最大 completion，返回后按 provider usage 结算。usage event 只保存计量和归因，不保存 prompt、源码正文或模型思维正文。
 
 ## 必须保持的不变量
 
 - 运行时 `AGENT.md` 和仓库根 `AGENTS.md` 必须严格区分。
 - Agent/Skill 声明的工具必须在 registry 中存在，并通过 ToolPolicy 和后端能力 gate。
 - 模型输出解析失败必须可观测并受重试/回退边界控制，不能把任意文本当作已验证 finding。
+- `finish_reason=length` 只允许一次无历史紧凑重试；malformed 输出只允许一次小型格式修复。repair、retry、fallback 和连接中断都必须各自计费。
+- cached prompt token 是 prompt 子集，reasoning token 是 completion 子集，不得重复加入总 token；provider 不报告 usage 时必须标记 estimated，已发出但用量未知的调用保守扣除全部预留。
+- usage 账本不得拒绝新的 HTTP attempt，也不得缩短模型的 completion allowance；连接中断时仅做保守计量。token 成本是否超出预期由 Benchmark 在扫描完成后判定。
+- 多轮 provider reasoning metadata 只在请求链内原样传递，不得写入普通日志、usage event 或报告。
 - API key、Authorization header 和私有 endpoint 响应不得进入日志、prompt 快照或测试 fixture。
 - endpoint 负载、重试和取消必须维护请求所有权，避免超时后泄漏后台工作。
 - 工具只能读取策略允许的目标项目范围，MCP 暴露不应扩大单个 Agent 的默认权限。
@@ -60,6 +69,7 @@ tests:
 python -m pytest -q tests/test_spec_registry.py tests/test_json_output_agents.py
 python -m pytest -q tests/test_tool_policy.py tests/test_tool_registry.py
 python -m pytest -q tests/test_llm_client_tokens.py tests/test_llm_owner_cleanup.py
+python -m pytest -q tests/test_validator_v3_protocol.py
 ```
 
 ## 权威源码和关联文档

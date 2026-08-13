@@ -366,6 +366,13 @@ def test_scan_validation_queue_validates_one_shared_ledger_group(tmp_path) -> No
 
     parallel._run_scan_validation_queue()
 
+    with pytest.raises(RuntimeError, match="candidate ledger is frozen"):
+        parallel._candidate_ledger.add(
+            ticket,
+            source="late_producer",
+            record_role="validation_obligation",
+        )
+
     assert parallel._global_validation_state["validation_group_count"] == 1
     assert parallel._global_validation_state["scan_level_raw_occurrence_count"] == 2
     snapshot = parallel._candidate_ledger.lifecycle_snapshot()

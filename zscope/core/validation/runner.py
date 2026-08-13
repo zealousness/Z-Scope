@@ -8,7 +8,8 @@ import logging
 import time
 from collections import OrderedDict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Callable, Dict, List, Optional, cast
@@ -29,15 +30,21 @@ from ...orchestration.candidate_envelope import (
     DECISION_CONTEXT_VERSION,
 )
 from .evidence import (
-    VALIDATOR_EVIDENCE_SLICE_VERSION,
+    VALIDATOR_EVIDENCE_SLICE_V3,
     VALIDATOR_MISSING_FACT_KINDS,
-    build_validator_evidence_slice_v2,
+    build_validator_evidence_slice_v3,
     build_validation_evidence_pack,
     compact_validation_evidence_pack,
     compact_validation_finding,
     is_entry_root_dead_code_rejection,
+    normalize_missing_fact_kinds,
     trim_code,
     validation_verdict,
+)
+from ...common.validator_protocol import (
+    VALIDATOR_PROTOCOL_VERSION as VALIDATOR_PROTOCOL_V3,
+    VALIDATOR_RESULT_VERSION,
+    ValidatorResultV3,
 )
 
 
@@ -59,6 +66,8 @@ class _PreparedValidation:
     issue_func: str
     issue_code: str
     evidence_pack: Dict[str, Any]
+    allow_v3: bool = False
+    v3_max_iterations: int = 0
 
 
 @dataclass
@@ -148,14 +157,32 @@ class ValidationResultCache:
         if event is not None:
             event.set()
 
+    def discard(self, key: str) -> None:
+        """Remove a non-reusable value and release any coalesced waiters."""
+
+        if not self.enabled or not key:
+            return
+        with self._lock:
+            self._values.pop(key, None)
+            event = self._inflight.pop(key, None)
+        if event is not None:
+            event.set()
+
 
 class ValidationRunner:
     """Owns validation-stage orchestration around ``ValidationPipeline``."""
 
     # v5 invalidates v4 entries after source-centric validation groups stopped
     # carrying occurrence-only reachability projections.
-    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v6"
+    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v8"
     _DEFAULT_VALIDATION_CACHE_SIZE = 4096
+    _TRANSIENT_VALIDATOR_STOP_REASONS = frozenset(
+        {
+            "fact_timeout",
+            "malformed_output",
+            "output_truncated",
+        }
+    )
     _EXTERNAL_API_NAMES = {
         "calloc",
         "close",
@@ -258,6 +285,8 @@ class ValidationRunner:
             item = self._prepare_issue_for_validation(state, raw_issue, index)
             if item is not None:
                 prepared.append(item)
+
+        prepared = self._assign_v3_investigation_budget(prepared)
 
         validation_workers = self._validation_worker_count(len(prepared))
         parent_token = current_cancellation_token()
@@ -526,9 +555,148 @@ class ValidationRunner:
             min(issue_count, int(self.config.concurrency.validator_workers)),
         )
 
+    def _assign_v3_investigation_budget(
+        self,
+        prepared: List[_PreparedValidation],
+    ) -> List[_PreparedValidation]:
+        depth = self._scan_depth()
+        if depth not in {"balanced", "deep"} or not prepared:
+            return prepared
+        eligible = []
+        for item in prepared:
+            issue = item.raw_issue
+            severity = str(issue.get("impact_level") or issue.get("severity") or "").lower()
+            externally_reachable = self._externally_reachable(item)
+            valid_obligation = self._has_valid_security_obligation(issue)
+            closable_gap = self._has_readonly_closable_gap(issue)
+            shadow_only = self._is_shadow_only_candidate(issue)
+            selected = False
+            reason = "not_selected"
+            if shadow_only:
+                reason = "shadow_only"
+            elif depth == "deep":
+                selected = True
+                reason = "deep_all_unclosed_without_counterproof"
+            elif not (self._v3_is_high_or_critical(item) or externally_reachable):
+                reason = "balanced_risk_and_reachability_gate"
+            elif not valid_obligation:
+                reason = "missing_security_obligation"
+            elif not closable_gap:
+                reason = "no_readonly_closable_gap"
+            else:
+                selected = True
+                reason = "balanced_high_critical_or_external"
+            issue["validator_v3_eligibility"] = {
+                "eligible": selected,
+                "depth": depth,
+                "reason": reason,
+                "severity": severity or "unknown",
+                "risk_score": self._v3_risk_score(item),
+                "externally_reachable": externally_reachable,
+                "valid_security_obligation": valid_obligation,
+                "readonly_closable_gap": closable_gap,
+                "required_fact_kinds": list(
+                    EvidenceCompletionQueue.required_resolution_fact_kinds(
+                        issue,
+                        {"verdict": "uncertain"},
+                    )
+                ),
+            }
+            if not selected:
+                continue
+            eligible.append(item)
+        selected_ids = {id(item) for item in eligible}
+        return [
+            replace(
+                item,
+                allow_v3=id(item) in selected_ids,
+                v3_max_iterations=50 if id(item) in selected_ids else 0,
+            )
+            for item in prepared
+        ]
+
+    def _scan_depth(self) -> str:
+        scan = getattr(self.config, "scan", None)
+        raw = scan.get("depth") if isinstance(scan, dict) else getattr(scan, "depth", None)
+        return str(raw or "fast").strip().lower()
+
+    @staticmethod
+    def _v3_risk_score(item: _PreparedValidation) -> int:
+        issue = item.raw_issue
+        try:
+            explicit = int(issue.get("risk_score") or issue.get("priority_score") or 0)
+        except (TypeError, ValueError):
+            explicit = 0
+        severity = str(issue.get("impact_level") or issue.get("severity") or "").lower()
+        severity_score = {"critical": 100, "high": 80, "medium": 60}.get(severity, 0)
+        return max(explicit, severity_score)
+
+    @staticmethod
+    def _v3_is_high_or_critical(item: _PreparedValidation) -> bool:
+        issue = item.raw_issue
+        severity = str(issue.get("impact_level") or issue.get("severity") or "").lower()
+        return severity in {"high", "critical"}
+
+    @staticmethod
+    def _is_shadow_only_candidate(issue: Dict[str, Any]) -> bool:
+        if str(issue.get("rollout_visibility") or "").lower() != "shadow":
+            return False
+        attribution = issue.get("attribution")
+        sources = attribution.get("discovered_by") if isinstance(attribution, dict) else []
+        normalized = {
+            str(value).strip().lower()
+            for value in (sources if isinstance(sources, list) else [])
+            if str(value).strip()
+        }
+        return normalized == {"llm_active_discovery"} or (
+            not normalized
+            and str(issue.get("candidate_source") or "").lower() == "active_discovery"
+        )
+
+    @staticmethod
+    def _has_valid_security_obligation(issue: Dict[str, Any]) -> bool:
+        obligation = issue.get("security_obligation")
+        return bool(
+            isinstance(obligation, dict)
+            and str(obligation.get("obligation_uid") or issue.get("obligation_uid") or "")
+            and str(
+                obligation.get("subject_uid")
+                or issue.get("resource_identity")
+                or issue.get("source_identity")
+                or ""
+            )
+        )
+
+    @staticmethod
+    def _has_readonly_closable_gap(issue: Dict[str, Any]) -> bool:
+        # A complete obligation may still need an auditable second decision
+        # because V1 was uncertain or its verified score did not promote.  In
+        # that case repository code/semantic tools can add decision evidence.
+        if issue.get("candidate_promotion_eligible") is True:
+            return True
+        return bool(
+            EvidenceCompletionQueue.required_resolution_fact_kinds(
+                issue,
+                {"verdict": "uncertain"},
+            )
+        )
+
+    @staticmethod
+    def _externally_reachable(item: _PreparedValidation) -> bool:
+        issue = item.raw_issue
+        entry = item.evidence_pack.get("entry_context")
+        entry = entry if isinstance(entry, dict) else {}
+        return bool(
+            issue.get("externally_reachable")
+            or issue.get("reachable_from_entry")
+            or entry.get("entry_is_external_root")
+            or entry.get("reachable_from_entry")
+        )
+
     def _mark_unvalidated(self, state: Dict[str, Any], new_issues: List[Dict[str, Any]]) -> None:
         logger.info("Validator agent disabled, marking %d issue(s) unvalidated.", len(new_issues))
         for raw_issue in new_issues:
+            self._ensure_discovery_attribution(raw_issue)
             issue_func = self._issue_function(raw_issue, state)
             decision = self.validation_pipeline.apply_pre_validation_feedback(raw_issue, issue_func)
             if decision:
@@ -548,6 +716,7 @@ class ValidationRunner:
         raw_issue: Dict[str, Any],
         index: int,
     ) -> Optional[_PreparedValidation]:
+        self._ensure_discovery_attribution(raw_issue)
         issue_func = self._issue_function(raw_issue, state)
         logger.info("Validating issue: %s in %s", raw_issue.get("id", "unknown"), issue_func)
 
@@ -604,6 +773,60 @@ class ValidationRunner:
             evidence_pack=evidence_pack,
         )
 
+    @staticmethod
+    def _ensure_discovery_attribution(issue: Dict[str, Any]) -> None:
+        attribution = issue.get("attribution")
+        if not isinstance(attribution, dict):
+            attribution = {
+                "schema_version": "zscope.finding-attribution.v1",
+                "discovered_by": [],
+                "discovery_details": [],
+                "decided_by": "unresolved",
+                "decision_level": "none",
+            }
+            issue["attribution"] = attribution
+        existing = attribution.get("discovered_by")
+        discovered = set(existing if isinstance(existing, list) else [])
+        pack = _as_dict(issue.get("evidence_pack"))
+        raw_sources = [
+            issue.get("candidate_source"),
+            issue.get("candidate_kind"),
+            pack.get("candidate_source"),
+            *(issue.get("evidence_sources") or []),
+        ]
+        sources = {str(value or "").strip().lower() for value in raw_sources if value}
+        if any("active_discovery" in value or "llm_observation" in value for value in sources):
+            discovered.add("llm_active_discovery")
+        if any(
+            "backend_signal" in value or value.startswith(("svf", "saber", "joern"))
+            for value in sources
+        ):
+            discovered.add("backend_signal")
+        if (
+            issue.get("rule")
+            or issue.get("rule_id")
+            or any(
+                value in {"deterministic_rule", "clang_ast_cfg", "graph", "project_fact_pass"}
+                or value.startswith(("clang_", "cpp_", "java_local"))
+                for value in sources
+            )
+        ):
+            discovered.add("deterministic_rule")
+        attribution["discovered_by"] = sorted(discovered)
+        details = attribution.get("discovery_details")
+        if not isinstance(details, list):
+            details = []
+        known = {
+            (str(item.get("kind") or ""), str(item.get("source_id") or ""))
+            for item in details
+            if isinstance(item, dict)
+        }
+        for kind in sorted(discovered):
+            source_id = ",".join(sorted(sources))[:500]
+            if (kind, source_id) not in known:
+                details.append({"kind": kind, "source_id": source_id})
+        attribution["discovery_details"] = details
+
     def _validate_prepared_issue(
         self,
         item: _PreparedValidation,
@@ -654,23 +877,52 @@ class ValidationRunner:
             self._merge_response_metadata(token_metadata, getattr(val_resp, "metadata", {}) or {})
 
             if not val_resp.success:
-                return _ValidationWorkerResult(
-                    index=item.index,
-                    raw_issue=item.raw_issue,
-                    issue_func=item.issue_func,
-                    success=False,
-                    error=val_resp.error,
-                    metadata=token_metadata,
+                if not item.allow_v3 or not self._recoverable_v1_failure(val_resp):
+                    return _ValidationWorkerResult(
+                        index=item.index,
+                        raw_issue=item.raw_issue,
+                        issue_func=item.issue_func,
+                        success=False,
+                        error=val_resp.error,
+                        metadata=token_metadata,
+                    )
+                stop_reason = (
+                    "output_truncated"
+                    if "truncat" in str(val_resp.error or "").lower()
+                    else "malformed_output"
                 )
-
-            val_data = self._normalize_worker_response(
+                val_data = self._terminal_uncertain_v3_result(
+                    item,
+                    {},
+                    validation_pass="initial",
+                    stop_reason=stop_reason,
+                    reasoning=(
+                        "The initial structured result was recoverably invalid; "
+                        "targeted investigation may reconstruct the decision from evidence."
+                    ),
+                )
+                item.raw_issue["validator_v1_recoverable_error"] = str(val_resp.error or "")[:500]
+            else:
+                val_data = self._normalize_worker_response(
+                    item,
+                    validator_agent,
+                    val_resp.data,
+                    token_metadata,
+                )
+            val_data = self._run_v3_evidence_recheck(
                 item,
                 validator_agent,
-                val_resp.data,
+                val_data,
                 token_metadata,
             )
-            self._validator_cache_put(cache_key, val_data)
-            cache_owner = False
+            val_data = self._run_v3_targeted_investigation(
+                item,
+                validator_agent,
+                val_data,
+                token_metadata,
+            )
+            if self._validator_cache_put(cache_key, val_data):
+                cache_owner = False
             return _ValidationWorkerResult(
                 index=item.index,
                 raw_issue=item.raw_issue,
@@ -678,16 +930,30 @@ class ValidationRunner:
                 success=True,
                 val_data=val_data,
                 metadata=token_metadata,
+                evidence_pack=item.evidence_pack,
             )
         finally:
             if cache_owner and cache_key:
                 self._validator_result_cache.abandon(cache_key)
             self._close_thread_llm_sessions()
 
+    @staticmethod
+    def _recoverable_v1_failure(response: Any) -> bool:
+        error = str(getattr(response, "error", "") or "").lower()
+        metadata = getattr(response, "metadata", {}) or {}
+        return bool(
+            any(token in error for token in ("malformed", "parse", "schema", "truncat", "json"))
+            or metadata.get("snapshot_terminal_tool_failed")
+            or metadata.get("validator_protocol_exhausted")
+            or str(metadata.get("finish_reason") or "").lower() == "length"
+        )
+
     def _validator_cache_get(self, cache_key: str) -> Optional[Dict[str, Any]]:
         cached = self._validator_result_cache.get(cache_key)
         if cached is not None:
-            return cached
+            if self._validator_result_is_cacheable(cached):
+                return cached
+            self._validator_result_cache.discard(cache_key)
         loader = getattr(self.snapshot_store, "load_validation_result", None)
         if not callable(loader) or not cache_key:
             return None
@@ -704,18 +970,22 @@ class ValidationRunner:
                 cache_key,
             )
             return None
-        if isinstance(cached, dict):
+        if isinstance(cached, dict) and self._validator_result_is_cacheable(cached):
             self._validator_result_cache.put(cache_key, cached)
             return dict(cached)
         return None
 
-    def _validator_cache_put(self, cache_key: str, val_data: Dict[str, Any]) -> None:
-        if not cache_key or not isinstance(val_data, dict):
-            return
+    def _validator_cache_put(self, cache_key: str, val_data: Dict[str, Any]) -> bool:
+        if (
+            not cache_key
+            or not isinstance(val_data, dict)
+            or not self._validator_result_is_cacheable(val_data)
+        ):
+            return False
         self._validator_result_cache.put(cache_key, val_data)
         saver = getattr(self.snapshot_store, "save_validation_result", None)
         if not callable(saver):
-            return
+            return True
         try:
             saver(
                 cache_key,
@@ -730,6 +1000,20 @@ class ValidationRunner:
                 "Persistent validation cache write failed for %s.",
                 cache_key,
             )
+        return True
+
+    @classmethod
+    def _validator_result_is_cacheable(cls, val_data: Dict[str, Any]) -> bool:
+        if str(val_data.get("schema_version") or "") != VALIDATOR_RESULT_VERSION:
+            return True
+        # A V3 terminal is authoritative only together with the cited
+        # tool-backed fact records attached to the issue.  The legacy result
+        # cache stores only ValidatorResult, so caching it would drop the
+        # promotion evidence on replay.
+        if str(val_data.get("pass") or "") == "investigation_synthesis":
+            return False
+        stop_reason = str(val_data.get("stop_reason") or "").strip().lower()
+        return stop_reason not in cls._TRANSIENT_VALIDATOR_STOP_REASONS
 
     def _validation_cache_wait_seconds(self) -> Optional[float]:
         analysis_cfg = getattr(self.config, "analysis", None)
@@ -852,7 +1136,10 @@ class ValidationRunner:
             ),
             None,
         )
-        llm_ref = str(getattr(validator_cfg, "llm_ref", "") or "default")
+        profiles = getattr(getattr(self.config, "scan", None), "llm_profiles", None)
+        llm_ref = str(getattr(profiles, "validation", "") or "")
+        if not llm_ref:
+            llm_ref = str(getattr(validator_cfg, "llm_ref", "") or "default")
         client = self.llm_clients.get(llm_ref) or self.llm_clients.get("default")
         payload = {
             "protocol": self._VALIDATION_CACHE_PROTOCOL,
@@ -993,6 +1280,10 @@ class ValidationRunner:
         val_data = result.val_data
         self._attach_validator_missing_fact_request(raw_issue, val_data)
         verdict = validation_verdict(val_data)
+        raw_issue["model_verdict"] = verdict
+        raw_issue["validator_result_pass"] = str(val_data.get("pass") or "initial")
+        if str(val_data.get("schema_version") or "") == VALIDATOR_RESULT_VERSION:
+            raw_issue["validator_stop_reason"] = str(val_data.get("stop_reason") or "")
         score_data = self.validation_pipeline.score_components(raw_issue, val_data)
         outcome = self.validation_pipeline.apply_validator_result(
             raw_issue,
@@ -1000,7 +1291,10 @@ class ValidationRunner:
             verdict=verdict,
             score_data=score_data,
         )
-        if outcome.memory_status == "needs_review":
+        if (
+            outcome.memory_status == "needs_review"
+            and str(val_data.get("schema_version") or "") != "zscope.validator-result.v3"
+        ):
             completion = self._evidence_completion_queue.complete(
                 raw_issue,
                 validator_data={**val_data, "verdict": verdict},
@@ -1015,8 +1309,9 @@ class ValidationRunner:
                         "status": raw_issue.get("evidence_completion_status"),
                     }
                 )
-                # Completion may only surface backend-produced structured facts.
-                # Re-run the policy, never the LLM, once for this group.
+                # Legacy v2 replay compatibility. New v3 sessions resolve a
+                # typed fact and, when it adds partial evidence, run V2 before
+                # reaching this policy layer.
                 if raw_issue.get("evidence_completion_status") == "completed":
                     outcome = self.validation_pipeline.apply_validator_result(
                         raw_issue,
@@ -1024,12 +1319,58 @@ class ValidationRunner:
                         verdict=verdict,
                         score_data=score_data,
                     )
+        raw_issue["policy_disposition"] = str(
+            raw_issue.get("candidate_disposition") or outcome.memory_status or "needs_review"
+        )
+        self._record_validator_attribution(raw_issue, val_data, outcome)
         if outcome.report_bucket:
             state[outcome.report_bucket].append(raw_issue)
         if outcome.memory_status:
             self.remember_validation_result(raw_issue, outcome.memory_status)
         self._update_candidate_ledger(state, raw_issue)
         self._log_validation_outcome(raw_issue, val_data, verdict, outcome.final_score)
+
+    @staticmethod
+    def _record_validator_attribution(
+        issue: Dict[str, Any],
+        val_data: Dict[str, Any],
+        outcome: ValidationOutcome,
+    ) -> None:
+        attribution = issue.get("attribution")
+        if not isinstance(attribution, dict):
+            attribution = {
+                "schema_version": "zscope.finding-attribution.v1",
+                "discovered_by": [],
+                "discovery_details": [],
+            }
+            issue["attribution"] = attribution
+        policy_disposition = str(
+            issue.get("candidate_disposition") or outcome.memory_status or "needs_review"
+        )
+        if (
+            issue.get("decision_proof") and issue.get("proof_coverage") == "complete"
+        ) or policy_disposition == "rejected_with_proof":
+            attribution["decided_by"] = "deterministic_proof"
+        elif policy_disposition in {"confirmed", "validated"}:
+            attribution["decided_by"] = "validator_llm"
+        else:
+            # A model attempt is not itself a final decision.  In particular,
+            # rejected/uncertain output without a deterministic contradiction
+            # remains an unresolved, user-visible review obligation.
+            attribution["decided_by"] = "unresolved"
+        result_pass = str(val_data.get("pass") or "initial")
+        attribution["decision_level"] = {
+            "initial": "V1",
+            "evidence_recheck": "V2",
+            "investigation_synthesis": "V3",
+        }.get(result_pass, "V1")
+        if attribution["decided_by"] == "deterministic_proof":
+            attribution["decision_level"] = "V0"
+        issue["validator_policy_outcome"] = {
+            "model_verdict": validation_verdict(val_data),
+            "policy_disposition": policy_disposition,
+            "decision_level": attribution["decision_level"],
+        }
 
     @staticmethod
     def _attach_validator_missing_fact_request(
@@ -1086,6 +1427,475 @@ class ValidationRunner:
                 token_metadata,
             )
         return val_data
+
+    @staticmethod
+    def _terminal_uncertain_v3_result(
+        item: _PreparedValidation,
+        prior: Dict[str, Any],
+        *,
+        validation_pass: str,
+        stop_reason: str,
+        reasoning: str,
+    ) -> Dict[str, Any]:
+        """Create one schema-valid runtime terminal without model coercions."""
+
+        def identity(*values: Any, fallback: str) -> str:
+            for value in values:
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return fallback
+
+        def evidence(field: str, *, limit: int, max_length: int) -> tuple[str, ...]:
+            raw = prior.get(field)
+            if not isinstance(raw, list):
+                return ()
+            result: list[str] = []
+            for value in raw:
+                if not isinstance(value, str) or not value.strip() or len(value) > max_length:
+                    continue
+                result.append(value.strip())
+                if len(result) >= limit:
+                    break
+            return tuple(result)
+
+        candidate_uid = identity(
+            prior.get("candidate_uid"),
+            item.raw_issue.get("candidate_uid"),
+            item.raw_issue.get("candidate_id"),
+            item.raw_issue.get("id"),
+            fallback="unknown-candidate",
+        )
+        cluster_uid = identity(
+            prior.get("validation_cluster_uid"),
+            item.raw_issue.get("validation_cluster_uid"),
+            fallback=f"validation:{candidate_uid}",
+        )
+        return ValidatorResultV3(
+            candidate_uid=candidate_uid,
+            validation_cluster_uid=cluster_uid,
+            validation_pass=validation_pass,
+            verdict="uncertain",
+            reasoning=(reasoning.strip() or "Validator work stopped before a final decision.")[
+                :4000
+            ],
+            positive_evidence=evidence("positive_evidence", limit=12, max_length=1000),
+            negative_evidence=evidence("negative_evidence", limit=12, max_length=1000),
+            evidence_refs=evidence("evidence_refs", limit=32, max_length=512),
+            blocking_negative_evidence=(prior.get("blocking_negative_evidence") is True),
+            missing_fact_request=None,
+            stop_reason=stop_reason,
+        ).to_dict()
+
+    def _run_v3_evidence_recheck(
+        self,
+        item: _PreparedValidation,
+        validator_agent: Any,
+        val_data: Dict[str, Any],
+        token_metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Resolve all obligation facts and run at most one stateless V2."""
+
+        if str(val_data.get("schema_version") or "") != "zscope.validator-result.v3":
+            return val_data
+        item.raw_issue.setdefault("validator_pass_history", []).append(
+            {
+                "pass": str(val_data.get("pass") or "initial"),
+                "verdict": validation_verdict(val_data),
+                "stop_reason": str(val_data.get("stop_reason") or ""),
+            }
+        )
+        try:
+            batch = self._evidence_completion_queue.resolve_required_facts(
+                item.raw_issue,
+                validator_data=val_data,
+                validation_evidence=item.evidence_pack,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Required fact resolution failed for candidate %s: %s",
+                item.raw_issue.get("candidate_uid") or item.raw_issue.get("id"),
+                exc,
+            )
+            item.raw_issue["validator_fact_resolution"] = {
+                "status": "provider_error",
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+            }
+            item.raw_issue["validator_v2_stop_reason"] = "unsupported_fact"
+            return self._terminal_from_prior_for_v3(
+                item,
+                val_data,
+                stop_reason="unsupported_fact",
+                reasoning="The required deterministic fact providers failed.",
+            )
+
+        statuses = [value.status for value in batch.resolutions]
+        item.raw_issue["validator_fact_resolution"] = {
+            "fact_kinds": [value.fact_kind for value in batch.resolutions],
+            "statuses": statuses,
+            "status": str(item.raw_issue.get("evidence_completion_status") or "not_applicable"),
+            "evidence_delta_hash": batch.evidence_delta_hash,
+            "proof_added": batch.proof_added,
+        }
+        token_metadata["validator_fact_resolution_count"] = int(
+            token_metadata.get("validator_fact_resolution_count", 0) or 0
+        ) + len(batch.resolutions)
+        if batch.proof_added:
+            token_metadata["validator_fact_resolution_proof_count"] = (
+                int(token_metadata.get("validator_fact_resolution_proof_count", 0) or 0) + 1
+            )
+            item.raw_issue["validator_v2_stop_reason"] = "decision_complete"
+            return self._terminal_from_prior_for_v3(
+                item,
+                val_data,
+                stop_reason="decision_complete",
+                reasoning=(
+                    "Required fact resolution produced a complete deterministic proof; "
+                    "the policy layer owns the terminal disposition."
+                ),
+            )
+
+        if not batch.has_evidence_delta:
+            stop_reason = (
+                "fact_timeout"
+                if "timeout" in statuses
+                else (
+                    "unsupported_fact"
+                    if any(value in {"unsupported", "provider_error"} for value in statuses)
+                    else (
+                        "duplicate_fact_request"
+                        if statuses and all(value == "duplicate_request" for value in statuses)
+                        else "no_evidence_gain"
+                    )
+                )
+            )
+            item.raw_issue["validator_v2_stop_reason"] = stop_reason
+            return self._terminal_from_prior_for_v3(
+                item,
+                val_data,
+                stop_reason=stop_reason,
+                reasoning={
+                    "fact_timeout": "A required deterministic fact provider timed out.",
+                    "unsupported_fact": "A required deterministic fact provider is unavailable.",
+                    "duplicate_fact_request": "The required fact set was already attempted.",
+                }.get(stop_reason, "Fact resolution produced no new decision evidence."),
+            )
+
+        previous_hashes = item.raw_issue.setdefault("validator_evidence_delta_hashes", [])
+        if not isinstance(previous_hashes, list):
+            previous_hashes = []
+            item.raw_issue["validator_evidence_delta_hashes"] = previous_hashes
+        if batch.evidence_delta_hash in previous_hashes:
+            item.raw_issue["validator_v2_stop_reason"] = "duplicate_fact_request"
+            return self._terminal_from_prior_for_v3(
+                item,
+                val_data,
+                stop_reason="duplicate_fact_request",
+                reasoning="The resolved fact set was already evaluated.",
+            )
+        previous_hashes.append(batch.evidence_delta_hash)
+
+        response = validator_agent.run(
+            self._validator_input(
+                item.raw_issue,
+                item.issue_code,
+                item.evidence_pack,
+                validation_pass="evidence_recheck",
+                evidence_delta=batch.evidence_delta,
+            )
+        )
+        self._merge_response_metadata(token_metadata, getattr(response, "metadata", {}) or {})
+        if not response.success or not isinstance(response.data, dict):
+            item.raw_issue["validator_v2_stop_reason"] = "no_evidence_gain"
+            if response.error:
+                item.raw_issue["validator_v2_error"] = str(response.error)[:500]
+            return self._terminal_from_prior_for_v3(
+                item,
+                val_data,
+                validation_pass="evidence_recheck",
+                stop_reason="no_evidence_gain",
+                reasoning="The V2 evidence recheck failed without a valid decision.",
+            )
+        revised = dict(response.data)
+        if str(revised.get("schema_version") or "") != "zscope.validator-result.v3":
+            item.raw_issue["validator_v2_stop_reason"] = "malformed_output"
+            return self._terminal_from_prior_for_v3(
+                item,
+                val_data,
+                validation_pass="evidence_recheck",
+                stop_reason="malformed_output",
+                reasoning="The V2 evidence recheck returned a non-v3 result.",
+            )
+        item.raw_issue.setdefault("validator_pass_history", []).append(
+            {
+                "pass": "evidence_recheck",
+                "verdict": validation_verdict(revised),
+                "stop_reason": str(revised.get("stop_reason") or ""),
+                "evidence_delta_hash": batch.evidence_delta_hash,
+                "fact_kinds": list(batch.evidence_delta.get("fact_kinds") or []),
+            }
+        )
+        token_metadata["validator_evidence_recheck_count"] = (
+            int(token_metadata.get("validator_evidence_recheck_count", 0) or 0) + 1
+        )
+        return revised
+
+    def _terminal_from_prior_for_v3(
+        self,
+        item: _PreparedValidation,
+        prior: Dict[str, Any],
+        *,
+        stop_reason: str,
+        reasoning: str,
+        validation_pass: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Retain a terminal V1 verdict while making unresolved work explicit."""
+
+        verdict = validation_verdict(prior)
+        if verdict in {"verified", "rejected"}:
+            revised = dict(prior)
+            revised["stop_reason"] = stop_reason
+            revised["reasoning"] = reasoning[:4000]
+            revised["missing_fact_request"] = None
+            if validation_pass is not None:
+                revised["pass"] = validation_pass
+            return revised
+        return self._terminal_uncertain_v3_result(
+            item,
+            prior,
+            validation_pass=validation_pass or str(prior.get("pass") or "initial"),
+            stop_reason=stop_reason,
+            reasoning=reasoning,
+        )
+
+    def _run_v3_targeted_investigation(
+        self,
+        item: _PreparedValidation,
+        validator_agent: Any,
+        val_data: Dict[str, Any],
+        token_metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if (
+            not item.allow_v3
+            or str(val_data.get("schema_version") or "") != "zscope.validator-result.v3"
+            or not self._model_result_requires_review(item, val_data)
+        ):
+            return val_data
+        investigate = getattr(validator_agent, "investigate", None)
+        if not callable(investigate):
+            return val_data
+        item.raw_issue["validator_v3_entered"] = True
+        # Rebuild the pass projection so V3 sees any V2 fact delta/proofs but
+        # not the model's hidden reasoning history.
+        investigation_input = self._validator_input(
+            item.raw_issue,
+            item.issue_code,
+            item.evidence_pack,
+            validation_pass="investigation_synthesis",
+            evidence_delta={
+                "prior_passes": list(item.raw_issue.get("validator_pass_history") or []),
+                "fact_resolution": item.raw_issue.get("validator_fact_resolution") or {},
+            },
+        )
+        response = investigate(
+            investigation_input,
+            max_iterations=item.v3_max_iterations or 50,
+        )
+        self._merge_response_metadata(
+            token_metadata,
+            getattr(response, "metadata", {}) or {},
+        )
+        if not response.success or not isinstance(response.data, dict):
+            item.raw_issue["validator_v3_stop_reason"] = "investigation_exhausted"
+            if response.error:
+                item.raw_issue["validator_v3_error"] = str(response.error)[:500]
+            return self._terminal_uncertain_v3_result(
+                item,
+                val_data,
+                validation_pass="investigation_synthesis",
+                stop_reason="investigation_exhausted",
+                reasoning="Targeted V3 investigation failed without a valid decision.",
+            )
+        revised = dict(response.data)
+        if str(revised.get("schema_version") or "") != "zscope.validator-result.v3":
+            item.raw_issue["validator_v3_stop_reason"] = "malformed_output"
+            return self._terminal_uncertain_v3_result(
+                item,
+                val_data,
+                validation_pass="investigation_synthesis",
+                stop_reason="malformed_output",
+                reasoning="Targeted V3 investigation returned a non-v3 result.",
+            )
+        self._apply_v3_investigation_facts(
+            item.raw_issue,
+            revised,
+            getattr(response, "metadata", {}) or {},
+        )
+        item.raw_issue.setdefault("validator_pass_history", []).append(
+            {
+                "pass": "investigation_synthesis",
+                "verdict": validation_verdict(revised),
+                "stop_reason": str(revised.get("stop_reason") or ""),
+                "max_iterations": item.v3_max_iterations or 50,
+                "model_iterations": int(
+                    (getattr(response, "metadata", {}) or {}).get("iterations", 0) or 0
+                ),
+                "tool_call_count": int(
+                    (getattr(response, "metadata", {}) or {}).get("tool_call_count", 0) or 0
+                ),
+                "new_fact_count": len(item.raw_issue.get("v3_investigation_facts") or []),
+            }
+        )
+        token_metadata["validator_targeted_investigation_count"] = (
+            int(token_metadata.get("validator_targeted_investigation_count", 0) or 0) + 1
+        )
+        return revised
+
+    def _model_result_requires_review(
+        self,
+        item: _PreparedValidation,
+        val_data: Dict[str, Any],
+    ) -> bool:
+        """Ask the real policy whether this model result already has authority."""
+
+        probe = deepcopy(item.raw_issue)
+        score_data = self.validation_pipeline.score_components(probe, val_data)
+        outcome = self.validation_pipeline.apply_validator_result(
+            probe,
+            val_data,
+            verdict=validation_verdict(val_data),
+            score_data=score_data,
+        )
+        return outcome.memory_status in {"needs_review", "engine_failed"}
+
+    @staticmethod
+    def _apply_v3_investigation_facts(
+        issue: Dict[str, Any],
+        val_data: Dict[str, Any],
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Bind cited, tool-backed V3 claims into the promotion evidence slice."""
+
+        raw_facts = metadata.get("validator_investigation_facts")
+        facts = [dict(value) for value in raw_facts or [] if isinstance(value, dict)]
+        raw_tool_catalog = metadata.get("validator_tool_fact_catalog")
+        tool_catalog = (
+            {
+                str(uid): dict(record)
+                for uid, record in raw_tool_catalog.items()
+                if str(uid) and isinstance(record, dict)
+            }
+            if isinstance(raw_tool_catalog, dict)
+            else {}
+        )
+        cited = {
+            str(value)
+            for value in val_data.get("evidence_refs") or []
+            if isinstance(value, str) and value
+        }
+        accepted = []
+        for fact in facts:
+            fact_uid = str(fact.get("fact_uid") or "")
+            backing_refs = fact.get("evidence_refs")
+            backing_refs = (
+                [str(value) for value in backing_refs if str(value)]
+                if isinstance(backing_refs, list)
+                else []
+            )
+            locations = fact.get("locations")
+            has_locations = bool(
+                isinstance(locations, list)
+                and locations
+                and all(isinstance(value, dict) for value in locations)
+                and any(
+                    any(field not in (None, "") for field in value.values())
+                    for value in locations
+                    if isinstance(value, dict)
+                )
+            )
+            if (
+                fact_uid in cited
+                and str(fact.get("producer_engine") or "") == "validator_readonly_tool_session"
+                and str(fact.get("dependency_code_hash") or "")
+                and backing_refs
+                and all(ref in tool_catalog for ref in backing_refs)
+                and has_locations
+            ):
+                accepted.append(fact)
+        issue["v3_investigation_fact_count"] = len(facts)
+        issue["v3_investigation_cited_fact_count"] = len(accepted)
+        issue["v3_tool_fact_catalog"] = tool_catalog
+        if not accepted:
+            issue["v3_evidence_closure"] = {
+                "complete": False,
+                "reason": "no_cited_tool_backed_fact",
+                "resolved_fact_kinds": [],
+            }
+            return
+
+        existing = issue.setdefault("v3_investigation_facts", [])
+        if not isinstance(existing, list):
+            existing = []
+            issue["v3_investigation_facts"] = existing
+        known = {str(value.get("fact_uid") or "") for value in existing if isinstance(value, dict)}
+        for fact in accepted:
+            uid = str(fact.get("fact_uid") or "")
+            if uid and uid not in known:
+                existing.append(fact)
+                known.add(uid)
+
+        fact_slice = issue.get("decision_fact_slice")
+        fact_slice = dict(fact_slice) if isinstance(fact_slice, dict) else {}
+        raw_missing = issue.get("missing_fact_kinds") or fact_slice.get("missing_fact_kinds") or []
+        missing = set(normalize_missing_fact_kinds(raw_missing))
+        resolved = {str(fact.get("fact_kind") or "") for fact in accepted if fact.get("fact_kind")}
+        remaining = sorted(missing - resolved)
+        fact_uids = {str(value) for value in fact_slice.get("fact_uids") or [] if str(value)}
+        fact_payloads = [
+            dict(value) for value in fact_slice.get("facts") or [] if isinstance(value, dict)
+        ]
+        known_payloads = {
+            str(value.get("fact_uid") or value.get("uid") or value.get("id") or "")
+            for value in fact_payloads
+        }
+        for fact in accepted:
+            uid = str(fact.get("fact_uid") or "")
+            if uid and uid not in known_payloads:
+                fact_payloads.append(dict(fact))
+                known_payloads.add(uid)
+        fact_uids.update(str(fact.get("fact_uid")) for fact in accepted if fact.get("fact_uid"))
+        code_hashes = {
+            str(value) for value in fact_slice.get("dependency_code_hashes") or [] if str(value)
+        }
+        code_hashes.update(
+            str(fact.get("dependency_code_hash"))
+            for fact in accepted
+            if fact.get("dependency_code_hash")
+        )
+        fact_slice.update(
+            {
+                "fact_uids": sorted(fact_uids),
+                "dependency_code_hashes": sorted(code_hashes),
+                "missing_fact_kinds": remaining,
+                "coverage": "complete" if not remaining else "partial",
+                "facts": fact_payloads,
+            }
+        )
+        issue["decision_fact_slice"] = fact_slice
+        issue["missing_fact_kinds"] = remaining
+        issue["decision_fact_coverage"] = fact_slice["coverage"]
+        complete = bool(not remaining and code_hashes and accepted)
+        issue["v3_evidence_closure"] = {
+            "complete": complete,
+            "reason": "required_facts_closed" if complete else "required_facts_still_missing",
+            "resolved_fact_kinds": sorted(resolved),
+            "remaining_fact_kinds": remaining,
+            "fact_uids": sorted(
+                str(fact.get("fact_uid")) for fact in accepted if fact.get("fact_uid")
+            ),
+        }
+        if complete:
+            issue["candidate_promotion_eligible"] = True
+            issue["candidate_promotion_reason"] = "v3_tool_evidence_complete"
 
     def _validator_evidence_slice_enabled(self) -> bool:
         return True
@@ -1174,6 +1984,13 @@ class ValidationRunner:
             "multi_turn_outlier_count",
             "evidence_slice_token_count",
             "validator_turn_count",
+            "validator_length_retry_count",
+            "validator_protocol_exhausted",
+            "validator_fact_resolution_count",
+            "validator_fact_resolution_proof_count",
+            "validator_evidence_recheck_count",
+            "validator_investigation_trajectory_count",
+            "validator_targeted_investigation_count",
         ):
             target[key] = int(target.get(key, 0) or 0) + token_value(key)
 
@@ -1221,6 +2038,22 @@ class ValidationRunner:
             ("validator_api_call_count", "validator_api_call_count"),
             ("multi_turn_outlier_count", "multi_turn_outlier_count"),
             ("evidence_slice_token_count", "evidence_slice_token_count"),
+            ("validator_length_retry_count", "validator_length_retry_count"),
+            ("validator_protocol_exhausted", "validator_protocol_exhausted_count"),
+            ("validator_fact_resolution_count", "validator_fact_resolution_count"),
+            (
+                "validator_fact_resolution_proof_count",
+                "validator_fact_resolution_proof_count",
+            ),
+            ("validator_evidence_recheck_count", "validator_evidence_recheck_count"),
+            (
+                "validator_investigation_trajectory_count",
+                "validator_investigation_trajectory_count",
+            ),
+            (
+                "validator_targeted_investigation_count",
+                "validator_targeted_investigation_count",
+            ),
             (
                 "validation_soft_budget_overrun",
                 "validation_soft_budget_overrun_count",
@@ -1241,7 +2074,7 @@ class ValidationRunner:
         session_count = token_value("validator_session_count")
         if session_count:
             stage = (
-                "evidence_slice_v2"
+                "evidence_slice_v3"
                 if token_value("evidence_slice_token_count")
                 else "legacy_validator"
             )
@@ -1294,6 +2127,25 @@ class ValidationRunner:
             int(state.get("deterministic_prevalidation_decision_count", 0) or 0) + 1
         )
         state["validator_avoided_count"] = int(state.get("validator_avoided_count", 0) or 0) + 1
+        attribution = raw_issue.get("attribution")
+        if not isinstance(attribution, dict):
+            attribution = {
+                "schema_version": "zscope.finding-attribution.v1",
+                "discovered_by": [],
+                "discovery_details": [],
+            }
+            raw_issue["attribution"] = attribution
+        attribution["decided_by"] = "deterministic_proof"
+        attribution["decision_level"] = "V0"
+        raw_issue["model_verdict"] = None
+        raw_issue["policy_disposition"] = str(
+            raw_issue.get("candidate_disposition") or outcome.memory_status or "needs_review"
+        )
+        if raw_issue.get("validator_v3_entered") is True:
+            raw_issue["validator_v3_confirmed"] = raw_issue["policy_disposition"] in {
+                "confirmed",
+                "validated",
+            }
         decision = str(raw_issue.get("deterministic_prevalidation_decision") or "")
         if decision == "confirmed":
             state["deterministic_prevalidation_confirmed_count"] = (
@@ -1333,13 +2185,21 @@ class ValidationRunner:
         val_agent_cfg = next(
             (a for a in self.config.project.agents if a.name == "validator_agent"), None
         )
-        val_llm_ref = (
-            val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
-        )
+        profiles = getattr(getattr(self.config, "scan", None), "llm_profiles", None)
+        # Public stage routing takes precedence. The Agent-local reference is
+        # retained only for compatibility with pre-v2 effective configs.
+        val_llm_ref = str(getattr(profiles, "validation", "") or "")
+        if not val_llm_ref:
+            val_llm_ref = str(
+                val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+            )
         val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
+        validator_tools = (
+            self.get_tools("validator_agent") if self._scan_depth() in {"balanced", "deep"} else []
+        )
         return self.validator_agent_factory(
             val_client,
-            ([] if self._validator_evidence_slice_enabled() else self.get_tools("validator_agent")),
+            validator_tools,
             tool_policy=self.tool_policy_for_agent("validator_agent"),
         )
 
@@ -1440,13 +2300,31 @@ class ValidationRunner:
         raw_issue: Dict[str, Any],
         issue_code: str,
         evidence_pack: Dict[str, Any],
+        *,
+        validation_pass: str = "initial",
+        evidence_delta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if self._validator_evidence_slice_enabled():
-            evidence_slice = build_validator_evidence_slice_v2(
+            finding_uid = str(
+                raw_issue.get("candidate_uid")
+                or raw_issue.get("candidate_id")
+                or raw_issue.get("id")
+                or "unknown-candidate"
+            )
+            validation_cluster_uid = str(
+                raw_issue.get("validation_cluster_uid") or f"legacy:{finding_uid}"
+            )
+            evidence_slice = build_validator_evidence_slice_v3(
                 raw_issue,
                 evidence_pack,
                 issue_code,
+                validation_pass=validation_pass,
+                evidence_delta=evidence_delta,
             )
+            obligation = _as_dict(evidence_slice.get("obligation"))
+            obligation["candidate_uid"] = finding_uid
+            obligation["validation_cluster_uid"] = validation_cluster_uid
+            evidence_slice = self._fit_validator_slice(evidence_slice, max_tokens=12_000)
             serialized = json.dumps(
                 evidence_slice,
                 ensure_ascii=False,
@@ -1454,16 +2332,13 @@ class ValidationRunner:
                 separators=(",", ":"),
             )
             estimated_tokens = LLMClient.estimate_tokens([{"role": "user", "content": serialized}])
-            raw_issue["validator_evidence_slice_version"] = VALIDATOR_EVIDENCE_SLICE_VERSION
+            raw_issue["validator_evidence_slice_version"] = VALIDATOR_EVIDENCE_SLICE_V3
             raw_issue["evidence_slice_token_count"] = int(estimated_tokens)
             val_input = {
-                "validator_protocol": "zscope.validator-protocol.v2",
-                "finding_uid": str(
-                    raw_issue.get("candidate_uid")
-                    or raw_issue.get("candidate_id")
-                    or raw_issue.get("id")
-                    or "unknown"
-                ),
+                "validator_protocol": VALIDATOR_PROTOCOL_V3,
+                "finding_uid": finding_uid,
+                "validation_cluster_uid": validation_cluster_uid,
+                "validation_pass": validation_pass,
                 "evidence_slice": evidence_slice,
                 "evidence_slice_token_count": int(estimated_tokens),
             }
@@ -1481,6 +2356,84 @@ class ValidationRunner:
         }
         self.attach_agent_contract(val_input, "validator_agent")
         return val_input
+
+    @staticmethod
+    def _fit_validator_slice(
+        evidence_slice: Dict[str, Any],
+        *,
+        max_tokens: int,
+    ) -> Dict[str, Any]:
+        """Bound user evidence while preserving IDs and decision commitments."""
+
+        def estimate() -> int:
+            payload = json.dumps(
+                evidence_slice,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return LLMClient.estimate_tokens([{"role": "user", "content": payload}])
+
+        if estimate() <= max_tokens:
+            return evidence_slice
+        evidence_slice["slice_truncated"] = True
+        evidence_slice["slice_truncated_sections"] = []
+        code = _as_dict(evidence_slice.get("code"))
+        function_context = str(code.get("function_context") or "")
+        lines = function_context.splitlines()
+        while len(lines) > 32 and estimate() > max_tokens:
+            lines = lines[: max(32, len(lines) // 2)]
+            code["function_context"] = "\n".join(lines)
+        if len(lines) < len(function_context.splitlines()):
+            evidence_slice["slice_truncated_sections"].append("function_context")
+        for key, floor in (("semantic_claims", 4),):
+            values = evidence_slice.get(key)
+            if isinstance(values, list) and len(values) > floor and estimate() > max_tokens:
+                evidence_slice[key] = values[:floor]
+                evidence_slice["slice_truncated_sections"].append(key)
+        decision = _as_dict(evidence_slice.get("decision_facts"))
+        facts = decision.get("facts")
+        if isinstance(facts, list) and len(facts) > 12 and estimate() > max_tokens:
+            decision["facts"] = facts[:12]
+            evidence_slice["slice_truncated_sections"].append("decision_facts.facts")
+        if estimate() > max_tokens:
+            for key in ("callers", "callees", "snapshot_summary"):
+                if code.get(key) and estimate() > max_tokens:
+                    code[key] = [] if key != "snapshot_summary" else {}
+                    evidence_slice["slice_truncated_sections"].append(f"code.{key}")
+        if estimate() > max_tokens:
+            code["location_snippet"] = None
+            evidence_slice["semantic_claims"] = []
+            requirements = evidence_slice.get("validation_requirements")
+            if isinstance(requirements, list):
+                evidence_slice["validation_requirements"] = requirements[:4]
+            catalog = evidence_slice.get("evidence_ref_catalog")
+            if isinstance(catalog, dict):
+                for value in catalog.values():
+                    if isinstance(value, dict):
+                        value["summary"] = ""
+            evidence_slice["slice_truncated_sections"].extend(
+                ["code.location_snippet", "semantic_claims", "evidence_ref_catalog.summary"]
+            )
+        if estimate() > max_tokens:
+            code["function_context"] = "\n".join(
+                str(code.get("function_context") or "").splitlines()[:16]
+            )
+            facts = decision.get("facts")
+            if isinstance(facts, list):
+                decision["facts"] = facts[:4]
+            evidence = _as_dict(evidence_slice.get("evidence"))
+            for key in ("positive", "negative", "path_constraints"):
+                values = evidence.get(key)
+                if isinstance(values, list):
+                    evidence[key] = [str(value)[:400] for value in values[:4]]
+            evidence_slice["slice_truncated_sections"].append("minimal_decision_projection")
+        evidence_slice["slice_estimated_tokens"] = estimate()
+        if int(evidence_slice["slice_estimated_tokens"]) > max_tokens:
+            raise ValueError(
+                "Validator evidence identifiers exceed the 12K-token v3 input allowance."
+            )
+        return evidence_slice
 
     @staticmethod
     def _log_validation_outcome(

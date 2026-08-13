@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from .._version import __version__
@@ -130,9 +131,16 @@ class JsonRpcStdioServer:
         return jsonrpc_error(request_id, code, message)
 
 
-def run_stdio_server(config_path: str) -> None:
-    config = ConfigLoader.load(config_path)
-    provider = ZScopeMcpProvider(config)
+def run_stdio_server(
+    config_path: str,
+    *,
+    scan_depth: Optional[str] = None,
+) -> None:
+    config = ConfigLoader.load(
+        config_path,
+        scan_depth=scan_depth,
+    )
+    provider = ZScopeMcpProvider(config, config_path=Path(config_path))
     JsonRpcStdioServer(provider).serve_forever()
 
 
@@ -141,8 +149,12 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Run the local Z-SCOPE MCP stdio server.")
     parser.add_argument("--config", "-c", default="zscope.yaml", help="Path to zscope.yaml")
+    parser.add_argument("--scan-depth", choices=("fast", "balanced", "deep"), default=None)
     args = parser.parse_args()
-    run_stdio_server(args.config)
+    run_stdio_server(
+        args.config,
+        scan_depth=args.scan_depth,
+    )
 
 
 if __name__ == "__main__":

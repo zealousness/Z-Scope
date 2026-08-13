@@ -200,7 +200,7 @@ python -m pytest tests/test_parallel_custom_prompt.py
 python scripts/external_benchmark.py prepare-juliet --source /path/to/Juliet/C --name juliet_memory_formal --max-cases 0
 python scripts/external_benchmark.py prepare-svcomp --source /path/to/sv-benchmarks/c --name svcomp_memsafety_formal --max-cases 0
 python scripts/external_benchmark.py prepare-magma --magma-root /path/to/magma --target libpng --target-source /path/to/magma_full/libpng/repo --name magma_libpng_formal --max-bugs 0 --copy-full-source
-python scripts/external_benchmark.py run-matrix --suite-root benchmarks/external/workspace/juliet_memory_formal --conditions pure_llm_entry_source pure_llm_repo_context full_zscope_pipeline --trials 3 --run-kind formal
+python scripts/external_benchmark.py run-matrix --suite-root benchmarks/external/workspace/juliet_memory_formal --conditions full_zscope_pipeline --trials 5 --run-kind formal
 ```
 
 ### P3: SARIF/CI 集成面

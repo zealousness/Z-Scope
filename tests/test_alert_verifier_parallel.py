@@ -86,7 +86,9 @@ def test_alert_verifier_closes_worker_thread_llm_sessions() -> None:
 
     assert [result["alert_id"] for result in results] == ["ALERT_1", "ALERT_2", "ALERT_3"]
     assert len(verifier.llm_client.closed_threads) == 3
-    assert all(name.startswith("zscope-alert-verifier") for name in verifier.llm_client.closed_threads)
+    assert all(
+        name.startswith("zscope-alert-verifier") for name in verifier.llm_client.closed_threads
+    )
 
 
 def test_alert_llm_rejection_remains_actionable_without_deterministic_proof() -> None:
@@ -116,3 +118,29 @@ def test_unparseable_alert_validator_response_is_engine_failure() -> None:
     assert result["candidate_disposition"] == "engine_failed"
     assert result["validation_status"] == "pending"
     assert result["engine_status"] == "failed"
+
+
+def test_alert_validator_v3_rejection_is_policy_uncertain() -> None:
+    verifier = AlertVerifier.__new__(AlertVerifier)
+
+    result = verifier._validator_v3_result(
+        {
+            "pass": "initial",
+            "verdict": "rejected",
+            "reasoning": "No exploitable path is established.",
+            "positive_evidence": [],
+            "negative_evidence": [],
+            "evidence_refs": [],
+            "blocking_negative_evidence": False,
+            "stop_reason": "decision_complete",
+        },
+        alert=_alert(1),
+        alert_id="ALERT_1",
+        candidate_uid="CAND_1",
+        cluster_uid="VCL_1",
+    )
+
+    assert result["model_verdict"] == "rejected"
+    assert result["verdict"] == "uncertain"
+    assert result["candidate_disposition"] == "needs_review"
+    assert result["attribution"]["decided_by"] == "unresolved"

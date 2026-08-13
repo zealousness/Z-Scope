@@ -6,6 +6,7 @@ llms:
     base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
     models: ["${Z_SCOPE_LLM_MODEL}"]
     api_key: "${Z_SCOPE_API_KEY}"
+    max_tokens: 8192 # 单次响应长度上限；不是 scan-wide token 预算。
     base_url_max_concurrent_requests: 4
 
 project:
@@ -23,7 +24,9 @@ project:
     max_entries: 200
 
 scan:
+  depth: fast # fast|balanced|deep；通过正式门禁前省略也解析为 fast。
   task: "" # 空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。
+  llm_profiles: {modeling: default, analysis: default, validation: default}
 
 indexing:
   backend: unified

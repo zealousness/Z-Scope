@@ -1,0 +1,92 @@
+{
+  "schema_version": "zscope.discovery-ablation-arm-catalog.v1",
+  "catalog_revision": 1,
+  "plan_schema_version": "zscope.discovery-ablation-plan.v1",
+  "run_request_schema_version": "zscope.discovery-ablation-run-request.v1",
+  "expected_max_tokens": 12000000,
+  "trials_per_arm": 5,
+  "expected_stage_tokens": {
+    "semantic_completion": 1000000,
+    "active_discovery": 2500000,
+    "validator": 8000000,
+    "investigation_remediation_reserve": 500000
+  },
+  "arms": [
+    {
+      "arm_id": "D0",
+      "revision": 1,
+      "baseline": true,
+      "description": "Rules/backend candidates with the fixed Validator; no Security Semantic Map and no active discovery.",
+      "semantic_map_mode": "disabled",
+      "semantic_enrichment_mode": "disabled",
+      "active_discovery_mode": "disabled",
+      "legacy_full_entry_agents_mode": "disabled",
+      "execution_path": "production_bounded_pipeline",
+      "executor_protocol": "zscope.discovery-ablation-production-executor.v1",
+      "release_eligible": false,
+      "cost_upper_bound": false,
+      "arm_spec_sha256": "ec3c240fed8930c4010af98213308237edeb247f0ff18d93d0d24076c09e045a"
+    },
+    {
+      "arm_id": "D1",
+      "revision": 1,
+      "baseline": false,
+      "description": "D0 plus the evidence-backed Security Semantic Map and selective LLM semantic enrichment; discovery is disabled, including cached discovery reports.",
+      "semantic_map_mode": "evidence_backed",
+      "semantic_enrichment_mode": "active",
+      "active_discovery_mode": "disabled",
+      "legacy_full_entry_agents_mode": "disabled",
+      "execution_path": "production_bounded_pipeline",
+      "executor_protocol": "zscope.discovery-ablation-production-executor.v1",
+      "release_eligible": false,
+      "cost_upper_bound": false,
+      "arm_spec_sha256": "dc5fe044464e55c95990a2c4b76f31a83a8a96b5540cbf29193df0e651e4a062"
+    },
+    {
+      "arm_id": "D2",
+      "revision": 1,
+      "baseline": false,
+      "description": "D0 plus candidate-blind discovery over the zero-LLM semantic skeleton; LLM semantic enrichment is disabled.",
+      "semantic_map_mode": "zero_llm_skeleton",
+      "semantic_enrichment_mode": "disabled",
+      "active_discovery_mode": "active",
+      "legacy_full_entry_agents_mode": "disabled",
+      "execution_path": "production_bounded_pipeline",
+      "executor_protocol": "zscope.discovery-ablation-production-executor.v1",
+      "release_eligible": false,
+      "cost_upper_bound": false,
+      "arm_spec_sha256": "f93f6476e5d0cd54fd7a9089d3e95180e5136d073c66047981c6b80e3195a43f"
+    },
+    {
+      "arm_id": "D3",
+      "revision": 1,
+      "baseline": false,
+      "description": "Evidence-backed Security Semantic Map, selective LLM semantic enrichment, and candidate-blind active discovery with the fixed Validator.",
+      "semantic_map_mode": "evidence_backed",
+      "semantic_enrichment_mode": "active",
+      "active_discovery_mode": "active",
+      "legacy_full_entry_agents_mode": "disabled",
+      "execution_path": "production_bounded_pipeline",
+      "executor_protocol": "zscope.discovery-ablation-production-executor.v1",
+      "release_eligible": false,
+      "cost_upper_bound": false,
+      "arm_spec_sha256": "61346632f06642595264dcba4730de06061cfcbdabe679ffbff2168f61233868"
+    },
+    {
+      "arm_id": "D4",
+      "revision": 1,
+      "baseline": false,
+      "description": "Frozen legacy full-entry semantic-modeler and vulnerability-analyzer path, retained only as an external 12M cost upper bound; it cannot be substituted by the production pipeline.",
+      "semantic_map_mode": "legacy_executor_owned",
+      "semantic_enrichment_mode": "legacy_executor_owned",
+      "active_discovery_mode": "legacy_executor_owned",
+      "legacy_full_entry_agents_mode": "active",
+      "execution_path": "external_legacy_full_entry",
+      "executor_protocol": "zscope.discovery-ablation-legacy-full-entry-executor.v1",
+      "release_eligible": false,
+      "cost_upper_bound": true,
+      "arm_spec_sha256": "033ec728e0cc16744fe4d3386c25326a4965d7da35fb76bd44cb6cf3a9a63087"
+    }
+  ],
+  "catalog_sha256": "613550972d19f8da27e193c81b0443a69a78d961951d3e43b0c8499512b40935"
+}

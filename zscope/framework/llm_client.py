@@ -19,13 +19,31 @@ import time
 import shutil
 import subprocess
 import tempfile
-from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Set, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Deque,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Union,
+    cast,
+)
 
 import requests
 
 from ..common.cancellation import current_cancellation_token
 from ..common.utils import extract_json_blocks
 from .conversation_recorder import ConversationSession, get_conversation_recorder
+from .llm_usage import (
+    LLMUsageAttribution,
+    ScanTokenUsageLedger,
+    TokenUsageReservation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +162,8 @@ class LLMClient:
         base_url_max_concurrent_requests: Optional[int] = None,
         global_max_concurrent_requests: int = DEFAULT_GLOBAL_MAX_INFLIGHT,
         supports_structured_output: bool = False,
+        token_usage_ledger: Optional[ScanTokenUsageLedger] = None,
+        llm_ref: str = "",
     ):
         """
         Initialize LLM client.
@@ -167,6 +187,8 @@ class LLMClient:
         self.retry_until_available = bool(retry_until_available)
         self.max_tokens = max_tokens
         self.supports_structured_output = bool(supports_structured_output)
+        self.token_usage_ledger = token_usage_ledger
+        self.llm_ref = str(llm_ref or "")
         self.base_url_rate_limit_per_minute = max(0, int(base_url_rate_limit_per_minute or 0))
         self.base_url_max_concurrent_requests = max(0, int(base_url_max_concurrent_requests or 0))
         configured_global_limit = int(global_max_concurrent_requests or 0)
@@ -318,6 +340,183 @@ class LLMClient:
                 "successful_call_wall_seconds_p95": (durations[p95_index] if durations else 0.0),
                 "successful_call_wall_seconds_max": max(durations, default=0.0),
             }
+
+    @staticmethod
+    def _usage_value(value: Any, fallback: int = 0) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return max(0, int(fallback))
+        return max(0, int(value))
+
+    @classmethod
+    def _estimate_request_prompt_tokens(
+        cls,
+        messages: List[Dict[str, Any]],
+        *,
+        tools: Optional[List[Dict[str, Any]]],
+        response_format: Optional[Dict[str, Any]],
+    ) -> int:
+        """Estimate the complete request prompt before the manager adds its safety margin."""
+
+        estimate = cls.estimate_tokens(messages)
+        protocol_payload: Dict[str, Any] = {}
+        if tools:
+            protocol_payload["tools"] = tools
+        if response_format:
+            protocol_payload["response_format"] = response_format
+        if protocol_payload:
+            rendered = json.dumps(protocol_payload, ensure_ascii=False, separators=(",", ":"))
+            estimate += int((len(rendered) + 3) / 3.8)
+        # Provider chat templates add role and message framing that is absent
+        # from the content-only estimator.
+        estimate += 8 * max(1, len(messages))
+        return max(1, estimate)
+
+    def _reserve_scan_usage(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        tools: Optional[List[Dict[str, Any]]],
+        response_format: Optional[Dict[str, Any]],
+        max_completion_tokens: int,
+        model: str,
+        trace_agent: Optional[str],
+        trace_label: Optional[str],
+        usage_attribution: Optional[Mapping[str, Any]],
+    ) -> Optional[TokenUsageReservation]:
+        manager = self.token_usage_ledger
+        if manager is None:
+            return None
+        attribution = LLMUsageAttribution.from_trace(
+            trace_agent=trace_agent,
+            trace_label=trace_label,
+            llm_ref=self.llm_ref,
+            explicit=usage_attribution,
+        )
+        return manager.reserve(
+            self._estimate_request_prompt_tokens(
+                messages,
+                tools=tools,
+                response_format=response_format,
+            ),
+            max_completion_tokens,
+            attribution=attribution,
+            model=model,
+        )
+
+    def _settle_scan_usage(
+        self,
+        reservation: Optional[TokenUsageReservation],
+        usage: Mapping[str, Any],
+        *,
+        finish_reason: str = "",
+        retry: bool = False,
+        repair: bool = False,
+        tool_call_count: int = 0,
+        new_fact_count: int = 0,
+        duration_ms: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        manager = self.token_usage_ledger
+        if manager is None or reservation is None:
+            return None
+        prompt = self._usage_value(usage.get("prompt_tokens"))
+        completion = self._usage_value(usage.get("completion_tokens"))
+        total = self._usage_value(usage.get("total_tokens"), prompt + completion)
+        event = manager.settle(
+            reservation,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+            provider_reported=not bool(usage.get("estimated", True)),
+            finish_reason=finish_reason,
+            cached_prompt_tokens=self._usage_value(usage.get("cached_prompt_tokens")),
+            reasoning_tokens=self._usage_value(usage.get("reasoning_tokens")),
+            retry=retry,
+            repair=repair,
+            tool_call_count=tool_call_count,
+            new_fact_count=new_fact_count,
+            duration_ms=duration_ms,
+        )
+        return event.to_dict()
+
+    @classmethod
+    def _normalized_provider_usage(cls, value: Any) -> Dict[str, Any]:
+        """Normalize OpenAI-compatible usage variants without retaining content."""
+
+        if not isinstance(value, Mapping):
+            return {}
+
+        def first_number(*values: Any) -> Optional[int]:
+            for candidate in values:
+                if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+                    continue
+                return max(0, int(candidate))
+            return None
+
+        prompt_details = value.get("prompt_tokens_details")
+        if not isinstance(prompt_details, Mapping):
+            prompt_details = value.get("input_tokens_details")
+        if not isinstance(prompt_details, Mapping):
+            prompt_details = {}
+        completion_details = value.get("completion_tokens_details")
+        if not isinstance(completion_details, Mapping):
+            completion_details = value.get("output_tokens_details")
+        if not isinstance(completion_details, Mapping):
+            completion_details = {}
+
+        prompt = first_number(value.get("prompt_tokens"), value.get("input_tokens"))
+        completion = first_number(
+            value.get("completion_tokens"),
+            value.get("output_tokens"),
+        )
+        total = first_number(value.get("total_tokens"))
+        if prompt is None and completion is None and total is None:
+            return {}
+        prompt = prompt or 0
+        completion = completion or 0
+        total = max(prompt + completion, total or 0)
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+            "cached_prompt_tokens": first_number(
+                value.get("cached_prompt_tokens"),
+                prompt_details.get("cached_tokens"),
+            )
+            or 0,
+            "reasoning_tokens": first_number(
+                value.get("reasoning_tokens"),
+                completion_details.get("reasoning_tokens"),
+            )
+            or 0,
+            "estimated": False,
+        }
+
+    @staticmethod
+    def _usage_call_flags(
+        *,
+        attempt: int,
+        trace_label: Optional[str],
+        usage_attribution: Optional[Mapping[str, Any]],
+    ) -> tuple[bool, bool, int]:
+        explicit = usage_attribution or {}
+        label = str(trace_label or "").lower()
+        call_kind = str(explicit.get("call_kind") or "").lower()
+        retry = bool(explicit.get("retry")) or attempt > 1 or "retry" in label
+        repair = bool(explicit.get("repair")) or any(
+            marker in f"{label} {call_kind}"
+            for marker in ("repair", "json_retry", "structured_retry")
+        )
+        raw_new_facts = explicit.get("new_fact_count", 0)
+        if not raw_new_facts:
+            match = re.search(r"(?:^|[;\s])new_fact_count\s*=\s*(\d+)", label)
+            if match:
+                raw_new_facts = int(match.group(1))
+        new_fact_count = (
+            max(0, int(raw_new_facts))
+            if isinstance(raw_new_facts, (int, float)) and not isinstance(raw_new_facts, bool)
+            else 0
+        )
+        return retry, repair, new_fact_count
 
     def _record_successful_usage(
         self,
@@ -752,6 +951,7 @@ class LLMClient:
         trace_label: Optional[str] = None,
         trace_iteration: Optional[int] = None,
         trace_session: Optional[ConversationSession] = None,
+        usage_attribution: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Send chat completion request with model fallback.
@@ -784,6 +984,11 @@ class LLMClient:
 
             # Force streaming to bypass middle-proxy timeouts (e.g. 504 on 120s limit)
             payload["stream"] = True
+            # OpenAI-compatible streaming APIs only include the terminal usage
+            # chunk when explicitly requested.  Provider-reported usage is a
+            # formal benchmark invariant; incompatible endpoints remain
+            # visible as estimated telemetry instead of being misclassified.
+            payload["stream_options"] = {"include_usage": True}
 
             total_attempts = (self.max_retries + 1) * max(1, len(self._base_url_states))
             attempt = 0
@@ -804,32 +1009,73 @@ class LLMClient:
                 endpoint = self._select_base_url()
                 post_attempt_delay = 0.0
                 response: Optional[requests.Response] = None
+                usage_reservation: Optional[TokenUsageReservation] = None
+                usage_settled = False
+                request_started: Optional[float] = None
+                retry_call, repair_call, new_fact_count = self._usage_call_flags(
+                    attempt=attempt,
+                    trace_label=trace_label,
+                    usage_attribution=usage_attribution,
+                )
                 try:
                     url = self._chat_completion_url(endpoint.url)
+                    requested_max_tokens = self._usage_value(
+                        payload.get("max_tokens"),
+                        self.max_tokens,
+                    )
+                    usage_reservation = self._reserve_scan_usage(
+                        messages,
+                        tools=tools,
+                        response_format=response_format,
+                        max_completion_tokens=requested_max_tokens,
+                        model=model,
+                        trace_agent=trace_agent,
+                        trace_label=trace_label,
+                        usage_attribution=usage_attribution,
+                    )
+                    attempt_payload = dict(payload)
+                    if usage_reservation is not None:
+                        attempt_payload["max_tokens"] = usage_reservation.completion_token_limit
 
                     if self._transport == "curl":
                         request_started = time.monotonic()
                         assembled_message, finish_reason, provider_usage = (
                             self._curl_chat_completion(
                                 url,
-                                payload,
+                                attempt_payload,
                             )
                         )
                         prompt_tokens = LLMClient.estimate_tokens(messages)
                         completion_tokens = LLMClient.estimate_tokens([assembled_message])
-                        usage = {
+                        usage: Dict[str, Any] = {
                             "prompt_tokens": prompt_tokens,
                             "completion_tokens": completion_tokens,
                             "total_tokens": prompt_tokens + completion_tokens,
                             "estimated": True,
                         }
-                        if provider_usage:
-                            usage.update(provider_usage)
-                            usage["estimated"] = False
+                        normalized_provider_usage = self._normalized_provider_usage(provider_usage)
+                        if normalized_provider_usage:
+                            usage.update(normalized_provider_usage)
+                        duration_seconds = time.monotonic() - request_started
                         self._record_successful_usage(
                             usage,
-                            duration_seconds=time.monotonic() - request_started,
+                            duration_seconds=duration_seconds,
                         )
+                        tool_calls = assembled_message.get("tool_calls")
+                        tool_call_count = len(tool_calls) if isinstance(tool_calls, list) else 0
+                        usage_event = self._settle_scan_usage(
+                            usage_reservation,
+                            usage,
+                            finish_reason=finish_reason,
+                            retry=retry_call,
+                            repair=repair_call,
+                            tool_call_count=tool_call_count,
+                            new_fact_count=new_fact_count,
+                            duration_ms=max(0, int(round(duration_seconds * 1000))),
+                        )
+                        usage_settled = usage_reservation is not None
+                        if usage_event is not None:
+                            usage["usage_event"] = usage_event
                         logger.info(
                             f"[LLM API Trace] Model: {model} | "
                             f"Prompt ~{prompt_tokens:,} tk | "
@@ -876,11 +1122,13 @@ class LLMClient:
                             )
                     request_started = time.monotonic()
                     response = self._session_for_thread().post(
-                        url, json=payload, timeout=request_timeout, stream=True
+                        url, json=attempt_payload, timeout=request_timeout, stream=True
                     )
 
                     if response.status_code == 200:
-                        assembled_message, finish_reason = self._assemble_chat_response(response)
+                        assembled_message, finish_reason, provider_usage = (
+                            self._assemble_chat_response_with_usage(response)
+                        )
 
                         # Estimate single API call cost and log prominently
                         prompt_tokens = LLMClient.estimate_tokens(messages)
@@ -891,10 +1139,29 @@ class LLMClient:
                             "total_tokens": prompt_tokens + completion_tokens,
                             "estimated": True,
                         }
+                        normalized_provider_usage = self._normalized_provider_usage(provider_usage)
+                        if normalized_provider_usage:
+                            usage.update(normalized_provider_usage)
+                        duration_seconds = time.monotonic() - request_started
                         self._record_successful_usage(
                             usage,
-                            duration_seconds=time.monotonic() - request_started,
+                            duration_seconds=duration_seconds,
                         )
+                        tool_calls = assembled_message.get("tool_calls")
+                        tool_call_count = len(tool_calls) if isinstance(tool_calls, list) else 0
+                        usage_event = self._settle_scan_usage(
+                            usage_reservation,
+                            usage,
+                            finish_reason=finish_reason,
+                            retry=retry_call,
+                            repair=repair_call,
+                            tool_call_count=tool_call_count,
+                            new_fact_count=new_fact_count,
+                            duration_ms=max(0, int(round(duration_seconds * 1000))),
+                        )
+                        usage_settled = usage_reservation is not None
+                        if usage_event is not None:
+                            usage["usage_event"] = usage_event
 
                         logger.info(
                             f"[LLM API Trace] Model: {model} | "
@@ -1046,6 +1313,27 @@ class LLMClient:
                     last_error = str(e)
                     continue
                 finally:
+                    if usage_reservation is not None and not usage_settled:
+                        try:
+                            manager = self.token_usage_ledger
+                            if manager is None:
+                                raise ValueError("scan token usage ledger is unavailable")
+                            duration_ms = (
+                                max(0, int(round((time.monotonic() - request_started) * 1000)))
+                                if request_started is not None
+                                else 0
+                            )
+                            manager.forfeit(
+                                usage_reservation,
+                                reason=(str(last_error or "provider_request_failed")[:500]),
+                                retry=retry_call,
+                                repair=repair_call,
+                                duration_ms=duration_ms,
+                            )
+                        except ValueError:
+                            # A successful response can be settled immediately
+                            # before a downstream recorder/logging failure.
+                            pass
                     if response is not None:
                         close_response = getattr(response, "close", None)
                         if callable(close_response):
@@ -1077,6 +1365,7 @@ class LLMClient:
         curl_bin = self._curl_executable()
         curl_payload = dict(payload)
         curl_payload["stream"] = False
+        curl_payload.pop("stream_options", None)
         request_bytes = json.dumps(curl_payload, ensure_ascii=False).encode("utf-8")
         status_marker = "\n__Z_SCOPE_HTTP_STATUS__:"
         timeout_seconds = max(float(self.timeout) * 3.0, 60.0) if self.timeout is not None else None
@@ -1210,10 +1499,20 @@ class LLMClient:
 
     def _assemble_chat_response(self, response: requests.Response) -> tuple[Dict[str, Any], str]:
         """Assemble either SSE chunks or a plain JSON chat completion response."""
+        message, finish_reason, _usage = self._assemble_chat_response_with_usage(response)
+        return message, finish_reason
+
+    def _assemble_chat_response_with_usage(
+        self,
+        response: requests.Response,
+    ) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+        """Assemble a response and retain only provider token-accounting fields."""
+
         content_pieces: List[str] = []
         reasoning_pieces: List[str] = []
         tool_calls_map: Dict[Any, Dict[str, Any]] = {}
         finish_reason = "stop"
+        provider_usage: Dict[str, Any] = {}
 
         # A stream that continues to yield valid provider chunks is healthy.
         # Do not turn request elapsed time into a local analysis budget; the
@@ -1225,6 +1524,9 @@ class LLMClient:
             max_stream_seconds=stream_deadline,
             max_idle_valid_chunk_seconds=self.timeout,
         ):
+            chunk_usage = chunk.get("usage")
+            if isinstance(chunk_usage, dict):
+                provider_usage.update(chunk_usage)
             choices = chunk.get("choices", [])
             if not choices:
                 continue
@@ -1266,7 +1568,7 @@ class LLMClient:
         if reasoning_pieces:
             assembled_message["reasoning_content"] = "".join(reasoning_pieces)
 
-        return assembled_message, finish_reason
+        return assembled_message, finish_reason, provider_usage
 
     @staticmethod
     def _iter_chat_chunks(
@@ -1380,6 +1682,8 @@ class LLMClient:
     def _prepare_messages_for_model(
         self,
         conversation: List[Dict[str, Any]],
+        *,
+        preserve_reasoning_metadata: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Build the model-facing context without mutating the full transcript.
@@ -1398,7 +1702,7 @@ class LLMClient:
         for message in conversation:
             role = message.get("role")
             projected_message = self._copy_message_for_model(message)
-            if role == "assistant":
+            if role == "assistant" and not preserve_reasoning_metadata:
                 # reasoning_content is provider-specific scratchpad text. It is
                 # useful for local diagnostics but very expensive to replay.
                 projected_message.pop("reasoning_content", None)
@@ -1560,6 +1864,7 @@ class LLMClient:
         terminal_tool_required: bool = False,
         max_identical_invalid_terminal_calls: int = 3,
         max_invalid_terminal_calls: int = 5,
+        preserve_reasoning_metadata: bool = False,
     ) -> Dict[str, Any]:
         """
         Run a conversation loop with tool calling support.
@@ -1593,7 +1898,22 @@ class LLMClient:
             iterations += 1
             remaining_after_this = max_iterations - iterations
             max_iteration_final = iterations >= max_iterations
-            force_no_tool_final = loop_guard_recovery is not None
+            executor_requested_final = False
+            start_tool_iteration = getattr(
+                tool_executor,
+                "_zscope_start_iteration",
+                None,
+            )
+            if callable(start_tool_iteration):
+                try:
+                    executor_requested_final = bool(start_tool_iteration(iterations))
+                except Exception as exc:
+                    logger.warning(
+                        "Tool executor iteration guard failed; forcing final synthesis: %s",
+                        exc,
+                    )
+                    executor_requested_final = True
+            force_no_tool_final = loop_guard_recovery is not None or executor_requested_final
             final_iteration = max_iteration_final or force_no_tool_final
             if max_iteration_final:
                 final_instruction = (
@@ -1630,7 +1950,10 @@ class LLMClient:
                     }
                 )
 
-            model_conversation = self._prepare_messages_for_model(conversation)
+            model_conversation = self._prepare_messages_for_model(
+                conversation,
+                preserve_reasoning_metadata=preserve_reasoning_metadata,
+            )
             ctx_tokens = self.estimate_tokens(model_conversation)
             raw_ctx_tokens = self.estimate_tokens(conversation)
             logger.info(
@@ -1700,7 +2023,12 @@ class LLMClient:
                     )
                     continue
                 content = self._get_combined_content(conversation)
-                final_tokens = self.estimate_tokens(self._prepare_messages_for_model(conversation))
+                final_tokens = self.estimate_tokens(
+                    self._prepare_messages_for_model(
+                        conversation,
+                        preserve_reasoning_metadata=preserve_reasoning_metadata,
+                    )
+                )
                 logger.info(
                     f"Conversation complete: {iterations} iterations, final context ≈ {final_tokens:,} tokens"
                 )
@@ -1760,7 +2088,12 @@ class LLMClient:
                     "Model returned %d tool calls after tool use was disabled.",
                     len(tool_calls),
                 )
-                final_tokens = self.estimate_tokens(self._prepare_messages_for_model(conversation))
+                final_tokens = self.estimate_tokens(
+                    self._prepare_messages_for_model(
+                        conversation,
+                        preserve_reasoning_metadata=preserve_reasoning_metadata,
+                    )
+                )
                 if recorder and trace_session:
                     recorder.record_session_end(
                         trace_session,
@@ -1851,7 +2184,12 @@ class LLMClient:
                     )
                     continue
                 content = self._get_combined_content(conversation)
-                final_tokens = self.estimate_tokens(self._prepare_messages_for_model(conversation))
+                final_tokens = self.estimate_tokens(
+                    self._prepare_messages_for_model(
+                        conversation,
+                        preserve_reasoning_metadata=preserve_reasoning_metadata,
+                    )
+                )
                 logger.info(
                     f"Conversation complete (no more tool calls): {iterations} iterations, final context ≈ {final_tokens:,} tokens"
                 )
@@ -1952,7 +2290,10 @@ class LLMClient:
                                 True,
                             )
                         final_tokens = self.estimate_tokens(
-                            self._prepare_messages_for_model(conversation)
+                            self._prepare_messages_for_model(
+                                conversation,
+                                preserve_reasoning_metadata=preserve_reasoning_metadata,
+                            )
                         )
                         if recorder and trace_session:
                             recorder.record_session_end(trace_session, iterations, final_tokens)
@@ -2049,7 +2390,10 @@ class LLMClient:
                                 "latest_seen": identical_failures[-1],
                             }
                         final_tokens = self.estimate_tokens(
-                            self._prepare_messages_for_model(conversation)
+                            self._prepare_messages_for_model(
+                                conversation,
+                                preserve_reasoning_metadata=preserve_reasoning_metadata,
+                            )
                         )
                         logger.warning(
                             "Terminal tool loop guard triggered tool=%s reason=%s "
@@ -2205,6 +2549,13 @@ class LLMClient:
                                 }
                     else:
                         repeated_call_count = 0
+                        set_tool_iteration = getattr(
+                            tool_executor,
+                            "_zscope_set_iteration",
+                            None,
+                        )
+                        if callable(set_tool_iteration):
+                            set_tool_iteration(iterations)
                         result = tool_executor(func_name, func_args)
                         if previous_calls and isinstance(result, dict):
                             result = dict(result)
@@ -2311,7 +2662,12 @@ class LLMClient:
                     history_summary.append(f"Tool Result: {content_preview[:100]}...")
             logger.debug(f"Last steps: {history_summary}")
 
-        final_tokens = self.estimate_tokens(self._prepare_messages_for_model(conversation))
+        final_tokens = self.estimate_tokens(
+            self._prepare_messages_for_model(
+                conversation,
+                preserve_reasoning_metadata=preserve_reasoning_metadata,
+            )
+        )
         logger.info(
             f"Conversation ended (truncated={iterations >= max_iterations}): {iterations} iterations, final context ≈ {final_tokens:,} tokens"
         )

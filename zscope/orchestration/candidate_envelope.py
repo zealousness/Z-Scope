@@ -39,6 +39,7 @@ CANDIDATE_DISPOSITIONS = {
     "engine_failed",
     "interrupted",
     "deduplicated_alias",
+    "shadow_observation",
 }
 
 _DETERMINISTIC_REJECTION_SOURCES = {

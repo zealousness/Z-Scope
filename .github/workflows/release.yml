@@ -9,6 +9,9 @@ on:
       benchmark_run_id:
         description: Successful Formal Benchmark workflow run ID for the release SHA
         required: true
+      balanced_attestation_run_id:
+        description: Successful protected Balanced Default Attestation run ID
+        required: true
 
 permissions:
   contents: write
@@ -34,12 +37,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BENCHMARK_RUN_ID: ${{ inputs.benchmark_run_id }}
+          ATTESTATION_RUN_ID: ${{ inputs.balanced_attestation_run_id }}
           RELEASE_SHA: ${{ steps.release-source.outputs.sha }}
         run: |
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BENCHMARK_RUN_ID}" --jq .head_sha)" = "$RELEASE_SHA"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BENCHMARK_RUN_ID}" --jq .event)" = "workflow_dispatch"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BENCHMARK_RUN_ID}" --jq .conclusion)" = "success"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BENCHMARK_RUN_ID}" --jq .path)" = ".github/workflows/formal-benchmark.yml"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ATTESTATION_RUN_ID}" --jq .head_sha)" = "$RELEASE_SHA"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ATTESTATION_RUN_ID}" --jq .event)" = "workflow_dispatch"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ATTESTATION_RUN_ID}" --jq .conclusion)" = "success"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ATTESTATION_RUN_ID}" --jq .path)" = ".github/workflows/balanced-default-attestation.yml"
       - name: Download immutable C formal benchmark evidence
         uses: actions/download-artifact@v8
         with:
@@ -48,6 +56,15 @@ jobs:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ inputs.benchmark_run_id }}
+          digest-mismatch: error
+      - name: Download independent balanced-default attestation
+        uses: actions/download-artifact@v8
+        with:
+          name: balanced-default-${{ steps.release-source.outputs.sha }}
+          path: release-evidence/balanced-default
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.balanced_attestation_run_id }}
           digest-mismatch: error
       - name: Build wheelhouse from locked Python 3.13 dependencies
         run: |
@@ -81,6 +98,8 @@ jobs:
             --release-sha "$(git rev-parse HEAD)" \
             --tag '${{ inputs.tag }}' \
             --formal-artifact "cpp=$GITHUB_WORKSPACE/release-evidence/formal-cpp" \
+            --balanced-default-attestation "$GITHUB_WORKSPACE/release-evidence/balanced-default/balanced-default-attestation.json" \
+            --balanced-attestation-workflow-run-id '${{ inputs.balanced_attestation_run_id }}' \
             --asset-dir dist/release \
             --offline-smoke-evidence "$Z_SCOPE_OFFLINE_SMOKE_EVIDENCE" \
             --output dist/release-candidate-audit.json

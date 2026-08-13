@@ -71,7 +71,7 @@ def test_rule_list_json_uses_effective_schema_and_filters_engine_and_status(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["schema_version"] == "zscope.rule-catalog.v1"
+    assert payload["schema_version"] == "zscope.rule-catalog.v2"
     assert payload["language"] == "c_cpp"
     assert payload["backend"] == "regex"
     assert payload["summary"]["total"] > 0
@@ -117,7 +117,7 @@ def test_rule_show_json_resolves_descriptor_and_effective_reason(tmp_path: Path)
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["schema_version"] == "zscope.rule-catalog.v1"
+    assert payload["schema_version"] == "zscope.rule-catalog.v2"
     assert len(payload["catalog_sha256"]) == 64
     assert len(payload["effective_sha256"]) == 64
     assert payload["config_valid"] is True

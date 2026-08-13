@@ -5,11 +5,50 @@ from zscope.orchestration.candidate_envelope import (
 from zscope.reporting.schema import (
     apply_report_schema_v2,
     coalesce_terminal_candidates,
+    completeness_status,
     exit_code_for_report,
     report_invariant_status,
     report_is_reusable,
     report_reuse_blockers,
 )
+
+
+def test_enabled_discovery_without_llm_is_partial_and_exit_two() -> None:
+    report = {"issues": []}
+    apply_report_schema_v2(
+        report,
+        state={
+            "completeness": "complete",
+            "engine_capabilities": {
+                "active_discovery": {
+                    "status": "planned_no_llm_client",
+                    "reason": "analysis profile unavailable",
+                }
+            },
+        },
+        issues=[],
+        observations=[],
+        metadata={"run_id": "RUN"},
+        entry_function="entry",
+    )
+
+    assert report["completeness"] == "partial"
+    assert report["candidate_terminal_states"][0]["candidate_disposition"] == ("deferred_budget")
+    assert exit_code_for_report(report, policy="legacy") == 2
+
+
+def test_fast_disabled_discovery_does_not_mark_report_partial() -> None:
+    assert (
+        completeness_status(
+            {
+                "active_discovery": {
+                    "enabled": False,
+                    "status": "disabled_by_profile",
+                }
+            }
+        )
+        == "complete"
+    )
 
 
 def test_report_invariant_rejects_open_evidence_completion() -> None:
@@ -75,10 +114,7 @@ def test_candidate_envelope_separates_display_id_from_internal_occurrence() -> N
     assert first_envelope.schema_version == CANDIDATE_SCHEMA_VERSION
     assert first["candidate_uid"] == second["candidate_uid"]
     assert first["occurrence_uid"] != second["occurrence_uid"]
-    assert (
-        first["validation_cluster_uid"]
-        == second["validation_cluster_uid"]
-    )
+    assert first["validation_cluster_uid"] == second["validation_cluster_uid"]
     assert first["context_signature"] != second["context_signature"]
     assert first["run_issue_uid"] != second["run_issue_uid"]
 
@@ -189,10 +225,7 @@ def test_candidate_identity_is_idempotent_and_independent_of_detector_rule() -> 
     assert repeated.candidate_uid == initial.candidate_uid
     assert repeated.evidence_hash == initial.evidence_hash
     assert alternate_detector.candidate_uid == initial.candidate_uid
-    assert (
-        alternate_detector.validation_cluster_uid
-        == initial.validation_cluster_uid
-    )
+    assert alternate_detector.validation_cluster_uid == initial.validation_cluster_uid
     assert alternate_detector.provenance_hash != initial.provenance_hash
 
 
@@ -226,10 +259,7 @@ def test_candidate_validation_cluster_separates_decision_constraints() -> None:
     )
 
     assert guarded.candidate_uid == unguarded.candidate_uid
-    assert (
-        guarded.validation_cluster_uid
-        != unguarded.validation_cluster_uid
-    )
+    assert guarded.validation_cluster_uid != unguarded.validation_cluster_uid
 
 
 def test_report_schema_marks_deferred_candidate_incomplete() -> None:
@@ -258,6 +288,33 @@ def test_report_schema_marks_deferred_candidate_incomplete() -> None:
     assert report["run_manifest"]["valid"] is False
     assert exit_code_for_report(report, policy="review") == 2
     assert exit_code_for_report(report, policy="confirmed") == 2
+
+
+def test_report_schema_exposes_llm_usage_without_product_budget() -> None:
+    report = {}
+    llm_usage = {
+        "consumed_tokens": 1_999_000,
+        "usage_attribution": {"totals": {"total_tokens": 1_999_000}},
+    }
+
+    apply_report_schema_v2(
+        report,
+        state={"llm_usage": llm_usage},
+        issues=[],
+        observations=[],
+        metadata={
+            "run_id": "RUN",
+            "scan_depth": "fast",
+            "llm_usage": llm_usage,
+        },
+        entry_function="entry",
+    )
+
+    assert report["completeness"] == "complete"
+    assert report["run_manifest"]["scan_depth"] == "fast"
+    assert report["run_manifest"]["llm_usage_attribution"]["totals"]["total_tokens"] == 1_999_000
+    assert "max_llm_tokens" not in report["run_manifest"]
+    assert report["run_manifest"]["llm_usage"]["consumed_tokens"] == 1_999_000
 
 
 def test_exit_policies_preserve_legacy_and_layered_behavior() -> None:
@@ -329,9 +386,7 @@ def test_canonical_projection_counts_review_once_not_as_terminal_duplicate() -> 
     )
 
     assert report["run_manifest"]["needs_review_count"] == 1
-    assert report["needs_review_governance"]["by_disposition"] == {
-        "needs_review": 1
-    }
+    assert report["needs_review_governance"]["by_disposition"] == {"needs_review": 1}
     assert report["run_manifest"]["report_invariant_status"]["valid"] is True
 
 
@@ -419,6 +474,40 @@ def test_terminal_coalescing_preserves_evidence_variants_and_safest_status() -> 
     assert by_evidence["EVIDENCE_B"]["candidate_disposition"] == "deferred_budget"
 
 
+def test_shadow_observation_is_a_closed_non_user_visible_terminal() -> None:
+    shadow = {
+        "candidate_uid": "CAND_SHADOW",
+        "occurrence_uid": "OCC_SHADOW",
+        "validation_cluster_uid": "VAL_SHADOW",
+        "evidence_hash": "EVIDENCE_SHADOW",
+        "context_signature": "CTX_SHADOW",
+        "candidate_disposition": "shadow_observation",
+        "status": "shadow_observation",
+        "validation_status": "shadow",
+        "rollout_visibility": "shadow",
+    }
+    report = {"issues": []}
+
+    apply_report_schema_v2(
+        report,
+        state={
+            "canonical_outcome_projection": True,
+            "candidate_terminal_states": [shadow],
+        },
+        issues=[],
+        observations=[],
+        metadata={"run_id": "RUN", "rollout": {"stage": "semantic_shadow"}},
+        entry_function="entry",
+    )
+
+    assert report["issues"] == []
+    assert report["finding_status"] == "clean"
+    assert report["run_manifest"]["needs_review_count"] == 0
+    invariant = report["run_manifest"]["report_invariant_status"]
+    assert invariant["valid"] is True
+    assert invariant["shadow_observation_count"] == 1
+
+
 def test_report_reuse_requires_complete_compatible_manifest_without_pending_work() -> None:
     reusable = {
         "schema_version": 2,
@@ -454,9 +543,7 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
     incomplete = {
         **reusable,
         "finding_status": "needs_review",
-        "candidate_terminal_states": [
-            {"candidate_disposition": "deferred_budget"}
-        ],
+        "candidate_terminal_states": [{"candidate_disposition": "deferred_budget"}],
     }
     blockers = report_reuse_blockers(incomplete)
     assert "finding_needs_review" in blockers
@@ -473,9 +560,7 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
             "candidate_schema_version": "zscope.candidate.v2",
         },
     }
-    assert "candidate_schema_mismatch" in report_reuse_blockers(
-        legacy_candidate_schema
-    )
+    assert "candidate_schema_mismatch" in report_reuse_blockers(legacy_candidate_schema)
 
     v32_candidate_schema = {
         **reusable,
@@ -484,7 +569,5 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
             "candidate_schema_version": "zscope.candidate.v3.2",
         },
     }
-    assert "candidate_schema_mismatch" in report_reuse_blockers(
-        v32_candidate_schema
-    )
+    assert "candidate_schema_mismatch" in report_reuse_blockers(v32_candidate_schema)
     assert not report_is_reusable(v32_candidate_schema)

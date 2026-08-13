@@ -244,7 +244,7 @@ def _summarize_run_dir(run_dir: Path) -> Dict[str, Any]:
                     "duplicate_of_matched_count",
                     "false_negatives",
                     "precision",
-                    "false_positive_rate",
+                    "false_discovery_rate",
                     "recall",
                     "f1",
                 )
@@ -260,7 +260,7 @@ def _summarize_run_dir(run_dir: Path) -> Dict[str, Any]:
                     "duplicate_of_matched_count",
                     "false_negatives",
                     "precision",
-                    "false_positive_rate",
+                    "false_discovery_rate",
                     "recall",
                     "f1",
                 )

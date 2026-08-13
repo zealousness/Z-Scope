@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from zscope.benchmarking.runner import _gate_c, _gate_c_sealed, _performance_outliers
+from zscope.benchmarking.runner import (
+    C_GATES,
+    _aggregate_arm_a_binding,
+    _aggregate_range_gate_metrics,
+    _gate_c,
+    _gate_c_sealed,
+    _gate_metrics,
+    _performance_outliers,
+)
 
 
 def _summary(run: int, wall: float, scan: float) -> dict:
@@ -47,35 +55,125 @@ def test_performance_outliers_ignore_normal_variance() -> None:
     assert _performance_outliers(summaries) == []
 
 
-def test_cpp_gate_applies_raw_fp_limit_to_with_review_view() -> None:
-    score = {
-        "confirmed_tp": 90,
-        "precision": 98,
-        "with_review_tp": 134,
-        "with_review_raw_fp": 101,
-        "needs_review": 120,
+def _passing_run_score() -> dict:
+    return {
         "tokens": 1_000_000,
-        "scan_wall_seconds": 2_000,
-        "sealed_confirmed_recall_delta_pp": 0,
-        "sealed_precision_delta_pp": 0,
+        "provider_usage_coverage": 1.0,
+        "explicit_attribution_coverage": 1.0,
+        "telemetry_complete_rate": 1.0,
+        "protocol_anomaly_count": 0,
+        "queue_empty": True,
+        "token_conservation_passed": True,
+        "usage_accounting": {"complete": True, "source": "response_usage_spans"},
+        "rule_qualification_telemetry_present": True,
+        "report_views": {"default": {"attribution": {"explicit_coverage": 1.0}}},
     }
 
-    assert _gate_c(score) == ["with_review_raw_fp=101.0 > 100.0"]
+
+def test_cpp_gate_evaluates_balanced_twelve_million_cost_expectation() -> None:
+    score = _passing_run_score()
+    score["tokens"] = 12_000_001
+
+    assert _gate_c(score) == ["tokens=12000001.0 > 12000000.0"]
 
 
 def test_cpp_sealed_gate_is_separate_from_numeric_release_gate() -> None:
-    score = {
-        "confirmed_tp": 90,
-        "precision": 98,
-        "with_review_tp": 134,
-        "with_review_raw_fp": 80,
-        "needs_review": 120,
-        "tokens": 1_000_000,
-        "scan_wall_seconds": 2_000,
-    }
+    score = _passing_run_score()
 
     assert _gate_c(score) == []
-    assert _gate_c_sealed(score) == [
-        "missing numeric metric: sealed_confirmed_recall_delta_pp",
-        "missing numeric metric: sealed_precision_delta_pp",
+    failures = _gate_c_sealed(score)
+    assert "missing numeric metric: sealed_confirmed_recall_delta_pp" in failures
+    assert "missing numeric metric: shadow_precision_at_25" in failures
+    assert "missing numeric metric: silent_rejection_without_proof_count" in failures
+
+
+def test_cpp_gate_rejects_default_enabled_unqualified_rules() -> None:
+    score = _passing_run_score()
+    score["default_enabled_unqualified_rule_count"] = 1
+
+    assert _gate_c(score) == ["default-enabled deterministic rules are not externally qualified"]
+
+
+def test_range_aggregate_executes_all_locked_policy_gates() -> None:
+    summaries = [
+        {
+            "queue_empty": True,
+            "metrics": {
+                "confirmed_tp": 112,
+                "tokens": 9_000_000 + run,
+                "confirmed_recall": 0.82,
+                "actionable_fdr_delta_vs_arm_a_pp": 0.5,
+                "provider_usage_coverage": 1.0,
+                "explicit_attribution_coverage": 1.0,
+                "token_conservation_passed": True,
+                "telemetry_complete_rate": 1.0,
+                "protocol_anomaly_count": 0,
+                "true_positive_truth_ids": ["T1", "T2"],
+            },
+        }
+        for run in range(5)
     ]
+
+    actuals = _aggregate_range_gate_metrics(summaries)
+
+    assert _gate_metrics(actuals, C_GATES) == []
+    assert actuals["median_confirmed_tp"] == 112
+    assert actuals["true_positive_jaccard"] == 1.0
+    assert actuals["queue_drained_rate"] == 1.0
+    assert actuals["telemetry_complete_rate"] == 1.0
+
+
+def test_range_aggregate_fails_closed_without_arm_a_delta() -> None:
+    summaries = [
+        {
+            "queue_empty": True,
+            "metrics": {
+                "confirmed_tp": 112,
+                "tokens": 9_000_000,
+                "confirmed_recall": 0.82,
+                "provider_usage_coverage": 1.0,
+                "explicit_attribution_coverage": 1.0,
+                "token_conservation_passed": True,
+                "telemetry_complete_rate": 1.0,
+                "protocol_anomaly_count": 0,
+                "true_positive_truth_ids": ["T1"],
+            },
+        }
+        for _ in range(5)
+    ]
+
+    failures = _gate_metrics(_aggregate_range_gate_metrics(summaries), C_GATES)
+
+    assert any("actionable_fdr_delta_vs_arm_a_pp" in failure for failure in failures)
+
+
+def test_formal_arm_a_binding_requires_one_frozen_baseline_and_replay_bundle() -> None:
+    binding = {
+        "frozen": True,
+        "arm": "A",
+        "replay_bundle_sha256": "a" * 64,
+        "baseline_sha256": "b" * 64,
+    }
+    summaries = [
+        {
+            "metrics": {"validator_arm_a_baseline": binding},
+            "validator_replay_bundle": {"bundle_sha256": "a" * 64},
+        }
+        for _ in range(5)
+    ]
+
+    assert _aggregate_arm_a_binding(summaries)["passed"] is True
+    summaries[0]["metrics"]["validator_arm_a_baseline"] = {
+        **binding,
+        "baseline_sha256": "c" * 64,
+    }
+    assert _aggregate_arm_a_binding(summaries)["passed"] is False
+
+    summaries = [
+        {
+            "metrics": {"validator_arm_a_baseline": binding},
+            "validator_replay_bundle": {"bundle_sha256": "c" * 64},
+        }
+        for _ in range(5)
+    ]
+    assert _aggregate_arm_a_binding(summaries)["passed"] is False

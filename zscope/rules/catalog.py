@@ -12,8 +12,8 @@ from typing import Any, Dict, Iterable, Iterator, Literal, Mapping, Optional, Se
 
 import yaml
 
-RULE_CATALOG_VERSION = 1
-RULE_CATALOG_SCHEMA = "zscope.rule-catalog.v1"
+RULE_CATALOG_VERSION = 2
+RULE_CATALOG_SCHEMA = "zscope.rule-catalog.v2"
 SUPPORTED_LANGUAGES = frozenset({"c_cpp", "java"})
 BUILTIN_ENGINES = frozenset(
     {"cpp_regex", "cpp_clang_cfg", "cpp_clang_matcher", "cpp_graph", "java_local"}
@@ -37,6 +37,7 @@ DESCRIPTOR_FIELDS = frozenset(
         "default_severity",
         "revision",
         "status",
+        "default_enabled",
         "title",
         "summary",
         "required_capabilities",
@@ -110,6 +111,7 @@ class RuleDescriptor:
     aliases: Tuple[str, ...] = ()
     legacy_id: bool = False
     source: str = "builtin"
+    default_enabled: bool = True
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -122,6 +124,7 @@ class RuleDescriptor:
             "default_severity": self.default_severity,
             "revision": self.revision,
             "status": self.status,
+            "default_enabled": self.default_enabled,
             "title": self.title,
             "summary": self.summary,
             "required_capabilities": list(self.required_capabilities),
@@ -359,6 +362,8 @@ class RuleCatalog:
             raise RuleCatalogError(f"rule {descriptor.id!r} aliases must be a string tuple")
         if not isinstance(descriptor.legacy_id, bool):
             raise RuleCatalogError(f"rule {descriptor.id!r} legacy_id must be a boolean")
+        if not isinstance(descriptor.default_enabled, bool):
+            raise RuleCatalogError(f"rule {descriptor.id!r} default_enabled must be a boolean")
         if not _ID_RE.fullmatch(descriptor.id):
             raise RuleCatalogError(f"invalid stable rule id {descriptor.id!r}")
         if descriptor.language not in SUPPORTED_LANGUAGES:
@@ -389,6 +394,10 @@ class RuleCatalog:
         if descriptor.status not in SUPPORTED_STATUSES:
             raise RuleCatalogError(
                 f"rule {descriptor.id!r} has invalid status {descriptor.status!r}"
+            )
+        if descriptor.status == "experimental" and descriptor.default_enabled:
+            raise RuleCatalogError(
+                f"experimental rule {descriptor.id!r} must set default_enabled=false"
             )
         if isinstance(descriptor.revision, bool) or descriptor.revision < 1:
             raise RuleCatalogError(f"rule {descriptor.id!r} revision must be a positive integer")
@@ -433,6 +442,7 @@ class EffectiveRuleSet:
     rules: Tuple[EffectiveRuleState, ...]
     provenance: RuleCatalogProvenance
     warnings: Tuple[str, ...] = ()
+    qualification: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     extension_registry: Optional[Any] = field(default=None, repr=False, compare=False)
 
     @property
@@ -475,7 +485,9 @@ class EffectiveRuleSet:
         language: str,
         backend: str,
         disabled_ids: Sequence[str] = (),
+        enabled_ids: Sequence[str] = (),
         extension_sources: Sequence[Mapping[str, Any]] = (),
+        qualification_summary: Optional[Mapping[str, Any]] = None,
         implementation_sha256: str = "",
         extension_registry: Optional[Any] = None,
     ) -> "EffectiveRuleSet":
@@ -484,30 +496,52 @@ class EffectiveRuleSet:
         capabilities = capabilities_for(language, backend)
         seen_disabled: set[str] = set()
         canonical_disabled: set[str] = set()
+        seen_enabled: set[str] = set()
+        canonical_enabled: set[str] = set()
         warnings = []
-        for index, configured in enumerate(disabled_ids):
-            value = str(configured or "")
-            if value in seen_disabled:
-                raise RuleCatalogError(f"rules.disabled_ids[{index}]: duplicate rule id {value!r}")
-            seen_disabled.add(value)
-            descriptor = catalog.get(value)
-            if descriptor is None:
-                suggestion = _nearest(value, catalog.ids | frozenset(catalog.aliases))
-                suffix = f"; did you mean {suggestion!r}?" if suggestion else ""
-                raise RuleCatalogError(
-                    f"rules.disabled_ids[{index}]: unknown rule id {value!r}{suffix}"
-                )
-            if descriptor.language != language:
-                raise RuleCatalogError(
-                    f"rules.disabled_ids[{index}]: rule {value!r} is for "
-                    f"{descriptor.language}, not {language}"
-                )
-            if descriptor.id in canonical_disabled:
-                raise RuleCatalogError(
-                    f"rules.disabled_ids[{index}]: duplicate canonical rule id "
-                    f"{descriptor.id!r}"
-                )
-            canonical_disabled.add(descriptor.id)
+
+        def normalize_configured_ids(
+            configured_ids: Sequence[str],
+            *,
+            field: str,
+            seen: set[str],
+            canonical: set[str],
+        ) -> None:
+            for index, configured in enumerate(configured_ids):
+                value = str(configured or "")
+                if value in seen:
+                    raise RuleCatalogError(f"rules.{field}[{index}]: duplicate rule id {value!r}")
+                seen.add(value)
+                descriptor = catalog.get(value)
+                if descriptor is None:
+                    suggestion = _nearest(value, catalog.ids | frozenset(catalog.aliases))
+                    suffix = f"; did you mean {suggestion!r}?" if suggestion else ""
+                    raise RuleCatalogError(
+                        f"rules.{field}[{index}]: unknown rule id {value!r}{suffix}"
+                    )
+                if descriptor.language != language:
+                    raise RuleCatalogError(
+                        f"rules.{field}[{index}]: rule {value!r} is for "
+                        f"{descriptor.language}, not {language}"
+                    )
+                if descriptor.id in canonical:
+                    raise RuleCatalogError(
+                        f"rules.{field}[{index}]: duplicate canonical rule id " f"{descriptor.id!r}"
+                    )
+                canonical.add(descriptor.id)
+
+        normalize_configured_ids(
+            disabled_ids,
+            field="disabled_ids",
+            seen=seen_disabled,
+            canonical=canonical_disabled,
+        )
+        normalize_configured_ids(
+            enabled_ids,
+            field="enabled_ids",
+            seen=seen_enabled,
+            canonical=canonical_enabled,
+        )
         states = []
         for descriptor in catalog:
             if descriptor.language != language:
@@ -525,11 +559,21 @@ class EffectiveRuleSet:
             elif missing:
                 state = "unavailable"
                 reason = "backend_capability_missing:" + ",".join(missing)
+            elif descriptor.id in canonical_enabled:
+                state = "enabled"
+                reason = "enabled_by_config"
+            elif not descriptor.default_enabled:
+                state = "disabled"
+                reason = "disabled_by_default"
             else:
                 state = "enabled"
-                reason = "enabled"
+                reason = "enabled_by_default"
             states.append(EffectiveRuleState(descriptor, state, reason))
         impl_hash = implementation_sha256 or implementation_hash(language=language)
+        qualification = dict(qualification_summary or {})
+        normalized_qualification = {
+            key: value for key, value in qualification.items() if key != "source_path"
+        }
         normalized = {
             "schema": RULE_CATALOG_SCHEMA,
             "catalog_sha256": catalog.source_sha256,
@@ -546,6 +590,7 @@ class EffectiveRuleSet:
                 for item in states
             ],
             "extension_sources": [dict(item) for item in extension_sources],
+            "qualification": normalized_qualification,
         }
         effective_hash = _sha256_json(normalized)
         provenance = RuleCatalogProvenance(
@@ -565,6 +610,7 @@ class EffectiveRuleSet:
             rules=tuple(states),
             provenance=provenance,
             warnings=tuple(warnings),
+            qualification=MappingProxyType(qualification),
             extension_registry=extension_registry,
         )
 
@@ -719,9 +765,52 @@ def implementation_hash(*, language: str) -> str:
 
 
 def serialize_effective_rules(effective: EffectiveRuleSet) -> Dict[str, Any]:
-    enabled = [item.as_dict() for item in effective.rules if item.state == "enabled"]
-    disabled = [item.as_dict() for item in effective.rules if item.state == "disabled"]
-    unavailable = [item.as_dict() for item in effective.rules if item.state == "unavailable"]
+    qualification = dict(effective.qualification)
+    raw_qualification_rows = qualification.get("rules")
+    qualification_by_rule = {
+        (str(item.get("rule_id") or ""), int(item.get("revision") or 0)): dict(item)
+        for item in raw_qualification_rows or []
+        if isinstance(item, Mapping)
+        and str(item.get("rule_id") or "")
+        and isinstance(item.get("revision"), int)
+        and not isinstance(item.get("revision"), bool)
+    }
+
+    def serialized(item: EffectiveRuleState) -> Dict[str, Any]:
+        row = item.as_dict()
+        qualification_row = qualification_by_rule.get(
+            (item.descriptor.id, item.descriptor.revision)
+        )
+        if qualification_row is not None:
+            row.update(
+                {
+                    "qualification_state": str(
+                        qualification_row.get("state")
+                        or qualification_row.get("qualification_state")
+                        or "pending"
+                    ),
+                    "qualification_evidence_verified": bool(
+                        qualification_row.get("evidence_verified")
+                    ),
+                    "qualification_inherited_legacy_pending": bool(
+                        qualification_row.get("inherited_legacy_pending")
+                    ),
+                }
+            )
+        else:
+            row.update(
+                {
+                    "qualification_state": "not_required",
+                    "qualification_evidence_verified": False,
+                    "qualification_inherited_legacy_pending": False,
+                }
+            )
+        return row
+
+    rows = [serialized(item) for item in effective.rules]
+    enabled = [item for item in rows if item["effective_status"] == "enabled"]
+    disabled = [item for item in rows if item["effective_status"] == "disabled"]
+    unavailable = [item for item in rows if item["effective_status"] == "unavailable"]
     return {
         **effective.provenance.as_dict(),
         "language": effective.language,
@@ -738,8 +827,9 @@ def serialize_effective_rules(effective: EffectiveRuleSet) -> Dict[str, Any]:
         "unavailable": [
             {"id": item["id"], "reason": item["effective_reason"]} for item in unavailable
         ],
-        "rules": [item.as_dict() for item in effective.rules],
+        "rules": rows,
         "warnings": list(effective.warnings),
+        "qualification": qualification,
     }
 
 
@@ -754,7 +844,10 @@ def _parse_descriptor(
     if not isinstance(raw, dict):
         raise RuleCatalogError(f"{path}: rule descriptor must be a mapping")
     unknown = sorted(set(raw) - DESCRIPTOR_FIELDS)
-    missing = sorted(DESCRIPTOR_FIELDS - set(raw))
+    # ``default_enabled`` is the only catalog-v2 migration field.  It may be
+    # omitted by packaged legacy rows and is materialized as ``True`` below;
+    # new rules must always state it explicitly.
+    missing = sorted((DESCRIPTOR_FIELDS - {"default_enabled"}) - set(raw))
     if unknown:
         raise RuleCatalogError(f"{path}: unknown fields: {', '.join(unknown)}")
     if missing:
@@ -788,6 +881,16 @@ def _parse_descriptor(
     for key in scalar_fields:
         if not isinstance(raw[key], str):
             raise RuleCatalogError(f"{path}.{key}: must be a string")
+    default_enabled = raw.get("default_enabled")
+    if default_enabled is None:
+        # Catalog v2 migration: all pre-v2 built-ins are legacy IDs and retain
+        # their previous enabled-by-default behavior without a 227-row rewrite.
+        # New built-ins must make activation intent explicit.
+        if not (builtin and legacy_id):
+            raise RuleCatalogError(f"{path}.default_enabled: field is required")
+        default_enabled = True
+    if not isinstance(default_enabled, bool):
+        raise RuleCatalogError(f"{path}.default_enabled: must be a boolean")
     descriptor = RuleDescriptor(
         id=raw["id"],
         language=language,  # type: ignore[arg-type]
@@ -804,6 +907,7 @@ def _parse_descriptor(
         aliases=list_fields["aliases"],
         legacy_id=legacy_id,
         source=source,
+        default_enabled=default_enabled,
     )
     RuleCatalog._validate_descriptor(descriptor, validate_builtin_engine=builtin)
     if skill_languages is not None:
@@ -837,6 +941,7 @@ def external_descriptor(
     status: str = "stable",
     required_capabilities: Sequence[str] = ("source_text",),
     aliases: Sequence[str] = (),
+    default_enabled: bool = True,
 ) -> RuleDescriptor:
     descriptor = RuleDescriptor(
         id=rule_id,
@@ -854,6 +959,7 @@ def external_descriptor(
         aliases=tuple(aliases),
         legacy_id=False,
         source=source,
+        default_enabled=default_enabled,
     )
     RuleCatalog._validate_descriptor(descriptor)
     if descriptor.id.startswith("zscope."):

@@ -81,6 +81,7 @@ from ..candidates.java_rules import JavaRuleCandidateGenerator
 from ...rules.extensions import RuleContext, preflight_rules
 from ...rules.catalog import serialize_effective_rules
 from ...semantics.models import LocalPatternSemantics
+from ...semantics.security_map import SQLiteSecurityMapStore, ZeroLLMSecurityMapBuilder
 from ..candidates.graph import GraphCandidateGenerator
 from ...orchestration.history_reconciler import HistoryReconciler
 from ..candidates.svf_value_flow import SvfValueFlowCandidateGenerator
@@ -108,6 +109,10 @@ from ...snapshots.policy import (
     trivial_suspicious_points,
 )
 from ...framework.llm_client import LLMClient
+from ...framework.llm_usage import (
+    ensure_scan_token_usage_ledger,
+    scan_token_usage_snapshot,
+)
 from ...agents.semantic_modeler.agent import SemanticModeler
 from ...agents.semantic_modeler.retry import run_semantic_model_with_retries
 from ...agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
@@ -138,7 +143,22 @@ from ..._version import __version__
 from ...orchestration.specs import SpecRegistry, WorkflowStep
 from ...orchestration.workflow_executor import WorkflowExecutor, WorkflowStepHandler
 from ...orchestration.subagents import SubAgentOrchestrator, SubAgentTicket
-from ...orchestration.candidates import CandidateLedger
+from ...orchestration.active_discovery import (
+    ActiveDiscoveryAgent,
+    ActiveDiscoveryCoordinator,
+    SemanticEnrichmentAgent,
+    SemanticMapEnricher,
+    candidate_coverage_keys,
+    historical_variant_keys,
+    make_agent_report_runner,
+    make_semantic_enrichment_runner,
+    resolve_discovery_profile,
+)
+from ...orchestration.rollout import (
+    rollout_active_discovery_mode,
+    rollout_runtime_policy,
+)
+from ...orchestration.candidates import CandidateLedger, CandidateRegistrar
 from ...orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
     annotate_issue_identity,
@@ -270,6 +290,7 @@ class Analyzer:
             self.llm_clients = llm_clients
         else:
             self.llm_clients = {}
+            token_usage_ledger = ensure_scan_token_usage_ledger(config)
             for name, llm_cfg in config.llms.items():
                 self.llm_clients[name] = LLMClient(
                     api_key=llm_cfg.api_key,
@@ -296,6 +317,8 @@ class Analyzer:
                     supports_structured_output=getattr(
                         llm_cfg, "supports_structured_output", False
                     ),
+                    token_usage_ledger=token_usage_ledger,
+                    llm_ref=name,
                 )
         self.validation_runner = self._make_validation_runner()
         self.report_generator = ReportGenerator(config.project.project_root)
@@ -1406,6 +1429,268 @@ class Analyzer:
                 candidate_count=len(candidate_signals),
             )
             continue
+
+        if not getattr(self, "defer_validation_to_scan", False):
+            self._run_single_entry_active_discovery(state)
+
+    def _run_single_entry_active_discovery(self, state: Dict[str, Any]) -> None:
+        """Run the shared map/discovery stage before local validation."""
+
+        if state.get("active_discovery_attempted"):
+            return
+        state["active_discovery_attempted"] = True
+        profile = resolve_discovery_profile(self.config)
+        discovery_mode = rollout_active_discovery_mode(self.config)
+        if profile.name == "fast" or discovery_mode == "disabled":
+            state["active_discovery"] = {
+                "enabled": False,
+                "profile": profile.name,
+                "status": (
+                    "disabled_by_profile" if profile.name == "fast" else "disabled_by_rollout"
+                ),
+                "visibility_mode": discovery_mode,
+                "rollout": rollout_runtime_policy(self.config),
+                "llm_semantic_model_calls": 0,
+                "llm_discovery_call_count": 0,
+            }
+            return
+
+        snapshot_dir = Path(self.config.analysis.snapshot_dir)
+        sidecar_path = snapshot_dir / "security_map.db"
+        export_path = snapshot_dir / "security_semantic_map.json"
+        ledger = state.get("candidate_ledger")
+        if not isinstance(ledger, CandidateLedger):
+            state["active_discovery"] = {
+                "enabled": True,
+                "profile": profile.name,
+                "status": "failed",
+                "failures": [{"reason": "candidate ledger unavailable"}],
+            }
+            return
+        before_clusters = {record.validation_cluster_uid for record in ledger.records()}
+        started = time.monotonic()
+        try:
+            entry = FunctionEntry(
+                function_name=str(state.get("entry_func") or self.config.project.entry_function),
+                file_path=str(state.get("entry_file_path") or "") or None,
+                signature=str(state.get("entry_signature") or "") or None,
+                diff_focus=(
+                    dict(state.get("diff_focus") or {})
+                    if isinstance(state.get("diff_focus"), dict)
+                    else None
+                ),
+            )
+            semantic_map = ZeroLLMSecurityMapBuilder(
+                self.code_index,
+                project_id=str(
+                    getattr(self.config.project, "project_id", "")
+                    or self.config.project.project_root.name
+                ),
+                revision=str(getattr(ledger, "revision", "") or ""),
+                profile=profile.name,
+                semantic_overlay=self._get_semantic_overlay(),
+                project_root=self.config.project.project_root,
+                max_functions=int(
+                    getattr(
+                        self.config.analysis,
+                        "security_map_max_functions",
+                        15_000 if profile.name == "deep" else 5_000,
+                    )
+                ),
+            ).build([entry])
+            store = SQLiteSecurityMapStore(sidecar_path)
+            registrar = CandidateRegistrar(
+                ledger,
+                project_id=str(
+                    getattr(self.config.project, "project_id", "")
+                    or self.config.project.project_root.name
+                ),
+                project_root=str(self.config.project.project_root),
+                revision=str(getattr(ledger, "revision", "") or ""),
+                run_id=str(state.get("run_id") or ""),
+                decision_fact_cache=self.decision_fact_cache,
+            )
+            discovery_llm_client = self._scan_role_llm_client("analysis")
+            modeling_llm_client = self._scan_role_llm_client("modeling")
+            report_runner = None
+            semantic_enricher = None
+            if discovery_llm_client is not None:
+                report_runner = make_agent_report_runner(ActiveDiscoveryAgent(discovery_llm_client))
+            if modeling_llm_client is not None:
+                semantic_enricher = SemanticMapEnricher(
+                    profile=profile,
+                    store=store,
+                    model_identity=str(
+                        (getattr(modeling_llm_client, "models", None) or ["unknown"])[0]
+                    ),
+                    user_semantics_fingerprint=str(
+                        semantic_map.fingerprints.get("semantic_overlay") or ""
+                    ),
+                    report_runner=make_semantic_enrichment_runner(
+                        SemanticEnrichmentAgent(modeling_llm_client)
+                    ),
+                    mode=str(
+                        getattr(
+                            self.config.analysis,
+                            "security_semantic_enrichment_mode",
+                            "shadow",
+                        )
+                        or "shadow"
+                    ),
+                )
+            planned_map, discovery_state = ActiveDiscoveryCoordinator(
+                profile=profile,
+                store=store,
+                registrar=registrar,
+                report_runner=report_runner,
+                semantic_enricher=semantic_enricher,
+                visibility_mode=discovery_mode,
+                rollout_stage=str(rollout_runtime_policy(self.config).get("stage") or "unmanaged"),
+            ).run(
+                semantic_map,
+                covered_keys=candidate_coverage_keys(ledger),
+                known_variant_keys=historical_variant_keys(
+                    (
+                        state.get("historical_report", {}).get("issues", [])
+                        if isinstance(state.get("historical_report"), dict)
+                        else []
+                    )
+                ),
+                export_path=export_path,
+            )
+            discovery_state.update(
+                {
+                    "sidecar_path": str(sidecar_path),
+                    "json_export_path": str(export_path),
+                    "duration_seconds": round(time.monotonic() - started, 4),
+                }
+            )
+            planned_units = list(planned_map.audit_units)
+            missing_modeling = modeling_llm_client is None and bool(planned_units)
+            missing_discovery = discovery_llm_client is None and int(
+                discovery_state.get("completed_report_count", 0) or 0
+            ) < len(planned_units)
+            if missing_modeling or missing_discovery:
+                discovery_state["status"] = "planned_no_llm_client"
+                missing_roles = [
+                    role
+                    for role, missing in (
+                        ("modeling", missing_modeling),
+                        ("analysis", missing_discovery),
+                    )
+                    if missing
+                ]
+                discovery_state.setdefault("failures", []).append(
+                    {
+                        "reason": (
+                            "No LLM client was configured for required scan role(s): "
+                            + ", ".join(missing_roles)
+                        )
+                    }
+                )
+                discovery_state["uncovered_unit_ids"] = list(
+                    dict.fromkeys(
+                        [
+                            *list(discovery_state.get("uncovered_unit_ids") or []),
+                            *(unit.unit_id for unit in planned_units),
+                        ]
+                    )
+                )
+            state["active_discovery"] = discovery_state
+            for record in ledger.records():
+                if record.validation_cluster_uid in before_clusters:
+                    continue
+                evidence = (
+                    record.ticket.evidence if isinstance(record.ticket.evidence, dict) else {}
+                )
+                payload = evidence.get("candidate_payload")
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("candidate_source") or "") != "active_discovery":
+                    continue
+                issue = deepcopy(payload)
+                issue["evidence_pack"] = deepcopy(evidence)
+                issue.setdefault("code_snippet", record.ticket.context_slice)
+                state["pending_new_issues"].append(issue)
+            state["candidate_ledger_context"] = ledger.to_context()
+            state["candidate_ledger_summary"] = ledger.summary()
+            state["total_context_tokens"] += int(discovery_state.get("context_tokens", 0) or 0)
+            state["total_cumulative_prompt_tokens"] += int(
+                discovery_state.get("cumulative_prompt_tokens", 0) or 0
+            )
+            state["total_cumulative_completion_tokens"] += int(
+                discovery_state.get("cumulative_completion_tokens", 0) or 0
+            )
+            state["total_cumulative_total_tokens"] += int(
+                discovery_state.get("cumulative_total_tokens", 0) or 0
+            )
+        except Exception as exc:
+            state["active_discovery"] = {
+                "enabled": True,
+                "profile": profile.name,
+                "status": "failed",
+                "sidecar_path": str(sidecar_path),
+                "json_export_path": str(export_path),
+                "duration_seconds": round(time.monotonic() - started, 4),
+                "failures": [{"reason": f"{type(exc).__name__}: {exc}"}],
+            }
+            logger.exception("[active-discovery] single-entry stage failed")
+        discovery_status = str(
+            (state.get("active_discovery") or {}).get("status") or "failed"
+        ).lower()
+        capability_status = (
+            "partial"
+            if discovery_status
+            in {
+                "partial",
+                "planned_no_llm_client",
+            }
+            else ("complete" if discovery_status in {"complete", "semantic_only"} else "failed")
+        )
+        discovery_failures = (state.get("active_discovery") or {}).get("failures") or []
+        discovery_reason = ""
+        if isinstance(discovery_failures, list) and discovery_failures:
+            first_failure = discovery_failures[0]
+            discovery_reason = (
+                str(first_failure.get("reason") or "")
+                if isinstance(first_failure, dict)
+                else str(first_failure)
+            )
+        self._record_engine_capability(
+            "security_semantic_map.active_discovery",
+            status=capability_status,
+            reason=discovery_reason,
+            active=True,
+            profile=profile.name,
+            stage_status=discovery_status,
+        )
+
+    def _scan_role_llm_client(self, role: str) -> Optional[LLMClient]:
+        """Resolve the public scan role mapping ahead of legacy Agent fields."""
+
+        profiles = getattr(getattr(self.config, "scan", None), "llm_profiles", None)
+        configured_ref = str(getattr(profiles, role, "") or "")
+        if not configured_ref:
+            legacy_names = (
+                ("active_discovery", "vulnerability_analyzer")
+                if role == "analysis"
+                else ("semantic_modeler",)
+            )
+            configured_ref = next(
+                (
+                    str(getattr(item, "llm_ref", "") or "")
+                    for item in self.config.project.agents
+                    if str(getattr(item, "name", "") or "") in legacy_names
+                    and bool(getattr(item, "enabled", True))
+                    and str(getattr(item, "llm_ref", "") or "")
+                ),
+                "",
+            )
+        configured_ref = configured_ref or "default"
+        return self.llm_clients.get(configured_ref, self.llm_clients.get("default"))
+
+    def _security_discovery_llm_client(self) -> Optional[LLMClient]:
+        return self._scan_role_llm_client("analysis")
 
     def _record_llm_iteration_budget(
         self,
@@ -4435,11 +4720,63 @@ class Analyzer:
             # v3 validation_cluster_uid contract.
             state["pending_new_issues"] = []
             return
+        ledger = state.get("candidate_ledger")
+        if isinstance(ledger, CandidateLedger):
+            # Candidate-blind discovery is the final producer for a
+            # single-entry scan.  Seal the obligation set before V0-V3 starts
+            # so late producers cannot evade this validation pass.
+            ledger.freeze()
         runner = getattr(self, "validation_runner", None)
         if runner is None:
             runner = self._make_validation_runner()
             self.validation_runner = runner
         runner.run(state)
+        state.update(
+            self._validator_v3_outcome_summary(
+                [
+                    item
+                    for item in [
+                        *list(state.get("issues") or []),
+                        *list(state.get("observations") or []),
+                    ]
+                    if isinstance(item, dict)
+                ]
+            )
+        )
+
+    @staticmethod
+    def _validator_v3_outcome_summary(issues: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregate single-entry V1→V3 fact and verdict telemetry."""
+
+        transitions: Dict[str, int] = {}
+        fact_completed = 0
+        fact_requested = 0
+        for issue in issues:
+            resolution = issue.get("validator_fact_resolution")
+            if isinstance(resolution, dict):
+                fact_requested += 1
+                if str(resolution.get("status") or "").startswith("completed"):
+                    fact_completed += 1
+            history = issue.get("validator_pass_history")
+            if not isinstance(history, list):
+                continue
+            normalized = [item for item in history if isinstance(item, dict)]
+            for before, after in zip(normalized, normalized[1:]):
+                key = "{before_pass}:{before_verdict}->{after_pass}:{after_verdict}".format(
+                    before_pass=str(before.get("pass") or "unknown"),
+                    before_verdict=str(before.get("verdict") or "unknown"),
+                    after_pass=str(after.get("pass") or "unknown"),
+                    after_verdict=str(after.get("verdict") or "unknown"),
+                )
+                transitions[key] = int(transitions.get(key, 0) or 0) + 1
+        return {
+            "validator_verdict_transitions": dict(sorted(transitions.items())),
+            "validator_fact_request_count": fact_requested,
+            "validator_fact_resolution_success_count": fact_completed,
+            "validator_fact_resolution_success_rate": (
+                round(fact_completed / fact_requested, 4) if fact_requested else None
+            ),
+        }
 
     def _make_validation_runner(self) -> ValidationRunner:
         return ValidationRunner(
@@ -5020,6 +5357,8 @@ class Analyzer:
     def _build_workflow_metadata(self, state: Dict[str, Any]) -> Dict[str, Any]:
         engine_capabilities = self._engine_capabilities()
         state["engine_capabilities"] = engine_capabilities
+        llm_usage = scan_token_usage_snapshot(self.config)
+        state["llm_usage"] = llm_usage
         ledger = state.get("candidate_ledger")
         ledger_summary = (
             ledger.summary()
@@ -5048,6 +5387,16 @@ class Analyzer:
             "runtime_spec": self._public_config_value(
                 getattr(self.config, "runtime_provenance", None)
             ),
+            "scan_depth": str(getattr(self.config.scan, "depth", "fast")),
+            "effective_scan": {
+                "depth": str(getattr(self.config.scan, "depth", "fast")),
+                "depth_source": str(
+                    getattr(self.config.scan, "depth_source", "default") or "default"
+                ),
+                "rollout": rollout_runtime_policy(self.config),
+            },
+            "rollout": rollout_runtime_policy(self.config),
+            "llm_usage": llm_usage,
             "engine_capabilities": engine_capabilities,
             "version": __version__,
             "knowledge_db_version": self._knowledge_db_version(),
@@ -5090,6 +5439,7 @@ class Analyzer:
             "subagent_reports": self._compact_subagent_reports(state.get("subagent_reports", [])),
             "candidate_ledger_summary": dict(ledger_summary),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
+            "active_discovery": dict(state.get("active_discovery", {}) or {}),
             "deferred_deterministic_work_count": len(state.get("deferred_deterministic_work", [])),
             "deferred_deterministic_work": list(state.get("deferred_deterministic_work", [])),
             "va_candidate_coverage_summary": dict(state.get("va_candidate_coverage_summary", {})),
@@ -5113,6 +5463,18 @@ class Analyzer:
                 "prevalidation_decision_count": int(
                     state.get("prevalidation_decision_count", 0) or 0
                 ),
+                "deterministic_prevalidation_decision_count": int(
+                    state.get("deterministic_prevalidation_decision_count", 0) or 0
+                ),
+                "deterministic_prevalidation_confirmed_count": int(
+                    state.get("deterministic_prevalidation_confirmed_count", 0) or 0
+                ),
+                "deterministic_prevalidation_rejected_count": int(
+                    state.get("deterministic_prevalidation_rejected_count", 0) or 0
+                ),
+                "deterministic_prevalidation_conflict_count": int(
+                    state.get("deterministic_prevalidation_conflict_count", 0) or 0
+                ),
                 "clang_prevalidation_decision_count": int(
                     state.get("clang_prevalidation_decision_count", 0) or 0
                 ),
@@ -5120,6 +5482,18 @@ class Analyzer:
                     state.get("static_audit_observation_count", 0) or 0
                 ),
                 "static_suppressed_count": int(state.get("static_suppressed_count", 0) or 0),
+                "fact_request_count": int(state.get("validator_fact_request_count", 0) or 0),
+                "fact_resolution_success_count": int(
+                    state.get("validator_fact_resolution_success_count", 0) or 0
+                ),
+                "fact_resolution_success_rate": state.get("validator_fact_resolution_success_rate"),
+                "evidence_recheck_count": int(
+                    state.get("validator_evidence_recheck_count", 0) or 0
+                ),
+                "targeted_investigation_count": int(
+                    state.get("validator_targeted_investigation_count", 0) or 0
+                ),
+                "verdict_transitions": dict(state.get("validator_verdict_transitions", {}) or {}),
             },
             "semantic_dedup_summary": dict(state.get("semantic_dedup_summary", {})),
             "budget_stage": state.get("budget_stage", ""),
@@ -5268,13 +5642,14 @@ class Analyzer:
         **details: Any,
     ) -> None:
         normalized = str(status or "failed").lower()
-        if normalized not in {"complete", "degraded", "failed", "interrupted"}:
+        if normalized not in {"complete", "partial", "degraded", "failed", "interrupted"}:
             normalized = "failed"
         severity = {
             "complete": 0,
-            "degraded": 1,
-            "failed": 2,
-            "interrupted": 3,
+            "partial": 1,
+            "degraded": 2,
+            "failed": 3,
+            "interrupted": 4,
         }
         lock = getattr(self, "_runtime_engine_capabilities_lock", None)
         if lock is None:

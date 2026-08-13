@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -259,6 +260,15 @@ class ScanConfig:
 
     task: str = ""
     llm_profiles: ScanLLMProfiles = field(default_factory=ScanLLMProfiles)
+    depth: str = "fast"
+    # Runtime audit metadata for the public depth control.
+    depth_source: str = "default"
+    # Internal, read-only rollout audit state.  These fields are not accepted
+    # by public config v2 and are populated only after CLI/YAML precedence has
+    # been resolved.
+    requested_depth: str = ""
+    requested_depth_source: str = ""
+    rollout: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -424,6 +434,10 @@ class AnalysisConfig:
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
     workflow_name: str = "default"
     enable_subagent_workers: bool = False
+    # Internal rollout control.  ``shadow`` records evidence-backed semantic
+    # deltas without allowing them to influence coverage-gap planning;
+    # ``active`` applies those deltas to the read-only Security Semantic Map.
+    security_semantic_enrichment_mode: str = "shadow"
     max_subagent_tickets: int = 4
     subagent_max_turns: int = 20  # Per-ticket tool/LLM turn budget for focused workers.
     request_deadline_seconds: Optional[float] = 120.0
@@ -458,6 +472,11 @@ class AnalysisConfig:
         self.budget_exhaustion_policy = _normalize_budget_exhaustion_policy(
             self.budget_exhaustion_policy
         )
+        self.security_semantic_enrichment_mode = (
+            str(self.security_semantic_enrichment_mode or "shadow").strip().lower()
+        )
+        if self.security_semantic_enrichment_mode not in {"shadow", "active"}:
+            raise ValueError("security_semantic_enrichment_mode must be 'shadow' or 'active'")
 
 
 @dataclass
@@ -483,6 +502,7 @@ class RulesConfig:
 
     packs: List[str] = field(default_factory=list)
     providers: List[str] = field(default_factory=list)
+    enabled_ids: List[str] = field(default_factory=list)
     disabled_ids: List[str] = field(default_factory=list)
 
 
@@ -610,6 +630,10 @@ class ZScopeConfig:
     effective_rules: Any = field(default=None, repr=False, compare=False)
     rule_catalog_provenance: Any = field(default=None, repr=False, compare=False)
     rule_validation_warnings: List[str] = field(default_factory=list, repr=False)
+    # One process-local usage ledger is shared by every LLM profile in a scan.
+    # It is intentionally excluded from equality/serialization and is created
+    # at the effective-config boundary.
+    scan_token_usage_ledger: Any = field(default=None, repr=False, compare=False)
 
 
 # Public names used by the v2 loader and developer documentation.  The
@@ -645,11 +669,28 @@ class ConfigLoader:
     DEFAULT_CONFIG_LOCATIONS = ["./zscope.yaml"]
 
     @staticmethod
-    def load(config_path: Optional[str] = None) -> ZScopeConfig:
-        from .v2 import load_user_config_v2
+    def load(
+        config_path: Optional[str] = None,
+        *,
+        scan_depth: Optional[str] = None,
+    ) -> ZScopeConfig:
+        from .v2 import apply_scan_overrides, load_user_config_v2
+        from ..framework.llm_usage import ScanTokenUsageLedger
+        from ..orchestration.rollout import apply_persisted_rollout_policy
         from ..rules.extensions import preflight_rules
 
         config = load_user_config_v2(config_path)
+        apply_scan_overrides(
+            config,
+            scan_depth=scan_depth,
+        )
+        apply_persisted_rollout_policy(config)
+        usage_event_path = Path(config.analysis.snapshot_dir) / (
+            f"llm_usage_events_{uuid.uuid4().hex}.jsonl"
+        )
+        config.scan_token_usage_ledger = ScanTokenUsageLedger(
+            depth=config.scan.depth, event_sink_path=usage_event_path
+        )
         # One shared preflight is deliberately part of configuration loading:
         # every CLI, Web, MCP, batch, and doctor entry point must reject an
         # invalid rule universe before constructing CodeIndex or invoking an

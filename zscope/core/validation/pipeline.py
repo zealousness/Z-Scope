@@ -177,6 +177,38 @@ class ValidationPipeline:
         issue["final_score"] = final_score
         issue["validator_avoided"] = True
 
+        if self._is_rollout_shadow_candidate(issue):
+            shadow_outcome = (
+                "conflicting_proofs"
+                if confirmation_proof is not None and rejection_proof is not None
+                else "confirmed_by_proof" if confirmation_proof is not None else "rejected_by_proof"
+            )
+            proof = confirmation_proof or rejection_proof
+            if proof is not None and shadow_outcome != "conflicting_proofs":
+                issue["decision_proof"] = proof.to_dict()
+                issue["proof_provider"] = proof.producer_engine
+                issue["proof_coverage"] = "complete"
+            issue.update(
+                {
+                    "validation_status": "shadow",
+                    "candidate_disposition": "shadow_observation",
+                    "finding_kind": "rollout_shadow_observation",
+                    "deterministic_prevalidation_decision": "shadow_observation",
+                    "rollout_shadow_evidence_outcome": shadow_outcome,
+                    "validation_reasoning": (
+                        "Candidate was evaluated during semantic/discovery shadow rollout; "
+                        "its proof result is retained as telemetry and cannot enter the "
+                        "default finding view."
+                    ),
+                }
+            )
+            return ValidationOutcome(
+                report_bucket=None,
+                memory_status=None,
+                verdict="shadow_observation",
+                final_score=final_score,
+            )
+
         if confirmation_proof is not None and rejection_proof is not None:
             issue.update(
                 {
@@ -314,6 +346,17 @@ class ValidationPipeline:
             val_data.get("confidence_score", issue.get("confidence", 0.5)),
             default=0.5,
         )
+        closure = issue.get("v3_evidence_closure")
+        if (
+            str(val_data.get("pass") or "") == "investigation_synthesis"
+            and str(val_data.get("verdict") or "").lower() == "verified"
+            and isinstance(closure, dict)
+            and closure.get("complete") is True
+        ):
+            # ValidatorResult v3 intentionally has no free-form confidence
+            # field.  A fully cited tool-backed closure is the auditable V3
+            # confidence signal used by the existing score policy.
+            validation_confidence = max(validation_confidence, 0.85)
         history_feedback = self.history_feedback_score(issue)
         final_score = (
             0.25 * rule_confidence
@@ -338,6 +381,22 @@ class ValidationPipeline:
     ) -> ValidationOutcome:
         """Mark a candidate when the Validator agent is disabled."""
         preserve_issue_location(issue)
+        if self._is_rollout_shadow_candidate(issue):
+            issue["validation_status"] = "shadow"
+            issue["candidate_disposition"] = "shadow_observation"
+            issue["finding_kind"] = "rollout_shadow_observation"
+            issue["score_components"] = score_data
+            final_score = self._final_score(score_data)
+            issue["final_score"] = final_score
+            issue["validation_reasoning"] = (
+                "Shadow discovery candidate was retained without promotion because "
+                "Validator was disabled."
+            )
+            return ValidationOutcome(
+                report_bucket=None,
+                verdict="shadow_observation",
+                final_score=final_score,
+            )
         issue["validation_status"] = "needs_review"
         issue["candidate_disposition"] = "needs_review"
         issue.setdefault("finding_kind", "needs_review")
@@ -377,6 +436,28 @@ class ValidationPipeline:
             if self.enable_deterministic_proof_routing
             else None
         )
+        if self._is_rollout_shadow_candidate(issue):
+            proof = confirmation_proof or rejection_proof
+            if proof is not None and not (
+                confirmation_proof is not None and rejection_proof is not None
+            ):
+                issue["decision_proof"] = proof.to_dict()
+                issue["proof_provider"] = proof.producer_engine
+                issue["proof_coverage"] = "complete"
+            issue["validation_status"] = "shadow"
+            issue["candidate_disposition"] = "shadow_observation"
+            issue["finding_kind"] = "rollout_shadow_observation"
+            issue["rollout_shadow_model_verdict"] = verdict
+            issue["validation_reasoning"] = val_data.get("reasoning")
+            issue["confidence"] = val_data.get("confidence_score", issue.get("confidence", 0.5))
+            self._copy_validator_detail_fields(issue, val_data)
+            preserve_issue_location(issue, val_data)
+            return ValidationOutcome(
+                report_bucket=None,
+                memory_status=None,
+                verdict=verdict,
+                final_score=final_score,
+            )
         # A proof is an explicit, reproducible decision authority.  Conflicting
         # complete proofs must be visible for review rather than silently
         # following a model verdict or whichever branch happened to run first.
@@ -614,6 +695,28 @@ class ValidationPipeline:
         )
 
     @staticmethod
+    def _is_rollout_shadow_candidate(issue: Dict[str, Any]) -> bool:
+        """Return true only for candidate-blind, shadow-only discoveries.
+
+        A validation group may merge the same obligation from deterministic or
+        backend producers.  Such a group must keep normal promotion authority;
+        a shadow occurrence cannot suppress a real non-shadow candidate.
+        """
+
+        if str(issue.get("rollout_visibility") or "").lower() != "shadow":
+            return False
+        attribution = issue.get("attribution")
+        discovered_by = attribution.get("discovered_by") if isinstance(attribution, dict) else None
+        sources = {
+            str(value).strip().lower()
+            for value in (discovered_by if isinstance(discovered_by, list) else [])
+            if str(value).strip()
+        }
+        if sources:
+            return sources == {"llm_active_discovery"}
+        return str(issue.get("candidate_source") or "").lower() == "active_discovery"
+
+    @staticmethod
     def _has_confirmed_evidence(
         issue: Dict[str, Any],
         score_data: Dict[str, float],
@@ -641,6 +744,19 @@ class ValidationPipeline:
         has_negative = (
             bool(negative) if isinstance(negative, list) else bool(str(negative or "").strip())
         )
+        if str(val_data.get("pass") or "") == "investigation_synthesis":
+            closure = issue.get("v3_evidence_closure")
+            if not isinstance(closure, dict) or closure.get("complete") is not True:
+                return False
+            closure_fact_uids = closure.get("fact_uids")
+            resolved_kinds = closure.get("resolved_fact_kinds")
+            if (
+                not isinstance(closure_fact_uids, list)
+                or not closure_fact_uids
+                or not isinstance(resolved_kinds, list)
+                or not resolved_kinds
+            ):
+                return False
         legacy_tier = bool(
             final_score >= 0.70
             and path >= 0.75
@@ -1115,6 +1231,27 @@ class ValidationPipeline:
         issue: Dict[str, Any],
         val_data: Dict[str, Any],
     ) -> float:
+        closure = issue.get("v3_evidence_closure")
+        resolved = {
+            str(value)
+            for value in (
+                (closure.get("resolved_fact_kinds") or [])
+                if isinstance(closure, dict)
+                else []
+            )
+            if str(value)
+        }
+        if (
+            str(val_data.get("pass") or "") == "investigation_synthesis"
+            and str(val_data.get("verdict") or "").lower() == "verified"
+            and isinstance(closure, dict)
+            and closure.get("complete") is True
+            and "source_sink_reachability" in resolved
+        ):
+            # A cited, tool-backed V3 reachability fact is stronger than the
+            # legacy source/sink-presence heuristic and must affect the policy
+            # rerun that follows evidence closure.
+            return 1.0
         evidence = _as_dict(issue.get("evidence_pack"))
         path = _as_dict(evidence.get("path"))
         if path.get("complete") is True or path.get("complete_in_function") is True:
@@ -1132,6 +1269,37 @@ class ValidationPipeline:
         issue: Dict[str, Any],
         val_data: Dict[str, Any],
     ) -> float:
+        closure = issue.get("v3_evidence_closure")
+        resolved = {
+            str(value)
+            for value in (
+                (closure.get("resolved_fact_kinds") or [])
+                if isinstance(closure, dict)
+                else []
+            )
+            if str(value)
+        }
+        contract_fact_kinds = {
+            "caller_contract",
+            "cleanup_coverage",
+            "happens_before",
+            "lockset",
+            "ownership_transfer",
+        }
+        if (
+            str(val_data.get("pass") or "") == "investigation_synthesis"
+            and str(val_data.get("verdict") or "").lower() == "verified"
+            and val_data.get("blocking_negative_evidence") is False
+            and isinstance(closure, dict)
+            and closure.get("complete") is True
+            and bool(resolved & contract_fact_kinds)
+            and not bool(issue.get("evidence_conflict"))
+        ):
+            # The V3 session has closed a concrete contract/protocol fact with
+            # read-only tool evidence.  Leaving the score at the legacy 0.55
+            # neutral default would mean the promotion-policy rerun ignores
+            # the very facts it was asked to collect.
+            return 0.8
         negative = issue.get("negative_evidence") or val_data.get("negative_evidence") or []
         if negative:
             return 0.55

@@ -1,0 +1,3 @@
+schema_version: zscope.rule-qualification.v1
+legacy_stable_policy: legacy_stable_pending
+qualifications: []

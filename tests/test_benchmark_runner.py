@@ -21,6 +21,35 @@ from zscope.benchmarking.runner import (
     run_benchmark,
     score_artifact,
 )
+from zscope.framework.llm_usage import LLMUsageAttribution, LLMUsageEvent
+
+
+def _usage_event(*, sequence: int = 1, reservation_id: str = "call-1") -> dict:
+    return LLMUsageEvent(
+        sequence=sequence,
+        reservation_id=reservation_id,
+        outcome="success",
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        reserved_total_tokens=20,
+        provider_reported=True,
+        conservative_charge=False,
+        budget_violation=False,
+        attribution=LLMUsageAttribution(
+            stage="validation",
+            agent="validator_agent",
+            candidate_uid="candidate-1",
+            validation_cluster_uid="cluster-1",
+            llm_ref="validation",
+            call_kind="initial_decision",
+        ),
+        budget_stage="validation",
+        model="glm-5.1",
+        finish_reason="stop",
+        cached_prompt_tokens=2,
+        reasoning_tokens=1,
+    ).to_dict()
 
 
 @pytest.mark.parametrize("language", ["c_cpp", "java"])
@@ -146,8 +175,9 @@ def test_trial_workspace_is_temporary_and_removed(monkeypatch, tmp_path: Path) -
     monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
     observed = {}
 
-    def fake_run(spec, run_dir, run_number, *, mode, workspace):
+    def fake_run(spec, run_dir, run_number, *, mode, workspace, scan_depth):
         observed["workspace"] = workspace
+        assert scan_depth == "fast"
         assert workspace.is_relative_to(work_parent)
         (workspace / "state").write_text("temporary", encoding="utf-8")
         return {"run": run_number, "mode": mode}
@@ -229,6 +259,9 @@ def test_dry_run_does_not_require_llm_or_create_output(monkeypatch, tmp_path: Pa
 
     assert plan["dry_run"] is True
     assert plan["truth_stage"] == "score_only"
+    assert plan["isolation"]["required"] is True
+    assert plan["isolation"]["fail_closed"] is True
+    assert plan["isolation"]["release_capable"] is False
     assert not output.exists()
 
 
@@ -256,6 +289,153 @@ def test_restore_scan_input_removes_generated_state_and_preserves_manifest(tmp_p
     assert not (destination / ".zscope_knowledge").exists()
     assert not (destination / "report.json").exists()
     assert (destination / "src/main.c").is_file()
+
+
+def test_usage_event_sidecar_is_archived_from_scan_workspace(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    run_dir = tmp_path / "run"
+    source = scan_root / ".zscope_snapshots" / "usage.jsonl"
+    source.parent.mkdir(parents=True)
+    run_dir.mkdir()
+    event = _usage_event()
+    source.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    report = {"metadata": {"llm_budget": {"usage_events_path": str(source)}}}
+
+    artifact = benchmark_runner._archive_usage_events(
+        report,
+        scan_root=scan_root,
+        run_dir=run_dir,
+    )
+    spans = benchmark_runner._read_archived_usage_events(run_dir)
+
+    assert artifact is not None
+    assert artifact["call_count"] == 1
+    assert len(artifact["sha256"]) == 64
+    assert spans == [event]
+    assert report["metadata"]["llm_usage_events_artifact"] == artifact
+
+
+def test_usage_event_sidecar_rejects_sparse_or_unknown_v1_fields(tmp_path: Path) -> None:
+    path = tmp_path / "usage.jsonl"
+    sparse = {
+        "schema_version": "zscope.llm-usage-event.v1",
+        "sequence": 1,
+        "call_id": "call-1",
+    }
+    path.write_text(json.dumps(sparse) + "\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkError, match="fields do not match v1"):
+        benchmark_runner._read_usage_events_jsonl(path)
+
+    event = _usage_event()
+    event["future_extension"] = True
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkError, match="unknown=future_extension"):
+        benchmark_runner._read_usage_events_jsonl(path)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda row: row.update(schema_version="v0"), "unsupported schema_version"),
+        (lambda row: row.update(provider_reported=1), "must be a boolean"),
+        (lambda row: row.update(prompt_tokens=True), "non-negative integer"),
+        (lambda row: row.update(total_tokens=16), "token totals do not conserve"),
+        (lambda row: row.update(cached_prompt_tokens=11), "exceeds prompt_tokens"),
+        (lambda row: row.update(reasoning_tokens=6), "exceeds completion_tokens"),
+    ],
+)
+def test_usage_event_sidecar_rejects_invalid_v1_values(
+    tmp_path: Path, mutate, message: str
+) -> None:
+    path = tmp_path / "usage.jsonl"
+    event = _usage_event()
+    mutate(event)
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkError, match=message):
+        benchmark_runner._read_usage_events_jsonl(path)
+
+
+def test_usage_event_sidecar_rejects_nested_sensitive_body(tmp_path: Path) -> None:
+    path = tmp_path / "usage.jsonl"
+    event = _usage_event()
+    event["attribution"]["extension"] = {
+        "nested": [{"reasoningContent": "private chain of thought"}]
+    }
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkError, match="reasoning_content"):
+        benchmark_runner._read_usage_events_jsonl(path)
+
+
+def test_usage_event_sidecar_rejects_duplicate_or_out_of_order_identity(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "usage.jsonl"
+    first = _usage_event()
+    duplicate_call = _usage_event(sequence=2)
+    path.write_text(
+        json.dumps(first) + "\n" + json.dumps(duplicate_call) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(BenchmarkError, match="duplicate LLM usage call_id"):
+        benchmark_runner._read_usage_events_jsonl(path)
+
+    duplicate_sequence = _usage_event(sequence=1, reservation_id="call-2")
+    path.write_text(
+        json.dumps(first) + "\n" + json.dumps(duplicate_sequence) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(BenchmarkError, match="duplicate LLM usage sequence"):
+        benchmark_runner._read_usage_events_jsonl(path)
+
+    skipped = _usage_event(sequence=2, reservation_id="call-2")
+    path.write_text(json.dumps(skipped) + "\n", encoding="utf-8")
+    with pytest.raises(BenchmarkError, match="must start at 1 and be contiguous"):
+        benchmark_runner._read_usage_events_jsonl(path)
+
+
+def test_usage_event_sidecar_rejects_attribution_dimension_mismatch(tmp_path: Path) -> None:
+    path = tmp_path / "usage.jsonl"
+    event = _usage_event()
+    event["attribution"]["candidate_uid"] = "different-candidate"
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkError, match="does not match attribution.candidate_uid"):
+        benchmark_runner._read_usage_events_jsonl(path)
+
+
+def test_usage_event_archive_rejects_path_outside_scan_workspace(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    run_dir = tmp_path / "run"
+    scan_root.mkdir()
+    run_dir.mkdir()
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkError, match="escapes the answer-free scan workspace"):
+        benchmark_runner._archive_usage_events(
+            {"metadata": {"llm_budget": {"usage_events_path": str(outside)}}},
+            scan_root=scan_root,
+            run_dir=run_dir,
+        )
+
+
+def test_source_line_metrics_ignore_generated_build_tree(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.c").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "api.h").write_text("one\ntwo\n", encoding="utf-8")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "generated.c").write_text("ignored\n", encoding="utf-8")
+
+    metrics = benchmark_runner._source_line_metrics(tmp_path, "c_cpp")
+
+    assert metrics["source_file_count"] == 2
+    assert metrics["source_line_count"] == 5
+    assert metrics["source_kloc"] == 0.005
 
 
 def test_clean_defaults_to_preview_and_protects_large_runs(tmp_path: Path, monkeypatch) -> None:

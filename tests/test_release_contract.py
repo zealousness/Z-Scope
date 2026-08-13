@@ -19,22 +19,19 @@ from scripts.verify_release_assets import verify_release_assets
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_release_gate_prefers_scan_wall_and_keeps_legacy_wall_fallback() -> None:
+def test_release_gate_requires_per_run_usage_and_attribution_invariants() -> None:
     failures = _metric_gate_failures(
         {
-            "confirmed_tp": 90,
-            "precision": 98,
-            "with_review_tp": 135,
-            "with_review_raw_fp": 90,
-            "needs_review": 100,
             "tokens": 1_000_000,
-            "scan_wall_seconds": 4_000,
-            "wall_seconds": 2_000,
+            "provider_usage_coverage": 0.99,
+            "explicit_attribution_coverage": 1.0,
+            "protocol_anomaly_count": 0,
+            "telemetry_complete_rate": 1.0,
         },
         CPP_FORMAL_LIMITS,
         prefix="cpp:run_1",
     )
-    assert failures == ["cpp:run_1_scan_wall_seconds_gate_failed"]
+    assert failures == ["cpp:run_1_provider_usage_coverage_gate_failed"]
 
     legacy = _metric_gate_failures(
         {
@@ -49,7 +46,12 @@ def test_release_gate_prefers_scan_wall_and_keeps_legacy_wall_fallback() -> None
         CPP_FORMAL_LIMITS,
         prefix="cpp:legacy",
     )
-    assert legacy == []
+    assert legacy == [
+        "cpp:legacy_provider_usage_coverage_missing",
+        "cpp:legacy_explicit_attribution_coverage_missing",
+        "cpp:legacy_protocol_anomaly_count_missing",
+        "cpp:legacy_telemetry_complete_rate_missing",
+    ]
 
 
 def test_package_version_is_semver_and_shared_by_user_surfaces() -> None:
@@ -131,10 +133,16 @@ def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
     assert "environment: release" in release
     assert "--verify-tag" in release
     assert "benchmark_run_id:" in release
+    assert "balanced_attestation_run_id:" in release
     assert "actions/download-artifact@v8" in release
     assert "--formal-artifact" in release
+    assert "--balanced-default-attestation" in release
+    assert "--balanced-attestation-workflow-run-id" in release
     assert ".github/workflows/formal-benchmark.yml" in release
+    assert ".github/workflows/balanced-default-attestation.yml" in release
     assert "digest-mismatch: error" in release
+    assert "org.opencontainers.image.revision" in benchmark
+    assert "scanner image must be digest-pinned" in benchmark
     assert "Missing SHA256SUMS.sig" in installer
     assert "Refusing system-wide prefix" in installer
     assert 'install_requirement="zscope[java]"' in installer
@@ -265,8 +273,22 @@ def test_formal_archives_are_bound_to_exact_benchmark_commits() -> None:
         version=__version__,
     )
     assert audit["status"] == "blocked"
-    assert "cpp:benchmark_sha_not_release_sha" in audit["hard_blockers"]
-    assert "cpp:sealed_set_not_verified" in audit["rc_blockers"]
+    assert "cpp:formal_artifact_required" in audit["hard_blockers"]
+    assert "balanced_default_attestation_missing" in audit["rc_blockers"]
+
+
+def test_release_rejects_unbound_balanced_attestation_workflow(tmp_path: Path) -> None:
+    attestation = tmp_path / "attestation.json"
+    attestation.write_text("{}\n", encoding="utf-8")
+
+    audit = evaluate_candidate(
+        ROOT / "docs/releases/benchmark-provenance.json",
+        release_sha="f" * 40,
+        version=__version__,
+        balanced_attestation=attestation,
+    )
+
+    assert "balanced_default_attestation_workflow_run_id_missing" in audit["rc_blockers"]
 
 
 def _write_formal_cpp_artifact(directory: Path, git_sha: str) -> None:
@@ -341,7 +363,8 @@ def test_external_formal_artifact_breaks_release_sha_self_reference(tmp_path: Pa
     )
 
     assert "cpp:benchmark_sha_not_release_sha" not in audit["hard_blockers"]
-    assert "cpp:sealed_set_not_verified" not in audit["rc_blockers"]
+    assert "cpp:formal_artifact_schema_not_current" in audit["hard_blockers"]
+    assert "balanced_default_attestation_missing" in audit["rc_blockers"]
     cpp = next(item for item in audit["benchmarks"] if item["language"] == "cpp")
     assert cpp["source"] == "workflow_artifact"
     assert cpp["benchmark_git_sha"] == release_sha

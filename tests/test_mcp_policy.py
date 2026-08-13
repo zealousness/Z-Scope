@@ -3,7 +3,13 @@ import json
 
 import pytest
 
-from zscope.config.config import AnalysisConfig, IndexingConfig, LLMConfig, ProjectConfig, ZScopeConfig
+from zscope.config.config import (
+    AnalysisConfig,
+    IndexingConfig,
+    LLMConfig,
+    ProjectConfig,
+    ZScopeConfig,
+)
 from zscope.tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from zscope.tools.runtime import ToolsRuntime
 from zscope.mcp.provider import ZScopeMcpProvider
@@ -22,6 +28,8 @@ class FakeCodeIndex:
 
 
 class FakeSnapshotStore:
+    snapshot_dir = Path(".")
+
     def list_snapshots(self):
         return []
 
@@ -64,6 +72,19 @@ def test_mcp_resource_policy_blocks_unlisted_resource(tmp_path: Path) -> None:
         provider.read_resource("zscope://knowledge/functions")
 
 
+def test_mcp_config_resource_exposes_effective_depth_and_usage(tmp_path: Path) -> None:
+    provider = _provider(tmp_path, ToolPolicy(allowed_resources={"zscope://config"}))
+    provider.config.scan.depth = "deep"
+    provider.config.scan_token_usage_ledger = None
+
+    resource = provider.read_resource("zscope://config")
+    payload = json.loads(resource["contents"][0]["text"])
+
+    assert payload["scan"]["depth"] == "deep"
+    assert payload["llm_usage"]["depth"] == "deep"
+    assert "max_tokens" not in payload["llm_usage"]
+
+
 def test_mcp_tool_policy_blocks_unlisted_tool(tmp_path: Path) -> None:
     provider = _provider(tmp_path, ToolPolicy(allowed_tools={"query_knowledge"}))
 
@@ -84,6 +105,39 @@ def test_mcp_lists_and_accepts_namespaced_tool_alias(tmp_path: Path) -> None:
     assert result["success"] is False
     assert result.get("policy_decision") is None
     assert "Knowledge DB not found" in result["error"]
+
+
+def test_mcp_scan_tool_forwards_only_depth_override(tmp_path: Path) -> None:
+    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.scan.run"}))
+    calls = []
+    provider.scan_request_service = type(
+        "Service",
+        (),
+        {
+            "start": staticmethod(
+                lambda **kwargs: calls.append(kwargs)
+                or {
+                    "scan_id": "scan-1",
+                    "status": "running",
+                    "effective_scan": {
+                        "depth": "balanced",
+                    },
+                    "llm_usage": {"consumed_tokens": 0},
+                }
+            )
+        },
+    )()
+
+    names = {tool["function"]["name"] for tool in provider.list_tools()}
+    result = provider.call_tool(
+        "zscope.scan.run",
+        {"scan_depth": "balanced"},
+    )
+
+    assert "zscope.scan.run" in names
+    assert calls == [{"scan_depth": "balanced"}]
+    assert result["success"] is True
+    assert result["data"]["effective_scan"]["depth"] == "balanced"
 
 
 def test_mcp_sensitive_path_hook_blocks_secret_file_tool(tmp_path: Path) -> None:

@@ -6,6 +6,11 @@ from pathlib import Path
 import pytest
 
 from zscope.config.config import ConfigLoader
+from zscope.orchestration.rollout import (
+    ROLLOUT_MANAGEMENT_KEY_ENV,
+    ROLLOUT_STATE_FILENAME,
+    BalancedRolloutController,
+)
 from zscope.orchestration.skill_selection import select_vulnerability_skills
 
 
@@ -66,6 +71,98 @@ def test_empty_task_activates_every_available_skill(tmp_path: Path) -> None:
     selection = select_vulnerability_skills(analyzer.task, ["memory", "concurrency"])
     assert selection.skills == ["memory", "concurrency"]
     assert selection.restricted is False
+
+
+def test_scan_depth_defaults_and_cli_overrides_are_deterministic(tmp_path: Path) -> None:
+    path = _write(tmp_path, _config(tmp_path))
+
+    default = ConfigLoader.load(str(path))
+    overridden = ConfigLoader.load(
+        str(path),
+        scan_depth="deep",
+    )
+
+    assert default.scan.depth == "fast"
+    assert overridden.scan.depth == "deep"
+    assert overridden.scan.depth_source == "cli"
+    assert overridden.scan_token_usage_ledger.depth == "deep"
+
+
+def test_config_loader_applies_installed_telemetry_rollout_before_usage_ledger_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots = tmp_path / ".zscope_snapshots"
+    snapshots.mkdir()
+    management_key = "config-test-management-key-32-bytes"
+    monkeypatch.setenv(ROLLOUT_MANAGEMENT_KEY_ENV, management_key)
+    BalancedRolloutController(
+        snapshots / ROLLOUT_STATE_FILENAME,
+        management_key=management_key,
+    ).initialize(
+        owner="release-team",
+        reason="telemetry safety",
+    )
+    data = _config(tmp_path)
+    data["scan"]["depth"] = "balanced"
+
+    config = ConfigLoader.load(str(_write(tmp_path, data)))
+
+    assert config.scan.requested_depth == "balanced"
+    assert config.scan.depth == "fast"
+    assert config.scan.depth_source == "rollout"
+    assert config.scan.rollout["stage"] == "telemetry_only"
+    assert config.scan_token_usage_ledger.depth == "fast"
+
+
+@pytest.mark.parametrize(
+    "depth",
+    ["fast", "balanced", "deep"],
+)
+def test_c_cpp_accepts_all_scan_depths(
+    tmp_path: Path,
+    depth: str,
+) -> None:
+    data = _config(tmp_path)
+    data["scan"]["depth"] = depth
+    config = ConfigLoader.load(str(_write(tmp_path, data)))
+
+    assert config.scan.depth == depth
+
+
+@pytest.mark.parametrize("depth", ["balanced", "deep"])
+def test_java_rejects_non_fast_scan_depths(tmp_path: Path, depth: str) -> None:
+    data = _config(tmp_path, language="java")
+    data["scan"]["depth"] = depth
+
+    with pytest.raises(ValueError, match="Java|java|project.language"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+def test_scan_max_llm_tokens_is_not_a_public_product_field(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["scan"]["max_llm_tokens"] = 12_000_000
+
+    with pytest.raises(ValueError, match="unknown configuration key"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+def test_rules_enabled_ids_are_public_and_reach_effective_policy(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["rules"] = {"enabled_ids": ["same_pointer_freed_twice"]}
+
+    config = ConfigLoader.load(str(_write(tmp_path, data)))
+
+    assert config.rules.enabled_ids == ["same_pointer_freed_twice"]
+    assert config.effective_rules.is_enabled("same_pointer_freed_twice") is True
+
+
+def test_rules_enabled_ids_reject_duplicates(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["rules"] = {"enabled_ids": ["same_pointer_freed_twice", "same_pointer_freed_twice"]}
+
+    with pytest.raises(ValueError, match=r"rules\.enabled_ids\[1\].*duplicate"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
 
 
 def test_unknown_key_reports_full_path_and_suggestion(tmp_path: Path) -> None:
@@ -248,6 +345,28 @@ def test_runtime_override_requires_developer_mode_and_records_provenance(
     assert config.runtime_provenance.developer_override is True
     assert config.runtime_provenance.source_path == str(override.resolve())
     assert len(config.runtime_provenance.sha256) == 64
+
+
+def test_runtime_override_controls_semantic_enrichment_rollout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = _write(tmp_path, _config(tmp_path))
+    override = tmp_path / "runtime.override.yaml"
+    override.write_text(
+        "runtime_spec_version: 1\n" "analysis:\n" "  security_semantic_enrichment_mode: active\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("Z_SCOPE_DEVELOPER_MODE", "1")
+    monkeypatch.setenv("Z_SCOPE_RUNTIME_SPEC", str(override.resolve()))
+    config = ConfigLoader.load(str(config_path))
+    assert config.analysis.security_semantic_enrichment_mode == "active"
+
+    override.write_text(
+        "runtime_spec_version: 1\n" "analysis:\n" "  security_semantic_enrichment_mode: unsafe\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be 'shadow' or 'active'"):
+        ConfigLoader.load(str(config_path))
 
 
 def test_runtime_override_is_strict_and_must_be_absolute(

@@ -4,6 +4,7 @@ Takes external alerts (SARIF etc.), enriches them with code context from CodeInd
 then uses the Validator Agent to confirm or reject each alert.
 """
 
+import hashlib
 import json
 import logging
 import time
@@ -19,6 +20,7 @@ from ..snapshots.store import SnapshotStore
 from ..tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from ..tools.runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
+from ..reporting.attribution import FindingAttribution
 from ..reporting.report import FinalReport, Issue, ReportGenerator
 from ..orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
 from ..orchestration.specs import SpecRegistry
@@ -191,33 +193,154 @@ class AlertVerifier:
             close_client()
 
     def _verify_single(self, alert: ExternalAlert, idx: int) -> Dict[str, Any]:
-        """验证单个告警。"""
+        """Validate one external signal with the bounded Validator v3 V1 pass."""
+        from ..agents.validator_agent.agent import ValidatorAgent
+        from ..core.validation.evidence import build_validator_evidence_slice_v3
+
         alert_id = f"ALERT_{idx}"
 
         # 1. 收集代码上下文
         context = self._build_context(alert)
 
-        # 2. 构建 prompt
-        user_prompt = self._build_prompt(alert, alert_id, context)
-
-        # 3. 调用 LLM 验证
-        messages = [
-            {"role": "system", "content": self._system_prompt()},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        response = self.llm_client.run_conversation_with_tools(
-            messages=messages,
-            tools_schema=self.tools_runtime.get_tools_schema(),
-            tool_executor=self.tools_runtime.execute_tool,
-            max_iterations=self.config.analysis.max_tool_iterations,
-            trace_agent="alert_verifier",
-            trace_label=f"alert={alert_id}; rule={alert.rule_id}; file={alert.file_path}:{alert.line}",
+        identity = {
+            "tool": alert.tool,
+            "rule_id": alert.rule_id,
+            "file": alert.file_path,
+            "line": alert.line,
+            "function": alert.function,
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        candidate_uid = f"CAND_ALERT_{digest}"
+        cluster_uid = f"VCL_ALERT_{digest}"
+        fact_uid = f"fact:external-alert:{digest}"
+        issue = {
+            "candidate_uid": candidate_uid,
+            "validation_cluster_uid": cluster_uid,
+            "occurrence_uid": f"OCC_ALERT_{digest}",
+            "candidate_kind": "backend_signal",
+            "candidate_source": "backend_signal",
+            "function": alert.function,
+            "location": f"{alert.file_path}:{alert.line}",
+            "category": alert.category or "external_alert",
+            "subcategory": alert.rule_id,
+            "decision_fact_slice": {
+                "coverage": "partial",
+                "fact_uids": [fact_uid],
+                "edge_uids": [],
+                "dependency_code_hashes": [],
+                "missing_fact_kinds": [],
+            },
+            "decision_facts": [
+                {
+                    "fact_uid": fact_uid,
+                    "kind": "backend_signal",
+                    "payload": {
+                        **identity,
+                        "message": alert.message,
+                        "severity": alert.severity.value,
+                    },
+                }
+            ],
+            "positive_evidence": [alert.message],
+        }
+        code = str(context.get("function_code") or context.get("code_snippet") or "")
+        evidence_pack = {
+            "finding_summary": {
+                "function": alert.function,
+                "location": f"{alert.file_path}:{alert.line}",
+                "category": alert.category or "external_alert",
+                "subcategory": alert.rule_id,
+            },
+            "function_context": {
+                "code": code,
+                "callers": context.get("callers") or [],
+                "callees": context.get("callees") or [],
+            },
+            "positive_evidence": [alert.message],
+            "negative_evidence": [],
+            "validation_requirements": [
+                "Treat the external alert as a signal, not as proof of a vulnerability."
+            ],
+        }
+        evidence_slice = build_validator_evidence_slice_v3(
+            issue,
+            evidence_pack,
+            code,
+            validation_pass="initial",
+        )
+        response = ValidatorAgent(self.llm_client, []).run(
+            {
+                "finding_uid": candidate_uid,
+                "validation_cluster_uid": cluster_uid,
+                "validation_pass": "initial",
+                "evidence_slice": evidence_slice,
+            }
+        )
+        if not response.success:
+            return self._make_error_result(
+                alert,
+                idx,
+                response.error or "validator_v3_failed",
+            )
+        return self._validator_v3_result(
+            response.data,
+            alert=alert,
+            alert_id=alert_id,
+            candidate_uid=candidate_uid,
+            cluster_uid=cluster_uid,
         )
 
-        # 4. 解析验证结果
-        result = self._parse_verification(response.get("content", ""), alert, alert_id)
-        return result
+    def _validator_v3_result(
+        self,
+        data: Dict[str, Any],
+        *,
+        alert: ExternalAlert,
+        alert_id: str,
+        candidate_uid: str,
+        cluster_uid: str,
+    ) -> Dict[str, Any]:
+        model_verdict = str(data.get("verdict") or "uncertain")
+        confirmed = model_verdict == "verified"
+        policy_disposition = "confirmed" if confirmed else "needs_review"
+        return {
+            "alert_id": alert_id,
+            "candidate_uid": candidate_uid,
+            "validation_cluster_uid": cluster_uid,
+            "tool": alert.tool,
+            "rule_id": alert.rule_id,
+            "file": alert.file_path,
+            "line": alert.line,
+            "original_message": alert.message,
+            "original_severity": alert.severity.value,
+            "verdict": "confirmed" if confirmed else "uncertain",
+            "model_verdict": model_verdict,
+            "policy_disposition": policy_disposition,
+            "validation_status": "validated" if confirmed else "needs_review",
+            "candidate_disposition": policy_disposition,
+            "engine_status": "complete",
+            "reasoning": str(data.get("reasoning") or ""),
+            "validation_reasoning": str(data.get("reasoning") or ""),
+            "positive_evidence": list(data.get("positive_evidence") or []),
+            "negative_evidence": list(data.get("negative_evidence") or []),
+            "evidence_refs": list(data.get("evidence_refs") or []),
+            "blocking_negative_evidence": bool(data.get("blocking_negative_evidence")),
+            "validator_result_pass": str(data.get("pass") or "initial"),
+            "validator_pass_history": [dict(data)],
+            "validator_policy_outcome": {
+                "model_verdict": model_verdict,
+                "policy_disposition": policy_disposition,
+                "stop_reason": str(data.get("stop_reason") or ""),
+            },
+            "attribution": FindingAttribution(
+                discovered_by=("backend_signal",),
+                discovery_details=({"tool": alert.tool, "native_rule_id": alert.rule_id},),
+                decided_by="validator_llm" if confirmed else "unresolved",
+                decision_level="V1",
+                decision_details={"model_verdict": model_verdict},
+            ).to_dict(),
+        }
 
     def _system_prompt(self) -> str:
         agent_spec = self.spec_registry.get_agent("alert_verifier")
