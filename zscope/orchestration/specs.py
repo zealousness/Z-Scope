@@ -124,13 +124,13 @@ class SkillSpec:
 
     def to_prompt_block(
         self,
-        max_chars: int = 6000,
+        max_chars: Optional[int] = None,
         allowed_tools: Optional[Sequence[str]] = None,
         allowed_mcp_tools: Optional[Sequence[str]] = None,
         allowed_mcp_resources: Optional[Sequence[str]] = None,
     ) -> str:
-        body = self.body[:max_chars]
-        if len(self.body) > max_chars:
+        body = self.body if max_chars is None else self.body[:max_chars]
+        if max_chars is not None and len(self.body) > max_chars:
             body += "\n\n[truncated]"
         if allowed_tools is None:
             tool_names = self.allowed_tools
@@ -196,12 +196,12 @@ class AgentSpec:
 
     def to_prompt_block(
         self,
-        max_chars: int = 5000,
+        max_chars: Optional[int] = None,
         active_skills: Optional[List[str]] = None,
         allowed_tools: Optional[Sequence[str]] = None,
     ) -> str:
-        body = self.body[:max_chars]
-        if len(self.body) > max_chars:
+        body = self.body if max_chars is None else self.body[:max_chars]
+        if max_chars is not None and len(self.body) > max_chars:
             body += "\n\n[truncated]"
         skill_names = self.skills if active_skills is None else active_skills
         if allowed_tools is None:
