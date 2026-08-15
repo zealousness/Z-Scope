@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 
 import zscope.orchestration.specs as specs_module
-from zscope.orchestration.specs import SkillSpec, SpecRegistry
+from zscope.agents.validator_agent.agent import ValidatorAgent
+from zscope.orchestration.agent_policy import attach_agent_contract
+from zscope.orchestration.specs import AgentSpec, SkillSpec, SpecRegistry
 
 
 def _write_spec_package(root: Path) -> None:
@@ -77,6 +79,66 @@ def test_spec_registry_loads_package_specs_once_under_concurrency(
     assert all(registry.get_agent("demo_agent") is not None for registry in registries)
     assert all(registry.get_skill("demo_skill") is not None for registry in registries)
     assert len(read_paths) == 2
+
+
+def test_agent_prompt_block_preserves_full_contract_by_default() -> None:
+    tail = "validator-contract-tail"
+    spec = AgentSpec(name="large_agent", body=("x" * 5001) + tail)
+
+    prompt = spec.to_prompt_block()
+
+    assert prompt.endswith(spec.body)
+    assert tail in prompt
+    assert "[truncated]" not in prompt
+
+
+def test_agent_prompt_block_keeps_explicit_truncation_compatibility() -> None:
+    tail = "validator-contract-tail"
+    spec = AgentSpec(name="large_agent", body=("x" * 5001) + tail)
+
+    prompt = spec.to_prompt_block(max_chars=5000)
+
+    assert prompt.endswith(("x" * 5000) + "\n\n[truncated]")
+    assert tail not in prompt
+
+
+def test_skill_prompt_block_preserves_full_contract_by_default() -> None:
+    tail = "validator-skill-tail"
+    spec = SkillSpec(name="large_skill", body=("x" * 6001) + tail)
+
+    prompt = spec.to_prompt_block()
+
+    assert prompt.endswith(spec.body)
+    assert tail in prompt
+    assert "[truncated]" not in prompt
+
+
+def test_skill_prompt_block_keeps_explicit_truncation_compatibility() -> None:
+    tail = "validator-skill-tail"
+    spec = SkillSpec(name="large_skill", body=("x" * 6001) + tail)
+
+    prompt = spec.to_prompt_block(max_chars=6000)
+
+    assert prompt.endswith(("x" * 6000) + "\n\n[truncated]")
+    assert tail not in prompt
+
+
+def test_validator_system_message_contains_the_complete_agent_contract() -> None:
+    registry = SpecRegistry()
+    spec = registry.get_agent("validator_agent")
+    assert spec is not None
+    assert len(spec.body) > 5000
+
+    context = {}
+    attach_agent_contract(context, "validator_agent", registry)
+    messages = ValidatorAgent(object(), [])._messages(context, "validate this finding")
+    system_prompt = str(messages[0]["content"])
+
+    assert context["agent_contract"] == spec.to_prompt_block()
+    assert system_prompt.endswith(spec.body)
+    assert "[truncated]" not in system_prompt
+    assert "Field requirements:" in system_prompt
+    assert "must be in Chinese." in system_prompt
 
 
 def test_builtin_skills_declare_strict_language_scopes() -> None:
