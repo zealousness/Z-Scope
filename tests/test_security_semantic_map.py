@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -102,6 +103,12 @@ def test_security_map_sqlite_round_trip_and_json_export(tmp_path) -> None:
     tampered["map_fingerprint"] = "not-the-content-hash"
     with pytest.raises(ValueError, match="fingerprint mismatch"):
         SecuritySemanticMap.from_dict(tampered)
+
+    updated = replace(semantic_map, profile="balanced")
+    store.save_map(updated)
+    reloaded = store.load_map("demo", "rev-2")
+    assert reloaded is not None
+    assert reloaded.profile == "balanced"
 
 
 def test_callee_contract_change_invalidates_only_reverse_consumers() -> None:

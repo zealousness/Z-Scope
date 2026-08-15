@@ -508,6 +508,46 @@ def test_empty_discovery_cache_requires_complete_coverage_without_unknowns(tmp_p
     assert state["completed_report_count"] == 1
 
 
+def test_sqlite_discovery_report_save_replaces_same_identity(tmp_path) -> None:
+    semantic_map = _semantic_map()
+    profile = resolve_discovery_profile(
+        type("Config", (), {"scan": type("S", (), {"depth": "balanced"})()})()
+    )
+    unit = CoverageGapPlanner(profile).plan(semantic_map)[0]
+    payload = _report_payload(unit)
+    payload["coverage_status"] = "partial"
+    payload["unresolved_facts"] = ["callee contract unknown"]
+    store = SQLiteSecurityMapStore(tmp_path / "replace-cache.db")
+    store.save_discovery_report(DiscoveryReport.from_dict(payload))
+
+    complete_payload = dict(payload)
+    complete_payload["coverage_status"] = "complete"
+    complete_payload["unresolved_facts"] = []
+    store.save_discovery_report(DiscoveryReport.from_dict(complete_payload))
+
+    cached = store.load_discovery_report(unit.unit_id, unit.fingerprint)
+    assert cached is not None
+    assert cached.coverage_status == "complete"
+    assert cached.unresolved_facts == ()
+
+
+def test_sqlite_semantic_delta_save_replaces_same_cache_key(tmp_path) -> None:
+    store = SQLiteSecurityMapStore(tmp_path / "semantic-delta-replace.db")
+    first = SemanticClaimDelta(
+        unit_id="unit-1",
+        unit_fingerprint="fingerprint-1",
+        claims=(),
+        unknowns=(),
+        unresolved_facts=("callee contract unknown",),
+    )
+    store.save_semantic_delta("cache-key", first)
+    store.save_semantic_delta("cache-key", replace(first, unresolved_facts=()))
+
+    cached = store.load_semantic_delta("cache-key")
+    assert cached is not None
+    assert cached.unresolved_facts == ()
+
+
 def test_discovery_report_rejects_extra_fields_and_hallucinated_evidence(tmp_path) -> None:
     semantic_map = _semantic_map()
     profile = resolve_discovery_profile(

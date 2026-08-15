@@ -1235,13 +1235,9 @@ class SQLiteSecurityMapStore(SecurityMapStore):
             try:
                 conn.execute(
                     """
-                    INSERT INTO security_maps(
+                    INSERT OR REPLACE INTO security_maps(
                         project_id, revision, map_fingerprint, payload_json, updated_at
                     ) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(project_id, revision) DO UPDATE SET
-                        map_fingerprint=excluded.map_fingerprint,
-                        payload_json=excluded.payload_json,
-                        updated_at=excluded.updated_at
                     """,
                     (
                         semantic_map.project_id,
@@ -1306,12 +1302,9 @@ class SQLiteSecurityMapStore(SecurityMapStore):
             try:
                 conn.execute(
                     """
-                    INSERT INTO discovery_reports(
+                    INSERT OR REPLACE INTO discovery_reports(
                         unit_id, unit_fingerprint, payload_json, updated_at
                     ) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(unit_id, unit_fingerprint) DO UPDATE SET
-                        payload_json=excluded.payload_json,
-                        updated_at=excluded.updated_at
                     """,
                     (report.unit_id, report.unit_fingerprint, payload, _utc_now()),
                 )
@@ -1345,14 +1338,9 @@ class SQLiteSecurityMapStore(SecurityMapStore):
             try:
                 conn.execute(
                     """
-                    INSERT INTO semantic_claim_deltas(
+                    INSERT OR REPLACE INTO semantic_claim_deltas(
                         cache_key, unit_id, unit_fingerprint, payload_json, updated_at
                     ) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(cache_key) DO UPDATE SET
-                        unit_id=excluded.unit_id,
-                        unit_fingerprint=excluded.unit_fingerprint,
-                        payload_json=excluded.payload_json,
-                        updated_at=excluded.updated_at
                     """,
                     (
                         str(cache_key),

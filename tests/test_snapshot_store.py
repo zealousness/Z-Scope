@@ -1053,6 +1053,20 @@ def test_validation_cache_requires_exact_v3_environment(tmp_path) -> None:
         )
         is None
     )
+    store.save_validation_result(
+        "CACHE_KEY",
+        {"verdict": "rejected"},
+        protocol="zscope.validator-cache.v3",
+        candidate_schema_version="zscope.candidate.v3",
+        environment_fingerprint="ENV_A",
+        max_entries=8,
+    )
+    assert store.load_validation_result(
+        "CACHE_KEY",
+        protocol="zscope.validator-cache.v3",
+        candidate_schema_version="zscope.candidate.v3",
+        environment_fingerprint="ENV_A",
+    ) == {"verdict": "rejected"}
     assert (
         store.load_validation_result(
             "CACHE_KEY",

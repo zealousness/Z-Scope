@@ -1061,26 +1061,12 @@ class SnapshotStore:
             try:
                 conn.execute(
                     """
-                    INSERT INTO snapshots (
+                    INSERT OR REPLACE INTO snapshots (
                         index_name, func_name, file_path, start_line, end_line,
                         code_hash, semantic_hash, symbol_context_hash, callee_summary_hash,
                         type_context_hash, effective_rules_sha256, snapshot_file,
                         final_report_file
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                    ON CONFLICT(index_name) DO UPDATE SET
-                        func_name=excluded.func_name,
-                        file_path=excluded.file_path,
-                        start_line=excluded.start_line,
-                        end_line=excluded.end_line,
-                        code_hash=excluded.code_hash,
-                        semantic_hash=excluded.semantic_hash,
-                        symbol_context_hash=excluded.symbol_context_hash,
-                        callee_summary_hash=excluded.callee_summary_hash,
-                        type_context_hash=excluded.type_context_hash,
-                        effective_rules_sha256=excluded.effective_rules_sha256,
-                        timestamp=CURRENT_TIMESTAMP,
-                        snapshot_file=excluded.snapshot_file,
-                        final_report_file=NULL
                     """,
                     (
                         index_name,
@@ -1180,16 +1166,10 @@ class SnapshotStore:
         try:
             conn.execute(
                 """
-                INSERT INTO validation_cache (
+                INSERT OR REPLACE INTO validation_cache (
                     cache_key, protocol, candidate_schema_version,
                     environment_fingerprint, result_json
                 ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(cache_key) DO UPDATE SET
-                    protocol=excluded.protocol,
-                    candidate_schema_version=excluded.candidate_schema_version,
-                    environment_fingerprint=excluded.environment_fingerprint,
-                    result_json=excluded.result_json,
-                    timestamp=CURRENT_TIMESTAMP
                 """,
                 (
                     cache_key,
