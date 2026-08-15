@@ -87,7 +87,7 @@ Z-Scope 内置了多层防丢失和可追溯机制：
 
 ### Python 依赖
 
-Z-SCOPE 源码兼容和 CI 门禁覆盖 Python 3.9–3.14；推荐和离线包内置 CPython 3.13。Python 3.9 已于 2025-10-31 结束官方维护，仅作为客户存量环境下限（见 [Python 官方版本状态](https://devguide.python.org/versions/)）。运行时依赖以 `pyproject.toml` 为准，每个小版本的带哈希约束位于 `requirements/constraints/`。
+Z-SCOPE 源码兼容和 CI 门禁覆盖 Python 3.9–3.14；推荐和离线包内置 CPython 3.13。Python 3.9 已于 2025-10-31 结束官方维护，仅作为客户存量环境下限（见 [Python 官方版本状态](https://devguide.python.org/versions/)）。SQLite 运行库最低要求为 3.8.10.2，以实际解释器的 `sqlite3.sqlite_version` 为准；Python 版本本身不保证 Linux 上动态链接的 SQLite 版本。运行时依赖与外部运行库下限以 `pyproject.toml` 为准，每个 Python 小版本的带哈希约束位于 `requirements/constraints/`。
 
 | 包名 | 用途 |
 |------|------|

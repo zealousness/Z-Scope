@@ -72,8 +72,7 @@ class KnowledgeDB:
     @classmethod
     def _clone_query_rows(cls, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [
-            {str(key): cls._clone_query_value(value) for key, value in row.items()}
-            for row in rows
+            {str(key): cls._clone_query_value(value) for key, value in row.items()} for row in rows
         ]
 
     @classmethod
@@ -159,9 +158,7 @@ class KnowledgeDB:
             quoted_index_name = '"' + index_name.replace('"', '""') + '"'
             columns = tuple(
                 str(row["name"])
-                for row in conn.execute(
-                    f"PRAGMA index_info({quoted_index_name})"
-                ).fetchall()
+                for row in conn.execute(f"PRAGMA index_info({quoted_index_name})").fetchall()
             )
             if columns == cls.TAINT_SIGNATURE_IDENTITY:
                 return True
@@ -195,9 +192,7 @@ class KnowledgeDB:
         try:
             conn.execute("BEGIN IMMEDIATE")
             old_count = int(
-                conn.execute("SELECT COUNT(*) AS count FROM taint_signatures").fetchone()[
-                    "count"
-                ]
+                conn.execute("SELECT COUNT(*) AS count FROM taint_signatures").fetchone()["count"]
             )
             conn.execute(
                 f"""
@@ -240,14 +235,12 @@ class KnowledgeDB:
                 """
             )
             migrated_count = int(
-                conn.execute(
-                    f'SELECT COUNT(*) AS count FROM "{replacement_table}"'
-                ).fetchone()["count"]
+                conn.execute(f'SELECT COUNT(*) AS count FROM "{replacement_table}"').fetchone()[
+                    "count"
+                ]
             )
             conn.execute("DROP TABLE taint_signatures")
-            conn.execute(
-                f'ALTER TABLE "{replacement_table}" RENAME TO taint_signatures'
-            )
+            conn.execute(f'ALTER TABLE "{replacement_table}" RENAME TO taint_signatures')
             conn.execute("CREATE INDEX idx_taint_type ON taint_signatures(bug_type)")
 
             conn.execute(
@@ -281,7 +274,8 @@ class KnowledgeDB:
 
     def _create_tables(self):
         c = self._conn
-        c.executescript("""
+        c.executescript(
+            """
             CREATE TABLE IF NOT EXISTS translation_units (
                 id          INTEGER PRIMARY KEY,
                 file_path   TEXT NOT NULL UNIQUE,
@@ -625,12 +619,11 @@ class KnowledgeDB:
                 return_semantics TEXT DEFAULT '',
                 updated_at  REAL DEFAULT 0
             );
-        """)
+        """
+        )
         c.commit()
 
-        c.execute(
-            "INSERT OR IGNORE INTO metadata (key, value) VALUES ('svf_db_generation', '0')"
-        )
+        c.execute("INSERT OR IGNORE INTO metadata (key, value) VALUES ('svf_db_generation', '0')")
         c.commit()
 
         # 兼容旧 DB：补加 file_hash 列
@@ -655,8 +648,7 @@ class KnowledgeDB:
         # 中多个函数指针调用点的候选事实。重建表以加入 callsite identity；旧行
         # 使用空 identity 保留，绝不根据名称猜测 pointer/callsite 信息。
         indirect_columns = {
-            str(row["name"])
-            for row in c.execute("PRAGMA table_info(indirect_calls)").fetchall()
+            str(row["name"]) for row in c.execute("PRAGMA table_info(indirect_calls)").fetchall()
         }
         required_indirect_columns = {
             "callsite_id",
@@ -1029,7 +1021,8 @@ class KnowledgeDB:
         self._conn.execute("DELETE FROM functions WHERE tu_id = ?", (tu_id,))
         # call_edges 没有 tu_id，通过 caller_file 联动清除
         row = self._conn.execute(
-            "SELECT file_path FROM translation_units WHERE id = ?", (tu_id,),
+            "SELECT file_path FROM translation_units WHERE id = ?",
+            (tu_id,),
         ).fetchone()
         if row:
             fp = row["file_path"]
@@ -1125,7 +1118,8 @@ class KnowledgeDB:
             self._conn.execute(f"DELETE FROM {stmt_id_stage}")
         self._conn.execute(
             "DELETE FROM type_members WHERE type_id IN "
-            "(SELECT id FROM type_definitions WHERE tu_id = ?)", (tu_id,),
+            "(SELECT id FROM type_definitions WHERE tu_id = ?)",
+            (tu_id,),
         )
         self._conn.execute(
             "DELETE FROM function_type_refs WHERE type_id IN "
@@ -1158,7 +1152,7 @@ class KnowledgeDB:
             parts = list(resolved.parts)
             for marker in ("src", "include", "internal", "test", "zscope"):
                 if marker in parts:
-                    variants.add(Path(*parts[parts.index(marker):]).as_posix())
+                    variants.add(Path(*parts[parts.index(marker) :]).as_posix())
         except OSError:
             pass
         return tuple(sorted(item for item in variants if item))
@@ -1280,61 +1274,132 @@ class KnowledgeDB:
         ).fetchone()
         return int(row["id"]) if row else 0
 
-    def insert_ir_resource_event(self, candidate_id: str, object_id: str,
-                                 event_kind: str, api: str, file_path: str,
-                                 line: int, function: str,
-                                 owner_before: str = "", owner_after: str = "",
-                                 condition: str = "", confidence: float = 0.5) -> int:
+    def insert_ir_resource_event(
+        self,
+        candidate_id: str,
+        object_id: str,
+        event_kind: str,
+        api: str,
+        file_path: str,
+        line: int,
+        function: str,
+        owner_before: str = "",
+        owner_after: str = "",
+        condition: str = "",
+        confidence: float = 0.5,
+    ) -> int:
         cur = self._conn.execute(
             "INSERT INTO ir_resource_events "
             "(candidate_id, object_id, event_kind, api, file_path, line, function, "
             "owner_before, owner_after, condition, confidence) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (candidate_id, object_id, event_kind, api, file_path, line, function,
-             owner_before, owner_after, condition, confidence),
+            (
+                candidate_id,
+                object_id,
+                event_kind,
+                api,
+                file_path,
+                line,
+                function,
+                owner_before,
+                owner_after,
+                condition,
+                confidence,
+            ),
         )
         return int(cur.lastrowid or 0)
 
-    def insert_ir_lock_event(self, candidate_id: str, lock_id: str,
-                             event_kind: str, file_path: str, line: int,
-                             function: str, path_id: str = "",
-                             held_before: str = "", held_after: str = "",
-                             confidence: float = 0.5) -> int:
+    def insert_ir_lock_event(
+        self,
+        candidate_id: str,
+        lock_id: str,
+        event_kind: str,
+        file_path: str,
+        line: int,
+        function: str,
+        path_id: str = "",
+        held_before: str = "",
+        held_after: str = "",
+        confidence: float = 0.5,
+    ) -> int:
         cur = self._conn.execute(
             "INSERT INTO ir_lock_events "
             "(candidate_id, lock_id, event_kind, file_path, line, function, path_id, "
             "held_before, held_after, confidence) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (candidate_id, lock_id, event_kind, file_path, line, function, path_id,
-             held_before, held_after, confidence),
+            (
+                candidate_id,
+                lock_id,
+                event_kind,
+                file_path,
+                line,
+                function,
+                path_id,
+                held_before,
+                held_after,
+                confidence,
+            ),
         )
         return int(cur.lastrowid or 0)
 
-    def insert_ir_shared_access(self, candidate_id: str, object_id: str,
-                                field: str, access_kind: str, file_path: str,
-                                line: int, function: str, guard_lock: str = "",
-                                thread_context: str = "", confidence: float = 0.5) -> int:
+    def insert_ir_shared_access(
+        self,
+        candidate_id: str,
+        object_id: str,
+        field: str,
+        access_kind: str,
+        file_path: str,
+        line: int,
+        function: str,
+        guard_lock: str = "",
+        thread_context: str = "",
+        confidence: float = 0.5,
+    ) -> int:
         cur = self._conn.execute(
             "INSERT INTO ir_shared_accesses "
             "(candidate_id, object_id, field, access_kind, file_path, line, function, "
             "guard_lock, thread_context, confidence) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (candidate_id, object_id, field, access_kind, file_path, line, function,
-             guard_lock, thread_context, confidence),
+            (
+                candidate_id,
+                object_id,
+                field,
+                access_kind,
+                file_path,
+                line,
+                function,
+                guard_lock,
+                thread_context,
+                confidence,
+            ),
         )
         return int(cur.lastrowid or 0)
 
-    def upsert_ir_path_slice(self, candidate_id: str, function: str,
-                             source_stmt: int = 0, sink_stmt: int = 0,
-                             path_summary: str = "{}", guards: str = "[]",
-                             contradictions: str = "[]",
-                             score_components: str = "{}") -> int:
+    def upsert_ir_path_slice(
+        self,
+        candidate_id: str,
+        function: str,
+        source_stmt: int = 0,
+        sink_stmt: int = 0,
+        path_summary: str = "{}",
+        guards: str = "[]",
+        contradictions: str = "[]",
+        score_components: str = "{}",
+    ) -> int:
         self._conn.execute(
             "INSERT OR REPLACE INTO ir_path_slices "
             "(candidate_id, function, source_stmt, sink_stmt, path_summary, guards, "
             "contradictions, score_components) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (candidate_id, function, source_stmt, sink_stmt, path_summary, guards,
-             contradictions, score_components),
+            (
+                candidate_id,
+                function,
+                source_stmt,
+                sink_stmt,
+                path_summary,
+                guards,
+                contradictions,
+                score_components,
+            ),
         )
         row = self._conn.execute(
             "SELECT id FROM ir_path_slices WHERE candidate_id = ?",
@@ -1342,18 +1407,33 @@ class KnowledgeDB:
         ).fetchone()
         return int(row["id"]) if row else 0
 
-    def upsert_function_contract(self, function: str, allocates: str = "[]",
-                                 releases: str = "[]", transfers: str = "[]",
-                                 borrows: str = "[]", locks: str = "[]",
-                                 thread_effects: str = "[]",
-                                 return_semantics: str = "") -> None:
+    def upsert_function_contract(
+        self,
+        function: str,
+        allocates: str = "[]",
+        releases: str = "[]",
+        transfers: str = "[]",
+        borrows: str = "[]",
+        locks: str = "[]",
+        thread_effects: str = "[]",
+        return_semantics: str = "",
+    ) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO function_contracts "
             "(function, allocates, releases, transfers, borrows, locks, "
             "thread_effects, return_semantics, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (function, allocates, releases, transfers, borrows, locks,
-             thread_effects, return_semantics, time.time()),
+            (
+                function,
+                allocates,
+                releases,
+                transfers,
+                borrows,
+                locks,
+                thread_effects,
+                return_semantics,
+                time.time(),
+            ),
         )
 
     def get_ir_path_slice(self, candidate_id: str) -> Optional[Dict[str, Any]]:
@@ -1573,7 +1653,7 @@ class KnowledgeDB:
                     "symbol_file TEXT DEFAULT '', reference_line INTEGER DEFAULT 0, "
                     "access_kind TEXT DEFAULT 'unknown', "
                     "UNIQUE(function_name, function_file, symbol_name, symbol_kind, "
-                    "symbol_file, reference_line))"
+                    "symbol_file, reference_line, access_kind))"
                 )
                 conn.execute(
                     f"CREATE TEMP TABLE IF NOT EXISTS {self._DERIVED_MACRO_REF_STAGE} ("
@@ -1610,18 +1690,9 @@ class KnowledgeDB:
     def stage_function_symbol_refs_batch(self, rows: List[tuple]) -> None:
         if rows:
             self._conn.executemany(
-                f"INSERT INTO {self._DERIVED_SYMBOL_REF_STAGE} "
+                f"INSERT OR IGNORE INTO {self._DERIVED_SYMBOL_REF_STAGE} "
                 "(function_name, function_file, symbol_name, symbol_kind, symbol_file, "
-                "reference_line, access_kind) VALUES (?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(function_name, function_file, symbol_name, symbol_kind, "
-                "symbol_file, reference_line) DO UPDATE SET access_kind = CASE "
-                "WHEN access_kind = 'read_write' OR excluded.access_kind = 'read_write' "
-                "THEN 'read_write' "
-                "WHEN (access_kind = 'read' AND excluded.access_kind = 'write') "
-                "OR (access_kind = 'write' AND excluded.access_kind = 'read') "
-                "THEN 'read_write' "
-                "WHEN excluded.access_kind IN ('read', 'write') THEN excluded.access_kind "
-                "ELSE access_kind END",
+                "reference_line, access_kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
 
@@ -1700,8 +1771,18 @@ class KnowledgeDB:
                         "(function_name, function_file, symbol_name, symbol_kind, symbol_file, "
                         "reference_line, access_kind) "
                         f"SELECT function_name, function_file, symbol_name, symbol_kind, "
-                        f"symbol_file, reference_line, access_kind "
-                        f"FROM {self._DERIVED_SYMBOL_REF_STAGE}"
+                        f"symbol_file, reference_line, CASE "
+                        f"WHEN MAX(CASE WHEN access_kind = 'read_write' THEN 1 ELSE 0 END) = 1 "
+                        f"OR (MAX(CASE WHEN access_kind = 'read' THEN 1 ELSE 0 END) = 1 "
+                        f"AND MAX(CASE WHEN access_kind = 'write' THEN 1 ELSE 0 END) = 1) "
+                        f"THEN 'read_write' "
+                        f"WHEN MAX(CASE WHEN access_kind = 'write' THEN 1 ELSE 0 END) = 1 "
+                        f"THEN 'write' "
+                        f"WHEN MAX(CASE WHEN access_kind = 'read' THEN 1 ELSE 0 END) = 1 "
+                        f"THEN 'read' ELSE 'unknown' END "
+                        f"FROM {self._DERIVED_SYMBOL_REF_STAGE} "
+                        f"GROUP BY function_name, function_file, symbol_name, symbol_kind, "
+                        f"symbol_file, reference_line"
                     )
                     conn.execute(
                         "INSERT INTO function_macro_refs "
@@ -1833,9 +1914,7 @@ class KnowledgeDB:
         if not clean_groups:
             self._conn.execute("DELETE FROM indirect_calls")
             self._conn.execute("DELETE FROM taint_signatures")
-            self._conn.execute(
-                "DELETE FROM metadata WHERE key LIKE 'svf_db_import:%'"
-            )
+            self._conn.execute("DELETE FROM metadata WHERE key LIKE 'svf_db_import:%'")
             self._conn.commit()
             return
         placeholders = ",".join("?" for _ in clean_groups)
@@ -1852,7 +1931,7 @@ class KnowledgeDB:
         ).fetchall()
         for row in marker_rows:
             key = str(row["key"] or "")
-            remainder = key[len("svf_db_import:"):]
+            remainder = key[len("svf_db_import:") :]
             _separator, _tool, marker_group = remainder.partition(":")
             if marker_group and marker_group not in clean_groups:
                 self._conn.execute("DELETE FROM metadata WHERE key = ?", (key,))
@@ -1860,15 +1939,33 @@ class KnowledgeDB:
 
     # ── Functions ──
 
-    def insert_function(self, name: str, file_path: str, start_line: int, end_line: int,
-                        signature: str = "", is_static: bool = False, is_inline: bool = False,
-                        is_declaration: bool = False, tu_id: Optional[int] = None):
+    def insert_function(
+        self,
+        name: str,
+        file_path: str,
+        start_line: int,
+        end_line: int,
+        signature: str = "",
+        is_static: bool = False,
+        is_inline: bool = False,
+        is_declaration: bool = False,
+        tu_id: Optional[int] = None,
+    ):
         self._conn.execute(
             "INSERT OR REPLACE INTO functions "
             "(name, file_path, start_line, end_line, signature, is_static, is_inline, is_declaration, tu_id) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, file_path, start_line, end_line, signature,
-             int(is_static), int(is_inline), int(is_declaration), tu_id),
+            (
+                name,
+                file_path,
+                start_line,
+                end_line,
+                signature,
+                int(is_static),
+                int(is_inline),
+                int(is_declaration),
+                tu_id,
+            ),
         )
 
     def insert_functions_batch(self, rows: List[tuple]):
@@ -2000,13 +2097,7 @@ class KnowledgeDB:
 
     def get_macro_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
         """Return all macro definitions matching the supplied names."""
-        clean_names = sorted(
-            {
-                str(name or "").strip()
-                for name in names
-                if str(name or "").strip()
-            }
-        )
+        clean_names = sorted({str(name or "").strip() for name in names if str(name or "").strip()})
         result: List[Dict[str, Any]] = []
         for offset in range(0, len(clean_names), 500):
             batch = clean_names[offset : offset + 500]
@@ -2195,7 +2286,15 @@ class KnowledgeDB:
         normalized_rows: List[tuple] = []
         for row in rows:
             if len(row) == 7:
-                name, file_path, start_line, end_line, macro_index_name, definition, is_function_like = row
+                (
+                    name,
+                    file_path,
+                    start_line,
+                    end_line,
+                    macro_index_name,
+                    definition,
+                    is_function_like,
+                ) = row
             elif len(row) == 5:
                 name, file_path, start_line, definition, is_function_like = row
                 definition_lines = str(definition or "").splitlines()
@@ -2255,9 +2354,16 @@ class KnowledgeDB:
 
     # ── Type Definitions ──
 
-    def insert_type(self, name: str, kind: str, file_path: str,
-                    start_line: int, end_line: int,
-                    full_definition: str = "", tu_id: Optional[int] = None) -> int:
+    def insert_type(
+        self,
+        name: str,
+        kind: str,
+        file_path: str,
+        start_line: int,
+        end_line: int,
+        full_definition: str = "",
+        tu_id: Optional[int] = None,
+    ) -> int:
         self._conn.execute(
             "INSERT OR REPLACE INTO type_definitions "
             "(name, kind, file_path, start_line, end_line, full_definition, tu_id) "
@@ -2304,8 +2410,9 @@ class KnowledgeDB:
                 member_rows,
             )
 
-    def insert_type_member(self, type_id: int, member_name: str,
-                           member_type: str = "", offset_idx: int = 0):
+    def insert_type_member(
+        self, type_id: int, member_name: str, member_type: str = "", offset_idx: int = 0
+    ):
         self._conn.execute(
             "INSERT OR REPLACE INTO type_members "
             "(type_id, member_name, member_type, offset_idx) VALUES (?, ?, ?, ?)",
@@ -2321,7 +2428,8 @@ class KnowledgeDB:
         result = dict(row)
         members = self._conn.execute(
             "SELECT member_name, member_type, offset_idx FROM type_members "
-            "WHERE type_id = ? ORDER BY offset_idx", (row["id"],)
+            "WHERE type_id = ? ORDER BY offset_idx",
+            (row["id"],),
         ).fetchall()
         result["members"] = [dict(m) for m in members]
         return result
@@ -2410,9 +2518,7 @@ class KnowledgeDB:
 
         # Iterative Kosaraju SCC turns an include graph with cycles into a DAG
         # without consuming Python recursion depth on long include chains.
-        ordered_neighbors = {
-            node: tuple(sorted(neighbors)) for node, neighbors in graph.items()
-        }
+        ordered_neighbors = {node: tuple(sorted(neighbors)) for node, neighbors in graph.items()}
         reverse_graph: Dict[str, set[str]] = {node: set() for node in graph}
         for source, included_files in graph.items():
             for included in included_files:
@@ -2424,9 +2530,7 @@ class KnowledgeDB:
             if start in visited:
                 continue
             visited.add(start)
-            pending: List[Tuple[str, Iterator[str]]] = [
-                (start, iter(ordered_neighbors[start]))
-            ]
+            pending: List[Tuple[str, Iterator[str]]] = [(start, iter(ordered_neighbors[start]))]
             while pending:
                 node, neighbors = pending[-1]
                 try:
@@ -2579,7 +2683,8 @@ class KnowledgeDB:
             ]
         if function_start_line:
             function_rows = [
-                row for row in function_rows
+                row
+                for row in function_rows
                 if int(row["start_line"] or 0) == int(function_start_line)
             ]
         if len(function_rows) != 1:
@@ -2666,10 +2771,17 @@ class KnowledgeDB:
 
     # ── Call Edges ──
 
-    def insert_call_edge(self, caller_name: str, caller_file: str,
-                         callee_name: str, callee_file: str = "", call_line: int = 0,
-                         call_type: str = "direct", callee_kind: str = "unknown",
-                         callee_signature: str = ""):
+    def insert_call_edge(
+        self,
+        caller_name: str,
+        caller_file: str,
+        callee_name: str,
+        callee_file: str = "",
+        call_line: int = 0,
+        call_type: str = "direct",
+        callee_kind: str = "unknown",
+        callee_signature: str = "",
+    ):
         self._invalidate_callgraph_query_cache()
         self._conn.execute(
             "INSERT OR IGNORE INTO call_edges "
@@ -2727,9 +2839,15 @@ class KnowledgeDB:
                 "FROM call_edges WHERE callee_name = ? LIMIT ?",
                 (func_name, limit),
             ).fetchall()
-        return [{"name": r["caller_name"], "filename": r["caller_file"],
-                 "callee_filename": r["callee_file"],
-                 "lineNumber": r["call_line"]} for r in rows]
+        return [
+            {
+                "name": r["caller_name"],
+                "filename": r["caller_file"],
+                "callee_filename": r["callee_file"],
+                "lineNumber": r["call_line"],
+            }
+            for r in rows
+        ]
 
     def get_all_callers(
         self,
@@ -2792,7 +2910,8 @@ class KnowledgeDB:
             finally:
                 self._callgraph_read_semaphore.release()
             rows = [
-                row for row in all_rows
+                row
+                for row in all_rows
                 if self._paths_match_hint(str(row["caller_file"] or ""), caller_file)
             ][:limit]
         else:
@@ -2807,10 +2926,17 @@ class KnowledgeDB:
                 ).fetchall()
             finally:
                 self._callgraph_read_semaphore.release()
-        result = [{"name": r["callee_name"], "filename": r["callee_file"],
-                   "lineNumber": r["call_line"], "call_type": r["call_type"],
-                   "callee_kind": r["callee_kind"],
-                   "callee_signature": r["callee_signature"]} for r in rows]
+        result = [
+            {
+                "name": r["callee_name"],
+                "filename": r["callee_file"],
+                "lineNumber": r["call_line"],
+                "call_type": r["call_type"],
+                "callee_kind": r["callee_kind"],
+                "callee_signature": r["callee_signature"],
+            }
+            for r in rows
+        ]
         with self._query_cache_lock:
             if cache_version == self._callgraph_cache_version:
                 self._callee_cache[cache_key] = self._clone_query_rows(result)
@@ -2865,7 +2991,8 @@ class KnowledgeDB:
         ).fetchall()
         if caller_file:
             rows = [
-                row for row in rows
+                row
+                for row in rows
                 if self._paths_match_hint(str(row["caller_file"] or ""), caller_file)
             ]
         return [
@@ -2889,11 +3016,7 @@ class KnowledgeDB:
             return False
         stored = stored.lstrip("./")
         hint = hint.lstrip("./")
-        return (
-            stored == hint
-            or stored.endswith(f"/{hint}")
-            or hint.endswith(f"/{stored}")
-        )
+        return stored == hint or stored.endswith(f"/{hint}") or hint.endswith(f"/{stored}")
 
     def find_callers_without_callee(
         self,
@@ -2939,15 +3062,11 @@ class KnowledgeDB:
         source_root: Optional[Path] = None,
     ) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT name, file_path, start_line FROM functions "
-            "WHERE is_declaration = 1"
+            "SELECT name, file_path, start_line FROM functions " "WHERE is_declaration = 1"
         ).fetchall()
 
         normalized_headers = (
-            {
-                self._normalize_source_relative_path(header, source_root)
-                for header in header_files
-            }
+            {self._normalize_source_relative_path(header, source_root) for header in header_files}
             if header_files
             else None
         )
@@ -2982,13 +3101,23 @@ class KnowledgeDB:
 
     # ── Indirect Calls (SVF) ──
 
-    def insert_indirect_call(self, caller: str, callee: str,
-                             source: str = "svf-ander", confidence: float = 1.0,
-                             call_file: str = "", call_line: int = 0,
-                             svf_group: str = "default", callsite_id: str = "",
-                             pointer_symbol: str = "", pointer_kind: str = "unknown",
-                             pointer_type: str = "", pointer_signature: str = "",
-                             callsite_expression: str = "", guard: str = ""):
+    def insert_indirect_call(
+        self,
+        caller: str,
+        callee: str,
+        source: str = "svf-ander",
+        confidence: float = 1.0,
+        call_file: str = "",
+        call_line: int = 0,
+        svf_group: str = "default",
+        callsite_id: str = "",
+        pointer_symbol: str = "",
+        pointer_kind: str = "unknown",
+        pointer_type: str = "",
+        pointer_signature: str = "",
+        callsite_expression: str = "",
+        guard: str = "",
+    ):
         self._invalidate_callgraph_query_cache()
         cursor = self._conn.execute(
             "INSERT OR IGNORE INTO indirect_calls "
@@ -3085,10 +3214,17 @@ class KnowledgeDB:
         result = []
         for r in rows:
             groups = self._split_svf_groups(r["svf_groups"])
-            result.append({"name": r["callee_name"], "source": r["source"],
-                           "confidence": r["confidence"], "svf_group": groups[0] if groups else "",
-                           "svf_groups": groups,
-                           "call_file": r["call_file"], "call_line": r["call_line"]})
+            result.append(
+                {
+                    "name": r["callee_name"],
+                    "source": r["source"],
+                    "confidence": r["confidence"],
+                    "svf_group": groups[0] if groups else "",
+                    "svf_groups": groups,
+                    "call_file": r["call_file"],
+                    "call_line": r["call_line"],
+                }
+            )
         with self._query_cache_lock:
             if cache_version == self._callgraph_cache_version:
                 self._indirect_callee_cache[cache_key] = self._clone_query_rows(result)
@@ -3118,9 +3254,16 @@ class KnowledgeDB:
 
     # ── Taint Signatures (SVF/Saber) ──
 
-    def insert_taint_signature(self, source_func: str, sink_func: str, bug_type: str,
-                               file_path: str = "", line: int = 0, tool: str = "saber",
-                               svf_group: str = "default"):
+    def insert_taint_signature(
+        self,
+        source_func: str,
+        sink_func: str,
+        bug_type: str,
+        file_path: str = "",
+        line: int = 0,
+        tool: str = "saber",
+        svf_group: str = "default",
+    ):
         cursor = self._conn.execute(
             "INSERT OR IGNORE INTO taint_signatures "
             "(source_func, sink_func, bug_type, file_path, line, tool, svf_group) "
@@ -3247,14 +3390,25 @@ class KnowledgeDB:
 
     def stats(self) -> Dict[str, int]:
         result = {}
-        for table in ("functions", "type_definitions", "call_edges",
-                       "macro_definitions", "global_variables",
-                       "function_symbol_refs", "function_macro_refs", "function_type_refs",
-                       "translation_units",
-                       "indirect_calls", "taint_signatures",
-                       "ir_statements", "ir_resource_events", "ir_lock_events",
-                       "ir_shared_accesses", "ir_path_slices",
-                       "function_contracts"):
+        for table in (
+            "functions",
+            "type_definitions",
+            "call_edges",
+            "macro_definitions",
+            "global_variables",
+            "function_symbol_refs",
+            "function_macro_refs",
+            "function_type_refs",
+            "translation_units",
+            "indirect_calls",
+            "taint_signatures",
+            "ir_statements",
+            "ir_resource_events",
+            "ir_lock_events",
+            "ir_shared_accesses",
+            "ir_path_slices",
+            "function_contracts",
+        ):
             row = self._conn.execute(f"SELECT COUNT(*) as cnt FROM {table}").fetchone()
             result[table] = row["cnt"]
         return result

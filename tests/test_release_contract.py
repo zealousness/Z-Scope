@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -17,6 +18,43 @@ from scripts.generate_release_manifest import build_manifest
 from scripts.verify_release_assets import verify_release_assets
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _sqlite_sql_literals(path: Path) -> list[str]:
+    """Return SQL-looking literals without importing the inspected module."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    literals: list[str] = []
+    for node in ast.walk(tree):
+        value = ""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            value = node.value
+        elif isinstance(node, ast.JoinedStr):
+            value = "".join(
+                (
+                    part.value
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                    else "{}"
+                )
+                for part in node.values
+            )
+        normalized = value.lstrip().upper()
+        if normalized.startswith(
+            (
+                "ALTER ",
+                "CREATE ",
+                "DELETE ",
+                "DROP ",
+                "INSERT ",
+                "PRAGMA ",
+                "REPLACE ",
+                "SELECT ",
+                "UPDATE ",
+                "VACUUM ",
+                "WITH ",
+            )
+        ):
+            literals.append(value)
+    return literals
 
 
 def test_release_gate_requires_per_run_usage_and_attribution_invariants() -> None:
@@ -76,6 +114,8 @@ def test_package_version_is_semver_and_shared_by_user_surfaces() -> None:
 def test_python_39_314_constraints_and_ci_are_declared() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'requires-python = ">=3.9"' in pyproject
+    assert "[tool.zscope.runtime-requirements]" in pyproject
+    assert 'sqlite = ">=3.8.10.2"' in pyproject
     assert "target-version = ['py39']" in pyproject
     assert 'python_version = "3.9"' in pyproject
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -101,6 +141,53 @@ def test_python_39_314_constraints_and_ci_are_declared() -> None:
     assert "dependency-policy:" in workflow
     assert "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266" in workflow
     assert "scripts/check_dependency_licenses.py" in workflow
+
+
+def test_sqlite_queries_stay_compatible_with_declared_3_8_10_2_floor() -> None:
+    sqlite_sources = []
+    for source_root in (ROOT / "zscope", ROOT / "scripts"):
+        for path in source_root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"^\s*(?:import sqlite3|from sqlite3\b)", text, re.MULTILINE):
+                sqlite_sources.append(path)
+
+    forbidden = {
+        "upsert": re.compile(r"\bON\s+CONFLICT\b|\bEXCLUDED\s*\.", re.IGNORECASE),
+        "returning": re.compile(r"\bRETURNING\b", re.IGNORECASE),
+        "window function": re.compile(
+            r"\b(?:ROW_NUMBER|RANK|DENSE_RANK)\s*\(|\bOVER\s*\(", re.IGNORECASE
+        ),
+        "aggregate filter": re.compile(r"\bFILTER\s*\(", re.IGNORECASE),
+        "ordered nulls": re.compile(r"\bNULLS\s+(?:FIRST|LAST)\b", re.IGNORECASE),
+        "generated column": re.compile(r"\bGENERATED\s+ALWAYS\b", re.IGNORECASE),
+        "strict table": re.compile(r"\)\s*STRICT\b", re.IGNORECASE),
+        "new alter table": re.compile(
+            r"\bALTER\s+TABLE\b[\s\S]*?\b(?:DROP|RENAME)\s+COLUMN\b", re.IGNORECASE
+        ),
+        "json function": re.compile(r"\bJSON_[A-Z_]+\s*\(", re.IGNORECASE),
+        "new scalar function": re.compile(r"\b(?:FORMAT|IIF|UNIXEPOCH)\s*\(", re.IGNORECASE),
+        "expression index": re.compile(
+            r"\bCREATE\s+(?:UNIQUE\s+)?INDEX\b[\s\S]*?\bON\b\s+[^\s(]+\s*"
+            r"\([^;)]*\b[A-Z_][A-Z0-9_]*\s*\(",
+            re.IGNORECASE,
+        ),
+        "new join": re.compile(r"\b(?:RIGHT|FULL(?:\s+OUTER)?)\s+JOIN\b", re.IGNORECASE),
+        "distinct comparison": re.compile(r"\bIS\s+(?:NOT\s+)?DISTINCT\s+FROM\b", re.IGNORECASE),
+        "materialized cte": re.compile(r"\bMATERIALIZED\b", re.IGNORECASE),
+        "vacuum into": re.compile(r"\bVACUUM\s+INTO\b", re.IGNORECASE),
+        "pragma optimize": re.compile(r"\bPRAGMA\s+OPTIMIZE\b", re.IGNORECASE),
+        "new pragma": re.compile(r"\bPRAGMA\s+TABLE_XINFO\b", re.IGNORECASE),
+        "boolean literal": re.compile(r"\b(?:TRUE|FALSE)\b", re.IGNORECASE),
+        "row value": re.compile(r"\([^()]+,\s*[^()]+\)\s+(?:IN|=|<|>)\s*\(", re.IGNORECASE),
+    }
+    violations = []
+    for path in sqlite_sources:
+        for sql in _sqlite_sql_literals(path):
+            for feature, pattern in forbidden.items():
+                if pattern.search(sql):
+                    violations.append(f"{path.relative_to(ROOT)}: {feature}: {sql.strip()}")
+
+    assert violations == []
 
 
 def test_release_lock_contains_runtime_and_java_extra_but_not_dev_tools() -> None:
