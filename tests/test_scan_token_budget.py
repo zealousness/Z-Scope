@@ -11,7 +11,9 @@ from zscope.framework.llm_usage import (
     LLMUsageAttribution,
     ScanTokenUsageLedger,
     TOKEN_USAGE_STAGES,
+    llm_usage_attribution_scope,
 )
+from zscope.framework.llm_client import LLMClient
 
 
 def test_usage_ledger_never_reduces_or_rejects_completion_allowance() -> None:
@@ -47,14 +49,14 @@ def test_usage_ledger_conserves_tokens_by_agent_and_stage() -> None:
     assert snapshot["consumed_tokens"] == 4_000
     assert snapshot["reserved_tokens"] == 0
     assert snapshot["usage_attribution"]["totals"]["total_tokens"] == 4_000
-    assert sum(
-        row["total_tokens"]
-        for row in snapshot["usage_attribution"]["by_agent"].values()
-    ) == 4_000
-    assert sum(
-        row["total_tokens"]
-        for row in snapshot["usage_attribution"]["by_stage"].values()
-    ) == 4_000
+    assert (
+        sum(row["total_tokens"] for row in snapshot["usage_attribution"]["by_agent"].values())
+        == 4_000
+    )
+    assert (
+        sum(row["total_tokens"] for row in snapshot["usage_attribution"]["by_stage"].values())
+        == 4_000
+    )
 
 
 def test_unknown_provider_usage_is_conservatively_measured_not_denied() -> None:
@@ -116,3 +118,71 @@ def test_usage_ledger_aggregates_validator_passes_by_call_kind() -> None:
     assert by_call_kind["initial"]["total_tokens"] == 10
     assert by_call_kind["evidence_recheck"]["total_tokens"] == 10
     assert by_call_kind["targeted_investigation"]["total_tokens"] == 10
+
+
+def test_usage_ledger_attributes_only_system_accepted_v3_facts(tmp_path) -> None:
+    sidecar = tmp_path / "usage.jsonl"
+    ledger = ScanTokenUsageLedger(depth="balanced", event_sink_path=sidecar)
+    reservation = ledger.reserve(
+        100,
+        200,
+        attribution=LLMUsageAttribution(
+            agent="validator_agent",
+            stage="validation",
+            call_kind="targeted_investigation",
+            validation_cluster_uid="VAL_FACTS",
+        ),
+    )
+    ledger.settle(
+        reservation,
+        prompt_tokens=80,
+        completion_tokens=20,
+        provider_reported=True,
+        # A provider/model supplied value is not authoritative until the
+        # validation runner accepts the structured facts into the slice.
+        new_fact_count=0,
+    )
+
+    assert ledger.attribute_accepted_facts(validation_cluster_uid="VAL_FACTS", new_fact_count=3)
+
+    snapshot = ledger.snapshot(include_events=True)
+    assert snapshot["consumed_tokens"] == 100
+    assert snapshot["usage_attribution"]["totals"]["new_fact_count"] == 3
+    assert snapshot["events"][0]["new_fact_count"] == 3
+    persisted = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert persisted["new_fact_count"] == 3
+    assert persisted["total_tokens"] == 100
+
+
+def test_nested_llm_call_inherits_validation_cluster_without_overriding_agent() -> None:
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+        token_usage_ledger=ledger,
+        llm_ref="modeling",
+    )
+
+    with llm_usage_attribution_scope(
+        validation_cluster_uid="VAL_NESTED",
+        candidate_uid="CAND_NESTED",
+        call_kind="v3_tool_dependency",
+    ):
+        reservation = client._reserve_scan_usage(
+            [{"role": "user", "content": "frozen snapshot request"}],
+            tools=None,
+            response_format=None,
+            max_completion_tokens=50,
+            model="unit-model",
+            trace_agent="semantic_modeler",
+            trace_label="function=callee",
+            usage_attribution=None,
+        )
+
+    assert reservation is not None
+    assert reservation.attribution.agent == "semantic_modeler"
+    assert reservation.attribution.stage == "semantic_modeling"
+    assert reservation.attribution.validation_cluster_uid == "VAL_NESTED"
+    assert reservation.attribution.candidate_uid == "CAND_NESTED"
+    assert reservation.attribution.call_kind == "v3_tool_dependency"

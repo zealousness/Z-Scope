@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import threading
 import time
@@ -14,6 +15,12 @@ from zscope.common.cancellation import (
 )
 from zscope.core.validation.pipeline import ValidationPipeline
 from zscope.core.validation.runner import ValidationResultCache, ValidationRunner
+from zscope.core.validation.claim_verifier import (
+    EvidenceClaimRequest,
+    EvidenceClaimVerifier,
+    verify_evidence_certificate,
+)
+from zscope.core.validation.function_ir import FunctionIRGraph
 from zscope.framework.base import AgentResponse
 from zscope.orchestration.scheduler import ScanScheduler
 
@@ -159,6 +166,151 @@ def _validator_v3_result(
         "missing_fact_request": missing_fact_request,
         "stop_reason": stop_reason,
     }
+
+
+def _verified_v3_fact(*, fact_kind="value_range", subject_uid="wire_len", ref="TOOLFACT_RANGE"):
+    predicate = {
+        "value_range": "value_range_is_proved",
+        "lockset": "lock_must_hold_at_access",
+    }[fact_kind]
+    true_key = {
+        "value_range": "value_range_proved",
+        "lockset": "lock_must_hold",
+    }[fact_kind]
+    result_payload = {
+        "success": True,
+        "data": {true_key: True, "analysis_complete": True},
+    }
+    result_hash = hashlib.sha256(
+        json.dumps(
+            result_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    catalog = {
+        ref: {
+            "evidence_ref": ref,
+            "tool_name": "get_data_flow",
+            "arguments": {"query": fact_kind},
+            "arguments_hash": "a" * 64,
+            "result_hash": result_hash,
+            "result_payload": result_payload,
+            "dependency_code_hash": result_hash,
+            "location": {
+                "file": "src/demo.c",
+                "function": "sink_func",
+                "start_line": 10,
+                "end_line": 14,
+            },
+        }
+    }
+    claim = EvidenceClaimRequest.from_mapping(
+        {
+            "obligation_uid": "OBL_TEST",
+            "fact_kind": fact_kind,
+            "predicate": predicate,
+            "polarity": "supports",
+            "subject_uid": subject_uid,
+            "decision_region_uid": "",
+            "arguments": {"query": fact_kind},
+            "cited_evidence_refs": [ref],
+        }
+    )
+    verification = EvidenceClaimVerifier().verify(
+        claim,
+        issue={},
+        tool_catalog=catalog,
+    )
+    assert verification.verified_fact is not None
+    return verification.verified_fact, catalog
+
+
+def _function_ir_graph(*, duplicate_sink: bool = False) -> dict:
+    blocks = [
+        {
+            "id": "B4",
+            "label": "(ENTRY)",
+            "successors": ["B3"],
+            "predecessors": [],
+            "statements": [],
+        },
+        {
+            "id": "B3",
+            "label": "",
+            "successors": ["B2", "B1"],
+            "predecessors": ["B4"],
+            "statements": ["wire_len = read_input()", "if (wire_len)"],
+        },
+        {
+            "id": "B2",
+            "label": "",
+            "successors": ["B0"],
+            "predecessors": ["B3"],
+            "statements": ["sink(wire_len)"],
+        },
+        {
+            "id": "B1",
+            "label": "",
+            "successors": ["B0"],
+            "predecessors": ["B3"],
+            "statements": ["sink(wire_len)" if duplicate_sink else "observe(wire_len)"],
+        },
+        {
+            "id": "B0",
+            "label": "(EXIT)",
+            "successors": [],
+            "predecessors": ["B2", "B1"],
+            "statements": [],
+        },
+    ]
+    call_exprs = [
+        {"callee": "read_input", "line": 5},
+        {"callee": "sink", "line": 10},
+    ]
+    if duplicate_sink:
+        call_exprs.append({"callee": "sink", "line": 20})
+    graph = FunctionIRGraph.from_clang_evidence(
+        {
+            "clang_path": "clang",
+            "code_snapshot_sha256": "c" * 64,
+            "cfg_dump": {
+                "summary": {
+                    "parse_ok": True,
+                    "function": "sink_func",
+                    "function_section_unique": True,
+                    "entry_blocks": ["B4"],
+                    "exit_blocks": ["B0"],
+                    "blocks": blocks,
+                }
+            },
+            "ast_dump": {"summary": {"target_function": {"call_exprs": call_exprs}}},
+        },
+        function="sink_func",
+        file="src/demo.c",
+    )
+    assert graph is not None
+    return graph.to_dict()
+
+
+def _executable_path_issue(**overrides):
+    issue = _issue(
+        function_ir_graph=_function_ir_graph(duplicate_sink=True),
+        source={"callee": "read_input", "line": 5},
+        sink={"callee": "sink"},
+        security_obligation={
+            "obligation_uid": "OBL_PATH",
+            "subject_uid": "wire_len",
+            "decision_region_uid": "REGION_PATH",
+            "required_fact_kinds": ["source_sink_reachability"],
+        },
+        obligation_required_fact_kinds=["source_sink_reachability"],
+        missing_fact_kinds=["source_sink_reachability"],
+    )
+    issue.update(overrides)
+    return issue
 
 
 def test_validation_runner_cache_key_uses_stable_evidence_fingerprint_without_candidate_id() -> (
@@ -408,10 +560,10 @@ def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
 
 def test_validation_runner_v2_recheck_sees_all_required_typed_fact_deltas_once() -> None:
     request = {
-        "fact_kind": "value_range",
+        "fact_kind": "source_controllability",
         "subject_uid": "wire_len",
         "function_uid": "sink_func",
-        "reason": "the caller bound is missing",
+        "reason": "the exposed entry contract is missing",
     }
     agent = FakeValidatorAgent(
         [
@@ -436,43 +588,36 @@ def test_validation_runner_v2_recheck_sees_all_required_typed_fact_deltas_once()
         validation_cluster_uid="VAL_V3",
         severity="medium",
         impact_level="medium",
-        reachable_from_entry=False,
+        reachable_from_entry=True,
+        entry_context={"entry_is_external_root": True},
+        function_ir_graph=_function_ir_graph(),
+        source={"callee": "read_input", "line": 5},
+        sink={"callee": "sink", "line": 10},
         security_obligation={
             "obligation_uid": "OBL_RANGE",
             "subject_uid": "wire_len",
-            "required_fact_kinds": ["value_range", "guard_dominance"],
+            "decision_region_uid": "REGION_PATH",
+            "required_fact_kinds": ["source_sink_reachability"],
         },
-        obligation_required_fact_kinds=["value_range", "guard_dominance"],
-        missing_fact_kinds=["value_range", "guard_dominance"],
-        fact_completion_by_kind={
-            "value_range": [
-                {
-                    "fact_uid": "FACT_RANGE",
-                    "kind": "value_range",
-                    "value": "wire_len <= destination_capacity",
-                }
-            ],
-            "guard_dominance": [
-                {
-                    "fact_uid": "FACT_GUARD",
-                    "kind": "guard_dominance",
-                    "value": "the size guard dominates the copy",
-                }
-            ],
-        },
+        obligation_required_fact_kinds=["source_sink_reachability"],
+        missing_fact_kinds=["source_sink_reachability"],
     )
     state = _state(issue)
 
-    _runner(agent).run(state)
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
 
     assert len(agent.inputs) == 2
     assert agent.inputs[1]["validation_pass"] == "evidence_recheck"
     delta = agent.inputs[1]["evidence_slice"]["evidence_delta"]
-    assert {fact["fact_uid"] for fact in delta["facts"]} == {
-        "FACT_RANGE",
-        "FACT_GUARD",
+    assert delta["fact_kinds"] == ["source_controllability"]
+    assert delta["facts"][0]["verification_certificate"]["schema_version"] == (
+        "zscope.evidence-certificate.v2"
+    )
+    v1_fact_kinds = {
+        fact["fact_kind"]
+        for fact in agent.inputs[0]["evidence_slice"]["decision_facts"]["facts"]
     }
-    assert delta["fact_kinds"] == ["guard_dominance", "value_range"]
+    assert "source_sink_reachability" in v1_fact_kinds
     assert issue["validator_fact_resolution"]["status"] == "completed_partial"
     assert issue["validator_pass_history"][-1]["pass"] == "evidence_recheck"
     assert issue["evidence_completion_attempt_count"] == 2
@@ -502,7 +647,8 @@ def test_validation_runner_does_not_recheck_without_evidence_delta() -> None:
 
     assert len(agent.inputs) == 1
     assert issue["validator_fact_resolution"]["status"] == "exhausted"
-    assert issue["validator_stop_reason"] == "no_evidence_gain"
+    assert issue["validator_stop_reason"] == "missing_fact"
+    assert issue["validator_v2_stop_reason"] == "no_evidence_gain"
 
 
 def test_validation_runner_maps_fact_provider_timeout_to_canonical_stop(monkeypatch) -> None:
@@ -542,39 +688,42 @@ def test_validation_runner_maps_fact_provider_timeout_to_canonical_stop(monkeypa
 
     assert state["validation_queue_drained"] is True
     assert issue["validator_fact_resolution"]["status"] == "timeout"
-    assert issue["validator_stop_reason"] == "fact_timeout"
+    assert issue["validator_stop_reason"] == "missing_fact"
+    assert issue["validator_v2_stop_reason"] == "fact_timeout"
     assert issue["candidate_disposition"] == "needs_review"
 
 
 def test_balanced_runs_long_v3_for_high_risk_external_candidate() -> None:
-    request = {
-        "fact_kind": "value_range",
-        "subject_uid": "wire_len",
-        "function_uid": "sink_func",
-        "reason": "the caller bound is missing",
-    }
-
     class InvestigatingValidator(FakeValidatorAgent):
         def __init__(self):
             super().__init__(
                 [
                     AgentResponse(
                         success=True,
-                        data=_validator_v3_result(
-                            missing_fact_request=request,
-                            stop_reason="missing_fact",
-                        ),
-                    ),
-                    AgentResponse(
-                        success=True,
-                        data=_validator_v3_result(validation_pass="evidence_recheck"),
+                        data=_validator_v3_result(),
                     ),
                 ]
             )
             self.investigations = []
 
-        def investigate(self, input_data, **kwargs):
-            self.investigations.append((input_data, kwargs))
+        def investigate(
+            self,
+            input_data,
+            *,
+            max_iterations=50,
+            evidence_actions=None,
+            evidence_action_executor=None,
+        ):
+            self.investigations.append(
+                (
+                    input_data,
+                    {
+                        "max_iterations": max_iterations,
+                        "evidence_actions": evidence_actions,
+                        "evidence_action_executor": evidence_action_executor,
+                    },
+                )
+            )
             return AgentResponse(
                 success=True,
                 data=_validator_v3_result(
@@ -585,39 +734,74 @@ def test_balanced_runs_long_v3_for_high_risk_external_candidate() -> None:
             )
 
     agent = InvestigatingValidator()
-    issue = _issue(
+    issue = _executable_path_issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
         severity="high",
         reachable_from_entry=True,
-        security_obligation={
-            "obligation_uid": "OBL_RANGE",
-            "subject_uid": "wire_len",
-            "required_fact_kinds": ["value_range"],
-        },
-        obligation_required_fact_kinds=["value_range"],
-        missing_fact_kinds=["value_range"],
-        fact_completion_by_kind={
-            "value_range": [
-                {
-                    "fact_uid": "FACT_RANGE",
-                    "kind": "value_range",
-                    "value": "wire_len may exceed destination_capacity",
-                }
-            ]
-        },
     )
     state = _state(issue)
 
     _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
 
     assert len(agent.investigations) == 1
-    assert agent.investigations[0][1] == {"max_iterations": 50}
+    kwargs = agent.investigations[0][1]
+    assert kwargs["max_iterations"] == 50
+    assert len(kwargs["evidence_actions"]) == 2
+    assert callable(kwargs["evidence_action_executor"])
     assert issue["validator_pass_history"][-1]["pass"] == "investigation_synthesis"
     assert issue["attribution"]["decision_level"] == "V3"
 
 
-def test_balanced_runs_v3_without_v2_when_local_fact_providers_add_no_delta() -> None:
+def test_v3_rejects_another_action_after_its_clause_was_closed() -> None:
+    class InvestigatingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
+            self.action_results = []
+
+        def investigate(
+            self,
+            _input_data,
+            *,
+            max_iterations=50,
+            evidence_actions=None,
+            evidence_action_executor=None,
+        ):
+            assert max_iterations == 50
+            actions = evidence_actions
+            execute = evidence_action_executor
+            assert callable(execute)
+            assert len(actions) == 2
+            self.action_results.append(execute(actions[0]["action_id"]))
+            self.action_results.append(execute(actions[1]["action_id"]))
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_exhausted",
+                ),
+            )
+
+    agent = InvestigatingValidator()
+    issue = _executable_path_issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="high",
+        reachable_from_entry=True,
+    )
+
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(_state(issue))
+
+    assert agent.action_results[0]["status"] == "verified_true"
+    assert agent.action_results[0]["newly_accepted"] is True
+    assert agent.action_results[1]["status"] == "unknown"
+    assert (
+        agent.action_results[1]["reason_code"]
+        == "evidence_action_clause_already_closed"
+    )
+
+
+def test_balanced_does_not_run_v3_when_no_executable_certificate_provider_exists() -> None:
     class InvestigatingValidator(FakeValidatorAgent):
         def __init__(self):
             super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
@@ -640,6 +824,7 @@ def test_balanced_runs_v3_without_v2_when_local_fact_providers_add_no_delta() ->
             validation_cluster_uid="VAL_V3",
             severity="critical",
             reachable_from_entry=True,
+            evidence_pack={"path": {"complete": False, "complete_to_entry": False}},
             security_obligation={
                 "obligation_uid": "OBL_CALLER",
                 "subject_uid": "sink_func",
@@ -652,12 +837,10 @@ def test_balanced_runs_v3_without_v2_when_local_fact_providers_add_no_delta() ->
 
     _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
 
-    assert len(agent.calls) == 1
-    assert agent.calls[0][1] == {"max_iterations": 50}
-    assert [entry["pass"] for entry in state["observations"][0]["validator_pass_history"]] == [
-        "initial",
-        "investigation_synthesis",
-    ]
+    assert agent.calls == []
+    issue = state["observations"][0]
+    assert issue["validator_v3_eligibility"]["reason"] == "no_readonly_closable_gap"
+    assert [entry["pass"] for entry in issue["validator_pass_history"]] == ["initial"]
 
 
 def test_balanced_does_not_run_v3_for_medium_risk_candidate() -> None:
@@ -714,19 +897,12 @@ def test_balanced_runs_v3_for_medium_candidate_when_explicitly_external() -> Non
             )
 
     agent = InvestigatingValidator()
-    issue = _issue(
+    issue = _executable_path_issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
         severity="medium",
         impact_level="medium",
         externally_reachable=True,
-        security_obligation={
-            "obligation_uid": "OBL_RANGE",
-            "subject_uid": "wire_len",
-            "required_fact_kinds": ["value_range"],
-        },
-        obligation_required_fact_kinds=["value_range"],
-        missing_fact_kinds=["value_range"],
     )
 
     _runner(agent, scan=SimpleNamespace(depth="balanced")).run(_state(issue))
@@ -752,19 +928,12 @@ def test_balanced_recoverable_v1_failure_enters_v3(error) -> None:
             )
 
     agent = RecoveringValidator()
-    issue = _issue(
+    issue = _executable_path_issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
         severity="high",
         impact_level="high",
         externally_reachable=True,
-        security_obligation={
-            "obligation_uid": "OBL_RANGE",
-            "subject_uid": "wire_len",
-            "required_fact_kinds": ["value_range"],
-        },
-        obligation_required_fact_kinds=["value_range"],
-        missing_fact_kinds=["value_range"],
     )
 
     _runner(agent, scan=SimpleNamespace(depth="balanced")).run(_state(issue))
@@ -786,7 +955,14 @@ def test_balanced_escalates_unclosed_model_verdicts_to_v3(verdict) -> None:
                             verdict=verdict,
                             stop_reason="decision_complete",
                         ),
-                    )
+                    ),
+                    AgentResponse(
+                        success=True,
+                        data=_validator_v3_result(
+                            validation_pass="evidence_recheck",
+                            stop_reason="decision_complete",
+                        ),
+                    ),
                 ]
             )
             self.calls = []
@@ -802,7 +978,7 @@ def test_balanced_escalates_unclosed_model_verdicts_to_v3(verdict) -> None:
             )
 
     agent = InvestigatingValidator()
-    issue = _issue(
+    issue = _executable_path_issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
         severity="high",
@@ -812,13 +988,6 @@ def test_balanced_escalates_unclosed_model_verdicts_to_v3(verdict) -> None:
         confidence=0.1,
         rule_confidence=0.1,
         evidence_pack={"path": {"complete": False, "complete_to_entry": True}},
-        security_obligation={
-            "obligation_uid": "OBL_CALLER",
-            "subject_uid": "sink_func",
-            "required_fact_kinds": ["caller_contract"],
-        },
-        obligation_required_fact_kinds=["caller_contract"],
-        missing_fact_kinds=["caller_contract"],
     )
 
     _runner(agent, scan=SimpleNamespace(depth="balanced")).run(_state(issue))
@@ -827,9 +996,10 @@ def test_balanced_escalates_unclosed_model_verdicts_to_v3(verdict) -> None:
     assert agent.calls[0][1] == {"max_iterations": 50}
     assert issue["validator_result_pass"] == "investigation_synthesis"
     assert issue["candidate_disposition"] == "needs_review"
+    assert issue["validator_v3_eligibility"]["risk_basis"]["truth_fields_consulted"] is False
 
 
-def test_v3_tool_backed_fact_closure_reenters_promotion_policy() -> None:
+def test_v3_legacy_generic_tool_fact_cannot_reenter_live_promotion_policy() -> None:
     class ClosingValidator(FakeValidatorAgent):
         def __init__(self):
             super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
@@ -837,8 +1007,8 @@ def test_v3_tool_backed_fact_closure_reenters_promotion_policy() -> None:
 
         def investigate(self, input_data, **kwargs):
             self.calls += 1
-            tool_ref = "TOOLFACT_RANGE"
-            fact_uid = "FACT_V3_RANGE"
+            fact, catalog = _verified_v3_fact()
+            fact_uid = fact["fact_uid"]
             return AgentResponse(
                 success=True,
                 data=_validator_v3_result(
@@ -850,42 +1020,13 @@ def test_v3_tool_backed_fact_closure_reenters_promotion_policy() -> None:
                 metadata={
                     "iterations": 4,
                     "tool_call_count": 3,
-                    "validator_tool_fact_catalog": {
-                        tool_ref: {
-                            "evidence_ref": tool_ref,
-                            "tool_name": "get_data_flow",
-                            "dependency_code_hash": "tool-code-sha",
-                            "location": {
-                                "file": "src/demo.c",
-                                "function": "sink_func",
-                                "start_line": 10,
-                                "end_line": 14,
-                            },
-                        }
-                    },
-                    "validator_investigation_facts": [
-                        {
-                            "fact_uid": fact_uid,
-                            "fact_kind": "value_range",
-                            "summary": "wire_len may exceed destination capacity",
-                            "evidence_refs": [tool_ref],
-                            "producer_engine": "validator_readonly_tool_session",
-                            "dependency_code_hash": "tool-code-sha",
-                            "locations": [
-                                {
-                                    "file": "src/demo.c",
-                                    "function": "sink_func",
-                                    "start_line": 10,
-                                    "end_line": 14,
-                                }
-                            ],
-                        }
-                    ],
+                    "validator_tool_fact_catalog": catalog,
+                    "validator_investigation_facts": [fact],
                 },
             )
 
     agent = ClosingValidator()
-    issue = _issue(
+    issue = _executable_path_issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
         severity="high",
@@ -893,18 +1034,13 @@ def test_v3_tool_backed_fact_closure_reenters_promotion_policy() -> None:
         reachable_from_entry=True,
         decision_context_version="zscope.decision-context.v3.1",
         source_identity="wire_len",
+        subject_uid="wire_len",
+        obligation_uid="OBL_MULTI",
         sink_identity="memcpy",
-        security_obligation={
-            "obligation_uid": "OBL_RANGE",
-            "subject_uid": "wire_len",
-            "required_fact_kinds": ["value_range"],
-        },
-        obligation_required_fact_kinds=["value_range"],
-        missing_fact_kinds=["value_range"],
         decision_fact_slice={
             "fact_uids": ["FACT_BASE"],
             "dependency_code_hashes": ["base-code-sha"],
-            "missing_fact_kinds": ["value_range"],
+            "missing_fact_kinds": ["source_sink_reachability"],
             "coverage": "partial",
         },
         decision_fact_coverage="partial",
@@ -914,14 +1050,94 @@ def test_v3_tool_backed_fact_closure_reenters_promotion_policy() -> None:
     _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
 
     assert agent.calls == 1
-    assert state["issues"] == [issue]
-    assert issue["candidate_disposition"] == "confirmed"
-    assert issue["v3_evidence_closure"]["complete"] is True
-    assert issue["v3_evidence_closure"]["fact_uids"] == ["FACT_V3_RANGE"]
-    assert issue["decision_fact_coverage"] == "complete"
-    assert issue["missing_fact_kinds"] == []
-    assert issue["decision_fact_slice"]["facts"][0]["fact_uid"] == "FACT_V3_RANGE"
+    assert state["issues"] == []
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["v3_evidence_closure"]["complete"] is False
+    assert issue["decision_fact_coverage"] == "partial"
     assert issue["v3_tool_fact_catalog"]["TOOLFACT_RANGE"]["tool_name"] == "get_data_flow"
+
+
+def test_v3_is_not_started_for_external_contract_without_program_provider() -> None:
+    holder = {}
+
+    class ClosingAfterProviderValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__(
+                [
+                    AgentResponse(success=True, data=_validator_v3_result()),
+                    AgentResponse(
+                        success=True,
+                        data=_validator_v3_result(
+                            verdict="verified",
+                            validation_pass="investigation_synthesis",
+                            stop_reason="decision_complete",
+                        ),
+                    ),
+                ]
+            )
+            self.investigation_calls = 0
+
+        def investigate(self, input_data, **kwargs):
+            self.investigation_calls += 1
+            holder["issue"]["fact_completion_by_kind"] = {
+                "caller_contract": [
+                    {
+                        "value": "public caller reaches sink_func",
+                        "dependency_code_hash": "caller-contract-sha",
+                    }
+                ]
+            }
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="verified",
+                    validation_pass="investigation_synthesis",
+                    missing_fact_request={
+                        "fact_kind": "caller_contract",
+                        "subject_uid": "sink_func",
+                        "function_uid": "sink_func",
+                        "reason": "the public caller contract must be closed",
+                    },
+                    stop_reason="missing_fact",
+                ),
+            )
+
+    agent = ClosingAfterProviderValidator()
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="high",
+        impact_level="high",
+        externally_reachable=False,
+        evidence_pack={"path": {"complete": False, "complete_to_entry": False}},
+        decision_context_version="zscope.decision-context.v3.1",
+        source_identity="public_input",
+        sink_identity="sink_func",
+        security_obligation={
+            "obligation_uid": "OBL_CALLER",
+            "subject_uid": "sink_func",
+            "required_fact_kinds": ["caller_contract"],
+        },
+        obligation_required_fact_kinds=["caller_contract"],
+        missing_fact_kinds=["caller_contract"],
+        decision_fact_slice={
+            "fact_uids": ["FACT_BASE"],
+            "dependency_code_hashes": ["base-code-sha"],
+            "missing_fact_kinds": ["caller_contract"],
+            "coverage": "partial",
+        },
+        decision_fact_coverage="partial",
+    )
+    holder["issue"] = issue
+
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(_state(issue))
+
+    assert agent.investigation_calls == 0
+    assert len(agent.inputs) == 1
+    assert issue["decision_fact_coverage"] == "partial"
+    assert issue["missing_fact_kinds"] == ["caller_contract"]
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["validator_v3_eligibility"]["reason"] == "no_readonly_closable_gap"
 
 
 def test_v3_rejects_unbacked_fact_uid_from_default_promotion() -> None:
@@ -954,7 +1170,7 @@ def test_v3_rejects_unbacked_fact_uid_from_default_promotion() -> None:
                 },
             )
 
-    issue = _issue(
+    issue = _executable_path_issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
         severity="high",
@@ -962,18 +1178,13 @@ def test_v3_rejects_unbacked_fact_uid_from_default_promotion() -> None:
         externally_reachable=True,
         decision_context_version="zscope.decision-context.v3.1",
         source_identity="wire_len",
+        subject_uid="wire_len",
+        obligation_uid="OBL_MULTI",
         sink_identity="memcpy",
-        security_obligation={
-            "obligation_uid": "OBL_RANGE",
-            "subject_uid": "wire_len",
-            "required_fact_kinds": ["value_range"],
-        },
-        obligation_required_fact_kinds=["value_range"],
-        missing_fact_kinds=["value_range"],
         decision_fact_slice={
             "fact_uids": ["FACT_BASE"],
             "dependency_code_hashes": ["base-code-sha"],
-            "missing_fact_kinds": ["value_range"],
+            "missing_fact_kinds": ["source_sink_reachability"],
             "coverage": "partial",
         },
         decision_fact_coverage="partial",
@@ -988,6 +1199,7 @@ def test_v3_rejects_unbacked_fact_uid_from_default_promotion() -> None:
 
 def test_v3_closure_normalizes_obligation_event_aliases() -> None:
     issue = {
+        "allow_legacy_v3_claim_replay": True,
         "missing_fact_kinds": ["event:shared_state_access", "lockset"],
         "decision_fact_slice": {
             "fact_uids": ["FACT_BASE"],
@@ -996,27 +1208,18 @@ def test_v3_closure_normalizes_obligation_event_aliases() -> None:
             "coverage": "partial",
         },
     }
-    fact = {
-        "fact_uid": "FACT_V3_LOCKSET",
-        "fact_kind": "lockset",
-        "summary": "the same mutex protects both accesses",
-        "evidence_refs": ["TOOLFACT_LOCKSET"],
-        "producer_engine": "validator_readonly_tool_session",
-        "dependency_code_hash": "lockset-code-sha",
-        "locations": [{"file": "src/demo.c", "start_line": 10}],
-    }
+    fact, catalog = _verified_v3_fact(
+        fact_kind="lockset",
+        subject_uid="shared_state",
+        ref="TOOLFACT_LOCKSET",
+    )
 
     ValidationRunner._apply_v3_investigation_facts(
         issue,
-        {"evidence_refs": ["FACT_V3_LOCKSET"]},
+        {"evidence_refs": [fact["fact_uid"]]},
         {
             "validator_investigation_facts": [fact],
-            "validator_tool_fact_catalog": {
-                "TOOLFACT_LOCKSET": {
-                    "tool_name": "get_file_snippet",
-                    "dependency_code_hash": "lockset-code-sha",
-                }
-            },
+            "validator_tool_fact_catalog": catalog,
         },
     )
 
@@ -1025,28 +1228,134 @@ def test_v3_closure_normalizes_obligation_event_aliases() -> None:
     assert issue["missing_fact_kinds"] == []
 
 
-def test_deep_runs_v3_for_every_unclosed_non_shadow_candidate() -> None:
-    request = {
-        "fact_kind": "value_range",
-        "subject_uid": "wire_len",
-        "function_uid": "sink_func",
-        "reason": "the caller bound is missing",
-    }
+def test_v3_legacy_claim_is_not_accepted_by_live_strict_verifier() -> None:
+    class ClaimingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__(
+                [
+                    AgentResponse(success=True, data=_validator_v3_result()),
+                    AgentResponse(
+                        success=True,
+                        data=_validator_v3_result(validation_pass="evidence_recheck"),
+                    ),
+                ]
+            )
 
+        def investigate(self, input_data, *, max_iterations=50, claim_verifier=None):
+            _, catalog = _verified_v3_fact()
+            assert max_iterations == 50
+            assert claim_verifier is not None
+            verification = claim_verifier(
+                {
+                    "obligation_uid": "OBL_PATH",
+                    "fact_kind": "value_range",
+                    "predicate": "value_range_is_proved",
+                    "polarity": "supports",
+                    "subject_uid": "wire_len",
+                    "decision_region_uid": "REGION_PATH",
+                    "arguments": {"query": "value_range"},
+                    "cited_evidence_refs": ["TOOLFACT_RANGE"],
+                },
+                catalog,
+            )
+            assert verification["status"] == "unknown"
+            assert verification["reason_code"] == "claim_protocol_invalid"
+            assert verification.get("accepted_into_decision_slice") is not True
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="uncertain",
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_exhausted",
+                ),
+                metadata={
+                    "iterations": 5,
+                    "tool_call_count": 2,
+                    "validator_tool_fact_catalog": catalog,
+                    "validator_investigation_facts": [verification["verified_fact"]],
+                },
+            )
+
+    issue = _executable_path_issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="high",
+        impact_level="high",
+        externally_reachable=True,
+        decision_context_version="zscope.decision-context.v3.1",
+        source_identity="wire_len",
+        subject_uid="wire_len",
+        obligation_uid="OBL_MULTI",
+        sink_identity="memcpy",
+        decision_fact_slice={
+            "fact_uids": ["FACT_BASE"],
+            "dependency_code_hashes": ["base-code-sha"],
+            "missing_fact_kinds": ["source_sink_reachability"],
+            "coverage": "partial",
+        },
+        decision_fact_coverage="partial",
+    )
+
+    _runner(ClaimingValidator(), scan=SimpleNamespace(depth="balanced")).run(_state(issue))
+
+    assert issue["candidate_disposition"] == "needs_review"
+    assert "value_range" not in issue["evidence_closure_state"]["resolved_fact_kinds"]
+    assert issue["validator_pass_history"][-1]["new_fact_count"] == 0
+
+
+def test_v3_invalid_claim_is_unknown_and_persisted_in_trace(tmp_path) -> None:
+    runner = _runner(
+        None,
+        analysis=SimpleNamespace(snapshot_dir=str(tmp_path)),
+    )
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3_INVALID_CLAIM",
+        obligation_uid="OBL_TEST",
+        subject_uid="wire_len",
+        decision_region_uid="REGION_1",
+    )
+
+    verification = runner._verify_v3_claim(
+        issue,
+        {
+            "fact_kind": "value_range",
+            # A model may pick two independently valid enum members that do
+            # not form a valid fact/predicate pair.  This must be traceable,
+            # not swallowed by the Agent tool loop.
+            "predicate": "caller_contract_holds",
+            "polarity": "supports",
+            "subject_uid": "wire_len",
+            "decision_region_uid": "REGION_1",
+            "arguments": {"query": "value_range"},
+            "cited_evidence_refs": ["TOOLFACT_RANGE"],
+        },
+        {},
+    )
+
+    assert verification["status"] == "unknown"
+    assert verification["reason_code"] == "claim_protocol_invalid"
+    trace = runner._decision_trace_store.trace("VAL_V3_INVALID_CLAIM")
+    verifier_events = [event for event in trace["events"] if event["stage"] == "verifier"]
+    assert len(verifier_events) == 1
+    assert verifier_events[0]["reason_code"] == "FACT_UNKNOWN"
+    assert verifier_events[0]["details"]["verification_reason"] == "claim_protocol_invalid"
+    assert verifier_events[0]["input_refs"]
+    assert verifier_events[0]["output_refs"]
+    certificate_object = json.loads(
+        (tmp_path / verifier_events[0]["output_refs"][0]).read_text(encoding="utf-8")
+    )
+    assert verify_evidence_certificate(certificate_object["payload"]) == (True, "ok")
+
+
+def test_deep_runs_v3_for_every_unclosed_non_shadow_candidate() -> None:
     class InvestigatingValidator(FakeValidatorAgent):
         def __init__(self):
             super().__init__(
                 [
                     AgentResponse(
                         success=True,
-                        data=_validator_v3_result(
-                            missing_fact_request=request,
-                            stop_reason="missing_fact",
-                        ),
-                    ),
-                    AgentResponse(
-                        success=True,
-                        data=_validator_v3_result(validation_pass="evidence_recheck"),
+                        data=_validator_v3_result(),
                     ),
                 ]
             )
@@ -1064,28 +1373,12 @@ def test_deep_runs_v3_for_every_unclosed_non_shadow_candidate() -> None:
             )
 
     agent = InvestigatingValidator()
-    issue = _issue(
+    issue = _executable_path_issue(
         candidate_uid="CAND_V3",
         validation_cluster_uid="VAL_V3",
         severity="medium",
         risk_score=1,
         reachable_from_entry=False,
-        security_obligation={
-            "obligation_uid": "OBL_RANGE",
-            "subject_uid": "wire_len",
-            "required_fact_kinds": ["value_range"],
-        },
-        obligation_required_fact_kinds=["value_range"],
-        missing_fact_kinds=["value_range"],
-        fact_completion_by_kind={
-            "value_range": [
-                {
-                    "fact_uid": "FACT_RANGE",
-                    "kind": "value_range",
-                    "value": "wire_len may exceed destination_capacity",
-                }
-            ]
-        },
     )
 
     _runner(agent, scan=SimpleNamespace(depth="deep")).run(_state(issue))

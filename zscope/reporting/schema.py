@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from ..orchestration.candidate_envelope import CANDIDATE_SCHEMA_VERSION
@@ -662,6 +663,25 @@ def apply_report_schema_v2(
     report["run_manifest"]["finding_root_alias_count"] = int(
         state.get("finding_root_alias_count", 0) or 0
     )
+    report["run_manifest"]["finding_root_projection"] = dict(
+        state.get("finding_root_projection_summary") or {}
+    )
+    trace_manifest = state.get("decision_trace_manifest")
+    if isinstance(trace_manifest, dict):
+        report["run_manifest"]["decision_trace"] = {
+            key: deepcopy(trace_manifest.get(key))
+            for key in (
+                "schema_version",
+                "manifest_path",
+                "manifest_sha256",
+                "trace_count",
+                "coverage_trace_count",
+                "evidence_object_count",
+                "model_event_count",
+                "complete",
+                "errors",
+            )
+        }
     for key in (
         "validator_session_count",
         "validator_api_call_count",

@@ -142,7 +142,7 @@ def _render(
         *project_lines,
         "",
         "scan:",
-        "  depth: fast # fast=2M；C/C++ 可选 balanced=12M 或 deep=30M。",
+        "  depth: fast # C/C++ 可选 balanced 或 deep；token 只观测，不作为运行时硬上限。",
         '  task: "" # 空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。',
         "  llm_profiles: {modeling: default, analysis: default, validation: default}",
         "",
