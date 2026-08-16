@@ -22,6 +22,7 @@ from zscope.benchmarking.runner import (
     score_artifact,
 )
 from zscope.framework.llm_usage import LLMUsageAttribution, LLMUsageEvent
+from zscope.orchestration.decision_trace import DecisionTraceStore
 
 
 def _usage_event(*, sequence: int = 1, reservation_id: str = "call-1") -> dict:
@@ -151,12 +152,17 @@ def test_individual_run_release_eligibility_requires_formal_mode_and_gates() -> 
     assert _run_release_eligible("formal", {"queue_empty": True}, [])
 
 
-def test_cpp_benchmark_restores_validator_capacity_without_raising_llm_cap() -> None:
+def test_cpp_benchmark_uses_eight_parallel_entry_and_validation_workers() -> None:
     config = yaml.safe_load(SPECS["c_cpp"].config_path.read_text(encoding="utf-8"))
 
-    assert config["concurrency"]["validator_workers"] == 4
-    assert config["concurrency"]["llm_max_inflight"] == 4
-    assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 4
+    assert config["concurrency"]["entry_workers"] == 8
+    assert config["concurrency"]["validator_workers"] == 8
+    assert config["concurrency"]["llm_max_inflight"] == 8
+    assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 8
+    assert config["concurrency"]["investigator_workers"] == 1
+    assert config["concurrency"]["evidence_completion_workers"] == 2
+    assert config["concurrency"]["index_workers"] == 4
+    assert config["concurrency"]["svf_workers"] == 2
 
 
 def test_wsl_cpp_work_root_rejects_windows_mount(monkeypatch, tmp_path: Path) -> None:
@@ -188,6 +194,45 @@ def test_trial_workspace_is_temporary_and_removed(monkeypatch, tmp_path: Path) -
 
     assert result == {"run": 1, "mode": "trial"}
     assert not observed["workspace"].exists()
+
+
+def test_failed_trial_archives_partial_trace_before_workspace_cleanup(
+    monkeypatch, tmp_path: Path
+) -> None:
+    work_parent = tmp_path / "native-work"
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
+    observed = {}
+
+    def fake_run(spec, run_dir, run_number, *, mode, workspace, scan_depth):
+        observed["workspace"] = workspace
+        trace_root = workspace / "scan-input" / ".zscope_snapshots"
+        (trace_root / "decision_traces").mkdir(parents=True)
+        (trace_root / "decision_traces" / "VAL_1.json").write_text(
+            json.dumps({"validation_cluster_uid": "VAL_1"}),
+            encoding="utf-8",
+        )
+        (trace_root / "llm_usage_events_deadbeef.jsonl").write_text(
+            json.dumps(_usage_event()) + "\n",
+            encoding="utf-8",
+        )
+        raise BenchmarkError("scan interrupted")
+
+    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fake_run)
+
+    with pytest.raises(BenchmarkError, match="scan interrupted"):
+        benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="trial")
+
+    assert not observed["workspace"].exists()
+    archive = json.loads((artifact / "interrupted-diagnostics.json").read_text(encoding="utf-8"))
+    assert archive["release_eligible"] is False
+    assert archive["answer_material_present"] is False
+    assert {item["path"] for item in archive["files"]} == {
+        "decision_traces/VAL_1.json",
+        "llm_usage_events_deadbeef.jsonl",
+    }
+    assert (artifact / "interrupted-diagnostics" / "decision_traces" / "VAL_1.json").is_file()
 
 
 def test_score_exposes_confirmed_and_with_review_views(monkeypatch, tmp_path: Path) -> None:
@@ -248,6 +293,17 @@ def test_score_exposes_confirmed_and_with_review_views(monkeypatch, tmp_path: Pa
     assert score["scan_wall_seconds"] == 120.5
     assert score["wall_seconds"] == score["scan_wall_seconds"]
     assert score["performance_telemetry"]["validator_api_call_count"] == 10
+
+
+def test_formal_gate_requires_current_truth_matcher_but_trial_remains_readable() -> None:
+    legacy = {"scoring_contract": {}}
+    current = {"scoring_contract": {"matcher_version": benchmark_runner.MATCHER_VERSION}}
+
+    assert benchmark_runner._truth_matcher_gate_failures("trial", legacy) == []
+    assert benchmark_runner._truth_matcher_gate_failures("formal", current) == []
+    failures = benchmark_runner._truth_matcher_gate_failures("formal", legacy)
+    assert len(failures) == 1
+    assert benchmark_runner.MATCHER_VERSION in failures[0]
 
 
 def test_dry_run_does_not_require_llm_or_create_output(monkeypatch, tmp_path: Path) -> None:
@@ -313,6 +369,135 @@ def test_usage_event_sidecar_is_archived_from_scan_workspace(tmp_path: Path) -> 
     assert len(artifact["sha256"]) == 64
     assert spans == [event]
     assert report["metadata"]["llm_usage_events_artifact"] == artifact
+
+
+def test_decision_trace_sidecar_is_archived_and_rebound_for_offline_explain(
+    tmp_path: Path, capsys
+) -> None:
+    scan_root = tmp_path / "scan"
+    trace_root = scan_root / ".zscope_snapshots"
+    run_dir = tmp_path / "run"
+    trace_root.mkdir(parents=True)
+    run_dir.mkdir()
+    event = _usage_event()
+    usage_path = trace_root / "usage.jsonl"
+    usage_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    class UsageLedger:
+        def snapshot(self, include_events=False):
+            return {
+                "schema_version": "zscope.llm-usage-ledger.v1",
+                "usage_events_path": str(usage_path),
+                "events": [event] if include_events else [],
+                "usage_attribution": {"provider_usage_coverage": 1.0},
+            }
+
+    store = DecisionTraceStore(trace_root, scan_uid="SCAN_1", usage_ledger=UsageLedger())
+    evidence_ref = store.put_evidence(
+        kind="decision_slice",
+        payload={"fact": "verified"},
+        producer="test",
+    )
+    store.append_event(
+        "cluster-1",
+        stage="V1",
+        actor="validator_agent",
+        reason_code="V1_COMPLETED",
+        output_refs=(evidence_ref,),
+        call_ids=(event["call_id"],),
+        token_delta=event["total_tokens"],
+    )
+    issue = {
+        "candidate_uid": "candidate-1",
+        "validation_cluster_uid": "cluster-1",
+        "candidate_disposition": "confirmed",
+        "validation_status": "validated",
+        "proof_coverage": "complete",
+        "decision_proof": {"coverage": "complete", "polarity": "positive"},
+    }
+    store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
+    manifest = store.snapshot()
+    report = {
+        "issues": [issue],
+        "metadata": {"llm_budget": {"usage_events_path": str(usage_path)}},
+        "run_manifest": {"decision_trace": manifest},
+    }
+
+    usage_artifact = benchmark_runner._archive_usage_events(
+        report,
+        scan_root=scan_root,
+        run_dir=run_dir,
+    )
+    trace_artifact = benchmark_runner._archive_decision_trace_artifacts(
+        report,
+        scan_root=scan_root,
+        run_dir=run_dir,
+        usage_artifact=usage_artifact,
+    )
+    report_path = run_dir / "report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    assert trace_artifact is not None
+    assert trace_artifact["trace_count"] == 1
+    assert trace_artifact["evidence_object_count"] >= 1
+    assert report["run_manifest"]["decision_trace"]["manifest_path"] == (
+        "decision_trace_manifest.json"
+    )
+    archived_manifest = json.loads(
+        (run_dir / "decision_trace_manifest.json").read_text(encoding="utf-8")
+    )
+    assert archived_manifest["llm_usage_events"]["path"] == "llm_usage_events.jsonl"
+    assert archived_manifest["llm_usage_events"]["file_sha256"] == usage_artifact["sha256"]
+    assert (run_dir / issue["decision_trace_ref"]).is_file()
+    assert (run_dir / evidence_ref).is_file()
+
+    from zscope.cli.explain import main as explain_main
+
+    assert (
+        explain_main(["--report", str(report_path), "--cluster", "cluster-1", "--format", "json"])
+        == 0
+    )
+    explanation = json.loads(capsys.readouterr().out)
+    assert explanation["terminal_disposition"] == "confirmed"
+
+
+def test_decision_trace_archive_rejects_tampered_content_object(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    trace_root = scan_root / ".zscope_snapshots"
+    run_dir = tmp_path / "run"
+    trace_root.mkdir(parents=True)
+    run_dir.mkdir()
+    store = DecisionTraceStore(trace_root)
+    reference = store.put_evidence(kind="fact", payload={"ok": True}, producer="test")
+    store.append_event(
+        "VAL_1",
+        stage="V1",
+        actor="validator_agent",
+        reason_code="V1_COMPLETED",
+        output_refs=(reference,),
+    )
+    issue = {
+        "candidate_uid": "CAND_1",
+        "validation_cluster_uid": "VAL_1",
+        "candidate_disposition": "needs_review",
+    }
+    store.finalize_issue(issue, view_memberships=("with_needs_review",))
+    manifest = store.snapshot()
+    evidence_path = trace_root / reference
+    evidence_path.write_text("{}\n", encoding="utf-8")
+    report = {
+        "issues_with_needs_review": [issue],
+        "candidate_terminal_states": [issue],
+        "run_manifest": {"decision_trace": manifest},
+    }
+
+    with pytest.raises(BenchmarkError, match="invalid evidence object"):
+        benchmark_runner._archive_decision_trace_artifacts(
+            report,
+            scan_root=scan_root,
+            run_dir=run_dir,
+            usage_artifact=None,
+        )
 
 
 def test_usage_event_sidecar_rejects_sparse_or_unknown_v1_fields(tmp_path: Path) -> None:
