@@ -9,6 +9,10 @@
 - Scorer PR不得修改产品检测逻辑或fixture。
 - 跨域需求必须拆分变更，由独立Benchmark reviewer批准依赖顺序。
 
+该不变量由`scripts/check_zscope_2_change_scope.py`和CI的
+`Z-SCOPE 2.0 change-scope governance`作业强制执行。脚本只根据Git路径分域，
+不读取truth内容，也不影响产品运行时。
+
 ## 反定制门禁
 
 CI递归扫描agents、core、orchestration、retrieval、rules、semantics、tools和reporting，禁止：

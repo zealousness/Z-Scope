@@ -3,10 +3,10 @@
   "design_version": "1.0.0",
   "design_status": "reviewed",
   "baseline": {
-    "git_commit": "17a9fc0100ea8a991bc25f3cfa76ca2dbb111ef8",
-    "git_tree": "c6dc2204da666ee3f7085894c5bce824d58c5486",
-    "clean": false,
-    "worktree_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23"
+    "git_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
+    "git_tree": "631f10adc6d23beb672569fdb337c81e02a031ca",
+    "clean": true,
+    "worktree_patch_sha256": ""
   },
   "phases": [
     {"phase": "P0", "status": "in_progress", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
@@ -25,19 +25,19 @@
       "phase": "P0",
       "kind": "design_archive",
       "status": "collected",
-      "implementation_commit": "",
+      "implementation_commit": "7acbe3561d008971310c024349066ba9593bd652",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
-          "sha256": "5ce204f6b804ada7309afa24e2bc87cd0c080aafd262f6c808ec490ad6cec82b"
+          "sha256": "23fb13996f284bb7db2705369114bdfbe60e85ef16a17ea2477b7db9a7dc45f4"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
-          "sha256": "6c02241a88176e2b8fe5960bb95d3fe225161df62b20e6c938db17a515eeca02"
+          "sha256": "2a8b2d6ab5ef66530dba78aa61e3da59aedcafc256a62b47734926dc3acf033d"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/baseline-artifact-manifest.json",
-          "sha256": "625563db309dc2b1046400764e197764c7a1e333dbc774cc22cd41421b6627cc"
+          "sha256": "66249c22fcf3f1151d9c8fc4868297b2b1cb7dee5950458fa5ed306a67d3b448"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
@@ -45,7 +45,30 @@
         }
       ],
       "reviewed_by": [],
-      "notes": "Normative documents and initial static audit are present. The implementation_commit and formal reviews remain empty until the design-only commit and clean baseline review are complete."
+      "notes": "The design-only archive commit is recorded and the previously dirty baseline has been split into four domain-separated commits. Cold runtime artifacts and formal reviews remain outstanding."
+    },
+    {
+      "evidence_uid": "P0-CHANGE-SCOPE-GATE",
+      "phase": "P0",
+      "kind": "governance_ci",
+      "status": "passed",
+      "implementation_commit": "",
+      "artifacts": [
+        {
+          "path": "scripts/check_zscope_2_change_scope.py",
+          "sha256": "6bab6a88b63ed19b3f86c34c480caf8fbf5a5909d1b92b6c465b6434e05d9c26"
+        },
+        {
+          "path": "tests/test_zscope_2_change_scope.py",
+          "sha256": "37d430188282bed22bbb31618fa6788df221decc706788511ce888435fe90162"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "06621354146ca09b08c0e885cf09ed3b7c0ee5e33671b136b6934c79b9963c2e"
+        }
+      ],
+      "reviewed_by": [],
+      "notes": "Unit tests, Black, mypy and compileall passed locally. The commit and reviewer fields remain open until this P0 governance change is committed and reviewed."
     }
   ]
 }
