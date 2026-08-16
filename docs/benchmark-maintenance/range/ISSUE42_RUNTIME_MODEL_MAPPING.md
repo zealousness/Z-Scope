@@ -59,7 +59,7 @@ contain issue-numbered or defect-named functions.
 | ISSUE42-025 | VM-023 PCM server state missing | `_runtime_mark_process_online` | Client init branch misses the process-state transition. |
 | ISSUE42-026 | VM-024 ftok concurrent issue | `_runtime_make_shared_key` | Path state and key generation are not made atomic. |
 | ISSUE42-027 | VM-025 wheel timer self-delete deadlock | `_runtime_cancel_wheel_timer` | Callback can re-enter timer deletion with conflicting lock order. |
-| ISSUE42-028 | VM-026 signal semaphore interrupt | `_runtime_write_exception_record` | Signal handler performs semaphore-protected work. |
+| ISSUE42-028 | VM-026 signal semaphore interrupt | `_runtime_write_exception_record`, `_runtime_record_signal_event` | Signal handler reaches a helper that performs semaphore-protected work. |
 | ISSUE42-029 | VM-027 WORK self-destruction race | `_runtime_finish_current_event` | Callback can free the current event before post-callback updates. |
 
 ISSUE42-012 was retired in benchmark v13 because the modeled log-level concern
