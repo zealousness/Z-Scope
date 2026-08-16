@@ -1,15 +1,22 @@
 {
   "schema_version": "zscope.baseline-artifact-manifest.v1",
   "design_version": "1.0.0",
-  "status": "incomplete_dirty_worktree",
-  "captured_at": "2026-08-17T00:00:00+08:00",
+  "status": "clean_code_baseline_runtime_artifacts_pending",
+  "captured_at": "2026-08-17T01:16:00+08:00",
   "source": {
     "branch": "main",
-    "git_commit": "17a9fc0100ea8a991bc25f3cfa76ca2dbb111ef8",
-    "git_tree": "c6dc2204da666ee3f7085894c5bce824d58c5486",
-    "worktree_clean": false,
+    "git_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
+    "git_tree": "631f10adc6d23beb672569fdb337c81e02a031ca",
+    "worktree_clean": true,
     "worktree_changed_path_count_before_design_archive": 84,
-    "worktree_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23"
+    "worktree_patch_sha256": "",
+    "pre_archive_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23",
+    "stabilization_commits": [
+      "1380b99 benchmark(range): version truth contract baseline to v15",
+      "201f6d2 benchmark(range): run pilots with eight workers",
+      "89e8274 benchmark: tighten structured matching and gap diagnostics",
+      "1564a95 feat: add traceable evidence closure and proof actions"
+    ]
   },
   "current_inputs": {
     "range_config": {
@@ -56,12 +63,11 @@
     "comparability": "historical reference only; it does not match the current baseline commit"
   },
   "missing_required_baseline_artifacts": [
-    "clean baseline commit containing the current worktree implementation",
     "cold fast report and raw usage for that clean commit",
     "cold balanced report and raw usage for that clean commit",
     "candidate ledger and decision trace bound to those reports",
     "matcher-v2 scores bound to the same reports",
-    "wheel content manifest and runtime dynamic reachability trace"
+    "runtime dynamic reachability trace"
   ],
   "approval_eligible": false
 }

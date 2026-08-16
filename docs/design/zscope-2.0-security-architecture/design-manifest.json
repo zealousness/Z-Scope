@@ -8,20 +8,21 @@
   "target_design_root": "docs/design/zscope-2.0-security-architecture",
   "baseline": {
     "branch": "main",
-    "git_commit": "17a9fc0100ea8a991bc25f3cfa76ca2dbb111ef8",
-    "git_tree": "c6dc2204da666ee3f7085894c5bce824d58c5486",
-    "worktree_clean": false,
+    "git_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
+    "git_tree": "631f10adc6d23beb672569fdb337c81e02a031ca",
+    "worktree_clean": true,
     "worktree_changed_path_count_before_design_archive": 84,
-    "worktree_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23"
+    "worktree_patch_sha256": "",
+    "pre_archive_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23"
   },
   "document_hashes": {
     "docs/design/README.md": "049ceb43d18afdbf21162b2ca4c0965026dc0b1cdeff6fd71f282d82fdb46a99",
-    "README.md": "aa260edc8436da2441c962966b281821f15e62ef1407aa0bdd89739d8feb2653",
+    "README.md": "c4f7f4ab1b4e1303050785ce7421b4aae1b667954f8ff6e603a90a2dd2662272",
     "architecture.md": "5a0197bf5469ce18d468aabbfce706b952f1ced98c499a0e5a72cdb0136c801b",
     "contracts.md": "d058a16eb13641ba951948943b8f400dcfc58baeb72e15a08e74d5e9c0f04745",
     "deprecation-plan.md": "a2475243e5ba10b191b50152a08e27dd762c032eaaf0cfceb4ad6ac2c7f97b9a",
     "benchmark-v5.md": "41489f657e4cce712e4c8467646d6184f0a58c42759c9abf068f328e993a294e",
-    "implementation-governance.md": "4baee95d954ff395c882cd6f955521243c671f3682109d8c5ed4b8c38021631b",
+    "implementation-governance.md": "526bd13419a79b82c928d08ccf3655a3c9e7bfba6a536ffec7b05533710aa462",
     "CHANGELOG.md": "ed40b740873a9222da29eaf8eee803df4e9938f21e6c2b9adee4fd370b26722a",
     "adr/0001-replace-vulnerability-analyzer-with-hypothesis-hunter.md": "2bfa0ddcb882802dba9585d4dac2b71535825041aaf0eba848146b9e21581809",
     "adr/0002-finite-security-spec-dsl-and-user-review.md": "cf970220db9d65700d0678feb548a5e58db476b249836f0f39cea19c9111a8b9",
@@ -38,8 +39,8 @@
     "phases/P6-pilot-validation.md": "0cfcddd02820343931e8a988a753939c325861c17abdfcc36dec93b4da7fd93d",
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "74f62a4e58a900a641a3aa837f5f24b6e05809141108d23ed1bfa476299e2361",
-    "acceptance/runtime-reachability-manifest.json": "6c02241a88176e2b8fe5960bb95d3fe225161df62b20e6c938db17a515eeca02",
-    "acceptance/baseline-artifact-manifest.json": "625563db309dc2b1046400764e197764c7a1e333dbc774cc22cd41421b6627cc"
+    "acceptance/runtime-reachability-manifest.json": "2a8b2d6ab5ef66530dba78aa61e3da59aedcafc256a62b47734926dc3acf033d",
+    "acceptance/baseline-artifact-manifest.json": "66249c22fcf3f1151d9c8fc4868297b2b1cb7dee5950458fa5ed306a67d3b448"
   },
   "adrs": [
     {"id": "ADR-0001", "status": "accepted-for-design", "affected_phases": ["P1", "P4", "P5"]},
@@ -71,8 +72,7 @@
     "tag": "design-zscope-2.0-security-architecture-v1",
     "tag_created": false,
     "blocked_reasons": [
-      "baseline worktree is not clean",
-      "baseline artifacts do not match the current baseline commit",
+      "cold fast and balanced baseline artifacts do not yet match the clean baseline commit",
       "formal review roles have not signed the evidence index"
     ]
   },
