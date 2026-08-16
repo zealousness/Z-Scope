@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.local/schemas/design-evidence-index-v1.json",
+  "title": "Z-SCOPE design phase evidence index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "design_version",
+    "design_status",
+    "baseline",
+    "phases",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.design-evidence-index.v1"},
+    "design_version": {"type": "string", "minLength": 1},
+    "design_status": {
+      "enum": ["draft", "reviewed", "approved", "implementing", "validated", "superseded"]
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_commit", "git_tree", "clean", "worktree_patch_sha256"],
+      "properties": {
+        "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "git_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "clean": {"type": "boolean"},
+        "worktree_patch_sha256": {"type": "string", "pattern": "^$|^[0-9a-f]{64}$"}
+      }
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase", "status", "entry_gate", "exit_gate", "review_roles"],
+        "properties": {
+          "phase": {"type": "string", "pattern": "^(P[0-7]|E0)$"},
+          "status": {"enum": ["pending", "in_progress", "blocked", "complete"]},
+          "entry_gate": {"type": "string"},
+          "exit_gate": {"type": "string"},
+          "review_roles": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence_uid", "phase", "kind", "status", "artifacts", "reviewed_by"],
+        "properties": {
+          "evidence_uid": {"type": "string", "minLength": 1},
+          "phase": {"type": "string", "pattern": "^(P[0-7]|E0)$"},
+          "kind": {"type": "string", "minLength": 1},
+          "status": {"enum": ["planned", "collected", "passed", "failed", "superseded"]},
+          "implementation_commit": {"type": "string", "pattern": "^$|^[0-9a-f]{40}$"},
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            }
+          },
+          "reviewed_by": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "notes": {"type": "string"}
+        }
+      }
+    }
+  }
+}
