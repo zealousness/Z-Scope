@@ -1,0 +1,43 @@
+{
+  "schema_version": "zscope.p0-execution-preflight.v1",
+  "captured_at": "2026-08-17T01:27:00+08:00",
+  "baseline_git_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
+  "baseline_git_tree": "631f10adc6d23beb672569fdb337c81e02a031ca",
+  "host": "windows_with_wsl",
+  "wsl_user": "zeal",
+  "toolchain": {
+    "default_noninteractive_path_ready": false,
+    "documented_paths_present": {
+      "cmake": true,
+      "gcc": true,
+      "clang": true,
+      "clangd": true,
+      "gclang": true,
+      "get-bc": true,
+      "llvm-link": true,
+      "llvm-nm": true,
+      "wpa": true,
+      "saber": true
+    },
+    "activation_required": true,
+    "shared_library_preflight_completed": false
+  },
+  "model_environment": {
+    "Z_SCOPE_LLM_BASE_URL": "missing",
+    "Z_SCOPE_LLM_MODEL": "missing",
+    "Z_SCOPE_API_KEY": "available_only_in_untracked_local_env",
+    "secret_values_recorded": false
+  },
+  "baseline_quality_checks": {
+    "pytest": "1857 passed, 7 skipped",
+    "mypy": "success, 193 source files",
+    "compileall": "passed for zscope scripts tests tools and canonical benchmark directories",
+    "benchmark_hygiene": "passed",
+    "agent_docs": "passed",
+    "wheel_build": "passed"
+  },
+  "cold_scan_started": false,
+  "llm_requests_started": false,
+  "result": "blocked_missing_explicit_model_endpoint_and_model_id",
+  "next_action": "Provide the approved endpoint/model through the operator secret environment, activate the documented WSL tool paths, run ldd checks, then execute smoke and cold fast/balanced baselines."
+}

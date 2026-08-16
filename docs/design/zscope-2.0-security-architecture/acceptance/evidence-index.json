@@ -29,7 +29,7 @@
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
-          "sha256": "23fb13996f284bb7db2705369114bdfbe60e85ef16a17ea2477b7db9a7dc45f4"
+          "sha256": "fe32db4449b4714e6579ef8a1357ce814486b5efd7b2fca24c07d6b70293f2e1"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
@@ -37,7 +37,7 @@
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/baseline-artifact-manifest.json",
-          "sha256": "66249c22fcf3f1151d9c8fc4868297b2b1cb7dee5950458fa5ed306a67d3b448"
+          "sha256": "cb05b6f4482fe372ea3ecacb1a029905362b56593d978e1da3bb2c1851183abd"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
@@ -69,6 +69,21 @@
       ],
       "reviewed_by": [],
       "notes": "Unit tests, Black, mypy and compileall passed locally. The implementation commit is bound; independent reviewer sign-off remains open."
+    },
+    {
+      "evidence_uid": "P0-COLD-BASELINE-PREFLIGHT",
+      "phase": "P0",
+      "kind": "execution_preflight",
+      "status": "collected",
+      "implementation_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-execution-preflight.json",
+          "sha256": "5285a093f43eccede28422b7f0d83eb968178bd3b407465bc2b43097bfd51635"
+        }
+      ],
+      "reviewed_by": [],
+      "notes": "No model call was started. Cold baseline generation is blocked until an approved endpoint/model is provided and the documented WSL toolchain environment is activated."
     }
   ]
 }
