@@ -15,12 +15,10 @@ def test_agent_tool_policy_uses_agent_allowlist() -> None:
     policy = analyzer._tool_policy_for_agent("validator_agent")
 
     assert policy.enforce_tool("get_function_info", {}, actor="test") is None
+    assert policy.enforce_tool("get_data_flow", {}, actor="test") is None
     blocked_impl = policy.enforce_tool("get_function_impl", {}, actor="test")
     assert blocked_impl is not None
     assert blocked_impl["policy_decision"] == "deny"
-    blocked = policy.enforce_tool("get_data_flow", {}, actor="test")
-    assert blocked is not None
-    assert blocked["policy_decision"] == "deny"
 
 
 def test_active_skill_policy_intersects_agent_and_skill_tools() -> None:

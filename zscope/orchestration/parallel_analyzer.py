@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -46,6 +47,7 @@ from ..orchestration.active_discovery import (
     resolve_discovery_profile,
 )
 from ..orchestration.candidates import CandidateLedger, CandidateRegistrar
+from ..orchestration.decision_trace import DecisionTraceStore, ensure_decision_trace_store
 from ..orchestration.candidate_envelope import annotate_issue_identity
 from ..orchestration.global_modeler import GlobalModeler
 from ..orchestration.rollout import (
@@ -171,12 +173,14 @@ class ParallelAnalyzer:
             max_entries=getattr(config.analysis, "validation_cache_entries", 4096)
         )
         self._decision_fact_cache = DecisionFactGraphCache()
+        self._decision_trace_store = ensure_decision_trace_store(config)
         self._candidate_ledger = CandidateLedger(
             project_id=str(
                 getattr(config.project, "project_id", "") or config.project.project_root.name
             ),
             project_root=str(config.project.project_root),
             revision=Analyzer._git_commit_sha(config.project.project_root),
+            decision_trace_store=self._decision_trace_store,
         )
         self._scheduler: Optional[ScanScheduler] = None
 
@@ -275,6 +279,7 @@ class ParallelAnalyzer:
             ),
             project_root=str(self.base_config.project.project_root),
             revision=Analyzer._git_commit_sha(self.base_config.project.project_root),
+            decision_trace_store=self._decision_trace_store,
         )
         self._decision_fact_cache = DecisionFactGraphCache()
         self._global_validation_state = {}
@@ -671,14 +676,31 @@ class ParallelAnalyzer:
         """Aggregate auditable fact-resolution and verdict transitions."""
 
         transitions: Dict[str, int] = {}
+        fact_by_kind: Dict[str, Dict[str, int]] = {}
+        fact_terminal_statuses: Dict[str, int] = {}
         fact_completed = 0
         fact_requested = 0
         for issue in issues:
-            resolution = issue.get("validator_fact_resolution")
-            if isinstance(resolution, dict):
+            raw_resolutions = issue.get("validator_fact_resolutions")
+            resolutions = (
+                [item for item in raw_resolutions if isinstance(item, dict)]
+                if isinstance(raw_resolutions, list)
+                else []
+            )
+            legacy = issue.get("validator_fact_resolution")
+            if not resolutions and isinstance(legacy, dict):
+                resolutions = [legacy]
+            for resolution in resolutions:
                 fact_requested += 1
-                if str(resolution.get("status") or "").startswith("completed"):
+                status = str(
+                    resolution.get("terminal_status") or resolution.get("status") or "unknown"
+                )
+                if status in {"resolved", "completed", "completed_partial", "completed_with_proof"}:
                     fact_completed += 1
+                fact_terminal_statuses[status] = fact_terminal_statuses.get(status, 0) + 1
+                kind = str(resolution.get("fact_kind") or "unknown")
+                by_status = fact_by_kind.setdefault(kind, {})
+                by_status[status] = by_status.get(status, 0) + 1
             history = issue.get("validator_pass_history")
             if not isinstance(history, list):
                 continue
@@ -698,6 +720,11 @@ class ParallelAnalyzer:
             "validator_fact_resolution_success_rate": (
                 round(fact_completed / fact_requested, 4) if fact_requested else None
             ),
+            "validator_fact_resolution_by_kind": {
+                kind: dict(sorted(statuses.items()))
+                for kind, statuses in sorted(fact_by_kind.items())
+            },
+            "validator_fact_terminal_status_counts": dict(sorted(fact_terminal_statuses.items())),
         }
 
     @staticmethod
@@ -1972,9 +1999,44 @@ class ParallelAnalyzer:
             for item in final_records
             if item.get("validation_cluster_uid")
         }
+        first_metadata = next(
+            (
+                result.metadata
+                for result in results.values()
+                if isinstance(result.metadata, dict) and result.metadata
+            ),
+            {},
+        )
+        decision_trace_store = getattr(self, "_decision_trace_store", None)
+        if not isinstance(decision_trace_store, DecisionTraceStore):
+            # Report-only callers and a few compatibility tests construct an
+            # analyzer without running __init__.  Keep those paths traceable
+            # without writing sidecars into the project working tree.
+            decision_trace_store = DecisionTraceStore(
+                Path(tempfile.gettempdir()) / f"zscope-report-trace-{uuid.uuid4().hex}",
+                identity={"project_id": project_id, "project_root": project_root},
+            )
+            self._decision_trace_store = decision_trace_store
+        decision_trace_store.update_identity(
+            {
+                "source_revision": str(first_metadata.get("commit_sha") or ""),
+                "source_tree_hash": str(first_metadata.get("source_tree_hash") or ""),
+                "config_hash": str(first_metadata.get("config_hash") or ""),
+                "model_manifest_hash": str(first_metadata.get("model_manifest_hash") or ""),
+                "effective_rules_sha256": str(
+                    getattr(
+                        getattr(base_config, "rule_catalog_provenance", None),
+                        "effective_sha256",
+                        "",
+                    )
+                    or ""
+                ),
+            }
+        )
         canonical_projection_state: Dict[str, Any] = {
             "candidate_lifecycle_snapshot": ledger_snapshot,
-            "finding_root_v1_enabled": True,
+            "finding_root_projection_enabled": True,
+            "decision_trace_store": decision_trace_store,
         }
         canonical_outcomes = (
             ReportAssembler._canonical_outcome_items(canonical_projection_state) or []
@@ -2078,6 +2140,19 @@ class ParallelAnalyzer:
             for item in coalesce_terminal_candidates(all_terminal_states)
             if isinstance(item, dict)
         ]
+        for item in unique_terminal_states:
+            if item.get("decision_trace_ref"):
+                continue
+            if not item.get("validation_cluster_uid"):
+                stable = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+                item["validation_cluster_uid"] = (
+                    "VAL_ENGINE_" + hashlib.sha256(stable.encode("utf-8")).hexdigest()[:32]
+                )
+            decision_trace_store.finalize_issue(
+                item,
+                view_memberships=("excluded",),
+            )
+        canonical_projection_state["decision_trace_manifest"] = decision_trace_store.snapshot()
         report_views = build_report_views(
             unique_issues,
             unique_observations,
@@ -2111,9 +2186,7 @@ class ParallelAnalyzer:
         llm_iteration_budget_summary = self._llm_iteration_budget_summary(results)
         scan_budget_summary = dict(getattr(self, "_last_scan_budget_metadata", {}) or {})
         llm_usage_summary = self._llm_usage_summary()
-        scan_token_usage = (
-            scan_token_usage_snapshot(base_config) if base_config is not None else {}
-        )
+        scan_token_usage = scan_token_usage_snapshot(base_config) if base_config is not None else {}
         llm_usage_summary["scan_token_usage"] = scan_token_usage
         retained_prompt_tokens = sum(r.cumulative_prompt_tokens for r in results.values())
         retained_completion_tokens = sum(r.cumulative_completion_tokens for r in results.values())
@@ -2242,6 +2315,12 @@ class ParallelAnalyzer:
             ),
             "fact_resolution_success_rate": global_validation_state.get(
                 "validator_fact_resolution_success_rate"
+            ),
+            "fact_resolution_by_kind": dict(
+                global_validation_state.get("validator_fact_resolution_by_kind") or {}
+            ),
+            "fact_terminal_status_counts": dict(
+                global_validation_state.get("validator_fact_terminal_status_counts") or {}
             ),
             "evidence_recheck_count": int(
                 global_validation_state.get("validator_evidence_recheck_count", 0) or 0
@@ -2405,12 +2484,18 @@ class ParallelAnalyzer:
                 "canonical_outcome_projection": canonical_projection,
                 "candidate_ledger_summary": ledger_snapshot.get("summary", {}),
                 "llm_usage": scan_token_usage,
-                "finding_root_v1_enabled": True,
+                "finding_root_projection_enabled": True,
                 "finding_root_count": int(
                     canonical_projection_state.get("finding_root_count", 0) or 0
                 ),
                 "finding_root_alias_count": int(
                     canonical_projection_state.get("finding_root_alias_count", 0) or 0
+                ),
+                "finding_root_projection_summary": dict(
+                    canonical_projection_state.get("finding_root_projection_summary") or {}
+                ),
+                "decision_trace_manifest": dict(
+                    canonical_projection_state.get("decision_trace_manifest") or {}
                 ),
                 "budget_exhaustion_policy": str(
                     global_validation_state.get("budget_exhaustion_policy") or "observe"

@@ -43,6 +43,7 @@ from .llm_usage import (
     LLMUsageAttribution,
     ScanTokenUsageLedger,
     TokenUsageReservation,
+    current_llm_usage_attribution,
 )
 
 logger = logging.getLogger(__name__)
@@ -386,11 +387,13 @@ class LLMClient:
         manager = self.token_usage_ledger
         if manager is None:
             return None
+        inherited_attribution = current_llm_usage_attribution()
+        inherited_attribution.update(dict(usage_attribution or {}))
         attribution = LLMUsageAttribution.from_trace(
             trace_agent=trace_agent,
             trace_label=trace_label,
             llm_ref=self.llm_ref,
-            explicit=usage_attribution,
+            explicit=inherited_attribution,
         )
         return manager.reserve(
             self._estimate_request_prompt_tokens(
@@ -1858,6 +1861,7 @@ class LLMClient:
         trace_agent: Optional[str] = None,
         trace_label: Optional[str] = None,
         max_identical_tool_calls: int = 2,
+        replay_identical_tool_result: bool = True,
         terminal_tool_name: Optional[str] = None,
         terminal_tool_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_validator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
@@ -2499,7 +2503,11 @@ class LLMClient:
                         and len(previous_calls) >= max_identical_tool_calls
                     ):
                         repeated_call_count = len(previous_calls) + 1
-                        if cached_previous_result is not None and not cached_replayed:
+                        if (
+                            replay_identical_tool_result
+                            and cached_previous_result is not None
+                            and not cached_replayed
+                        ):
                             result = dict(cached_previous_result)
                             result["cached_tool_result"] = True
                             result["repeat_call_warning"] = {
@@ -2645,6 +2653,65 @@ class LLMClient:
                         )
             if force_final_after_loop_guard:
                 continue
+
+            programmatic_terminal = getattr(
+                tool_executor,
+                "_zscope_programmatic_terminal_payload",
+                None,
+            )
+            if callable(programmatic_terminal):
+                try:
+                    payload = programmatic_terminal()
+                except Exception as exc:
+                    logger.warning("Programmatic terminal hook failed: %s", exc)
+                    payload = None
+                if isinstance(payload, dict):
+                    programmatic_validation: Dict[str, Any] = {
+                        "valid": True,
+                        "payload": payload,
+                    }
+                    if terminal_tool_handler:
+                        try:
+                            handled = terminal_tool_handler(payload)
+                            programmatic_validation = (
+                                handled
+                                if isinstance(handled, dict)
+                                else {"valid": bool(handled), "payload": payload}
+                            )
+                        except Exception as exc:
+                            programmatic_validation = {"valid": False, "error": str(exc)}
+                    if programmatic_validation.get("valid"):
+                        terminal_payload = programmatic_validation.get("payload", payload)
+                        final_tokens = self.estimate_tokens(
+                            self._prepare_messages_for_model(
+                                conversation,
+                                preserve_reasoning_metadata=preserve_reasoning_metadata,
+                            )
+                        )
+                        if recorder and trace_session:
+                            recorder.record_session_end(trace_session, iterations, final_tokens)
+                        return {
+                            "content": "",
+                            "conversation": conversation,
+                            "terminal_tool_payload": terminal_payload,
+                            "terminal_tool_name": terminal_tool_name,
+                            "terminal_tool_valid": True,
+                            "terminal_tool_call_count": terminal_tool_call_count,
+                            "terminal_invalid_call_count": terminal_invalid_call_count,
+                            "programmatic_terminal": True,
+                            "iterations": iterations,
+                            "context_tokens": final_tokens,
+                            "api_call_count": iterations,
+                            "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                            "cumulative_completion_tokens": cumulative_completion_tokens,
+                            "cumulative_total_tokens": (
+                                cumulative_prompt_tokens + cumulative_completion_tokens
+                            ),
+                            "tool_call_count": self._count_tool_result_messages(conversation),
+                            "finish_reason": last_finish_reason,
+                            "provider_model": last_provider_model,
+                            "last_assistant_preview": self._assistant_preview(last_message),
+                        }
 
         if iterations >= max_iterations:
             logger.warning(

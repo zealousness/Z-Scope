@@ -7,6 +7,8 @@ versioned proof record), and turns them into small auditable decision proofs.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Iterable, Mapping, Optional, cast
 
@@ -234,6 +236,8 @@ def deterministic_decision_proof(
             continue
         if not _complete(proof) or not _has_fact_ids(proof) or not _has_code_hash(proof, issue):
             continue
+        if proof.get("certificate_sha256") and not _valid_embedded_certificate(proof):
+            continue
         engine = str(proof.get("producer_engine") or proof.get("engine") or "").lower()
         if not engine or engine in {"llm", "validator", "model"}:
             continue
@@ -327,6 +331,25 @@ def _code_hash(issue: Mapping[str, Any]) -> str:
 
 def _has_code_hash(proof: Mapping[str, Any], issue: Mapping[str, Any]) -> bool:
     return bool(str(proof.get("code_hash") or _code_hash(issue)).strip())
+
+
+def _valid_embedded_certificate(proof: Mapping[str, Any]) -> bool:
+    certificate = proof.get("verification_certificate")
+    if not isinstance(certificate, Mapping):
+        return False
+    supplied = str(certificate.get("certificate_sha256") or "")
+    if supplied != str(proof.get("certificate_sha256") or ""):
+        return False
+    body = dict(certificate)
+    body.pop("certificate_sha256", None)
+    payload = json.dumps(
+        body,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest() == supplied
 
 
 def _string_values(value: Any) -> list[str]:

@@ -9,6 +9,9 @@ tools:
   - get_callers
   - get_type_info
   - get_call_graph
+  - get_data_flow
+  - query_pointer_alias
+  - find_function_pointers
   - get_security_semantics
 context_policy: Start from the compact evidence pack. Retrieve only code needed to prove a concrete trigger path or a mitigation.
 ---
@@ -31,14 +34,16 @@ When the input protocol is `zscope.validator-protocol.v3` and the pass is
 ordinary tools. The slice is the canonical validation context. If one decisive
 fact is absent, return exactly one `missing_fact_request` using a fact kind
 allowed by the slice. Never request the same fact repeatedly. During
-`investigation_synthesis`, use only the supplied read-only tools. One cluster
-has one continuous session with at most 50 model iterations and no independent
-tool-count quota. Do not repeat an identical query. Record useful tool-backed
-facts with their evidence references. A model round may first add raw,
-source-backed tool evidence and only later convert it into an obligation fact;
-neither kind is required within the first two rounds. Stop browsing only after
-two consecutive completed model rounds add neither kind, then emit the best
-strict terminal result.
+`investigation_synthesis`, select only the finite `EvidenceAction` records
+supplied for open clauses. Their subject, decision region, parameters, code
+snapshot and verifier are fixed by the system. Ordinary call-graph,
+indirect-callee and bug-signature queries are observations and cannot prove
+lockset, happens-before, cleanup, ownership or generic CFG reachability. One
+cluster has one continuous session with at most 50 model iterations and no
+independent action-count quota. Do not repeat an action. Only an
+`EvidenceCertificate v2` accepted by the program changes closure state. Stop
+after two consecutive completed rounds add no accepted fact. A complete
+deterministic positive or negative proof ends the session immediately.
 
 For v3, cite only keys present in `evidence_ref_catalog`. A UID or hash without
 its readable payload is not evidence by itself. Do not reject because a fact is
