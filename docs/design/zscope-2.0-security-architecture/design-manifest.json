@@ -40,7 +40,8 @@
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "74f62a4e58a900a641a3aa837f5f24b6e05809141108d23ed1bfa476299e2361",
     "acceptance/runtime-reachability-manifest.json": "2a8b2d6ab5ef66530dba78aa61e3da59aedcafc256a62b47734926dc3acf033d",
-    "acceptance/baseline-artifact-manifest.json": "66249c22fcf3f1151d9c8fc4868297b2b1cb7dee5950458fa5ed306a67d3b448"
+    "acceptance/baseline-artifact-manifest.json": "cb05b6f4482fe372ea3ecacb1a029905362b56593d978e1da3bb2c1851183abd",
+    "acceptance/p0-execution-preflight.json": "5285a093f43eccede28422b7f0d83eb968178bd3b407465bc2b43097bfd51635"
   },
   "adrs": [
     {"id": "ADR-0001", "status": "accepted-for-design", "affected_phases": ["P1", "P4", "P5"]},

@@ -62,6 +62,11 @@
     "formal_eligible": false,
     "comparability": "historical reference only; it does not match the current baseline commit"
   },
+  "execution_preflight": {
+    "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-execution-preflight.json",
+    "status": "blocked_missing_explicit_model_endpoint_and_model_id",
+    "llm_requests_started": false
+  },
   "missing_required_baseline_artifacts": [
     "cold fast report and raw usage for that clean commit",
     "cold balanced report and raw usage for that clean commit",
