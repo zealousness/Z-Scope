@@ -1,0 +1,67 @@
+{
+  "schema_version": "zscope.baseline-artifact-manifest.v1",
+  "design_version": "1.0.0",
+  "status": "incomplete_dirty_worktree",
+  "captured_at": "2026-08-17T00:00:00+08:00",
+  "source": {
+    "branch": "main",
+    "git_commit": "17a9fc0100ea8a991bc25f3cfa76ca2dbb111ef8",
+    "git_tree": "c6dc2204da666ee3f7085894c5bce824d58c5486",
+    "worktree_clean": false,
+    "worktree_changed_path_count_before_design_archive": 84,
+    "worktree_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23"
+  },
+  "current_inputs": {
+    "range_config": {
+      "path": "test/range/zscope.benchmark.yaml",
+      "sha256": "0e9797bc41fd3706702bc59c0dbf89014dc45a2010089f38f30e3aac8c796f55"
+    },
+    "rule_catalog": {
+      "path": "zscope/rules/builtin_catalog.yaml",
+      "sha256": "331b4d73c10cf787ae58dd2f8a6762c378a958b3977d7a7be1c12e807acf1ae6"
+    },
+    "qualification_registry": {
+      "path": "zscope/rules/qualification_registry.yaml",
+      "sha256": "7aac2837be79a8e0f71231e50561eb5a96cf15792d25dc2cf630f97104fc711a"
+    },
+    "validator_prompt": {
+      "path": "zscope/agents/validator_agent/AGENT.md",
+      "sha256": "8558cffb4aef7e6b0fc4eb6e79abb544096996fd3479506e993cba47894aa5d3"
+    },
+    "truth_v15": {
+      "path": "test/range/benchmark/ground_truth.json",
+      "sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739"
+    },
+    "scorer_v4_matcher_v2": {
+      "path": "zscope/benchmarking/protocol.py",
+      "sha256": "e7a9d55b62ce21aec34a40579af0ad6b0560e1f818c3111fb6ba44e03f17da31"
+    },
+    "finding_root_v2": {
+      "path": "zscope/reporting/finding_roots.py",
+      "sha256": "1810cc0c4a3ece6246f2ee64b0e4802c0baadf044a98a149a819c08af7ca23e0"
+    }
+  },
+  "historical_pilot_reference": {
+    "run_id": "range_v3_evidence_closure_balanced_20260813_pilot7_run_01",
+    "git_commit": "5e741706c481ffe2f0d98dfefa0321309950e289",
+    "artifact_manifest": {
+      "path": "docs/range_reports/adaptive_balanced_glm51_20260813_pilot7/artifact_manifest.json",
+      "sha256": "3324fb6e7a87e3494aba6733d7a9d530bc54fcf93d71d538cb3db1a075b516d1"
+    },
+    "run_summary": {
+      "path": "docs/range_reports/adaptive_balanced_glm51_20260813_pilot7/run_summary.json",
+      "sha256": "8636a5fef5e49bd444262bb64d72c19eae3cd91b84a0f681ea4625ef51c1bdf3"
+    },
+    "formal_eligible": false,
+    "comparability": "historical reference only; it does not match the current baseline commit"
+  },
+  "missing_required_baseline_artifacts": [
+    "clean baseline commit containing the current worktree implementation",
+    "cold fast report and raw usage for that clean commit",
+    "cold balanced report and raw usage for that clean commit",
+    "candidate ledger and decision trace bound to those reports",
+    "matcher-v2 scores bound to the same reports",
+    "wheel content manifest and runtime dynamic reachability trace"
+  ],
+  "approval_eligible": false
+}
