@@ -52,7 +52,7 @@
       "phase": "P0",
       "kind": "governance_ci",
       "status": "passed",
-      "implementation_commit": "",
+      "implementation_commit": "9fa105f618b531de2d303991640c28658806b083",
       "artifacts": [
         {
           "path": "scripts/check_zscope_2_change_scope.py",
@@ -68,7 +68,7 @@
         }
       ],
       "reviewed_by": [],
-      "notes": "Unit tests, Black, mypy and compileall passed locally. The commit and reviewer fields remain open until this P0 governance change is committed and reviewed."
+      "notes": "Unit tests, Black, mypy and compileall passed locally. The implementation commit is bound; independent reviewer sign-off remains open."
     }
   ]
 }
