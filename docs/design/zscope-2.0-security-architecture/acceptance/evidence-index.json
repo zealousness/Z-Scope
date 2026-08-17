@@ -26,10 +26,11 @@
       "kind": "design_archive",
       "status": "collected",
       "implementation_commit": "7acbe3561d008971310c024349066ba9593bd652",
+      "implementation_tree": "523306581ae20e350ec9dd213a0ca71fc9e8d28f",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
-          "sha256": "2823b629dc5ee5d4fdab19d52196d0d49c5e807b015fbfd2f62c26e028787827"
+          "sha256": "7a1e64f8947d2a6535afc241f587cf96cac6f99ac26be1975935af0d63488adb"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
@@ -41,10 +42,27 @@
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
-          "sha256": "74f62a4e58a900a641a3aa837f5f24b6e05809141108d23ed1bfa476299e2361"
+          "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4"
         }
       ],
+      "review_status": "pending",
       "reviewed_by": [],
+      "verification": {
+        "environment": {
+          "execution_context": "repository design archive",
+          "runtime": "not applicable; archival change only"
+        },
+        "commands": [
+          {
+            "command": "historical archival checks; exact command line was not recorded",
+            "status": "not_recorded"
+          }
+        ],
+        "limitations": [
+          "The initial archive predates structured command and environment evidence fields.",
+          "Formal product architecture, proof security and independent benchmark reviews remain outstanding."
+        ]
+      },
       "notes": "The design-only archive commit is recorded, the previously dirty baseline has been split into domain-separated commits, and cold runtime artifacts are hash-bound. Formal reviews remain outstanding."
     },
     {
@@ -53,6 +71,7 @@
       "kind": "governance_ci",
       "status": "passed",
       "implementation_commit": "9fa105f618b531de2d303991640c28658806b083",
+      "implementation_tree": "62527003c6e39773fe599921084be11ff8463368",
       "artifacts": [
         {
           "path": "scripts/check_zscope_2_change_scope.py",
@@ -67,7 +86,33 @@
           "sha256": "06621354146ca09b08c0e885cf09ed3b7c0ee5e33671b136b6934c79b9963c2e"
         }
       ],
+      "review_status": "pending",
       "reviewed_by": [],
+      "verification": {
+        "environment": {
+          "execution_context": "local repository validation",
+          "os_python": "not recorded in the original evidence"
+        },
+        "commands": [
+          {
+            "command": "python -m pytest -q tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m compileall -f -q zscope scripts test tests",
+            "status": "passed"
+          },
+          {"command": "python -m mypy zscope", "status": "passed"},
+          {
+            "command": "python -m black --check scripts/check_zscope_2_change_scope.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          }
+        ],
+        "limitations": [
+          "The original evidence did not record the exact OS and Python version.",
+          "Independent reviewer sign-off remains open."
+        ]
+      },
       "notes": "Unit tests, Black, mypy and compileall passed locally. The implementation commit is bound; independent reviewer sign-off remains open."
     },
     {
@@ -76,13 +121,33 @@
       "kind": "execution_preflight",
       "status": "passed",
       "implementation_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+      "implementation_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-execution-preflight.json",
           "sha256": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b"
         }
       ],
+      "review_status": "pending",
       "reviewed_by": [],
+      "verification": {
+        "environment": {
+          "host": "windows_with_wsl",
+          "linux_user": "zeal",
+          "model": "glm-5.1",
+          "toolchain": "activated documented WSL toolchain; shared libraries resolved"
+        },
+        "commands": [
+          {
+            "command": "preflight, quality and smoke commands summarized in p0-execution-preflight.json; exact shell transcript was not archived",
+            "status": "not_recorded"
+          }
+        ],
+        "limitations": [
+          "The default non-interactive WSL PATH requires explicit activation.",
+          "The evidence stores summaries and hashes rather than a full shell transcript."
+        ]
+      },
       "notes": "The documented WSL toolchain and shared libraries were verified, smoke passed without model/network use, and the explicit glm-5.1 provider identity was used without recording secrets."
     },
     {
@@ -91,6 +156,7 @@
       "kind": "cold_runtime_baseline",
       "status": "passed",
       "implementation_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+      "implementation_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-cold-baseline-summary.json",
@@ -105,7 +171,28 @@
           "sha256": "7694a7940799954337578d5e2b565d83119a1ac07331234a30d7a813ea7f7eb7"
         }
       ],
+      "review_status": "pending",
       "reviewed_by": [],
+      "verification": {
+        "environment": {
+          "host": "windows_with_wsl",
+          "language": "c_cpp",
+          "model": "glm-5.1",
+          "provider": "https://open.bigmodel.cn/api/paas/v4/"
+        },
+        "commands": [
+          {
+            "command": "cold fast and balanced trial commands; exact argv is not archived in the evidence summary",
+            "status": "not_recorded"
+          }
+        ],
+        "limitations": [
+          "Only one cold trial per depth was executed.",
+          "Large answer-free artifacts are ignored locally and are available only when separately retained under benchmark-artifacts.",
+          "The trials are P0 behavior baselines, not formal or release-eligible quality results.",
+          "Formal reviews remain outstanding."
+        ]
+      },
       "notes": "One cold fast and one cold balanced trial completed on the same commit/tree/input/model. Usage, traces, replay bundles, scoped runtime actor observations and matcher-v2 scores are hash-bound and answer-isolated. These P0 behavior baselines are not formal or release-eligible quality results."
     },
     {
@@ -114,6 +201,7 @@
       "kind": "cold_regression_verification",
       "status": "passed",
       "implementation_commit": "abffcc65213a79e5e622b5de94184eb728380f2c",
+      "implementation_tree": "941cfd17cf5eb4f4342429e184672daf86afab22",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-fast-regression-repair.json",
@@ -124,7 +212,28 @@
           "sha256": "58c4b816cb10cb6644ea1d8bc07307c0bf32160c209795f082d8a89c9c7da54f"
         }
       ],
+      "review_status": "pending",
       "reviewed_by": [],
+      "verification": {
+        "environment": {
+          "host": "windows_with_wsl",
+          "language": "c_cpp",
+          "model": "glm-5.1",
+          "scan_depth": "fast"
+        },
+        "commands": [
+          {
+            "command": "cold fast regression trial command; exact argv is not archived in the evidence summary",
+            "status": "not_recorded"
+          }
+        ],
+        "limitations": [
+          "This is a single cold trial and does not establish a stability distribution.",
+          "Range is an in-distribution diagnostic and does not establish production generalization.",
+          "Large answer-free artifacts may be absent from a fresh worktree and remain hash-bound only.",
+          "Independent review and all release gates remain outstanding."
+        ]
+      },
       "notes": "The cold fast trial recovered 48 matcher-v2 default TPs without losing any TP from the regressed run. Its deterministic contribution exactly matches the older healthy fast reference; the remaining four-reference-TP difference is confined to successful V1 uncertain outcomes with open facts and is not a candidate, scorer, projection or protocol loss. This single trial is not a stability or release result."
     }
   ]
