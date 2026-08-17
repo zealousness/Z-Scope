@@ -46,12 +46,12 @@ def test_java_range_benchmark_config_uses_unified_java_auto_detection(monkeypatc
     agents = {agent.name: agent for agent in config.project.agents}
     assert {
         "semantic_modeler",
-        "vulnerability_analyzer",
+        "active_discovery",
         "validator_agent",
-        "issue_reconciler_agent",
+        "history_maintenance_agent",
     } <= set(agents)
-    assert agents["vulnerability_analyzer"].enabled is True
-    assert agents["vulnerability_analyzer"].task == ""
+    assert agents["active_discovery"].enabled is True
+    assert agents["active_discovery"].task == ""
 
 
 def test_java_range_benchmark_manifest_is_consistent() -> None:

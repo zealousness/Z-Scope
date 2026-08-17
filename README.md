@@ -598,7 +598,7 @@ Dashboard 的 `POST /api/scan` 可按请求传入 `scan_depth`，并以 `GET /ap
 | 11 | `verify_taint_reachability` | SVF/Saber 内存缺陷查询 | unified |
 | 12 | `get_deep_call_context` | 高聚合查询（调用者+被调用者+间接调用+污点缺陷） | unified |
 
-Agent 工具可见性由 `AGENT.md` 与后端 gate 共同决定：`semantic_modeler` 主要使用前 6 个工具；`vulnerability_analyzer` 在 joern/unified 后端下再开放第 7-12 个高级查询，其中 SVF 特有结果只有 unified 后端会返回有效数据。MCP Server 会额外暴露 `query_knowledge`（只读查询 `code_knowledge.db`）与 `discover_entries`（入口发现）两个工具，供外部 MCP 客户端交互式审计使用。MCP 侧还提供 `zscope.code.*`、`zscope.graph.*`、`zscope.knowledge.query`、`zscope.entries.discover` 等 namespaced aliases；无论 stdio 还是 HTTP 传输，工具调用都会经过 `ToolPolicy`。
+Agent 工具可见性由 `AGENT.md` 与后端 gate 共同决定：`semantic_modeler` 使用建模所需的只读查询；`active_discovery` 只接收运行时预先构造的 candidate-blind 投影且不开放仓库工具；`validator_agent` 的 live 调查只使用当前开放 proof clause 生成的有限 EvidenceAction。MCP Server 会额外暴露 `query_knowledge`（只读查询 `code_knowledge.db`）与 `discover_entries`（入口发现）两个工具，供外部 MCP 客户端交互式审计使用。MCP 侧还提供 `zscope.code.*`、`zscope.graph.*`、`zscope.knowledge.query`、`zscope.entries.discover` 等 namespaced aliases；无论 stdio 还是 HTTP 传输，工具调用都会经过 `ToolPolicy`。
 
 ## 用户辅助配置
 
@@ -663,6 +663,12 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 ```
 
 ## 更新日志
+
+### Z-Scope 2.0 P1（开发中）
+- **统一 live 执行路径**：删除旧 Vulnerability Analyzer、Deep Worker、subagent 编排和报告期 LLM 判重；所有 live finding 只来自冻结 Candidate Ledger outcomes 的 Finding-root v2 投影。
+- **中性 workflow**：default、resume、maintain 使用稳定的中性阶段名；每个 step 都必须有 handler 并记录 completed/skipped/failed。
+- **严格兼容边界**：旧配置必须通过 `zscope-config migrate` 显式写入新文件后重新加载；旧报告和 usage 维度只由 `zscope.compat` 做只读展示/映射，不能回流扫描或 proof。
+- **模式收敛**：C/C++ `--mode ruledriven` 被拒绝并指向默认 Candidate Ledger；Java 暂时保留 ruledriven。
 
 ### v1.3.1
 - **版本与 Python 门禁**：包版本、CLI/MCP/Web 同步到 `1.3.1`，Python 3.9–3.14 使用独立带哈希约束和真实解释器 CI。

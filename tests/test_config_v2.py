@@ -63,9 +63,7 @@ def _write(root: Path, data: dict, name: str = "zscope.yaml") -> Path:
 
 def test_empty_task_activates_every_available_skill(tmp_path: Path) -> None:
     config = ConfigLoader.load(str(_write(tmp_path, _config(tmp_path))))
-    analyzer = next(
-        agent for agent in config.project.agents if agent.name == "vulnerability_analyzer"
-    )
+    analyzer = next(agent for agent in config.project.agents if agent.name == "active_discovery")
 
     assert analyzer.task == ""
     selection = select_vulnerability_skills(analyzer.task, ["memory", "concurrency"])
@@ -382,4 +380,38 @@ def test_runtime_override_is_strict_and_must_be_absolute(
     override.write_text("runtime_spec_version: 1\nunknown: true\n", encoding="utf-8")
     monkeypatch.setenv("Z_SCOPE_RUNTIME_SPEC", str(override.resolve()))
     with pytest.raises(ValueError, match="runtime.unknown"):
+        ConfigLoader.load(str(config_path))
+
+
+@pytest.mark.parametrize(
+    ("override_text", "message"),
+    [
+        (
+            "runtime_spec_version: 1\nagents:\n  vulnerability_analyzer:\n"
+            "    enabled: true\n    llm_role: analysis\n",
+            "migrate explicitly to runtime.agents.active_discovery",
+        ),
+        (
+            "runtime_spec_version: 1\nanalysis:\n  enable_subagent_workers: true\n",
+            "explicit compat migration",
+        ),
+        (
+            "runtime_spec_version: 1\nreporting:\n  semantic_dedup:\n" "    enabled: true\n",
+            "Finding-root v2 is the sole live report projection",
+        ),
+    ],
+)
+def test_removed_p1_runtime_fields_fail_with_migration_guidance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    override_text: str,
+    message: str,
+) -> None:
+    config_path = _write(tmp_path, _config(tmp_path))
+    override = tmp_path / "runtime.override.yaml"
+    override.write_text(override_text, encoding="utf-8")
+    monkeypatch.setenv("Z_SCOPE_DEVELOPER_MODE", "1")
+    monkeypatch.setenv("Z_SCOPE_RUNTIME_SPEC", str(override.resolve()))
+
+    with pytest.raises(ValueError, match=message):
         ConfigLoader.load(str(config_path))

@@ -1,4 +1,4 @@
-"""Candidate ledger for focused subagent de-duplication."""
+"""Candidate registration and lifecycle ledger."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from .candidate_envelope import (
     occurrence_uid_for,
     validation_cluster_uid_for,
 )
-from .subagents import SubAgentTicket
 from .decision_trace import DecisionTraceStore
 from ..reporting.attribution import (
     FindingAttribution,
@@ -39,6 +38,53 @@ TERMINAL_DISPOSITIONS = frozenset(
     }
 )
 NONTERMINAL_STATUSES = frozenset({"pending", "queued", "planned", "running"})
+
+
+@dataclass
+class CandidateTicket:
+    """Structured data accepted by the Candidate Ledger.
+
+    Candidate tickets have no worker-spawn or model-execution semantics. They
+    are emitted by deterministic providers or registrars and consumed only by
+    the shared lifecycle ledger.
+    """
+
+    id: str
+    skill: str
+    task: str
+    trigger: str
+    line: int
+    context_slice: str
+    priority_score: int = 0
+    priority_reasons: List[str] = field(default_factory=list)
+    origin: str = ""
+    sink: str = ""
+    resource_kind: str = ""
+    source: str = "source_rule"
+    sources: List[str] = field(default_factory=list)
+    call_paths: List[List[str]] = field(default_factory=list)
+    dedup_key: str = ""
+    evidence: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "skill": self.skill,
+            "task": self.task,
+            "trigger": self.trigger,
+            "line": self.line,
+            "context_slice": self.context_slice,
+            "priority_score": self.priority_score,
+            "priority_reasons": self.priority_reasons or [],
+            "origin": self.origin,
+            "sink": self.sink,
+            "resource_kind": self.resource_kind,
+            "source": self.source,
+            "sources": self.sources or ([self.source] if self.source else []),
+            "call_paths": self.call_paths or [],
+            "dedup_key": self.dedup_key,
+            "evidence": self.evidence or {},
+        }
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -311,7 +357,7 @@ class CandidateRegistrar:
                 call_path = [str(item) for item in raw_path if str(item)]
                 if not call_path:
                     call_path = [entry_identity]
-                ticket = SubAgentTicket(
+                ticket = CandidateTicket(
                     id=str(issue.get("candidate_id") or issue.get("id") or envelope.run_issue_uid),
                     skill=str(
                         issue.get("skill")
@@ -459,7 +505,7 @@ class CandidateRecord:
 
     candidate_id: str
     dedup_key: str
-    ticket: SubAgentTicket
+    ticket: CandidateTicket
     status: str = "pending"
     sources: List[str] = field(default_factory=list)
     call_paths: List[List[str]] = field(default_factory=list)
@@ -491,7 +537,7 @@ class CandidateRecord:
     engine_status: str = "complete"
     schema_version: str = CANDIDATE_SCHEMA_VERSION
 
-    def to_ticket(self) -> SubAgentTicket:
+    def to_ticket(self) -> CandidateTicket:
         ticket = self.ticket
         ticket.id = self.candidate_id
         ticket.sources = list(self.sources)
@@ -560,7 +606,7 @@ class CandidateRecord:
 
 
 class CandidateLedger:
-    """Central de-duplication ledger for semantic, heuristic, and VA candidates."""
+    """Central de-duplication ledger for every candidate source."""
 
     def __init__(
         self,
@@ -580,7 +626,7 @@ class CandidateLedger:
 
     def add(
         self,
-        ticket: SubAgentTicket,
+        ticket: CandidateTicket,
         source: str,
         call_path: Optional[Iterable[str]] = None,
         *,
@@ -738,14 +784,14 @@ class CandidateLedger:
 
     def add_many(
         self,
-        tickets: Iterable[SubAgentTicket],
+        tickets: Iterable[CandidateTicket],
         source: str,
         call_path: Optional[Iterable[str]] = None,
     ) -> None:
         for ticket in tickets:
             self.add(ticket, source=source, call_path=call_path)
 
-    def pending_tickets(self) -> List[SubAgentTicket]:
+    def pending_tickets(self) -> List[CandidateTicket]:
         with self._lock:
             return [
                 record.to_ticket()
@@ -753,14 +799,14 @@ class CandidateLedger:
                 if record.status == "pending"
             ]
 
-    def mark_planned(self, tickets: Iterable[SubAgentTicket]) -> None:
+    def mark_planned(self, tickets: Iterable[CandidateTicket]) -> None:
         ids = {ticket.id for ticket in tickets}
         with self._lock:
             for record in self._records.values():
                 if record.candidate_id in ids:
                     record.status = "planned"
 
-    def claim_pending(self, tickets: Iterable[SubAgentTicket]) -> List[SubAgentTicket]:
+    def claim_pending(self, tickets: Iterable[CandidateTicket]) -> List[CandidateTicket]:
         """Atomically claim pending candidates for exactly one worker/entry."""
         requested = [ticket for ticket in tickets]
         requested_ids = {ticket.id for ticket in requested}
@@ -772,7 +818,7 @@ class CandidateLedger:
                     claimed_ids.add(record.candidate_id)
         return [ticket for ticket in requested if ticket.id in claimed_ids]
 
-    def mark_unassigned(self, tickets: Iterable[SubAgentTicket]) -> None:
+    def mark_unassigned(self, tickets: Iterable[CandidateTicket]) -> None:
         ids = {ticket.id for ticket in tickets}
         with self._lock:
             for record in self._records.values():
@@ -793,7 +839,7 @@ class CandidateLedger:
                     continue
                 for record in self._records.values():
                     if record.candidate_id == candidate_id:
-                        # A deep worker is an evidence producer, not a proof
+                        # An investigation worker is an evidence producer, not a proof
                         # authority.  It must never turn a queued validation
                         # obligation into a security review finding.
                         if record.record_role == "validation_obligation":
@@ -1118,7 +1164,7 @@ class CandidateLedger:
         )
 
     @classmethod
-    def canonical_key(cls, ticket: SubAgentTicket) -> str:
+    def canonical_key(cls, ticket: CandidateTicket) -> str:
         return cls._ticket_root_cause_key(ticket, "")
 
     @staticmethod
@@ -1148,7 +1194,7 @@ class CandidateLedger:
         return f"HIST_{digest}"
 
     @staticmethod
-    def _evidence_hash(ticket: SubAgentTicket) -> str:
+    def _evidence_hash(ticket: CandidateTicket) -> str:
         import json
 
         payload = {
@@ -1164,7 +1210,7 @@ class CandidateLedger:
 
     @staticmethod
     def _decision_evidence_hash(
-        ticket: SubAgentTicket,
+        ticket: CandidateTicket,
         candidate_uid: str,
     ) -> str:
         evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
@@ -1195,7 +1241,7 @@ class CandidateLedger:
         return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _provenance_hash(ticket: SubAgentTicket, source: str) -> str:
+    def _provenance_hash(ticket: CandidateTicket, source: str) -> str:
         payload = {
             "display_id": ticket.id,
             "source": source,
@@ -1229,7 +1275,7 @@ class CandidateLedger:
     @classmethod
     def _context_signature(
         cls,
-        ticket: SubAgentTicket,
+        ticket: CandidateTicket,
         call_path: List[str],
     ) -> str:
         evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
@@ -1254,8 +1300,8 @@ class CandidateLedger:
 
     @staticmethod
     def _merge_ticket_evidence(
-        primary: SubAgentTicket,
-        secondary: SubAgentTicket,
+        primary: CandidateTicket,
+        secondary: CandidateTicket,
     ) -> None:
         primary_evidence = primary.evidence if isinstance(primary.evidence, dict) else {}
         secondary_evidence = secondary.evidence if isinstance(secondary.evidence, dict) else {}
@@ -1304,7 +1350,7 @@ class CandidateLedger:
         return re.sub(r"\s+", " ", text.lower()) or "project"
 
     @staticmethod
-    def _infer_resource_kind(ticket: SubAgentTicket) -> str:
+    def _infer_resource_kind(ticket: CandidateTicket) -> str:
         text = f"{ticket.skill} {ticket.trigger} {ticket.task}".lower()
         if any(word in text for word in ("malloc", "calloc", "realloc", "free", "memory")):
             return "memory"
@@ -1331,14 +1377,14 @@ class CandidateLedger:
         return text
 
     @classmethod
-    def _ticket_defect_class(cls, ticket: SubAgentTicket) -> str:
+    def _ticket_defect_class(cls, ticket: CandidateTicket) -> str:
         evidence = ticket.evidence or {}
         return cls._normalize(
             evidence.get("defect_class") or evidence.get("subcategory") or ticket.skill
         )
 
     @classmethod
-    def _ticket_source(cls, ticket: SubAgentTicket) -> str:
+    def _ticket_source(cls, ticket: CandidateTicket) -> str:
         evidence = ticket.evidence or {}
         source = evidence.get("source")
         if isinstance(source, dict):
@@ -1346,7 +1392,7 @@ class CandidateLedger:
         return cls._normalize(source or ticket.origin)
 
     @classmethod
-    def _ticket_sink(cls, ticket: SubAgentTicket) -> str:
+    def _ticket_sink(cls, ticket: CandidateTicket) -> str:
         evidence = ticket.evidence or {}
         sink = evidence.get("sink")
         if isinstance(sink, dict):
@@ -1354,7 +1400,7 @@ class CandidateLedger:
         return cls._normalize(sink or ticket.sink)
 
     @classmethod
-    def _ticket_root_cause_key(cls, ticket: SubAgentTicket, fallback: str) -> str:
+    def _ticket_root_cause_key(cls, ticket: CandidateTicket, fallback: str) -> str:
         evidence = ticket.evidence or {}
         explicit = evidence.get("root_cause_key") or evidence.get("dedup_key")
         defect = cls._ticket_defect_class(ticket)

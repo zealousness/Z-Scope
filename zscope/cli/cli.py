@@ -468,9 +468,9 @@ def main(
 
         if mode == "ruledriven":
             if zscope_config.project.language != "java":
-                logger.warning(
-                    "C/C++ --mode ruledriven is deprecated in Z-SCOPE 1.x and is removed in 2.0; "
-                    "ordinary C/C++ rules now enter the default candidate pipeline."
+                raise click.ClickException(
+                    "C/C++ --mode ruledriven was removed in Z-Scope 2.0 P1; "
+                    "use --mode default so every rule signal enters the Candidate Ledger"
                 )
             logger.info("Rule-driven mode: running Joern rules + validation")
             from ..rules.analyzer import RuleDrivenAnalyzer
@@ -763,6 +763,8 @@ def main(
 
         sys.exit(session_result.exit_code)
 
+    except click.ClickException:
+        raise
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
         sys.exit(2)

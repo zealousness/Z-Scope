@@ -37,12 +37,8 @@ def replay_frozen_state(payload: Dict[str, Any]) -> Dict[str, Any]:
         "finding_root_projection_enabled": True,
     }
     outcomes = ReportAssembler._canonical_outcome_items(state) or []
-    confirmed = [
-        item for item in outcomes if item.get("candidate_disposition") == "confirmed"
-    ]
-    review = [
-        item for item in outcomes if item.get("candidate_disposition") == "needs_review"
-    ]
+    confirmed = [item for item in outcomes if item.get("candidate_disposition") == "confirmed"]
+    review = [item for item in outcomes if item.get("candidate_disposition") == "needs_review"]
     views = build_report_views(confirmed, review, canonical_projection=True)
 
     workflow_payload = payload["workflow"]
@@ -82,18 +78,13 @@ def replay_frozen_state(payload: Dict[str, Any]) -> Dict[str, Any]:
                 ),
             )
         ],
-        "finding_root_projection": deepcopy(
-            state.get("finding_root_projection_summary") or {}
-        ),
+        "finding_root_projection": deepcopy(state.get("finding_root_projection_summary") or {}),
         "views": {
             name: {
                 "issue_count": int(view.get("issue_count") or 0),
-                "included_needs_review_count": int(
-                    view.get("included_needs_review_count") or 0
-                ),
+                "included_needs_review_count": int(view.get("included_needs_review_count") or 0),
                 "candidate_uids": [
-                    str(item.get("candidate_uid") or "")
-                    for item in view.get("issues", [])
+                    str(item.get("candidate_uid") or "") for item in view.get("issues", [])
                 ],
             }
             for name, view in views.items()
@@ -101,10 +92,7 @@ def replay_frozen_state(payload: Dict[str, Any]) -> Dict[str, Any]:
         "workflow": {
             "executed": executed,
             "progress": [
-                {
-                    key: row[key]
-                    for key in ("index", "id", "scope", "handler", "status")
-                }
+                {key: row[key] for key in ("index", "id", "scope", "handler", "status")}
                 for row in progress
             ],
         },

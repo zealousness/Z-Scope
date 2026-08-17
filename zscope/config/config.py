@@ -230,7 +230,6 @@ class AgentConfig:
     skills: List[str] = field(default_factory=list)
     tools: List[str] = field(default_factory=list)
     mcp_servers: List[str] = field(default_factory=list)
-    can_spawn_subagents: Optional[bool] = None
     entry_custom_prompt: Optional[str] = None
 
 
@@ -306,7 +305,6 @@ class RuntimeAgentConfig:
     name: str
     llm_role: str
     enabled: bool = True
-    can_spawn_subagents: Optional[bool] = None
 
 
 @dataclass
@@ -433,22 +431,15 @@ class AnalysisConfig:
     max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
     workflow_name: str = "default"
-    enable_subagent_workers: bool = False
     # Internal rollout control.  ``shadow`` records evidence-backed semantic
     # deltas without allowing them to influence coverage-gap planning;
     # ``active`` applies those deltas to the read-only Security Semantic Map.
     security_semantic_enrichment_mode: str = "shadow"
-    max_subagent_tickets: int = 4
-    subagent_max_turns: int = 20  # Per-ticket tool/LLM turn budget for focused workers.
     request_deadline_seconds: Optional[float] = 120.0
     validation_deadline_seconds: Optional[float] = 240.0
-    subagent_ticket_timeout: Optional[float] = 300.0
     entry_deadline_seconds: Optional[float] = 1800.0
     scan_deadline_seconds: Optional[float] = None
     budget_exhaustion_policy: str = "observe"
-    subagent_spawn_allowlist: List[str] = field(default_factory=lambda: ["deep_worker"])
-    subagent_skill_llm_refs: Dict[str, str] = field(default_factory=dict)
-    subagent_skill_efforts: Dict[str, str] = field(default_factory=dict)
     tool_audit_log: str = ""  # Optional JSONL audit sink for tool/MCP policy events.
 
     def __post_init__(self) -> None:
@@ -461,9 +452,6 @@ class AnalysisConfig:
         )
         self.validation_deadline_seconds = _optional_positive_seconds(
             self.validation_deadline_seconds, 240.0
-        )
-        self.subagent_ticket_timeout = _optional_positive_seconds(
-            self.subagent_ticket_timeout, 300.0
         )
         self.entry_deadline_seconds = _optional_positive_seconds(
             self.entry_deadline_seconds, 1800.0
@@ -480,20 +468,8 @@ class AnalysisConfig:
 
 
 @dataclass
-class SemanticDedupConfig:
-    """Configuration for final-report semantic duplicate handling."""
-
-    enabled: bool = True
-    llm_enabled: bool = False
-    llm_confidence_threshold: float = 0.85
-    max_cluster_size: int = 8
-
-
-@dataclass
 class ReportingConfig:
     """Configuration for report assembly and presentation."""
-
-    semantic_dedup: SemanticDedupConfig = field(default_factory=SemanticDedupConfig)
 
 
 @dataclass

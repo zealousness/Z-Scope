@@ -19,6 +19,7 @@ DESIGN_MANIFEST = DESIGN_RELATIVE_ROOT / "design-manifest.json"
 EXTERNAL_ARTIFACT_PREFIXES = ("benchmark-artifacts/",)
 PHASES = ("P0", "P1", "P2", "P3", "P4", "P5", "E0", "P6", "P7")
 P0_REVIEW_ROLES = ("product_architecture", "proof_security", "independent_benchmark")
+P1_REVIEW_ROLES = ("product_architecture",)
 DESIGN_STATUSES = (
     "draft",
     "reviewed",
@@ -189,9 +190,7 @@ def validate_json_schema(instance: Any, schema: Mapping[str, Any], path: str = "
             if key in properties:
                 property_schema = properties[key]
                 if isinstance(property_schema, dict):
-                    errors.extend(
-                        validate_json_schema(value, property_schema, f"{path}.{key}")
-                    )
+                    errors.extend(validate_json_schema(value, property_schema, f"{path}.{key}"))
             elif additional is False:
                 errors.append(f"{path}: unexpected property {key!r}")
             elif isinstance(additional, dict):
@@ -329,6 +328,47 @@ def validate_formal_review_documents(
     return errors
 
 
+def validate_p1_review_documents(
+    phase_review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+) -> list[str]:
+    """Validate the product-architecture review required to complete P1."""
+
+    errors: list[str] = []
+    artifacts = phase_review.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P1_REVIEW_ROLES):
+        return ["P1 phase review must contain product_architecture exactly once"]
+    reviewed_commit = phase_review.get("reviewed_commit")
+    reviewed_tree = phase_review.get("reviewed_tree")
+    if HEX_40.fullmatch(str(reviewed_commit)) is None:
+        errors.append("P1 phase review reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(str(reviewed_tree)) is None:
+        errors.append("P1 phase review reviewed_tree must be a full Git tree")
+
+    role = P1_REVIEW_ROLES[0]
+    spec = artifacts.get(role)
+    review = reviews.get(role)
+    if not isinstance(spec, dict) or not isinstance(review, dict):
+        return errors + ["P1 product_architecture review specification or document is missing"]
+    errors.extend(f"P1 {role}: {row}" for row in validate_json_schema(review, review_schema))
+    if review.get("role") != role:
+        errors.append(f"P1 {role}: review document names role {review.get('role')!r}")
+    if review.get("reviewer_model") != spec.get("reviewer_model"):
+        errors.append(f"P1 {role}: reviewer model differs from the phase assignment")
+    if review.get("harness") != spec.get("harness"):
+        errors.append(f"P1 {role}: harness differs from the phase assignment")
+    if review.get("reviewed_commit") != reviewed_commit:
+        errors.append(f"P1 {role}: reviewed commit differs from the phase review target")
+    if review.get("reviewed_tree") != reviewed_tree:
+        errors.append(f"P1 {role}: reviewed tree differs from the phase review target")
+    if review.get("decision") != "approved":
+        errors.append(f"P1 {role}: completion requires an approved review decision")
+    if review.get("blocking_findings") != []:
+        errors.append(f"P1 {role}: completion requires zero blocking findings")
+    return errors
+
+
 def _validate_approval_tag(
     repo_root: Path, manifest: Mapping[str, Any], report: ValidationReport
 ) -> None:
@@ -406,9 +446,7 @@ def _validate_approval_tag(
     if isinstance(raw_artifacts, dict):
         for spec in raw_artifacts.values():
             if isinstance(spec, dict) and isinstance(spec.get("path"), str):
-                required_paths.add(
-                    (DESIGN_RELATIVE_ROOT / PurePosixPath(spec["path"])).as_posix()
-                )
+                required_paths.add((DESIGN_RELATIVE_ROOT / PurePosixPath(spec["path"])).as_posix())
     if set(bindings.values()) != required_paths:
         report.error("approval tag_hash_bindings must cover manifest, evidence index, and reviews")
 
@@ -470,14 +508,24 @@ def validate_phase_gates(
 
     p0_status = raw_manifest_phases.get("P0")
     later_started = [
-        phase
-        for phase in PHASES
-        if phase != "P0" and raw_manifest_phases.get(phase) != "pending"
+        phase for phase in PHASES if phase != "P0" and raw_manifest_phases.get(phase) != "pending"
     ]
     if later_started and p0_status != "complete":
         errors.append(f"phases started before P0 completion: {', '.join(later_started)}")
     if later_started and design_status not in ACTIVE_AFTER_REVIEW:
         errors.append("post-P0 work requires an approved or later design status")
+
+    post_p1_started = [
+        phase
+        for phase in PHASES
+        if phase not in {"P0", "P1"} and raw_manifest_phases.get(phase) != "pending"
+    ]
+    if post_p1_started and raw_manifest_phases.get("P1") != "complete":
+        errors.append(f"phases started before P1 completion: {', '.join(post_p1_started)}")
+    if raw_manifest_phases.get("P1") == "complete":
+        phase_reviews = manifest.get("phase_reviews")
+        if not isinstance(phase_reviews, dict) or not isinstance(phase_reviews.get("P1"), dict):
+            errors.append("P1 completion requires a product_architecture phase review")
 
     approval = manifest.get("approval")
     review_roles = manifest.get("review_roles")
@@ -573,10 +621,9 @@ def validate_design_evidence(
     report.errors.extend(validate_phase_gates(manifest, evidence_index))
 
     formal = manifest.get("formal_reviews")
-    require_formal_approval = (
-        manifest.get("status") in ACTIVE_AFTER_REVIEW
-        or (isinstance(manifest.get("phase_status"), dict)
-            and manifest["phase_status"].get("P0") == "complete")
+    require_formal_approval = manifest.get("status") in ACTIVE_AFTER_REVIEW or (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P0") == "complete"
     )
     if formal is not None:
         if not isinstance(formal, dict):
@@ -624,14 +671,10 @@ def validate_design_evidence(
                 )
             reviewed_commit = str(formal.get("reviewed_commit", ""))
             reviewed_tree = str(formal.get("reviewed_tree", ""))
-            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(
-                reviewed_tree
-            ):
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
                 actual_tree = _git_tree(repo_root, reviewed_commit)
                 if actual_tree is None:
-                    report.error(
-                        f"formal review commit is unavailable in Git: {reviewed_commit}"
-                    )
+                    report.error(f"formal review commit is unavailable in Git: {reviewed_commit}")
                 elif actual_tree != reviewed_tree:
                     report.error(
                         "formal review tree mismatch; "
@@ -639,6 +682,58 @@ def validate_design_evidence(
                     )
     elif require_formal_approval:
         report.error("P0/design approval requires formal_reviews")
+
+    p1_complete = (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P1") == "complete"
+    )
+    phase_reviews = manifest.get("phase_reviews")
+    if p1_complete:
+        p1_review = phase_reviews.get("P1") if isinstance(phase_reviews, dict) else None
+        if isinstance(p1_review, dict):
+            try:
+                p1_schema_path = resolve_repository_path(
+                    repo_root,
+                    str(p1_review.get("schema", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(f"P1 phase review: {exc}")
+                p1_schema_path = None
+            p1_schema = (
+                _read_governance_json(p1_schema_path, report)
+                if p1_schema_path is not None
+                else None
+            )
+            p1_reviews: dict[str, Any] = {}
+            p1_artifacts = p1_review.get("artifacts")
+            if isinstance(p1_artifacts, dict):
+                for role, spec in p1_artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("P1 phase review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root,
+                            str(spec.get("path", "")),
+                            relative_root=design_root,
+                        )
+                    except ValueError as exc:
+                        report.error(f"P1 {role}: {exc}")
+                        continue
+                    p1_reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(p1_schema, dict):
+                report.errors.extend(validate_p1_review_documents(p1_review, p1_reviews, p1_schema))
+            reviewed_commit = str(p1_review.get("reviewed_commit", ""))
+            reviewed_tree = str(p1_review.get("reviewed_tree", ""))
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(f"P1 review commit is unavailable in Git: {reviewed_commit}")
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "P1 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
+                    )
 
     if verify_git:
         _validate_approval_tag(repo_root, manifest, report)
@@ -710,6 +805,18 @@ def validate_design_evidence(
                     report.error(f"{uid}: {exc}")
                     continue
                 external = raw_path.startswith(EXTERNAL_ARTIFACT_PREFIXES)
+                if (
+                    not external
+                    and verify_git
+                    and HEX_40.fullmatch(commit)
+                    and _git_blob_sha256(repo_root, commit, raw_path) == expected
+                ):
+                    # Evidence binds the artifact as it existed in its implementation
+                    # commit.  A later phase may legitimately evolve the same gate file;
+                    # that evolution must be bound by a new evidence row instead of
+                    # rewriting the historical record.
+                    report.checked_files.add(f"git:{commit}:{raw_path}")
+                    continue
                 _verify_file_hash(
                     artifact_path,
                     expected,
