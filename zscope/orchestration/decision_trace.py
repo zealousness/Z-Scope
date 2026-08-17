@@ -491,6 +491,22 @@ class DecisionTraceStore:
             (value for value in reasons if value not in {"ROOT_ALIAS", "VIEW_EXCLUDED"}),
             reasons[0],
         )
+        security_spec_mode = str(
+            issue.get("security_spec_mode") or self.identity.get("security_spec_mode") or "shadow"
+        )
+        security_spec_artifact_refs = _sanitize(
+            issue.get("security_spec_artifact_refs")
+            or self.identity.get("security_spec_artifact_refs")
+            or []
+        )
+        security_spec_shadow_decision = _sanitize(
+            issue.get("security_spec_shadow_decision")
+            or self.identity.get("security_spec_shadow_decision")
+            or {
+                "active_product_effect": "none",
+                "reason_code": "security_spec_shadow_only",
+            }
+        )
         policy_ref = self.put_evidence(
             kind="terminal_policy_input",
             payload={
@@ -513,6 +529,9 @@ class DecisionTraceStore:
                     or issue.get("proof_kernel_shadow_terminal_authority_decision")
                     or {}
                 ),
+                "security_spec_mode": security_spec_mode,
+                "security_spec_artifact_refs": security_spec_artifact_refs,
+                "security_spec_shadow_decision": security_spec_shadow_decision,
             },
             producer="terminal_authority_evaluator",
         )
@@ -540,6 +559,9 @@ class DecisionTraceStore:
                 "model_verdict": issue.get("model_verdict"),
                 "policy_disposition": issue.get("policy_disposition"),
                 "proof_coverage": issue.get("proof_coverage"),
+                "security_spec_mode": security_spec_mode,
+                "security_spec_artifact_refs": security_spec_artifact_refs,
+                "security_spec_shadow_decision": security_spec_shadow_decision,
             },
             dedupe_key=f"terminal:{terminal_reason}:{_disposition(issue)}",
         )

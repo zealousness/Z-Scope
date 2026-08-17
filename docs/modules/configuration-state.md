@@ -17,6 +17,7 @@ sources:
   - zscope/semantics/defaults.yaml
   - zscope/semantics/user_config_context.py
   - zscope/semantics/security_map.py
+  - zscope/semantics/security_specs
   - zscope/snapshots/store.py
   - zscope/memory/review_memory.py
   - zscope/common/issue_identity.py
@@ -31,6 +32,8 @@ tests:
   - tests/test_parallel_custom_prompt.py
   - tests/test_semantics_defaults.py
   - tests/test_security_semantic_map.py
+  - tests/test_security_specs.py
+  - tests/test_p3_security_spec_qualification.py
   - tests/test_snapshot_store.py
   - tests/test_review_memory.py
   - tests/test_issue_dedup.py
@@ -51,13 +54,14 @@ tests:
 - public YAML 顶层只允许 `config_version`、`llms`、`project`、`scan`、`indexing`、`concurrency` 和可选 `rules`。`project.language` 只能显式为 `c_cpp` 或 `java`。
 - `scan.depth` 公开为 `fast|balanced|deep`；CLI 的 `--scan-depth` 高于 YAML，YAML 高于打包默认。省略 depth 目前解析为 `fast`。public config 不提供 scan-wide token 预算字段。
 - 三档不带产品侧 token 上限；Range Benchmark policy 分别维护完成后成本预期，并按 agent/stage 的真实 usage 验收。
-- `runtime_defaults.yaml` 管理 Agent 启用状态/LLM 角色、分析预算、缓存和稳定算法默认值；`AGENT.md`、`SKILL.md`、workflow YAML 不在此重复。P1 runtime Agent 只有 `semantic_modeler`、`active_discovery`、`validator_agent` 与 `history_maintenance_agent`。
+- `runtime_defaults.yaml` 管理 Agent 启用状态/LLM 角色、分析预算、缓存和稳定算法默认值；`AGENT.md`、`SKILL.md`、workflow YAML 不在此重复。P3 继续保留 P1 的 `semantic_modeler`、`active_discovery`、`validator_agent` 与 `history_maintenance_agent`；Security Spec 模型适配器只在系统已冻结 subject/scope/evidence/slot ID 的 unknown audit unit 上提出 `proposed` 对象，不是可配置 runtime Agent。
 - `zscope.compat` 集中提供旧配置显式迁移、旧报告只读视图与旧 usage 维度映射；它不导入 Agent、LLM client、执行器或 promotion 代码。
 - 根目录 `zscope.c_cpp.yaml` 与 `zscope.java.yaml` 是语言隔离的精简参考文件；Java 不接受 SVF/clang/compile database，C/C++ 不接受 Java provider 字段。
 - `Z_SCOPE_RUNTIME_SPEC` 只在 `Z_SCOPE_DEVELOPER_MODE=1` 时接受绝对覆盖路径。有效规格版本、来源和 SHA-256 进入配置哈希、缓存身份及报告 provenance。
 - `UserConfigWorkbook`/`UserConfigStore` 维护人工可审阅语义以及 suppression、baseline 等旁路状态。
 - semantics 合并内置 defaults、工作簿、源码推断和历史信息，为候选与 prompt 提供当前入口相关的语义片段。
 - `security_map.db` 是独立于历史函数 snapshot 的只读安全语义 sidecar：零 LLM 骨架记录入口、调用、危险事件和 backend coverage；有证据引用的选择性 LLM delta 才能成为 claim，无可解析引用的内容仅是 observation。
+- `security_specs/security_specs.db` 与同目录不可变 CAS 保存 SecuritySpec revision、qualification、review chain、shadow compilation 和 root manifest。P3 的 13 类有限 DSL 不接受脚本、正则、查询代码或自然语言条件；程序事实若不能精确绑定 subject、slot、scope、evidence 与 dependency hash，只能保留为 observation。
 - snapshot policy 决定完整、轻量或语法快照，store 负责持久化与复用。
 - `ReviewMemory` 是验证反馈门面；`issue_identity.py` 为报告、baseline、SARIF 和 benchmark 提供统一身份。
 
@@ -76,6 +80,7 @@ tests:
 - 用户配置只向当前函数/入口注入相关片段，不能把整个工作簿无差别放入 prompt。
 - 人工填写的配置不能被自动推断静默覆盖；推断行必须保留来源和置信度。
 - 历史 snapshot cache key 必须覆盖影响其内容的代码、public config、RuntimeSpec provenance、Agent/Skill 和后端版本因素。Security Semantic Map 则分层缓存：程序骨架只依赖 code/symbol/type/call-edge/IR/backend 版本，LLM delta 再依赖 model/prompt/skill/用户语义；规则变化只重算 gap plan，callee 契约变化按反向消费者和 SCC 原子传播。
+- Security Spec cache 额外绑定 audit-unit fingerprint、registry/compiler/prompt revision、model profile 与依赖 hashes；dependency 或 scope 变化只通过反向索引失效命中的 spec、函数与调用依赖。P5 前 `security_spec_mode` 固定为不可配置的 `shadow`，compiled artifact 不得回流 Candidate Ledger、Proof closure 或 terminal disposition。
 - 入口 canonical identity 必须保留实现文件和可调用实体；当后端给出的 signature 不含方法名时（如 Java 的返回值/参数描述符），必须同时保留全限定函数名，不能因去重而丢失入口。
 - canonical key、stable fingerprint 和 source-context fingerprint 的用途不能互换；身份算法变更要考虑历史 baseline 兼容性。
 
@@ -94,6 +99,7 @@ tests:
 ```bash
 python -m pytest -q tests/test_user_config_workbook.py tests/test_semantics_defaults.py
 python -m pytest -q tests/test_security_semantic_map.py
+python -m pytest -q tests/test_security_specs.py tests/test_p3_security_spec_qualification.py
 python -m pytest -q tests/test_config_v2.py tests/test_config_migration.py tests/test_concurrency_config.py
 python -m pytest -q tests/test_snapshot_store.py tests/test_snapshot_refresh_decision_prompt.py
 python -m pytest -q tests/test_review_memory.py tests/test_issue_dedup.py

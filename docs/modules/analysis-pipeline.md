@@ -34,6 +34,7 @@ tests:
   - tests/test_proof_kernel.py
   - tests/test_p2_proof_corpus.py
   - tests/test_p2_proof_lifecycle.py
+  - tests/test_p3_security_spec_lifecycle.py
   - tests/test_alert_verifier_parallel.py
   - tests/test_rule_extensions.py
   - tests/test_rule_catalog.py
@@ -56,6 +57,7 @@ tests:
 - YAML pack 和严格 Provider V2 只负责规则特有匹配/证据；语言、CWE、defect class、severity 和 Skill 以 descriptor 为唯一真源。
 - Candidate ledger 负责候选身份、合并、生命周期和证据保留。
 - `fast` 只运行确定性/backend 候选快车道；`balanced`/`deep` 还可接收 candidate-blind 主动发现产生的 hypothesis。所有来源完成后先冻结全局 Ledger，再按 validation cluster 验证一次。
+- default、resume、maintain 与 alert-verify 都冻结相同的 Security Spec shadow policy。确定性 miner 和有限模型 proposal 只形成独立 spec CAS/compilation 对照；旧 SemanticModeler/SecuritySemanticMap 仍是产品输入，P5 前 spec 不产生候选、proof fact 或终态贡献。
 - Validation runner 先执行稳定的 bounded V0 确定性 proof，再运行 V1 单次结构化判定、新增合法请求产生真实 delta 后的单次 V2 无状态复判，以及分档 V3 调查。Z-Scope 2.0 的 `RequiredFactPlan`、Proof Kernel 与严格 `TerminalAuthorityEvaluator` 当前只做 shadow 对照：输出保留在候选和 trace 中，但 P5 完成前不得改写 V1 输入、Candidate Ledger outcome 或既有 validation pipeline 终态。balanced 覆盖 high/critical 或外部可达的可执行未决 cluster，deep 覆盖全部有可执行证明动作、无完整反证的非 shadow 未决 cluster。
 - Finding attribution 显式区分 `discovered_by` 集合与 `decided_by`/`decision_level`，因此“规则发现、LLM 判定”和“LLM 独占发现”不会混为一类。
 - Rule engine 和 alert verifier 将规则或外部告警转换为相同的验证/报告语义。
@@ -72,6 +74,7 @@ tests:
 - 并发、资源、路径/guard 和 contract/type provider 只提出严格的 `EvidenceCertificate v2`；独立 `ProofChecker` 从冻结 `ProgramProofIR v2` 与 obligation/action 重算谓词，校验 scope、量词、CFG/出口、assumption allowlist 和 code/IR/backend/dependency hash 后，才可在 shadow closure 中生成 accepted fact。入口参数绑定还要求 IR 显式标记完整的冻结签名域；只有 CFG 完整而没有该签名域时保持 unknown。RequiredFactPlan 的派生事实只关闭 fact request，不产生 terminal contribution；alert 缺少冻结 IR 时 shadow 保持 open。缺少 protocol revision 或严格字段的早期同名证书标为 `legacy_preview`，只能读取，不能关闭 P2 clause。全称命题在 alias、动态边、wrapper/transfer 或覆盖不完整时必须 unknown 且 witness 为空。产品 V1 仍使用稳定 decision slice；V1 只能再提出一个新的合法参数化请求，有真实 delta 才执行一次无历史 V2。
 - V3 模型不能构造 fact、引用或自由参数，只能选择系统提供的 action ID。系统执行固定 verifier、自动绑定 subject/region/code/backend hash，把证书写回 decision slice，并立即调用 `TerminalAuthorityEvaluator`；完整正/反 proof 通过程序终态钩子在当前工具轮结束后停止，不再调用模型。重复 action 被拒绝，连续两轮没有系统接纳的 fact 即停止，50 轮只是安全上限。逐调用 `new_fact_count` 只统计实际写入 decision slice 的事实。
 - 旧 `EvidenceClaimRequest` 与普通只读工具目录只用于历史 trace/replay 分类；live V3 使用有限 action 与严格 Checker，不能以 observation 晋级。Proof artifacts 进入不可变 CAS，Decision Trace 的唯一 terminal event 同时冻结 active product decision、`proof_kernel_mode=shadow` 和 shadow decision；P5 前不能把既有 policy 已确认的 finding 降级。
+- 同一个唯一 terminal event 还附加 `security_spec_mode=shadow`、spec artifact refs 与 `active_product_effect=none`。Security Spec 编译冲突、过期依赖、未知字段、空 scope、证据不可解析或 reviewer identity 缺失都必须 fail-closed，且不得通过新增 terminal event 改写稳定结果。
 - 主动发现 Agent 只能写 hypothesis/observation，不能写 confirmed finding；其 prompt 不得包含 Candidate Ledger 内容、候选/规则身份、benchmark、truth 或历史 verdict。
 - 已启用阶段因超时、取消或工具失败未能覆盖全部审计单元时，已有结果仍需保存并标记 `completeness=partial`；未启用的阶段不构成 partial。token 成本只在 Benchmark 完成后评价。
 - 外部告警适配后仍需遵守统一 issue identity、证据和报告 schema。
@@ -110,6 +113,7 @@ python -m pytest -q tests/test_candidate_pipeline.py tests/test_candidate_ledger
 python -m pytest -q tests/test_validation_pipeline.py tests/test_validation_runner.py
 python -m pytest -q tests/test_validator_v3_protocol.py tests/test_evidence_completion.py tests/test_fact_capabilities.py
 python -m pytest -q tests/test_proof_kernel.py tests/test_p2_proof_corpus.py tests/test_p2_proof_lifecycle.py
+python -m pytest -q tests/test_security_specs.py tests/test_p3_security_spec_lifecycle.py
 python -m pytest -q tests/test_alert_verifier_parallel.py tests/test_needs_review_governance.py
 ```
 

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.local/schemas/compiled-security-spec-v2.schema.json",
+  "title": "CompiledSecuritySpec v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "protocol_revision", "spec_uid", "spec_revision", "source_spec_sha256", "predicate", "subject", "scope", "parameters", "qualification_ref", "effect_footprint", "mode", "content_sha256"],
+  "properties": {
+    "schema_version": {"const": "zscope.compiled-security-spec.v2"},
+    "protocol_revision": {"const": 2},
+    "spec_uid": {"type": "string"},
+    "spec_revision": {"type": "integer", "minimum": 1},
+    "source_spec_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "predicate": {"type": "string"},
+    "subject": {"type": "object"},
+    "scope": {"type": "object"},
+    "parameters": {"type": "object"},
+    "qualification_ref": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "effect_footprint": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "mode": {"const": "shadow"},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

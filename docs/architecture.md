@@ -364,6 +364,8 @@ P2 Proof Kernel 把唯一、完整的 `FunctionIRGraph v1` 转换为语言中立
 
 Proof Kernel 在 P2 完成后仍固定为不可配置的 `shadow`：V0/RequiredFactPlan、V1/V2、V3 与 alert-verify 都冻结相同的 proof artifact refs、Checker result 和 shadow decision，但不会改写稳定 Candidate Ledger outcome、Finding-root 视图或产品终态；只有 P5 完成后才能转移 runtime authority。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3；balanced 不使用 top-K，调查 high/critical 或外部可达且 registry 具有可执行 action 的 cluster，deep 调查全部无完整反证、非 shadow 且有 action 的 cluster。V3 单会话最多50次模型迭代且只能选择固定 action ID；完整 proof 后程序在当前工具轮直接终止。`model_verdict` 与最终 `policy_disposition` 分离；没有 proof 的模型 rejected 只能进入 needs-review。
 
+P3 Security Spec Kernel 在 `zscope/semantics/security_specs/` 建立独立严格对象、13 类有限 DSL、内容寻址存储、qualification、review hash chain 与 shadow compiler。确定性程序事实优先；模型适配器只在 unknown audit unit 上选择系统提供的 subject/scope/evidence/predicate/slot ID，且最高产生 `proposed`。只有 qualification-backed `stable` 规格可进入 P3 shadow compilation；冲突、过期依赖、未知字段、空 scope 或证据不可解析一律不编译。default、resume、maintain 与 alert-verify 在唯一 terminal trace 上附加同一 spec manifest/ref 和 `active_product_effect=none`，旧 SemanticModeler/SecuritySemanticMap 继续提供产品语义，Candidate Ledger、Proof Kernel authority、Finding-root 与稳定终态均不改变。Web Review Center 因缺少可信 reviewer identity 固定只读，review/apply-import 返回 fail-closed 403；P5 前不存在用户可控 authority 开关。
+
 ### 5.7 持久化与反馈平面
 
 Z-SCOPE 使用五类主要持久化区域：
@@ -373,6 +375,7 @@ Z-SCOPE 使用五类主要持久化区域：
 | `.zscope_knowledge/code_knowledge.db` | 代码事实、SVF 信号、Inspection IR | 全局代码知识图谱和候选证据审计 |
 | `.zscope_snapshots/snapshots.db` | 语义快照索引、final report 索引 | `--resume`、`--maintain` 和函数级缓存 |
 | `.zscope_snapshots/security_map.db` | 程序安全事实、semantic claim、unknown/conflict、audit unit | balanced/deep 的只读 Security Semantic Map sidecar |
+| `.zscope_snapshots/security_specs/` | SecuritySpec revision、qualification/review chain、shadow compilation、CAS root manifest | P3 只读 Review Center与跨 workflow shadow replay |
 | `.zscope_snapshots/user_config.xlsx` | 外部函数、配对函数、函数指针、dispatcher、模块生命周期、函数意图 | 人工可审阅的用户领域知识 |
 | `.zscope_snapshots/user_config.state.db` 或 `user_config.db` | 抑制、baseline、配置告警和历史兼容数据 | 误报反馈与旧 SQLite 配置兼容 |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划 | 审计本次 SVF 分析实际纳入了哪些翻译单元；WSL `/mnt/...` 场景可能写入 Linux 原生临时 bitcode 目录 |

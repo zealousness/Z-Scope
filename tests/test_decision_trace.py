@@ -73,6 +73,39 @@ def test_cluster_trace_is_ordered_and_hash_chained_under_concurrency(tmp_path: P
     assert loaded["trace_root_sha256"] == trace["trace_root_sha256"]
 
 
+def test_terminal_event_freezes_security_spec_shadow_without_second_terminal(
+    tmp_path: Path,
+) -> None:
+    store = DecisionTraceStore(tmp_path, scan_uid="SCAN_P3")
+    store.update_identity(
+        {
+            "security_spec_mode": "shadow",
+            "security_spec_artifact_refs": ["sha256:" + "a" * 64],
+            "security_spec_shadow_decision": {
+                "active_product_effect": "none",
+                "compiled_spec_count": 3,
+                "reason_code": "security_spec_shadow_only",
+            },
+        }
+    )
+    issue = {
+        "validation_cluster_uid": "VAL_P3",
+        "candidate_disposition": "needs_review",
+    }
+    store.finalize_issue(issue, view_memberships=("with_needs_review",))
+    store.finalize_issue(issue, view_memberships=("with_needs_review",))
+
+    trace = store.trace("VAL_P3")
+    terminal = [value for value in trace["events"] if value["stage"] == "policy"]
+    assert len(terminal) == 1
+    assert terminal[0]["details"]["security_spec_mode"] == "shadow"
+    assert terminal[0]["details"]["security_spec_shadow_decision"] == {
+        "active_product_effect": "none",
+        "compiled_spec_count": 3,
+        "reason_code": "security_spec_shadow_only",
+    }
+
+
 def test_trace_and_evidence_tampering_are_detected(tmp_path: Path) -> None:
     store = DecisionTraceStore(tmp_path)
     evidence_ref = store.put_evidence(

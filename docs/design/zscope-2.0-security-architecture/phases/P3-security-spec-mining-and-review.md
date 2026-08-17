@@ -35,11 +35,12 @@
 - stable规格100%绑定批准或qualification。
 - 过期XLSX、hash冲突和未知字段严格失败。
 - scope缩小和revoke产生精确失效。
-- 100个盲审单元关键契约召回不低于85%，unsupported不高于5%。
+- 至少120个盲审单元关键契约召回不低于85%，positive unsupported不高于5%，safe/near-miss active acceptance为0。
 - evidence refs 100%可解析。
 - 未修改项目第二次扫描语义LLM调用下降至少80%。
 - shadow不改变finding终态或视图。
 - 至少覆盖三个非Range项目/API风格。
+- default、resume、maintain、alert-verify、P1稳定回放与P2 proof replay的终态、双视图、workflow progress和proof shadow decision不变。
 
 ## 停止与回退
 

@@ -33,6 +33,10 @@ from ..framework.llm_usage import (
 from ..semantics.inference import LocalPatternSemanticBuilder
 from ..semantics.models import LocalPatternSemantics
 from ..semantics.security_map import SQLiteSecurityMapStore, ZeroLLMSecurityMapBuilder
+from ..semantics.security_specs.shadow import SecuritySpecShadowRuntime
+from ..semantics.security_specs.store import SecuritySpecStore
+from ..semantics.security_specs.qualification import load_builtin_qualification
+from ..semantics.security_specs.manifest import load_shadow_manifest_identity
 from ..snapshots.store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 from ..orchestration.active_discovery import (
@@ -435,6 +439,23 @@ class ParallelAnalyzer:
                     self._active_discovery_state["benchmark_ablation"] = (
                         ablation_override.report_metadata()
                     )
+                spec_identity = load_shadow_manifest_identity(
+                    Path(self.base_config.analysis.snapshot_dir) / "security_specs",
+                    consumer="scan",
+                )
+                self._active_discovery_state["security_spec_shadow"] = {
+                    "schema_version": "zscope.security-spec-shadow-result.v2",
+                    "security_spec_mode": spec_identity["security_spec_mode"],
+                    "active_product_effect": "none",
+                    "status": "replayed_read_only",
+                    "root_manifest_sha256": spec_identity["security_spec_root_manifest_sha256"],
+                    "artifact_refs": spec_identity["security_spec_artifact_refs"],
+                    "compiled_spec_count": spec_identity["security_spec_shadow_decision"][
+                        "compiled_spec_count"
+                    ],
+                    "reason_code": spec_identity["security_spec_shadow_decision"]["reason_code"],
+                }
+                self._decision_trace_store.update_identity(spec_identity)
             else:
                 self._run_active_discovery(entries, discovery_profile)
 
@@ -1181,6 +1202,88 @@ class ParallelAnalyzer:
                 export_path=export_path,
             )
             state.update(discovery_state)
+            try:
+                spec_store = SecuritySpecStore(snapshot_dir / "security_specs")
+                existing_specs = spec_store.list_specs()
+                qualifications = spec_store.list_artifacts("qualification")
+                builtin_qualification = load_builtin_qualification()
+                qualifications = [
+                    builtin_qualification,
+                    *(
+                        value
+                        for value in qualifications
+                        if value.get("content_sha256")
+                        != builtin_qualification.get("content_sha256")
+                    ),
+                ]
+                evidence_refs = {
+                    str(value)
+                    for claim in getattr(planned_map, "claims", ()) or ()
+                    for value in getattr(claim, "evidence_refs", ()) or ()
+                }
+                dependency_hashes = {
+                    str(value)
+                    for record in getattr(planned_map, "functions", ()) or ()
+                    for value in (
+                        getattr(record, "code_hash", ""),
+                        hashlib.sha256(
+                            json.dumps(
+                                getattr(record, "backend_coverage", {}) or {},
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                    )
+                    if str(value)
+                }
+                spec_shadow = SecuritySpecShadowRuntime(spec_store).run(
+                    planned_map,
+                    qualification_hashes=[
+                        str(value.get("content_sha256") or "") for value in qualifications
+                    ],
+                    qualifications=qualifications,
+                    resolvable_evidence_refs=evidence_refs,
+                    current_dependency_hashes=dependency_hashes,
+                    additional_specs=existing_specs,
+                )
+                state["security_spec_shadow"] = spec_shadow
+                self._decision_trace_store.update_identity(
+                    {
+                        "security_spec_mode": str(
+                            spec_shadow.get("security_spec_mode") or "shadow"
+                        ),
+                        "security_spec_root_manifest_sha256": str(
+                            spec_shadow.get("root_manifest_sha256") or ""
+                        ),
+                        "security_spec_artifact_refs": list(spec_shadow.get("artifact_refs") or []),
+                        "security_spec_shadow_decision": {
+                            "active_product_effect": "none",
+                            "compiled_spec_count": int(
+                                spec_shadow.get("compiled_spec_count", 0) or 0
+                            ),
+                            "reason_code": "security_spec_shadow_only",
+                        },
+                    }
+                )
+            except Exception as exc:
+                state["security_spec_shadow"] = {
+                    "schema_version": "zscope.security-spec-shadow-result.v2",
+                    "security_spec_mode": "shadow",
+                    "active_product_effect": "none",
+                    "status": "failed_closed",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+                self._decision_trace_store.update_identity(
+                    {
+                        "security_spec_mode": "shadow",
+                        "security_spec_artifact_refs": [],
+                        "security_spec_shadow_decision": {
+                            "active_product_effect": "none",
+                            "reason_code": "security_spec_shadow_failed_closed",
+                        },
+                    }
+                )
             planned_units = list(planned_map.audit_units)
             missing_modeling = (
                 semantic_enrichment_enabled and modeling_llm_client is None and bool(planned_units)
@@ -2190,6 +2293,21 @@ class ParallelAnalyzer:
                     "failures": list(active_discovery_state.get("failures") or []),
                 }
             }
+            spec_shadow = active_discovery_state.get("security_spec_shadow")
+            if isinstance(spec_shadow, dict):
+                engine_capabilities["__security_spec_shadow__"] = {
+                    "security_spec": {
+                        "status": str(spec_shadow.get("status") or "complete"),
+                        "mode": str(spec_shadow.get("security_spec_mode") or "shadow"),
+                        "active_product_effect": str(
+                            spec_shadow.get("active_product_effect") or "none"
+                        ),
+                        "mined_spec_count": int(spec_shadow.get("mined_spec_count", 0) or 0),
+                        "compiled_spec_count": int(spec_shadow.get("compiled_spec_count", 0) or 0),
+                        "root_manifest_sha256": str(spec_shadow.get("root_manifest_sha256") or ""),
+                        "artifact_refs": list(spec_shadow.get("artifact_refs") or []),
+                    }
+                }
         error_result_count = sum(
             1
             for result in results.values()
