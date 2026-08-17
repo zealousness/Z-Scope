@@ -578,8 +578,18 @@ def evaluate_predicate(
     if predicate_id == "external_entry_parameter_binding":
         parameter_uid = str(parameters.get("parameter_uid") or "")
         parameter_slot = str(parameters.get("parameter_slot") or "")
+        entry_events = [
+            event for event in _events(summary) if event.get("kind") == "entry_parameter"
+        ]
+        signature_frozen = bool(entry_events) and all(
+            isinstance(event.get("attributes"), Mapping)
+            and event["attributes"].get("entry_signature_complete") is True
+            for event in entry_events
+        )
+        if not signature_frozen:
+            return _unknown(spec, "entry_signature_not_frozen")
         matches = []
-        for event in _events(summary):
+        for event in entry_events:
             attributes = event.get("attributes")
             attributes = attributes if isinstance(attributes, Mapping) else {}
             subjects = [str(value) for value in event.get("subject_uids") or []]
@@ -589,11 +599,10 @@ def evaluate_predicate(
                 and str(attributes.get("parameter_slot") or "") == parameter_slot
             ):
                 matches.append(str(event.get("event_uid") or ""))
-        if not complete and not matches:
-            return _unknown(spec, unresolved[0] if unresolved else "entry_signature_incomplete")
         if len(matches) > 1:
             return _unknown(spec, "entry_parameter_binding_ambiguous")
         actual = {"external_entry_parameter_bound": bool(matches)}
+        signature_event_uids = [str(value.get("event_uid") or "") for value in entry_events]
         return _complete_result(
             spec,
             actual=actual,
@@ -603,10 +612,14 @@ def evaluate_predicate(
                 "cfg_edges": [],
                 "path_node_uids": [],
                 "exit_node_uids": [],
-                "values": {"matching_event_uids": matches, **actual},
+                "values": {
+                    "matching_event_uids": matches,
+                    "signature_event_uids": signature_event_uids,
+                    **actual,
+                },
             },
-            enumerated=matches,
-            required=matches,
+            enumerated=signature_event_uids,
+            required=signature_event_uids,
             reason="entry_parameter_binding_recomputed",
         )
 
