@@ -17,6 +17,29 @@
 
 无可解析证据、scope为空或predicate不在注册表中的LLM输出只能成为observation。
 
+P3 首版 DSL registry 固定为 13 个 predicate，`kind` 必须与 `predicate` 相同：
+
+| family | predicate | 严格参数 |
+|---|---|---|
+| dataflow | `source` / `sink` | 精确 source/sink slot 与有限 label |
+| dataflow | `propagate` / `sanitize` | 非空 from slots、精确 to slot 与有限 label |
+| resource | `acquire` / `release` | 精确 resource slot 与有限 resource kind |
+| resource | `transfer` | 精确 resource slot 与不同的有限 from/to owner |
+| concurrency | `lock` / `unlock` | 精确 lock slot 与有限 lock mode |
+| protocol | `state_transition` / `sentinel` | 精确 state/value slot、结构化值与有限 sentinel meaning |
+| callback/contract | `callback_retains` | 精确 callback/retained slots 与有限 lifetime |
+| callback/contract | `caller_contract` | 精确 target slots 与有限 caller requirement |
+
+slot 只能是 `parameter:N`、`return`、`receiver` 或精确 `field:...`。registry 不接受脚本、
+正则、查询代码、自由 predicate 或自然语言条件。LLM 只能从系统给出的 subject、scope、
+evidence、predicate 和 slot ID 中选择，且最高状态为 `proposed`。
+
+状态转换固定为 `observation -> proposed -> verified_scoped -> project_active -> stable`；
+异常状态为 `conflicting / rejected / quarantined`。`project_active` 和 `stable` 必须绑定单一
+review 或 qualification authority，不能同时绑定二者。P3 只把 qualification-backed `stable`
+规格编译到 shadow；冲突、过期依赖和不可解析 evidence 一律不编译。SecuritySpec、review event、
+qualification、compiled spec 和 archive 均使用 strict schema、canonical JSON 和 SHA-256 内容寻址。
+
 ## SecuritySpecReviewEvent
 
 审阅事件不可变，至少包含：
@@ -29,6 +52,10 @@
 - previous event hash
 
 审阅不得改写程序事实。匿名或未认证Web会话只能读取和导出。
+
+P3 Web 服务器没有可信 reviewer identity，`REVIEWER_IDENTITY_MODE` 固定为
+`unavailable_read_only`。review POST 和 apply-import 必须返回
+`403 reviewer_identity_unavailable`；import 只允许严格 dry-run 校验与影响预览，不能持久化。
 
 ## SecurityHypothesis v2
 

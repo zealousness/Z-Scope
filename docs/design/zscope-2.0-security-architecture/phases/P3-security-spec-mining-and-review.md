@@ -20,6 +20,15 @@
 6. 实现规范JSON与严格XLSX导入导出。
 7. shadow运行并与旧SemanticModeler对照。
 
+## 当前实施状态
+
+- P2证书与trace契约已完成并保持shadow，P3从P2-complete commit进入。
+- 严格SecuritySpec、review event、qualification、compiled spec和archive schema已冻结；有限DSL
+  registry只允许13个声明式predicate，不接受查询代码或自由参数。
+- 当前Web无可信reviewer identity，因此Review Center固定只读。review和apply-import必须
+  fail-closed；只有独立qualification可以在P3产生`stable`规格。
+- Security Spec编译模式固定为shadow，旧SemanticModeler在P5之前继续承担当前产品输入。
+
 ## 验收
 
 - active/stable规格100%具有说明、scope、证据和影响预览。
