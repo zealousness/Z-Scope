@@ -2,7 +2,7 @@
   "schema_version": "zscope.runtime-reachability-manifest.v1",
   "design_version": "1.0.0",
   "phase": "P1",
-  "audit_status": "candidate_validation_complete_pending_product_architecture_review",
+  "audit_status": "p1_complete_with_approved_product_architecture_review",
   "p0_complete_commit": "314cddf299387cad7c998cc62990194535d2cb9b",
   "p0_complete_tree": "2bb59cf4b90de2d6e71a9ccaedd7920e21837366",
   "frozen_replay": {
@@ -128,6 +128,6 @@
     "public_entrypoint_breakage": "not_observed_in_zero_model_smoke",
     "wheel_or_import_graph_contains_removed_runtime": "not_observed",
     "black_gate_failure": "not_observed_in_wsl_black_25_11_0",
-    "formal_review_blocker": "pending_review"
+    "formal_review_blocker": "approved_zero_blocking_findings"
   }
 }

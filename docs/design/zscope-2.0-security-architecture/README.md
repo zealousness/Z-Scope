@@ -7,11 +7,11 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 
 - 设计版本：`1.0.0`
 - 状态：`implementing`
-- 当前阶段：`P0 baseline-and-design-freeze`已完成；`P1`实现候选为`in_progress`并等待product architecture审核；`E0`仍为`pending`
+- 当前阶段：`P0 baseline-and-design-freeze`与`P1 dead-code-and-workflow-cleanup`已完成；`P2`与`E0`仍为`pending`
 - 当前产品事实：仍以[`docs/architecture.md`](../../architecture.md)为准
 - 基线状态：已拆分为Truth、运行配置、Scorer和产品四个可审计提交，工作树干净
 - P0批准状态：cold fast/balanced基线、三方正式审核、最终证据校验和annotated design tag均已绑定
-- P1停止条件：冻结replay、公共入口、wheel/import graph、Black或最终product architecture审核任一失败，P1保持`in_progress`；测试通过本身不等于阶段完成
+- P1完成状态：候选commit/tree已通过冻结replay、公共入口、wheel/import graph、Black和`claude-opus-5`只读product architecture审核；零blocking finding。测试通过与正式审核记录分别登记
 
 ## 权威文件
 
@@ -25,6 +25,7 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 - [P0三方审核schema](acceptance/p0-review.schema.json)
 - [P0正式审核记录](acceptance/reviews/p0-product-architecture.json)
 - [P1 product architecture审核schema](acceptance/p1-review.schema.json)
+- [P1 product architecture审核记录](acceptance/reviews/p1-product-architecture.json)
 - [架构决策记录](adr/0001-replace-vulnerability-analyzer-with-hypothesis-hunter.md)
 
 ## 状态机
