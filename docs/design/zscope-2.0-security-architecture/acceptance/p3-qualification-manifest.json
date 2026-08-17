@@ -102,7 +102,7 @@
     "Native Windows Black 25.11.0 hangs during grammar initialization; the identical release passed all 27 changed Python files under local WSL after one transient WSL E_ACCESSDENIED retry.",
     "The wheel is a local ignored artifact; only its hash, size, inventory and installed-target package/import results are recorded.",
     "No external-model benchmark, remote CI, push, PR or design tag was executed.",
-    "P3 completion still requires approved read-only product_architecture and proof_security reviews on the exact candidate with zero blocking findings."
+    "Both final read-only reviews approved the exact candidate with zero blocking findings; their non-blocking P4/P5 recommendations do not change the P3 shadow acceptance result."
   ],
   "stop_conditions": {
     "anonymous_write_succeeds": "not_observed",
@@ -112,7 +112,23 @@
     "stable_replay_drift": "not_observed",
     "shadow_takes_authority": "not_observed",
     "wheel_or_import_graph_failure": "not_observed",
-    "formal_review_blocker": "reviews_pending"
+    "formal_review_blocker": "approved_zero_blocking_findings"
   },
-  "review_status": "pending"
+  "review_status": "approved",
+  "reviews": {
+    "product_architecture": {
+      "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p3-product-architecture.json",
+      "reviewer": "claude-code/claude-opus-5",
+      "scope": "final_product_architecture",
+      "decision": "approved",
+      "blocking_finding_count": 0
+    },
+    "proof_security": {
+      "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p3-proof-security.json",
+      "reviewer": "dsh/deepseek-v4-pro:max",
+      "scope": "final_proof_security",
+      "decision": "approved",
+      "blocking_finding_count": 0
+    }
+  }
 }

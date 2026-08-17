@@ -2,7 +2,7 @@
   "schema_version": "zscope.runtime-reachability-manifest.v1",
   "design_version": "1.0.1",
   "phase": "P3",
-  "audit_status": "p3_candidate_validated_reviews_pending",
+  "audit_status": "p3_complete_with_approved_dual_reviews",
   "p0_complete_commit": "314cddf299387cad7c998cc62990194535d2cb9b",
   "p1_complete_commit": "8d36b3f2f579f5d57d6d0bf1bcdabc2662164d72",
   "p2_complete_commit": "cba2e218cae69340c72f25eefcdbd9b00541565f",
@@ -39,7 +39,7 @@
     "second_scan_llm_reduction": 1.0,
     "security_spec_mode": "shadow",
     "reviewer_identity_mode": "unavailable_read_only",
-    "final_reviews": "pending"
+    "final_reviews": "approved_zero_blocking_findings"
   },
   "audit_methods": [
     "strict schema and canonical-content validation",
@@ -202,7 +202,7 @@
     "The wheel is a local ignored artifact; its hash and inventory are recorded, but the wheel itself is not committed.",
     "Native Windows Black 25.11.0 hangs during grammar initialization; the same version passed all changed Python files under local WSL.",
     "No remote CI ran because no push or PR is authorized.",
-    "No external-model benchmark ran; only the separately authorized read-only P3 architecture and proof-security reviews remain.",
+    "No external-model benchmark ran; the only external-model actions were the separately authorized read-only P3 architecture and proof-security reviews.",
     "Historical P0 benchmark aggregates remain unavailable locally and were not represented as replayed.",
     "The Web Review Center remains read-only because the current server has no trusted reviewer identity."
   ],
@@ -215,6 +215,6 @@
     "public_entrypoint_breakage": "not_observed",
     "wheel_or_import_graph_failure": "not_observed",
     "authority_before_p5": "not_observed",
-    "formal_review_blocker": "reviews_pending"
+    "formal_review_blocker": "approved_zero_blocking_findings"
   }
 }
