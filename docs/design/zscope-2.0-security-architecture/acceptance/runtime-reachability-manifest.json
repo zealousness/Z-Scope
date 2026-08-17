@@ -1,141 +1,172 @@
 {
   "schema_version": "zscope.runtime-reachability-manifest.v1",
   "design_version": "1.0.1",
-  "phase": "P2",
-  "audit_status": "p2_complete_with_approved_final_proof_security_review",
+  "phase": "P3",
+  "audit_status": "p3_candidate_validated_reviews_pending",
   "p0_complete_commit": "314cddf299387cad7c998cc62990194535d2cb9b",
   "p1_complete_commit": "8d36b3f2f579f5d57d6d0bf1bcdabc2662164d72",
-  "p2_candidate_commit": "45ee3de1d637cc72434f656cac4b589aa5fc0750",
-  "p2_candidate_tree": "14eae235198d884da2f3a8975a4d5e3d643a0336",
+  "p2_complete_commit": "cba2e218cae69340c72f25eefcdbd9b00541565f",
+  "p3_candidate_commit": "e69bce195d948e2d0832919eb105d82ba1d49ed4",
+  "p3_candidate_tree": "edbd217754849a91e1990cafad7371532c23d695",
   "frozen_replay": {
-    "fixture_manifest": "tests/fixtures/p1_frozen_replay/manifest.json",
+    "p1_fixture_manifest": "tests/fixtures/p1_frozen_replay/manifest.json",
+    "p2_qualification_manifest": "docs/design/zscope-2.0-security-architecture/acceptance/p2-qualification-manifest.json",
+    "p3_corpus_manifest": "tests/fixtures/p3_security_specs/manifest.json",
     "answer_free": true,
-    "model_calls": 0,
+    "external_model_calls": 0,
     "network": false,
     "candidate_outcomes_changed": false,
     "finding_root_views_changed": false,
     "workflow_progress_changed": false,
+    "terminal_event_count_changed": false,
+    "proof_shadow_decision_changed": false,
     "limitations": [
       "The three large P0 benchmark aggregates are not copied into this worktree; their historical hashes remain bound by P0 evidence.",
-      "P2 did not replay an external-model benchmark and does not claim a new Range result."
+      "P3 did not replay an external-model benchmark and does not claim a new Range result."
     ]
   },
-  "proof_qualification": {
-    "manifest": "docs/design/zscope-2.0-security-architecture/acceptance/p2-qualification-manifest.json",
-    "corpus": "tests/fixtures/p2_proof_kernel/corpus.json",
-    "case_count": 120,
-    "safe_case_count": 80,
-    "safe_false_acceptance_count": 0,
-    "offline_recomputed_accepted_fact_count": 40,
-    "clang_version": "21.1.8",
-    "source_to_ir_case_count": 4,
-    "source_to_ir_semantic_sha256": "9caf7edccdb6cdf0748a5895e932214b0c51ec2cd858fdf42ffcc0b60a0385d7",
-    "proof_kernel_mode": "shadow",
-    "final_review": "approved_zero_blocking_findings"
+  "security_spec_qualification": {
+    "manifest": "docs/design/zscope-2.0-security-architecture/acceptance/p3-qualification-manifest.json",
+    "source_corpus": "tests/fixtures/p3_security_specs/source-corpus.json",
+    "expected_contracts": "tests/fixtures/p3_security_specs/expected-contracts.json",
+    "case_count": 143,
+    "positive_case_count": 104,
+    "safe_case_count": 39,
+    "safe_false_activation_count": 0,
+    "key_contract_recall": 1.0,
+    "positive_unsupported_rate": 0.0,
+    "evidence_resolution_rate": 1.0,
+    "second_scan_llm_reduction": 1.0,
+    "security_spec_mode": "shadow",
+    "reviewer_identity_mode": "unavailable_read_only",
+    "final_reviews": "pending"
   },
   "audit_methods": [
     "strict schema and canonical-content validation",
-    "independent checker offline predicate recomputation",
-    "forged hash, identity, scope, quantifier, CFG, exit, assumption, action and trace rejection tests",
-    "immutable atomic proof CAS dependency verification",
-    "four-family answer-free qualification corpus replay",
-    "Clang 21.1.8 neutral source-to-ProgramProofIR replay",
-    "V0, RequiredFactPlan, V1/V2, V3 and alert-verify shadow integration",
+    "finite thirteen-operation DSL registry validation",
+    "immutable SecuritySpec CAS and SQLite metadata cross-reference verification",
+    "append-only review-chain tamper and stale-revision rejection tests",
+    "qualification-backed stable-only compiler acceptance",
+    "conflict, stale dependency, unresolved evidence and empty scope fail-closed tests",
+    "answer-free 143-unit qualification replay across three unrelated project styles",
+    "counting-fake second-scan cache and exact invalidation tests",
+    "default, resume, maintain and alert-verify frozen shadow-manifest reuse",
+    "one-terminal-event Decision Trace replay",
+    "read-only Web GET, export and all-or-nothing dry-run import tests",
+    "anonymous review and apply-import 403 tests",
     "source-to-evidence shadow lifecycle gate",
-    "zero-model frozen Candidate Ledger replay",
-    "zero-model default, resume, maintain, CLI, Web, MCP and alert-verify smoke",
-    "wheel package-data, forbidden import and P1 removed-runtime reachability gates",
+    "zero-model P1 Candidate Ledger and P2 Proof Kernel replay",
+    "public CLI, Web and MCP installed-wheel smoke",
+    "wheel package-data, forbidden import and P1/P2/P3 reachability gates",
     "full pytest, compileall, mypy and changed-Python Black validation"
   ],
   "classifications": [
     {
-      "component": "program_proof_ir_v2",
-      "classification": "production_reachable_shadow_artifact",
+      "component": "security_spec_v2_contracts",
+      "classification": "strict_immutable_shadow_artifacts",
       "evidence": [
-        "strict FunctionIRGraph v1 conversion",
-        "function/CFG/event/type/wrapper coverage and dependency hashes",
-        "Java Preview fails closed"
+        "five packaged strict schemas",
+        "UID, revision, subject, signature, slot, scope, evidence and dependency hashes",
+        "unknown fields and broken content hashes fail closed"
       ]
     },
     {
-      "component": "proof_provider_registry",
-      "classification": "finite_candidate_certificate_producer",
+      "component": "security_spec_registry",
+      "classification": "finite_compilable_dsl",
       "evidence": [
-        "six executable predicates across four families",
-        "entry binding is unknown without an explicitly frozen complete signature domain",
-        "unsupported predicates explicitly non-executable/unknown",
-        "no model-supplied fact, free parameter, coverage or disposition"
+        "exactly thirteen registered operations",
+        "system-provided exact slots and finite enum parameters only",
+        "no script, regular expression, query code or natural-language predicate"
       ]
     },
     {
-      "component": "proof_checker",
-      "classification": "sole_strict_fact_acceptance_authority_shadow_only",
+      "component": "security_spec_store",
+      "classification": "immutable_content_addressed_store_with_precise_indexes",
       "evidence": [
-        "offline predicate recomputation",
-        "subject, region, quantifier, scope, action, code, IR, backend and dependency binding",
-        "derived RequiredFactPlan facts have no terminal contribution"
+        "spec, qualification, review, compiled artifact and root manifest cross-validation",
+        "scope, dependency and caller reverse indexes",
+        "narrow and revoke compute explicit old/new footprint deltas"
       ]
     },
     {
-      "component": "proof_artifact_store",
-      "classification": "immutable_content_addressed_atomic_store",
+      "component": "security_spec_miner",
+      "classification": "deterministic_first_bounded_llm_proposal_only",
       "evidence": [
-        "IR, obligation, action, certificate, check result and root manifest",
-        "recursive dependency verification",
-        "tampered object and unsafe reference rejection"
+        "exact program and user inputs mine deterministically",
+        "unknown audit units expose only system-generated proposal IDs",
+        "model output cannot supply subject, scope, evidence, predicate, slot or terminal state"
       ]
     },
     {
-      "component": "validation_runner",
+      "component": "security_spec_compiler",
+      "classification": "qualification_backed_stable_shadow_only",
+      "evidence": [
+        "proposed, verified, conflicting and stale specs are preview-only or rejected",
+        "only independent qualification-backed stable specs compile in P3",
+        "compiled summaries are compared against the legacy semantic map without replacing it"
+      ]
+    },
+    {
+      "component": "parallel_analyzer",
       "classification": "production_reachable_dual_track_shadow",
       "evidence": [
-        "strict registry/checker runs before a V0 compatibility stop",
-        "V1/V2 and V3 retain strict artifacts and checker events",
-        "stable Candidate Ledger disposition remains active until P5"
+        "non-fast scans create a frozen spec shadow manifest after legacy semantic modeling",
+        "fast and replay paths only read an existing valid manifest",
+        "active product effect is explicitly none"
       ]
     },
     {
       "component": "alert_verify",
-      "classification": "production_reachable_shadow_fail_closed_without_frozen_ir",
+      "classification": "production_reachable_read_only_shadow_replay",
       "evidence": [
-        "active alert behavior preserved",
-        "shadow decision remains needs_review/open",
-        "model result is not copied into Proof Kernel authority"
+        "loads the same frozen manifest as scan workflows",
+        "tampered or unavailable references fail closed",
+        "active alert and Proof Kernel decisions remain unchanged"
       ]
     },
     {
-      "component": "zscope_explain_reverify",
-      "classification": "production_reachable_offline_checker_replay",
+      "component": "decision_trace",
+      "classification": "single_terminal_event_with_shadow_refs",
       "evidence": [
-        "loads frozen IR, obligation, action and certificate",
-        "recomputes ProofCheckResult",
-        "legacy preview never becomes authoritative"
+        "SecuritySpec refs are attached to the existing terminal event",
+        "active product and P2 proof decisions are frozen separately",
+        "no second terminal event is emitted"
       ]
     },
     {
-      "component": "finding_root_v2",
-      "classification": "sole_live_display_projection_unchanged",
+      "component": "web_security_spec_center",
+      "classification": "read_only_without_trusted_reviewer_identity",
       "evidence": [
-        "no proof or terminal authority",
-        "P1 frozen default/with-needs-review views unchanged"
+        "list, detail, compile/impact preview and JSON/XLSX export are GET-only",
+        "review and apply-import return 403 reviewer_identity_unavailable",
+        "strict dry-run imports do not mutate the store"
+      ]
+    },
+    {
+      "component": "legacy_semantic_modeler",
+      "classification": "active_product_input_unchanged_until_p5",
+      "evidence": [
+        "SecuritySemanticMap remains the active product semantic input",
+        "P3 adds only a structured shadow comparison",
+        "legacy removal and authority cutover remain P5 work"
+      ]
+    },
+    {
+      "component": "candidate_ledger_and_proof_kernel",
+      "classification": "stable_authority_boundaries_unchanged",
+      "evidence": [
+        "no SecuritySpec import in candidate, validation or reporting authority packages",
+        "P1 and P2 frozen replays pass",
+        "Finding-root remains display-only and Proof Kernel remains shadow"
       ]
     },
     {
       "component": "benchmark_truth_scorer",
-      "classification": "not_imported_or_modified_by_proof_kernel",
+      "classification": "not_imported_or_modified_by_security_specs",
       "evidence": [
         "lifecycle and wheel forbidden-import gates",
         "product-only change-scope classification",
         "qualification corpus is neutral and answer-free"
-      ]
-    },
-    {
-      "component": "fact_first_terminal_authority",
-      "classification": "shadow_until_p5",
-      "evidence": [
-        "PROOF_KERNEL_MODE is a non-configurable shadow constant",
-        "authoritative or user-controlled mode fails CI",
-        "no P2 runtime cutover claim"
       ]
     }
   ],
@@ -143,45 +174,47 @@
     "default": ["discover_entries", "collect_candidates", "validate_candidates", "persist_report"],
     "resume": ["discover_entries", "plan_resume", "run_pending_entries", "merge_reused_reports"],
     "maintain": ["discover_entries", "compare_entry_state", "reuse_unchanged_report", "reconcile_history", "run_changed_entry"],
+    "alert_verify": "reuses the same valid frozen SecuritySpec manifest without write or authority",
     "progress_invariant": "P1 frozen workflow progress is byte-equivalent after semantic normalization"
   },
   "public_entrypoints_validated": [
     "CLI source and installed-wheel imports",
-    "zscope-explain strict offline reverify",
     "CLI default/resume/maintain workflow",
-    "CLI alert-verify shadow fail-closed",
-    "Web scan dispatch",
+    "CLI alert-verify frozen SecuritySpec replay",
+    "Web scan dispatch and read-only Security Spec Center",
     "MCP scan dispatch"
   ],
   "wheel_inventory": {
     "filename": "zscope-1.3.1-py3-none-any.whl",
-    "sha256": "ea1c588667634740806817bea9b56fe4a8b72c14e8fd23d3dec3bf48c83b3e8d",
-    "size_bytes": 1412754,
-    "entry_count": 250,
+    "sha256": "5a5a3c1705f8120cd5d8a456e5d5aa10102b836b520f21778b496f3786c398ab",
+    "size_bytes": 1448933,
+    "entry_count": 268,
     "build_command": "python -m pip wheel . --no-deps --no-build-isolation --no-cache-dir",
-    "proof_kernel_module_count": 9,
-    "proof_schema_count": 6,
-    "forbidden_proof_import_count": 0,
+    "security_spec_module_count": 12,
+    "security_spec_schema_count": 5,
+    "qualification_artifact_count": 1,
+    "forbidden_security_spec_import_count": 0,
     "removed_p1_component_entry_count": 0,
-    "installed_wheel_cli_web_mcp_schema_import_smoke": "passed"
+    "proof_kernel_package_gate": "passed",
+    "installed_wheel_cli_web_mcp_import_smoke": "passed"
   },
   "limitations": [
     "The wheel is a local ignored artifact; its hash and inventory are recorded, but the wheel itself is not committed.",
     "Native Windows Black 25.11.0 hangs during grammar initialization; the same version passed all changed Python files under local WSL.",
     "No remote CI ran because no push or PR is authorized.",
-    "No external-model benchmark ran; the only external-model action still required is the read-only P2 final proof-security review.",
+    "No external-model benchmark ran; only the separately authorized read-only P3 architecture and proof-security reviews remain.",
     "Historical P0 benchmark aggregates remain unavailable locally and were not represented as replayed.",
-    "Java Preview is schema/fail-closed evidence only and is not a terminal provider qualification."
+    "The Web Review Center remains read-only because the current server has no trusted reviewer identity."
   ],
   "stop_conditions": {
-    "forged_certificate_promotes": "not_observed",
-    "safe_false_acceptance_nonzero": "not_observed",
-    "universal_incomplete_coverage_closes": "not_observed",
-    "post_terminal_model_or_tool_call": "not_observed",
+    "anonymous_write_succeeds": "not_observed",
+    "conflict_is_silently_overridden": "not_observed",
+    "stale_spec_compiles": "not_observed",
+    "safe_false_activation_nonzero": "not_observed",
     "stable_replay_drift": "not_observed",
     "public_entrypoint_breakage": "not_observed",
     "wheel_or_import_graph_failure": "not_observed",
     "authority_before_p5": "not_observed",
-    "formal_review_blocker": "approved_zero_blocking_findings"
+    "formal_review_blocker": "reviews_pending"
   }
 }
