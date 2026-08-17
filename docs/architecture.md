@@ -64,7 +64,7 @@ flowchart TB
         Gap["Coverage-gap Planner<br/>candidate-blind units"]
         Discovery["Active Discovery<br/>hypotheses only"]
         Ledger["CandidateLedger<br/>dedup + freeze"]
-        SemanticDedup["Semantic report dedup<br/>programmatic"]
+        FindingRoot["Finding-root v2<br/>sole display projection"]
     end
 
     TokenUsage["ScanTokenUsageLedger<br/>call-level measurement only"]
@@ -74,6 +74,9 @@ flowchart TB
         V2["V2 fact delta recheck"]
         V3["V3 bounded investigation"]
         ClaimVerifier["EvidenceClaimVerifier<br/>recompute structured claim"]
+        ProofIR["ProgramProofIR v2<br/>frozen language-neutral IR"]
+        ProofProvider["Finite proof providers<br/>certificate proposals only"]
+        ProofChecker["Independent Proof Checker<br/>offline recomputation"]
         Authority["TerminalAuthorityEvaluator<br/>proof stop + P2 shadow closure"]
     end
     ReviewMemory["ReviewMemory<br/>baseline + suppression + validator memory"]
@@ -82,6 +85,7 @@ flowchart TB
     UserCfg["UserConfigStore<br/>user_config.xlsx + feedback state"]
     Report["ReportAssembler<br/>views / semantic dedup / SARIF / metadata"]
     DecisionTrace["IssueDecisionTrace<br/>hash chain + content-addressed evidence"]
+    ProofCAS["Proof artifact CAS<br/>immutable + atomic"]
 
     Ingress --> Config --> Workflow
     Workflow --> DiffImpact --> Candidate
@@ -98,9 +102,14 @@ flowchart TB
     UserCfg --> Candidate
     Candidate --> Ledger
     KDB --> SecurityMap --> Gap --> Discovery --> Ledger
-    Ledger --> SemanticDedup
     Ledger --> V0 --> V1 --> V2 --> V3
     V3 --> ClaimVerifier --> Authority
+    V0 --> ProofIR
+    V2 --> ProofIR
+    V3 --> ProofIR --> ProofProvider --> ProofChecker --> Authority
+    ProofIR --> ProofCAS
+    ProofProvider --> ProofCAS
+    ProofChecker --> ProofCAS
     V0 --> Authority
     V1 --> Authority
     V2 --> Authority
@@ -116,7 +125,7 @@ flowchart TB
     Index --> Tools
     Snapshot --> Tools
     UserCfg --> Tools
-    V3 --> Report
+    V3 --> FindingRoot --> Report
     Ledger --> DecisionTrace
     V0 --> DecisionTrace
     V1 --> DecisionTrace
@@ -129,7 +138,7 @@ flowchart TB
     Report --> UserCfg
 ```
 
-总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面保留确定性快车道，并在 balanced/deep 中用独立安全语义地图和 candidate-blind coverage gap 扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof，或经过程序验真的完整 evidence closure 改变终态；模型只能提交 Claim，不能直接创造事实或确认漏洞。反馈平面通过 SnapshotStore、Security Map sidecar、UserConfigStore、ReviewMemory 与 IssueDecisionTrace 保留中间产物、因果事件、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 仅向 V3 调查和受控发现开放白名单内的只读查询。
+总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面保留确定性快车道，并在 balanced/deep 中用独立安全语义地图和 candidate-blind coverage gap 扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof，或经过程序验真的完整 evidence closure 改变终态；live 模型只能选择系统给出的固定 EvidenceAction ID，不能直接创造事实、自由参数、coverage 或 terminal disposition。反馈平面通过 SnapshotStore、Security Map sidecar、UserConfigStore、ReviewMemory 与 IssueDecisionTrace 保留中间产物、因果事件、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 仅向 V3 调查和受控发现开放白名单内的只读查询。
 
 跨语言规则治理在既有候选生命周期上增加严格预检：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；包内目录、YAML pack、指定 provider、Skill 契约和 disabled IDs 组合为不可变 `EffectiveRuleSet`。重复 ID/alias、未知字段、语言错配、缺失 Skill 或能力错配在任何外部工具/LLM 启动前失败。`zscope.candidate.v3.3` 仍是内部候选协议，规则 provenance 以兼容字段追加，不改变稳定候选身份算法。
 
@@ -349,7 +358,11 @@ Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根�
 
 这层的设计目标是让所有候选都先保持“待验证证据”的形态，再由统一的验证门禁决定是否进入 `issues[]`、`metadata.audit_observations[]` 或被 suppression/baseline 拦截。高置信规则也不再绕过验证流水线；它们只能在证据完整、无反证且满足评分门槛时被自动接受。
 
-验证阶段使用 bounded `ValidatorEvidenceSlice v3`：每个 cluster 只传 canonical occurrence、可读事实 payload、proof、必要路径/claim 与代码窗口，输入上限 12K tokens。当前产品先运行 bounded V0；完整且无冲突的正/反 proof 可立即终止。未闭合项进入 V1 单次无工具结构化判定；V1 只能提出一个新的合法请求，有真实 delta hash 变化才执行一次无历史 V2。`FunctionIRGraph v1`、四组证书 provider、V1 前 `RequiredFactPlan` 与严格 closure authority 已提供可审计 shadow 输出，但在设计包 P2 的通用 fixture、safe corpus 和证书重放门禁通过前，shadow 事实不能改写 V1 decision slice，shadow closure 也不能把既有 validation pipeline 已确认的 finding 降级。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3；balanced 不使用 top-K，调查 high/critical 或外部可达且 registry 具有可执行 action 的 cluster，deep 调查全部无完整反证、非 shadow 且有 action 的 cluster。V3 单会话最多50次模型迭代且只能选择固定 action ID；证书一旦形成完整正/反 proof，程序在当前工具轮直接终止。`model_verdict` 与最终 `policy_disposition` 分离；没有 proof 的模型 rejected 只能进入 needs-review。
+验证阶段使用 bounded `ValidatorEvidenceSlice v3`：每个 cluster 只传 canonical occurrence、可读事实 payload、proof、必要路径/claim 与代码窗口，输入上限 12K tokens。当前产品先运行 bounded V0；完整且无冲突的稳定正/反 proof 可立即终止。未闭合项进入 V1 单次无工具结构化判定；V1 只能提出一个新的合法请求，有真实 delta hash 变化才执行一次无历史 V2。
+
+P2 Proof Kernel 把唯一、完整的 `FunctionIRGraph v1` 转换为语言中立 `ProgramProofIR v2`，并把 `ProofObligation`、固定参数 `EvidenceAction v2`、provider 提出的 `EvidenceCertificate v2` 和独立 Checker 重算的 `ProofCheckResult` 写入不可变 CAS 与 Decision Trace。四组 provider 不能产出终态或自证 coverage；只有 Checker 对冻结 IR、subject、region、scope、量词、CFG/出口、assumption allowlist 及 code/IR/backend/dependency hash 全部复算一致后才会形成 accepted fact。缺字段的早期同名证书仅为 `legacy_preview`，不能关闭 P2 clause；`zscope-explain reverify` 从冻结 IR 重算，不再把哈希完整等同于语义成立。
+
+Proof Kernel 在 P2 完成后仍固定为不可配置的 `shadow`：V0/RequiredFactPlan、V1/V2、V3 与 alert-verify 都冻结相同的 proof artifact refs、Checker result 和 shadow decision，但不会改写稳定 Candidate Ledger outcome、Finding-root 视图或产品终态；只有 P5 完成后才能转移 runtime authority。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3；balanced 不使用 top-K，调查 high/critical 或外部可达且 registry 具有可执行 action 的 cluster，deep 调查全部无完整反证、非 shadow 且有 action 的 cluster。V3 单会话最多50次模型迭代且只能选择固定 action ID；完整 proof 后程序在当前工具轮直接终止。`model_verdict` 与最终 `policy_disposition` 分离；没有 proof 的模型 rejected 只能进入 needs-review。
 
 ### 5.7 持久化与反馈平面
 

@@ -61,6 +61,7 @@ jobs:
           python -m pip check
       - name: Full tests and CLI smoke
         run: |
+          python scripts/check_p2_proof_lifecycle.py
           python -m pytest -q
           zscope --version
           zscope-init --help
@@ -71,6 +72,7 @@ jobs:
       - name: Build and install wheel
         run: |
           python -m build --wheel
+          python scripts/check_p2_proof_package.py dist/zscope-*.whl
           python -m pip install --force-reinstall --no-deps dist/zscope-*.whl
           python -m pip check
 
@@ -90,7 +92,9 @@ jobs:
             zscope scripts tests tools test/range/benchmark test/java_range/benchmark
           python scripts/check_mypy_baseline.py
           python scripts/check_black_baseline.py
+          python scripts/check_p2_proof_lifecycle.py
           python -m pytest -q tests/test_agent_docs.py tests/test_rule_extensions.py tests/test_benchmark_protocol.py
+          python -m pytest -q tests/test_proof_kernel.py tests/test_p2_proof_corpus.py tests/test_p2_proof_lifecycle.py tests/test_p2_proof_package.py
 
   java:
     runs-on: ubuntu-24.04

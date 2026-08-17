@@ -20,6 +20,7 @@ EXTERNAL_ARTIFACT_PREFIXES = ("benchmark-artifacts/",)
 PHASES = ("P0", "P1", "P2", "P3", "P4", "P5", "E0", "P6", "P7")
 P0_REVIEW_ROLES = ("product_architecture", "proof_security", "independent_benchmark")
 P1_REVIEW_ROLES = ("product_architecture",)
+P2_REVIEW_ROLES = ("proof_security",)
 DESIGN_STATUSES = (
     "draft",
     "reviewed",
@@ -369,6 +370,53 @@ def validate_p1_review_documents(
     return errors
 
 
+def validate_p2_review_documents(
+    phase_review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+) -> list[str]:
+    """Validate the sole final-soundness proof-security review for P2."""
+
+    errors: list[str] = []
+    artifacts = phase_review.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P2_REVIEW_ROLES):
+        return ["P2 phase review must contain proof_security exactly once"]
+    reviewed_commit = str(phase_review.get("reviewed_commit") or "")
+    reviewed_tree = str(phase_review.get("reviewed_tree") or "")
+    if HEX_40.fullmatch(reviewed_commit) is None:
+        errors.append("P2 phase review reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(reviewed_tree) is None:
+        errors.append("P2 phase review reviewed_tree must be a full Git tree")
+    spec = artifacts.get("proof_security")
+    review = reviews.get("proof_security")
+    if not isinstance(spec, dict) or not isinstance(review, dict):
+        return errors + ["P2 proof_security review specification or document is missing"]
+    errors.extend(
+        f"P2 proof_security: {row}" for row in validate_json_schema(review, review_schema)
+    )
+    if review.get("review_scope") != "final_soundness":
+        errors.append("P2 proof_security: completion requires final_soundness review scope")
+    if review.get("role") != "proof_security":
+        errors.append("P2 proof_security: review document has the wrong role")
+    if review.get("reviewer_model") != spec.get("reviewer_model"):
+        errors.append("P2 proof_security: reviewer model differs from the phase assignment")
+    if review.get("harness") != spec.get("harness"):
+        errors.append("P2 proof_security: harness differs from the phase assignment")
+    if "reasoning_effort=max" not in str(review.get("harness") or ""):
+        errors.append("P2 proof_security: completion review must use maximum reasoning")
+    if "permission_mode=read-only" not in str(review.get("harness") or ""):
+        errors.append("P2 proof_security: completion review must be read-only")
+    if review.get("reviewed_commit") != reviewed_commit:
+        errors.append("P2 proof_security: reviewed commit differs from the phase target")
+    if review.get("reviewed_tree") != reviewed_tree:
+        errors.append("P2 proof_security: reviewed tree differs from the phase target")
+    if review.get("decision") != "approved":
+        errors.append("P2 proof_security: completion requires an approved review decision")
+    if review.get("blocking_findings") != []:
+        errors.append("P2 proof_security: completion requires zero blocking findings")
+    return errors
+
+
 def _validate_approval_tag(
     repo_root: Path, manifest: Mapping[str, Any], report: ValidationReport
 ) -> None:
@@ -526,6 +574,13 @@ def validate_phase_gates(
         phase_reviews = manifest.get("phase_reviews")
         if not isinstance(phase_reviews, dict) or not isinstance(phase_reviews.get("P1"), dict):
             errors.append("P1 completion requires a product_architecture phase review")
+    if raw_manifest_phases.get("P2") == "complete":
+        phase_reviews = manifest.get("phase_reviews")
+        p2_review = phase_reviews.get("P2") if isinstance(phase_reviews, dict) else None
+        if not isinstance(p2_review, dict):
+            errors.append("P2 completion requires a proof_security phase review")
+        elif not isinstance(p2_review.get("qualification_manifest"), str):
+            errors.append("P2 completion requires a qualification manifest binding")
 
     approval = manifest.get("approval")
     review_roles = manifest.get("review_roles")
@@ -733,6 +788,88 @@ def validate_design_evidence(
                 elif actual_tree != reviewed_tree:
                     report.error(
                         "P1 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
+                    )
+
+    p2_complete = (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P2") == "complete"
+    )
+    if p2_complete:
+        p2_review = phase_reviews.get("P2") if isinstance(phase_reviews, dict) else None
+        if isinstance(p2_review, dict):
+            try:
+                p2_schema_path = resolve_repository_path(
+                    repo_root, str(p2_review.get("schema", "")), relative_root=design_root
+                )
+                qualification_path = resolve_repository_path(
+                    repo_root,
+                    str(p2_review.get("qualification_manifest", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(f"P2 phase review: {exc}")
+                p2_schema_path = None
+                qualification_path = None
+            p2_schema = (
+                _read_governance_json(p2_schema_path, report)
+                if p2_schema_path is not None
+                else None
+            )
+            qualification = (
+                _read_governance_json(qualification_path, report)
+                if qualification_path is not None
+                else None
+            )
+            p2_reviews: dict[str, Any] = {}
+            p2_artifacts = p2_review.get("artifacts")
+            if isinstance(p2_artifacts, dict):
+                for role, spec in p2_artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("P2 phase review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root, str(spec.get("path", "")), relative_root=design_root
+                        )
+                    except ValueError as exc:
+                        report.error(f"P2 {role}: {exc}")
+                        continue
+                    p2_reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(p2_schema, dict):
+                report.errors.extend(validate_p2_review_documents(p2_review, p2_reviews, p2_schema))
+            reviewed_commit = str(p2_review.get("reviewed_commit", ""))
+            reviewed_tree = str(p2_review.get("reviewed_tree", ""))
+            if isinstance(qualification, dict):
+                required_values = {
+                    "status": "passed",
+                    "candidate_commit": reviewed_commit,
+                    "candidate_tree": reviewed_tree,
+                    "proof_kernel_mode": "shadow",
+                    "safe_false_acceptance_count": 0,
+                    "llm_calls": 0,
+                    "network": False,
+                }
+                for key, expected in required_values.items():
+                    if qualification.get(key) != expected:
+                        report.error(
+                            f"P2 qualification {key} must equal the reviewed candidate value"
+                        )
+                if qualification.get("case_count") != 120:
+                    report.error("P2 qualification must bind exactly 120 corpus cases")
+                if qualification.get("safe_case_count") != 80:
+                    report.error("P2 qualification must bind exactly 80 safe cases")
+                if qualification.get("clang_version") != "21.1.8":
+                    report.error("P2 qualification must record Clang 21.1.8")
+                for key in ("schema_hashes", "artifact_hashes", "commands", "limitations"):
+                    if not qualification.get(key):
+                        report.error(f"P2 qualification must record non-empty {key}")
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(f"P2 review commit is unavailable in Git: {reviewed_commit}")
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "P2 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
                     )
 
     if verify_git:

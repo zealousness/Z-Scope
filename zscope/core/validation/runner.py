@@ -69,6 +69,7 @@ from .claim_verifier import (
     verify_evidence_certificate,
 )
 from .authority import TerminalAuthorityEvaluator
+from .proof_kernel.lifecycle import PROOF_KERNEL_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +194,10 @@ class ValidationRunner:
     # The proof kernel introduced by the Z-Scope 2.0 work is still in its
     # shadow-qualification phase.  It may emit facts, closure diagnostics and
     # replay traces, but it must not change the stable product disposition
-    # until the P2 certificate/safe-corpus gates have passed.  Keeping this an
+    # until P5 explicitly transfers runtime authority. Keeping this an
     # internal lifecycle state avoids exposing a user switch that could bypass
     # the eventual proof authority.
-    _PROOF_KERNEL_TERMINAL_MODE = "shadow"
+    _PROOF_KERNEL_TERMINAL_MODE = PROOF_KERNEL_MODE
     _TRANSIENT_VALIDATOR_STOP_REASONS = frozenset(
         {
             "fact_timeout",
@@ -313,9 +314,7 @@ class ValidationRunner:
                 "prompt_contract_sha256": self._validation_environment_fingerprint,
             }
         )
-        self._evidence_claim_verifier = EvidenceClaimVerifier(
-            allow_legacy_observation_claims=False
-        )
+        self._evidence_claim_verifier = EvidenceClaimVerifier(allow_legacy_observation_claims=False)
         self._terminal_authority = TerminalAuthorityEvaluator()
 
     @staticmethod
@@ -1110,6 +1109,109 @@ class ValidationRunner:
             "candidate_promotion_eligible": probe.get("candidate_promotion_eligible"),
             "candidate_promotion_reason": probe.get("candidate_promotion_reason"),
         }
+        shadow = self._record_proof_kernel_shadow(
+            issue,
+            evidence_pack,
+            tuple(value.fact_kind for value in batch.resolutions if value.fact_kind),
+        )
+        issue["proof_kernel_fact_first"]["proof_engine_shadow"] = shadow
+
+    def _record_proof_kernel_shadow(
+        self,
+        issue: Dict[str, Any],
+        evidence_pack: Mapping[str, Any],
+        fact_kinds: tuple[str, ...],
+    ) -> Dict[str, Any]:
+        """Replay the finite strict registry without mutating the active product decision."""
+
+        requested = tuple(sorted({str(value) for value in fact_kinds if str(value)}))
+        actions = self._function_ir_facts.actions(issue, evidence_pack, requested)
+        refs = issue.setdefault("proof_kernel_artifact_refs", [])
+        if not isinstance(refs, list):
+            refs = []
+            issue["proof_kernel_artifact_refs"] = refs
+        checker_results = issue.setdefault("proof_kernel_checker_results", [])
+        if not isinstance(checker_results, list):
+            checker_results = []
+            issue["proof_kernel_checker_results"] = checker_results
+        known_checks = {
+            str(value.get("check_uid") or "")
+            for value in checker_results
+            if isinstance(value, Mapping)
+        }
+        for action in actions:
+            result = self._function_ir_facts.execute(action, issue, evidence_pack)
+            artifacts = result.proof_artifacts or {}
+            action_refs: list[str] = []
+            for artifact_kind, artifact in artifacts.items():
+                reference = self._decision_trace_store.put_evidence(
+                    kind=artifact_kind,
+                    payload=artifact,
+                    producer="zscope.proof-kernel.v2",
+                    dependency_hashes=tuple(
+                        str(value)
+                        for value in artifact.get("dependency_hashes") or []
+                        if str(value)
+                    ),
+                )
+                action_refs.append(reference)
+                if reference not in refs:
+                    refs.append(reference)
+            checked = artifacts.get("proof_check_result")
+            if isinstance(checked, Mapping):
+                check_uid = str(checked.get("check_uid") or "")
+                if check_uid and check_uid not in known_checks:
+                    checker_results.append(dict(checked))
+                    known_checks.add(check_uid)
+                    check_status = str(checked.get("status") or "unknown")
+                    self._trace_event(
+                        issue,
+                        stage="verifier",
+                        actor="zscope.proof-checker",
+                        reason_code={
+                            "accepted": "FACT_VERIFIED_TRUE",
+                            "conflicting": "FACT_CONFLICTING",
+                        }.get(check_status, "FACT_UNKNOWN"),
+                        output_refs=tuple(action_refs),
+                        details={
+                            "proof_kernel_mode": self._PROOF_KERNEL_TERMINAL_MODE,
+                            "action_id": action.action_id,
+                            "fact_kind": action.fact_kind,
+                            "check_uid": check_uid,
+                            "check_status": check_status,
+                            "terminal_contribution": str(
+                                checked.get("terminal_contribution") or "none"
+                            ),
+                        },
+                        dedupe_key=f"proof-check:{check_uid}",
+                    )
+        accepted = {
+            str((value.get("accepted_fact") or {}).get("fact_kind") or "")
+            for value in checker_results
+            if isinstance(value, Mapping)
+            and value.get("status") == "accepted"
+            and isinstance(value.get("accepted_fact"), Mapping)
+        }
+        missing = sorted(set(requested) - accepted)
+        decision = {
+            "proof_kernel_mode": self._PROOF_KERNEL_TERMINAL_MODE,
+            "disposition": "fact_set_closed" if requested and not missing else "needs_review",
+            "reason_code": (
+                "verified_required_fact_set"
+                if requested and not missing
+                else "open_or_unknown_proof_clause"
+            ),
+            "requested_fact_kinds": list(requested),
+            "accepted_fact_kinds": sorted(accepted & set(requested)),
+            "missing_fact_kinds": missing,
+            "artifact_refs": list(refs),
+        }
+        issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
+        issue["proof_kernel_shadow_decision"] = decision
+        issue["proof_kernel_shadow_terminal_authority_decision"] = (
+            self._proof_kernel_shadow_terminal_decision(issue)
+        )
+        return decision
 
     def _prepare_issue_for_validation(
         self,
@@ -1154,6 +1256,12 @@ class ValidationRunner:
                 if str(value)
             ),
         )
+        if not self._proof_kernel_is_authoritative():
+            # Run the same strict registry/checker shadow before V0 can stop
+            # the active compatibility path. The preview mutates only P2
+            # audit fields and therefore preserves established dispositions.
+            raw_issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
+            self._preview_fact_first_prevalidation(raw_issue, evidence_pack)
         if self._deterministic_prevalidation_enabled():
             # Restore the bounded local V0 completion used by the last stable
             # baseline.  Removing this call made already available structural
@@ -1321,7 +1429,6 @@ class ValidationRunner:
             # terminal behavior.  Record the lifecycle state without mutating
             # the candidate or the V1 input.
             raw_issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
-            self._preview_fact_first_prevalidation(raw_issue, evidence_pack)
         return _PreparedValidation(
             index=index,
             raw_issue=raw_issue,
@@ -1962,7 +2069,9 @@ class ValidationRunner:
             protocol_or_engine_failure=False,
         )
         raw_issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
-        raw_issue["proof_kernel_shadow_terminal_authority_decision"] = authority.to_dict()
+        raw_issue["proof_kernel_shadow_terminal_authority_decision"] = (
+            self._proof_kernel_shadow_terminal_decision(raw_issue)
+        )
         if (
             not self._proof_kernel_is_authoritative()
             and outcome.memory_status == "validated"
@@ -2257,6 +2366,11 @@ class ValidationRunner:
             )
 
         statuses = [value.terminal_status for value in batch.resolutions]
+        self._record_proof_kernel_shadow(
+            item.raw_issue,
+            item.evidence_pack,
+            tuple(value.fact_kind for value in batch.resolutions if value.fact_kind),
+        )
         item.raw_issue["validator_fact_resolution"] = {
             "fact_kinds": [value.fact_kind for value in batch.resolutions],
             "statuses": statuses,
@@ -2616,6 +2730,49 @@ class ValidationRunner:
                         if str(value or "")
                     ),
                 )
+                proof_refs = []
+                for artifact_kind, artifact in (result.proof_artifacts or {}).items():
+                    proof_refs.append(
+                        self._decision_trace_store.put_evidence(
+                            kind=artifact_kind,
+                            payload=artifact,
+                            producer="zscope.proof-kernel.v2",
+                            dependency_hashes=tuple(
+                                str(value)
+                                for value in artifact.get("dependency_hashes") or []
+                                if str(value)
+                            ),
+                        )
+                    )
+                if proof_refs:
+                    existing_refs = item.raw_issue.setdefault("proof_kernel_artifact_refs", [])
+                    if not isinstance(existing_refs, list):
+                        existing_refs = []
+                        item.raw_issue["proof_kernel_artifact_refs"] = existing_refs
+                    existing_refs.extend(
+                        value for value in proof_refs if value not in existing_refs
+                    )
+                    checker = (result.proof_artifacts or {}).get("proof_check_result")
+                    if isinstance(checker, Mapping):
+                        checker_results = item.raw_issue.setdefault(
+                            "proof_kernel_checker_results", []
+                        )
+                        if not isinstance(checker_results, list):
+                            checker_results = []
+                            item.raw_issue["proof_kernel_checker_results"] = checker_results
+                        checker_results.append(dict(checker))
+                        item.raw_issue["proof_kernel_shadow_decision"] = {
+                            "disposition": (
+                                "fact_verified"
+                                if checker.get("status") == "accepted"
+                                else "needs_review"
+                            ),
+                            "reason_code": str(
+                                (checker.get("reason_codes") or ["open_or_unknown_proof_clause"])[0]
+                            ),
+                            "proof_kernel_mode": self._PROOF_KERNEL_TERMINAL_MODE,
+                            "check_uid": str(checker.get("check_uid") or ""),
+                        }
                 fact = result.fact
                 added = 0
                 if isinstance(fact, dict):
@@ -2645,7 +2802,7 @@ class ValidationRunner:
                         "conflicting": "FACT_CONFLICTING",
                     }.get(result.status, "FACT_UNKNOWN"),
                     before_state=before_state,
-                    output_refs=(certificate_ref,),
+                    output_refs=(certificate_ref, *proof_refs),
                     details={
                         "action_id": action.action_id,
                         "fact_kind": action.fact_kind,
@@ -2658,6 +2815,7 @@ class ValidationRunner:
                 )
                 payload = result.to_dict()
                 payload["certificate_ref"] = certificate_ref
+                payload["proof_artifact_refs"] = proof_refs
                 payload["newly_accepted"] = bool(added)
                 payload["terminal_authority"] = authority.to_dict()
                 return payload
@@ -3080,6 +3238,11 @@ class ValidationRunner:
                 for value in batch.resolutions
             ],
         }
+        self._record_proof_kernel_shadow(
+            item.raw_issue,
+            item.evidence_pack,
+            tuple(value.fact_kind for value in batch.resolutions if value.fact_kind),
+        )
         closure = item.raw_issue.get("evidence_closure_state")
         if isinstance(closure, dict):
             fact_slice = item.raw_issue.get("decision_fact_slice")
@@ -3180,6 +3343,52 @@ class ValidationRunner:
     @classmethod
     def _proof_kernel_is_authoritative(cls) -> bool:
         return cls._PROOF_KERNEL_TERMINAL_MODE == "authoritative"
+
+    @staticmethod
+    def _proof_kernel_shadow_terminal_decision(issue: Mapping[str, Any]) -> Dict[str, Any]:
+        """Resolve strict checker contributions without consulting model output."""
+
+        results = issue.get("proof_kernel_checker_results")
+        results = results if isinstance(results, list) else []
+        contributions = {
+            str(value.get("terminal_contribution") or "")
+            for value in results
+            if isinstance(value, Mapping) and value.get("status") == "accepted"
+        }
+        has_confirmation = "confirmation" in contributions
+        has_counterproof = "counterproof" in contributions
+        if has_confirmation and has_counterproof:
+            disposition = "needs_review"
+            reason_code = "NEEDS_REVIEW_EVIDENCE_CONFLICT"
+            authority = "zscope.proof-checker-conflict-resolver"
+        elif has_counterproof:
+            disposition = "rejected_with_proof"
+            reason_code = "REJECTED_DETERMINISTIC_COUNTERPROOF"
+            authority = "zscope.proof-checker"
+        elif has_confirmation:
+            disposition = "confirmed"
+            reason_code = "CONFIRMED_DETERMINISTIC_PROOF"
+            authority = "zscope.proof-checker"
+        else:
+            disposition = "needs_review"
+            reason_code = "NEEDS_REVIEW_OPEN_CLAUSES"
+            authority = "zscope.proof-checker"
+        return {
+            "terminal": True,
+            "disposition": disposition,
+            "reason_code": reason_code,
+            "authority": authority,
+            "next_action": "",
+            "conflict_resolution": (
+                {
+                    "status": "unresolved",
+                    "basis": "accepted_checker_contributions",
+                    "model_vote_used": False,
+                }
+                if has_confirmation and has_counterproof
+                else None
+            ),
+        }
 
     @staticmethod
     def _apply_v3_investigation_facts(

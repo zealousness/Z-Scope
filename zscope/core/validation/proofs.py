@@ -337,6 +337,21 @@ def _valid_embedded_certificate(proof: Mapping[str, Any]) -> bool:
     certificate = proof.get("verification_certificate")
     if not isinstance(certificate, Mapping):
         return False
+    if certificate.get("protocol_revision") == 2:
+        from .proof_kernel.models import validate_certificate_envelope, validate_check_result
+
+        check_result = proof.get("proof_check_result")
+        if not isinstance(check_result, Mapping):
+            return False
+        certificate_valid, _ = validate_certificate_envelope(certificate)
+        check_valid, _ = validate_check_result(check_result)
+        return bool(
+            certificate_valid
+            and check_valid
+            and certificate.get("content_sha256") == proof.get("certificate_sha256")
+            and check_result.get("certificate_uid") == certificate.get("certificate_uid")
+            and check_result.get("status") == "accepted"
+        )
     supplied = str(certificate.get("certificate_sha256") or "")
     if supplied != str(proof.get("certificate_sha256") or ""):
         return False

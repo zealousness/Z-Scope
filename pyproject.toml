@@ -64,6 +64,7 @@ zscope = [
     "skills/*/SKILL.md",
     "skills/*/references/*.md",
     "semantics/*.yaml",
+    "core/validation/proof_kernel/schemas/*.json",
     "workflows/*.yaml",
     "web/static/*.html",
 ]

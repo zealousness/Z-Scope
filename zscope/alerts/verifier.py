@@ -26,6 +26,7 @@ from ..orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
 from ..orchestration.specs import SpecRegistry
 from ..orchestration.decision_trace import ensure_decision_trace_store
 from ..core.validation.authority import TerminalAuthorityEvaluator
+from ..core.validation.proof_kernel.lifecycle import PROOF_KERNEL_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +389,17 @@ class AlertVerifier:
         )
         confirmed = authority.disposition == "confirmed"
         policy_disposition = authority.disposition
+        # External alerts do not yet carry a frozen ProgramProofIR/action set.
+        # Keep the established alert result active, while the P2 shadow path
+        # fails closed instead of mirroring an LLM-derived disposition.
+        proof_shadow_authority = {
+            "terminal": True,
+            "disposition": "needs_review",
+            "reason_code": "NEEDS_REVIEW_OPEN_CLAUSES",
+            "authority": "zscope.proof-checker",
+            "next_action": "",
+            "conflict_resolution": None,
+        }
         return {
             "alert_id": alert_id,
             "candidate_uid": candidate_uid,
@@ -419,6 +431,16 @@ class AlertVerifier:
             },
             "terminal_authority": authority.authority,
             "terminal_authority_decision": authority.to_dict(),
+            "proof_kernel_mode": PROOF_KERNEL_MODE,
+            "proof_kernel_shadow_terminal_authority_decision": proof_shadow_authority,
+            "proof_kernel_shadow_decision": {
+                "disposition": "needs_review",
+                "reason_code": "open_or_unknown_proof_clause",
+                "source": "alert_verify_proof_ir_unavailable",
+                "accepted_fact_kinds": [],
+                "missing_fact_kinds": ["external_alert_program_evidence"],
+            },
+            "proof_kernel_open_clause_ids": ["external_alert_program_evidence"],
             "terminal_reason_codes": [authority.reason_code],
             "open_clause_ids": ([] if confirmed else ["external_alert_program_evidence"]),
             "attribution": FindingAttribution(
