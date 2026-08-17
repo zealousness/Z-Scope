@@ -20,6 +20,7 @@ tests:
   - tests/test_report_schema_v2.py
   - tests/test_sarif_exporter.py
   - tests/test_web_dashboard_server.py
+  - tests/test_web_security_specs.py
   - tests/test_mcp_security.py
   - tests/test_decision_trace.py
 ---
@@ -41,6 +42,7 @@ tests:
 - schema 层维护结构化报告兼容性。`zscope.finding-root.v2` 只在最终视图做非破坏性低噪声投影：同 candidate、同结构化 sink，或同 defect family/file/function/obligation shape/subject/decision region 的 finding 可选择一个 primary；全部 cluster、occurrence、来源和证据仍保存在 terminal records 与 alias 中。
 - SARIF exporter 将完成后的报告转换为 SARIF v2.1.0，并保留稳定 fingerprint 和证据位置。
 - Web server 负责路由，services 负责配置、报告、反馈和索引状态等业务操作。
+- Web Security Specs Review Center 在 P3 固定只读：GET 提供列表、详情、编译/影响预览及规范 JSON/XLSX 导出；import 只做整包 dry-run。因为服务器没有可信 reviewer identity，review POST 与 apply-import 都明确返回 `403 reviewer_identity_unavailable`，不能匿名写入 store。
 - MCP stdio/HTTP server 复用工具与资源 provider；远程 HTTP 额外经过 token、allowlist 和绑定地址校验。
 - Web/MCP 扫描请求接受 `scan_depth`，响应回显 effective depth 与 usage 摘要；CLI/YAML/API 最终都走同一严格配置校验。
 
@@ -54,6 +56,7 @@ tests:
 - 报告 schema 变更必须保持明确版本、向后兼容策略和对应测试。
 - SARIF location、rule、level、code flow 和 partial fingerprint 必须来自结构化 finding，不能从展示文本猜测。
 - Web 保存反馈必须通过统一 config/review store，不能创建第二套状态语义。
+- Security Spec 的 JSON 是规范归档；XLSX 只允许固定 metadata/specs/reviews/qualifications sheets 和严格列集合。过期 revision、bundle hash 冲突、重复 UID、未知 sheet/column 或破损 review chain 必须整包失败，dry-run 不修改 CAS 或 SQLite 索引。
 - MCP 工具必须经过 ToolPolicy；远程非 loopback 绑定必须要求认证 token 和客户端 allowlist。
 - API 和日志不得泄露 LLM key、Bearer token、敏感源码范围或用户配置秘密。
 - 新 finding 必须显式携带 `zscope.finding-attribution.v1`；`discovered_by` 是可重叠集合，`decided_by` 与 `decision_level` 独立。旧报告可以推断，但必须标记 `attribution_inferred=true`。
@@ -74,6 +77,7 @@ tests:
 ```bash
 python -m pytest -q tests/test_report_assembler.py tests/test_report_schema_v2.py tests/test_report_views.py
 python -m pytest -q tests/test_sarif_exporter.py tests/test_web_dashboard_server.py
+python -m pytest -q tests/test_web_security_specs.py
 python -m pytest -q tests/test_mcp_policy.py tests/test_mcp_http_server.py tests/test_mcp_security.py
 ```
 

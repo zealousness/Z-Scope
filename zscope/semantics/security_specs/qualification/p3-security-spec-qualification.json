@@ -1,0 +1,39 @@
+{
+  "schema_version": "zscope.security-spec-qualification.v1",
+  "protocol_revision": 2,
+  "qualification_uid": "SPECQUAL_2e14299eb3d8c4c99ff243d41e9cb857",
+  "registry_sha256": "db688c62dc3564075f55a0a9e9f6dacd579b42a5ab1cd5dfb8250c641480a1bc",
+  "compiler_sha256": "d8124b76509c92077fd1172cb5e664096565f4158b5d53faae760f9b69dce299",
+  "corpus_sha256": "1dd7dfca2a7c2c971bd5d2d11c81817834486952e1f08244ccee8ad4c100aa83",
+  "qualified_predicates": [
+    "acquire",
+    "callback_retains",
+    "caller_contract",
+    "lock",
+    "propagate",
+    "release",
+    "sanitize",
+    "sentinel",
+    "sink",
+    "source",
+    "state_transition",
+    "transfer",
+    "unlock"
+  ],
+  "source_projects": ["callback_service", "procedural_runtime", "raii_library"],
+  "metrics": {
+    "case_count": 143,
+    "key_contract_recall": 1.0,
+    "positive_unsupported_rate": 0.0,
+    "safe_false_activation_count": 0,
+    "evidence_resolution_rate": 1.0,
+    "second_scan_llm_reduction": 1.0
+  },
+  "environment": {
+    "python": "3.10.5",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "network": false,
+    "llm_client": "counting_fake"
+  },
+  "content_sha256": "7b1096a49c69e68305534f761f731fd77f0d48ccd7745ac1fdb4b47cbc7638e6"
+}

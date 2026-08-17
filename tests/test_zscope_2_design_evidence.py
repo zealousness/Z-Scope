@@ -14,6 +14,7 @@ from scripts.check_zscope_2_design_evidence import (
     validate_json_schema,
     validate_p1_review_documents,
     validate_p2_review_documents,
+    validate_p3_review_documents,
     validate_phase_gates,
 )
 
@@ -278,6 +279,64 @@ def test_p2_final_review_rejects_entry_scope_or_blockers() -> None:
     assert any("final_soundness" in value for value in errors)
     assert any("approved review" in value for value in errors)
     assert any("zero blocking" in value for value in errors)
+
+
+def test_p3_completion_requires_two_approved_reviews_on_one_candidate() -> None:
+    schema = load_json(DESIGN_ROOT / "acceptance" / "p3-review.schema.json")
+    phase_review = {
+        "reviewed_commit": "1" * 40,
+        "reviewed_tree": "2" * 40,
+        "artifacts": {
+            "product_architecture": {
+                "reviewer_model": "claude-opus-5",
+                "harness": "claude-code/test; permission_mode=read-only",
+            },
+            "proof_security": {
+                "reviewer_model": "deepseek-v4-pro",
+                "harness": "dsh/test; reasoning_effort=max; permission_mode=read-only",
+            },
+        },
+    }
+
+    def review(role: str, scope: str, model: str, harness: str) -> dict:
+        return {
+            "review_schema": "zscope.p3-security-spec-review.v1",
+            "review_scope": scope,
+            "role": role,
+            "reviewer_model": model,
+            "harness": harness,
+            "reviewed_commit": "1" * 40,
+            "reviewed_tree": "2" * 40,
+            "decision": "approved",
+            "summary": "Synthetic P3 review.",
+            "blocking_findings": [],
+            "non_blocking_findings": [],
+            "checks": [{"name": "scope", "result": "pass", "evidence": "synthetic"}],
+            "limitations": ["synthetic unit-test document"],
+            "attestation": "Read-only synthetic review.",
+        }
+
+    reviews = {
+        "product_architecture": review(
+            "product_architecture",
+            "final_product_architecture",
+            "claude-opus-5",
+            phase_review["artifacts"]["product_architecture"]["harness"],
+        ),
+        "proof_security": review(
+            "proof_security",
+            "final_proof_security",
+            "deepseek-v4-pro",
+            phase_review["artifacts"]["proof_security"]["harness"],
+        ),
+    }
+    assert validate_p3_review_documents(phase_review, reviews, schema) == []
+
+    reviews["proof_security"]["reviewed_tree"] = "3" * 40
+    assert any(
+        "reviewed tree differs" in value
+        for value in validate_p3_review_documents(phase_review, reviews, schema)
+    )
 
 
 def test_proof_security_review_records_max_reasoning_and_read_only_mode() -> None:
