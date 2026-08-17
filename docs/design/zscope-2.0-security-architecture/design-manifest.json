@@ -33,15 +33,15 @@
     "adr/0007-freeze-proof-provider-quantifiers.md": "ad8107e5c4bac6d6e39132e84d4bba969ca7b225211498359847f0e0e2cb4c85",
     "phases/P0-baseline-and-design-freeze.md": "bd78a6e9489c6ae05161275bfc0574dbf12c1d9ec499e7598aa049e55563ce83",
     "phases/P1-dead-code-and-workflow-cleanup.md": "1202aa0adea4c77ea282c053438239dde8829498f4d41dd3d5e8ff793a37e0cf",
-    "phases/P2-proof-kernel.md": "0db37f936962074c589d8114f0fe81de208f0889e42119ebf65b0493b0945eda",
+    "phases/P2-proof-kernel.md": "9f47fc56a72c20b7ab213c6b1565eadf1fb8a79a1d7f799ee9c85e2ea517e80e",
     "phases/P3-security-spec-mining-and-review.md": "37c495545f0ed9534ae322904cb1fd42468e8a06daafc79eec3fe43a9145e106",
     "phases/P4-hypothesis-driven-hunting.md": "8cf467ab50dd5e81cead88569ba22755d2061499285a47af878001a047a6b110",
     "phases/P5-runtime-cutover.md": "1859da91841e60bc9e2a24836cdeb69ce25c00441c1967dc059de8c083120641",
     "phases/P6-pilot-validation.md": "0cfcddd02820343931e8a988a753939c325861c17abdfcc36dec93b4da7fd93d",
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4",
-    "acceptance/runtime-reachability-manifest.json": "e1bcd809bf4f443b462b9da7c03e62c8f924948173efa59b2d503debf585b868",
-    "acceptance/p2-qualification-manifest.json": "4e1867547e6452e6a634f9443d3e26295a22ae2e5c7777113751345c76edbbdb",
+    "acceptance/runtime-reachability-manifest.json": "f60e0c1069a596fe67e80bd0196f5f479101ecb505cc258dd34984a14901b050",
+    "acceptance/p2-qualification-manifest.json": "7e0b606f4943a4d1fbc8bda8df87cbd4b6f9758810ecfae1eb840bfd6fd6f904",
     "acceptance/baseline-artifact-manifest.json": "0e96b854c81e299f48b4bff7e687b1f6504ebb059114c853c844179473bc3d50",
     "acceptance/p0-execution-preflight.json": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b",
     "acceptance/p0-cold-baseline-summary.json": "ebd95c07957e3f0a4bef7c446f2e079caebfad1d6395e45ed4cc1b06476a3b49",
@@ -59,7 +59,8 @@
     "acceptance/reviews/p0-proof-security.json": "be5df762187bfc920c14144f4b8ca382280bd503558bbaae64185c8ddcade530",
     "acceptance/reviews/p0-independent-benchmark.json": "96348ecbbd6b4c75750ecc291b1f32c5e02d67a27904599d8d4c35cefd74bfe0",
     "acceptance/reviews/p1-product-architecture.json": "f9150e004ee32abb1ddd992ab838d609d7b64534611b31eadea60afdf54b75a3",
-    "acceptance/reviews/p2-contract-freeze-proof-security.json": "9febdfb5eda063cf585a198f922018b0ee82936b241a76ac083ec58267f1327d"
+    "acceptance/reviews/p2-contract-freeze-proof-security.json": "9febdfb5eda063cf585a198f922018b0ee82936b241a76ac083ec58267f1327d",
+    "acceptance/reviews/p2-final-proof-security.json": "02d1f586ed32d5b8657b5188a3bfd773528a6bc38402e26d4ecd841102c34ba9"
   },
   "adrs": [
     {"id": "ADR-0001", "status": "accepted-for-design", "affected_phases": ["P1", "P4", "P5"]},
@@ -73,7 +74,7 @@
   "phase_status": {
     "P0": "complete",
     "P1": "complete",
-    "P2": "in_progress",
+    "P2": "complete",
     "P3": "pending",
     "P4": "pending",
     "P5": "pending",
@@ -118,6 +119,19 @@
           "path": "acceptance/reviews/p1-product-architecture.json",
           "reviewer_model": "claude-opus-5",
           "harness": "claude-code/2.1.233; permission_mode=plan-read-only"
+        }
+      }
+    },
+    "P2": {
+      "schema": "acceptance/p2-review.schema.json",
+      "qualification_manifest": "acceptance/p2-qualification-manifest.json",
+      "reviewed_commit": "45ee3de1d637cc72434f656cac4b589aa5fc0750",
+      "reviewed_tree": "14eae235198d884da2f3a8975a4d5e3d643a0336",
+      "artifacts": {
+        "proof_security": {
+          "path": "acceptance/reviews/p2-final-proof-security.json",
+          "reviewer_model": "deepseek-v4-pro",
+          "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only"
         }
       }
     }

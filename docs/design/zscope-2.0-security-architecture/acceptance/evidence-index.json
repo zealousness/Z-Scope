@@ -11,7 +11,7 @@
   "phases": [
     {"phase": "P0", "status": "complete", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
     {"phase": "P1", "status": "complete", "entry_gate": "P0 complete", "exit_gate": "dead runtime removed with frozen replay equivalence and approved product architecture review", "review_roles": ["product_architecture"]},
-    {"phase": "P2", "status": "in_progress", "entry_gate": "P1 complete and ADR-0007 contract-freeze proof-security review approved", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
+    {"phase": "P2", "status": "complete", "entry_gate": "P1 complete and ADR-0007 contract-freeze proof-security review approved", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
     {"phase": "P3", "status": "pending", "entry_gate": "P2 contracts stable", "exit_gate": "spec blind review, user review and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P4", "status": "pending", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind and non-Range hypothesis gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P5", "status": "pending", "entry_gate": "P2-P4 pass", "exit_gate": "all public paths cut over and legacy runtime absent", "review_roles": ["product_architecture", "proof_security"]},
@@ -712,11 +712,11 @@
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/p2-qualification-manifest.json",
-          "sha256": "4e1867547e6452e6a634f9443d3e26295a22ae2e5c7777113751345c76edbbdb"
+          "sha256": "7e0b606f4943a4d1fbc8bda8df87cbd4b6f9758810ecfae1eb840bfd6fd6f904"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
-          "sha256": "e1bcd809bf4f443b462b9da7c03e62c8f924948173efa59b2d503debf585b868"
+          "sha256": "f60e0c1069a596fe67e80bd0196f5f479101ecb505cc258dd34984a14901b050"
         },
         {
           "path": "tests/fixtures/p2_proof_kernel/corpus.json",
@@ -739,8 +739,10 @@
           "sha256": "f1cf8c40c3bb9044a5a3d0fb1a393a3dcd55dabbe42b753981fb3ae21515494d"
         }
       ],
-      "review_status": "pending",
-      "reviewed_by": [],
+      "review_status": "approved",
+      "reviewed_by": [
+        "dsh/deepseek-v4-pro:max"
+      ],
       "verification": {
         "environment": {
           "host": "Windows-10-10.0.26200-SP0 with local WSL",
@@ -769,10 +771,53 @@
           "Native Windows Black hangs during grammar initialization; the same 25.11.0 release passed all changed Python files under WSL.",
           "The local wheel is ignored and not committed; its SHA-256 and inventory are recorded in the qualification and reachability manifests.",
           "No external-model benchmark, remote CI, push, PR or new design tag was executed.",
-          "Final P2 proof-security review is pending; P2 remains in_progress and Proof Kernel remains shadow."
+          "The final proof-security review approved the exact product candidate with zero blocking findings; Proof Kernel remains shadow until P5."
         ]
       },
       "notes": "The product-only P2 candidate freezes strict proof artifacts, four finite provider families, independent checker recomputation, CAS storage, 120 neutral cases with zero safe false acceptance, Clang 21.1.8 source replay and dual-track shadow integration without changing stable outcomes."
+    },
+    {
+      "evidence_uid": "P2-FINAL-PROOF-SECURITY-REVIEW",
+      "phase": "P2",
+      "kind": "formal_review",
+      "status": "passed",
+      "implementation_commit": "45ee3de1d637cc72434f656cac4b589aa5fc0750",
+      "implementation_tree": "14eae235198d884da2f3a8975a4d5e3d643a0336",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p2-review.schema.json",
+          "sha256": "089d6012803091fb8a3ec416917d52050699a61e337f183ba14d8d5bdbafa822"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p2-final-proof-security.json",
+          "sha256": "02d1f586ed32d5b8657b5188a3bfd773528a6bc38402e26d4ecd841102c34ba9"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": [
+        "dsh/deepseek-v4-pro:max"
+      ],
+      "verification": {
+        "environment": {
+          "harness": "DSH 0.1.0-rc.6",
+          "model": "deepseek-v4-pro",
+          "reasoning_effort": "max",
+          "permission_mode": "read-only",
+          "review_target": "45ee3de1d637cc72434f656cac4b589aa5fc0750 / 14eae235198d884da2f3a8975a4d5e3d643a0336"
+        },
+        "commands": [
+          {
+            "command": "dsh --profile headless --patch <deepseek-v4-pro max> under DSH_PERMISSION_MODE=read-only",
+            "status": "passed"
+          }
+        ],
+        "limitations": [
+          "The approval covers the exact P2 implementation candidate and qualification evidence; later changes are restricted to review, evidence and phase-status records.",
+          "Before P5 authority, add direct corpus cases for external_entry_parameter_binding and guard_dominates_sink, and make entry-signature completeness independently checkable against parameter count and identity.",
+          "No external-model benchmark ran and Range truth or benchmark answer content was not read."
+        ]
+      },
+      "notes": "DeepSeek-V4-Pro Max approved the final P2 proof-security candidate with zero blocking findings. The two recommendations are non-blocking P5 prerequisites; P2 remains shadow and does not change stable product authority."
     }
   ]
 }
