@@ -2,7 +2,7 @@
   "schema_version": "zscope.runtime-reachability-manifest.v1",
   "design_version": "1.0.1",
   "phase": "P2",
-  "audit_status": "p2_candidate_gates_passed_pending_proof_security_review",
+  "audit_status": "p2_complete_with_approved_final_proof_security_review",
   "p0_complete_commit": "314cddf299387cad7c998cc62990194535d2cb9b",
   "p1_complete_commit": "8d36b3f2f579f5d57d6d0bf1bcdabc2662164d72",
   "p2_candidate_commit": "45ee3de1d637cc72434f656cac4b589aa5fc0750",
@@ -30,7 +30,8 @@
     "clang_version": "21.1.8",
     "source_to_ir_case_count": 4,
     "source_to_ir_semantic_sha256": "9caf7edccdb6cdf0748a5895e932214b0c51ec2cd858fdf42ffcc0b60a0385d7",
-    "proof_kernel_mode": "shadow"
+    "proof_kernel_mode": "shadow",
+    "final_review": "approved_zero_blocking_findings"
   },
   "audit_methods": [
     "strict schema and canonical-content validation",
@@ -181,6 +182,6 @@
     "public_entrypoint_breakage": "not_observed",
     "wheel_or_import_graph_failure": "not_observed",
     "authority_before_p5": "not_observed",
-    "formal_review_blocker": "pending_final_proof_security_review"
+    "formal_review_blocker": "approved_zero_blocking_findings"
   }
 }

@@ -26,7 +26,7 @@
 - 有限 registry 只登记可执行谓词；其他 predicate 保持 non-executable/unknown。Provider 只提出证书，独立 Checker 是 accepted fact 的唯一来源。
 - ProgramProofIR、ProofObligation（confirmation/counterproof/open 三类 clause）、EvidenceAction、EvidenceCertificate、ProofCheckResult 与不可变 CAS 已实现；早期同名证书只作 `legacy_preview`。
 - V0/RequiredFactPlan、V1/V2、V3 和 alert-verify 记录同一 shadow lifecycle；RequiredFactPlan 的派生事实即使被 Checker 接纳也不产生 terminal contribution，alert 缺少冻结 IR 时 shadow 明确 fail-closed。稳定 Candidate Ledger outcomes、Finding-root 投影和产品终态不变，source-to-evidence gate 固定 `proof_kernel_mode=shadow`。
-- answer-free corpus 已冻结为 120 项：四个 family 各 10 正例、20 near-miss，80 个 safe case；本机 Clang 21.1.8 source-to-IR baseline 另行冻结。阶段仍须通过完整门禁和最终 `proof_security` 审核后才能标记 complete。
+- answer-free corpus 已冻结为 120 项：四个 family 各 10 正例、20 near-miss，80 个 safe case；本机 Clang 21.1.8 source-to-IR baseline 另行冻结。完整门禁与 DeepSeek-V4-Pro Max `final_soundness` 只读审核均已通过且无 blocking finding，P2 标记 complete；Proof Kernel 仍保持 shadow，P5 之前不得取得产品终态权威。
 
 ## 通用fixture资格
 

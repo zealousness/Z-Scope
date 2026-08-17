@@ -98,5 +98,12 @@
     "wheel_or_import_graph_failure": "not_observed",
     "authority_before_p5": "not_observed"
   },
-  "review_status": "pending"
+  "review_status": "approved",
+  "review": {
+    "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p2-final-proof-security.json",
+    "reviewer": "dsh/deepseek-v4-pro:max",
+    "scope": "final_soundness",
+    "decision": "approved",
+    "blocking_finding_count": 0
+  }
 }

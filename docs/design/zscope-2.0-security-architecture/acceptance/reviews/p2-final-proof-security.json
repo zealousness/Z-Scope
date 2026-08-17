@@ -1,0 +1,94 @@
+{
+  "review_schema": "zscope.p2-proof-security-review.v1",
+  "review_scope": "final_soundness",
+  "role": "proof_security",
+  "reviewer_model": "deepseek-v4-pro",
+  "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only",
+  "reviewed_commit": "45ee3de1d637cc72434f656cac4b589aa5fc0750",
+  "reviewed_tree": "14eae235198d884da2f3a8975a4d5e3d643a0336",
+  "decision": "approved",
+  "summary": "The hardened P2 final-soundness candidate is sound. external_entry_parameter_binding now fails closed: it returns unknown (entry_signature_not_frozen) with an empty witness unless entry_parameter events are non-empty and every event asserts entry_signature_complete=true, and it emits complete coverage only from that frozen domain. This removes the prior empty-domain false-acceptance path, and the absent-domain case is unit-tested. The reviewed candidate boundary is followed only by qualification/evidence rebinding. Candidate, tree, wheel and test bindings consistently reference 45ee3de/14eae235, 1908 passed plus 7 skipped, and wheel sha256 ea1c588667634740806817bea9b56fe4a8b72c14e8fd23d3dec3bf48c83b3e8d. The family-level 120-case minimum is substantiated. No false fact acceptance, terminal contribution, premature P5 authority, post-terminal model/tool call, or unsubstantiated mandatory gate was found.",
+  "blocking_findings": [],
+  "non_blocking_findings": [
+    {
+      "id": "NB-1",
+      "title": "Per-predicate corpus coverage gap for external_entry_parameter_binding and guard_dominates_sink",
+      "evidence": "The 120-case corpus has 30 cases per provider family, while external_entry_parameter_binding and guard_dominates_sink have no dedicated corpus cases. The frozen P2 requirement is family-level and is satisfied, so this is defense-in-depth only.",
+      "recommendation": "Add dedicated cases for the frozen-domain entry-binding path and guard dominance before P5."
+    },
+    {
+      "id": "NB-2",
+      "title": "entry_signature_complete is a trusted frozen-IR assertion",
+      "evidence": "The checker gates on entry_parameter events whose attributes set entry_signature_complete=true. No current product producer emits those events, so the exact-binding positive path is not live in P2.",
+      "recommendation": "Before P5, bind producer-emitted signature completeness to independently checkable parameter count and identity facts."
+    }
+  ],
+  "checks": [
+    {
+      "name": "entry binding fails closed without a frozen signature domain",
+      "result": "pass",
+      "evidence": "registry.py requires non-empty entry_parameter events and entry_signature_complete=true for all such events, otherwise returning unknown with reason entry_signature_not_frozen."
+    },
+    {
+      "name": "absent entry-signature domain is tested",
+      "result": "pass",
+      "evidence": "test_entry_parameter_binding_requires_frozen_signature_domain asserts unknown, an empty witness and no accepted fact."
+    },
+    {
+      "name": "complete entry-binding coverage comes only from a frozen domain",
+      "result": "pass",
+      "evidence": "enumerated and required coverage are both derived from the non-empty frozen signature event UIDs."
+    },
+    {
+      "name": "post-candidate boundary is evidence-only",
+      "result": "pass",
+      "evidence": "The reviewed implementation candidate is followed only by qualification, reachability, evidence-index and design-manifest rebinding before this review."
+    },
+    {
+      "name": "candidate and tree bindings are exact",
+      "result": "pass",
+      "evidence": "Qualification, reachability and evidence records all bind 45ee3de1d637cc72434f656cac4b589aa5fc0750 and tree 14eae235198d884da2f3a8975a4d5e3d643a0336."
+    },
+    {
+      "name": "test and wheel bindings are consistent",
+      "result": "pass",
+      "evidence": "The qualification records 1908 passed and 7 skipped and wheel sha256 ea1c588667634740806817bea9b56fe4a8b72c14e8fd23d3dec3bf48c83b3e8d."
+    },
+    {
+      "name": "family-level corpus minimum is substantiated",
+      "result": "pass",
+      "evidence": "The answer-free corpus contains 120 cases: 10 positive and 20 near-miss safe cases for each of four provider families, with zero safe false acceptance."
+    },
+    {
+      "name": "forged certificates cannot promote",
+      "result": "pass",
+      "evidence": "The checker independently recomputes predicates and rejects identity, dependency, code, IR, backend, witness, coverage, assumption, polarity and action mismatches."
+    },
+    {
+      "name": "incomplete universal coverage fails closed",
+      "result": "pass",
+      "evidence": "Incomplete summaries and unfrozen exact-binding domains return unknown with empty witnesses, and the checker cannot accept incomplete coverage."
+    },
+    {
+      "name": "model text cannot create facts or terminal contribution",
+      "result": "pass",
+      "evidence": "The finite provider/checker path is deterministic; derived RequiredFactPlan facts force terminal_contribution=none."
+    },
+    {
+      "name": "Proof Kernel remains shadow until P5",
+      "result": "pass",
+      "evidence": "PROOF_KERNEL_MODE is a non-configurable shadow constant and lifecycle tests reject authoritative or user-configurable modes."
+    },
+    {
+      "name": "product and Benchmark domains remain isolated",
+      "result": "pass",
+      "evidence": "The candidate is product-only; proof imports exclude Benchmark, truth, Scorer and old claim-promotion dependencies, and no Range answer content was reviewed."
+    }
+  ],
+  "limitations": [
+    "The final review was read-only and did not execute pytest or a benchmark; it verified source, Git objects, bindings and committed hashes.",
+    "The local wheel is ignored; the reviewer checked cross-manifest consistency rather than reading the wheel bytes.",
+    "P2 remains shadow, and this review does not approve P5 runtime cutover or authority."
+  ],
+  "attestation": "I performed a read-only proof-security final_soundness review of commit 45ee3de1d637cc72434f656cac4b589aa5fc0750 and tree 14eae235198d884da2f3a8975a4d5e3d643a0336 at maximum reasoning depth. I confirmed the external_entry_parameter_binding hardening fails closed without an explicitly frozen entry-signature domain, the absent-domain test exists, the post-candidate range is evidence-only, and candidate, tree, wheel and test bindings are consistent. I found zero blocking findings and no false fact acceptance, terminal contribution, premature P5 authority, post-terminal model/tool call or unsubstantiated mandatory gate. I did not edit files, run a benchmark or test suite, or read Range truth, benchmark answers, Scorer inputs, secrets or credentials."
+}
