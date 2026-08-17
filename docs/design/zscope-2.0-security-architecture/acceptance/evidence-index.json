@@ -107,6 +107,25 @@
       ],
       "reviewed_by": [],
       "notes": "One cold fast and one cold balanced trial completed on the same commit/tree/input/model. Usage, traces, replay bundles, scoped runtime actor observations and matcher-v2 scores are hash-bound and answer-isolated. These P0 behavior baselines are not formal or release-eligible quality results."
+    },
+    {
+      "evidence_uid": "P0-FAST-DISPOSITION-REGRESSION-REPAIR",
+      "phase": "P0",
+      "kind": "cold_regression_verification",
+      "status": "passed",
+      "implementation_commit": "abffcc65213a79e5e622b5de94184eb728380f2c",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-fast-regression-repair.json",
+          "sha256": "77820c8d4f11d830bafc6bb536f0ff8960a3e09f516d01edc976a81ddb5f98d8"
+        },
+        {
+          "path": "benchmark-artifacts/zscope2-regression-fast-abffcc6/aggregate.json",
+          "sha256": "58c4b816cb10cb6644ea1d8bc07307c0bf32160c209795f082d8a89c9c7da54f"
+        }
+      ],
+      "reviewed_by": [],
+      "notes": "The cold fast trial recovered 48 matcher-v2 default TPs without losing any TP from the regressed run. Its deterministic contribution exactly matches the older healthy fast reference; the remaining four-reference-TP difference is confined to successful V1 uncertain outcomes with open facts and is not a candidate, scorer, projection or protocol loss. This single trial is not a stability or release result."
     }
   ]
 }
