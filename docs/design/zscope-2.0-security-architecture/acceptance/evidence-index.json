@@ -235,6 +235,88 @@
         ]
       },
       "notes": "The cold fast trial recovered 48 matcher-v2 default TPs without losing any TP from the regressed run. Its deterministic contribution exactly matches the older healthy fast reference; the remaining four-reference-TP difference is confined to successful V1 uncertain outcomes with open facts and is not a candidate, scorer, projection or protocol loss. This single trial is not a stability or release result."
+    },
+    {
+      "evidence_uid": "P0-DESIGN-EVIDENCE-VALIDATION-GATE",
+      "phase": "P0",
+      "kind": "governance_ci",
+      "status": "collected",
+      "implementation_commit": "0a1192ef615ae76c2d17692aefeb8e518a942ec1",
+      "implementation_tree": "b66895d1c94f82304c5deecf275c1565d9bc5e77",
+      "artifacts": [
+        {
+          "path": "scripts/check_zscope_2_design_evidence.py",
+          "sha256": "0b17a5b4d26d7d1f0ec00ed224ffc947788672c8a7639efa7a883cc11478e0c1"
+        },
+        {
+          "path": "tests/test_zscope_2_design_evidence.py",
+          "sha256": "19546421477cafff05090c6b59daedb21c2b0605e236e0154942f985372f37ad"
+        },
+        {
+          "path": ".github/workflows/zscope-2-design-evidence.yml",
+          "sha256": "0a5132cfd220c0111f93854d01860ab3348a7ff3a318f9458d49850b549797db"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
+          "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4"
+        }
+      ],
+      "review_status": "pending",
+      "reviewed_by": [],
+      "verification": {
+        "environment": {
+          "host": "Microsoft Windows NT 10.0.26200.0",
+          "python": "3.10.5 from the existing repository virtual environment",
+          "git": "2.52.0.windows.1",
+          "network_and_model_use": "none"
+        },
+        "commands": [
+          {
+            "command": "python scripts/check_zscope_2_design_evidence.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m pytest -q tests/test_zscope_2_design_evidence.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m pytest -q tests/test_agent_docs.py tests/test_release_contract.py tests/test_benchmark_v4_contract.py tests/test_zscope_2_design_evidence.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {"command": "python -m pytest -q", "status": "passed"},
+          {
+            "command": "python -m compileall -f -q zscope scripts test tests",
+            "status": "passed"
+          },
+          {"command": "python -m mypy zscope", "status": "passed"},
+          {
+            "command": "python -m mypy --explicit-package-bases scripts/check_zscope_2_design_evidence.py",
+            "status": "passed"
+          },
+          {"command": "python scripts/check_benchmark_hygiene.py", "status": "passed"},
+          {
+            "command": "python scripts/check_zscope_2_change_scope.py --path <each changed path>",
+            "status": "passed"
+          },
+          {"command": "git diff --check", "status": "passed"},
+          {
+            "command": "python -m black --check scripts/check_zscope_2_design_evidence.py tests/test_zscope_2_design_evidence.py",
+            "status": "not_run"
+          },
+          {
+            "command": "python scripts/check_zscope_2_design_evidence.py --strict-external-artifacts",
+            "status": "not_run"
+          }
+        ],
+        "limitations": [
+          "The existing Windows virtual environment hangs while importing Black, including for --version; the local Black gate could not complete and remains for CI verification.",
+          "Three ignored benchmark aggregate artifacts are absent from this worktree, so strict external-artifact hash verification was not possible; the default validator reports each as an explicit limitation.",
+          "The first full pytest attempt had one Clang latency timer flake; the isolated retry passed and a complete second run passed with 1873 passed and 7 skipped.",
+          "The new CI workflow has not run remotely because this branch was not pushed.",
+          "Independent review remains outstanding; this evidence does not approve the design or complete P0."
+        ]
+      },
+      "notes": "The P0 design/evidence gate now fails closed on schema drift, hash mismatch, missing repository artifacts, commit/tree mismatch, premature phase entry and false approval state. It tolerates only explicitly classified missing ignored benchmark artifacts, which remain unverified locally."
     }
   ]
 }
