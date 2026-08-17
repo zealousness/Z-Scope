@@ -6,11 +6,11 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 ## 当前状态
 
 - 设计版本：`1.0.0`
-- 状态：`reviewed`
-- 当前阶段：`P0 baseline-and-design-freeze`
+- 状态：`approved`
+- 当前阶段：`P0 baseline-and-design-freeze`已完成；`P1`与`E0`仍为`pending`
 - 当前产品事实：仍以[`docs/architecture.md`](../../architecture.md)为准
 - 基线状态：已拆分为Truth、运行配置、Scorer和产品四个可审计提交，工作树干净
-- 进入`approved`的剩余步骤：cold fast/balanced基线与三方正式审核已冻结，等待最终证据校验和annotated design tag；详见`design-manifest.json`
+- P0批准状态：cold fast/balanced基线、三方正式审核、最终证据校验和annotated design tag均已绑定；测试通过不代表P1、E0或后续阶段完成
 
 ## 权威文件
 

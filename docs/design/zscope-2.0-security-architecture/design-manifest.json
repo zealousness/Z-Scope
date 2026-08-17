@@ -2,7 +2,7 @@
   "schema_version": "zscope.design-manifest.v1",
   "design_id": "zscope-2.0-security-architecture",
   "design_version": "1.0.0",
-  "status": "reviewed",
+  "status": "approved",
   "created_at": "2026-08-17T00:00:00+08:00",
   "current_product_authority": "docs/architecture.md and current source/tests",
   "target_design_root": "docs/design/zscope-2.0-security-architecture",
@@ -17,7 +17,7 @@
   },
   "document_hashes": {
     "docs/design/README.md": "049ceb43d18afdbf21162b2ca4c0965026dc0b1cdeff6fd71f282d82fdb46a99",
-    "README.md": "1c721141bed0ba4fc700cc5238b95f6fecf77fe568e5434bb4ee385db3316a19",
+    "README.md": "cc636b1621d59025387f00c3a3bdc6af681e740206434654eefb7df4cbf16163",
     "architecture.md": "5a0197bf5469ce18d468aabbfce706b952f1ced98c499a0e5a72cdb0136c801b",
     "contracts.md": "d058a16eb13641ba951948943b8f400dcfc58baeb72e15a08e74d5e9c0f04745",
     "deprecation-plan.md": "a2475243e5ba10b191b50152a08e27dd762c032eaaf0cfceb4ad6ac2c7f97b9a",
@@ -40,7 +40,7 @@
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4",
     "acceptance/runtime-reachability-manifest.json": "735ad6e1cbebadd8aad9edb7e25bf4d9e9b845950245612bd169d99c11ba2b88",
-    "acceptance/baseline-artifact-manifest.json": "02a9644b26e4ee8cec36edf6d613bbe5b72b0bc192b237928ce947545e8626c1",
+    "acceptance/baseline-artifact-manifest.json": "0e96b854c81e299f48b4bff7e687b1f6504ebb059114c853c844179473bc3d50",
     "acceptance/p0-execution-preflight.json": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b",
     "acceptance/p0-cold-baseline-summary.json": "ebd95c07957e3f0a4bef7c446f2e079caebfad1d6395e45ed4cc1b06476a3b49",
     "acceptance/p0-fast-regression-repair.json": "77820c8d4f11d830bafc6bb536f0ff8960a3e09f516d01edc976a81ddb5f98d8",
@@ -58,7 +58,7 @@
     {"id": "ADR-0006", "status": "accepted-for-design", "affected_phases": ["P0", "P1", "P2", "P3", "P4", "P5", "E0", "P6", "P7"]}
   ],
   "phase_status": {
-    "P0": "in_progress",
+    "P0": "complete",
     "P1": "pending",
     "P2": "pending",
     "P3": "pending",
@@ -96,10 +96,10 @@
     }
   },
   "approval": {
-    "approved_at": "",
-    "approved_commit": "",
+    "approved_at": "2026-08-17T15:04:33+08:00",
+    "approved_commit": "b74e6b6e82224d487392ad7e03d794d6592a514a",
     "tag": "design-zscope-2.0-security-architecture-v1",
-    "tag_created": false,
+    "tag_created": true,
     "tag_hash_bindings": {
       "design-manifest-sha256": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
       "evidence-index-sha256": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.json",
@@ -107,9 +107,7 @@
       "proof-security-review-sha256": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p0-proof-security.json",
       "independent-benchmark-review-sha256": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p0-independent-benchmark.json"
     },
-    "blocked_reasons": [
-      "annotated design tag has not been created"
-    ]
+    "blocked_reasons": []
   },
   "evidence_index": {
     "path": "acceptance/evidence-index.json",
