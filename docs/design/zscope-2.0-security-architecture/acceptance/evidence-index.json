@@ -707,16 +707,16 @@
       "phase": "P2",
       "kind": "implementation_validation",
       "status": "passed",
-      "implementation_commit": "b44b1d5531fd5c7369d956ac13fa8cb196137913",
-      "implementation_tree": "b6fbb3c9ec820b2cdaee731cd09db074e29a0586",
+      "implementation_commit": "45ee3de1d637cc72434f656cac4b589aa5fc0750",
+      "implementation_tree": "14eae235198d884da2f3a8975a4d5e3d643a0336",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/p2-qualification-manifest.json",
-          "sha256": "2ae509177bafb2f600c45a538e9668ed437398b5ec08268ecafddd05bb219bf3"
+          "sha256": "4e1867547e6452e6a634f9443d3e26295a22ae2e5c7777113751345c76edbbdb"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
-          "sha256": "7240a26a5eb724e6a542187b75082fecc13ebc727fa5ac98b70121701854d162"
+          "sha256": "e1bcd809bf4f443b462b9da7c03e62c8f924948173efa59b2d503debf585b868"
         },
         {
           "path": "tests/fixtures/p2_proof_kernel/corpus.json",
@@ -758,13 +758,13 @@
           {"command": "python scripts/check_p2_proof_lifecycle.py", "status": "passed"},
           {"command": "python scripts/check_benchmark_hygiene.py", "status": "passed"},
           {"command": "python scripts/check_zscope_2_design_evidence.py", "status": "passed"},
-          {"command": "python scripts/check_zscope_2_change_scope.py --base 8d36b3f2f579f5d57d6d0bf1bcdabc2662164d72 --head b44b1d5531fd5c7369d956ac13fa8cb196137913", "status": "passed"},
+          {"command": "python scripts/check_zscope_2_change_scope.py --base 8d36b3f2f579f5d57d6d0bf1bcdabc2662164d72 --head 45ee3de1d637cc72434f656cac4b589aa5fc0750", "status": "passed"},
           {"command": "python scripts/check_p1_runtime_reachability.py --wheel tmp/p2-wheel/zscope-1.3.1-py3-none-any.whl", "status": "passed"},
           {"command": "python scripts/check_p2_proof_package.py tmp/p2-wheel/zscope-1.3.1-py3-none-any.whl", "status": "passed"},
           {"command": "git diff --check", "status": "passed"}
         ],
         "limitations": [
-          "The full local suite passed with 1907 passed and 7 skipped; test success remains separate from phase approval.",
+          "The full local suite passed with 1908 passed and 7 skipped; test success remains separate from phase approval.",
           "Three ignored historical P0 benchmark aggregates are absent and were not replayed.",
           "Native Windows Black hangs during grammar initialization; the same 25.11.0 release passed all changed Python files under WSL.",
           "The local wheel is ignored and not committed; its SHA-256 and inventory are recorded in the qualification and reachability manifests.",
