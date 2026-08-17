@@ -17,6 +17,7 @@ from zscope.orchestration.decision_trace import (
 from zscope.reporting.assembler import ReportAssembler
 
 from scripts.reverify_v3_trace import reverify_trace_root
+from scripts.p2_proof_corpus import build_corpus
 
 
 def _tool_record(ref="TOOLFACT_1"):
@@ -191,6 +192,40 @@ def test_interrupted_v3_trace_can_be_reclassified_without_model_or_truth(tmp_pat
     assert result["truth_inputs"] == 0
     assert result["terminal_trace_count"] == 0
     assert result["classification_counts"] == {"provider_semantic_mismatch": 1}
+
+
+def test_strict_proof_trace_reverify_recomputes_from_frozen_ir(tmp_path: Path) -> None:
+    store = DecisionTraceStore(tmp_path, scan_uid="SCAN_P2_REVERIFY")
+    case = build_corpus()["cases"][0]
+    refs = []
+    for kind, key in (
+        ("program_proof_ir", "program_proof_ir"),
+        ("proof_obligation", "proof_obligation"),
+        ("action", "evidence_action"),
+        ("evidence_certificate", "evidence_certificate"),
+        ("proof_check_result", "proof_check_result"),
+    ):
+        refs.append(
+            store.put_evidence(
+                kind=kind,
+                payload=case[key],
+                producer="zscope.proof-kernel.v2",
+            )
+        )
+    store.append_event(
+        "VAL_P2_REVERIFY",
+        stage="verifier",
+        actor="zscope.proof-checker",
+        reason_code="FACT_VERIFIED_TRUE",
+        output_refs=tuple(refs),
+    )
+    store.snapshot()
+
+    result = reverify_trace_root(tmp_path)
+
+    assert result["llm_calls"] == 0
+    assert result["truth_inputs"] == 0
+    assert result["classification_counts"] == {"valid_certificate": 1}
 
 
 def test_terminal_and_view_events_preserve_root_alias_trace(tmp_path: Path) -> None:

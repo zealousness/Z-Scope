@@ -2,7 +2,7 @@
 
 ## 目标
 
-建立模型不能绕过的程序验真和统一终态权威，先用通用fixture证明soundness，再接入产品流水线。
+建立模型不能绕过的程序验真内核，先用通用 fixture 证明 soundness，再以 shadow 接入产品流水线；P2 不转移稳定产品终态权威，P5 才能执行 cutover。
 
 ## 进入条件
 
@@ -19,6 +19,14 @@
 4. 统一V0、RequiredFactPlan、V1/V2、V3和TerminalAuthority。
 5. 迁移alert-verify到同一终态语义。
 6. 为证书、代码hash、CFG边、scope和量词添加篡改检测。
+
+## 当前实施状态
+
+- ADR-0007 和六份严格 schema 已冻结，contract-freeze `proof_security` 预审 approved；阶段为 `in_progress`。
+- 有限 registry 只登记可执行谓词；其他 predicate 保持 non-executable/unknown。Provider 只提出证书，独立 Checker 是 accepted fact 的唯一来源。
+- ProgramProofIR、ProofObligation（confirmation/counterproof/open 三类 clause）、EvidenceAction、EvidenceCertificate、ProofCheckResult 与不可变 CAS 已实现；早期同名证书只作 `legacy_preview`。
+- V0/RequiredFactPlan、V1/V2、V3 和 alert-verify 记录同一 shadow lifecycle；RequiredFactPlan 的派生事实即使被 Checker 接纳也不产生 terminal contribution，alert 缺少冻结 IR 时 shadow 明确 fail-closed。稳定 Candidate Ledger outcomes、Finding-root 投影和产品终态不变，source-to-evidence gate 固定 `proof_kernel_mode=shadow`。
+- answer-free corpus 已冻结为 120 项：四个 family 各 10 正例、20 near-miss，80 个 safe case；本机 Clang 21.1.8 source-to-IR baseline 另行冻结。阶段仍须通过完整门禁和最终 `proof_security` 审核后才能标记 complete。
 
 ## 通用fixture资格
 

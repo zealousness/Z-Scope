@@ -18,11 +18,30 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from ...retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
 from .function_ir import FUNCTION_IR_VERSION, FunctionIREvent, FunctionIRGraph, graph_from_mapping
+from .proof_kernel.checker import ProofChecker
+from .proof_kernel.models import (
+    build_evidence_action as build_proof_action,
+    build_proof_clause,
+    build_proof_obligation,
+    program_proof_ir_from_graph,
+    validate_certificate_envelope,
+)
+from .proof_kernel.provider import ProofProvider
+from .proof_kernel.registry import PREDICATE_REGISTRY
 
 
 CAPABILITY_REGISTRY_VERSION = "zscope.fact-capability-registry.v1"
 EVIDENCE_ACTION_VERSION = "zscope.evidence-action.v1"
 EVIDENCE_CERTIFICATE_VERSION = "zscope.evidence-certificate.v2"
+
+_FACT_PREDICATES = {
+    "lockset": "lock_must_hold_at_access",
+    "cleanup_coverage": "cleanup_covers_all_exits",
+    "source_sink_reachability": "source_sink_path_exists",
+    "guard_dominance": "guard_dominates_sink",
+    "source_controllability": "external_entry_parameter_binding",
+    "type_layout": "record_layout_matches",
+}
 
 SUPPORTED_FACT_KINDS = frozenset(
     {
@@ -184,6 +203,7 @@ class CertificateResult:
     reason_code: str
     certificate: Dict[str, Any]
     fact: Optional[Dict[str, Any]] = None
+    proof_artifacts: Optional[Dict[str, Dict[str, Any]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -191,6 +211,11 @@ class CertificateResult:
             "reason_code": self.reason_code,
             "certificate": dict(self.certificate),
             "verified_fact": dict(self.fact) if isinstance(self.fact, dict) else None,
+            "proof_artifacts": (
+                {key: dict(value) for key, value in self.proof_artifacts.items()}
+                if isinstance(self.proof_artifacts, dict)
+                else None
+            ),
         }
 
 
@@ -296,16 +321,26 @@ class ConcurrencyProofProvider(_CertificateProvider):
     ) -> CertificateResult:
         if not graph.coverage_complete or graph.unresolved_dynamic_edges:
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="coverage_incomplete", predicate_value=None, coverage="partial"
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="coverage_incomplete",
+                predicate_value=None,
+                coverage="partial",
             )
         if fact_kind == "lockset":
             access_statement = str(parameters.get("access_statement_uid") or "")
             locksets = graph.must_hold_locksets_at_statements()
             if access_statement not in locksets:
                 return self.result(
-                    graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                    reason="access_statement_unresolved", predicate_value=None, coverage="partial"
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    status="unknown",
+                    reason="access_statement_unresolved",
+                    predicate_value=None,
+                    coverage="partial",
                 )
             locks = sorted(locksets[access_statement])
             statement = next(
@@ -315,9 +350,14 @@ class ConcurrencyProofProvider(_CertificateProvider):
                 if value.statement_uid == access_statement
             )
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="verified_true",
-                reason="cfg_must_hold_fixed_point", predicate_value={"must_hold_locks": locks},
-                coverage="complete", cfg_nodes=(statement.block_uid, access_statement),
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="verified_true",
+                reason="cfg_must_hold_fixed_point",
+                predicate_value={"must_hold_locks": locks},
+                coverage="complete",
+                cfg_nodes=(statement.block_uid, access_statement),
             )
         if fact_kind == "happens_before":
             left_uid = str(parameters.get("left_event_uid") or "")
@@ -327,32 +367,51 @@ class ConcurrencyProofProvider(_CertificateProvider):
             right = by_uid.get(right_uid)
             if left is None or right is None:
                 return self.result(
-                    graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                    reason="sync_event_unresolved", predicate_value=None, coverage="partial"
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    status="unknown",
+                    reason="sync_event_unresolved",
+                    predicate_value=None,
+                    coverage="partial",
                 )
             same_object = bool(set(left.subject_symbols) & set(right.subject_symbols))
-            valid_kinds = (
-                (left.kind, right.kind) in {
-                    ("lock_release", "lock_acquire"),
-                    ("thread_create", "thread_join"),
-                }
-            )
+            valid_kinds = (left.kind, right.kind) in {
+                ("lock_release", "lock_acquire"),
+                ("thread_create", "thread_join"),
+            }
             path = graph.event_precedes(left.event_uid, right.event_uid)
             if not same_object or not valid_kinds or not path:
                 return self.result(
-                    graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                    reason="explicit_sync_relation_not_proved", predicate_value=None,
-                    coverage="partial", cfg_nodes=path,
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    status="unknown",
+                    reason="explicit_sync_relation_not_proved",
+                    predicate_value=None,
+                    coverage="partial",
+                    cfg_nodes=path,
                 )
             edges = [(left.event_uid, right.event_uid)]
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="verified_true",
-                reason="explicit_sync_edges_recomputed", predicate_value={"happens_before": edges},
-                coverage="complete", cfg_nodes=path, cfg_edges=edges,
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="verified_true",
+                reason="explicit_sync_edges_recomputed",
+                predicate_value={"happens_before": edges},
+                coverage="complete",
+                cfg_nodes=path,
+                cfg_edges=edges,
             )
         return self.result(
-            graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-            reason="unsupported_concurrency_fact", predicate_value=None, coverage="none"
+            graph=graph,
+            issue=issue,
+            fact_kind=fact_kind,
+            status="unknown",
+            reason="unsupported_concurrency_fact",
+            predicate_value=None,
+            coverage="none",
         )
 
 
@@ -370,18 +429,28 @@ class ResourceProtocolProofProvider(_CertificateProvider):
         subject = str(parameters.get("resource_symbol") or "")
         if not graph.coverage_complete or not subject or graph.unresolved_dynamic_edges:
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="coverage_or_resource_identity_incomplete", predicate_value=None,
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="coverage_or_resource_identity_incomplete",
+                predicate_value=None,
                 coverage="partial",
             )
         acquires = [
-            event for event in graph.events
+            event
+            for event in graph.events
             if event.kind == "resource_acquire" and subject in event.subject_symbols
         ]
         if not acquires:
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="resource_acquire_not_resolved", predicate_value=None, coverage="partial"
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="resource_acquire_not_resolved",
+                predicate_value=None,
+                coverage="partial",
             )
         outstanding = graph.resource_outstanding_at_exits(subject)
         uncovered = [value for value, is_outstanding in outstanding.items() if is_outstanding]
@@ -404,19 +473,34 @@ class ResourceProtocolProofProvider(_CertificateProvider):
             }
         elif fact_kind == "ownership_transfer":
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="callee_ownership_contract_unavailable", predicate_value=None,
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="callee_ownership_contract_unavailable",
+                predicate_value=None,
                 coverage="partial",
             )
         else:
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="unsupported_resource_fact", predicate_value=None, coverage="none"
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="unsupported_resource_fact",
+                predicate_value=None,
+                coverage="none",
             )
         return self.result(
-            graph=graph, issue=issue, fact_kind=fact_kind, status="verified_true",
-            reason="all_reachable_exits_enumerated", predicate_value=value, coverage="complete",
-            cfg_nodes=tuple((*covered, *uncovered)), exit_blocks=graph.exit_block_uids,
+            graph=graph,
+            issue=issue,
+            fact_kind=fact_kind,
+            status="verified_true",
+            reason="all_reachable_exits_enumerated",
+            predicate_value=value,
+            coverage="complete",
+            cfg_nodes=tuple((*covered, *uncovered)),
+            exit_blocks=graph.exit_block_uids,
             assumptions=("no external ownership transfer assumed",),
         )
 
@@ -434,8 +518,13 @@ class PathAndGuardProofProvider(_CertificateProvider):
     ) -> CertificateResult:
         if not graph.coverage_complete:
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="coverage_incomplete", predicate_value=None, coverage="partial"
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="coverage_incomplete",
+                predicate_value=None,
+                coverage="partial",
             )
         source_statement = str(parameters.get("source_statement_uid") or "")
         sink_statement = str(parameters.get("sink_statement_uid") or "")
@@ -449,8 +538,13 @@ class PathAndGuardProofProvider(_CertificateProvider):
             source = source_record.block_uid if source_record else ""
         if not sink:
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="sink_block_unresolved", predicate_value=None, coverage="partial"
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="sink_block_unresolved",
+                predicate_value=None,
+                coverage="partial",
             )
         if fact_kind == "source_sink_reachability":
             path = (
@@ -460,35 +554,56 @@ class PathAndGuardProofProvider(_CertificateProvider):
             )
             if not path and graph.unresolved_dynamic_edges:
                 return self.result(
-                    graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                    reason="dynamic_edge_coverage_incomplete", predicate_value=None,
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    status="unknown",
+                    reason="dynamic_edge_coverage_incomplete",
+                    predicate_value=None,
                     coverage="partial",
                 )
             edges = tuple(zip(path, path[1:])) if path else ()
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="verified_true",
-                reason="cfg_reachability_recomputed", predicate_value={"path_exists": bool(path)},
-                coverage="complete", cfg_nodes=path, cfg_edges=edges,
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="verified_true",
+                reason="cfg_reachability_recomputed",
+                predicate_value={"path_exists": bool(path)},
+                coverage="complete",
+                cfg_nodes=path,
+                cfg_edges=edges,
             )
         if fact_kind == "guard_dominance":
             guard_statement = str(parameters.get("guard_statement_uid") or "")
             if not guard_statement or not sink_statement:
                 return self.result(
-                    graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                    reason="guard_or_sink_statement_unresolved", predicate_value=None,
-                    coverage="partial"
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    status="unknown",
+                    reason="guard_or_sink_statement_unresolved",
+                    predicate_value=None,
+                    coverage="partial",
                 )
             guard_record = graph.statement_map.get(guard_statement)
             sink_record = graph.statement_map.get(sink_statement)
             if guard_record is None or sink_record is None:
                 return self.result(
-                    graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                    reason="guard_or_sink_statement_unresolved", predicate_value=None,
-                    coverage="partial"
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    status="unknown",
+                    reason="guard_or_sink_statement_unresolved",
+                    predicate_value=None,
+                    coverage="partial",
                 )
             dominates = graph.statement_dominates(guard_statement, sink_statement)
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="verified_true",
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="verified_true",
                 reason="cfg_dominance_recomputed",
                 predicate_value={"guard_dominates_sink": dominates},
                 coverage="complete",
@@ -501,12 +616,22 @@ class PathAndGuardProofProvider(_CertificateProvider):
             )
         if fact_kind == "value_range":
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="value_range_domain_not_available", predicate_value=None, coverage="partial"
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="value_range_domain_not_available",
+                predicate_value=None,
+                coverage="partial",
             )
         return self.result(
-            graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-            reason="unsupported_path_fact", predicate_value=None, coverage="none"
+            graph=graph,
+            issue=issue,
+            fact_kind=fact_kind,
+            status="unknown",
+            reason="unsupported_path_fact",
+            predicate_value=None,
+            coverage="none",
         )
 
 
@@ -529,13 +654,22 @@ class ContractAndTypeProofProvider(_CertificateProvider):
             )
             if not explicit:
                 return self.result(
-                    graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                    reason="entry_exposure_not_proved", predicate_value=None, coverage="partial"
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    status="unknown",
+                    reason="entry_exposure_not_proved",
+                    predicate_value=None,
+                    coverage="partial",
                 )
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="verified_true",
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="verified_true",
                 reason="entry_exposure_fact_replayed",
-                predicate_value={"externally_controllable": True}, coverage="complete",
+                predicate_value={"externally_controllable": True},
+                coverage="complete",
             )
         if fact_kind == "type_layout":
             subject = str(parameters.get("type_subject") or _subject(issue))
@@ -545,29 +679,51 @@ class ContractAndTypeProofProvider(_CertificateProvider):
                     matches.append(dict(call))
             if not matches:
                 return self.result(
-                    graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                    reason="type_subject_not_resolved", predicate_value=None, coverage="partial"
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    status="unknown",
+                    reason="type_subject_not_resolved",
+                    predicate_value=None,
+                    coverage="partial",
                 )
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="verified_true",
-                reason="clang_ast_type_replayed", predicate_value={"matches": matches},
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="verified_true",
+                reason="clang_ast_type_replayed",
+                predicate_value={"matches": matches},
                 coverage="complete",
             )
         if fact_kind == "caller_contract":
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="external_caller_contract_not_program_provable", predicate_value=None,
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="external_caller_contract_not_program_provable",
+                predicate_value=None,
                 coverage="partial",
             )
         if fact_kind == "object_identity":
             return self.result(
-                graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-                reason="field_sensitive_alias_certificate_unavailable", predicate_value=None,
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="field_sensitive_alias_certificate_unavailable",
+                predicate_value=None,
                 coverage="partial",
             )
         return self.result(
-            graph=graph, issue=issue, fact_kind=fact_kind, status="unknown",
-            reason="unsupported_contract_fact", predicate_value=None, coverage="none"
+            graph=graph,
+            issue=issue,
+            fact_kind=fact_kind,
+            status="unknown",
+            reason="unsupported_contract_fact",
+            predicate_value=None,
+            coverage="none",
         )
 
 
@@ -599,6 +755,8 @@ class FunctionIRFactService:
             "object_identity": ContractAndTypeProofProvider(),
             "type_layout": ContractAndTypeProofProvider(),
         }
+        self._proof_provider = ProofProvider()
+        self._proof_checker = ProofChecker()
 
     def graph(
         self,
@@ -701,12 +859,43 @@ class FunctionIRFactService:
                     "ir": graph.ir_sha256,
                 }
                 provider = self._providers[fact_kind]
+                proof_parameters = dict(parameters)
+                if fact_kind == "lockset" and "lock_uid" not in proof_parameters:
+                    locks = tuple(
+                        dict.fromkeys(
+                            symbol
+                            for event in graph.events
+                            if event.kind in {"lock_acquire", "lock_release"}
+                            for symbol in event.subject_symbols
+                        )
+                    )
+                    if len(locks) == 1:
+                        proof_parameters["lock_uid"] = locks[0]
+                compiled = self._compile_proof_artifacts(
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    parameters=proof_parameters,
+                )
+                strict_action = compiled.get("action") if compiled else None
                 actions.append(
                     EvidenceAction(
-                        action_id="EVACTION_" + _sha(body)[:32],
+                        action_id=(
+                            str(strict_action["action_uid"])
+                            if isinstance(strict_action, Mapping)
+                            else "EVACTION_" + _sha(body)[:32]
+                        ),
                         fact_kind=fact_kind,
-                        provider_id=provider.provider_id,
-                        verifier_id=provider.verifier_id,
+                        provider_id=(
+                            str(strict_action["provider_id"])
+                            if isinstance(strict_action, Mapping)
+                            else provider.provider_id
+                        ),
+                        verifier_id=(
+                            str(strict_action["verifier_id"])
+                            if isinstance(strict_action, Mapping)
+                            else provider.verifier_id
+                        ),
                         subject_uid=_subject(issue),
                         decision_region_uid=_region(issue),
                         fixed_parameters=parameters,
@@ -728,8 +917,7 @@ class FunctionIRFactService:
         if graph is None:
             return self._unavailable_result(action, "function_ir_unavailable")
         expected = {
-            value.action_id: value
-            for value in self.actions(issue, evidence, (action.fact_kind,))
+            value.action_id: value for value in self.actions(issue, evidence, (action.fact_kind,))
         }.get(action.action_id)
         if expected is None or expected.to_dict() != action.to_dict():
             return self._unavailable_result(action, "evidence_action_identity_mismatch")
@@ -739,21 +927,143 @@ class FunctionIRFactService:
         if cached is not None:
             return cached
         provider = self._providers[action.fact_kind]
-        result = provider.prove(graph, issue, action.fact_kind, action.fixed_parameters)
-        if isinstance(result.fact, dict):
-            fact = dict(result.fact)
-            proof = self._decision_proof(result, issue)
+        stable_result = provider.prove(graph, issue, action.fact_kind, action.fixed_parameters)
+        if isinstance(stable_result.fact, dict):
+            stable_fact = dict(stable_result.fact)
+            proof = self._decision_proof(stable_result, issue)
             if proof is not None:
-                fact["deterministic_proof"] = proof
-                result = CertificateResult(
-                    status=result.status,
-                    reason_code=result.reason_code,
-                    certificate=dict(result.certificate),
-                    fact=fact,
+                stable_fact["deterministic_proof"] = proof
+            stable_result = CertificateResult(
+                status=stable_result.status,
+                reason_code=stable_result.reason_code,
+                certificate=dict(stable_result.certificate),
+                fact=stable_fact,
+            )
+        parameters = dict(action.fixed_parameters)
+        if action.fact_kind == "lockset" and "lock_uid" not in parameters:
+            locks = tuple(
+                dict.fromkeys(
+                    symbol
+                    for event in graph.events
+                    if event.kind in {"lock_acquire", "lock_release"}
+                    for symbol in event.subject_symbols
                 )
+            )
+            if len(locks) == 1:
+                parameters["lock_uid"] = locks[0]
+        artifacts = self._compile_proof_artifacts(
+            graph=graph,
+            issue=issue,
+            fact_kind=action.fact_kind,
+            parameters=parameters,
+        )
+        if artifacts is None:
+            result = stable_result
+            with self._lock:
+                self._results[cache_key] = result
+            return result
+        certificate = self._proof_provider.produce(
+            proof_ir=artifacts["program_proof_ir"],
+            obligation=artifacts["proof_obligation"],
+            action=artifacts["action"],
+        )
+        check_result = self._proof_checker.check(
+            proof_ir=artifacts["program_proof_ir"],
+            obligation=artifacts["proof_obligation"],
+            action=artifacts["action"],
+            certificate=certificate,
+        )
+        result = CertificateResult(
+            status=stable_result.status,
+            reason_code=stable_result.reason_code,
+            certificate=stable_result.certificate,
+            fact=stable_result.fact,
+            proof_artifacts={
+                **artifacts,
+                "evidence_certificate": certificate,
+                "proof_check_result": check_result,
+            },
+        )
         with self._lock:
             self._results[cache_key] = result
         return result
+
+    @staticmethod
+    def _compile_proof_artifacts(
+        *,
+        graph: FunctionIRGraph,
+        issue: Mapping[str, Any],
+        fact_kind: str,
+        parameters: Mapping[str, Any],
+    ) -> Optional[Dict[str, Dict[str, Any]]]:
+        predicate_id = _FACT_PREDICATES.get(fact_kind)
+        spec = PREDICATE_REGISTRY.get(predicate_id or "")
+        subject_uid = _subject(issue)
+        region_uid = _region(issue)
+        if spec is None or not subject_uid or not region_uid:
+            return None
+        fixed = dict(parameters)
+        if predicate_id == "source_sink_path_exists":
+            source_statement = str(fixed.pop("source_statement_uid", ""))
+            sink_statement = str(fixed.pop("sink_statement_uid", ""))
+            if source_statement:
+                record = graph.statement_map.get(source_statement)
+                fixed["source_node_uid"] = record.block_uid if record else ""
+            if sink_statement:
+                record = graph.statement_map.get(sink_statement)
+                fixed["sink_node_uid"] = record.block_uid if record else ""
+            fixed.setdefault("source_node_uid", str(fixed.pop("source_block_uid", "")))
+            fixed.setdefault("sink_node_uid", str(fixed.pop("sink_block_uid", "")))
+        elif predicate_id == "cleanup_covers_all_exits":
+            fixed = {"resource_uid": str(fixed.get("resource_symbol") or "")}
+        if set(fixed) != set(spec.parameter_keys) or any(
+            value in (None, "") for value in fixed.values()
+        ):
+            return None
+        proof_ir = program_proof_ir_from_graph(
+            graph,
+            project_uid="PROJECT_" + _sha({"file": graph.file})[:32],
+            revision_uid="REV_" + graph.code_snapshot_sha256[:32],
+        )
+        clause = build_proof_clause(
+            role="confirmation",
+            provider_family=spec.provider_family,
+            predicate_id=spec.predicate_id,
+            fact_kind=spec.fact_kind,
+            quantifier=spec.quantifier,
+            expected_value={"$derived": True},
+            parameters=fixed,
+        )
+        security_obligation = issue.get("security_obligation")
+        security_obligation = (
+            security_obligation if isinstance(security_obligation, Mapping) else {}
+        )
+        obligation = build_proof_obligation(
+            validation_cluster_uid=str(
+                issue.get("validation_cluster_uid")
+                or security_obligation.get("obligation_uid")
+                or region_uid
+            ),
+            defect_family=str(issue.get("defect_family") or issue.get("type") or "generic"),
+            subject_uid=subject_uid,
+            decision_region_uid=region_uid,
+            confirmation_clauses=(clause,),
+            counterproof_clauses=(),
+            open_clauses=(),
+            dependency_hashes=proof_ir["dependency_hashes"],
+        )
+        proof_action = build_proof_action(
+            obligation=obligation,
+            clause=clause,
+            proof_ir=proof_ir,
+            provider_id=spec.provider_id,
+            verifier_id=spec.verifier_id,
+        )
+        return {
+            "program_proof_ir": proof_ir,
+            "proof_obligation": obligation,
+            "action": proof_action,
+        }
 
     def resolve_first(
         self,
@@ -816,9 +1126,7 @@ class FunctionIRFactService:
                     supported=supported,
                     executable_for_subject_region=executable,
                     coverage_scope=(
-                        "function_cfg_complete"
-                        if graph and graph.coverage_complete
-                        else "none"
+                        "function_cfg_complete" if graph and graph.coverage_complete else "none"
                     ),
                     cost_class="local_cfg",
                     dependency_hashes=(
@@ -835,7 +1143,9 @@ class FunctionIRFactService:
                         else ()
                     ),
                     unavailable_reason=(
-                        "" if executable else (
+                        ""
+                        if executable
+                        else (
                             self.unavailable_reason(issue)
                             if graph is None
                             else "subject_region_not_executable"
@@ -873,6 +1183,8 @@ class FunctionIRFactService:
         if not isinstance(fact, Mapping):
             return None
         certificate = result.certificate
+        witness = certificate.get("witness")
+        witness = witness if isinstance(witness, Mapping) else {}
         fact_kind = str(fact.get("fact_kind") or "")
         value = fact.get("value")
         value = value if isinstance(value, Mapping) else {}
@@ -906,15 +1218,25 @@ class FunctionIRFactService:
             "producer_engine": str(certificate.get("verifier_id") or "function_ir_verifier"),
             "proof_version": "zscope.decision-proof.v4",
             "fact_ids": [str(fact.get("fact_uid") or "")],
-            "cfg_nodes": list(certificate.get("cfg_nodes") or []),
+            "cfg_nodes": list(witness.get("cfg_nodes") or certificate.get("cfg_nodes") or []),
             "subject_identity": _subject(issue),
-            "code_hash": str(certificate.get("code_snapshot_sha256") or ""),
+            "code_hash": str(
+                certificate.get("code_sha256") or certificate.get("code_snapshot_sha256") or ""
+            ),
             "facts": facts,
             "completeness": "complete",
-            "scope": str(certificate.get("coverage") or "function CFG"),
-            "summary": str(certificate.get("reason_code") or proof_kind),
-            "assumptions": list(certificate.get("assumptions") or []),
-            "certificate_sha256": str(certificate.get("certificate_sha256") or ""),
+            "scope": str(
+                (certificate.get("coverage") or {}).get("domain")
+                if isinstance(certificate.get("coverage"), Mapping)
+                else certificate.get("coverage") or "function CFG"
+            ),
+            "summary": result.reason_code or proof_kind,
+            "assumptions": list(
+                certificate.get("assumption_ids") or certificate.get("assumptions") or []
+            ),
+            "certificate_sha256": str(
+                certificate.get("content_sha256") or certificate.get("certificate_sha256") or ""
+            ),
             "verification_certificate": dict(certificate),
         }
 
@@ -942,9 +1264,7 @@ class FunctionIRFactService:
             line = int(issue.get("line") or issue.get("start_line") or 0)
             sink_blocks = tuple(
                 dict.fromkeys(
-                    event.block_uid
-                    for event in graph.events
-                    if line and event.source_line == line
+                    event.block_uid for event in graph.events if line and event.source_line == line
                 )
             )
         if fact_kind == "source_sink_reachability":
@@ -961,7 +1281,8 @@ class FunctionIRFactService:
             sources = source_blocks or ((graph.entry_block_uid,) if graph.entry_block_uid else ())
             return tuple(
                 {"source_block_uid": source, "sink_block_uid": sink}
-                for source in sources for sink in sink_blocks
+                for source in sources
+                for sink in sink_blocks
             )[:16]
         if fact_kind == "guard_dominance":
             guard_statements = tuple(
@@ -990,6 +1311,14 @@ class FunctionIRFactService:
                     for statement in block.statements
                     if line and statement.source_line == line
                 )
+            locks = tuple(
+                dict.fromkeys(
+                    symbol
+                    for event in graph.events
+                    if event.kind in {"lock_acquire", "lock_release"}
+                    for symbol in event.subject_symbols
+                )
+            )
             return tuple({"access_statement_uid": value} for value in statements)[:16]
         if fact_kind == "happens_before":
             sync_events = [
@@ -1132,6 +1461,9 @@ class FactCapabilityRegistry:
 
 
 def verify_certificate_v2(certificate: Mapping[str, Any]) -> bool:
+    valid, _ = validate_certificate_envelope(certificate)
+    if valid:
+        return True
     if str(certificate.get("schema_version") or "") != EVIDENCE_CERTIFICATE_VERSION:
         return False
     supplied = str(certificate.get("certificate_sha256") or "")

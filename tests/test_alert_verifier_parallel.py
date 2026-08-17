@@ -144,3 +144,14 @@ def test_alert_validator_v3_rejection_is_policy_uncertain() -> None:
     assert result["verdict"] == "uncertain"
     assert result["candidate_disposition"] == "needs_review"
     assert result["attribution"]["decided_by"] == "unresolved"
+    assert result["proof_kernel_mode"] == "shadow"
+    assert (
+        result["proof_kernel_shadow_terminal_authority_decision"]["disposition"] == "needs_review"
+    )
+    assert result["proof_kernel_shadow_decision"] == {
+        "disposition": "needs_review",
+        "reason_code": "open_or_unknown_proof_clause",
+        "source": "alert_verify_proof_ir_unavailable",
+        "accepted_fact_kinds": [],
+        "missing_fact_kinds": ["external_alert_program_evidence"],
+    }

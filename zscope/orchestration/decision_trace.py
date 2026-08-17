@@ -501,6 +501,18 @@ class DecisionTraceStore:
                 "terminal_authority_decision": _sanitize(
                     issue.get("terminal_authority_decision") or {}
                 ),
+                "proof_kernel_mode": str(issue.get("proof_kernel_mode") or "shadow"),
+                "proof_kernel_artifact_refs": _sanitize(
+                    issue.get("proof_kernel_artifact_refs") or []
+                ),
+                "proof_kernel_checker_results": _sanitize(
+                    issue.get("proof_kernel_checker_results") or []
+                ),
+                "proof_kernel_shadow_decision": _sanitize(
+                    issue.get("proof_kernel_shadow_decision")
+                    or issue.get("proof_kernel_shadow_terminal_authority_decision")
+                    or {}
+                ),
             },
             producer="terminal_authority_evaluator",
         )

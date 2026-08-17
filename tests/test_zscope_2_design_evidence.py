@@ -13,6 +13,7 @@ from scripts.check_zscope_2_design_evidence import (
     validate_formal_review_documents,
     validate_json_schema,
     validate_p1_review_documents,
+    validate_p2_review_documents,
     validate_phase_gates,
 )
 
@@ -218,6 +219,65 @@ def test_p1_complete_status_cannot_be_recorded_without_phase_review() -> None:
     errors = validate_phase_gates(mutated_manifest, mutated_evidence)
 
     assert "P1 completion requires a product_architecture phase review" in errors
+
+
+def test_p2_completion_requires_review_and_qualification_binding() -> None:
+    manifest, evidence, _ = _design_documents()
+    mutated_manifest = copy.deepcopy(manifest)
+    mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["phase_status"]["P2"] = "complete"
+    mutated_manifest["phase_reviews"].pop("P2", None)
+    for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P2":
+            phase["status"] = "complete"
+
+    errors = validate_phase_gates(mutated_manifest, mutated_evidence)
+
+    assert "P2 completion requires a proof_security phase review" in errors
+
+
+def test_p2_final_review_rejects_entry_scope_or_blockers() -> None:
+    schema = load_json(DESIGN_ROOT / "acceptance" / "p2-review.schema.json")
+    phase_review = {
+        "reviewed_commit": "1" * 40,
+        "reviewed_tree": "2" * 40,
+        "artifacts": {
+            "proof_security": {
+                "reviewer_model": "deepseek-v4-pro",
+                "harness": "dsh/test; reasoning_effort=max; permission_mode=read-only",
+            }
+        },
+    }
+    review = {
+        "review_schema": "zscope.p2-proof-security-review.v1",
+        "review_scope": "contract_freeze",
+        "role": "proof_security",
+        "reviewer_model": "deepseek-v4-pro",
+        "harness": "dsh/test; reasoning_effort=max; permission_mode=read-only",
+        "reviewed_commit": "1" * 40,
+        "reviewed_tree": "2" * 40,
+        "decision": "changes_required",
+        "summary": "synthetic blocker",
+        "blocking_findings": [
+            {
+                "id": "P2-BLOCK",
+                "severity": "high",
+                "title": "synthetic",
+                "evidence": "unit test",
+                "required_action": "keep P2 open",
+            }
+        ],
+        "non_blocking_findings": [],
+        "checks": [{"name": "soundness", "result": "fail", "evidence": "synthetic"}],
+        "limitations": ["synthetic"],
+        "attestation": "read-only synthetic review",
+    }
+
+    errors = validate_p2_review_documents(phase_review, {"proof_security": review}, schema)
+
+    assert any("final_soundness" in value for value in errors)
+    assert any("approved review" in value for value in errors)
+    assert any("zero blocking" in value for value in errors)
 
 
 def test_proof_security_review_records_max_reasoning_and_read_only_mode() -> None:

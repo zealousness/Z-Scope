@@ -46,7 +46,7 @@
 
 ## ProgramProofIR与证书
 
-`ProofObligation`由blocking clauses组成。`EvidenceAction`必须绑定固定subject/region、predicate和有限参数schema。
+`ProofObligation`显式分为 confirmation、counterproof 和 open clauses；open clause 不产生 action 或 terminal contribution。`EvidenceAction`必须绑定固定subject/region、predicate和有限参数 schema。
 
 P2 首批 predicate registry 的量词和 coverage 语义冻结如下；未列为 executable 的 predicate
 只能返回 `unknown`，不能由模型文本、普通 repository tool observation 或相似名称推断：

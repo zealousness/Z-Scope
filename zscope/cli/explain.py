@@ -16,6 +16,7 @@ from ..core.validation.claim_verifier import (
     verify_evidence_certificate,
 )
 from ..core.validation.fact_capabilities import verify_certificate_v2
+from ..core.validation.proof_kernel.checker import ProofChecker
 from ..orchestration.decision_trace import (
     DecisionTraceError,
     load_decision_trace,
@@ -341,26 +342,71 @@ def _reverify(
             _load_evidence(snapshot_root, str(ref)) for ref in event.get("output_refs") or []
         ]
         action_certificate = next(
+            (value for value in outputs if value.get("kind") == "evidence_certificate"),
+            None,
+        ) or next(
             (value for value in outputs if value.get("kind") == "evidence_certificate_v2"),
             None,
         )
         if isinstance(action_certificate, Mapping):
             payload = action_certificate.get("payload")
             payload = payload if isinstance(payload, Mapping) else {}
+            if payload.get("protocol_revision") == 2:
+                artifacts = {
+                    str(value.get("kind") or ""): value.get("payload")
+                    for value in outputs
+                    if isinstance(value, Mapping) and isinstance(value.get("payload"), Mapping)
+                }
+                proof_ir = artifacts.get("program_proof_ir")
+                obligation = artifacts.get("proof_obligation")
+                action = artifacts.get("action")
+                frozen_check = artifacts.get("proof_check_result")
+                strict_certificate = artifacts.get("evidence_certificate") or payload
+                if not all(
+                    isinstance(value, Mapping)
+                    for value in (proof_ir, obligation, action, strict_certificate, frozen_check)
+                ):
+                    raise DecisionTraceError(
+                        "strict proof certificate has no complete frozen replay artifact set"
+                    )
+                recomputed = ProofChecker().check(
+                    proof_ir=cast(Mapping[str, Any], proof_ir),
+                    obligation=cast(Mapping[str, Any], obligation),
+                    action=cast(Mapping[str, Any], action),
+                    certificate=cast(Mapping[str, Any], strict_certificate),
+                )
+                matches = recomputed == frozen_check
+                accepted = recomputed.get("status") == "accepted"
+                results.append(
+                    {
+                        "claim_uid": "",
+                        "fact_kind": str(payload.get("fact_kind") or ""),
+                        "status": str(payload.get("status") or "unknown"),
+                        "classification": (
+                            "valid_certificate" if accepted and matches else "proof_replay_mismatch"
+                        ),
+                        "matches_frozen_status": matches,
+                        "certificate_valid": accepted,
+                        "certificate_reason": (
+                            "ok" if accepted and matches else "checker_replay_mismatch"
+                        ),
+                    }
+                )
+                continue
             valid = verify_certificate_v2(payload)
             results.append(
                 {
                     "claim_uid": "",
                     "fact_kind": str(payload.get("fact_kind") or ""),
                     "status": str(payload.get("status") or "unknown"),
-                    "classification": (
-                        "valid_certificate"
-                        if valid and payload.get("quantifier_coverage_complete") is True
-                        else "coverage_incomplete"
+                    "classification": ("legacy_preview" if valid else "certificate_invalid"),
+                    "matches_frozen_status": False,
+                    "certificate_valid": False,
+                    "certificate_reason": (
+                        "legacy_preview_not_replay_authoritative"
+                        if valid
+                        else "certificate_v2_invalid"
                     ),
-                    "matches_frozen_status": valid,
-                    "certificate_valid": valid,
-                    "certificate_reason": "ok" if valid else "certificate_v2_invalid",
                 }
             )
             continue

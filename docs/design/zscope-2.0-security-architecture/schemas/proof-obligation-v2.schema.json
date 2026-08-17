@@ -7,7 +7,7 @@
   "required": [
     "schema_version", "protocol_revision", "obligation_uid", "validation_cluster_uid",
     "defect_family", "subject_uid", "decision_region_uid", "confirmation_clauses",
-    "counterproof_clauses", "dependency_hashes", "content_sha256"
+    "counterproof_clauses", "open_clauses", "dependency_hashes", "content_sha256"
   ],
   "properties": {
     "schema_version": {"const": "zscope.proof-obligation.v2"},
@@ -19,6 +19,7 @@
     "decision_region_uid": {"type": "string", "minLength": 1},
     "confirmation_clauses": {"type": "array", "items": {"$ref": "#/$defs/clause"}},
     "counterproof_clauses": {"type": "array", "items": {"$ref": "#/$defs/clause"}},
+    "open_clauses": {"type": "array", "items": {"$ref": "#/$defs/clause"}},
     "dependency_hashes": {"type": "array", "items": {"$ref": "#/$defs/sha256"}, "minItems": 1, "uniqueItems": true},
     "content_sha256": {"$ref": "#/$defs/sha256"}
   },
@@ -29,7 +30,7 @@
       "required": ["clause_uid", "role", "provider_family", "predicate_id", "fact_kind", "quantifier", "expected_value", "parameters", "required"],
       "properties": {
         "clause_uid": {"type": "string", "pattern": "^PCLAUSE_[0-9a-f]{32}$"},
-        "role": {"enum": ["confirmation", "counterproof"]},
+        "role": {"enum": ["confirmation", "counterproof", "open"]},
         "provider_family": {"enum": ["concurrency", "resource", "path_guard", "contract_type"]},
         "predicate_id": {"type": "string", "minLength": 1},
         "fact_kind": {"type": "string", "minLength": 1},
