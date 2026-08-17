@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.local/schemas/proof-obligation-v2.schema.json",
+  "title": "ProofObligation v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "protocol_revision", "obligation_uid", "validation_cluster_uid",
+    "defect_family", "subject_uid", "decision_region_uid", "confirmation_clauses",
+    "counterproof_clauses", "dependency_hashes", "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.proof-obligation.v2"},
+    "protocol_revision": {"const": 2},
+    "obligation_uid": {"type": "string", "pattern": "^POBL_[0-9a-f]{32}$"},
+    "validation_cluster_uid": {"type": "string", "minLength": 1},
+    "defect_family": {"type": "string", "minLength": 1},
+    "subject_uid": {"type": "string", "minLength": 1},
+    "decision_region_uid": {"type": "string", "minLength": 1},
+    "confirmation_clauses": {"type": "array", "items": {"$ref": "#/$defs/clause"}},
+    "counterproof_clauses": {"type": "array", "items": {"$ref": "#/$defs/clause"}},
+    "dependency_hashes": {"type": "array", "items": {"$ref": "#/$defs/sha256"}, "minItems": 1, "uniqueItems": true},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "clause": {
+      "type": "object", "additionalProperties": false,
+      "required": ["clause_uid", "role", "provider_family", "predicate_id", "fact_kind", "quantifier", "expected_value", "parameters", "required"],
+      "properties": {
+        "clause_uid": {"type": "string", "pattern": "^PCLAUSE_[0-9a-f]{32}$"},
+        "role": {"enum": ["confirmation", "counterproof"]},
+        "provider_family": {"enum": ["concurrency", "resource", "path_guard", "contract_type"]},
+        "predicate_id": {"type": "string", "minLength": 1},
+        "fact_kind": {"type": "string", "minLength": 1},
+        "quantifier": {"enum": ["must_at_point", "for_all_exits", "exists_path", "for_all_paths", "exact_binding", "exact_layout"]},
+        "expected_value": {},
+        "parameters": {"type": "object"},
+        "required": {"type": "boolean"}
+      }
+    }
+  }
+}

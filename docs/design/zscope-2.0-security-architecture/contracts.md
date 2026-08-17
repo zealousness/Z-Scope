@@ -48,6 +48,22 @@
 
 `ProofObligation`由blocking clauses组成。`EvidenceAction`必须绑定固定subject/region、predicate和有限参数schema。
 
+P2 首批 predicate registry 的量词和 coverage 语义冻结如下；未列为 executable 的 predicate
+只能返回 `unknown`，不能由模型文本、普通 repository tool observation 或相似名称推断：
+
+| Provider family | 首批 executable predicate | 量词与完整性要求 |
+|---|---|---|
+| concurrency | `lock_must_hold_at_access` | `must_at_point`；对所有到达精确访问语句的 CFG 路径取 must 交集，锁对象和访问语句必须唯一。CFG、对象 identity 或动态边不完整时为 `unknown`。没有完整跨线程图时不得产生 `happens_before`。 |
+| resource | `cleanup_covers_all_exits` | `for_all_exits`；绑定精确资源 identity 并枚举全部可达出口。存在未解析 alias、ownership transfer、wrapper、动态调用或出口时，全称 cleanup 结论为 `unknown`；具体未清理出口可作为存在性 witness。 |
+| path/guard | `source_sink_path_exists`、`guard_dominates_sink` | 路径存在使用 `exists_path` 和具体相邻 CFG edge witness；不存在与 dominance 使用完整 CFG 的全称证明。dominance 只关闭结构 fact，不能替代 value-range 或安全 counterproof。 |
+| contract/type | `external_entry_parameter_binding`、`record_layout_matches` | `exact_binding` / `exact_layout`；只接受冻结入口 identity、参数槽、Clang layout 和 dependency hash。缺少闭世界 caller、alias 或 ownership contract 时为 `unknown`。 |
+
+严格字段级 schema 位于 `schemas/`。`ProgramProofIR v2`、`FunctionSecuritySummary`、
+`ProofObligation`、`EvidenceAction v2`、`EvidenceCertificate v2` 和 `ProofCheckResult` 均使用
+canonical JSON 内容寻址。内容 hash 不等于 proof：独立 Checker 必须从冻结 IR 重新计算 predicate，
+并校验 action、clause、subject、region、量词、CFG 节点/边、出口集合、assumption allowlist 及
+code/IR/backend/dependency hash。
+
 `EvidenceCertificate v2`至少包含：
 
 - certificate/action/verifier UID和版本
@@ -60,6 +76,9 @@
 - content hash
 
 只有`verified_true`且量词coverage完整的证书才能关闭clause。
+
+缺少 `protocol_revision=2` 的早期同名 `EvidenceCertificate v2` 是 `legacy_preview`。compat 可以
+展示其原始内容，但 live Proof Engine、closure、promotion 和 TerminalAuthority 必须拒绝它。
 
 ## TerminalAuthority
 
