@@ -11,7 +11,7 @@
   "phases": [
     {"phase": "P0", "status": "complete", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
     {"phase": "P1", "status": "complete", "entry_gate": "P0 complete", "exit_gate": "dead runtime removed with frozen replay equivalence and approved product architecture review", "review_roles": ["product_architecture"]},
-    {"phase": "P2", "status": "pending", "entry_gate": "P1 complete and ADR-0007 contract-freeze proof-security review approved", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
+    {"phase": "P2", "status": "in_progress", "entry_gate": "P1 complete and ADR-0007 contract-freeze proof-security review approved", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
     {"phase": "P3", "status": "pending", "entry_gate": "P2 contracts stable", "exit_gate": "spec blind review, user review and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P4", "status": "pending", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind and non-Range hypothesis gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P5", "status": "pending", "entry_gate": "P2-P4 pass", "exit_gate": "all public paths cut over and legacy runtime absent", "review_roles": ["product_architecture", "proof_security"]},
@@ -660,6 +660,47 @@
         ]
       },
       "notes": "Claude Opus 5 approved the exact clean P1 candidate commit/tree with zero blocking findings."
+    },
+    {
+      "evidence_uid": "P2-CONTRACT-FREEZE-PROOF-SECURITY-REVIEW",
+      "phase": "P2",
+      "kind": "entry_gate_review",
+      "status": "passed",
+      "implementation_commit": "3442de63f98f90c5ba0df8efa707e8cc540ebd87",
+      "implementation_tree": "14c7937ef5e892c4ab89dfb3c47f37e930fcba30",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p2-review.schema.json",
+          "sha256": "089d6012803091fb8a3ec416917d52050699a61e337f183ba14d8d5bdbafa822"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p2-contract-freeze-proof-security.json",
+          "sha256": "9febdfb5eda063cf585a198f922018b0ee82936b241a76ac083ec58267f1327d"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": ["dsh/deepseek-v4-pro:max"],
+      "verification": {
+        "environment": {
+          "harness": "DSH 0.1.0-rc.6",
+          "model": "deepseek-v4-pro",
+          "reasoning_effort": "max",
+          "permission_mode": "read-only",
+          "review_target": "3442de63f98f90c5ba0df8efa707e8cc540ebd87 / 14c7937ef5e892c4ab89dfb3c47f37e930fcba30"
+        },
+        "commands": [
+          {
+            "command": "dsh --profile headless --patch <deepseek-v4-pro max> under DSH_PERMISSION_MODE=read-only",
+            "status": "passed"
+          }
+        ],
+        "limitations": [
+          "This approval covers the P2 contract-freeze entry gate only, not final proof soundness.",
+          "No benchmark ran and Range truth or benchmark answer content was not read.",
+          "Seven non-blocking recommendations are implementation requirements for the machine-readable registry and Checker."
+        ]
+      },
+      "notes": "DeepSeek-V4-Pro Max approved the P2 contract-freeze candidate with zero blocking findings; runtime authority remains shadow until P5."
     }
   ]
 }

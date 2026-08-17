@@ -1,6 +1,6 @@
 # ADR-0007：冻结首批 Proof Provider 的量词与 Coverage 语义
 
-- 状态：accepted-for-design-candidate
+- 状态：accepted-for-design
 - 日期：2026-08-17
 - 影响阶段：P2、P5、P6
 
