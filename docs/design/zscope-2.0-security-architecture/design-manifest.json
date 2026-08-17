@@ -39,10 +39,10 @@
     "phases/P6-pilot-validation.md": "0cfcddd02820343931e8a988a753939c325861c17abdfcc36dec93b4da7fd93d",
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "74f62a4e58a900a641a3aa837f5f24b6e05809141108d23ed1bfa476299e2361",
-    "acceptance/runtime-reachability-manifest.json": "2a8b2d6ab5ef66530dba78aa61e3da59aedcafc256a62b47734926dc3acf033d",
+    "acceptance/runtime-reachability-manifest.json": "735ad6e1cbebadd8aad9edb7e25bf4d9e9b845950245612bd169d99c11ba2b88",
     "acceptance/baseline-artifact-manifest.json": "5a3553e0c14a200563c0393396068c238f397895ea8aada7bf7f90e286c88c00",
     "acceptance/p0-execution-preflight.json": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b",
-    "acceptance/p0-cold-baseline-summary.json": "d7099cf5e62c6fb7ca37b851cdc77525db30376cdc02f12d8b90078c9b99a4d9"
+    "acceptance/p0-cold-baseline-summary.json": "ebd95c07957e3f0a4bef7c446f2e079caebfad1d6395e45ed4cc1b06476a3b49"
   },
   "adrs": [
     {"id": "ADR-0001", "status": "accepted-for-design", "affected_phases": ["P1", "P4", "P5"]},

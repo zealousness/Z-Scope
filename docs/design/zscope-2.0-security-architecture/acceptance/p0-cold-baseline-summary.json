@@ -153,5 +153,10 @@
     "179 default-enabled deterministic rules remain externally unqualified",
     "truth v15 has no independently attested verification contract",
     "historical benchmark token expectations were exceeded; these are measurement gates and did not truncate product execution"
+  ],
+  "baseline_anomalies": [
+    "balanced recorded one operational security-semantic-map item with the legacy deferred_budget label even though usage admission reported zero denied requests and zero budget violations",
+    "V3 usage is attributed to the legacy reserve stage name even though no scan-wide token limit truncated the run",
+    "103 balanced responses ended with finish_reason=length and require proof-kernel/prompt review before any effectiveness conclusion"
   ]
 }
