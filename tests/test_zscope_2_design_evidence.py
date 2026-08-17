@@ -72,8 +72,15 @@ def test_phase_gate_rejects_starting_p1_before_p0_completion_and_approval() -> N
     manifest, evidence, _ = _design_documents()
     mutated_manifest = copy.deepcopy(manifest)
     mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["status"] = "reviewed"
+    mutated_manifest["phase_status"]["P0"] = "in_progress"
     mutated_manifest["phase_status"]["P1"] = "in_progress"
+    mutated_manifest["approval"]["approved_at"] = ""
+    mutated_manifest["approval"]["approved_commit"] = ""
+    mutated_manifest["approval"]["tag_created"] = False
     for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P0":
+            phase["status"] = "in_progress"
         if phase["phase"] == "P1":
             phase["status"] = "in_progress"
 
@@ -86,9 +93,15 @@ def test_phase_gate_rejects_starting_p1_before_p0_completion_and_approval() -> N
 def test_reviewed_design_cannot_claim_an_approval_tag() -> None:
     manifest, evidence, _ = _design_documents()
     mutated = copy.deepcopy(manifest)
+    mutated_evidence = copy.deepcopy(evidence)
+    mutated["status"] = "reviewed"
+    mutated["phase_status"]["P0"] = "in_progress"
     mutated["approval"]["tag_created"] = True
+    for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P0":
+            phase["status"] = "in_progress"
 
-    errors = validate_phase_gates(mutated, evidence)
+    errors = validate_phase_gates(mutated, mutated_evidence)
 
     assert "reviewed design must not claim that its approval tag was created" in errors
 

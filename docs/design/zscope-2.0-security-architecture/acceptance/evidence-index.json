@@ -1,7 +1,7 @@
 {
   "schema_version": "zscope.design-evidence-index.v1",
   "design_version": "1.0.0",
-  "design_status": "reviewed",
+  "design_status": "approved",
   "baseline": {
     "git_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
     "git_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
@@ -9,7 +9,7 @@
     "worktree_patch_sha256": ""
   },
   "phases": [
-    {"phase": "P0", "status": "in_progress", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
+    {"phase": "P0", "status": "complete", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
     {"phase": "P1", "status": "pending", "entry_gate": "P0 complete", "exit_gate": "dead runtime removed with frozen replay equivalence", "review_roles": ["product_architecture"]},
     {"phase": "P2", "status": "pending", "entry_gate": "P1 complete", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
     {"phase": "P3", "status": "pending", "entry_gate": "P2 contracts stable", "exit_gate": "spec blind review, user review and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
@@ -30,7 +30,7 @@
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
-          "sha256": "4bdb598b2dab6b8e89b38540dfb5a21cbc051404be71a1f089bbe9d3db1e84f1"
+          "sha256": "a858c935f5bf2c7d01ec36b711bb273db0ef1bab8ba9ad305c992411fe948c3f"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
@@ -38,15 +38,19 @@
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/baseline-artifact-manifest.json",
-          "sha256": "02a9644b26e4ee8cec36edf6d613bbe5b72b0bc192b237928ce947545e8626c1"
+          "sha256": "0e96b854c81e299f48b4bff7e687b1f6504ebb059114c853c844179473bc3d50"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
           "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4"
         }
       ],
-      "review_status": "pending",
-      "reviewed_by": [],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
       "verification": {
         "environment": {
           "execution_context": "repository design archive",
@@ -60,10 +64,10 @@
         ],
         "limitations": [
           "The initial archive predates structured command and environment evidence fields.",
-          "Formal product architecture, proof security and independent benchmark reviews remain outstanding."
+          "The initial archive predates the later three-role review artifacts; those reviews are recorded separately under P0-THREE-ROLE-INDEPENDENT-REVIEWS."
         ]
       },
-      "notes": "The design-only archive commit is recorded, the previously dirty baseline has been split into domain-separated commits, and cold runtime artifacts are hash-bound. Formal reviews remain outstanding."
+      "notes": "The design-only archive commit is recorded, the previously dirty baseline has been split into domain-separated commits, and cold runtime artifacts are hash-bound. The final three-role review approved the common b74e6b6/aca131c4 target with no blockers."
     },
     {
       "evidence_uid": "P0-CHANGE-SCOPE-GATE",
@@ -86,8 +90,12 @@
           "sha256": "06621354146ca09b08c0e885cf09ed3b7c0ee5e33671b136b6934c79b9963c2e"
         }
       ],
-      "review_status": "pending",
-      "reviewed_by": [],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
       "verification": {
         "environment": {
           "execution_context": "local repository validation",
@@ -110,10 +118,10 @@
         ],
         "limitations": [
           "The original evidence did not record the exact OS and Python version.",
-          "Independent reviewer sign-off remains open."
+          "The original execution record predates the final three-role sign-off; the review artifacts bind the later approval."
         ]
       },
-      "notes": "Unit tests, Black, mypy and compileall passed locally. The implementation commit is bound; independent reviewer sign-off remains open."
+      "notes": "Unit tests, Black, mypy and compileall passed locally for the original gate. The implementation commit is bound and the final three-role review approved the P0 governance boundary."
     },
     {
       "evidence_uid": "P0-COLD-BASELINE-PREFLIGHT",
@@ -128,8 +136,12 @@
           "sha256": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b"
         }
       ],
-      "review_status": "pending",
-      "reviewed_by": [],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
       "verification": {
         "environment": {
           "host": "windows_with_wsl",
@@ -171,8 +183,12 @@
           "sha256": "7694a7940799954337578d5e2b565d83119a1ac07331234a30d7a813ea7f7eb7"
         }
       ],
-      "review_status": "pending",
-      "reviewed_by": [],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
       "verification": {
         "environment": {
           "host": "windows_with_wsl",
@@ -190,7 +206,7 @@
           "Only one cold trial per depth was executed.",
           "Large answer-free artifacts are ignored locally and are available only when separately retained under benchmark-artifacts.",
           "The trials are P0 behavior baselines, not formal or release-eligible quality results.",
-          "Formal reviews remain outstanding."
+          "The baseline is approved only as P0 behavior evidence; it remains non-formal and non-release-eligible."
         ]
       },
       "notes": "One cold fast and one cold balanced trial completed on the same commit/tree/input/model. Usage, traces, replay bundles, scoped runtime actor observations and matcher-v2 scores are hash-bound and answer-isolated. These P0 behavior baselines are not formal or release-eligible quality results."
@@ -212,8 +228,12 @@
           "sha256": "58c4b816cb10cb6644ea1d8bc07307c0bf32160c209795f082d8a89c9c7da54f"
         }
       ],
-      "review_status": "pending",
-      "reviewed_by": [],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
       "verification": {
         "environment": {
           "host": "windows_with_wsl",
@@ -231,7 +251,7 @@
           "This is a single cold trial and does not establish a stability distribution.",
           "Range is an in-distribution diagnostic and does not establish production generalization.",
           "Large answer-free artifacts may be absent from a fresh worktree and remain hash-bound only.",
-          "Independent review and all release gates remain outstanding."
+          "The three P0 reviews are complete; all later soundness, external, formal, stability and release gates remain outstanding."
         ]
       },
       "notes": "The cold fast trial recovered 48 matcher-v2 default TPs without losing any TP from the regressed run. Its deterministic contribution exactly matches the older healthy fast reference; the remaining four-reference-TP difference is confined to successful V1 uncertain outcomes with open facts and is not a candidate, scorer, projection or protocol loss. This single trial is not a stability or release result."
@@ -240,17 +260,17 @@
       "evidence_uid": "P0-DESIGN-EVIDENCE-VALIDATION-GATE",
       "phase": "P0",
       "kind": "governance_ci",
-      "status": "collected",
+      "status": "passed",
       "implementation_commit": "0a1192ef615ae76c2d17692aefeb8e518a942ec1",
       "implementation_tree": "b66895d1c94f82304c5deecf275c1565d9bc5e77",
       "artifacts": [
         {
           "path": "scripts/check_zscope_2_design_evidence.py",
-          "sha256": "59de6ed2ff0fa4cc290a51050d6daf52cbc5c1f78f7ca2d85ed26c6d4d63bcf6"
+          "sha256": "26b6d4c5fbf4a682926c224fae64cda66b2617e6bedb25ca745f6e180c7e03c2"
         },
         {
           "path": "tests/test_zscope_2_design_evidence.py",
-          "sha256": "cd9b88e8fa979b448020dca92095f5b7757707e528654182978228ba38e2bbf9"
+          "sha256": "4782202899623aa83c180e747c898f87323d5c4f03faa597e33a6640cdc24478"
         },
         {
           "path": ".github/workflows/zscope-2-design-evidence.yml",
@@ -261,8 +281,12 @@
           "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4"
         }
       ],
-      "review_status": "pending",
-      "reviewed_by": [],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
       "verification": {
         "environment": {
           "host": "Microsoft Windows NT 10.0.26200.0",
@@ -313,7 +337,7 @@
           "Three ignored benchmark aggregate artifacts are absent from this worktree, so strict external-artifact hash verification was not possible; the default validator reports each as an explicit limitation.",
           "The first full pytest attempt had one Clang latency timer flake; the isolated retry passed and a complete second run passed with 1873 passed and 7 skipped.",
           "The new CI workflow has not run remotely because this branch was not pushed.",
-          "Independent review remains outstanding; this evidence does not approve the design or complete P0."
+          "The original gate commit predates formal review/tag closure; P0 approval is separately bound by the three review artifacts and annotated tag."
         ]
       },
       "notes": "The P0 design/evidence gate now fails closed on schema drift, hash mismatch, missing repository artifacts, commit/tree mismatch, premature phase entry and false approval state. It tolerates only explicitly classified missing ignored benchmark artifacts, which remain unverified locally."

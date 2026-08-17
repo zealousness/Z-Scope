@@ -260,7 +260,7 @@ def _git_text(repo_root: Path, *args: str) -> str | None:
     return completed.stdout
 
 
-def _git_blob_sha256(repo_root: Path, commit: str, raw_path: str) -> str | None:
+def _git_blob(repo_root: Path, commit: str, raw_path: str) -> bytes | None:
     completed = subprocess.run(
         ["git", "show", f"{commit}:{raw_path}"],
         cwd=repo_root,
@@ -269,7 +269,12 @@ def _git_blob_sha256(repo_root: Path, commit: str, raw_path: str) -> str | None:
     )
     if completed.returncode != 0:
         return None
-    return hashlib.sha256(completed.stdout).hexdigest()
+    return completed.stdout
+
+
+def _git_blob_sha256(repo_root: Path, commit: str, raw_path: str) -> str | None:
+    blob = _git_blob(repo_root, commit, raw_path)
+    return hashlib.sha256(blob).hexdigest() if blob is not None else None
 
 
 def validate_formal_review_documents(
@@ -362,6 +367,36 @@ def _validate_approval_tag(
         "reviewed_tree"
     ):
         report.error("approval tag reviewed-tree does not match formal_reviews.reviewed_tree")
+
+    tagged_manifest_blob = _git_blob(repo_root, tagged_commit, DESIGN_MANIFEST.as_posix())
+    try:
+        tagged_manifest = (
+            json.loads(
+                tagged_manifest_blob.decode("utf-8"),
+                object_pairs_hook=_object_without_duplicates,
+            )
+            if tagged_manifest_blob is not None
+            else None
+        )
+    except (UnicodeError, json.JSONDecodeError, DuplicateJsonKeyError) as exc:
+        report.error(f"approval tag contains an unreadable design manifest: {exc}")
+        tagged_manifest = None
+    if not isinstance(tagged_manifest, dict):
+        report.error("approval tag does not contain a design manifest object")
+    else:
+        tagged_phases = tagged_manifest.get("phase_status")
+        tagged_approval = tagged_manifest.get("approval")
+        if tagged_manifest.get("status") != "approved":
+            report.error("approval tag design manifest must have status approved")
+        if not isinstance(tagged_phases, dict) or tagged_phases.get("P0") != "complete":
+            report.error("approval tag design manifest must record P0 complete")
+        if not isinstance(tagged_approval, dict):
+            report.error("approval tag design manifest is missing approval metadata")
+        else:
+            if tagged_approval.get("tag") != tag or tagged_approval.get("tag_created") is not True:
+                report.error("approval tag design manifest does not name its created tag")
+            if tagged_approval.get("approved_commit") != approval.get("approved_commit"):
+                report.error("approval tag design manifest changes the reviewed commit")
 
     required_paths = {
         DESIGN_MANIFEST.as_posix(),
