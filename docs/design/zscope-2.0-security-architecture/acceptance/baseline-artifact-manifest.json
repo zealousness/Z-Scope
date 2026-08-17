@@ -1,12 +1,12 @@
 {
   "schema_version": "zscope.baseline-artifact-manifest.v1",
   "design_version": "1.0.0",
-  "status": "clean_code_baseline_runtime_artifacts_pending",
-  "captured_at": "2026-08-17T01:16:00+08:00",
+  "status": "cold_runtime_artifacts_collected_reviews_pending",
+  "captured_at": "2026-08-17T09:14:19+08:00",
   "source": {
     "branch": "main",
-    "git_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
-    "git_tree": "631f10adc6d23beb672569fdb337c81e02a031ca",
+    "git_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+    "git_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
     "worktree_clean": true,
     "worktree_changed_path_count_before_design_archive": 84,
     "worktree_patch_sha256": "",
@@ -15,7 +15,10 @@
       "1380b99 benchmark(range): version truth contract baseline to v15",
       "201f6d2 benchmark(range): run pilots with eight workers",
       "89e8274 benchmark: tighten structured matching and gap diagnostics",
-      "1564a95 feat: add traceable evidence closure and proof actions"
+      "1564a95 feat: add traceable evidence closure and proof actions",
+      "9fa105f chore: enforce Z-Scope 2.0 change-scope governance",
+      "6c51f1a docs: bind P0 change-scope gate evidence",
+      "e3459a5 docs: record P0 cold baseline preflight"
     ]
   },
   "current_inputs": {
@@ -64,15 +67,24 @@
   },
   "execution_preflight": {
     "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-execution-preflight.json",
-    "status": "blocked_missing_explicit_model_endpoint_and_model_id",
-    "llm_requests_started": false
+    "status": "passed_for_p0_behavior_baseline",
+    "llm_requests_started": true
   },
-  "missing_required_baseline_artifacts": [
-    "cold fast report and raw usage for that clean commit",
-    "cold balanced report and raw usage for that clean commit",
-    "candidate ledger and decision trace bound to those reports",
-    "matcher-v2 scores bound to the same reports",
-    "runtime dynamic reachability trace"
+  "cold_baseline": {
+    "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-cold-baseline-summary.json",
+    "artifact_storage": "large answer-free artifacts remain under ignored benchmark-artifacts paths and are bound by SHA-256",
+    "fast_completed": true,
+    "balanced_completed": true,
+    "decision_traces_complete": true,
+    "usage_conservation_passed": true,
+    "matcher_v2_scores_present": true
+  },
+  "missing_required_baseline_artifacts": [],
+  "remaining_approval_requirements": [
+    "product architecture review signature",
+    "proof security review signature",
+    "independent benchmark review signature",
+    "annotated design tag after approval"
   ],
   "approval_eligible": false
 }

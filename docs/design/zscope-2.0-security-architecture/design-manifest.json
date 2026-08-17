@@ -8,8 +8,8 @@
   "target_design_root": "docs/design/zscope-2.0-security-architecture",
   "baseline": {
     "branch": "main",
-    "git_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
-    "git_tree": "631f10adc6d23beb672569fdb337c81e02a031ca",
+    "git_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+    "git_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
     "worktree_clean": true,
     "worktree_changed_path_count_before_design_archive": 84,
     "worktree_patch_sha256": "",
@@ -17,7 +17,7 @@
   },
   "document_hashes": {
     "docs/design/README.md": "049ceb43d18afdbf21162b2ca4c0965026dc0b1cdeff6fd71f282d82fdb46a99",
-    "README.md": "c4f7f4ab1b4e1303050785ce7421b4aae1b667954f8ff6e603a90a2dd2662272",
+    "README.md": "dec8a243e4e59d22077ce61ca332bfb03f4402610445bc898eb5857c1f0fb0a5",
     "architecture.md": "5a0197bf5469ce18d468aabbfce706b952f1ced98c499a0e5a72cdb0136c801b",
     "contracts.md": "d058a16eb13641ba951948943b8f400dcfc58baeb72e15a08e74d5e9c0f04745",
     "deprecation-plan.md": "a2475243e5ba10b191b50152a08e27dd762c032eaaf0cfceb4ad6ac2c7f97b9a",
@@ -40,8 +40,9 @@
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "74f62a4e58a900a641a3aa837f5f24b6e05809141108d23ed1bfa476299e2361",
     "acceptance/runtime-reachability-manifest.json": "2a8b2d6ab5ef66530dba78aa61e3da59aedcafc256a62b47734926dc3acf033d",
-    "acceptance/baseline-artifact-manifest.json": "cb05b6f4482fe372ea3ecacb1a029905362b56593d978e1da3bb2c1851183abd",
-    "acceptance/p0-execution-preflight.json": "5285a093f43eccede28422b7f0d83eb968178bd3b407465bc2b43097bfd51635"
+    "acceptance/baseline-artifact-manifest.json": "5a3553e0c14a200563c0393396068c238f397895ea8aada7bf7f90e286c88c00",
+    "acceptance/p0-execution-preflight.json": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b",
+    "acceptance/p0-cold-baseline-summary.json": "d7099cf5e62c6fb7ca37b851cdc77525db30376cdc02f12d8b90078c9b99a4d9"
   },
   "adrs": [
     {"id": "ADR-0001", "status": "accepted-for-design", "affected_phases": ["P1", "P4", "P5"]},
@@ -73,7 +74,6 @@
     "tag": "design-zscope-2.0-security-architecture-v1",
     "tag_created": false,
     "blocked_reasons": [
-      "cold fast and balanced baseline artifacts do not yet match the clean baseline commit",
       "formal review roles have not signed the evidence index"
     ]
   },
