@@ -1,0 +1,43 @@
+{
+  "schema_version": "zscope.p1-frozen-replay-manifest.v1",
+  "captured_at": "2026-08-17T16:22:17+08:00",
+  "source": {
+    "git_commit": "314cddf299387cad7c998cc62990194535d2cb9b",
+    "git_tree": "2bb59cf4b90de2d6e71a9ccaedd7920e21837366",
+    "design_phase": "P0-complete",
+    "fixture_kind": "generic_non_range"
+  },
+  "artifacts": {
+    "input.json": "d70520c3ae93da37b8444b05abb77426daebe8dbd7ba8277da36b4addd642f84",
+    "expected.json": "7768d0a3596761234bc0c2ebaa72586857ab53506925773340e1f4c184050622"
+  },
+  "environment": {
+    "host": "Windows-10-10.0.26200-SP0",
+    "python": "3.10.5",
+    "timezone": "Asia/Shanghai"
+  },
+  "answer_free": true,
+  "llm_calls": 0,
+  "network_used": false,
+  "compared_fields": [
+    "candidate_uids",
+    "candidate_disposition",
+    "terminal_reason",
+    "validator_fact_resolution.status",
+    "finding_root_uid",
+    "finding_root_alias",
+    "default_view",
+    "with_needs_review_view",
+    "workflow_progress"
+  ],
+  "normalization": [
+    "workflow_started_at",
+    "workflow_finished_at",
+    "temporary_absolute_paths"
+  ],
+  "limitations": [
+    "The ignored P0 Range report and validator replay bundle are absent from this worktree and were not replayed.",
+    "This fixture is a generic product-behavior replay captured before P1 deletion; it is not Range quality evidence.",
+    "No claim about model stability, recall, precision, proof soundness, or release eligibility is made."
+  ]
+}
