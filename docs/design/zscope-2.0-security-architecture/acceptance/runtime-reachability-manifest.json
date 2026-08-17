@@ -1,16 +1,18 @@
 {
   "schema_version": "zscope.runtime-reachability-manifest.v1",
   "design_version": "1.0.0",
-  "audit_status": "static_and_wheel_inventory_complete_dynamic_trace_pending",
-  "baseline_git_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
-  "baseline_git_tree": "631f10adc6d23beb672569fdb337c81e02a031ca",
+  "audit_status": "static_inventory_and_scoped_cold_runtime_observation_complete",
+  "baseline_git_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+  "baseline_git_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
   "baseline_worktree_patch_sha256": "",
   "audit_methods": [
     "static import and constructor search",
     "workflow step-to-handler inspection",
     "public CLI dispatch inspection",
     "runtime defaults inspection",
-    "package file inventory"
+    "package file inventory",
+    "cold fast and balanced CLI trial usage/event observation",
+    "cold decision trace and candidate funnel observation"
   ],
   "classifications": [
     {
@@ -67,6 +69,32 @@
     "MCP scan provider",
     "Range benchmark runner"
   ],
+  "cold_runtime_observation": {
+    "scope": "Range C/C++ CLI trial through build, health, index, scan, trace export and post-scan scoring",
+    "fast_aggregate_sha256": "43e3719d0f00f0419e076f055e13d89c0771f867e52b5dadd5913ec5d7bf9d96",
+    "balanced_aggregate_sha256": "7694a7940799954337578d5e2b565d83119a1ac07331234a30d7a813ea7f7eb7",
+    "observed_runtime_actors": {
+      "validator_agent": {"fast_calls": 268, "balanced_calls": 437},
+      "security_semantic_enricher": {"fast_calls": 0, "balanced_calls": 7},
+      "active_discovery": {"fast_calls": 0, "balanced_calls": 6}
+    },
+    "legacy_runtime_actors_not_observed": [
+      "vulnerability_analyzer",
+      "deep_worker",
+      "subagent_orchestrator",
+      "semantic_modeler",
+      "global_modeler",
+      "issue_reconciler"
+    ],
+    "fast_trace_count": 272,
+    "balanced_trace_count": 282,
+    "balanced_coverage_trace_count": 116,
+    "limitations": [
+      "absence from these two CLI trials is observational evidence, not a proof that a component is unreachable from every public mode",
+      "Web, MCP, maintain, resume and alert-verify were statically inspected but not dynamically executed in P0",
+      "P1 and P5 must execute compatibility and public-entrypoint tests before removal or cutover"
+    ]
+  },
   "wheel_inventory": {
     "filename": "zscope-1.3.1-py3-none-any.whl",
     "sha256": "f0d031cf9b6d898f1af1249a5b1fbb6a5908d649942251314609f7fb328ed728",
@@ -82,8 +110,9 @@
       "issue_reconciler": 2
     }
   },
-  "completion_blockers": [
-    "dynamic import coverage and runtime trace have not yet been collected",
-    "frozen no-LLM replay equivalence has not yet been executed"
+  "p1_required_follow_up": [
+    "compare the P0 frozen replay bundle before and after dead-code removal without model calls",
+    "exercise legacy compatibility rejection and every public entrypoint affected by the cutover",
+    "treat any newly observed legacy actor as a stop condition"
   ]
 }
