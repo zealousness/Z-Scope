@@ -341,6 +341,30 @@ def test_incomplete_universal_predicate_is_unknown_with_empty_witness() -> None:
     assert result["accepted_fact"] is None
 
 
+def test_entry_parameter_binding_requires_frozen_signature_domain() -> None:
+    proof_ir, obligation, actions = _artifacts(
+        "external_entry_parameter_binding",
+        {"parameter_uid": "arg0", "parameter_slot": "0"},
+        {"$derived": True},
+    )
+
+    certificate = ProofProvider().produce(
+        proof_ir=proof_ir, obligation=obligation, action=actions[0]
+    )
+    result = ProofChecker().check(
+        proof_ir=proof_ir,
+        obligation=obligation,
+        action=actions[0],
+        certificate=certificate,
+    )
+
+    assert certificate["status"] == "unknown"
+    assert certificate["coverage"]["unresolved_reasons"] == ["entry_signature_not_frozen"]
+    assert all(not value for value in certificate["witness"].values())
+    assert result["status"] == "unknown"
+    assert result["accepted_fact"] is None
+
+
 def test_legacy_preview_certificate_never_closes_clause() -> None:
     valid, reason = validate_certificate_envelope(
         {"schema_version": "zscope.evidence-certificate.v2", "status": "verified_true"}
