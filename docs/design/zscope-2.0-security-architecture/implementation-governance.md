@@ -44,6 +44,11 @@ CI递归扫描agents、core、orchestration、retrieval、rules、semantics、to
 - 已知限制和停止条件审计；
 - product、proof或benchmark reviewer结论。
 
+`python scripts/check_zscope_2_design_evidence.py`校验设计文档hash、acceptance schema、证据artifact、
+commit/tree、阶段状态和审批门禁。被忽略且未复制到当前worktree的`benchmark-artifacts/`只产生明确
+限制告警；持有归档的审计环境使用`--strict-external-artifacts`要求大件存在且hash一致。告警不等于
+这些外部artifact已经在本地重放或复核。
+
 ## 全局检查
 
 每阶段合并前至少执行：
