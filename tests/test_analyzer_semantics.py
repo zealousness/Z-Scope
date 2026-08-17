@@ -94,7 +94,7 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
     reached = analyzer._record_llm_iteration_budget(
         state,
         response,
-        agent_name="vulnerability_analyzer",
+        agent_name="active_discovery",
         outcome="incomplete",
     )
 
@@ -103,34 +103,13 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
     assert state["budget_observations"] == [
         {
             "kind": "llm_iteration_budget",
-            "agent": "vulnerability_analyzer",
+            "agent": "active_discovery",
             "configured_iterations": 50,
             "observed_iterations": 50,
             "budget_reached": True,
             "outcome": "incomplete",
             "hard_failure": False,
         }
-    ]
-
-
-def test_candidate_first_skips_entry_scoped_investigator_planning() -> None:
-    analyzer = object.__new__(Analyzer)
-    recorded = []
-    analyzer._record_engine_capability = lambda *args, **kwargs: recorded.append((args, kwargs))
-    state = {"notes": []}
-
-    analyzer._step_focused_subagent_planning(state)
-
-    assert "stable candidate-first" in state["notes"][0]
-    assert recorded == [
-        (
-            ("focused_investigators",),
-            {
-                "status": "complete",
-                "active": False,
-                "reason": "stable_candidate_first_lifecycle",
-            },
-        )
     ]
 
 
@@ -148,7 +127,7 @@ def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> No
             agents=[
                 SimpleNamespace(
                     enabled=True,
-                    name="vulnerability_analyzer",
+                    name="active_discovery",
                     task="Audit memory and concurrency defects",
                     skills=[],
                 )
@@ -164,16 +143,15 @@ def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> No
     analyzer._candidate_first_skill_selection = lambda cfg: (
         observed_configs.append(cfg) or SkillSelection(skills=[], restricted=False)
     )
-    analyzer._attach_agent_contract = lambda *args, **kwargs: None
     analyzer._compact_candidate_signal_items = lambda *args, **kwargs: []
     analyzer._register_candidate_issues = lambda *args, **kwargs: None
-    analyzer._deduplicate_against_history = lambda candidates, state: candidates
     analyzer._record_engine_capability = lambda *args, **kwargs: None
+    analyzer.defer_validation_to_scan = True
     state = {"agent_context": {}, "pending_new_issues": [], "notes": []}
 
-    analyzer._step_vulnerability_mining(state)
+    analyzer._step_collect_candidates(state)
 
-    assert observed_configs == [analyzer.config.project.agents[0]]
+    assert observed_configs == [[]]
     assert state["pending_new_issues"] == []
 
 
@@ -189,16 +167,11 @@ def test_candidate_first_skill_selection_keeps_every_deterministic_skill() -> No
     }
     analyzer.config = SimpleNamespace(project=SimpleNamespace(language="c_cpp"))
     analyzer.spec_registry = SimpleNamespace(
-        skills_for_agent=lambda name, extra: [
-            skills["bounds_and_integer"],
-            skills["resource_lifecycle"],
-            skills["shared_state_race"],
-        ],
         skills=skills,
         get_skill=skills.get,
     )
 
-    selection = analyzer._candidate_first_skill_selection(SimpleNamespace(skills=[]))
+    selection = analyzer._candidate_first_skill_selection([])
 
     assert selection.skills == [
         "bounds_and_integer",

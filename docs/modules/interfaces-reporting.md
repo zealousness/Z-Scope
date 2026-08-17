@@ -34,7 +34,7 @@ tests:
 
 ## 主入口和数据流
 
-- `ReportAssembler` 接收已验证/待复核 finding、元数据和去重结果，构建默认与 `with_needs_review` 视图并持久化。
+- `ReportAssembler` 只接收冻结 Candidate Ledger outcomes，经过 Finding-root v2 投影后构建默认与 `with_needs_review` 视图并持久化；entry-local issue list 和历史非 canonical 报告不能作为 live finding 输入。
 - 每个 terminal validation cluster 同时生成 `zscope.issue-decision-trace.v1`。报告 finding 只嵌入 trace ref/hash、唯一终态事件、终态权威、原因码和 open clauses；候选、模型结构化输入输出、provider/工具结果与 policy 输入保存在 snapshot 目录的内容寻址 sidecar 中。
 - 报告同时输出 effective scan depth、持久 rollout stage/enrollment/semantic-discovery mode、实际 token usage、按 agent/stage 的 usage、finish reason、补证转换、Security Semantic Map 路径/coverage、主动发现单元/独占发现和未覆盖区域。
 - Web `POST /api/scan` 与 MCP `zscope.scan.run` 只接受 `scan_depth` 覆盖并异步启动扫描；状态接口返回 effective depth、实际 token usage 和最终 completeness。MCP 同时提供 `zscope://reports/latest` 与 `zscope://rules/effective` 只读资源。接口不得接受任意命令、环境、cwd 或输出路径。
@@ -50,6 +50,7 @@ tests:
 - `confirmed` 同时属于 default 与 with-needs-review，`needs_review` 只属于后者；rejected、shadow 和 engine failure 仅保留 terminal trace。Finding-root 只做 primary/alias 展示投影，不能删除底层 cluster trace。
 - `zscope-explain` 只能读取冻结的 report/manifest/trace/evidence/usage。它在输出前验证事件链、trace 文档 hash、所有内容寻址引用与 usage sidecar；`policy-replay` 不调用模型，`reverify` 只重放该 cluster 的冻结 verifier 输入且在代码 revision 变化时拒绝比较。
 - Finding-root 投影不得使用 benchmark truth、规则名、自由文本相似度或 LLM，也不得改变 Candidate Ledger/Validator identity；不能跨 defect family、函数、subject 或 decision region 合并，反证、blocking negative evidence 与事实冲突都会阻断合并。needs-review 只有在 required/missing fact 与阻断契约一致时才能合并。
+- live 报告不得注册 report-time semantic-dedup hook 或 LLM cache。历史报告展示只能调用 `zscope.compat.reports` 的只读副本，不得回流 Ledger、Proof 或 promotion。
 - 报告 schema 变更必须保持明确版本、向后兼容策略和对应测试。
 - SARIF location、rule、level、code flow 和 partial fingerprint 必须来自结构化 finding，不能从展示文本猜测。
 - Web 保存反馈必须通过统一 config/review store，不能创建第二套状态语义。

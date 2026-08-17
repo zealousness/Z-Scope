@@ -5,20 +5,15 @@ steps:
   - id: discover_entries
     scope: session
     handler: discover_entries
-    required: false
     action: classify API, communication, thread, and other user-input entries when requested
-  - id: focused_subagent_planning
+  - id: collect_candidates
     scope: entry
-    agent: vulnerability_analyzer
-    action: create narrow worker tickets for allocation, release, copy, lock, and thread events
-  - id: vulnerability_mining
-    scope: entry
-    agent: vulnerability_analyzer
-    action: run focused memory and concurrency analysis
-  - id: validate_findings
+    agent: active_discovery
+    action: register deterministic and active-discovery candidates in the Candidate Ledger
+  - id: validate_candidates
     scope: entry
     agent: validator_agent
-    action: confirm suspected findings and reject only with evidence
+    action: validate registered candidates and close their ledger lifecycle
   - id: persist_report
     scope: entry
     action: write final JSON/Markdown report and snapshot final_report_file

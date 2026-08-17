@@ -63,11 +63,6 @@ from ..candidates.java_evidence import merge_java_evidence_candidates
 from ...orchestration.agent_policy import (
     agent_system_prompt,
     attach_agent_contract,
-    compact_subagent_item,
-    compact_subagent_items,
-    compact_subagent_reports,
-    route_vulnerability_skills_with_llm,
-    subagent_llm_ref_for_ticket,
     tool_audit_log_path,
     tool_policy_for_agent,
 )
@@ -115,25 +110,15 @@ from ...framework.llm_usage import (
 )
 from ...agents.semantic_modeler.agent import SemanticModeler
 from ...agents.semantic_modeler.retry import run_semantic_model_with_retries
-from ...agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from ...reporting.report import FinalReport, Issue, ReportGenerator
 from ...common.issue_identity import (
     canonical_issue_key,
     deduplicate_semantic_issues_programmatic,
-    deduplicate_issues,
     flatten_issue_text,
-    issue_call_path_signature,
-    issue_resource_signature,
     issue_rank,
-    issue_sink_signature,
-    issues_may_share_root_cause,
     normalize_issue_category,
     normalize_issue_key_part,
     parse_issue_location,
-    semantic_category_family,
-    semantic_related_cluster_keys,
-    semantic_root_cause_key,
-    merge_duplicate_issue,
 )
 from ...reporting.assembler import ReportAssembler
 from ...common.cancellation import CancellationToken, bind_cancellation_token
@@ -142,7 +127,6 @@ from ...common.utils import extract_json_blocks, validate_json_schema
 from ..._version import __version__
 from ...orchestration.specs import SpecRegistry, WorkflowStep
 from ...orchestration.workflow_executor import WorkflowExecutor, WorkflowStepHandler
-from ...orchestration.subagents import SubAgentOrchestrator, SubAgentTicket
 from ...orchestration.active_discovery import (
     ActiveDiscoveryAgent,
     ActiveDiscoveryCoordinator,
@@ -158,7 +142,7 @@ from ...orchestration.rollout import (
     rollout_active_discovery_mode,
     rollout_runtime_policy,
 )
-from ...orchestration.candidates import CandidateLedger, CandidateRegistrar
+from ...orchestration.candidates import CandidateLedger, CandidateRegistrar, CandidateTicket
 from ...orchestration.decision_trace import ensure_decision_trace_store
 from ...orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
@@ -166,15 +150,14 @@ from ...orchestration.candidate_envelope import (
 )
 from ...orchestration.scheduler import ScanScheduler
 from ...orchestration.budget import EffectiveBudget, RiskBudgetPlanner
-from ...orchestration.skill_selection import SkillSelection, select_vulnerability_skills
+from ...orchestration.skill_selection import SkillSelection
 from ...reporting.schema import report_reuse_blockers
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCAN_STEP_IDS = (
-    "focused_subagent_planning",
-    "vulnerability_mining",
-    "validate_findings",
+    "collect_candidates",
+    "validate_candidates",
     "persist_report",
 )
 
@@ -327,8 +310,6 @@ class Analyzer:
             self.report_generator,
             self.snapshot_store,
             resolve_issue_locations=self._resolve_issue_locations,
-            deduplicate_observations=self._deduplicate_candidate_issues,
-            deduplicate_report_issues=self._deduplicate_report_issues,
             metadata_factory=self._build_workflow_metadata,
         )
         self.tools_runtime = ToolsRuntime(
@@ -353,7 +334,6 @@ class Analyzer:
         if self.candidate_ledger.decision_trace_store is None:
             self.candidate_ledger.decision_trace_store = self.decision_trace_store
         self.budget_planner = RiskBudgetPlanner(config.analysis)
-        self._skill_selection_cache: Dict[str, SkillSelection] = {}
         self._local_pattern_semantics: Optional[LocalPatternSemantics] = (
             deepcopy(shared_local_pattern_semantics)
             if shared_local_pattern_semantics is not None
@@ -368,7 +348,6 @@ class Analyzer:
         self._runtime_engine_capabilities_lock = threading.RLock()
         self._reachable_function_cache: Dict[tuple[str, int, int, int], Set[str]] = {}
         self._reachable_function_cache_lock = threading.RLock()
-        self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
         self.workflow_progress: List[Dict[str, Any]] = []
         self.current_workflow_step: Optional[str] = None
         self.workflow_step_handlers: Dict[str, WorkflowStepHandler] = (
@@ -550,11 +529,6 @@ class Analyzer:
             "is_code_unchanged": False,
             "history_loaded": False,
             "history_reconciled": False,
-            "subagent_candidates": [],
-            "subagent_ticket_plan": [],
-            "subagent_unassigned_candidates": [],
-            "subagent_reports": [],
-            "subagent_report_summary": {},
             "candidate_ledger": self.candidate_ledger,
             "decision_trace_store": self.decision_trace_store,
             "candidate_ledger_context": [],
@@ -650,7 +624,6 @@ class Analyzer:
         rule_candidates: Optional[Sequence[Any]] = None,
         graph_candidates: Optional[Sequence[Any]] = None,
         backend_candidates: Optional[Sequence[Any]] = None,
-        subagent_candidates: Optional[Sequence[Any]] = None,
     ) -> EffectiveBudget:
         """Compute and attach the current adaptive budget to workflow state."""
 
@@ -659,7 +632,6 @@ class Analyzer:
             rule_candidates=rule_candidates,
             graph_candidates=graph_candidates,
             backend_candidates=backend_candidates,
-            subagent_candidates=subagent_candidates,
         )
         budget_dict = budget.to_dict()
         state["effective_budget"] = budget_dict
@@ -693,16 +665,15 @@ class Analyzer:
     def _build_workflow_step_handlers(self) -> Dict[str, WorkflowStepHandler]:
         return {
             "load_snapshot_state": self._handle_load_history_state,
-            "compare_hashes": self._handle_load_history_state,
-            "reuse_unchanged": self._handle_reuse_unchanged_report,
-            "reconcile_changed": self._handle_reconcile_changed_issues,
-            "analyze_remaining": self._handle_default_scan_subworkflow,
-            "rescan_changed": self._handle_default_scan_subworkflow,
+            "compare_entry_state": self._handle_load_history_state,
+            "reuse_unchanged_report": self._handle_reuse_unchanged_report,
+            "reconcile_history": self._handle_reconcile_changed_issues,
+            "run_pending_entries": self._handle_default_scan_subworkflow,
+            "run_changed_entry": self._handle_default_scan_subworkflow,
             "premodel_reachable_callees": self._handle_premodel_reachable_callees,
             "model_entry": self._handle_model_entry,
-            "focused_subagent_planning": self._handle_focused_subagent_planning,
-            "vulnerability_mining": self._handle_vulnerability_mining,
-            "validate_findings": self._handle_validate_findings,
+            "collect_candidates": self._handle_collect_candidates,
+            "validate_candidates": self._handle_validate_findings,
             "persist_report": self._handle_persist_report,
         }
 
@@ -729,12 +700,8 @@ class Analyzer:
         self._step_model_entry(state)
         return False
 
-    def _handle_focused_subagent_planning(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
-        self._step_focused_subagent_planning(state)
-        return False
-
-    def _handle_vulnerability_mining(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
-        self._step_vulnerability_mining(state)
+    def _handle_collect_candidates(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        self._step_collect_candidates(state)
         return False
 
     def _handle_validate_findings(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
@@ -815,7 +782,7 @@ class Analyzer:
                 len(valid_hist_issues),
             )
             recon_agent_cfg = next(
-                (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
+                (a for a in self.config.project.agents if a.name == "history_maintenance_agent"),
                 None,
             )
             recon_llm_ref = (
@@ -825,13 +792,13 @@ class Analyzer:
             )
             recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
             if recon_client is None:
-                raise RuntimeError("No LLM client configured for issue reconciliation")
+                raise RuntimeError("No LLM client configured for historical maintenance")
 
-            from ...agents.issue_reconciler.agent import IssueReconcilerAgent
+            from ...agents.history_maintenance.agent import HistoryMaintenanceAgent
 
-            reconciler_agent = IssueReconcilerAgent(
+            reconciler_agent = HistoryMaintenanceAgent(
                 recon_client,
-                tool_policy=self._tool_policy_for_agent("issue_reconciler_agent"),
+                tool_policy=self._tool_policy_for_agent("history_maintenance_agent"),
             )
             verified_hist_issues = []
             for hist_issue in valid_hist_issues:
@@ -1038,404 +1005,52 @@ class Analyzer:
                 reason=failure_reason,
             )
 
-    def _step_focused_subagent_planning(self, state: Dict[str, Any]) -> None:
-        # Candidate-first is deliberately a *single* deterministic discovery
-        # path.  The old planning step duplicated those collectors for every
-        # entry and then asked the LLM to choose worker tickets before there
-        # was a validation group.  Besides producing the same lead repeatedly,
-        # it consumed an LLM request per entry even when no contradictory
-        # decision evidence existed. The stable path keeps candidate creation
-        # deterministic and routes frozen validation groups downstream.
-        state["notes"].append(
-            "Focused investigator planning skipped for the stable candidate-first "
-            "lifecycle; deterministic discovery owns candidate creation."
-        )
-        self._record_engine_capability(
-            "focused_investigators",
-            status="complete",
-            active=False,
-            reason="stable_candidate_first_lifecycle",
-        )
-        return
-
-        va_agent_cfg = next(
-            (
-                a
-                for a in self.config.project.agents
-                if a.enabled and a.name == "vulnerability_analyzer"
-            ),
+    def _step_collect_candidates(self, state: Dict[str, Any]) -> None:
+        agent_context = state["agent_context"]
+        active_cfg = next(
+            (agent for agent in self.config.project.agents if agent.name == "active_discovery"),
             None,
         )
-        if not va_agent_cfg:
-            return
-        if not self._should_spawn_subagents(va_agent_cfg):
-            state["notes"].append(
-                "Focused investigator planning skipped; deep workers are disabled "
-                "for the default deterministic-discovery/validation flow."
-            )
-            return
+        task = str(
+            getattr(getattr(self.config, "scan", None), "task", "")
+            or getattr(active_cfg, "task", "")
+            or ""
+        )
+        selection = self._candidate_first_skill_selection(
+            list(getattr(active_cfg, "skills", []) or [])
+        )
+        agent_context["task"] = task
+        agent_context["entry_custom_prompt"] = getattr(active_cfg, "entry_custom_prompt", None)
+        agent_context["active_skills"] = selection.skills
+        agent_context["skill_selection_restricted"] = False
 
-        va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
-        va_client = self.llm_clients.get(va_llm_ref, self.llm_clients.get("default"))
-        selection = self._select_vulnerability_skills_for_config(va_agent_cfg, va_client)
-        tools = self._get_tools(
-            "deep_worker",
-            enable_on_demand_snapshots=False,
-            active_skill_names=selection.skills,
+        candidate_batch = self.candidate_pipeline.collect_signal_candidates(state)
+        self.candidate_pipeline.accumulate_summary(state, candidate_batch)
+        self.candidate_pipeline.persist(candidate_batch)
+        candidate_signals = candidate_batch.merged_candidates
+        agent_context["candidate_signal_summary"] = candidate_batch.summary_increment()
+        agent_context["candidate_signal_candidates"] = self._compact_candidate_signal_items(
+            candidate_signals,
+            limit=80,
         )
-        orchestrator = SubAgentOrchestrator(
-            self.spec_registry,
-            tools,
-            scheduler=getattr(self, "scheduler", None),
-        )
-        ledger = state.get("candidate_ledger")
-        if not isinstance(ledger, CandidateLedger):
-            ledger = CandidateLedger(
-                project_id=str(
-                    getattr(self.config.project, "project_id", "")
-                    or self.config.project.project_root.name
-                ),
-                project_root=str(self.config.project.project_root),
-                revision=self._git_commit_sha(self.config.project.project_root),
-                decision_trace_store=self.decision_trace_store,
-            )
-            state["candidate_ledger"] = ledger
 
-        local_records = []
-        source_candidates = orchestrator.plan_candidates(
-            state["entry_func"],
-            state["agent_context"]["code"],
-            allowed_skills=selection.skills,
-        )
-        for ticket in source_candidates:
-            record, _ = ledger.add(
-                ticket,
-                source=f"source_rule:{state['entry_func']}",
-                call_path=[state["entry_func"]],
-            )
-            local_records.append(record)
-        collection_budget = self._refresh_effective_budget(state, "subagent_collect")
-        snapshot_candidate_count = self._add_snapshot_candidates_to_ledger(
-            ledger,
-            orchestrator,
-            state["entry_index_name"],
-            selection.skills,
-            local_records,
-            max_depth=collection_budget.premodel_depth,
-            max_callees=collection_budget.premodel_callees,
-        )
-        local_rule_tickets = self._detect_local_rule_tickets(state, selection.skills)
-        for ticket in local_rule_tickets:
-            record, _ = ledger.add(
-                ticket,
-                source=f"local_rule:{state['entry_func']}",
-                call_path=[state["entry_func"]],
-            )
-            local_records.append(record)
-        graph_tickets = self._detect_graph_rule_tickets(state, selection.skills)
-        for ticket in graph_tickets:
-            record, _ = ledger.add(
-                ticket,
-                source=f"graph_rule:{state['entry_func']}",
-                call_path=[state["entry_func"]],
-            )
-            local_records.append(record)
-        backend_tickets = self._detect_backend_signal_tickets(state, selection.skills)
-        for ticket in backend_tickets:
-            record, _ = ledger.add(
-                ticket,
-                source=f"static_backend_signal:{state['entry_func']}",
-                call_path=[state["entry_func"]],
-            )
-            local_records.append(record)
-
-        seen_local_keys = set()
-        candidates = []
-        for record in local_records:
-            if record.dedup_key in seen_local_keys or record.status != "pending":
-                continue
-            seen_local_keys.add(record.dedup_key)
-            candidates.append(record.to_ticket())
-        planning_budget = self._refresh_effective_budget(
+        self._register_candidate_issues(
             state,
-            "subagent_planning",
-            subagent_candidates=candidates,
+            candidate_signals,
+            source="deterministic_candidate_discovery",
         )
-        investigator_candidates = [
-            ticket for ticket in candidates if self._is_high_risk_conflicting_ticket(ticket)
-        ]
-        proposed_tickets = orchestrator.select_tickets(
-            investigator_candidates,
-            planning_budget.subagent_tickets,
-        )
-        unassigned = orchestrator.unassigned_candidates(
-            investigator_candidates,
-            proposed_tickets,
-        )
-        ledger.mark_unassigned(unassigned)
-        tickets = ledger.claim_pending(proposed_tickets)
-
-        candidate_plan = [record.to_dict(include_context=False) for record in ledger.records()]
-        ticket_plan = [ticket.to_dict() for ticket in tickets]
-        unassigned_plan = [ticket.to_dict() for ticket in unassigned]
-        ledger_context = ledger.to_context()
-        ledger_summary = ledger.summary()
-
-        state["subagent_candidates"] = candidate_plan
-        state["agent_context"]["subagent_candidates"] = candidate_plan
-        state["subagent_unassigned_candidates"] = unassigned_plan
-        state["agent_context"]["subagent_unassigned_candidates"] = unassigned_plan
-        state["candidate_ledger_context"] = ledger_context
-        state["agent_context"]["candidate_ledger"] = ledger_context
-        state["candidate_ledger_summary"] = ledger_summary
-        state["agent_context"]["candidate_ledger_summary"] = ledger_summary
-        state["agent_context"]["active_skills"] = selection.skills
-        state["agent_context"]["skill_selection_restricted"] = selection.restricted
-
-        if not tickets:
-            if candidates:
-                state["notes"].append(
-                    f"Found {len(candidates)} focused subagent candidate(s), but ticket budget is 0."
-                )
-            else:
-                state["notes"].append(
-                    "Focused subagent planning produced no candidates "
-                    f"for active skills: {', '.join(selection.skills) or 'none'}."
-                )
-                logger.info(
-                    "Focused subagent planning produced no candidates for %s "
-                    "(active skills: %s).",
-                    state["entry_func"],
-                    ", ".join(selection.skills) or "none",
-                )
-            return
-
-        state["subagent_ticket_plan"] = ticket_plan
-        state["agent_context"]["subagent_plan"] = ticket_plan
+        state["pending_new_issues"].extend(list(candidate_signals))
         state["notes"].append(
-            f"Planned {len(tickets)} focused subagent ticket(s) from {len(candidates)} "
-            f"pending candidate(s); merged {ledger_summary.get('duplicates_merged', 0)} "
-            f"duplicate candidate source(s), including {snapshot_candidate_count} "
-            f"semantic snapshot candidate(s) and {len(local_rule_tickets)} "
-            f"local rule candidate(s), {len(graph_tickets)} graph/protocol "
-            f"candidate(s), plus {len(backend_tickets)} backend signal candidate(s)."
+            "Routed structured deterministic candidates directly to the shared "
+            "Candidate Ledger and validation lifecycle."
         )
-        if unassigned:
-            state["notes"].append(
-                f"Deferred {len(unassigned)} subagent candidate(s) due to ticket budget."
-            )
-
-        va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
-        va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
-        va_agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
-        max_worker_cap = (
-            int(va_agent_spec.max_subagents or len(tickets)) if va_agent_spec else len(tickets)
+        self._record_engine_capability(
+            "candidate_collection",
+            status="complete",
+            active=True,
+            reason="candidate_ledger_registration",
+            candidate_count=len(candidate_signals),
         )
-        max_workers = max(
-            1,
-            min(
-                len(tickets),
-                self.config.concurrency.investigator_workers,
-                max_worker_cap,
-            ),
-        )
-        subagent_max_turns = int(getattr(self.config.analysis, "subagent_max_turns", 20) or 20)
-        max_turns = max(1, min(int(self.config.analysis.max_tool_iterations), subagent_max_turns))
-        skill_llm_refs = dict(getattr(self.config.analysis, "subagent_skill_llm_refs", {}) or {})
-        skill_efforts = dict(getattr(self.config.analysis, "subagent_skill_efforts", {}) or {})
-
-        def llm_client_for_ticket(ticket: Any) -> LLMClient:
-            ref = self._subagent_llm_ref_for_ticket(ticket, skill_llm_refs, va_llm_ref)
-            return self.llm_clients.get(ref, va_client)
-
-        def execution_policy_for_ticket(ticket: Any) -> Dict[str, Any]:
-            ref = self._subagent_llm_ref_for_ticket(ticket, skill_llm_refs, va_llm_ref)
-            client = self.llm_clients.get(ref, va_client)
-            models = getattr(client, "models", []) or []
-            return {
-                "llm_ref": ref,
-                "model": str(models[0]) if models else "",
-                "reasoning_effort": str(
-                    skill_efforts.get(getattr(ticket, "skill", "")) or skill_efforts.get("*") or ""
-                ),
-            }
-
-        reports = orchestrator.run_tickets(
-            va_client,
-            tickets,
-            max_iterations=max_turns,
-            tool_policy=self._tool_policy_for_agent(
-                "deep_worker",
-                active_skill_names=selection.skills,
-            ),
-            max_workers=max_workers,
-            ticket_timeout=float(
-                getattr(self.config.analysis, "subagent_ticket_timeout", 0.0) or 0.0
-            ),
-            budget_exhaustion_policy=str(
-                getattr(
-                    self.config.analysis,
-                    "budget_exhaustion_policy",
-                    "observe",
-                )
-                or "observe"
-            ),
-            agent_type="deep_worker",
-            spawn_allowlist=list(
-                getattr(self.config.analysis, "subagent_spawn_allowlist", ["deep_worker"])
-                or ["deep_worker"]
-            ),
-            nested_spawn_allowed=False,
-            llm_client_resolver=llm_client_for_ticket,
-            execution_policy_resolver=execution_policy_for_ticket,
-            worktree_isolation={"mode": "read_only", "snapshot_writes": False},
-        )
-        ledger.mark_reported(reports)
-        report_summary = orchestrator.summarize_reports(reports)
-        state["subagent_reports"] = reports
-        state["agent_context"]["subagent_reports"] = reports
-        state["subagent_report_summary"] = report_summary
-        state["agent_context"]["subagent_report_summary"] = report_summary
-        state["candidate_ledger_context"] = ledger.to_context()
-        state["agent_context"]["candidate_ledger"] = state["candidate_ledger_context"]
-        state["candidate_ledger_summary"] = ledger.summary()
-        state["agent_context"]["candidate_ledger_summary"] = state["candidate_ledger_summary"]
-        state["total_context_tokens"] += sum(
-            int(report.get("metadata", {}).get("context_tokens", 0) or 0) for report in reports
-        )
-        for report in reports:
-            self._accumulate_cumulative_token_metadata(
-                state,
-                report.get("metadata", {}) if isinstance(report.get("metadata"), dict) else {},
-            )
-        state["notes"].append(
-            "Executed focused subagent ticket(s): "
-            + ", ".join(f"{key}={value}" for key, value in report_summary.items())
-        )
-
-    def _add_snapshot_candidates_to_ledger(
-        self,
-        ledger: CandidateLedger,
-        orchestrator: SubAgentOrchestrator,
-        entry_index_name: str,
-        active_skills: List[str],
-        local_records: List[Any],
-        *,
-        max_depth: int,
-        max_callees: int,
-    ) -> int:
-        """Add semantic-snapshot suspicious points from reachable functions to the ledger."""
-        added = 0
-        visited: Set[str] = set()
-        queue: List[tuple[str, List[str], int]] = [(entry_index_name, [entry_index_name], 0)]
-
-        while queue:
-            func, path, depth = queue.pop(0)
-            if func in visited or depth > max_depth:
-                continue
-            visited.add(func)
-
-            snapshot = self.snapshot_store.load_snapshot(func)
-            if snapshot:
-                tickets = orchestrator.plan_snapshot_candidates(
-                    func,
-                    snapshot,
-                    allowed_skills=active_skills,
-                )
-                for ticket in tickets:
-                    record, _ = ledger.add(
-                        ticket,
-                        source=f"semantic_snapshot:{func}",
-                        call_path=path,
-                    )
-                    local_records.append(record)
-                added += len(tickets)
-
-            if depth >= max_depth:
-                continue
-            try:
-                callees = self.code_index.get_callees(func, limit=max_callees)
-            except Exception as exc:
-                logger.debug("Failed to collect snapshot callees for %s: %s", func, exc)
-                continue
-            for callee in callees:
-                callee_name = callee.get("name") if isinstance(callee, dict) else None
-                if not callee_name or callee_name in visited:
-                    continue
-                queue.append((callee_name, path + [callee_name], depth + 1))
-
-        return added
-
-    def _step_vulnerability_mining(self, state: Dict[str, Any]) -> None:
-        agent_context = state["agent_context"]
-        for agent_cfg in self.config.project.agents:
-            if not agent_cfg.enabled or agent_cfg.name != "vulnerability_analyzer":
-                continue
-
-            logger.info("Running Vulnerability Analyzer agent for task: %s", agent_cfg.task)
-            # The stable candidate-first path collects every inexpensive
-            # deterministic fact. A task router would be a lossy pre-filter:
-            # omitted keywords must not turn into false negatives.
-            selection = self._candidate_first_skill_selection(agent_cfg)
-
-            agent_context["task"] = agent_cfg.task
-            agent_context["entry_custom_prompt"] = getattr(
-                agent_cfg,
-                "entry_custom_prompt",
-                None,
-            )
-            agent_context["active_skills"] = selection.skills
-            agent_context["skill_selection_restricted"] = selection.restricted
-            self._attach_agent_contract(
-                agent_context,
-                "vulnerability_analyzer",
-                agent_cfg.skills,
-                active_skill_names=selection.skills,
-            )
-            candidate_batch = self.candidate_pipeline.collect_signal_candidates(state)
-            self.candidate_pipeline.accumulate_summary(state, candidate_batch)
-            self.candidate_pipeline.persist(candidate_batch)
-            rule_candidates = candidate_batch.local_candidates
-            graph_candidates = candidate_batch.graph_candidates
-            backend_candidates = candidate_batch.backend_candidates
-            candidate_signals = candidate_batch.merged_candidates
-            candidate_signal_summary = candidate_batch.summary_increment()
-            agent_context["candidate_signal_summary"] = candidate_signal_summary
-            agent_context["candidate_signal_candidates"] = self._compact_candidate_signal_items(
-                candidate_signals,
-                limit=80,
-            )
-
-            # Candidate lifecycle v3 deliberately separates cheap, complete
-            # discovery from expensive semantic investigation.  Running a
-            # general-purpose tool agent once for every entry re-discovers the
-            # same sinks, re-builds snapshots, and creates entry-local copies
-            # of the same validation obligation.  The default route therefore
-            # sends structured deterministic candidates directly to the shared
-            # validator.  Focused deep workers remain available for the small
-            # set of high-risk contradictory tickets planned above.
-            self._register_candidate_issues(
-                state,
-                candidate_signals,
-                source="deterministic_candidate_discovery",
-            )
-            new_issues = self._deduplicate_against_history(
-                list(candidate_signals),
-                state,
-            )
-            state["pending_new_issues"].extend(new_issues)
-            state["notes"].append(
-                "Routed structured deterministic candidates directly to "
-                "validation through the stable candidate-first lifecycle."
-            )
-            self._record_engine_capability(
-                "vulnerability_analyzer",
-                status="complete",
-                active=False,
-                reason="stable_candidate_first_lifecycle",
-                candidate_count=len(candidate_signals),
-            )
-            continue
 
         if not getattr(self, "defer_validation_to_scan", False):
             self._run_single_entry_active_discovery(state)
@@ -1678,11 +1293,7 @@ class Analyzer:
         profiles = getattr(getattr(self.config, "scan", None), "llm_profiles", None)
         configured_ref = str(getattr(profiles, role, "") or "")
         if not configured_ref:
-            legacy_names = (
-                ("active_discovery", "vulnerability_analyzer")
-                if role == "analysis"
-                else ("semantic_modeler",)
-            )
+            legacy_names = ("active_discovery",) if role == "analysis" else ("semantic_modeler",)
             configured_ref = next(
                 (
                     str(getattr(item, "llm_ref", "") or "")
@@ -1753,83 +1364,6 @@ class Analyzer:
             outcome,
         )
         return True
-
-    def _deduplicate_against_history(
-        self,
-        raw_new_issues: List[Dict[str, Any]],
-        state: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        dedup_reference_issues = state.get("verified_hist_issues", []) + state.get(
-            "user_rejected_hist_issues", []
-        )
-        if not raw_new_issues or not dedup_reference_issues:
-            return raw_new_issues
-        semantic_cfg = getattr(
-            getattr(self.config, "reporting", None),
-            "semantic_dedup",
-            None,
-        )
-        if not bool(getattr(semantic_cfg, "llm_enabled", False)):
-            state.setdefault("notes", []).append(
-                "Historical LLM duplicate suggestions skipped by default; "
-                "all candidates remain in the validation ledger."
-            )
-            return raw_new_issues
-
-        logger.info(
-            "Deduplicating %d new issue(s) against %d reference issue(s).",
-            len(raw_new_issues),
-            len(dedup_reference_issues),
-        )
-        recon_agent_cfg = next(
-            (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
-            None,
-        )
-        recon_llm_ref = (
-            recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
-        )
-        recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
-        if recon_client is None:
-            raise RuntimeError("No LLM client configured for issue reconciliation")
-
-        from ...agents.issue_reconciler.agent import IssueReconcilerAgent
-
-        reconciler_agent = IssueReconcilerAgent(
-            recon_client,
-            tool_policy=self._tool_policy_for_agent("issue_reconciler_agent"),
-        )
-        user_rejected_hist_issues = state.get("user_rejected_hist_issues", [])
-        new_issues = []
-        for raw_issue in raw_new_issues:
-            input_data = {
-                "mode": "deduplicate",
-                "historical_issues": dedup_reference_issues,
-                "new_issue": raw_issue,
-            }
-            resp = reconciler_agent.run(input_data)
-            if resp.success and resp.data.get("is_duplicate"):
-                matched_id = resp.data.get("matched_historical_id")
-                matched_user_rejected = any(
-                    iss.get("id") == matched_id and iss.get("rejection_source") == "user"
-                    for iss in user_rejected_hist_issues
-                )
-                raw_issue.setdefault("dedup_cluster_suggestions", []).append(
-                    {
-                        "kind": "historical_duplicate",
-                        "matched_historical_id": matched_id,
-                        "matched_user_rejected": matched_user_rejected,
-                        "reasoning": str(resp.data.get("reasoning") or ""),
-                        "advisory_only": True,
-                    }
-                )
-                logger.info(
-                    "Historical duplicate suggestion recorded for issue %s -> %s; "
-                    "the candidate remains in validation.",
-                    raw_issue.get("id"),
-                    matched_id,
-                )
-            new_issues.append(raw_issue)
-        return new_issues
 
     def _detect_local_rule_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Seed backend-appropriate local candidates before LLM validation."""
@@ -2083,81 +1617,6 @@ class Analyzer:
         if not isinstance(functions, (list, tuple, set)):
             return 0
         return len({str(item) for item in functions if str(item)})
-
-    def _detect_graph_rule_tickets(
-        self,
-        state: Dict[str, Any],
-        allowed_skills: Optional[List[str]] = None,
-    ) -> List[Any]:
-        generator = GraphCandidateGenerator(
-            self.code_index,
-            self._get_local_pattern_semantics(),
-            semantic_overlay=self._get_semantic_overlay(),
-            rule_policy=getattr(self, "rule_policy", None),
-        )
-        issues = self._detect_graph_rule_candidates(state)
-        state.setdefault("_candidate_signal_cache", {})["graph"] = issues
-        tickets = [generator.issue_to_ticket(issue) for issue in issues]
-        if allowed_skills is None:
-            return tickets
-        allowed = set(allowed_skills)
-        return [ticket for ticket in tickets if ticket.skill in allowed]
-
-    def _detect_local_rule_tickets(
-        self,
-        state: Dict[str, Any],
-        allowed_skills: Optional[List[str]] = None,
-    ) -> List[Any]:
-        """Create tickets from the same deterministic batch used by mining."""
-        profile = self._candidate_backend_profile()
-        generator: Optional[RegexCandidateGenerator] = None
-        java_generator: Optional[JavaRuleCandidateGenerator] = None
-        clang_generator: Optional[ClangAstCfgCandidateGenerator] = None
-        if self._project_language() == "java":
-            java_generator = JavaRuleCandidateGenerator(
-                rule_policy=getattr(self, "rule_policy", None)
-            )
-        elif profile == "regex":
-            generator = RegexCandidateGenerator(
-                self._get_local_pattern_semantics(),
-                rule_policy=getattr(self, "rule_policy", None),
-            )
-        if self._project_language() != "java" and profile in {"clang", "unified"}:
-            clang_generator = ClangAstCfgCandidateGenerator(
-                self._get_local_pattern_semantics(),
-                semantic_overlay=self._get_semantic_overlay(),
-                tooling_evidence_provider=self._clang_tooling_evidence_for,
-                rule_policy=getattr(self, "rule_policy", None),
-            )
-        issues = self._detect_local_rule_candidates(state)
-        state.setdefault("_candidate_signal_cache", {})["local"] = issues
-        if not issues:
-            return []
-        tickets = [
-            (
-                java_generator.issue_to_ticket(issue)
-                if java_generator is not None
-                else (
-                    clang_generator.issue_to_ticket(issue)
-                    if issue.get("candidate_source") == "clang_ast_cfg"
-                    and clang_generator is not None
-                    else (
-                        generator
-                        or RegexCandidateGenerator(
-                            self._get_local_pattern_semantics(),
-                            rule_policy=getattr(self, "rule_policy", None),
-                        )
-                    ).issue_to_ticket(issue)
-                )
-            )
-            for issue in issues
-            if issue.get("validation_required") is not False
-            and str(issue.get("finding_kind") or "").lower() != "audit_observation"
-        ]
-        if allowed_skills is None:
-            return tickets
-        allowed = set(allowed_skills)
-        return [ticket for ticket in tickets if ticket.skill in allowed]
 
     @staticmethod
     def _apply_candidate_validation_budget(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -4394,7 +3853,7 @@ class Analyzer:
             if not call_paths:
                 call_paths = [[entry_identity]]
             for call_path in call_paths:
-                ticket = SubAgentTicket(
+                ticket = CandidateTicket(
                     id=str(issue.get("candidate_id") or issue.get("id") or envelope.run_issue_uid),
                     skill=str(
                         issue.get("skill")
@@ -4477,20 +3936,6 @@ class Analyzer:
             "joern": "joern_backend_signal_adapter",
             "unified": "svf_saber_backend_signal_adapter",
         }.get(self._candidate_backend_profile(), "knowledge_db_backend_signal_adapter")
-
-    def _detect_backend_signal_tickets(
-        self,
-        state: Dict[str, Any],
-        allowed_skills: Optional[List[str]] = None,
-    ) -> List[Any]:
-        generator = RegexCandidateGenerator(self._get_local_pattern_semantics())
-        issues = self._detect_backend_signal_candidates(state)
-        state.setdefault("_candidate_signal_cache", {})["backend"] = issues
-        tickets = [generator.issue_to_ticket(issue) for issue in issues]
-        if allowed_skills is None:
-            return tickets
-        allowed = set(allowed_skills)
-        return [ticket for ticket in tickets if ticket.skill in allowed]
 
     def _get_local_pattern_semantics(self) -> LocalPatternSemantics:
         """Build once-per-run local-pattern aliases and project API semantics."""
@@ -4899,428 +4344,6 @@ class Analyzer:
         deduped, _summary = deduplicate_semantic_issues_programmatic(issues)
         return deduped
 
-    def _deduplicate_report_issues(
-        self,
-        issues: List[Dict[str, Any]],
-        state: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        """Apply final-report semantic dedup before report views are built."""
-        semantic_cfg = getattr(getattr(self.config, "reporting", None), "semantic_dedup", None)
-        if semantic_cfg is None or not getattr(semantic_cfg, "enabled", True):
-            deduped = deduplicate_issues(issues)
-            state["semantic_dedup_summary"] = {
-                "enabled": False,
-                "input_issue_count": len(issues),
-                "output_issue_count": len(deduped),
-            }
-            return deduped
-
-        deduped, summary = deduplicate_semantic_issues_programmatic(issues)
-        summary.update(
-            {
-                "enabled": True,
-                "llm_enabled": bool(getattr(semantic_cfg, "llm_enabled", False)),
-                "input_issue_count": len(issues),
-                "after_programmatic_issue_count": len(deduped),
-            }
-        )
-        if getattr(semantic_cfg, "llm_enabled", False):
-            deduped, llm_summary = self._deduplicate_report_clusters_with_llm(
-                deduped,
-                semantic_cfg=semantic_cfg,
-            )
-            summary.update(llm_summary)
-        summary["output_issue_count"] = len(deduped)
-        state["semantic_dedup_summary"] = summary
-        return deduped
-
-    def _deduplicate_report_clusters_with_llm(
-        self,
-        issues: List[Dict[str, Any]],
-        *,
-        semantic_cfg: Any,
-    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        max_cluster_size = max(2, int(getattr(semantic_cfg, "max_cluster_size", 8) or 8))
-        threshold = float(getattr(semantic_cfg, "llm_confidence_threshold", 0.85) or 0.85)
-        clusters: Dict[str, List[Dict[str, Any]]] = {}
-        for issue in issues:
-            for key in semantic_related_cluster_keys(issue):
-                clusters.setdefault(key, []).append(issue)
-
-        candidate_clusters: List[List[Dict[str, Any]]] = []
-        seen_cluster_sets: Set[tuple[int, ...]] = set()
-        prefilter_skipped = 0
-        for group in clusters.values():
-            for candidate_group in self._split_semantic_dedup_cluster(group, max_cluster_size):
-                if len(candidate_group) < 2:
-                    continue
-                if not self._semantic_dedup_cluster_needs_llm(candidate_group):
-                    prefilter_skipped += 1
-                    continue
-                cluster_ids = tuple(sorted(id(issue) for issue in candidate_group))
-                if cluster_ids in seen_cluster_sets:
-                    continue
-                seen_cluster_sets.add(cluster_ids)
-                candidate_clusters.append(candidate_group)
-        summary: Dict[str, Any] = {
-            "llm_candidate_cluster_count": len(candidate_clusters),
-            "llm_clusters_called": 0,
-            "llm_cache_hits": 0,
-            "llm_merge_count": 0,
-            "llm_suggestion_count": 0,
-            "llm_rejected_merge_count": 0,
-            "llm_failed_cluster_count": 0,
-            "llm_prefilter_skipped_count": prefilter_skipped,
-        }
-        if not candidate_clusters:
-            return issues, summary
-
-        recon_agent = self._make_issue_reconciler_agent()
-        if recon_agent is None:
-            summary["llm_disabled_reason"] = "no_issue_reconciler_llm_client"
-            return issues, summary
-
-        self._assign_semantic_dedup_ids(issues)
-        by_issue_id: Dict[str, Dict[str, Any]] = {}
-        issue_order: List[str] = []
-        issue_indices = {id(issue): index for index, issue in enumerate(issues)}
-        for index, issue in enumerate(issues):
-            issue_id = self._semantic_dedup_issue_id(issue, index)
-            by_issue_id[issue_id] = issue
-            issue_order.append(issue_id)
-
-        removed: Set[str] = set()
-        for cluster in candidate_clusters:
-            active_cluster = [
-                issue
-                for issue in cluster
-                if self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
-                not in removed
-            ]
-            if len(active_cluster) < 2:
-                continue
-            cluster_payload = self._semantic_dedup_cluster_payload(active_cluster, issue_indices)
-            cluster_fingerprint = self._semantic_dedup_cluster_fingerprint(cluster_payload)
-            decision = self._semantic_dedup_llm_cache.get(cluster_fingerprint)
-            if decision is not None:
-                summary["llm_cache_hits"] += 1
-            else:
-                response = recon_agent.run(cluster_payload)
-                summary["llm_clusters_called"] += 1
-                if not response.success or not isinstance(response.data, dict):
-                    summary["llm_failed_cluster_count"] += 1
-                    continue
-                decision = response.data
-                self._semantic_dedup_llm_cache[cluster_fingerprint] = decision
-
-            suggested, rejected = self._apply_llm_dedup_decision(
-                decision,
-                by_issue_id,
-                removed,
-                threshold=threshold,
-            )
-            summary["llm_suggestion_count"] += suggested
-            summary["llm_rejected_merge_count"] += rejected
-
-        result = [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed]
-        for issue in issues:
-            issue.pop("_semantic_dedup_uid", None)
-        return result, summary
-
-    @staticmethod
-    def _semantic_dedup_cluster_needs_llm(group: List[Dict[str, Any]]) -> bool:
-        for left_index, left in enumerate(group):
-            for right in group[left_index + 1 :]:
-                if Analyzer._semantic_dedup_pair_needs_llm(left, right):
-                    return True
-        return False
-
-    @staticmethod
-    def _semantic_dedup_pair_needs_llm(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
-        left_file, _ = parse_issue_location(str(left.get("location") or left.get("file") or ""))
-        right_file, _ = parse_issue_location(str(right.get("location") or right.get("file") or ""))
-        same_file = bool(
-            left_file
-            and right_file
-            and normalize_issue_key_part(left_file) == normalize_issue_key_part(right_file)
-        )
-        left_funcs = {
-            normalize_issue_key_part(str(value or ""))
-            for value in (
-                left.get("function"),
-                left.get("sink_function"),
-                left.get("entry_function"),
-            )
-            if value
-        }
-        right_funcs = {
-            normalize_issue_key_part(str(value or ""))
-            for value in (
-                right.get("function"),
-                right.get("sink_function"),
-                right.get("entry_function"),
-            )
-            if value
-        }
-        same_function = bool(left_funcs & right_funcs)
-        same_family = semantic_category_family(
-            normalize_issue_category(
-                str(
-                    left.get("category")
-                    or left.get("defect_class")
-                    or left.get("subcategory")
-                    or ""
-                )
-            )
-        ) == semantic_category_family(
-            normalize_issue_category(
-                str(
-                    right.get("category")
-                    or right.get("defect_class")
-                    or right.get("subcategory")
-                    or ""
-                )
-            )
-        )
-        shared_resource_or_sink = bool(
-            issue_resource_signature(left)
-            and issue_resource_signature(left) == issue_resource_signature(right)
-        ) or bool(
-            issue_sink_signature(left) and issue_sink_signature(left) == issue_sink_signature(right)
-        )
-        return bool(same_family and ((same_file and same_function) or shared_resource_or_sink))
-
-    @staticmethod
-    def _split_semantic_dedup_cluster(
-        group: List[Dict[str, Any]],
-        max_cluster_size: int,
-    ) -> List[List[Dict[str, Any]]]:
-        if len(group) <= max_cluster_size:
-            return [group]
-
-        buckets: Dict[str, List[Dict[str, Any]]] = {}
-        for issue in group:
-            bucket_key = (
-                issue_resource_signature(issue)
-                or issue_sink_signature(issue)
-                or semantic_root_cause_key(issue)
-                or str(issue.get("function") or issue.get("func_name") or "")
-                or "fallback"
-            )
-            buckets.setdefault(bucket_key, []).append(issue)
-
-        split: List[List[Dict[str, Any]]] = []
-        for bucket in buckets.values():
-            for start in range(0, len(bucket), max_cluster_size):
-                chunk = bucket[start : start + max_cluster_size]
-                if len(chunk) > 1:
-                    split.append(chunk)
-        return split
-
-    def _make_issue_reconciler_agent(self) -> Any:
-        recon_agent_cfg = next(
-            (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
-            None,
-        )
-        recon_llm_ref = (
-            recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
-        )
-        recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
-        if recon_client is None:
-            logger.warning(
-                "Semantic LLM dedup requested but no issue_reconciler_agent LLM client is configured."
-            )
-            return None
-        from ...agents.issue_reconciler.agent import IssueReconcilerAgent
-
-        return IssueReconcilerAgent(
-            recon_client,
-            tool_policy=self._tool_policy_for_agent("issue_reconciler_agent"),
-        )
-
-    @staticmethod
-    def _semantic_dedup_issue_id(issue: Dict[str, Any], index: int) -> str:
-        return str(
-            issue.get("_semantic_dedup_uid")
-            or issue.get("run_issue_uid")
-            or issue.get("occurrence_uid")
-            or issue.get("candidate_uid")
-            or issue.get("candidate_id")
-            or issue.get("dedup_key")
-            or f"semantic_issue_{index}"
-        )
-
-    @staticmethod
-    def _assign_semantic_dedup_ids(issues: List[Dict[str, Any]]) -> None:
-        """Assign private reconciliation ids without consulting display ``id``."""
-        bases = []
-        for index, issue in enumerate(issues):
-            internal = (
-                issue.get("run_issue_uid")
-                or issue.get("occurrence_uid")
-                or issue.get("candidate_uid")
-                or issue.get("candidate_id")
-                or issue.get("dedup_key")
-            )
-            if not internal:
-                payload = {
-                    "canonical": canonical_issue_key(issue),
-                    "evidence_hash": issue.get("evidence_hash"),
-                    "index": index,
-                }
-                internal = (
-                    "SEM_"
-                    + hashlib.sha256(
-                        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-                    ).hexdigest()[:24]
-                )
-            bases.append(str(internal))
-        counts = {base: bases.count(base) for base in set(bases)}
-        for index, (issue, base) in enumerate(zip(issues, bases)):
-            if counts[base] == 1:
-                issue["_semantic_dedup_uid"] = base
-                continue
-            issue["_semantic_dedup_uid"] = str(
-                issue.get("run_issue_uid") or issue.get("occurrence_uid") or f"{base}::{index}"
-            )
-
-    def _semantic_dedup_cluster_payload(
-        self,
-        cluster: List[Dict[str, Any]],
-        issue_indices: Dict[int, int],
-    ) -> Dict[str, Any]:
-        compact_issues = []
-        files = set()
-        functions = set()
-        resources = set()
-        families = set()
-        for issue in cluster:
-            issue_id = self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
-            compact = self._compact_issue_for_semantic_dedup(issue, issue_id)
-            compact_issues.append(compact)
-            if compact.get("file"):
-                files.add(compact["file"])
-            if compact.get("function"):
-                functions.add(compact["function"])
-            if compact.get("resource_signature"):
-                resources.add(compact["resource_signature"])
-            if compact.get("category_family"):
-                families.add(compact["category_family"])
-        cluster_id = self._semantic_dedup_cluster_fingerprint(
-            {"issues": compact_issues, "mode": "deduplicate_cluster"}
-        )
-        return {
-            "mode": "deduplicate_cluster",
-            "cluster_id": cluster_id,
-            "issues": compact_issues,
-            "deterministic_hints": {
-                "category_families": sorted(families),
-                "same_file": len(files) <= 1,
-                "same_function": len(functions) <= 1,
-                "resource_signatures": sorted(resources),
-            },
-        }
-
-    @staticmethod
-    def _compact_issue_for_semantic_dedup(issue: Dict[str, Any], issue_id: str) -> Dict[str, Any]:
-        location = str(issue.get("location") or issue.get("file") or "")
-        file_path, _line = parse_issue_location(location)
-        category = str(issue.get("category") or issue.get("subcategory") or "")
-        return {
-            "id": issue_id,
-            "category": category,
-            "category_family": semantic_category_family(category),
-            "function": issue.get("function") or issue.get("func_name"),
-            "file": file_path,
-            "location": location,
-            "root_cause": issue.get("root_cause"),
-            "description": issue.get("description"),
-            "positive_evidence": issue.get("positive_evidence"),
-            "candidate_source": issue.get("candidate_source") or issue.get("finding_kind"),
-            "resource_signature": issue_resource_signature(issue),
-            "root_cause_key": semantic_root_cause_key(issue),
-            "source": issue.get("source"),
-            "sink": issue.get("sink") or issue.get("sink_function"),
-            "call_path": issue.get("call_path"),
-            "call_path_signature": issue_call_path_signature(issue),
-            "sink_signature": issue_sink_signature(issue),
-        }
-
-    @staticmethod
-    def _semantic_dedup_cluster_fingerprint(payload: Dict[str, Any]) -> str:
-        stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-        return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
-
-    @staticmethod
-    def _apply_llm_dedup_decision(
-        decision: Dict[str, Any],
-        by_issue_id: Dict[str, Dict[str, Any]],
-        removed: Set[str],
-        *,
-        threshold: float,
-    ) -> tuple[int, int]:
-        applied = 0
-        rejected = 0
-        keep_distinct = {
-            str(issue_id)
-            for issue_id in decision.get("must_keep_distinct_issue_ids", [])
-            if issue_id
-        }
-        groups = decision.get("duplicate_groups")
-        if not isinstance(groups, list):
-            return 0, 0
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            primary_id = str(group.get("primary_issue_id") or "")
-            primary = by_issue_id.get(primary_id)
-            if primary is None or primary_id in removed:
-                rejected += 1
-                continue
-            try:
-                confidence = float(group.get("confidence", 0) or 0)
-            except (TypeError, ValueError):
-                confidence = 0.0
-            for duplicate_id in group.get("duplicate_issue_ids", []) or []:
-                duplicate_id = str(duplicate_id or "")
-                duplicate = by_issue_id.get(duplicate_id)
-                if (
-                    not duplicate_id
-                    or duplicate is None
-                    or duplicate_id == primary_id
-                    or duplicate_id in removed
-                    or duplicate_id in keep_distinct
-                    or primary_id in keep_distinct
-                ):
-                    rejected += 1
-                    continue
-                if not issues_may_share_root_cause(
-                    primary,
-                    duplicate,
-                    confidence=confidence,
-                    threshold=threshold,
-                    allow_cross_function_root=True,
-                ):
-                    rejected += 1
-                    continue
-                root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(
-                    primary
-                )
-                suggestion = {
-                    "method": "issue_reconciler_agent_suggestion",
-                    "root_cause_key": root_key,
-                    "confidence": confidence,
-                    "reasoning": group.get("reasoning"),
-                }
-                primary.setdefault("dedup_cluster_suggestions", []).append(
-                    {**suggestion, "role": "primary", "peer_issue_uid": duplicate_id}
-                )
-                duplicate.setdefault("dedup_cluster_suggestions", []).append(
-                    {**suggestion, "role": "possible_alias", "peer_issue_uid": primary_id}
-                )
-                applied += 1
-        return applied, rejected
-
     def _build_validation_evidence_pack(
         self,
         issue: Dict[str, Any],
@@ -5454,24 +4477,11 @@ class Analyzer:
             ),
             "workflow_progress": list(self.workflow_progress),
             "current_workflow_step": self.workflow_executor.current_step,
-            "subagent_candidate_count": len(state.get("subagent_candidates", [])),
-            "subagent_ticket_count": len(state.get("subagent_ticket_plan", [])),
-            "subagent_unassigned_count": len(state.get("subagent_unassigned_candidates", [])),
-            "subagent_reports_count": len(state.get("subagent_reports", [])),
-            "subagent_report_summary": dict(state.get("subagent_report_summary", {})),
-            "subagent_ticket_plan": self._compact_subagent_items(
-                state.get("subagent_ticket_plan", [])
-            ),
-            "subagent_unassigned_candidates": self._compact_subagent_items(
-                state.get("subagent_unassigned_candidates", [])
-            ),
-            "subagent_reports": self._compact_subagent_reports(state.get("subagent_reports", [])),
             "candidate_ledger_summary": dict(ledger_summary),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
             "active_discovery": dict(state.get("active_discovery", {}) or {}),
             "deferred_deterministic_work_count": len(state.get("deferred_deterministic_work", [])),
             "deferred_deterministic_work": list(state.get("deferred_deterministic_work", [])),
-            "va_candidate_coverage_summary": dict(state.get("va_candidate_coverage_summary", {})),
             "validation_performance": {
                 "iterations": int(state.get("validation_iterations", 0) or 0),
                 "tool_call_count": int(state.get("validation_tool_call_count", 0) or 0),
@@ -5530,7 +4540,6 @@ class Analyzer:
                 ),
                 "verdict_transitions": dict(state.get("validator_verdict_transitions", {}) or {}),
             },
-            "semantic_dedup_summary": dict(state.get("semantic_dedup_summary", {})),
             "budget_stage": state.get("budget_stage", ""),
             "budget_hard_caps": dict(state.get("budget_hard_caps", {})),
             "effective_budget": dict(state.get("effective_budget", {})),
@@ -6022,51 +5031,13 @@ class Analyzer:
             visible_tool_names=visible_tool_names,
         )
 
-    def _select_vulnerability_skills_for_config(
-        self,
-        agent_cfg: Any,
-        llm_client: Optional[LLMClient] = None,
-    ) -> SkillSelection:
-        """Select active vulnerability skills from the configured analyzer task."""
-        available = [
-            skill.name
-            for skill in self.spec_registry.skills_for_agent(
-                "vulnerability_analyzer",
-                extra=getattr(agent_cfg, "skills", None),
-            )
-        ]
-        available = self._language_filtered_vulnerability_skills(available)
-        task = getattr(agent_cfg, "task", None)
-        semantic_router = None
-        if llm_client is not None:
-            semantic_router = (
-                lambda task_text, skill_names: self._route_vulnerability_skills_with_llm(
-                    task_text,
-                    skill_names,
-                    llm_client,
-                )
-            )
-        selection = select_vulnerability_skills(task, available, semantic_router=semantic_router)
-        if selection.restricted:
-            logger.info(
-                "Task-selected vulnerability skills for '%s': %s (source=%s, confidence=%.2f)",
-                task or "",
-                ", ".join(selection.skills) or "none",
-                selection.source,
-                selection.confidence,
-            )
-        return selection
-
-    def _candidate_first_skill_selection(self, agent_cfg: Any) -> SkillSelection:
-        """Return every deterministic vulnerability skill without semantic routing."""
-        available = [
-            skill.name
-            for skill in self.spec_registry.skills_for_agent(
-                "vulnerability_analyzer",
-                extra=getattr(agent_cfg, "skills", None),
-            )
-        ]
-        available = self._language_filtered_vulnerability_skills(available)
+    def _candidate_first_skill_selection(self, extra_skills: Sequence[str]) -> SkillSelection:
+        """Return every language-compatible deterministic skill."""
+        get_agent = getattr(self.spec_registry, "get_agent", None)
+        active_spec = get_agent("active_discovery") if callable(get_agent) else None
+        available = list(getattr(active_spec, "skills", []) or self.spec_registry.skills)
+        available.extend(str(skill) for skill in extra_skills if str(skill))
+        available = self._language_filtered_analysis_skills(list(dict.fromkeys(available)))
         return SkillSelection(
             skills=available,
             restricted=False,
@@ -6074,77 +5045,6 @@ class Analyzer:
             confidence=1.0,
             reasons=["complete deterministic fact collection"],
         )
-
-    def _route_vulnerability_skills_with_llm(
-        self,
-        task: str,
-        available_skill_names: Sequence[str],
-        llm_client: LLMClient,
-    ) -> Dict[str, Any]:
-        return route_vulnerability_skills_with_llm(
-            task,
-            available_skill_names,
-            llm_client,
-            self._skill_selection_cache,
-        )
-
-    def _should_spawn_subagents(self, agent_cfg: Any) -> bool:
-        """Decide whether focused deep-worker LLM calls are enabled for this run."""
-        if not self.config.analysis.enable_subagent_workers:
-            return False
-        explicit = getattr(agent_cfg, "can_spawn_subagents", None)
-        if explicit is not None:
-            return bool(explicit)
-        agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
-        return bool(agent_spec and agent_spec.can_spawn_subagents)
-
-    @staticmethod
-    def _is_high_risk_conflicting_ticket(ticket: Any) -> bool:
-        """Reserve deep investigation for high-risk contradictory evidence."""
-
-        try:
-            priority = int(getattr(ticket, "priority_score", 0) or 0)
-        except (TypeError, ValueError):
-            priority = 0
-        if priority < 70:
-            return False
-        evidence = getattr(ticket, "evidence", None)
-        if not isinstance(evidence, dict):
-            return False
-        if evidence.get("conflicting_evidence") is True:
-            return True
-        positive = evidence.get("positive_evidence") or []
-        negative = evidence.get("negative_evidence") or []
-        if not positive or not negative:
-            return False
-        negative_text = " ".join(str(item) for item in negative if str(item).strip()).lower()
-        return any(
-            marker in negative_text
-            for marker in (
-                "guard",
-                "bound",
-                "sanit",
-                "released",
-                "cleanup",
-                "unreachable",
-                "ownership",
-                "alias",
-                "lock",
-                "happens-before",
-            )
-        )
-
-    @staticmethod
-    def _subagent_llm_ref_for_ticket(
-        ticket: Any,
-        skill_llm_refs: Dict[str, str],
-        fallback_ref: str,
-    ) -> str:
-        return subagent_llm_ref_for_ticket(ticket, skill_llm_refs, fallback_ref)
-
-    @classmethod
-    def _compact_subagent_items(cls, items: Any, *, limit: int = 50) -> List[Dict[str, Any]]:
-        return compact_subagent_items(items, limit=limit)
 
     @staticmethod
     def _compact_candidate_signal_items(items: Any, *, limit: int = 80) -> List[Dict[str, Any]]:
@@ -6189,63 +5089,6 @@ class Analyzer:
         if len(items) > limit:
             compact.append({"truncated": True, "omitted_count": len(items) - limit})
         return compact
-
-    @staticmethod
-    def _normalize_candidate_coverage(raw: Any) -> Dict[str, Dict[str, Any]]:
-        if not isinstance(raw, list):
-            return {}
-        coverage: Dict[str, Dict[str, Any]] = {}
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            candidate_id = str(item.get("candidate_id") or item.get("id") or "").strip()
-            if not candidate_id:
-                continue
-            coverage[candidate_id] = {
-                "status": str(item.get("status") or "").strip(),
-                "reason": item.get("reason"),
-                "issue_id": item.get("issue_id"),
-            }
-        return coverage
-
-    @staticmethod
-    def _candidate_coverage_summary(coverage: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
-        summary: Dict[str, int] = {"total": len(coverage)}
-        for item in coverage.values():
-            status = str(item.get("status") or "unknown")
-            summary[status] = summary.get(status, 0) + 1
-        return summary
-
-    @staticmethod
-    def _mark_va_unreviewed_candidates(
-        candidates: List[Dict[str, Any]],
-        coverage: Dict[str, Dict[str, Any]],
-    ) -> None:
-        covered_ok = {"reported", "rejected_by_evidence"}
-        for candidate in candidates:
-            if not isinstance(candidate, dict):
-                continue
-            evidence_pack = _as_dict(candidate.get("evidence_pack"))
-            candidate_id = str(
-                candidate.get("candidate_id")
-                or candidate.get("id")
-                or evidence_pack.get("candidate_id")
-                or ""
-            )
-            status = str((coverage.get(candidate_id) or {}).get("status") or "")
-            if status not in covered_ok:
-                candidate["va_unreviewed"] = True
-                evidence_pack["va_unreviewed"] = True
-                if evidence_pack:
-                    candidate["evidence_pack"] = evidence_pack
-
-    @staticmethod
-    def _compact_subagent_item(item: Any) -> Dict[str, Any]:
-        return compact_subagent_item(item)
-
-    @classmethod
-    def _compact_subagent_reports(cls, reports: Any, *, limit: int = 50) -> List[Dict[str, Any]]:
-        return compact_subagent_reports(reports, limit=limit)
 
     def _get_tools(
         self,
@@ -7326,10 +6169,6 @@ class Analyzer:
                 list(candidate_signals), limit=24
             ),
             "candidate_ledger_summary": state.get("candidate_ledger_summary") or {},
-            "subagent_unassigned_candidates": self._compact_subagent_items(
-                state.get("subagent_unassigned_candidates") or [],
-                limit=24,
-            ),
             "active_skills": list(active_skills),
             "review_policy": (
                 "LLM-only Java active findings must use candidate_source=java_llm_active_audit "
@@ -7564,18 +6403,18 @@ class Analyzer:
             code_index=getattr(self, "code_index", None),
         )
 
-    def _language_filtered_vulnerability_skills(
+    def _language_filtered_analysis_skills(
         self,
         skill_names: Sequence[str],
     ) -> List[str]:
-        """Keep vulnerability skills aligned with the configured project language."""
+        """Keep candidate-analysis skills aligned with the configured language."""
         names = list(dict.fromkeys(skill_names))
         language = self._project_language()
 
         def supports_language(name: str) -> bool:
             skill = self.spec_registry.get_skill(name)
             if skill is None:
-                raise ValueError(f"Unknown vulnerability skill {name!r}")
+                raise ValueError(f"Unknown candidate-analysis skill {name!r}")
             languages = list(getattr(skill, "languages", []))
             if not languages:
                 raise ValueError(f"Skill {name!r} has no language metadata")
@@ -7585,11 +6424,9 @@ class Analyzer:
         if filtered:
             return filtered
 
-        # The shared vulnerability-analyzer AGENT.md intentionally remains a
-        # C/C++-oriented prompt contract. Java defaults therefore come from
-        # language-scoped Skill contracts rather than a second hard-coded
-        # name list. Shared modeling/validation skills declare both languages
-        # and are not part of this vulnerability fallback.
+        # Java defaults come from language-scoped Skill contracts rather than
+        # a second hard-coded name list. Shared modeling/validation skills
+        # declare both languages and are not part of this analysis fallback.
         registry_skills = getattr(self.spec_registry, "skills", {})
         return sorted(
             skill.name

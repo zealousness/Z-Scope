@@ -47,7 +47,7 @@ def _config(
         project=ProjectConfig(
             project_root=tmp_path,
             source_root=tmp_path,
-            agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
+            agents=[AgentConfig(name="active_discovery", task="audit")],
         ),
         concurrency=ConcurrencyConfig(entry_workers=1),
     )

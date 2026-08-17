@@ -56,7 +56,6 @@ class EffectiveBudget:
     premodel_callees: int
     graph_depth: int
     graph_functions: int
-    subagent_tickets: int
     hard_caps: Dict[str, int] = field(default_factory=dict)
     risk_scores: Dict[str, int] = field(default_factory=dict)
     risk_reasons: Dict[str, List[str]] = field(default_factory=dict)
@@ -68,12 +67,9 @@ class EffectiveBudget:
             "premodel_callees": self.premodel_callees,
             "graph_depth": self.graph_depth,
             "graph_functions": self.graph_functions,
-            "subagent_tickets": self.subagent_tickets,
             "hard_caps": dict(self.hard_caps),
             "risk_scores": dict(self.risk_scores),
-            "risk_reasons": {
-                key: list(value) for key, value in self.risk_reasons.items()
-            },
+            "risk_reasons": {key: list(value) for key, value in self.risk_reasons.items()},
         }
 
 
@@ -92,12 +88,10 @@ class RiskBudgetPlanner:
         recursion_depth = self._non_negative(self.analysis_config.max_recursion_depth)
         premodel_depth = self._non_negative(self.analysis_config.max_premodel_depth)
         premodel_callees = self._non_negative(self.analysis_config.max_premodel_callees)
-        subagent_tickets = self._non_negative(self.analysis_config.max_subagent_tickets)
         return {
             "max_recursion_depth": recursion_depth,
             "max_premodel_depth": premodel_depth,
             "max_premodel_callees": premodel_callees,
-            "max_subagent_tickets": subagent_tickets,
             "max_graph_functions": premodel_callees * max(1, recursion_depth),
         }
 
@@ -108,7 +102,6 @@ class RiskBudgetPlanner:
         rule_candidates: Optional[Sequence[Any]] = None,
         graph_candidates: Optional[Sequence[Any]] = None,
         backend_candidates: Optional[Sequence[Any]] = None,
-        subagent_candidates: Optional[Sequence[Any]] = None,
     ) -> EffectiveBudget:
         impl = self._mapping(state.get("impl_result"))
         agent_context = self._mapping(state.get("agent_context"))
@@ -116,8 +109,10 @@ class RiskBudgetPlanner:
         callees = self._callee_names(impl.get("callees"))
         call_tokens = self._call_tokens(code)
         user_config_context = str(agent_context.get("user_config_context") or "")
-        candidates = list(rule_candidates or []) + list(graph_candidates or []) + list(
-            backend_candidates or []
+        candidates = (
+            list(rule_candidates or [])
+            + list(graph_candidates or [])
+            + list(backend_candidates or [])
         )
 
         scores: Dict[str, int] = {}
@@ -136,29 +131,14 @@ class RiskBudgetPlanner:
             user_config_context,
             candidates,
         )
-        scores["premodel_callees"], reasons["premodel_callees"] = (
-            self._score_premodel_callees(code, callees, call_tokens, user_config_context)
+        scores["premodel_callees"], reasons["premodel_callees"] = self._score_premodel_callees(
+            code, callees, call_tokens, user_config_context
         )
-        scores["subagent_tickets"], reasons["subagent_tickets"] = (
-            self._score_subagent_tickets(
-                candidates,
-                subagent_candidates or (),
-                self._mapping(state.get("candidate_ledger_summary")),
-            )
-        )
-
         caps = self.hard_caps()
-        recursion_depth = self._depth_budget(
-            scores["recursion_depth"], caps["max_recursion_depth"]
-        )
-        premodel_depth = self._depth_budget(
-            scores["premodel_depth"], caps["max_premodel_depth"]
-        )
+        recursion_depth = self._depth_budget(scores["recursion_depth"], caps["max_recursion_depth"])
+        premodel_depth = self._depth_budget(scores["premodel_depth"], caps["max_premodel_depth"])
         premodel_callees = self._breadth_budget(
             scores["premodel_callees"], caps["max_premodel_callees"]
-        )
-        subagent_tickets = self._ticket_budget(
-            scores["subagent_tickets"], caps["max_subagent_tickets"]
         )
         graph_depth = (
             min(caps["max_recursion_depth"], max(1, recursion_depth))
@@ -180,7 +160,6 @@ class RiskBudgetPlanner:
             premodel_callees=premodel_callees,
             graph_depth=graph_depth,
             graph_functions=graph_functions,
-            subagent_tickets=subagent_tickets,
             hard_caps=caps,
             risk_scores=scores,
             risk_reasons=reasons,
@@ -307,62 +286,6 @@ class RiskBudgetPlanner:
             reasons.append("user_config_external_api_context")
         return min(score, 100), reasons
 
-    def _score_subagent_tickets(
-        self,
-        candidates: Sequence[Any],
-        subagent_candidates: Sequence[Any],
-        ledger_summary: Mapping[str, Any],
-    ) -> tuple[int, List[str]]:
-        score = 5
-        reasons = ["baseline_ticket_triage"]
-        all_candidates = list(candidates) + list(subagent_candidates)
-        if len(all_candidates) >= 8:
-            score += 35
-            reasons.append("many_independent_candidates")
-        elif len(all_candidates) >= 4:
-            score += 20
-            reasons.append("several_independent_candidates")
-        elif len(all_candidates) >= 2:
-            score += 10
-            reasons.append("multiple_candidates")
-
-        sources = {
-            source
-            for item in all_candidates
-            for source in self._candidate_sources(item)
-            if source
-        }
-        if len(sources) >= 3:
-            score += 20
-            reasons.append("multiple_candidate_source_families")
-        elif len(sources) >= 2:
-            score += 10
-            reasons.append("two_candidate_source_families")
-
-        skills = {str(self._candidate_field(item, "skill") or "") for item in all_candidates}
-        skills.discard("")
-        if len(skills) >= 3:
-            score += 15
-            reasons.append("multiple_skill_domains")
-        elif len(skills) >= 2:
-            score += 8
-            reasons.append("two_skill_domains")
-
-        high_priority = [
-            item
-            for item in all_candidates
-            if self._candidate_priority(item) >= 75
-        ]
-        if high_priority:
-            score += min(20, 5 * len(high_priority))
-            reasons.append("high_priority_candidate")
-
-        duplicates_merged = int(ledger_summary.get("duplicates_merged", 0) or 0)
-        if duplicates_merged:
-            score += min(10, duplicates_merged)
-            reasons.append("candidate_dedup_merges")
-        return min(score, 100), reasons
-
     @staticmethod
     def _depth_budget(score: int, cap: int) -> int:
         if cap <= 0:
@@ -386,18 +309,6 @@ class RiskBudgetPlanner:
         if score >= 30:
             return min(cap, max(12, (cap + 1) // 2))
         return min(cap, min(8, cap))
-
-    @staticmethod
-    def _ticket_budget(score: int, cap: int) -> int:
-        if cap <= 0:
-            return 0
-        if score >= 80:
-            return cap
-        if score >= 55:
-            return min(cap, max(4, (cap * 2 + 2) // 3))
-        if score >= 30:
-            return min(cap, max(2, (cap + 1) // 2))
-        return min(cap, min(2, cap))
 
     @staticmethod
     def _non_negative(value: Any) -> int:
@@ -481,18 +392,3 @@ class RiskBudgetPlanner:
         if hasattr(item, field_name):
             return getattr(item, field_name)
         return None
-
-    @classmethod
-    def _candidate_priority(cls, item: Any) -> int:
-        raw = cls._candidate_field(item, "priority_score")
-        if raw is None:
-            raw = cls._candidate_field(item, "confidence")
-        if raw is None:
-            raw = cls._candidate_field(item, "rule_confidence")
-        try:
-            value = float(raw or 0)
-            if 0 < value <= 1:
-                value *= 100
-            return int(value)
-        except (TypeError, ValueError):
-            return 0

@@ -22,7 +22,7 @@ def _config_with_task(task: str) -> ZScopeConfig:
         project=ProjectConfig(
             project_root=Path("."),
             source_root=Path("."),
-            agents=[AgentConfig(name="vulnerability_analyzer", task=task)],
+            agents=[AgentConfig(name="active_discovery", task=task)],
         ),
     )
 

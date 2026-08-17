@@ -180,7 +180,7 @@ def test_single_entry_uses_public_modeling_and_analysis_profiles_separately(tmp_
     )
     analyzer.config.project.agents = [
         SimpleNamespace(
-            name="vulnerability_analyzer",
+            name="active_discovery",
             enabled=True,
             llm_ref="legacy-profile",
         )

@@ -26,7 +26,7 @@ from .cpp_domains import (
 )
 
 if TYPE_CHECKING:
-    from ...orchestration.subagents import SubAgentTicket
+    from ...orchestration.candidates import CandidateTicket
 
 
 def default_local_semantics() -> LocalPatternSemantics:
@@ -195,7 +195,7 @@ class RegexCandidateGenerator(
         file_path: str,
         *,
         allowed_skills: Optional[Iterable[str]] = None,
-    ) -> List["SubAgentTicket"]:
+    ) -> List["CandidateTicket"]:
         return [
             self.issue_to_ticket(issue)
             for issue in self.generate_issues(
@@ -206,8 +206,8 @@ class RegexCandidateGenerator(
             )
         ]
 
-    def issue_to_ticket(self, issue: Dict[str, Any]) -> "SubAgentTicket":
-        from ...orchestration.subagents import SubAgentTicket
+    def issue_to_ticket(self, issue: Dict[str, Any]) -> "CandidateTicket":
+        from ...orchestration.candidates import CandidateTicket
 
         defect_class = str(issue.get("defect_class") or issue.get("subcategory") or "unknown")
         rule_id = str(issue.get("rule_id") or issue.get("rule") or "")
@@ -223,7 +223,7 @@ class RegexCandidateGenerator(
         evidence.setdefault("positive_evidence", issue.get("positive_evidence") or [])
         evidence.setdefault("negative_evidence", issue.get("negative_evidence") or [])
         line = self._line_from_location(str(issue.get("location") or ""))
-        return SubAgentTicket(
+        return CandidateTicket(
             id=str(issue.get("candidate_id") or issue.get("id")),
             skill=skill,
             task=(

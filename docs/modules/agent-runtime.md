@@ -10,7 +10,8 @@ sources:
   - zscope/framework/llm_client.py
   - zscope/framework/llm_usage.py
   - zscope/common/validator_protocol.py
-  - zscope/agents/vulnerability_analyzer/AGENT.md
+  - zscope/agents/active_discovery/AGENT.md
+  - zscope/agents/history_maintenance/AGENT.md
   - zscope/skills/evidence_validation/SKILL.md
   - zscope/tools/runtime.py
   - zscope/tools/policy.py
@@ -18,6 +19,7 @@ sources:
 tests:
   - tests/test_spec_registry.py
   - tests/test_json_output_agents.py
+  - tests/test_history_maintenance_agent.py
   - tests/test_tool_policy.py
   - tests/test_tool_registry.py
   - tests/test_llm_client_tokens.py
@@ -39,6 +41,7 @@ tests:
 - `zscope/skills/*/SKILL.md` 提供按风险领域激活的审计知识和检查策略。
 - Tool registry 暴露 schema，runtime 执行查询，ToolPolicy 根据 Agent 白名单、后端能力和敏感路径规则过滤。
 - Agent 输出回到分析/验证流水线，不能绕过统一 schema 和 issue identity 直接持久化最终报告。
+- `active_discovery` 只对运行时预先界定的 candidate-blind 语义单元提出候选；`history_maintenance_agent` 只执行 `verify_fix` 历史复核。二者都没有 proof、promotion 或稳定终态权限。
 - Validator v3 的 V1/V2 使用无状态、严格 schema 的直接 chat completion；V1 不进入通用工具循环，V2 只携带原候选摘要和新增证据。V3 才能按档位使用有界只读工具轨迹。
 - 每个真实 HTTP attempt 在发出前原子预留估算 prompt 与最大 completion，返回后按 provider usage 结算。usage event 只保存计量和归因，不保存 prompt、源码正文或模型思维正文。
 

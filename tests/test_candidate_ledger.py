@@ -3,15 +3,14 @@ from zscope.core.candidates.decision_facts import (
     DECISION_CONTEXT_V33,
     DecisionFactGraphCache,
 )
-from zscope.orchestration.candidates import CandidateLedger
-from zscope.orchestration.subagents import SubAgentTicket
+from zscope.orchestration.candidates import CandidateLedger, CandidateTicket
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
 
 def _ticket(*, priority=90, negative=None):
-    return SubAgentTicket(
+    return CandidateTicket(
         id="RULE_1",
         skill="bounds_and_integer",
         task="check bounds",
@@ -93,16 +92,6 @@ def test_investigator_completion_cannot_close_validation_obligation() -> None:
     assert record.status == "queued"
     assert record.disposition == ""
     assert record.evidence_completion_status == "evidence_collected"
-
-
-def test_deep_investigator_requires_high_risk_conflicting_evidence() -> None:
-    assert Analyzer._is_high_risk_conflicting_ticket(
-        _ticket(negative=["a dominating guard may bound len"])
-    )
-    assert not Analyzer._is_high_risk_conflicting_ticket(
-        _ticket(priority=40, negative=["a guard may bound len"])
-    )
-    assert not Analyzer._is_high_risk_conflicting_ticket(_ticket())
 
 
 def test_candidate_uid_includes_revision_but_history_key_does_not() -> None:

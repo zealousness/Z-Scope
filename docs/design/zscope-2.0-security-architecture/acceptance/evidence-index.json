@@ -1,7 +1,7 @@
 {
   "schema_version": "zscope.design-evidence-index.v1",
   "design_version": "1.0.0",
-  "design_status": "approved",
+  "design_status": "implementing",
   "baseline": {
     "git_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
     "git_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
@@ -10,7 +10,7 @@
   },
   "phases": [
     {"phase": "P0", "status": "complete", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
-    {"phase": "P1", "status": "pending", "entry_gate": "P0 complete", "exit_gate": "dead runtime removed with frozen replay equivalence", "review_roles": ["product_architecture"]},
+    {"phase": "P1", "status": "in_progress", "entry_gate": "P0 complete", "exit_gate": "dead runtime removed with frozen replay equivalence and approved product architecture review", "review_roles": ["product_architecture"]},
     {"phase": "P2", "status": "pending", "entry_gate": "P1 complete", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
     {"phase": "P3", "status": "pending", "entry_gate": "P2 contracts stable", "exit_gate": "spec blind review, user review and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P4", "status": "pending", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind and non-Range hypothesis gates pass", "review_roles": ["product_architecture", "proof_security"]},
@@ -30,11 +30,11 @@
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
-          "sha256": "a858c935f5bf2c7d01ec36b711bb273db0ef1bab8ba9ad305c992411fe948c3f"
+          "sha256": "5ce204f6b804ada7309afa24e2bc87cd0c080aafd262f6c808ec490ad6cec82b"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
-          "sha256": "735ad6e1cbebadd8aad9edb7e25bf4d9e9b845950245612bd169d99c11ba2b88"
+          "sha256": "6c02241a88176e2b8fe5960bb95d3fe225161df62b20e6c938db17a515eeca02"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/baseline-artifact-manifest.json",
@@ -63,7 +63,7 @@
           }
         ],
         "limitations": [
-          "The initial archive predates structured command and environment evidence fields.",
+          "The initial archive predates structured command and environment evidence fields; its mutable governance artifact hashes are bound to the named implementation commit blobs.",
           "The initial archive predates the later three-role review artifacts; those reviews are recorded separately under P0-THREE-ROLE-INDEPENDENT-REVIEWS."
         ]
       },
@@ -485,6 +485,58 @@
         ]
       },
       "notes": "The annotated tag, local tag/hash replay, related tests, docs/package/reachability contracts, full pytest, compileall, mypy, benchmark hygiene and change-scope gate passed without network or model use. P1, E0 and all later release gates remain pending."
+    },
+    {
+      "evidence_uid": "P1-FROZEN-ANSWER-FREE-REPLAY",
+      "phase": "P1",
+      "kind": "frozen_replay_baseline",
+      "status": "passed",
+      "implementation_commit": "6302039b9467ea42c8183561310b8d4807e152f3",
+      "implementation_tree": "31a2a1965240bf854d8e8d66d17f31fe15f140e0",
+      "artifacts": [
+        {
+          "path": "tests/fixtures/p1_frozen_replay/input.json",
+          "sha256": "d70520c3ae93da37b8444b05abb77426daebe8dbd7ba8277da36b4addd642f84"
+        },
+        {
+          "path": "tests/fixtures/p1_frozen_replay/expected.json",
+          "sha256": "7768d0a3596761234bc0c2ebaa72586857ab53506925773340e1f4c184050622"
+        },
+        {
+          "path": "tests/fixtures/p1_frozen_replay/manifest.json",
+          "sha256": "223620fc516bde3aca13b47de9ff270935880cb6c9f250ddf886a7d9067003b0"
+        },
+        {
+          "path": "tests/p1_frozen_replay.py",
+          "sha256": "afda2ef2f4941c0cb0f7f4791797c0b88c2283874621a7afab3c690c8e0633d2"
+        },
+        {
+          "path": "tests/test_p1_frozen_replay.py",
+          "sha256": "daddeb702412101a570e8853daa2ac07a98907073ba820875d34d1f57c9a0184"
+        }
+      ],
+      "review_status": "partially_reviewed",
+      "reviewed_by": ["codex/local-zero-model-replay"],
+      "verification": {
+        "environment": {
+          "host": "Microsoft Windows NT 10.0.26200.0",
+          "python": "3.10.5 from the P1 workspace virtual environment",
+          "network_and_model_use": "none",
+          "source": "P0-complete commit 314cddf299387cad7c998cc62990194535d2cb9b"
+        },
+        "commands": [
+          {
+            "command": "python -m pytest -q tests/test_p1_frozen_replay.py",
+            "status": "passed"
+          }
+        ],
+        "limitations": [
+          "The replay freezes generic Candidate Ledger, terminal, Finding-root/alias, default/with-needs-review and workflow progress semantics without exercising an external model.",
+          "The three large historical P0 benchmark aggregates are absent from this worktree and were not replayed.",
+          "This local replay is implementation evidence; it is not the required P1 product architecture approval."
+        ]
+      },
+      "notes": "The P1 entry replay is answer-free, normalizes only non-semantic time/path fields, fails on any model or network call, and explicitly covers validator_fact_resolution.status."
     }
   ]
 }

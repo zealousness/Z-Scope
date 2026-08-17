@@ -12,6 +12,7 @@ from scripts.check_zscope_2_design_evidence import (
     validate_design_evidence,
     validate_formal_review_documents,
     validate_json_schema,
+    validate_p1_review_documents,
     validate_phase_gates,
 )
 
@@ -32,8 +33,7 @@ def _formal_review_documents() -> tuple[dict, dict, dict]:
     formal = manifest["formal_reviews"]
     schema = load_json(DESIGN_ROOT / formal["schema"])
     reviews = {
-        role: load_json(DESIGN_ROOT / spec["path"])
-        for role, spec in formal["artifacts"].items()
+        role: load_json(DESIGN_ROOT / spec["path"]) for role, spec in formal["artifacts"].items()
     }
     return manifest, reviews, schema
 
@@ -120,9 +120,7 @@ def test_p0_completion_requires_three_approved_role_separated_reviews() -> None:
         }
     ]
 
-    errors = validate_formal_review_documents(
-        manifest, mutated, schema, require_approval=True
-    )
+    errors = validate_formal_review_documents(manifest, mutated, schema, require_approval=True)
 
     assert any("requires an approved review decision" in row for row in errors)
     assert any("requires zero blocking findings" in row for row in errors)
@@ -133,11 +131,89 @@ def test_formal_reviews_bind_one_common_commit_and_tree() -> None:
     mutated = copy.deepcopy(reviews)
     mutated["independent_benchmark"]["reviewed_tree"] = "0" * 40
 
-    errors = validate_formal_review_documents(
-        manifest, mutated, schema, require_approval=True
-    )
+    errors = validate_formal_review_documents(manifest, mutated, schema, require_approval=True)
 
     assert any("reviewed tree differs from the common review target" in row for row in errors)
+
+
+def _p1_review_documents() -> tuple[dict, dict, dict]:
+    schema = load_json(DESIGN_ROOT / "acceptance" / "p1-review.schema.json")
+    phase_review = {
+        "schema": "acceptance/p1-review.schema.json",
+        "reviewed_commit": "1" * 40,
+        "reviewed_tree": "2" * 40,
+        "artifacts": {
+            "product_architecture": {
+                "path": "acceptance/reviews/p1-product-architecture.json",
+                "reviewer_model": "claude-opus-5",
+                "harness": "claude-code/test; permission_mode=read-only",
+            }
+        },
+    }
+    review = {
+        "review_schema": "zscope.p1-product-architecture-review.v1",
+        "role": "product_architecture",
+        "reviewer_model": "claude-opus-5",
+        "harness": "claude-code/test; permission_mode=read-only",
+        "reviewed_commit": "1" * 40,
+        "reviewed_tree": "2" * 40,
+        "decision": "approved",
+        "summary": "P1 architecture is consistent.",
+        "blocking_findings": [],
+        "non_blocking_findings": [],
+        "checks": [{"name": "scope", "result": "pass", "evidence": "synthetic"}],
+        "limitations": ["synthetic unit-test document"],
+        "attestation": "Read-only synthetic review.",
+    }
+    return phase_review, {"product_architecture": review}, schema
+
+
+def test_p1_completion_requires_approved_zero_blocking_architecture_review() -> None:
+    phase_review, reviews, schema = _p1_review_documents()
+    mutated = copy.deepcopy(reviews)
+    mutated["product_architecture"]["decision"] = "changes_required"
+    mutated["product_architecture"]["blocking_findings"] = [
+        {
+            "id": "P1-BLOCK-1",
+            "severity": "high",
+            "title": "synthetic blocker",
+            "evidence": "unit test",
+            "required_action": "keep P1 in progress",
+        }
+    ]
+
+    errors = validate_p1_review_documents(phase_review, mutated, schema)
+
+    assert any("requires an approved review decision" in row for row in errors)
+    assert any("requires zero blocking findings" in row for row in errors)
+
+
+def test_post_p1_phase_cannot_start_before_p1_completion() -> None:
+    manifest, evidence, _ = _design_documents()
+    mutated_manifest = copy.deepcopy(manifest)
+    mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["phase_status"]["P2"] = "in_progress"
+    for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P2":
+            phase["status"] = "in_progress"
+
+    errors = validate_phase_gates(mutated_manifest, mutated_evidence)
+
+    assert any("before P1 completion" in row for row in errors)
+
+
+def test_p1_complete_status_cannot_be_recorded_without_phase_review() -> None:
+    manifest, evidence, _ = _design_documents()
+    mutated_manifest = copy.deepcopy(manifest)
+    mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["phase_status"]["P1"] = "complete"
+    for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P1":
+            phase["status"] = "complete"
+
+    errors = validate_phase_gates(mutated_manifest, mutated_evidence)
+
+    assert "P1 completion requires a product_architecture phase review" in errors
 
 
 def test_proof_security_review_records_max_reasoning_and_read_only_mode() -> None:

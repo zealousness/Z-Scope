@@ -5,19 +5,17 @@ steps:
   - id: discover_entries
     scope: session
     handler: discover_entries
-    required: false
     action: classify API, communication, thread, and other user-input entries when requested
-  - id: load_snapshot_state
+  - id: plan_resume
     scope: session
     handler: plan_resume_entries
     action: skip entries with successful final reports and no pending validations
-  - id: analyze_remaining
+  - id: run_pending_entries
     scope: entry
     stop_policy: stop_if_handler_returns_true
     agent: semantic_modeler
     action: reuse snapshots where valid and analyze remaining entries through the default workflow
-  - id: merge_skipped_reports
+  - id: merge_reused_reports
     scope: batch
     handler: merge_skipped_reports
-    required: false
     action: load skipped final reports from snapshot.db and merge with current results

@@ -16,7 +16,7 @@ from zscope.config.function_entry import FunctionEntry
 from zscope.core.analysis import analyzer as analyzer_module
 from zscope.orchestration import parallel_analyzer as parallel_module
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
-from zscope.orchestration.subagents import SubAgentTicket
+from zscope.orchestration.candidates import CandidateTicket
 from zscope.rules.catalog import RuleCatalogError
 from zscope.semantics.models import LocalPatternSemantics
 
@@ -38,7 +38,7 @@ def _config(tmp_path: Path) -> ZScopeConfig:
         project=ProjectConfig(
             project_root=tmp_path,
             source_root=tmp_path,
-            agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
+            agents=[AgentConfig(name="active_discovery", task="audit")],
         ),
         concurrency=ConcurrencyConfig(entry_workers=3),
     )
@@ -321,7 +321,7 @@ def test_scan_validation_queue_validates_one_shared_ledger_group(tmp_path) -> No
     """Wrapper occurrences are merged before any validator work is scheduled."""
 
     parallel = ParallelAnalyzer(_config(tmp_path), code_index=FakeCodeIndex())
-    ticket = SubAgentTicket(
+    ticket = CandidateTicket(
         id="RULE_1",
         skill="bounds",
         task="validate one structured bounds obligation",

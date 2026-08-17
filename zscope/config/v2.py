@@ -34,7 +34,6 @@ from .config import (
     RuntimeSpecProvenance,
     ScanConfig,
     ScanLLMProfiles,
-    SemanticDedupConfig,
     UserConfigV2,
 )
 
@@ -206,9 +205,26 @@ def _deep_merge(base: MutableMapping[str, Any], override: Mapping[str, Any]) -> 
 
 _RUNTIME_AGENT_NAMES = {
     "semantic_modeler",
-    "vulnerability_analyzer",
-    "issue_reconciler_agent",
+    "active_discovery",
+    "history_maintenance_agent",
     "validator_agent",
+}
+
+_REMOVED_RUNTIME_AGENTS = {
+    "vulnerability_analyzer": "active_discovery",
+    "issue_reconciler_agent": "history_maintenance_agent",
+    "deep_worker": "active_discovery",
+    "subagent_orchestrator": "active_discovery",
+}
+
+_REMOVED_ANALYSIS_KEYS = {
+    "enable_subagent_workers",
+    "max_subagent_tickets",
+    "subagent_max_turns",
+    "subagent_ticket_timeout",
+    "subagent_spawn_allowlist",
+    "subagent_skill_llm_refs",
+    "subagent_skill_efforts",
 }
 
 
@@ -225,12 +241,31 @@ def _validate_runtime_shape(raw: Mapping[str, Any], *, partial: bool) -> None:
 
     agents = _mapping(raw.get("agents"), "runtime.agents")
     for name, value in agents.items():
+        if name in _REMOVED_RUNTIME_AGENTS:
+            replacement = _REMOVED_RUNTIME_AGENTS[name]
+            raise ValueError(
+                f"runtime.agents.{name} was removed in Z-Scope 2.0 P1; "
+                f"migrate explicitly to runtime.agents.{replacement}, save the migrated file, "
+                "then reload it"
+            )
         if name not in _RUNTIME_AGENT_NAMES:
             raise _unknown_key("runtime.agents", name, _RUNTIME_AGENT_NAMES)
         item = _mapping(value, f"runtime.agents.{name}", required=True)
-        _check_keys(item, {"enabled", "llm_role", "can_spawn_subagents"}, f"runtime.agents.{name}")
+        if "can_spawn_subagents" in item:
+            raise ValueError(
+                f"runtime.agents.{name}.can_spawn_subagents was removed in Z-Scope 2.0 P1; "
+                "remove it, save the migrated file, then reload it"
+            )
+        _check_keys(item, {"enabled", "llm_role"}, f"runtime.agents.{name}")
 
     analysis = _mapping(raw.get("analysis"), "runtime.analysis")
+    removed_analysis = sorted(_REMOVED_ANALYSIS_KEYS.intersection(analysis))
+    if removed_analysis:
+        raise ValueError(
+            "removed Z-Scope 2.0 P1 runtime.analysis field(s): "
+            + ", ".join(removed_analysis)
+            + "; run the explicit compat migration, save the migrated file, then reload it"
+        )
     _check_keys(
         analysis,
         {
@@ -243,32 +278,24 @@ def _validate_runtime_shape(raw: Mapping[str, Any], *, partial: bool) -> None:
             "max_premodel_depth",
             "max_premodel_callees",
             "trivial_function_max_lines",
-            "enable_subagent_workers",
             "security_semantic_enrichment_mode",
-            "max_subagent_tickets",
-            "subagent_max_turns",
             "request_deadline_seconds",
             "validation_deadline_seconds",
-            "subagent_ticket_timeout",
             "entry_deadline_seconds",
             "scan_deadline_seconds",
             "budget_exhaustion_policy",
-            "subagent_spawn_allowlist",
-            "subagent_skill_llm_refs",
-            "subagent_skill_efforts",
             "tool_audit_log",
         },
         "runtime.analysis",
     )
 
     reporting = _mapping(raw.get("reporting"), "runtime.reporting")
-    _check_keys(reporting, {"semantic_dedup"}, "runtime.reporting")
-    semantic = _mapping(reporting.get("semantic_dedup"), "runtime.reporting.semantic_dedup")
-    _check_keys(
-        semantic,
-        {"enabled", "llm_enabled", "llm_confidence_threshold", "max_cluster_size"},
-        "runtime.reporting.semantic_dedup",
-    )
+    if "semantic_dedup" in reporting:
+        raise ValueError(
+            "runtime.reporting.semantic_dedup was removed in Z-Scope 2.0 P1; "
+            "Finding-root v2 is the sole live report projection"
+        )
+    _check_keys(reporting, set(), "runtime.reporting")
 
     paths = _mapping(raw.get("paths"), "runtime.paths")
     _check_keys(
@@ -294,18 +321,6 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
     def deadline(name: str, default: Optional[float]) -> Optional[float]:
         return _positive_number_or_none(data.get(name, default), f"runtime.analysis.{name}")
 
-    spawn_allowlist = data.get("subagent_spawn_allowlist", ["deep_worker"])
-    llm_refs = data.get("subagent_skill_llm_refs", {})
-    efforts = data.get("subagent_skill_efforts", {})
-    if not isinstance(llm_refs, dict) or not all(
-        isinstance(key, str) and isinstance(value, str) for key, value in llm_refs.items()
-    ):
-        raise ValueError("runtime.analysis.subagent_skill_llm_refs must map strings to strings")
-    if not isinstance(efforts, dict) or not all(
-        isinstance(key, str) and isinstance(value, str) for key, value in efforts.items()
-    ):
-        raise ValueError("runtime.analysis.subagent_skill_efforts must map strings to strings")
-
     policy = _string(
         data.get("budget_exhaustion_policy", "observe"),
         "runtime.analysis.budget_exhaustion_policy",
@@ -323,25 +338,15 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
         max_premodel_depth=integer("max_premodel_depth", 3, non_negative=True),
         max_premodel_callees=integer("max_premodel_callees", 20, non_negative=True),
         trivial_function_max_lines=integer("trivial_function_max_lines", 5, non_negative=True),
-        enable_subagent_workers=boolean("enable_subagent_workers", False),
         security_semantic_enrichment_mode=_string(
             data.get("security_semantic_enrichment_mode", "shadow"),
             "runtime.analysis.security_semantic_enrichment_mode",
         ),
-        max_subagent_tickets=integer("max_subagent_tickets", 4, non_negative=True),
-        subagent_max_turns=integer("subagent_max_turns", 20),
         request_deadline_seconds=deadline("request_deadline_seconds", 120.0),
         validation_deadline_seconds=deadline("validation_deadline_seconds", 240.0),
-        subagent_ticket_timeout=deadline("subagent_ticket_timeout", 300.0),
         entry_deadline_seconds=deadline("entry_deadline_seconds", 1800.0),
         scan_deadline_seconds=deadline("scan_deadline_seconds", None),
         budget_exhaustion_policy=policy,
-        subagent_spawn_allowlist=_string_list(
-            spawn_allowlist,
-            "runtime.analysis.subagent_spawn_allowlist",
-        ),
-        subagent_skill_llm_refs={str(key): str(value) for key, value in llm_refs.items()},
-        subagent_skill_efforts={str(key): str(value) for key, value in efforts.items()},
         tool_audit_log=_string(
             data.get("tool_audit_log", ""),
             "runtime.analysis.tool_audit_log",
@@ -392,49 +397,15 @@ def load_runtime_spec() -> RuntimeSpec:
             raise ValueError(
                 f"runtime.agents.{name}.llm_role must be modeling, analysis, or validation"
             )
-        can_spawn = data.get("can_spawn_subagents")
-        if can_spawn is not None:
-            can_spawn = _boolean(can_spawn, f"runtime.agents.{name}.can_spawn_subagents")
         agents.append(
             RuntimeAgentConfig(
                 name=name,
                 llm_role=role,
                 enabled=_boolean(data.get("enabled", True), f"runtime.agents.{name}.enabled"),
-                can_spawn_subagents=can_spawn,
             )
         )
 
-    reporting_data = _mapping(base.get("reporting"), "runtime.reporting")
-    semantic_data = _mapping(
-        reporting_data.get("semantic_dedup"),
-        "runtime.reporting.semantic_dedup",
-    )
-    confidence = semantic_data.get("llm_confidence_threshold", 0.85)
-    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-        raise ValueError(
-            "runtime.reporting.semantic_dedup.llm_confidence_threshold must be numeric"
-        )
-    if not 0 <= float(confidence) <= 1:
-        raise ValueError(
-            "runtime.reporting.semantic_dedup.llm_confidence_threshold must be between 0 and 1"
-        )
-    reporting = ReportingConfig(
-        semantic_dedup=SemanticDedupConfig(
-            enabled=_boolean(
-                semantic_data.get("enabled", True),
-                "runtime.reporting.semantic_dedup.enabled",
-            ),
-            llm_enabled=_boolean(
-                semantic_data.get("llm_enabled", False),
-                "runtime.reporting.semantic_dedup.llm_enabled",
-            ),
-            llm_confidence_threshold=float(confidence),
-            max_cluster_size=_positive_int(
-                semantic_data.get("max_cluster_size", 8),
-                "runtime.reporting.semantic_dedup.max_cluster_size",
-            ),
-        )
-    )
+    reporting = ReportingConfig()
     paths = _mapping(base.get("paths"), "runtime.paths", required=True)
     return RuntimeSpec(
         analysis=_runtime_analysis(_mapping(base.get("analysis"), "runtime.analysis")),
@@ -944,9 +915,8 @@ def _agents_from_runtime(runtime: RuntimeSpec, scan: ScanConfig) -> List[AgentCo
             AgentConfig(
                 name=spec.name,
                 enabled=spec.enabled,
-                task=scan.task if spec.name == "vulnerability_analyzer" else "",
+                task=scan.task if spec.name == "active_discovery" else "",
                 llm_ref=role_refs[spec.llm_role],
-                can_spawn_subagents=spec.can_spawn_subagents,
             )
         )
     return agents
