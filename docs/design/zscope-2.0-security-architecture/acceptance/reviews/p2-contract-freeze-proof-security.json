@@ -1,0 +1,89 @@
+{
+  "review_schema": "zscope.p2-proof-security-review.v1",
+  "review_scope": "contract_freeze",
+  "role": "proof_security",
+  "reviewer_model": "deepseek-v4-pro",
+  "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only",
+  "reviewed_commit": "3442de63f98f90c5ba0df8efa707e8cc540ebd87",
+  "reviewed_tree": "14c7937ef5e892c4ab89dfb3c47f37e930fcba30",
+  "decision": "approved",
+  "summary": "The P2 contract freeze at 3442de6 freezes sound, fail-closed quantifier/coverage semantics for all four first provider families in contracts.md and ADR-0007, mirrored by six protocol_revision=2 field-level schemas. Closure is gated on independent Proof Checker recomputation from frozen ProgramProofIR v2 plus verified_true with complete quantifier coverage; incomplete inputs fail closed to unknown. legacy_preview certificates are excluded from live authority, model text cannot write facts, and the Proof Kernel remains shadow until P5.",
+  "blocking_findings": [],
+  "non_blocking_findings": [
+    {
+      "id": "NB-1",
+      "title": "Finite predicate registry is frozen in prose, not as schema enums",
+      "evidence": "proof-obligation-v2 and evidence-action-v2 use open string fields for predicate_id and fact_kind.",
+      "recommendation": "Emit a machine-readable registry and make the Checker reject predicate/fact pairs outside it."
+    },
+    {
+      "id": "NB-2",
+      "title": "Quantifier is not constrained per predicate",
+      "evidence": "All proof schemas share one six-value quantifier enum.",
+      "recommendation": "Enforce the exact per-predicate quantifier in the Checker registry."
+    },
+    {
+      "id": "NB-3",
+      "title": "Predicate value, parameter and coverage domains need executable constraints",
+      "evidence": "Several schema fields are deliberately generic objects in the contract draft.",
+      "recommendation": "Define per-predicate parameter, value and coverage-domain schemas in the implementation."
+    },
+    {
+      "id": "NB-4",
+      "title": "Unknown certificate witness convention is implicit",
+      "evidence": "The certificate schema requires witness for every status.",
+      "recommendation": "Require an empty witness for unknown or make full witness conditional."
+    },
+    {
+      "id": "NB-5",
+      "title": "Canonical provider-family identifiers should be explicit",
+      "evidence": "Prose uses path/guard and contract/type while schemas use path_guard and contract_type.",
+      "recommendation": "Declare the snake_case schema identifiers canonical."
+    },
+    {
+      "id": "NB-6",
+      "title": "Coverage completeness is quantifier-specific",
+      "evidence": "exists_path requires a complete witness, while universal predicates require complete domain enumeration.",
+      "recommendation": "Encode separate completeness checks for existential, universal, must and exact quantifiers."
+    },
+    {
+      "id": "NB-7",
+      "title": "Polarity and terminal-contribution mapping needs one matrix",
+      "evidence": "Clause role, certificate polarity and checker terminal contribution are separate enums.",
+      "recommendation": "Freeze and enforce a single mapping so refutation cannot contribute confirmation."
+    }
+  ],
+  "checks": [
+    {
+      "name": "Four provider families frozen with fail-closed coverage",
+      "result": "pass",
+      "evidence": "contracts.md and ADR-0007 freeze six executable predicates and their quantifiers."
+    },
+    {
+      "name": "Independent Checker is required",
+      "result": "pass",
+      "evidence": "The contract rejects content-hash-only validation and provider/model authority."
+    },
+    {
+      "name": "legacy_preview is non-authoritative",
+      "result": "pass",
+      "evidence": "protocol_revision=2 is mandatory for live certificates and compatibility records cannot close clauses."
+    },
+    {
+      "name": "P2 remains shadow until P5",
+      "result": "pass",
+      "evidence": "ADR-0007 and the phase contracts prohibit runtime authority before P5."
+    },
+    {
+      "name": "P2 entry-gate prerequisites",
+      "result": "pass",
+      "evidence": "P1 is complete and the contract-freeze candidate is clean and hash-bound."
+    }
+  ],
+  "limitations": [
+    "This is a contract-freeze review, not a final soundness review of implementation or corpus results.",
+    "No benchmark was executed and Range truth or benchmark answer content was not read.",
+    "No P5 runtime cutover or runtime authority is approved."
+  ],
+  "attestation": "I performed a read-only proof-security contract-freeze review of commit 3442de63f98f90c5ba0df8efa707e8cc540ebd87 and tree 14c7937ef5e892c4ab89dfb3c47f37e930fcba30 at maximum reasoning depth. I found the P2 entry contract sound and fail-closed, with zero blocking findings. I did not edit files, read Range truth or benchmark answers, run a benchmark, or approve runtime cutover."
+}
