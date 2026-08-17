@@ -3,8 +3,8 @@
   "design_version": "1.0.0",
   "design_status": "reviewed",
   "baseline": {
-    "git_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
-    "git_tree": "631f10adc6d23beb672569fdb337c81e02a031ca",
+    "git_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+    "git_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
     "clean": true,
     "worktree_patch_sha256": ""
   },
@@ -29,7 +29,7 @@
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
-          "sha256": "fe32db4449b4714e6579ef8a1357ce814486b5efd7b2fca24c07d6b70293f2e1"
+          "sha256": "1d6cba3b6547f4b52dc33990da0e42bdc4b147548128dfe9401eedd66a71187a"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
@@ -37,7 +37,7 @@
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/baseline-artifact-manifest.json",
-          "sha256": "cb05b6f4482fe372ea3ecacb1a029905362b56593d978e1da3bb2c1851183abd"
+          "sha256": "5a3553e0c14a200563c0393396068c238f397895ea8aada7bf7f90e286c88c00"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
@@ -45,7 +45,7 @@
         }
       ],
       "reviewed_by": [],
-      "notes": "The design-only archive commit is recorded and the previously dirty baseline has been split into four domain-separated commits. Cold runtime artifacts and formal reviews remain outstanding."
+      "notes": "The design-only archive commit is recorded, the previously dirty baseline has been split into domain-separated commits, and cold runtime artifacts are hash-bound. Formal reviews remain outstanding."
     },
     {
       "evidence_uid": "P0-CHANGE-SCOPE-GATE",
@@ -74,16 +74,39 @@
       "evidence_uid": "P0-COLD-BASELINE-PREFLIGHT",
       "phase": "P0",
       "kind": "execution_preflight",
-      "status": "collected",
-      "implementation_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
+      "status": "passed",
+      "implementation_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-execution-preflight.json",
-          "sha256": "5285a093f43eccede28422b7f0d83eb968178bd3b407465bc2b43097bfd51635"
+          "sha256": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b"
         }
       ],
       "reviewed_by": [],
-      "notes": "No model call was started. Cold baseline generation is blocked until an approved endpoint/model is provided and the documented WSL toolchain environment is activated."
+      "notes": "The documented WSL toolchain and shared libraries were verified, smoke passed without model/network use, and the explicit glm-5.1 provider identity was used without recording secrets."
+    },
+    {
+      "evidence_uid": "P0-COLD-FAST-BALANCED-BASELINE",
+      "phase": "P0",
+      "kind": "cold_runtime_baseline",
+      "status": "passed",
+      "implementation_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-cold-baseline-summary.json",
+          "sha256": "d7099cf5e62c6fb7ca37b851cdc77525db30376cdc02f12d8b90078c9b99a4d9"
+        },
+        {
+          "path": "benchmark-artifacts/zscope2-p0-fast-r2/aggregate.json",
+          "sha256": "43e3719d0f00f0419e076f055e13d89c0771f867e52b5dadd5913ec5d7bf9d96"
+        },
+        {
+          "path": "benchmark-artifacts/zscope2-p0-balanced/aggregate.json",
+          "sha256": "7694a7940799954337578d5e2b565d83119a1ac07331234a30d7a813ea7f7eb7"
+        }
+      ],
+      "reviewed_by": [],
+      "notes": "One cold fast and one cold balanced trial completed on the same commit/tree/input/model. Usage, traces, replay bundles and matcher-v2 scores are hash-bound and answer-isolated. These P0 behavior baselines are not formal or release-eligible quality results."
     }
   ]
 }

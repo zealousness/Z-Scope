@@ -1,8 +1,8 @@
 {
   "schema_version": "zscope.p0-execution-preflight.v1",
-  "captured_at": "2026-08-17T01:27:00+08:00",
-  "baseline_git_commit": "1564a95b28f68f8dfe3a88eb074b557644a649ad",
-  "baseline_git_tree": "631f10adc6d23beb672569fdb337c81e02a031ca",
+  "captured_at": "2026-08-17T09:14:19+08:00",
+  "baseline_git_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+  "baseline_git_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
   "host": "windows_with_wsl",
   "wsl_user": "zeal",
   "toolchain": {
@@ -20,12 +20,15 @@
       "saber": true
     },
     "activation_required": true,
-    "shared_library_preflight_completed": false
+    "activated_path_ready": true,
+    "shared_library_preflight_completed": true,
+    "wpa_missing_shared_libraries": [],
+    "saber_missing_shared_libraries": []
   },
   "model_environment": {
-    "Z_SCOPE_LLM_BASE_URL": "missing",
-    "Z_SCOPE_LLM_MODEL": "missing",
-    "Z_SCOPE_API_KEY": "available_only_in_untracked_local_env",
+    "Z_SCOPE_LLM_BASE_URL": "https://open.bigmodel.cn/api/paas/v4/",
+    "Z_SCOPE_LLM_MODEL": "glm-5.1",
+    "Z_SCOPE_API_KEY": "loaded_from_untracked_local_env",
     "secret_values_recorded": false
   },
   "baseline_quality_checks": {
@@ -36,8 +39,16 @@
     "agent_docs": "passed",
     "wheel_build": "passed"
   },
-  "cold_scan_started": false,
-  "llm_requests_started": false,
-  "result": "blocked_missing_explicit_model_endpoint_and_model_id",
-  "next_action": "Provide the approved endpoint/model through the operator secret environment, activate the documented WSL tool paths, run ldd checks, then execute smoke and cold fast/balanced baselines."
+  "smoke": {
+    "passed": true,
+    "artifact_sha256": "4423e1e30944c0ed9808c260ef4f9f7cf154ca49260986a0020c0ea2d96f1000",
+    "llm_called": false,
+    "network_used": false
+  },
+  "cold_scan_started": true,
+  "llm_requests_started": true,
+  "cold_fast_completed": true,
+  "cold_balanced_completed": true,
+  "result": "passed_for_p0_behavior_baseline",
+  "next_action": "Bind the hash-only cold baseline summary into the evidence index, obtain the three independent design reviews, then approve and tag the design before P1 starts."
 }
