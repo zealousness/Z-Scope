@@ -9,6 +9,7 @@
 - P1完成。
 - Decision Trace和冻结policy replay可用。
 - 四个首批provider family的量词和coverage语义已在contracts中冻结。
+- ADR-0007、字段级schema和上述分族语义通过`proof_security`只读预审；预审前阶段保持`pending`。
 
 ## 工作包
 

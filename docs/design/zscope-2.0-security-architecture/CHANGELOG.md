@@ -1,5 +1,10 @@
 # Design Changelog
 
+## 1.0.1 - 2026-08-17
+
+- 通过 ADR-0007 冻结 P2 首批四类 provider 的量词、coverage 和 fail-closed 语义。
+- 增加 Proof Kernel v2 严格字段 schema 草案；P2 在 proof-security 预审前保持 pending。
+
 ## 1.0.0 - 2026-08-17
 
 - 归档Z-SCOPE 2.0目标架构、契约、淘汰计划和Benchmark v5设计。
