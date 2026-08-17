@@ -52,7 +52,7 @@ tests:
 - YAML pack 和严格 Provider V2 只负责规则特有匹配/证据；语言、CWE、defect class、severity 和 Skill 以 descriptor 为唯一真源。
 - Candidate ledger 负责候选身份、合并、生命周期和证据保留。
 - `fast` 只运行确定性/backend 候选快车道；`balanced`/`deep` 还可接收 candidate-blind 主动发现产生的 hypothesis。所有来源完成后先冻结全局 Ledger，再按 validation cluster 验证一次。
-- Validation runner 依次执行 V0 确定性 proof、`RequiredFactPlan` 的本地证书批处理、V1 单次结构化判定、新增合法请求产生真实 delta 后的单次 V2 无状态复判，以及分档 V3 调查；balanced 覆盖 high/critical 或外部可达的可执行未决 cluster，deep 覆盖全部有可执行证明动作、无完整反证的非 shadow 未决 cluster。validation pipeline 再应用 suppression、baseline、评分和状态分流。
+- Validation runner 先执行稳定的 bounded V0 确定性 proof，再运行 V1 单次结构化判定、新增合法请求产生真实 delta 后的单次 V2 无状态复判，以及分档 V3 调查。Z-Scope 2.0 的 V1 前 `RequiredFactPlan` 与严格 `TerminalAuthorityEvaluator` 当前只做 shadow 对照：输出保留在候选和 trace 中，但在 P2 资格门禁通过前不得改写 V1 输入或覆盖既有 validation pipeline 终态。balanced 覆盖 high/critical 或外部可达的可执行未决 cluster，deep 覆盖全部有可执行证明动作、无完整反证的非 shadow 未决 cluster。
 - Finding attribution 显式区分 `discovered_by` 集合与 `decided_by`/`decision_level`，因此“规则发现、LLM 判定”和“LLM 独占发现”不会混为一类。
 - Rule engine 和 alert verifier 将规则或外部告警转换为相同的验证/报告语义。
 
@@ -63,11 +63,11 @@ tests:
 - 去重必须保留 occurrence、替代证据和来源，不能仅按文本或行号合并。
 - 确定性 proof、LLM 判断和引擎失败必须在元数据中可区分。
 - 完整且无冲突的 proof 才能确定性确认或拒绝。正反 proof 冲突先由 `ProofConflictResolver` 对 subject、decision region、路径/范围、dependency hash 与 completeness 做程序化消解：一方失效时采用另一方，双方仍有效时进入定向 V3；无法消解才进入 `needs_review`，模型不能投票裁决 proof 真伪。没有确定性反证时，模型的 `rejected` 只是一项模型意见，不能把候选从审计视图静默隐藏。
-- `RequiredFactPlan` 在 V1 前从 obligation、decision slice 与 promotion 条件派生本地工作。`FunctionIRGraph v1` 只从唯一、完整的 Clang CFG 函数段构建稳定 block/statement/event、真实边、入口/全部出口和代码/backend hash；候选自己的同一行 inspection 记录不能充当 CFG。Function IR 从候选的结构化 file/location/obligation endpoint 解析源文件，同一函数的 Clang AST/CFG 构建使用 scan-local single-flight，AST JSON 与 stderr 诊断分离解析；失败必须暴露具体 capability 原因，不能缓存成无法解释的全局不可用。每项 provider 结果使用 `resolved/no_match/unsupported/timeout/provider_error/conflicting` 终态。
+- `RequiredFactPlan` 从 obligation、decision slice 与 promotion 条件派生本地工作；当前 V1 前执行只在候选副本上形成 `proof_kernel_fact_first` shadow 投影，不能把未资格化 clause 写入产品 decision slice。`FunctionIRGraph v1` 只从唯一、完整的 Clang CFG 函数段构建稳定 block/statement/event、真实边、入口/全部出口和代码/backend hash；候选自己的同一行 inspection 记录不能充当 CFG。Function IR 从候选的结构化 file/location/obligation endpoint 解析源文件，同一函数的 Clang AST/CFG 构建使用 scan-local single-flight，AST JSON 与 stderr 诊断分离解析；失败必须暴露具体 capability 原因，不能缓存成无法解释的全局不可用。每项 provider 结果使用 `resolved/no_match/unsupported/timeout/provider_error/conflicting` 终态。
 - `FactCapabilityRegistry` 是 V3 可执行性的唯一权威。它按当前 subject、decision region、Function IR 和 backend coverage 产生有限 `EvidenceAction`；普通 call graph、间接 callee（兼容名 `query_pointer_alias`）和 SVF bug-signature 查询只能形成 observation，不能关闭 lockset/HB/cleanup/ownership/path clause。没有 action 的 cluster 以 `V3_NOT_ELIGIBLE_NO_EXECUTABLE_GAP` 留在 needs-review。
-- 并发、资源、路径/guard 和 contract/type provider 统一输出内容寻址的 `EvidenceCertificate v2`。只有证书 hash 有效、status 为 `verified_true` 且量词 coverage 完整的 fact 才带 `satisfies_fact_kinds` 并推进 `EvidenceClosureState`；全称命题在 alias、动态边或路径覆盖不完整时必须 unknown。事实在 V1 前可见；V1 只能再提出一个新的合法参数化请求，有真实 delta 才执行一次无历史 V2。
+- 并发、资源、路径/guard 和 contract/type provider 统一输出内容寻址的 `EvidenceCertificate v2`。只有证书 hash 有效、status 为 `verified_true` 且量词 coverage 完整的 fact 才带 `satisfies_fact_kinds` 并推进 `EvidenceClosureState`；全称命题在 alias、动态边或路径覆盖不完整时必须 unknown。P2 shadow 阶段的 V1 前事实只在对照投影中可见；产品 V1 仍使用稳定 decision slice。V1只能再提出一个新的合法参数化请求，严格证书队列有真实 delta 才执行一次无历史 V2。
 - V3 模型不能构造 fact、引用或自由参数，只能选择系统提供的 action ID。系统执行固定 verifier、自动绑定 subject/region/code/backend hash，把证书写回 decision slice，并立即调用 `TerminalAuthorityEvaluator`；完整正/反 proof 通过程序终态钩子在当前工具轮结束后停止，不再调用模型。重复 action 被拒绝，连续两轮没有系统接纳的 fact 即停止，50 轮只是安全上限。逐调用 `new_fact_count` 只统计实际写入 decision slice 的事实。
-- 旧 `EvidenceClaimRequest` 与普通只读工具目录只用于历史 trace/replay 分类；live ValidationRunner 使用严格 verifier，不能以这些 observation 晋级。`TerminalAuthorityEvaluator` 在 proof、closure 或 promotion 状态变化后统一决定提前终止或继续调查。
+- 旧 `EvidenceClaimRequest` 与普通只读工具目录只用于历史 trace/replay 分类；live V3 使用严格 verifier，不能以这些 observation 晋级。完整确定性正反 proof 仍可立即终止；新 `TerminalAuthorityEvaluator` 的 closure 终态在 P2 门禁通过前保留为 `proof_kernel_shadow_terminal_authority_decision`，不能把既有 policy 已确认的 finding 降级。
 - 主动发现 Agent 只能写 hypothesis/observation，不能写 confirmed finding；其 prompt 不得包含 Candidate Ledger 内容、候选/规则身份、benchmark、truth 或历史 verdict。
 - 已启用阶段因超时、取消或工具失败未能覆盖全部审计单元时，已有结果仍需保存并标记 `completeness=partial`；未启用的阶段不构成 partial。token 成本只在 Benchmark 完成后评价。
 - 外部告警适配后仍需遵守统一 issue identity、证据和报告 schema。

@@ -190,6 +190,13 @@ class ValidationRunner:
     # carrying occurrence-only reachability projections.
     _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v8"
     _DEFAULT_VALIDATION_CACHE_SIZE = 4096
+    # The proof kernel introduced by the Z-Scope 2.0 work is still in its
+    # shadow-qualification phase.  It may emit facts, closure diagnostics and
+    # replay traces, but it must not change the stable product disposition
+    # until the P2 certificate/safe-corpus gates have passed.  Keeping this an
+    # internal lifecycle state avoids exposing a user switch that could bypass
+    # the eventual proof authority.
+    _PROOF_KERNEL_TERMINAL_MODE = "shadow"
     _TRANSIENT_VALIDATOR_STOP_REASONS = frozenset(
         {
             "fact_timeout",
@@ -274,6 +281,15 @@ class ValidationRunner:
             enable_v12_providers=False,
             certified_fact_provider=self._function_ir_facts.resolve_first,
             require_replayable_certificates=True,
+        )
+        # Stable V0 compatibility is deliberately isolated from the strict
+        # post-V1 fact queue.  Reusing one queue made legacy bounded providers
+        # look like a new V2 delta and changed the validation state machine.
+        self._compatibility_prevalidation_queue = EvidenceCompletionQueue(
+            enabled=True,
+            max_workers=config.concurrency.evidence_completion_workers,
+            enable_v11_providers=True,
+            enable_v12_providers=True,
         )
         self._decision_trace_store = ensure_decision_trace_store(config)
         project_root = Path(getattr(getattr(config, "project", None), "project_root", ".") or ".")
@@ -1041,6 +1057,60 @@ class ValidationRunner:
         )
         return batch, outcome
 
+    def _preview_fact_first_prevalidation(
+        self,
+        issue: Dict[str, Any],
+        evidence_pack: Mapping[str, Any],
+    ) -> None:
+        """Record the new proof-kernel fact plan without changing V1 input.
+
+        P2 has not qualified the new RequiredFactPlan as a product authority.
+        Running it over a copy keeps the exact projected closure available for
+        offline comparison while preventing shadow-only missing clauses from
+        rewriting the stable candidate decision slice.
+        """
+
+        probe = deepcopy(issue)
+        if not self._has_valid_security_obligation(probe):
+            issue["proof_kernel_fact_first"] = {
+                "status": "not_applicable",
+                "reason": "missing_security_obligation",
+            }
+            return
+        try:
+            batch = self._evidence_completion_queue.resolve_required_facts(
+                probe,
+                validator_data={"verdict": "uncertain"},
+                validation_evidence=evidence_pack,
+            )
+        except Exception as exc:
+            issue["proof_kernel_fact_first"] = {
+                "status": "provider_error",
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+            }
+            return
+        issue["proof_kernel_fact_first"] = {
+            "status": str(probe.get("evidence_completion_status") or "not_applicable"),
+            "evidence_delta_hash": batch.evidence_delta_hash,
+            "proof_added": batch.proof_added,
+            "attempted_fact_kinds": sorted(
+                {value.fact_kind for value in batch.resolutions if value.fact_kind}
+            ),
+            "resolutions": [
+                {
+                    "fact_kind": value.fact_kind,
+                    "status": value.terminal_status,
+                    "provider_ids": list(value.provider_ids),
+                    "miss_reason": value.miss_reason,
+                }
+                for value in batch.resolutions
+            ],
+            "decision_fact_slice": deepcopy(probe.get("decision_fact_slice") or {}),
+            "evidence_closure_state": deepcopy(probe.get("evidence_closure_state") or {}),
+            "candidate_promotion_eligible": probe.get("candidate_promotion_eligible"),
+            "candidate_promotion_reason": probe.get("candidate_promotion_reason"),
+        }
+
     def _prepare_issue_for_validation(
         self,
         state: Dict[str, Any],
@@ -1085,10 +1155,14 @@ class ValidationRunner:
             ),
         )
         if self._deterministic_prevalidation_enabled():
-            # V0 consumes producer-owned deterministic proofs already attached
-            # to the candidate. Legacy local completion heuristics are not
-            # allowed to manufacture a complete proof in certificate mode;
-            # FunctionIR fact-first runs below for unresolved obligations.
+            # Restore the bounded local V0 completion used by the last stable
+            # baseline.  Removing this call made already available structural
+            # facts invisible to the common deterministic proof checker and
+            # regressed a large set of candidates from confirmed to review.
+            self._compatibility_prevalidation_queue.complete_prevalidation(
+                raw_issue,
+                validation_evidence=evidence_pack,
+            )
             deterministic_outcome = self.validation_pipeline.apply_deterministic_prevalidation(
                 raw_issue,
                 self.validation_pipeline.score_components(raw_issue, {}),
@@ -1223,22 +1297,31 @@ class ValidationRunner:
             output_refs=(evidence_ref,),
             dedupe_key=f"v0-unresolved:{self._trace_cluster_uid(raw_issue)}",
         )
-        _batch, fact_first_outcome = self._run_fact_first_prevalidation(
-            raw_issue,
-            evidence_pack,
-        )
-        if fact_first_outcome is not None:
-            self._record_deterministic_prevalidation_outcome(
-                state,
+        if self._proof_kernel_is_authoritative():
+            _batch, fact_first_outcome = self._run_fact_first_prevalidation(
                 raw_issue,
-                fact_first_outcome,
+                evidence_pack,
             )
-            if fact_first_outcome.report_bucket:
-                state[fact_first_outcome.report_bucket].append(raw_issue)
-            if fact_first_outcome.memory_status:
-                self.remember_validation_result(raw_issue, fact_first_outcome.memory_status)
-            self._update_candidate_ledger(state, raw_issue)
-            return None
+            if fact_first_outcome is not None:
+                self._record_deterministic_prevalidation_outcome(
+                    state,
+                    raw_issue,
+                    fact_first_outcome,
+                )
+                if fact_first_outcome.report_bucket:
+                    state[fact_first_outcome.report_bucket].append(raw_issue)
+                if fact_first_outcome.memory_status:
+                    self.remember_validation_result(raw_issue, fact_first_outcome.memory_status)
+                self._update_candidate_ledger(state, raw_issue)
+                return None
+        else:
+            # RequiredFactPlan is not yet a product authority.  Applying its
+            # broad, still-unqualified clauses before V1 changed the model's
+            # evidence slice and caused a diagnostic shadow feature to alter
+            # terminal behavior.  Record the lifecycle state without mutating
+            # the candidate or the V1 input.
+            raw_issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
+            self._preview_fact_first_prevalidation(raw_issue, evidence_pack)
         return _PreparedValidation(
             index=index,
             raw_issue=raw_issue,
@@ -1878,10 +1961,36 @@ class ValidationRunner:
             has_executable_action=False,
             protocol_or_engine_failure=False,
         )
-        raw_issue["terminal_authority_decision"] = authority.to_dict()
-        raw_issue["terminal_authority"] = authority.authority
-        raw_issue["terminal_reason_codes"] = [authority.reason_code]
-        if authority.disposition == "needs_review" and outcome.memory_status != "needs_review":
+        raw_issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
+        raw_issue["proof_kernel_shadow_terminal_authority_decision"] = authority.to_dict()
+        if (
+            not self._proof_kernel_is_authoritative()
+            and outcome.memory_status == "validated"
+            and authority.disposition == "needs_review"
+        ):
+            # Until Proof Kernel P2 is qualified, its incomplete closure is a
+            # diagnostic, not permission to downgrade a result accepted by the
+            # established Validator policy.  Preserve both decisions so the
+            # exact future cutover delta remains auditable offline.
+            raw_issue["terminal_authority_decision"] = {
+                "terminal": True,
+                "disposition": "confirmed",
+                "reason_code": "CONFIRMED_VERIFIED_CLOSURE",
+                "authority": "validation_pipeline_compat",
+                "next_action": "",
+                "conflict_resolution": None,
+            }
+            raw_issue["terminal_authority"] = "validation_pipeline_compat"
+            raw_issue["terminal_reason_codes"] = ["CONFIRMED_VERIFIED_CLOSURE"]
+        else:
+            raw_issue["terminal_authority_decision"] = authority.to_dict()
+            raw_issue["terminal_authority"] = authority.authority
+            raw_issue["terminal_reason_codes"] = [authority.reason_code]
+        if (
+            self._proof_kernel_is_authoritative()
+            and authority.disposition == "needs_review"
+            and outcome.memory_status != "needs_review"
+        ):
             raw_issue["candidate_disposition"] = "needs_review"
             raw_issue["validation_status"] = "needs_review"
             raw_issue["finding_kind"] = "needs_review"
@@ -3051,6 +3160,8 @@ class ValidationRunner:
             verdict=validation_verdict(val_data),
             score_data=score_data,
         )
+        if not self._proof_kernel_is_authoritative():
+            return outcome.memory_status in {"needs_review", "engine_failed"}
         authority = self._terminal_authority.evaluate(
             probe,
             model_result=val_data,
@@ -3065,6 +3176,10 @@ class ValidationRunner:
             "needs_review",
             "engine_failed",
         }
+
+    @classmethod
+    def _proof_kernel_is_authoritative(cls) -> bool:
+        return cls._PROOF_KERNEL_TERMINAL_MODE == "authoritative"
 
     @staticmethod
     def _apply_v3_investigation_facts(
