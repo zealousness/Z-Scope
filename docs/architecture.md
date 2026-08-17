@@ -74,7 +74,7 @@ flowchart TB
         V2["V2 fact delta recheck"]
         V3["V3 bounded investigation"]
         ClaimVerifier["EvidenceClaimVerifier<br/>recompute structured claim"]
-        Authority["TerminalAuthorityEvaluator<br/>single stop authority"]
+        Authority["TerminalAuthorityEvaluator<br/>proof stop + P2 shadow closure"]
     end
     ReviewMemory["ReviewMemory<br/>baseline + suppression + validator memory"]
     Tools["ToolsRuntime<br/>ToolPolicy + agent tools"]
@@ -171,7 +171,7 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 2. `collect_candidates`：各入口收集规则、图与 backend signal，登记到共享 Candidate Ledger；发现层不得因 token 预算静默丢候选。
 3. `semantic_and_gap_discovery`：fast 跳过；balanced/deep 先构建零 LLM Security Semantic Map 骨架，只对高风险 audit unit 做证据化 semantic delta，再运行 candidate-blind 主动发现并登记 hypothesis。coverage 使用 family + audit-unit + 函数集合 + subject/decision-region/source-sink 的哈希化局部身份；同 family 的另一函数已有候选不能抑制当前 candidate desert。
 4. `freeze_ledger`：全部入口与主动发现结束后冻结全局 Ledger，按同一安全义务跨入口合并。
-5. `validate_findings`：V0 proof → V1 结构化单次判定 → 按 obligation 定向补齐全部必需事实 → 有事实增量才执行一次 V2 → balanced 调查 high/critical 或外部可达的未闭合 cluster，deep 调查全部无完整反证的非 shadow 未闭合 cluster。
+5. `validate_findings`：稳定 bounded V0 proof → V1 结构化单次判定 → 按模型合法请求定向补证 → 有事实增量才执行一次 V2 → balanced 调查 high/critical 或外部可达的未闭合 cluster，deep 调查全部无完整反证的非 shadow 未闭合 cluster。Z-Scope 2.0 的 V1 前 fact-first 与 closure authority 当前只生成 shadow 对照，不改写产品 V1 输入或终态。
 6. `persist_report`：无论完整或部分完成都保存报告、地图、usage、未覆盖区域，以及按 cluster 的 hash-chain decision trace；已启用阶段不完整时标记 partial。
 
 当 `${snapshot_dir}/balanced_rollout_state.json` 存在时，配置生效边界在创建 usage 账本之前执行统一灰度策略。状态必须是由受保护控制面使用专用环境密钥生成的 HMAC-SHA256 信封，并通过 schema/policy/language/release identity、单调 sequence、签发时间、有效期和内部状态校验，才有权改变省略档位：telemetry/回退状态强制 fast，validator opt-in 不启用语义/发现，semantic shadow 运行候选盲发现但将其闭合为不进入用户视图的 `shadow_observation`，10/50/100 依据稳定 project-id bucket 做确定性 enrollment。CLI、Web、MCP 和报告均回显 requested/effective depth、rollout stage、bucket、认证状态与语义/发现可见性；无密钥、裸文件、篡改、过期或 identity 不匹配均视为 unmanaged，不能把省略档位切为 balanced，但不会阻断用户显式 `--scan-depth balanced|deep`。没有安装状态文件的开发/既有部署保持原配置行为。
@@ -349,7 +349,7 @@ Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根�
 
 这层的设计目标是让所有候选都先保持“待验证证据”的形态，再由统一的验证门禁决定是否进入 `issues[]`、`metadata.audit_observations[]` 或被 suppression/baseline 拦截。高置信规则也不再绕过验证流水线；它们只能在证据完整、无反证且满足评分门槛时被自动接受。
 
-验证阶段使用 bounded `ValidatorEvidenceSlice v3`：每个 cluster 只传 canonical occurrence、可读事实 payload、proof、必要路径/claim 与代码窗口，输入上限 12K tokens。状态机固定为：V0 完整正/反 proof；`RequiredFactPlan` 先从 security obligation、slice 与 promotion 缺口派生本地 fact kind，`FunctionIRGraph v1` 与四组专用 provider 批量生成 `EvidenceCertificate v2`，随后 TerminalAuthority 先行；仍未终止才运行 V1 单次无工具结构化判定。V1 只能提出一个新的合法请求，有真实 delta hash 变化才执行一次无历史 V2。只有证书完整、代码/backend/IR hash 可重放且量词 coverage 完整的 fact 才闭合 obligation；alias、动态边或外部契约不完整时返回 unknown。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3。balanced 不再使用 top-K，调查 high/critical 或外部可达且 registry 具有可执行 action 的 cluster；deep 调查全部无完整反证、非 shadow 且有 action 的 cluster。V3 单会话最多 50 次模型迭代，无独立 action 次数上限；模型只能选择固定 action ID，不能构造参数、fact 或 evidence ref。重复 action 立即拒绝，连续两个模型轮次没有系统接纳事实即提前结束；证书一旦形成完整正/反 proof，程序在当前工具轮直接终止而不再调用模型。`new_fact_count` 来自系统实际写入 decision slice 的事实。`model_verdict` 与最终 `policy_disposition` 分离；没有 proof 的模型 rejected 只能进入 needs-review，V3 verified 也必须具有已闭合阻断事实、无冲突且通过现有 promotion policy 才能进入默认视图。
+验证阶段使用 bounded `ValidatorEvidenceSlice v3`：每个 cluster 只传 canonical occurrence、可读事实 payload、proof、必要路径/claim 与代码窗口，输入上限 12K tokens。当前产品先运行 bounded V0；完整且无冲突的正/反 proof 可立即终止。未闭合项进入 V1 单次无工具结构化判定；V1 只能提出一个新的合法请求，有真实 delta hash 变化才执行一次无历史 V2。`FunctionIRGraph v1`、四组证书 provider、V1 前 `RequiredFactPlan` 与严格 closure authority 已提供可审计 shadow 输出，但在设计包 P2 的通用 fixture、safe corpus 和证书重放门禁通过前，shadow 事实不能改写 V1 decision slice，shadow closure 也不能把既有 validation pipeline 已确认的 finding 降级。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3；balanced 不使用 top-K，调查 high/critical 或外部可达且 registry 具有可执行 action 的 cluster，deep 调查全部无完整反证、非 shadow 且有 action 的 cluster。V3 单会话最多50次模型迭代且只能选择固定 action ID；证书一旦形成完整正/反 proof，程序在当前工具轮直接终止。`model_verdict` 与最终 `policy_disposition` 分离；没有 proof 的模型 rejected 只能进入 needs-review。
 
 ### 5.7 持久化与反馈平面
 

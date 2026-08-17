@@ -505,6 +505,10 @@ class EvidenceCompletionQueue:
                 dict(value)
                 for value in resolution.evidence_delta.get("facts") or []
                 if isinstance(value, Mapping)
+                and (
+                    not self.require_replayable_certificates
+                    or value.get("certificate_authoritative") is True
+                )
             )
             proofs.extend(
                 dict(value)
