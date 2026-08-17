@@ -402,6 +402,89 @@
         ]
       },
       "notes": "All three assigned roles independently approved the same commit/tree with zero blocking findings. Non-blocking recommendations remain tracked in the review artifacts and do not relax later phase gates."
+    },
+    {
+      "evidence_uid": "P0-POST-TAG-LOCAL-VALIDATION",
+      "phase": "P0",
+      "kind": "local_gate_execution",
+      "status": "passed",
+      "implementation_commit": "9c343b7da8bc1f9837f87371df9c41f61726174c",
+      "implementation_tree": "cc5ce03aead26f8c43897b631e9653b4a0907da6",
+      "artifacts": [
+        {
+          "path": "scripts/check_zscope_2_design_evidence.py",
+          "sha256": "26b6d4c5fbf4a682926c224fae64cda66b2617e6bedb25ca745f6e180c7e03c2"
+        },
+        {
+          "path": "tests/test_zscope_2_design_evidence.py",
+          "sha256": "4782202899623aa83c180e747c898f87323d5c4f03faa597e33a6640cdc24478"
+        },
+        {
+          "path": ".github/workflows/zscope-2-design-evidence.yml",
+          "sha256": "0a5132cfd220c0111f93854d01860ab3348a7ff3a318f9458d49850b549797db"
+        }
+      ],
+      "review_status": "partially_reviewed",
+      "reviewed_by": ["codex/local-gate-execution"],
+      "verification": {
+        "environment": {
+          "host": "Microsoft Windows NT 10.0.26200.0",
+          "python": "3.10.5 from C:/Users/10273/home/work/Z-Scope/.venv/Scripts/python.exe",
+          "git": "2.52.0.windows.1",
+          "network_and_model_use": "none",
+          "approval_tag": "design-zscope-2.0-security-architecture-v1 -> 9c343b7da8bc1f9837f87371df9c41f61726174c"
+        },
+        "commands": [
+          {
+            "command": "python scripts/check_zscope_2_design_evidence.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m pytest -q tests/test_zscope_2_design_evidence.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m pytest -q tests/test_agent_docs.py tests/test_release_contract.py tests/test_benchmark_v4_contract.py tests/test_zscope_2_design_evidence.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {"command": "python -m pytest -q", "status": "passed"},
+          {
+            "command": "python -m compileall -f -q zscope scripts test tests",
+            "status": "passed"
+          },
+          {"command": "python -m mypy zscope", "status": "passed"},
+          {
+            "command": "python -m mypy --explicit-package-bases scripts/check_zscope_2_design_evidence.py",
+            "status": "passed"
+          },
+          {"command": "python scripts/check_benchmark_hygiene.py", "status": "passed"},
+          {
+            "command": "python scripts/check_zscope_2_change_scope.py --base main --head HEAD",
+            "status": "passed"
+          },
+          {"command": "git diff --check", "status": "passed"},
+          {
+            "command": "python -m black --check scripts/check_zscope_2_design_evidence.py tests/test_zscope_2_design_evidence.py (startup hung and was terminated after more than 60 seconds)",
+            "status": "not_run"
+          },
+          {
+            "command": "python scripts/check_zscope_2_design_evidence.py --strict-external-artifacts",
+            "status": "failed"
+          },
+          {
+            "command": "remote CI workflow .github/workflows/zscope-2-design-evidence.yml",
+            "status": "not_run"
+          }
+        ],
+        "limitations": [
+          "The full local suite passed with 1876 passed and 7 skipped in 159.16 seconds; test success is recorded separately from phase approval.",
+          "The shared Windows virtual environment again hung before Black produced output, so no Black result is claimed.",
+          "Strict external-artifact validation failed exactly on the three ignored aggregate files absent from this worktree; their expected hashes remain recorded and the default validator emits three explicit warnings.",
+          "Remote CI was not run because no push or PR was authorized.",
+          "This post-tag execution was not a fourth independent design review and is therefore marked partially_reviewed."
+        ]
+      },
+      "notes": "The annotated tag, local tag/hash replay, related tests, docs/package/reachability contracts, full pytest, compileall, mypy, benchmark hygiene and change-scope gate passed without network or model use. P1, E0 and all later release gates remain pending."
     }
   ]
 }
