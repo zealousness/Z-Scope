@@ -261,8 +261,8 @@
       "phase": "P0",
       "kind": "governance_ci",
       "status": "passed",
-      "implementation_commit": "0a1192ef615ae76c2d17692aefeb8e518a942ec1",
-      "implementation_tree": "b66895d1c94f82304c5deecf275c1565d9bc5e77",
+      "implementation_commit": "f37af3258afdb01973756c608ebd85a49dd35314",
+      "implementation_tree": "96d484d9e06e42f7f3a072811f03a28336351242",
       "artifacts": [
         {
           "path": "scripts/check_zscope_2_design_evidence.py",
