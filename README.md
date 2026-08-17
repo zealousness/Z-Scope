@@ -664,7 +664,7 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 
 ## 更新日志
 
-### Z-Scope 2.0 P1（开发中）
+### Z-Scope 2.0 P1（已完成）
 - **统一 live 执行路径**：删除旧 Vulnerability Analyzer、Deep Worker、subagent 编排和报告期 LLM 判重；所有 live finding 只来自冻结 Candidate Ledger outcomes 的 Finding-root v2 投影。
 - **中性 workflow**：default、resume、maintain 使用稳定的中性阶段名；每个 step 都必须有 handler 并记录 completed/skipped/failed。
 - **严格兼容边界**：旧配置必须通过 `zscope-config migrate` 显式写入新文件后重新加载；旧报告和 usage 维度只由 `zscope.compat` 做只读展示/映射，不能回流扫描或 proof。

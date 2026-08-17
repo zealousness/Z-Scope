@@ -192,8 +192,11 @@ def test_post_p1_phase_cannot_start_before_p1_completion() -> None:
     manifest, evidence, _ = _design_documents()
     mutated_manifest = copy.deepcopy(manifest)
     mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["phase_status"]["P1"] = "in_progress"
     mutated_manifest["phase_status"]["P2"] = "in_progress"
     for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P1":
+            phase["status"] = "in_progress"
         if phase["phase"] == "P2":
             phase["status"] = "in_progress"
 
@@ -207,6 +210,7 @@ def test_p1_complete_status_cannot_be_recorded_without_phase_review() -> None:
     mutated_manifest = copy.deepcopy(manifest)
     mutated_evidence = copy.deepcopy(evidence)
     mutated_manifest["phase_status"]["P1"] = "complete"
+    mutated_manifest.pop("phase_reviews", None)
     for phase in mutated_evidence["phases"]:
         if phase["phase"] == "P1":
             phase["status"] = "complete"
