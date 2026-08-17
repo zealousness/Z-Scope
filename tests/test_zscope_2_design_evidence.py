@@ -10,6 +10,7 @@ from scripts.check_zscope_2_design_evidence import (
     main,
     resolve_repository_path,
     validate_design_evidence,
+    validate_formal_review_documents,
     validate_json_schema,
     validate_phase_gates,
 )
@@ -24,6 +25,17 @@ def _design_documents() -> tuple[dict, dict, dict]:
     evidence = load_json(DESIGN_ROOT / "acceptance" / "evidence-index.json")
     schema = load_json(DESIGN_ROOT / "acceptance" / "evidence-index.schema.json")
     return manifest, evidence, schema
+
+
+def _formal_review_documents() -> tuple[dict, dict, dict]:
+    manifest, _, _ = _design_documents()
+    formal = manifest["formal_reviews"]
+    schema = load_json(DESIGN_ROOT / formal["schema"])
+    reviews = {
+        role: load_json(DESIGN_ROOT / spec["path"])
+        for role, spec in formal["artifacts"].items()
+    }
+    return manifest, reviews, schema
 
 
 def test_current_design_evidence_is_consistent_without_ignored_artifacts() -> None:
@@ -79,6 +91,48 @@ def test_reviewed_design_cannot_claim_an_approval_tag() -> None:
     errors = validate_phase_gates(mutated, evidence)
 
     assert "reviewed design must not claim that its approval tag was created" in errors
+
+
+def test_p0_completion_requires_three_approved_role_separated_reviews() -> None:
+    manifest, reviews, schema = _formal_review_documents()
+    mutated = copy.deepcopy(reviews)
+    mutated["proof_security"]["decision"] = "changes_required"
+    mutated["proof_security"]["blocking_findings"] = [
+        {
+            "id": "BLOCK-1",
+            "severity": "high",
+            "title": "synthetic blocker",
+            "evidence": "test mutation",
+            "required_action": "reject completion",
+        }
+    ]
+
+    errors = validate_formal_review_documents(
+        manifest, mutated, schema, require_approval=True
+    )
+
+    assert any("requires an approved review decision" in row for row in errors)
+    assert any("requires zero blocking findings" in row for row in errors)
+
+
+def test_formal_reviews_bind_one_common_commit_and_tree() -> None:
+    manifest, reviews, schema = _formal_review_documents()
+    mutated = copy.deepcopy(reviews)
+    mutated["independent_benchmark"]["reviewed_tree"] = "0" * 40
+
+    errors = validate_formal_review_documents(
+        manifest, mutated, schema, require_approval=True
+    )
+
+    assert any("reviewed tree differs from the common review target" in row for row in errors)
+
+
+def test_proof_security_review_records_max_reasoning_and_read_only_mode() -> None:
+    _, reviews, _ = _formal_review_documents()
+
+    harness = reviews["proof_security"]["harness"]
+    assert "reasoning_effort=max" in harness
+    assert "permission_mode=read-only" in harness
 
 
 def test_repository_path_resolution_rejects_escape() -> None:

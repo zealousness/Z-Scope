@@ -18,6 +18,7 @@ DESIGN_RELATIVE_ROOT = PurePosixPath("docs/design/zscope-2.0-security-architectu
 DESIGN_MANIFEST = DESIGN_RELATIVE_ROOT / "design-manifest.json"
 EXTERNAL_ARTIFACT_PREFIXES = ("benchmark-artifacts/",)
 PHASES = ("P0", "P1", "P2", "P3", "P4", "P5", "E0", "P6", "P7")
+P0_REVIEW_ROLES = ("product_architecture", "proof_security", "independent_benchmark")
 DESIGN_STATUSES = (
     "draft",
     "reviewed",
@@ -245,6 +246,163 @@ def _git_tree(repo_root: Path, commit: str) -> str | None:
     return completed.stdout.strip()
 
 
+def _git_text(repo_root: Path, *args: str) -> str | None:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _git_blob_sha256(repo_root: Path, commit: str, raw_path: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "show", f"{commit}:{raw_path}"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        return None
+    return hashlib.sha256(completed.stdout).hexdigest()
+
+
+def validate_formal_review_documents(
+    manifest: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+    *,
+    require_approval: bool,
+) -> list[str]:
+    """Validate the three role-separated P0 review decisions without file I/O."""
+
+    errors: list[str] = []
+    formal = manifest.get("formal_reviews")
+    review_roles = manifest.get("review_roles")
+    if not isinstance(formal, dict) or not isinstance(review_roles, dict):
+        return ["formal_reviews or review_roles structure is missing"]
+    artifacts = formal.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P0_REVIEW_ROLES):
+        return ["formal_reviews artifacts must contain the three P0 review roles exactly once"]
+    reviewed_commit = formal.get("reviewed_commit")
+    reviewed_tree = formal.get("reviewed_tree")
+    if HEX_40.fullmatch(str(reviewed_commit)) is None:
+        errors.append("formal_reviews reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(str(reviewed_tree)) is None:
+        errors.append("formal_reviews reviewed_tree must be a full Git tree")
+
+    for role in P0_REVIEW_ROLES:
+        spec = artifacts.get(role)
+        review = reviews.get(role)
+        if not isinstance(spec, dict) or not isinstance(review, dict):
+            errors.append(f"{role}: review specification or document is missing")
+            continue
+        errors.extend(f"{role}: {row}" for row in validate_json_schema(review, review_schema))
+        expected_model = spec.get("reviewer_model")
+        expected_harness = spec.get("harness")
+        if review.get("role") != role:
+            errors.append(f"{role}: review document names role {review.get('role')!r}")
+        if review.get("reviewer_model") != expected_model:
+            errors.append(f"{role}: reviewer model differs from the formal assignment")
+        if review.get("harness") != expected_harness:
+            errors.append(f"{role}: harness configuration differs from the formal assignment")
+        if review_roles.get(role) != expected_model:
+            errors.append(f"{role}: review_roles identity differs from the formal assignment")
+        if review.get("reviewed_commit") != reviewed_commit:
+            errors.append(f"{role}: reviewed commit differs from the common review target")
+        if review.get("reviewed_tree") != reviewed_tree:
+            errors.append(f"{role}: reviewed tree differs from the common review target")
+        if require_approval and review.get("decision") != "approved":
+            errors.append(f"{role}: P0 completion requires an approved review decision")
+        if require_approval and review.get("blocking_findings") != []:
+            errors.append(f"{role}: P0 completion requires zero blocking findings")
+    return errors
+
+
+def _validate_approval_tag(
+    repo_root: Path, manifest: Mapping[str, Any], report: ValidationReport
+) -> None:
+    approval = manifest.get("approval")
+    if not isinstance(approval, dict) or approval.get("tag_created") is not True:
+        return
+    tag = approval.get("tag")
+    bindings = approval.get("tag_hash_bindings")
+    if not isinstance(tag, str) or not tag:
+        report.error("approval tag is missing")
+        return
+    if not isinstance(bindings, dict) or not bindings:
+        report.error("approved design requires non-empty tag_hash_bindings")
+        return
+    ref = f"refs/tags/{tag}"
+    object_type = _git_text(repo_root, "cat-file", "-t", ref)
+    if object_type is None or object_type.strip() != "tag":
+        report.error(f"approval tag must exist as an annotated tag: {tag}")
+        return
+    tagged_commit = _git_text(repo_root, "rev-parse", f"{ref}^{{commit}}")
+    tag_object = _git_text(repo_root, "cat-file", "-p", ref)
+    if tagged_commit is None or tag_object is None:
+        report.error(f"cannot read approval tag: {tag}")
+        return
+    tagged_commit = tagged_commit.strip()
+    message = tag_object.split("\n\n", 1)[1] if "\n\n" in tag_object else ""
+    message_fields: dict[str, str] = {}
+    for line in message.splitlines():
+        if ": " in line:
+            key, value = line.split(": ", 1)
+            message_fields[key.strip()] = value.strip()
+    if message_fields.get("reviewed-commit") != approval.get("approved_commit"):
+        report.error("approval tag reviewed-commit does not match approval.approved_commit")
+    formal = manifest.get("formal_reviews")
+    if not isinstance(formal, dict) or message_fields.get("reviewed-tree") != formal.get(
+        "reviewed_tree"
+    ):
+        report.error("approval tag reviewed-tree does not match formal_reviews.reviewed_tree")
+
+    required_paths = {
+        DESIGN_MANIFEST.as_posix(),
+        (DESIGN_RELATIVE_ROOT / "acceptance/evidence-index.json").as_posix(),
+    }
+    raw_artifacts = formal.get("artifacts") if isinstance(formal, dict) else None
+    if isinstance(raw_artifacts, dict):
+        for spec in raw_artifacts.values():
+            if isinstance(spec, dict) and isinstance(spec.get("path"), str):
+                required_paths.add(
+                    (DESIGN_RELATIVE_ROOT / PurePosixPath(spec["path"])).as_posix()
+                )
+    if set(bindings.values()) != required_paths:
+        report.error("approval tag_hash_bindings must cover manifest, evidence index, and reviews")
+
+    for key, raw_path in bindings.items():
+        if not isinstance(key, str) or not isinstance(raw_path, str):
+            report.error("approval tag hash bindings must be string pairs")
+            continue
+        expected = message_fields.get(key)
+        if expected is None or HEX_64.fullmatch(expected) is None:
+            report.error(f"approval tag is missing a valid {key} binding")
+            continue
+        actual = _git_blob_sha256(repo_root, tagged_commit, raw_path)
+        if actual is None:
+            report.error(f"approval tag does not contain bound path: {raw_path}")
+        elif actual != expected:
+            report.error(
+                f"approval tag {key} mismatch for {raw_path}: expected {expected}, got {actual}"
+            )
+
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", tagged_commit, "HEAD"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+    )
+    if ancestry.returncode != 0:
+        report.error("approval tag target is not an ancestor of the current HEAD")
+
+
 def validate_phase_gates(
     manifest: Mapping[str, Any], evidence_index: Mapping[str, Any]
 ) -> list[str]:
@@ -300,6 +458,7 @@ def validate_phase_gates(
         and isinstance(approval.get("approved_commit"), str)
         and HEX_40.fullmatch(str(approval.get("approved_commit"))) is not None
         and approval.get("tag_created") is True
+        and approval.get("blocked_reasons") == []
     )
     if p0_status == "complete" or design_status in ACTIVE_AFTER_REVIEW:
         if not reviews_complete:
@@ -308,6 +467,10 @@ def validate_phase_gates(
             errors.append("P0/design approval requires timestamp, commit, and created tag")
     if design_status == "reviewed" and approval.get("tag_created") is True:
         errors.append("reviewed design must not claim that its approval tag was created")
+    if design_status in ACTIVE_AFTER_REVIEW and p0_status != "complete":
+        errors.append("approved or later design status requires P0 completion")
+    if p0_status == "complete" and design_status not in ACTIVE_AFTER_REVIEW:
+        errors.append("P0 completion requires an approved or later design status")
     return errors
 
 
@@ -373,6 +536,77 @@ def validate_design_evidence(
     if evidence_index.get("design_status") != manifest.get("status"):
         report.error("design status differs between manifest and evidence index")
     report.errors.extend(validate_phase_gates(manifest, evidence_index))
+
+    formal = manifest.get("formal_reviews")
+    require_formal_approval = (
+        manifest.get("status") in ACTIVE_AFTER_REVIEW
+        or (isinstance(manifest.get("phase_status"), dict)
+            and manifest["phase_status"].get("P0") == "complete")
+    )
+    if formal is not None:
+        if not isinstance(formal, dict):
+            report.error("formal_reviews must be an object")
+        else:
+            try:
+                review_schema_path = resolve_repository_path(
+                    repo_root,
+                    str(formal.get("schema", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(str(exc))
+                review_schema_path = None
+            review_schema = (
+                _read_governance_json(review_schema_path, report)
+                if review_schema_path is not None
+                else None
+            )
+            reviews: dict[str, Any] = {}
+            artifacts = formal.get("artifacts")
+            if isinstance(artifacts, dict):
+                for role, spec in artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("formal review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root,
+                            str(spec.get("path", "")),
+                            relative_root=design_root,
+                        )
+                    except ValueError as exc:
+                        report.error(f"{role}: {exc}")
+                        continue
+                    reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(review_schema, dict):
+                report.errors.extend(
+                    validate_formal_review_documents(
+                        manifest,
+                        reviews,
+                        review_schema,
+                        require_approval=require_formal_approval,
+                    )
+                )
+            reviewed_commit = str(formal.get("reviewed_commit", ""))
+            reviewed_tree = str(formal.get("reviewed_tree", ""))
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(
+                reviewed_tree
+            ):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(
+                        f"formal review commit is unavailable in Git: {reviewed_commit}"
+                    )
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "formal review tree mismatch; "
+                        f"expected {reviewed_tree}, got {actual_tree}"
+                    )
+    elif require_formal_approval:
+        report.error("P0/design approval requires formal_reviews")
+
+    if verify_git:
+        _validate_approval_tag(repo_root, manifest, report)
 
     manifest_baseline = manifest.get("baseline")
     evidence_baseline = evidence_index.get("baseline")

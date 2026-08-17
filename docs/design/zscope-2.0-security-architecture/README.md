@@ -10,7 +10,7 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 - 当前阶段：`P0 baseline-and-design-freeze`
 - 当前产品事实：仍以[`docs/architecture.md`](../../architecture.md)为准
 - 基线状态：已拆分为Truth、运行配置、Scorer和产品四个可审计提交，工作树干净
-- 进入`approved`的阻塞：cold fast/balanced基线已冻结，但三方正式审核尚未完成；详见`design-manifest.json`
+- 进入`approved`的剩余步骤：cold fast/balanced基线与三方正式审核已冻结，等待最终证据校验和annotated design tag；详见`design-manifest.json`
 
 ## 权威文件
 
@@ -21,6 +21,8 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 - [实施治理](implementation-governance.md)
 - [阶段规格](phases/P0-baseline-and-design-freeze.md)
 - [验收证据索引](acceptance/evidence-index.json)
+- [P0三方审核schema](acceptance/p0-review.schema.json)
+- [P0正式审核记录](acceptance/reviews/p0-product-architecture.json)
 - [架构决策记录](adr/0001-replace-vulnerability-analyzer-with-hypothesis-hunter.md)
 
 ## 状态机
@@ -29,6 +31,8 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 
 只有`design-manifest.json`绑定clean baseline、全部规范文件hash及正式审核记录后，状态才能从
 `reviewed`进入`approved`。批准后的契约变更必须新增ADR，并把受影响阶段重置为`pending`。
+最终annotated tag消息同时绑定design manifest、evidence index和三份正式审核记录的SHA-256；
+这避免manifest与evidence index互相包含当前hash所形成的循环依赖。
 
 ## 不变量
 

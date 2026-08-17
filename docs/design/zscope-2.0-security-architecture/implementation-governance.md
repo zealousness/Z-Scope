@@ -49,6 +49,12 @@ commit/tree、阶段状态和审批门禁。被忽略且未复制到当前worktr
 限制告警；持有归档的审计环境使用`--strict-external-artifacts`要求大件存在且hash一致。告警不等于
 这些外部artifact已经在本地重放或复核。
 
+`evidence-index.json`不直接写入`design-manifest.json`的`document_hashes`：evidence index同时记录当前
+manifest artifact，二者互写当前hash会形成不可满足的循环。P0批准时，annotated design tag消息必须
+同时绑定最终manifest、evidence index和三份role-separated review artifact的SHA-256。校验器验证tag为
+annotated object、tagged commit包含这些精确bytes、reviewed commit/tree一致且tagged commit是当前HEAD
+的祖先。这样后续阶段可以更新活动证据，而P0批准快照仍由Git对象和tag消息不可变地重放。
+
 ## 全局检查
 
 每阶段合并前至少执行：
