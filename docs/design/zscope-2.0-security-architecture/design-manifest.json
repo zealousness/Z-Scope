@@ -1,0 +1,88 @@
+{
+  "schema_version": "zscope.design-manifest.v1",
+  "design_id": "zscope-2.0-security-architecture",
+  "design_version": "1.0.0",
+  "status": "reviewed",
+  "created_at": "2026-08-17T00:00:00+08:00",
+  "current_product_authority": "docs/architecture.md and current source/tests",
+  "target_design_root": "docs/design/zscope-2.0-security-architecture",
+  "baseline": {
+    "branch": "main",
+    "git_commit": "17a9fc0100ea8a991bc25f3cfa76ca2dbb111ef8",
+    "git_tree": "c6dc2204da666ee3f7085894c5bce824d58c5486",
+    "worktree_clean": false,
+    "worktree_changed_path_count_before_design_archive": 84,
+    "worktree_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23"
+  },
+  "document_hashes": {
+    "docs/design/README.md": "049ceb43d18afdbf21162b2ca4c0965026dc0b1cdeff6fd71f282d82fdb46a99",
+    "README.md": "aa260edc8436da2441c962966b281821f15e62ef1407aa0bdd89739d8feb2653",
+    "architecture.md": "5a0197bf5469ce18d468aabbfce706b952f1ced98c499a0e5a72cdb0136c801b",
+    "contracts.md": "d058a16eb13641ba951948943b8f400dcfc58baeb72e15a08e74d5e9c0f04745",
+    "deprecation-plan.md": "a2475243e5ba10b191b50152a08e27dd762c032eaaf0cfceb4ad6ac2c7f97b9a",
+    "benchmark-v5.md": "41489f657e4cce712e4c8467646d6184f0a58c42759c9abf068f328e993a294e",
+    "implementation-governance.md": "4baee95d954ff395c882cd6f955521243c671f3682109d8c5ed4b8c38021631b",
+    "CHANGELOG.md": "ed40b740873a9222da29eaf8eee803df4e9938f21e6c2b9adee4fd370b26722a",
+    "adr/0001-replace-vulnerability-analyzer-with-hypothesis-hunter.md": "2bfa0ddcb882802dba9585d4dac2b71535825041aaf0eba848146b9e21581809",
+    "adr/0002-finite-security-spec-dsl-and-user-review.md": "cf970220db9d65700d0678feb548a5e58db476b249836f0f39cea19c9111a8b9",
+    "adr/0003-internal-proof-kernel.md": "e45002873bdb7e8fe1c6212ad15bbc48c17a2a97143b3204c49be0e0871ded20",
+    "adr/0004-benchmark-v5-and-truth-v16.md": "055fa3cababc2c517d92a668bf2262cae36c461729e1bcc3bb593165ec94e722",
+    "adr/0005-zscope-2.0-breaking-cleanup.md": "bf704b5d48a25cd4a5f28e64ec9eae0bfaee6b8cb5995a132ad14366bd2cd855",
+    "adr/0006-product-and-benchmark-governance-separation.md": "0e528a1d9ed0c7cc22f37cbd002ecba51a9ff17f2778264a35529b7b9f856240",
+    "phases/P0-baseline-and-design-freeze.md": "bd78a6e9489c6ae05161275bfc0574dbf12c1d9ec499e7598aa049e55563ce83",
+    "phases/P1-dead-code-and-workflow-cleanup.md": "bab8d0fef807bc24e95f41e307e17c1a8240ea5d1bc4998b2f331f824d217604",
+    "phases/P2-proof-kernel.md": "7fd62fbb14702e0039ba43a069c9efc60358a52eede0441c5cd9979c30fa6d48",
+    "phases/P3-security-spec-mining-and-review.md": "37c495545f0ed9534ae322904cb1fd42468e8a06daafc79eec3fe43a9145e106",
+    "phases/P4-hypothesis-driven-hunting.md": "8cf467ab50dd5e81cead88569ba22755d2061499285a47af878001a047a6b110",
+    "phases/P5-runtime-cutover.md": "1859da91841e60bc9e2a24836cdeb69ce25c00441c1967dc059de8c083120641",
+    "phases/P6-pilot-validation.md": "0cfcddd02820343931e8a988a753939c325861c17abdfcc36dec93b4da7fd93d",
+    "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
+    "acceptance/evidence-index.schema.json": "74f62a4e58a900a641a3aa837f5f24b6e05809141108d23ed1bfa476299e2361",
+    "acceptance/runtime-reachability-manifest.json": "6c02241a88176e2b8fe5960bb95d3fe225161df62b20e6c938db17a515eeca02",
+    "acceptance/baseline-artifact-manifest.json": "625563db309dc2b1046400764e197764c7a1e333dbc774cc22cd41421b6627cc"
+  },
+  "adrs": [
+    {"id": "ADR-0001", "status": "accepted-for-design", "affected_phases": ["P1", "P4", "P5"]},
+    {"id": "ADR-0002", "status": "accepted-for-design", "affected_phases": ["P3", "P5"]},
+    {"id": "ADR-0003", "status": "accepted-for-design", "affected_phases": ["P2", "P5", "P6"]},
+    {"id": "ADR-0004", "status": "accepted-for-design", "affected_phases": ["E0", "P6", "P7"]},
+    {"id": "ADR-0005", "status": "accepted-for-design", "affected_phases": ["P1", "P5"]},
+    {"id": "ADR-0006", "status": "accepted-for-design", "affected_phases": ["P0", "P1", "P2", "P3", "P4", "P5", "E0", "P6", "P7"]}
+  ],
+  "phase_status": {
+    "P0": "in_progress",
+    "P1": "pending",
+    "P2": "pending",
+    "P3": "pending",
+    "P4": "pending",
+    "P5": "pending",
+    "E0": "pending",
+    "P6": "pending",
+    "P7": "pending"
+  },
+  "review_roles": {
+    "product_architecture": "pending_assignment",
+    "proof_security": "pending_assignment",
+    "independent_benchmark": "pending_assignment"
+  },
+  "approval": {
+    "approved_at": "",
+    "approved_commit": "",
+    "tag": "design-zscope-2.0-security-architecture-v1",
+    "tag_created": false,
+    "blocked_reasons": [
+      "baseline worktree is not clean",
+      "baseline artifacts do not match the current baseline commit",
+      "formal review roles have not signed the evidence index"
+    ]
+  },
+  "evidence_index": {
+    "path": "acceptance/evidence-index.json",
+    "schema": "acceptance/evidence-index.schema.json"
+  },
+  "change_control": {
+    "approved_contract_changes_require_new_adr": true,
+    "affected_phases_reset_to_pending": true,
+    "product_truth_scorer_change_separation_required": true
+  }
+}
