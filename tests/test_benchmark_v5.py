@@ -70,17 +70,48 @@ def _pairs() -> dict:
     }
 
 
-def _attestation() -> dict:
+def _attestation(score: dict) -> dict:
+    bindings = score["artifact_bindings"]
     value = {
         "schema_version": "zscope.e0-attestation.v1",
+        "issued_at": "2026-08-18T00:00:00+00:00",
         "workflow": {
             "path": ".github/workflows/range-v16-benchmark-v5-attestation.yml",
             "run_id": "123",
             "head_sha": "a" * 40,
+            "environment": "sealed-benchmark",
+        },
+        "component_commits": {
+            "governance": "b" * 40,
+            "scorer": "c" * 40,
+            "truth": "a" * 40,
+        },
+        "artifacts": {
+            "truth_v16": "1" * 64,
+            "truth_v16_content": bindings["truth_v16_content"],
+            "truth_contract_manifest": bindings["truth_contract_manifest"],
+            "truth_manifest": "2" * 64,
+            "review_bundle": "3" * 64,
+            "review_bundle_content": bindings["review_bundle_content"],
+            "review_provenance": "4" * 64,
+            "safe_pair_manifest": "5" * 64,
+            "defect_taxonomy": bindings["defect_taxonomy"],
+            "benchmark_policy": bindings["benchmark_policy"],
+            "scorer_bundle": "6" * 64,
+        },
+        "review_summary": {
+            "record_count": 136,
+            "dual_review_count": 136,
+            "opus_review_count": 9,
+            "disputed_opus_count": 9,
         },
         "invariants": {
             "matcher_v2_unchanged": True,
+            "v15_read_only": True,
+            "safe_units_cover_confirmable_truth": True,
             "scanner_answer_isolated": True,
+            "raw_reviews_artifact_only": True,
+            "product_runtime_unchanged": True,
         },
         "content_sha256": "",
     }
@@ -127,7 +158,7 @@ def test_formal_v4_requires_five_component_complete_trials_and_attestation() -> 
         trials.append(trial)
     aggregate = aggregate_benchmark_v5(
         trials,
-        e0_attestation=_attestation(),
+        e0_attestation=_attestation(score),
         trusted_workflow_run_id="123",
         trusted_head_sha="a" * 40,
     )
@@ -137,7 +168,19 @@ def test_formal_v4_requires_five_component_complete_trials_and_attestation() -> 
     with pytest.raises(BenchmarkV5Error, match="run identity"):
         aggregate_benchmark_v5(
             trials,
-            e0_attestation=_attestation(),
+            e0_attestation=_attestation(score),
             trusted_workflow_run_id="self-asserted",
+            trusted_head_sha="a" * 40,
+        )
+    wrong_truth = _attestation(score)
+    wrong_truth["artifacts"]["truth_v16_content"] = "f" * 64
+    unsigned = dict(wrong_truth)
+    unsigned.pop("content_sha256")
+    wrong_truth["content_sha256"] = _sha256_value(unsigned)
+    with pytest.raises(BenchmarkV5Error, match="truth_v16_content"):
+        aggregate_benchmark_v5(
+            trials,
+            e0_attestation=wrong_truth,
+            trusted_workflow_run_id="123",
             trusted_head_sha="a" * 40,
         )

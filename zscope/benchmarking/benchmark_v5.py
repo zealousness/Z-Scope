@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import statistics
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
@@ -27,6 +28,8 @@ FORMAL_BENCHMARK_V4_SCHEMA_VERSION = "zscope.formal-benchmark.v4"
 POLICY_V2_SCHEMA_VERSION = "zscope.benchmark-policy.v2"
 TAXONOMY_SCHEMA_VERSION = "zscope.defect-taxonomy.v1"
 E0_ATTESTATION_SCHEMA_VERSION = "zscope.e0-attestation.v1"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _POLICY_PATH = Path(__file__).with_name("benchmark_policy.v2.json")
 _TAXONOMY_PATH = Path(__file__).with_name("defect-taxonomy.v1.json")
 
@@ -147,7 +150,9 @@ def _cost_metrics(report: Mapping[str, Any], confirmed_tp: int) -> Dict[str, Any
         or metadata.get("total_cumulative_total_tokens")
         or 0
     )
-    loc = int(metadata.get("source_loc") or _mapping(metadata.get("benchmark_input")).get("loc") or 0)
+    loc = int(
+        metadata.get("source_loc") or _mapping(metadata.get("benchmark_input")).get("loc") or 0
+    )
     wall = float(metadata.get("wall_time_seconds") or metadata.get("elapsed_seconds") or 0.0)
     return {
         "runtime_token_limit_applied": False,
@@ -197,9 +202,7 @@ def _safe_pair_metrics(
 
 
 def _macro_metrics(report: Dict[str, Any], truth: Dict[str, Any], view: str) -> Dict[str, Any]:
-    records = truth_records_for_contract(
-        truth, kinds=("concrete_trigger", "public_api_contract")
-    )
+    records = truth_records_for_contract(truth, kinds=("concrete_trigger", "public_api_contract"))
     groups: Dict[str, list[Dict[str, Any]]] = {}
     for record in records:
         contract = _mapping(record.get("verification_contract"))
@@ -273,18 +276,14 @@ def score_benchmark_v5(
             "root_cause_precision": raw["root_cause_precision"],
             "recall": raw["recall"],
             "actionable_f1": raw["actionable_f1"],
-            "actionable_false_discovery_rate": raw[
-                "actionable_false_discovery_rate"
-            ],
+            "actionable_false_discovery_rate": raw["actionable_false_discovery_rate"],
             "safe_entry_alert_rate": raw.get("safe_entry_alert_rate"),
             "matched": raw["matched"],
             "missed": raw["missed"],
             "macro": _macro_metrics(report, truth, name),
             "matcher_audit": {
                 "same_product_root_count": raw["same_product_root_count"],
-                "truth_covered_additional_count": raw[
-                    "truth_covered_additional_count"
-                ],
+                "truth_covered_additional_count": raw["truth_covered_additional_count"],
                 "cross_anchor_overlap_count": raw["cross_anchor_overlap_count"],
                 "weak_legacy_overlap_count": raw["weak_legacy_overlap_count"],
             },
@@ -315,6 +314,13 @@ def score_benchmark_v5(
             "policy_schema_version": POLICY_V2_SCHEMA_VERSION,
             "policy_sha256": policy["source_sha256"],
             "v4_comparison_policy": "incomparable",
+        },
+        "artifact_bindings": {
+            "truth_v16_content": _sha256_value(truth),
+            "truth_contract_manifest": str(contract["manifest_sha256"]),
+            "review_bundle_content": str(contract["review_bundle_sha256"]),
+            "defect_taxonomy": taxonomy["source_sha256"],
+            "benchmark_policy": policy["source_sha256"],
         },
         "product": product_views,
         "security_spec_mining": components["security_spec_mining"],
@@ -353,10 +359,14 @@ def aggregate_benchmark_v5(
     manifests = {str(item.get("manifest_sha256") or "") for item in contracts}
     if len(manifests) != 1 or "" in manifests:
         raise BenchmarkV5Error("formal trials do not bind one Truth v16 manifest")
+    bindings = [_mapping(trial.get("artifact_bindings")) for trial in trials]
+    if not bindings or any(binding != bindings[0] for binding in bindings[1:]):
+        raise BenchmarkV5Error("formal trials do not bind one E0 artifact set")
     _validate_e0_attestation_binding(
         e0_attestation,
         trusted_workflow_run_id=trusted_workflow_run_id,
         trusted_head_sha=trusted_head_sha,
+        expected_artifacts=bindings[0],
     )
     defaults = [_mapping(_mapping(trial.get("product")).get("default")) for trial in trials]
     recalls = [float(item.get("recall") or 0.0) for item in defaults]
@@ -388,23 +398,93 @@ def aggregate_benchmark_v5(
 
 
 def _validate_e0_attestation_binding(
-    value: Mapping[str, Any], *, trusted_workflow_run_id: str, trusted_head_sha: str
+    value: Mapping[str, Any],
+    *,
+    trusted_workflow_run_id: str,
+    trusted_head_sha: str,
+    expected_artifacts: Mapping[str, Any],
 ) -> None:
-    if value.get("schema_version") != E0_ATTESTATION_SCHEMA_VERSION:
+    expected_top = {
+        "schema_version",
+        "issued_at",
+        "workflow",
+        "component_commits",
+        "artifacts",
+        "review_summary",
+        "invariants",
+        "content_sha256",
+    }
+    if set(value) != expected_top or value.get("schema_version") != E0_ATTESTATION_SCHEMA_VERSION:
         raise BenchmarkV5Error("formal Benchmark v5 requires an E0 attestation")
     workflow = _mapping(value.get("workflow"))
+    if set(workflow) != {"path", "run_id", "head_sha", "environment"}:
+        raise BenchmarkV5Error("E0 attestation workflow identity is incomplete")
     if workflow.get("path") != ".github/workflows/range-v16-benchmark-v5-attestation.yml":
         raise BenchmarkV5Error("E0 attestation workflow path is untrusted")
     if str(workflow.get("run_id") or "") != str(trusted_workflow_run_id):
         raise BenchmarkV5Error("E0 attestation run identity is untrusted")
     if workflow.get("head_sha") != trusted_head_sha:
         raise BenchmarkV5Error("E0 attestation head identity is untrusted")
+    if workflow.get("environment") != "sealed-benchmark":
+        raise BenchmarkV5Error("E0 attestation environment is untrusted")
+    commits = _mapping(value.get("component_commits"))
+    if set(commits) != {"governance", "scorer", "truth"} or not all(
+        _GIT_SHA_RE.fullmatch(str(item or "")) for item in commits.values()
+    ):
+        raise BenchmarkV5Error("E0 attestation component commits are invalid")
+    artifacts = _mapping(value.get("artifacts"))
+    required_artifacts = {
+        "truth_v16",
+        "truth_v16_content",
+        "truth_contract_manifest",
+        "truth_manifest",
+        "review_bundle",
+        "review_bundle_content",
+        "review_provenance",
+        "safe_pair_manifest",
+        "defect_taxonomy",
+        "benchmark_policy",
+        "scorer_bundle",
+    }
+    if set(artifacts) != required_artifacts or not all(
+        _SHA256_RE.fullmatch(str(item or "")) for item in artifacts.values()
+    ):
+        raise BenchmarkV5Error("E0 attestation artifact bindings are invalid")
+    for name in (
+        "truth_v16_content",
+        "truth_contract_manifest",
+        "review_bundle_content",
+        "defect_taxonomy",
+        "benchmark_policy",
+    ):
+        if artifacts.get(name) != expected_artifacts.get(name):
+            raise BenchmarkV5Error(f"E0 attestation does not bind trial artifact: {name}")
+    review = _mapping(value.get("review_summary"))
+    if (
+        set(review)
+        != {"record_count", "dual_review_count", "opus_review_count", "disputed_opus_count"}
+        or review.get("record_count") != 136
+        or review.get("dual_review_count") != 136
+        or int(review.get("opus_review_count") or 0) < 9
+        or review.get("disputed_opus_count") != 9
+    ):
+        raise BenchmarkV5Error("E0 attestation review coverage is incomplete")
     unsigned = dict(value)
     supplied = str(unsigned.pop("content_sha256", ""))
     if supplied != _sha256_value(unsigned):
         raise BenchmarkV5Error("E0 attestation content hash is invalid")
     invariants = _mapping(value.get("invariants"))
-    if not invariants or any(item is not True for item in invariants.values()):
+    required_invariants = {
+        "matcher_v2_unchanged",
+        "v15_read_only",
+        "safe_units_cover_confirmable_truth",
+        "scanner_answer_isolated",
+        "raw_reviews_artifact_only",
+        "product_runtime_unchanged",
+    }
+    if set(invariants) != required_invariants or any(
+        invariants.get(name) is not True for name in required_invariants
+    ):
         raise BenchmarkV5Error("E0 attestation hard invariant is not satisfied")
 
 
