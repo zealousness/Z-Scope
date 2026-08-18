@@ -21,7 +21,21 @@ from zscope.benchmarking.benchmark_v5 import (
 
 
 def _load(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    def reject_duplicate(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise BenchmarkV5Error(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+
+    return json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=reject_duplicate,
+        parse_constant=lambda value: (_ for _ in ()).throw(
+            BenchmarkV5Error(f"non-finite JSON number: {value}")
+        ),
+    )
 
 
 def _write(path: Path, value: Mapping[str, Any]) -> None:
@@ -45,15 +59,14 @@ def _score(args: argparse.Namespace) -> int:
 def _aggregate(args: argparse.Namespace) -> int:
     trials = [_load(path) for path in args.trial]
     attestation = _load(args.e0_attestation)
-    if not all(isinstance(value, dict) for value in trials) or not isinstance(
-        attestation, dict
-    ):
+    if not all(isinstance(value, dict) for value in trials) or not isinstance(attestation, dict):
         raise BenchmarkV5Error("trials and E0 attestation must be JSON objects")
     result = aggregate_benchmark_v5(
         trials,
         e0_attestation=attestation,
         trusted_workflow_run_id=args.workflow_run_id,
         trusted_head_sha=args.head_sha,
+        baseline_actionable_precision=args.baseline_actionable_precision,
     )
     _write(args.output, result)
     return 0
@@ -74,6 +87,7 @@ def _parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--e0-attestation", required=True, type=Path)
     aggregate.add_argument("--workflow-run-id", required=True)
     aggregate.add_argument("--head-sha", required=True)
+    aggregate.add_argument("--baseline-actionable-precision", required=True, type=float)
     aggregate.add_argument("--output", required=True, type=Path)
     aggregate.set_defaults(handler=_aggregate)
     return parser

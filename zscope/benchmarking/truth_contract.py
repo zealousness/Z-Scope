@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+from pathlib import PurePosixPath
 from typing import Any, Dict, Mapping, Sequence
 
 
@@ -16,6 +17,9 @@ TRUTH_CONTRACT_KINDS = frozenset(
 )
 TRUTH_ADJUDICATION_STATUSES = frozenset({"accepted", "corrected", "retired"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_TAXONOMY_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,127}$")
+_CLAUSE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+_ANCHOR_KINDS = frozenset({"primary", "secondary", "additional"})
 
 
 def _records(truth: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -182,6 +186,7 @@ def _summarize_truth_contract_v2(
     counts = {kind: 0 for kind in sorted(TRUTH_CONTRACT_KINDS)}
     canonical_records: list[Dict[str, Any]] = []
     seen: set[str] = set()
+    fixture_hashes: set[str] = set()
     for record in _records(truth):
         truth_id = str(record.get("id") or "")
         if not truth_id or truth_id in seen:
@@ -198,14 +203,18 @@ def _summarize_truth_contract_v2(
             raise ValueError(f"truth {truth_id} has invalid verification contract kind")
         if status not in TRUTH_ADJUDICATION_STATUSES:
             raise ValueError(f"truth {truth_id} has invalid adjudication status")
-        if kind == "retired" and status != "retired":
-            raise ValueError(f"truth {truth_id} retired contract must have retired status")
+        if (kind == "retired") != (status == "retired"):
+            raise ValueError(f"truth {truth_id} retired contract/status is inconsistent")
         taxonomy_id = str(contract.get("defect_taxonomy_id") or "")
-        if not taxonomy_id:
+        if not _TAXONOMY_ID_RE.fullmatch(taxonomy_id):
             raise ValueError(f"truth {truth_id} defect taxonomy identity is missing")
+        if record.get("category") != taxonomy_id:
+            raise ValueError(f"truth {truth_id} category/taxonomy identity is inconsistent")
         anchors = contract.get("structured_anchors")
         if not isinstance(anchors, list) or not anchors:
             raise ValueError(f"truth {truth_id} structured anchors are missing")
+        primary_anchors: list[Mapping[str, Any]] = []
+        anchor_identities: set[tuple[Any, ...]] = set()
         for anchor in anchors:
             if not isinstance(anchor, Mapping) or set(anchor) != {
                 "kind",
@@ -215,7 +224,19 @@ def _summarize_truth_contract_v2(
                 "end_line",
             }:
                 raise ValueError(f"truth {truth_id} structured anchor is invalid")
-            if not str(anchor.get("file") or "") or not str(anchor.get("function") or ""):
+            if anchor.get("kind") not in _ANCHOR_KINDS:
+                raise ValueError(f"truth {truth_id} structured anchor kind is invalid")
+            file_name = str(anchor.get("file") or "")
+            path = PurePosixPath(file_name)
+            if (
+                not file_name
+                or "\\" in file_name
+                or path.is_absolute()
+                or str(path) != file_name
+                or any(part in {"", ".", ".."} for part in path.parts)
+            ):
+                raise ValueError(f"truth {truth_id} anchor file is not canonical")
+            if not str(anchor.get("function") or "").strip():
                 raise ValueError(f"truth {truth_id} anchor file/function is missing")
             start = anchor.get("start_line")
             end = anchor.get("end_line")
@@ -228,6 +249,30 @@ def _summarize_truth_contract_v2(
                 or end < start
             ):
                 raise ValueError(f"truth {truth_id} anchor line range is invalid")
+            identity = (
+                anchor.get("kind"),
+                file_name,
+                anchor.get("function"),
+                start,
+                end,
+            )
+            if identity in anchor_identities:
+                raise ValueError(f"truth {truth_id} structured anchors are duplicate")
+            anchor_identities.add(identity)
+            if anchor.get("kind") == "primary":
+                primary_anchors.append(anchor)
+        if len(primary_anchors) != 1:
+            raise ValueError(f"truth {truth_id} requires exactly one primary anchor")
+        primary = primary_anchors[0]
+        if any(
+            record.get(field) != primary.get(anchor_field)
+            for field, anchor_field in (
+                ("file", "file"),
+                ("function", "function"),
+                ("line", "start_line"),
+            )
+        ):
+            raise ValueError(f"truth {truth_id} primary anchor projection is inconsistent")
         trigger = contract.get("trigger")
         if not isinstance(trigger, Mapping) or set(trigger) != {"summary", "evidence_refs"}:
             raise ValueError(f"truth {truth_id} trigger contract is invalid")
@@ -240,15 +285,37 @@ def _summarize_truth_contract_v2(
             raise ValueError(f"truth {truth_id} trigger evidence refs are invalid")
         assumptions = contract.get("threat_assumptions")
         clauses = contract.get("required_evidence_clauses")
-        if not isinstance(assumptions, list) or not all(
-            isinstance(value, str) and value.strip() for value in assumptions
+        if (
+            not isinstance(assumptions, list)
+            or not assumptions
+            or not all(isinstance(value, str) and value.strip() for value in assumptions)
         ):
             raise ValueError(f"truth {truth_id} threat assumptions are invalid")
-        if not isinstance(clauses, list) or not clauses or not all(
-            isinstance(value, Mapping) and str(value.get("clause_id") or "").strip()
-            for value in clauses
-        ):
+        if len(assumptions) != len(set(assumptions)):
+            raise ValueError(f"truth {truth_id} threat assumptions are duplicate")
+        if not isinstance(clauses, list) or not clauses:
             raise ValueError(f"truth {truth_id} required evidence clauses are invalid")
+        clause_ids: set[str] = set()
+        for clause in clauses:
+            if not isinstance(clause, Mapping) or set(clause) != {
+                "clause_id",
+                "predicate",
+                "evidence_refs",
+            }:
+                raise ValueError(f"truth {truth_id} required evidence clause is invalid")
+            clause_id = str(clause.get("clause_id") or "")
+            if not _CLAUSE_ID_RE.fullmatch(clause_id) or clause_id in clause_ids:
+                raise ValueError(f"truth {truth_id} evidence clause identity is invalid")
+            clause_ids.add(clause_id)
+            if not str(clause.get("predicate") or "").strip():
+                raise ValueError(f"truth {truth_id} evidence clause predicate is invalid")
+            refs = clause.get("evidence_refs")
+            if not isinstance(refs, list) or not all(
+                isinstance(value, str) and value.strip() for value in refs
+            ):
+                raise ValueError(f"truth {truth_id} evidence clause refs are invalid")
+            if len(refs) != len(set(refs)):
+                raise ValueError(f"truth {truth_id} evidence clause refs are duplicate")
         reviews = contract.get("review_artifacts")
         required_reviews = {"fable_sha256", "deepseek_sha256", "normalized_sha256"}
         if not isinstance(reviews, Mapping) or not required_reviews.issubset(reviews):
@@ -277,10 +344,15 @@ def _summarize_truth_contract_v2(
                 raise ValueError(f"truth {truth_id} safe pair hash is invalid")
         elif pair:
             raise ValueError(f"truth {truth_id} non-confirmable contract cannot bind a safe pair")
-        if not _SHA256_RE.fullmatch(str(contract.get("fixture_sha256") or "")):
+        fixture_sha = str(contract.get("fixture_sha256") or "")
+        if not _SHA256_RE.fullmatch(fixture_sha):
             raise ValueError(f"truth {truth_id} fixture hash is invalid")
+        fixture_hashes.add(fixture_sha)
         counts[kind] += 1
         canonical_records.append({"truth_id": truth_id, **dict(contract)})
+
+    if len(fixture_hashes) != 1:
+        raise ValueError("truth contract v2 records do not bind one fixture snapshot")
 
     calculated_manifest = hashlib.sha256(
         json.dumps(

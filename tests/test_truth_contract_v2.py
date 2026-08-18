@@ -27,9 +27,14 @@ def _record(truth_id: str, kind: str, line: int) -> dict:
                 "end_line": line + 1,
             }
         ],
-        "trigger": {"summary": "A concrete resource path.", "evidence_refs": [f"src/demo.c:{line}"]},
+        "trigger": {
+            "summary": "A concrete resource path.",
+            "evidence_refs": [f"src/demo.c:{line}"],
+        },
         "threat_assumptions": ["The entry is callable."],
-        "required_evidence_clauses": [{"clause_id": "path", "predicate": "source_sink"}],
+        "required_evidence_clauses": [
+            {"clause_id": "path", "predicate": "source_sink", "evidence_refs": []}
+        ],
         "review_artifacts": {
             "fable_sha256": "1" * 64,
             "deepseek_sha256": "2" * 64,
@@ -114,4 +119,19 @@ def test_truth_contract_v2_rejects_unknown_fields() -> None:
     truth = truth_v16()
     truth["vulnerabilities"][0]["verification_contract"]["benchmark_hint"] = "do not allow"
     with pytest.raises(ValueError, match="fields are invalid"):
+        summarize_truth_contract(truth)
+
+
+def test_truth_contract_v2_rejects_incoherent_anchor_and_clause() -> None:
+    truth = truth_v16()
+    truth["vulnerabilities"][0]["function"] = "other"
+    with pytest.raises(ValueError, match="primary anchor projection"):
+        summarize_truth_contract(truth)
+
+    truth = truth_v16()
+    clause = truth["vulnerabilities"][0]["verification_contract"]["required_evidence_clauses"][0]
+    truth["vulnerabilities"][0]["verification_contract"]["required_evidence_clauses"].append(
+        deepcopy(clause)
+    )
+    with pytest.raises(ValueError, match="clause identity"):
         summarize_truth_contract(truth)

@@ -69,6 +69,8 @@ Proof Engine：
 - agent/stage/V1/V2/V3 tokens、tokens/KLOC、tokens/confirmed TP
 - marginal tokens/新增TP、p50/p95墙钟、五轮Jaccard和recall极差
 
+formal输入必须携带完整的上述三个组件合同、answer-isolation、100% provider usage和token守恒；缺字段不能以0代替。paired结果逐条绑定Truth v16的pair UID、manifest/source hash和两侧scanner report hash。五轮formal聚合重新验证每份score hash，并由调用方提供冻结baseline actionable precision，统一执行`zscope.benchmark-policy.v2`；attestation正文不得自行提供可信workflow run ID。
+
 ## 版本边界
 
 - Benchmark v4和truth v15只读、不可作为2.0 Release证据。
