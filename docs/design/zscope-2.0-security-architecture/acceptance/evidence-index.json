@@ -13,7 +13,7 @@
     {"phase": "P1", "status": "complete", "entry_gate": "P0 complete", "exit_gate": "dead runtime removed with frozen replay equivalence and approved product architecture review", "review_roles": ["product_architecture"]},
     {"phase": "P2", "status": "complete", "entry_gate": "P1 complete and ADR-0007 contract-freeze proof-security review approved", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
     {"phase": "P3", "status": "complete", "entry_gate": "P2 contracts stable and SecuritySpec DSL/state/reviewer policy frozen", "exit_gate": "spec blind qualification, read-only review center and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
-    {"phase": "P4", "status": "pending", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind and non-Range hypothesis gates pass", "review_roles": ["product_architecture", "proof_security"]},
+    {"phase": "P4", "status": "in_progress", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind and non-Range hypothesis gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P5", "status": "pending", "entry_gate": "P2-P4 pass", "exit_gate": "all public paths cut over and legacy runtime absent", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "E0", "status": "pending", "entry_gate": "P0 design approved", "exit_gate": "truth v16 and benchmark v5 independently attested", "review_roles": ["independent_benchmark"]},
     {"phase": "P6", "status": "pending", "entry_gate": "P1-P5 and E0 complete", "exit_gate": "offline replay and cold pilot invariants pass", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},

@@ -7,13 +7,14 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 
 - 设计版本：`1.0.1`
 - 状态：`implementing`
-- 当前阶段：`P0`、`P1`与`P2 proof-kernel`已完成；`P3 security-spec-mining-and-review`已冻结入口契约并进入实现，`E0`仍为`pending`
+- 当前阶段：`P0`至`P3`已完成；`P4 hypothesis-driven-hunting`已冻结入口契约并进入实现，`E0`仍为`pending`
 - 当前产品事实：仍以[`docs/architecture.md`](../../architecture.md)为准
 - 基线状态：已拆分为Truth、运行配置、Scorer和产品四个可审计提交，工作树干净
 - P0批准状态：cold fast/balanced基线、三方正式审核、最终证据校验和annotated design tag均已绑定
 - P1完成状态：候选commit/tree已通过冻结replay、公共入口、wheel/import graph、Black和`claude-opus-5`只读product architecture审核；零blocking finding。测试通过与正式审核记录分别登记
 - P2完成状态：Proof Kernel资格 corpus、完整门禁和DeepSeek `deepseek-v4-pro`最终proof-security审核已通过，零blocking finding；运行时仍固定为shadow，P5之前不得取得authority
-- P3进入状态：SecuritySpec v2严格schema、13项有限DSL registry、状态机、qualification契约和只读reviewer policy已冻结；当前Web没有可信reviewer identity，P3不开放写审阅
+- P3完成状态：SecuritySpec v2资格、只读Review Center和双角色审核已通过，运行时继续保持shadow
+- P4进入状态：SecurityHypothesis v2、系统offer/action选择、独立shadow Ledger和非Range qualification契约已冻结；现有active discovery与稳定终态在P5前保持不变
 
 ## 权威文件
 
