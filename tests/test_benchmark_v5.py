@@ -81,6 +81,9 @@ def _report(*, components: bool = False) -> dict:
     return {
         "answer_material_present": False,
         "issues": [confirmed],
+        "run_manifest": {
+            "finding_root_projection": {"schema_version": "zscope.finding-root.v2"}
+        },
         "report_views": {
             "default": {"issues": [confirmed]},
             "with_needs_review": {"issues": [confirmed, needs_review]},
@@ -154,7 +157,7 @@ def _attestation(score: dict) -> dict:
             "safe_pair_manifest": "5" * 64,
             "defect_taxonomy": bindings["defect_taxonomy"],
             "benchmark_policy": bindings["benchmark_policy"],
-            "scorer_bundle": "6" * 64,
+            "scorer_bundle": bindings["scorer_bundle"],
         },
         "review_summary": {
             "record_count": 136,
@@ -222,6 +225,10 @@ def test_formal_v4_requires_five_component_complete_trials_and_attestation() -> 
     for index in range(5):
         trial = deepcopy(score)
         trial["cost"]["total_tokens"] += index
+        trial["cost"]["tokens_per_kloc"] += index
+        trial["cost"]["tokens_per_confirmed_tp"] += index
+        trial["cost"]["usage_by_agent"]["proof_engine"]["total_tokens"] += index
+        trial["cost"]["usage_by_stage"]["V1"]["total_tokens"] += index
         unsigned_trial = dict(trial)
         unsigned_trial.pop("score_sha256")
         trial["score_sha256"] = _sha256_value(unsigned_trial)
@@ -236,6 +243,10 @@ def test_formal_v4_requires_five_component_complete_trials_and_attestation() -> 
     assert aggregate["schema_version"] == FORMAL_BENCHMARK_V4_SCHEMA_VERSION
     assert aggregate["trial_count"] == 5
     assert aggregate["cost"]["runtime_token_limit_applied"] is False
+    assert aggregate["quality"]["default"]["recall"]["median"] == 0.5
+    assert aggregate["quality"]["with_needs_review"]["recall"]["median"] == 1.0
+    assert aggregate["cost"]["total_tokens"]["median"] == 1002
+    assert aggregate["components"]["proof_engine"]["certificate_replay_rate"]["median"] == 1.0
     assert aggregate["policy_evaluation"]["status"] == "failed"
     assert aggregate["policy_evaluation"]["gates"]["confirmed_recall"]["passed"] is False
     with pytest.raises(BenchmarkV5Error, match="run identity"):
@@ -284,12 +295,46 @@ def test_formal_v5_rejects_answer_or_telemetry_gaps_and_trial_tampering() -> Non
     with pytest.raises(BenchmarkV5Error, match="provider/token telemetry"):
         score_benchmark_v5(report, truth_v16(), pair_results=_pairs(formal=True), formal=True)
 
+    report = _report(components=True)
+    report["metadata"]["llm_usage"]["by_agent"]["proof_engine"]["total_tokens"] = 999
+    with pytest.raises(BenchmarkV5Error, match="token dimensions"):
+        score_benchmark_v5(report, truth_v16(), pair_results=_pairs(formal=True), formal=True)
+
+    report = _report(components=True)
+    report["run_manifest"]["finding_root_projection"]["schema_version"] = "legacy"
+    with pytest.raises(BenchmarkV5Error, match="Finding-root v2"):
+        score_benchmark_v5(report, truth_v16(), pair_results=_pairs(formal=True), formal=True)
+
+    report = _report(components=True)
+    report["metadata"]["benchmark_v5_components"]["proof_engine"][
+        "certificate_replay_rate"
+    ] = float("nan")
+    with pytest.raises(BenchmarkV5Error, match="component metrics"):
+        score_benchmark_v5(report, truth_v16(), pair_results=_pairs(formal=True), formal=True)
+
     score = score_benchmark_v5(
         _report(components=True), truth_v16(), pair_results=_pairs(formal=True), formal=True
     )
     trials = [deepcopy(score) for _ in range(5)]
     trials[0]["product"]["default"]["recall"] = 0.0
     with pytest.raises(BenchmarkV5Error, match="score hash"):
+        aggregate_benchmark_v5(
+            trials,
+            e0_attestation=_attestation(score),
+            trusted_workflow_run_id="123",
+            trusted_head_sha="a" * 40,
+            baseline_actionable_precision=1.0,
+        )
+
+    score = score_benchmark_v5(
+        _report(components=True), truth_v16(), pair_results=_pairs(formal=True), formal=True
+    )
+    trials = [deepcopy(score) for _ in range(5)]
+    trials[0]["cost"]["total_tokens"] += 1
+    unsigned_trial = dict(trials[0])
+    unsigned_trial.pop("score_sha256")
+    trials[0]["score_sha256"] = _sha256_value(unsigned_trial)
+    with pytest.raises(BenchmarkV5Error, match="token dimensions"):
         aggregate_benchmark_v5(
             trials,
             e0_attestation=_attestation(score),
