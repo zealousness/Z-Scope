@@ -60,7 +60,8 @@ DECISION_FIELDS = {
     "cwe_ids": ["CWE-123"],
     "structured_anchors": [
         {
-            "kind": "primary|secondary|additional|corrected",
+            "kind": "primary|secondary|additional",
+            "corrected": "boolean indicating a v15 anchor correction",
             "file": "repository-relative POSIX path",
             "function": "function name",
             "start_line": "positive integer",
@@ -142,11 +143,17 @@ def _decision_schema_for_model() -> dict[str, Any]:
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["kind", "file", "function", "start_line", "end_line"],
+                    "required": [
+                        "kind",
+                        "corrected",
+                        "file",
+                        "function",
+                        "start_line",
+                        "end_line",
+                    ],
                     "properties": {
-                        "kind": {
-                            "enum": ["primary", "secondary", "additional", "corrected"]
-                        },
+                        "kind": {"enum": ["primary", "secondary", "additional"]},
+                        "corrected": {"type": "boolean"},
                         "file": {"type": "string", "minLength": 1},
                         "function": {"type": "string", "minLength": 1},
                         "start_line": {"type": "integer", "minimum": 1},
