@@ -37,6 +37,8 @@ REASON_CODES = {
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 CLAUSE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+TAXONOMY_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,127}$")
+CWE_ID_RE = re.compile(r"^CWE-[0-9]+$")
 
 _FORBIDDEN_KEYS = {
     "candidate_id",
@@ -248,9 +250,13 @@ def validate_review_decision(
         "contract_kind",
         "disposition",
         "confidence",
+        "defect_taxonomy_id",
+        "cwe_ids",
         "structured_anchors",
         "required_evidence_clauses",
         "evidence_refs",
+        "trigger_summary",
+        "threat_assumptions",
         "safe_pair_recommendation",
         "reason_codes",
     }
@@ -273,6 +279,17 @@ def validate_review_decision(
         raise E0GovernanceError("review decision confidence must be numeric")
     if not math.isfinite(float(confidence)) or not 0 <= float(confidence) <= 1:
         raise E0GovernanceError("review decision confidence is outside [0,1]")
+    if not TAXONOMY_ID_RE.fullmatch(str(decision.get("defect_taxonomy_id") or "")):
+        raise E0GovernanceError("review decision defect taxonomy ID is invalid")
+    cwe_ids = decision.get("cwe_ids")
+    if (
+        not isinstance(cwe_ids, list)
+        or not cwe_ids
+        or not all(isinstance(value, str) and CWE_ID_RE.fullmatch(value) for value in cwe_ids)
+    ):
+        raise E0GovernanceError("review decision CWE identities are invalid")
+    if len(set(cwe_ids)) != len(cwe_ids):
+        raise E0GovernanceError("review decision CWE identities are duplicate")
     anchors = decision.get("structured_anchors")
     if not isinstance(anchors, list) or not anchors:
         raise E0GovernanceError("review decision structured_anchors must be non-empty")
@@ -334,6 +351,15 @@ def validate_review_decision(
         isinstance(value, str) and value.strip() for value in evidence_refs
     ):
         raise E0GovernanceError("review decision evidence refs are invalid")
+    if not isinstance(decision.get("trigger_summary"), str) or not decision[
+        "trigger_summary"
+    ].strip():
+        raise E0GovernanceError("review decision trigger summary is invalid")
+    threat_assumptions = decision.get("threat_assumptions")
+    if not isinstance(threat_assumptions, list) or not threat_assumptions or not all(
+        isinstance(value, str) and value.strip() for value in threat_assumptions
+    ):
+        raise E0GovernanceError("review decision threat assumptions are invalid")
     codes = decision.get("reason_codes")
     if not isinstance(codes, list) or not codes or not set(codes).issubset(REASON_CODES):
         raise E0GovernanceError("review decision reason codes are invalid")

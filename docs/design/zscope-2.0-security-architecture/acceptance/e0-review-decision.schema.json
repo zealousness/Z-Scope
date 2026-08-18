@@ -13,9 +13,13 @@
     "contract_kind",
     "disposition",
     "confidence",
+    "defect_taxonomy_id",
+    "cwe_ids",
     "structured_anchors",
     "required_evidence_clauses",
     "evidence_refs",
+    "trigger_summary",
+    "threat_assumptions",
     "safe_pair_recommendation",
     "reason_codes"
   ],
@@ -30,6 +34,16 @@
     },
     "disposition": {"enum": ["keep", "correct", "retire", "unresolved"]},
     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "defect_taxonomy_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,127}$"
+    },
+    "cwe_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^CWE-[0-9]+$"}
+    },
     "structured_anchors": {
       "type": "array",
       "minItems": 1,
@@ -64,6 +78,12 @@
       }
     },
     "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "trigger_summary": {"type": "string", "minLength": 1},
+    "threat_assumptions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
     "safe_pair_recommendation": {
       "type": "object",
       "additionalProperties": false,

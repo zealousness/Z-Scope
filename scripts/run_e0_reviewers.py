@@ -56,6 +56,8 @@ DECISION_FIELDS = {
     "contract_kind": "concrete_trigger|public_api_contract|pattern_model|retired",
     "disposition": "keep|correct|retire|unresolved",
     "confidence": "number 0..1",
+    "defect_taxonomy_id": "lowercase normalized defect category",
+    "cwe_ids": ["CWE-123"],
     "structured_anchors": [
         {
             "kind": "primary|secondary|additional|corrected",
@@ -73,6 +75,8 @@ DECISION_FIELDS = {
         }
     ],
     "evidence_refs": [],
+    "trigger_summary": "concise evidence-grounded trigger or model summary",
+    "threat_assumptions": ["explicit answer-free assumption reviewed from the packet"],
     "safe_pair_recommendation": {
         "kind": "fixed|near_miss",
         "invariant_summary": "the invariant isolated by the pair",
@@ -122,6 +126,16 @@ def _decision_schema_for_model() -> dict[str, Any]:
             },
             "disposition": {"enum": ["keep", "correct", "retire", "unresolved"]},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "defect_taxonomy_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{1,127}$",
+            },
+            "cwe_ids": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": True,
+                "items": {"type": "string", "pattern": "^CWE-[0-9]+$"},
+            },
             "structured_anchors": {
                 "type": "array",
                 "minItems": 1,
@@ -161,6 +175,12 @@ def _decision_schema_for_model() -> dict[str, Any]:
                 },
             },
             "evidence_refs": {"type": "array", "items": {"type": "string"}},
+            "trigger_summary": {"type": "string", "minLength": 1},
+            "threat_assumptions": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
+            },
             "safe_pair_recommendation": {
                 "type": "object",
                 "additionalProperties": False,
@@ -669,7 +689,15 @@ def run_arbitration(args: argparse.Namespace) -> int:
         deepseek = _load_decision(args.deepseek_dir / "decisions" / f"{truth_id}.json")
         disagreement = any(
             fable.get(field) != deepseek.get(field)
-            for field in ("contract_kind", "disposition", "structured_anchors")
+            for field in (
+                "contract_kind",
+                "disposition",
+                "defect_taxonomy_id",
+                "cwe_ids",
+                "structured_anchors",
+                "trigger_summary",
+                "threat_assumptions",
+            )
         )
         if disagreement:
             disagreements.add(truth_id)
