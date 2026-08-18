@@ -32,8 +32,7 @@ def _formal_review_documents() -> tuple[dict, dict, dict]:
     formal = manifest["formal_reviews"]
     schema = load_json(DESIGN_ROOT / formal["schema"])
     reviews = {
-        role: load_json(DESIGN_ROOT / spec["path"])
-        for role, spec in formal["artifacts"].items()
+        role: load_json(DESIGN_ROOT / spec["path"]) for role, spec in formal["artifacts"].items()
     }
     return manifest, reviews, schema
 
@@ -120,9 +119,7 @@ def test_p0_completion_requires_three_approved_role_separated_reviews() -> None:
         }
     ]
 
-    errors = validate_formal_review_documents(
-        manifest, mutated, schema, require_approval=True
-    )
+    errors = validate_formal_review_documents(manifest, mutated, schema, require_approval=True)
 
     assert any("requires an approved review decision" in row for row in errors)
     assert any("requires zero blocking findings" in row for row in errors)
@@ -133,9 +130,7 @@ def test_formal_reviews_bind_one_common_commit_and_tree() -> None:
     mutated = copy.deepcopy(reviews)
     mutated["independent_benchmark"]["reviewed_tree"] = "0" * 40
 
-    errors = validate_formal_review_documents(
-        manifest, mutated, schema, require_approval=True
-    )
+    errors = validate_formal_review_documents(manifest, mutated, schema, require_approval=True)
 
     assert any("reviewed tree differs from the common review target" in row for row in errors)
 

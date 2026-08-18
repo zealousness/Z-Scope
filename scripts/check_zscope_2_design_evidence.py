@@ -189,9 +189,7 @@ def validate_json_schema(instance: Any, schema: Mapping[str, Any], path: str = "
             if key in properties:
                 property_schema = properties[key]
                 if isinstance(property_schema, dict):
-                    errors.extend(
-                        validate_json_schema(value, property_schema, f"{path}.{key}")
-                    )
+                    errors.extend(validate_json_schema(value, property_schema, f"{path}.{key}"))
             elif additional is False:
                 errors.append(f"{path}: unexpected property {key!r}")
             elif isinstance(additional, dict):
@@ -406,9 +404,7 @@ def _validate_approval_tag(
     if isinstance(raw_artifacts, dict):
         for spec in raw_artifacts.values():
             if isinstance(spec, dict) and isinstance(spec.get("path"), str):
-                required_paths.add(
-                    (DESIGN_RELATIVE_ROOT / PurePosixPath(spec["path"])).as_posix()
-                )
+                required_paths.add((DESIGN_RELATIVE_ROOT / PurePosixPath(spec["path"])).as_posix())
     if set(bindings.values()) != required_paths:
         report.error("approval tag_hash_bindings must cover manifest, evidence index, and reviews")
 
@@ -470,9 +466,7 @@ def validate_phase_gates(
 
     p0_status = raw_manifest_phases.get("P0")
     later_started = [
-        phase
-        for phase in PHASES
-        if phase != "P0" and raw_manifest_phases.get(phase) != "pending"
+        phase for phase in PHASES if phase != "P0" and raw_manifest_phases.get(phase) != "pending"
     ]
     if later_started and p0_status != "complete":
         errors.append(f"phases started before P0 completion: {', '.join(later_started)}")
@@ -573,10 +567,9 @@ def validate_design_evidence(
     report.errors.extend(validate_phase_gates(manifest, evidence_index))
 
     formal = manifest.get("formal_reviews")
-    require_formal_approval = (
-        manifest.get("status") in ACTIVE_AFTER_REVIEW
-        or (isinstance(manifest.get("phase_status"), dict)
-            and manifest["phase_status"].get("P0") == "complete")
+    require_formal_approval = manifest.get("status") in ACTIVE_AFTER_REVIEW or (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P0") == "complete"
     )
     if formal is not None:
         if not isinstance(formal, dict):
@@ -624,14 +617,10 @@ def validate_design_evidence(
                 )
             reviewed_commit = str(formal.get("reviewed_commit", ""))
             reviewed_tree = str(formal.get("reviewed_tree", ""))
-            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(
-                reviewed_tree
-            ):
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
                 actual_tree = _git_tree(repo_root, reviewed_commit)
                 if actual_tree is None:
-                    report.error(
-                        f"formal review commit is unavailable in Git: {reviewed_commit}"
-                    )
+                    report.error(f"formal review commit is unavailable in Git: {reviewed_commit}")
                 elif actual_tree != reviewed_tree:
                     report.error(
                         "formal review tree mismatch; "
