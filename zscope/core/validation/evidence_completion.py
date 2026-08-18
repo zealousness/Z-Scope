@@ -580,9 +580,7 @@ class EvidenceCompletionQueue:
         prior_closure = issue.get("evidence_closure_state")
         prior_closure = prior_closure if isinstance(prior_closure, Mapping) else {}
         required_for_closure = set(fact_plan.fact_kinds) | {
-            str(value)
-            for value in prior_closure.get("required_fact_kinds") or []
-            if str(value)
+            str(value) for value in prior_closure.get("required_fact_kinds") or [] if str(value)
         }
         missing_fact_kinds = tuple(sorted(required_for_closure - set(resolved_fact_kinds)))
         closure_payload = {

@@ -614,8 +614,7 @@ def test_validation_runner_v2_recheck_sees_all_required_typed_fact_deltas_once()
         "zscope.evidence-certificate.v2"
     )
     v1_fact_kinds = {
-        fact["fact_kind"]
-        for fact in agent.inputs[0]["evidence_slice"]["decision_facts"]["facts"]
+        fact["fact_kind"] for fact in agent.inputs[0]["evidence_slice"]["decision_facts"]["facts"]
     }
     assert "source_sink_reachability" in v1_fact_kinds
     assert issue["validator_fact_resolution"]["status"] == "completed_partial"
@@ -795,10 +794,7 @@ def test_v3_rejects_another_action_after_its_clause_was_closed() -> None:
     assert agent.action_results[0]["status"] == "verified_true"
     assert agent.action_results[0]["newly_accepted"] is True
     assert agent.action_results[1]["status"] == "unknown"
-    assert (
-        agent.action_results[1]["reason_code"]
-        == "evidence_action_clause_already_closed"
-    )
+    assert agent.action_results[1]["reason_code"] == "evidence_action_clause_already_closed"
 
 
 def test_balanced_does_not_run_v3_when_no_executable_certificate_provider_exists() -> None:

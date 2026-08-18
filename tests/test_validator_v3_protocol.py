@@ -290,8 +290,7 @@ def test_v3_synthesis_does_not_count_input_facts_as_new_usage_facts() -> None:
     evidence_slice["validation_pass"] = "investigation_synthesis"
     evidence_slice["evidence_delta"] = {
         "facts": [
-            {"fact_uid": f"FACT_INPUT_{index}", "fact_kind": "value_range"}
-            for index in range(6)
+            {"fact_uid": f"FACT_INPUT_{index}", "fact_kind": "value_range"} for index in range(6)
         ]
     }
 

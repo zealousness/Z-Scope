@@ -243,9 +243,7 @@ def test_cfg_join_uses_must_intersection_and_does_not_merge_branch_lock() -> Non
     graph = _clang_graph()
 
     locksets = graph.must_hold_locksets()
-    sink_statement = next(
-        event.statement_uid for event in graph.events if event.callee == "sink"
-    )
+    sink_statement = next(event.statement_uid for event in graph.events if event.callee == "sink")
 
     assert locksets["B0"] == frozenset()
     result = ConcurrencyProofProvider().prove(
@@ -262,9 +260,7 @@ def test_cfg_join_uses_must_intersection_and_does_not_merge_branch_lock() -> Non
 
 def test_statement_order_distinguishes_access_before_and_after_lock() -> None:
     graph = _clang_graph()
-    sink_statement = next(
-        event.statement_uid for event in graph.events if event.callee == "sink"
-    )
+    sink_statement = next(event.statement_uid for event in graph.events if event.callee == "sink")
     lock_statement = next(
         event.statement_uid for event in graph.events if event.kind == "lock_acquire"
     )

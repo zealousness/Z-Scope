@@ -297,9 +297,7 @@ class ValidationRunner:
                 "prompt_contract_sha256": self._validation_environment_fingerprint,
             }
         )
-        self._evidence_claim_verifier = EvidenceClaimVerifier(
-            allow_legacy_observation_claims=False
-        )
+        self._evidence_claim_verifier = EvidenceClaimVerifier(allow_legacy_observation_claims=False)
         self._terminal_authority = TerminalAuthorityEvaluator()
 
     @staticmethod

@@ -111,7 +111,8 @@ _STRICT_PREDICATE_ALLOWED_TOOLS: Dict[str, frozenset[str]] = {
     # signatures.  None can certify CFG paths, lock/HB, ownership, cleanup,
     # type layout or object identity.  New scans use EvidenceCertificate v2
     # actions; this empty registry makes old claims fail closed during replay.
-    predicate: frozenset() for predicate in PREDICATE_FACT_KINDS
+    predicate: frozenset()
+    for predicate in PREDICATE_FACT_KINDS
 }
 
 _LEGACY_REPLAY_ALLOWED_TOOLS: Dict[str, frozenset[str]] = {
