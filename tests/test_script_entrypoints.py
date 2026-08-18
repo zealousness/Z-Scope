@@ -27,6 +27,7 @@ import pytest
         "scripts/build_e0_review_provenance.py",
         "scripts/run_e0_reviewers.py",
         "scripts/verify_e0_attestation.py",
+        "scripts/verify_e0_review_provenance.py",
     ),
 )
 def test_direct_script_help_uses_worktree(relative_path: str, tmp_path: Path) -> None:

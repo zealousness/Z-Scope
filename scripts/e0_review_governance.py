@@ -14,6 +14,7 @@ from typing import Any, Mapping
 PACKET_SCHEMA_VERSION = "zscope.range-v16-review-packet.v1"
 DECISION_SCHEMA_VERSION = "zscope.range-v16-review-decision.v1"
 ATTESTATION_SCHEMA_VERSION = "zscope.e0-attestation.v1"
+REVIEW_PROVENANCE_SCHEMA_VERSION = "zscope.range-v16-review-provenance.v1"
 CONTRACT_KINDS = {
     "concrete_trigger",
     "public_api_contract",
@@ -39,6 +40,7 @@ GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 CLAUSE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 TAXONOMY_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,127}$")
 CWE_ID_RE = re.compile(r"^CWE-[0-9]+$")
+ARTIFACT_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 _FORBIDDEN_KEYS = {
     "candidate_id",
@@ -195,8 +197,10 @@ def validate_review_packet(packet: Mapping[str, Any]) -> None:
         if not isinstance(raw_path, str) or not raw_path or "\\" in raw_path:
             raise E0GovernanceError("review packet code window path is invalid")
         path = PurePosixPath(raw_path)
-        if path.is_absolute() or str(path) != raw_path or any(
-            part in {"", ".", ".."} for part in path.parts
+        if (
+            path.is_absolute()
+            or str(path) != raw_path
+            or any(part in {"", ".", ".."} for part in path.parts)
         ):
             raise E0GovernanceError("review packet code window path is not canonical")
         start_line = window.get("start_line")
@@ -310,8 +314,10 @@ def validate_review_decision(
         if not isinstance(anchor.get("file"), str) or not anchor["file"]:
             raise E0GovernanceError("review decision structured anchor file is invalid")
         path = PurePosixPath(str(anchor["file"]))
-        if path.is_absolute() or str(path) != anchor["file"] or any(
-            part in {"", ".", ".."} for part in path.parts
+        if (
+            path.is_absolute()
+            or str(path) != anchor["file"]
+            or any(part in {"", ".", ".."} for part in path.parts)
         ):
             raise E0GovernanceError("review decision structured anchor path is not canonical")
         if not isinstance(anchor.get("function"), str) or not anchor["function"]:
@@ -354,13 +360,16 @@ def validate_review_decision(
         isinstance(value, str) and value.strip() for value in evidence_refs
     ):
         raise E0GovernanceError("review decision evidence refs are invalid")
-    if not isinstance(decision.get("trigger_summary"), str) or not decision[
-        "trigger_summary"
-    ].strip():
+    if (
+        not isinstance(decision.get("trigger_summary"), str)
+        or not decision["trigger_summary"].strip()
+    ):
         raise E0GovernanceError("review decision trigger summary is invalid")
     threat_assumptions = decision.get("threat_assumptions")
-    if not isinstance(threat_assumptions, list) or not threat_assumptions or not all(
-        isinstance(value, str) and value.strip() for value in threat_assumptions
+    if (
+        not isinstance(threat_assumptions, list)
+        or not threat_assumptions
+        or not all(isinstance(value, str) and value.strip() for value in threat_assumptions)
     ):
         raise E0GovernanceError("review decision threat assumptions are invalid")
     codes = decision.get("reason_codes")
@@ -381,10 +390,58 @@ def validate_review_decision(
         if not isinstance(safe_pair.get(field), str) or not safe_pair[field].strip():
             raise E0GovernanceError(f"review decision safe pair {field} is invalid")
     compile_requirements = safe_pair.get("compile_requirements")
-    if not isinstance(compile_requirements, list) or not compile_requirements or not all(
-        isinstance(value, str) and value.strip() for value in compile_requirements
+    if (
+        not isinstance(compile_requirements, list)
+        or not compile_requirements
+        or not all(isinstance(value, str) and value.strip() for value in compile_requirements)
     ):
         raise E0GovernanceError("review decision compile requirements are invalid")
+
+
+def validate_review_provenance(
+    value: Mapping[str, Any],
+    *,
+    expected_workflow_run_id: str | None = None,
+    expected_head_sha: str | None = None,
+    expected_artifact_digest: str | None = None,
+) -> None:
+    expected = {
+        "schema_version",
+        "workflow_path",
+        "workflow_run_id",
+        "head_sha",
+        "environment",
+        "artifact_name",
+        "artifact_digest",
+        "packet_catalog_sha256",
+        "review_bundle_sha256",
+    }
+    if set(value) != expected or value.get("schema_version") != REVIEW_PROVENANCE_SCHEMA_VERSION:
+        raise E0GovernanceError("review provenance fields or schema are invalid")
+    if value.get("workflow_path") != ".github/workflows/range-v16-review.yml":
+        raise E0GovernanceError("review provenance workflow is untrusted")
+    run_id = value.get("workflow_run_id")
+    if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id < 1:
+        raise E0GovernanceError("review provenance run ID is invalid")
+    if expected_workflow_run_id is not None and str(run_id) != str(expected_workflow_run_id):
+        raise E0GovernanceError("review provenance run ID mismatch")
+    head_sha = str(value.get("head_sha") or "")
+    if not GIT_SHA_RE.fullmatch(head_sha):
+        raise E0GovernanceError("review provenance head SHA is invalid")
+    if expected_head_sha is not None and head_sha != expected_head_sha:
+        raise E0GovernanceError("review provenance head SHA mismatch")
+    if value.get("environment") != "sealed-benchmark":
+        raise E0GovernanceError("review provenance environment is untrusted")
+    if value.get("artifact_name") != f"range-v16-reviewed-{head_sha}":
+        raise E0GovernanceError("review provenance artifact name is invalid")
+    digest = str(value.get("artifact_digest") or "")
+    if not ARTIFACT_DIGEST_RE.fullmatch(digest):
+        raise E0GovernanceError("review provenance artifact digest is invalid")
+    if expected_artifact_digest is not None and digest != expected_artifact_digest:
+        raise E0GovernanceError("review provenance artifact digest mismatch")
+    for field in ("packet_catalog_sha256", "review_bundle_sha256"):
+        if not SHA256_RE.fullmatch(str(value.get(field) or "")):
+            raise E0GovernanceError(f"review provenance {field} is invalid")
 
 
 def attestation_content_sha256(payload: Mapping[str, Any]) -> str:
@@ -432,14 +489,18 @@ def validate_e0_attestation(
     artifacts = payload.get("artifacts")
     required_artifacts = {
         "truth_v16",
+        "truth_v16_content",
+        "truth_contract_manifest",
         "truth_manifest",
         "review_bundle",
+        "review_bundle_content",
+        "review_provenance",
         "safe_pair_manifest",
         "defect_taxonomy",
         "benchmark_policy",
         "scorer_bundle",
     }
-    if not isinstance(artifacts, Mapping) or not required_artifacts.issubset(artifacts):
+    if not isinstance(artifacts, Mapping) or set(artifacts) != required_artifacts:
         raise E0GovernanceError("E0 artifact bindings are incomplete")
     if not all(SHA256_RE.fullmatch(str(item or "")) for item in artifacts.values()):
         raise E0GovernanceError("E0 artifact SHA is invalid")
@@ -472,6 +533,7 @@ __all__ = [
     "DECISION_SCHEMA_VERSION",
     "E0GovernanceError",
     "PACKET_SCHEMA_VERSION",
+    "REVIEW_PROVENANCE_SCHEMA_VERSION",
     "assert_minimal_review_packet",
     "attestation_content_sha256",
     "canonical_json_bytes",
@@ -481,4 +543,5 @@ __all__ = [
     "validate_e0_attestation",
     "validate_review_decision",
     "validate_review_packet",
+    "validate_review_provenance",
 ]
