@@ -414,6 +414,15 @@ def test_decision_trace_sidecar_is_archived_and_rebound_for_offline_explain(
         "validation_status": "validated",
         "proof_coverage": "complete",
         "decision_proof": {"coverage": "complete", "polarity": "positive"},
+        "terminal_authority_decision": {
+            "schema_version": "zscope.terminal-authority-decision.v3",
+            "terminal": True,
+            "disposition": "confirmed",
+            "reason_code": "CONFIRMED_DETERMINISTIC_PROOF",
+            "authority": "zscope.proof-checker",
+            "next_action": "",
+            "conflict_resolution": None,
+        },
     }
     store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
     manifest = store.snapshot()
@@ -480,6 +489,15 @@ def test_decision_trace_archive_rejects_tampered_content_object(tmp_path: Path) 
         "candidate_uid": "CAND_1",
         "validation_cluster_uid": "VAL_1",
         "candidate_disposition": "needs_review",
+        "terminal_authority_decision": {
+            "schema_version": "zscope.terminal-authority-decision.v3",
+            "terminal": True,
+            "disposition": "needs_review",
+            "reason_code": "NEEDS_REVIEW_OPEN_CLAUSES",
+            "authority": "zscope.proof-checker",
+            "next_action": "",
+            "conflict_resolution": None,
+        },
     }
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
     manifest = store.snapshot()

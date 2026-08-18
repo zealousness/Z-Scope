@@ -3,13 +3,7 @@ from zscope.orchestration.budget import RiskBudgetPlanner
 
 
 def _planner() -> RiskBudgetPlanner:
-    return RiskBudgetPlanner(
-        AnalysisConfig(
-            max_recursion_depth=6,
-            max_premodel_depth=5,
-            max_premodel_callees=80,
-        )
-    )
+    return RiskBudgetPlanner(AnalysisConfig(max_recursion_depth=6))
 
 
 def test_adaptive_budget_keeps_low_risk_functions_below_hard_caps() -> None:
@@ -25,21 +19,11 @@ def test_adaptive_budget_keeps_low_risk_functions_below_hard_caps() -> None:
     budget = planner.plan(state)
 
     assert budget.recursion_depth == 1
-    assert budget.premodel_depth == 1
-    assert budget.premodel_callees <= 8
     assert budget.recursion_depth <= budget.hard_caps["max_recursion_depth"]
-    assert budget.premodel_depth <= budget.hard_caps["max_premodel_depth"]
-    assert budget.premodel_callees <= budget.hard_caps["max_premodel_callees"]
 
 
 def test_zero_hard_caps_disable_their_effective_budgets() -> None:
-    planner = RiskBudgetPlanner(
-        AnalysisConfig(
-            max_recursion_depth=0,
-            max_premodel_depth=0,
-            max_premodel_callees=0,
-        )
-    )
+    planner = RiskBudgetPlanner(AnalysisConfig(max_recursion_depth=0))
     state = {
         "impl_result": {
             "code": "int entry(void) { return malloc(16) != 0; }",
@@ -53,8 +37,6 @@ def test_zero_hard_caps_disable_their_effective_budgets() -> None:
     )
 
     assert budget.recursion_depth == 0
-    assert budget.premodel_depth == 0
-    assert budget.premodel_callees == 0
     assert budget.graph_depth == 0
     assert budget.graph_functions == 0
 
@@ -107,10 +89,7 @@ def test_adaptive_budget_uses_separate_risk_signals_per_budget_type() -> None:
     budget = planner.plan(state, graph_candidates=graph_candidates)
 
     assert budget.recursion_depth > low.recursion_depth
-    assert budget.premodel_depth > low.premodel_depth
-    assert budget.premodel_callees > low.premodel_callees
     assert "graph_candidate_requires_cross_function_trace" in budget.risk_reasons["recursion_depth"]
-    assert "user_config_protocol_or_pair_context" in budget.risk_reasons["premodel_depth"]
 
 
 def test_adaptive_budget_expands_thin_protocol_facades() -> None:
@@ -127,6 +106,5 @@ def test_adaptive_budget_expands_thin_protocol_facades() -> None:
 
     budget = planner.plan(state)
 
-    assert budget.premodel_depth >= 2
     assert budget.graph_depth >= 2
-    assert "thin_public_facade_requires_callee_context" in budget.risk_reasons["premodel_depth"]
+    assert "thin_public_facade_requires_callee_trace" in budget.risk_reasons["recursion_depth"]

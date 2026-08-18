@@ -63,7 +63,7 @@ def _write(root: Path, data: dict, name: str = "zscope.yaml") -> Path:
 
 def test_empty_task_activates_every_available_skill(tmp_path: Path) -> None:
     config = ConfigLoader.load(str(_write(tmp_path, _config(tmp_path))))
-    analyzer = next(agent for agent in config.project.agents if agent.name == "active_discovery")
+    analyzer = next(agent for agent in config.project.agents if agent.name == "hypothesis_hunter")
 
     assert analyzer.task == ""
     selection = select_vulnerability_skills(analyzer.task, ["memory", "concurrency"])
@@ -345,7 +345,7 @@ def test_runtime_override_requires_developer_mode_and_records_provenance(
     assert len(config.runtime_provenance.sha256) == 64
 
 
-def test_runtime_override_controls_semantic_enrichment_rollout(
+def test_removed_semantic_enrichment_override_requires_explicit_migration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_path = _write(tmp_path, _config(tmp_path))
@@ -356,14 +356,7 @@ def test_runtime_override_controls_semantic_enrichment_rollout(
     )
     monkeypatch.setenv("Z_SCOPE_DEVELOPER_MODE", "1")
     monkeypatch.setenv("Z_SCOPE_RUNTIME_SPEC", str(override.resolve()))
-    config = ConfigLoader.load(str(config_path))
-    assert config.analysis.security_semantic_enrichment_mode == "active"
-
-    override.write_text(
-        "runtime_spec_version: 1\n" "analysis:\n" "  security_semantic_enrichment_mode: unsafe\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="must be 'shadow' or 'active'"):
+    with pytest.raises(ValueError, match="explicit compat migration"):
         ConfigLoader.load(str(config_path))
 
 
@@ -389,7 +382,7 @@ def test_runtime_override_is_strict_and_must_be_absolute(
         (
             "runtime_spec_version: 1\nagents:\n  vulnerability_analyzer:\n"
             "    enabled: true\n    llm_role: analysis\n",
-            "migrate explicitly to runtime.agents.active_discovery",
+            "migrate explicitly to runtime.agents.hypothesis_hunter",
         ),
         (
             "runtime_spec_version: 1\nanalysis:\n  enable_subagent_workers: true\n",

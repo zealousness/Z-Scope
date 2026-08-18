@@ -1,16 +1,16 @@
 runtime_spec_version: 1
 
 agents:
-  semantic_modeler:
+  security_spec_miner:
     enabled: true
     llm_role: modeling
-  active_discovery:
+  hypothesis_hunter:
     enabled: true
     llm_role: analysis
   history_maintenance_agent:
     enabled: true
     llm_role: modeling
-  validator_agent:
+  proof_engine:
     enabled: true
     llm_role: validation
 
@@ -20,12 +20,7 @@ analysis:
   max_tool_iterations: 50
   enable_snapshot_cache: true
   validation_cache_entries: 4096
-  enable_global_model: false
-  max_premodel_depth: 3
-  max_premodel_callees: 20
   trivial_function_max_lines: 5
-  # Rollout starts in shadow mode; release policy controls promotion to active.
-  security_semantic_enrichment_mode: shadow
   request_deadline_seconds: 120
   validation_deadline_seconds: 240
   entry_deadline_seconds: 1800

@@ -1,4 +1,4 @@
-"""Strict read-only loading of a frozen Security Spec shadow root manifest."""
+"""Strict read-only loading of a frozen authoritative Security Spec manifest."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ from .lifecycle import SECURITY_SPEC_MODE
 from .store import SecuritySpecObjectStore
 
 
-def load_shadow_manifest_identity(root: Path, *, consumer: str) -> dict[str, Any]:
+def load_manifest_identity(root: Path, *, consumer: str) -> dict[str, Any]:
     root = Path(root)
     fallback = {
         "security_spec_mode": SECURITY_SPEC_MODE,
         "security_spec_root_manifest_sha256": "",
         "security_spec_artifact_refs": [],
-        "security_spec_shadow_decision": {
-            "active_product_effect": "none",
+        "security_spec_decision": {
+            "active_product_effect": "semantic_input",
             "compiled_spec_count": 0,
             "reason_code": f"{consumer}_security_spec_manifest_unavailable",
         },
@@ -35,7 +35,9 @@ def load_shadow_manifest_identity(root: Path, *, consumer: str) -> dict[str, Any
         body = {key: value for key, value in raw.items() if key != "content_sha256"}
         if raw.get("schema_version") != "zscope.security-spec-root-manifest.v1":
             raise ValueError("security_spec_manifest_version_mismatch")
-        if raw.get("mode") != "shadow" or content_sha256(body) != raw.get("content_sha256"):
+        if raw.get("mode") != SECURITY_SPEC_MODE or content_sha256(body) != raw.get(
+            "content_sha256"
+        ):
             raise ValueError("security_spec_manifest_hash_or_mode_mismatch")
         refs = raw.get("artifact_refs")
         object_store = SecuritySpecObjectStore(root)
@@ -55,8 +57,8 @@ def load_shadow_manifest_identity(root: Path, *, consumer: str) -> dict[str, Any
             "security_spec_mode": SECURITY_SPEC_MODE,
             "security_spec_root_manifest_sha256": str(raw["content_sha256"]),
             "security_spec_artifact_refs": list(refs),
-            "security_spec_shadow_decision": {
-                "active_product_effect": "none",
+            "security_spec_decision": {
+                "active_product_effect": "semantic_input",
                 "compiled_spec_count": compiled_count,
                 "reason_code": f"{consumer}_security_spec_manifest_loaded",
             },

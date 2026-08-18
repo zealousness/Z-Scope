@@ -41,6 +41,6 @@
     "zscope/semantics/security_specs/qualification/p3-security-spec-qualification.json": "e7ace75c3fee12d914fe432ae6f8bb2756a7707a508df1510ea0dd04bc933861",
     "scripts/qualify_p3_security_specs.py": "12cacaf0f58a03f1ca04dd623fbe8d64f7bfc967095f4ea25d502750cb56cdc4",
     "zscope/semantics/security_specs/registry.py": "68b884ffa0a9f42dc6a662457f78a0928f471ce52a862c0d474488783f2026ad",
-    "zscope/semantics/security_specs/compiler.py": "b0c2a866b836fc32a92eb17a905713078ff0d824f80af705379da0ebb6bd287f"
+    "zscope/semantics/security_specs/compiler.py": "0c48949d6d27ac049eb557ee68fb8e42cf43a4c45a7e55600f07b453d3713844"
   }
 }

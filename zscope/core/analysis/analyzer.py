@@ -10,6 +10,7 @@ import time
 import datetime
 import inspect
 import re
+import subprocess
 import threading
 import uuid
 from collections import deque
@@ -92,9 +93,6 @@ from ..validation.evidence import (
     trim_code,
     validation_verdict,
 )
-from ...semantics.inference import (
-    LocalPatternSemanticBuilder,
-)
 from ...semantics.user_config_context import relevant_user_config_context
 from ...snapshots.policy import (
     build_lightweight_snapshot,
@@ -108,8 +106,6 @@ from ...framework.llm_usage import (
     ensure_scan_token_usage_ledger,
     scan_token_usage_snapshot,
 )
-from ...agents.semantic_modeler.agent import SemanticModeler
-from ...agents.semantic_modeler.retry import run_semantic_model_with_retries
 from ...reporting.report import FinalReport, Issue, ReportGenerator
 from ...common.issue_identity import (
     canonical_issue_key,
@@ -127,22 +123,21 @@ from ...common.utils import extract_json_blocks, validate_json_schema
 from ..._version import __version__
 from ...orchestration.specs import SpecRegistry, WorkflowStep
 from ...orchestration.workflow_executor import WorkflowExecutor, WorkflowStepHandler
-from ...orchestration.active_discovery import (
-    ActiveDiscoveryAgent,
-    ActiveDiscoveryCoordinator,
-    SemanticEnrichmentAgent,
-    SemanticMapEnricher,
-    candidate_coverage_keys,
-    historical_variant_keys,
-    make_agent_report_runner,
-    make_semantic_enrichment_runner,
-    resolve_discovery_profile,
-)
-from ...orchestration.rollout import (
-    rollout_active_discovery_mode,
-    rollout_runtime_policy,
-)
+from ...orchestration.rollout import rollout_runtime_policy
 from ...orchestration.candidates import CandidateLedger, CandidateRegistrar, CandidateTicket
+from ...orchestration.hunting_profile import resolve_hunting_profile
+from ...orchestration.hypothesis_hunter import (
+    HypothesisArtifactStore,
+    HypothesisHunterAgent,
+    HypothesisHunterRuntime,
+    HypothesisProofCatalog,
+)
+from ...orchestration.runtime_authority import build_runtime_authority_manifest
+from ..validation.fact_capabilities import FunctionIRFactService
+from ...semantics.security_specs.compiler import SecuritySpecCompiler
+from ...semantics.security_specs.qualification import load_builtin_qualification
+from ...semantics.security_specs.runtime import SecuritySpecRuntime
+from ...semantics.security_specs.store import SecuritySpecStore
 from ...orchestration.decision_trace import ensure_decision_trace_store
 from ...orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
@@ -255,10 +250,7 @@ class Analyzer:
             else Path(config.analysis.snapshot_dir)
         )
         self.user_config = user_config or UserConfigStore(db_dir)
-        self.validation_pipeline = ValidationPipeline(
-            self.user_config,
-            enable_deterministic_proof_routing=True,
-        )
+        self.validation_pipeline = ValidationPipeline(self.user_config)
         self.candidate_pipeline = CandidatePipeline(
             local_detector=self._detect_local_rule_candidates,
             graph_detector=self._detect_graph_rule_candidates,
@@ -670,8 +662,6 @@ class Analyzer:
             "reconcile_history": self._handle_reconcile_changed_issues,
             "run_pending_entries": self._handle_default_scan_subworkflow,
             "run_changed_entry": self._handle_default_scan_subworkflow,
-            "premodel_reachable_callees": self._handle_premodel_reachable_callees,
-            "model_entry": self._handle_model_entry,
             "collect_candidates": self._handle_collect_candidates,
             "validate_candidates": self._handle_validate_findings,
             "persist_report": self._handle_persist_report,
@@ -691,14 +681,6 @@ class Analyzer:
     def _handle_default_scan_subworkflow(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         self._execute_default_scan_subworkflow(state)
         return True
-
-    def _handle_premodel_reachable_callees(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
-        self._step_premodel_reachable_callees(state)
-        return False
-
-    def _handle_model_entry(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
-        self._step_model_entry(state)
-        return False
 
     def _handle_collect_candidates(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         self._step_collect_candidates(state)
@@ -832,183 +814,12 @@ class Analyzer:
 
         state["history_reconciled"] = True
 
-    def _step_premodel_reachable_callees(self, state: Dict[str, Any]) -> None:
-        if self.config.analysis.enable_global_model:
-            state["notes"].append(
-                "Premodel reachable callees skipped because global modeling is enabled."
-            )
-            return
-
-        sm_agent_cfg = next(
-            (a for a in self.config.project.agents if a.name == "semantic_modeler"), None
-        )
-        sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
-        sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
-        budget = self._refresh_effective_budget(state, "premodel")
-        if budget.premodel_depth <= 0 or budget.premodel_callees <= 0:
-            state["notes"].append("Premodel skipped because adaptive budget is 0.")
-            self._record_engine_capability(
-                "semantic_premodel",
-                status="degraded",
-                active=False,
-                reason="semantic_premodel_budget_disabled",
-            )
-            return
-
-        try:
-            modeled, skipped, tokens = self._premodel_callees(
-                state["entry_func"],
-                sm_client,
-                max_depth=budget.premodel_depth,
-                max_callees=budget.premodel_callees,
-                state=state,
-            )
-        except Exception as exc:
-            logger.exception(
-                "[premodel] Reachable callee premodeling failed for '%s'; "
-                "continuing with entry analysis.",
-                state["entry_func"],
-            )
-            state["notes"].append(
-                "Premodel reachable callees skipped after retrieval error: " f"{exc}"
-            )
-            self._record_engine_failed_work(
-                state,
-                engine="semantic_premodel",
-                function_name=str(state.get("entry_func") or ""),
-                reason=f"{type(exc).__name__}: {exc}",
-            )
-            self._record_engine_capability(
-                "semantic_premodel",
-                status="failed",
-                active=True,
-                reason="semantic_premodel_failed",
-            )
-            return
-        state["total_context_tokens"] += tokens
-        state["total_cumulative_total_tokens"] += tokens
-        state["notes"].append(
-            f"Premodeled {modeled} reachable callee(s), reused {skipped} snapshot(s)."
-        )
-
-    def _step_model_entry(self, state: Dict[str, Any]) -> None:
-        if self.config.analysis.enable_global_model:
-            impl_result = _as_dict(state.get("impl_result"))
-            entry_func = str(state.get("entry_func") or "")
-            entry_index_name = str(state.get("entry_index_name") or "")
-            snapshot = self.snapshot_store.load_snapshot(entry_index_name)
-            if snapshot:
-                try:
-                    needs_refresh, reason = self.snapshot_store.needs_refresh(
-                        entry_index_name,
-                        str(impl_result.get("code") or ""),
-                        state["semantic_model_input"],
-                    )
-                except Exception:
-                    needs_refresh, reason = True, "snapshot_refresh_check_failed"
-                if not needs_refresh:
-                    self._record_engine_capability(
-                        "semantic_entry_model",
-                        status="complete",
-                        active=True,
-                        reason="reused_global_snapshot",
-                    )
-                    state["notes"].append(f"Reused globally modeled snapshot for {entry_func}.")
-                    logger.info(
-                        "[global-model] Reusing entry snapshot for '%s' (%s).",
-                        entry_func,
-                        reason or "current",
-                    )
-                    return
-                logger.info(
-                    "[global-model] Entry snapshot for '%s' needs refresh (%s); falling back to model_entry.",
-                    entry_func,
-                    reason or "unknown",
-                )
-            else:
-                logger.info(
-                    "[global-model] No entry snapshot for '%s'; falling back to model_entry.",
-                    entry_func,
-                )
-
-        sm_agent_cfg = next(
-            (a for a in self.config.project.agents if a.name == "semantic_modeler"), None
-        )
-        sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
-        sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
-
-        def make_semantic_agent() -> SemanticModeler:
-            return SemanticModeler(
-                sm_client,
-                self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
-                tool_policy=self._tool_policy_for_agent("semantic_modeler"),
-            )
-
-        agent_context = state["agent_context"]
-        semantic_context = deepcopy(state["semantic_model_input"])
-
-        logger.info("Running Semantic Modeler agent with '%s' LLM...", sm_llm_ref)
-        self._attach_agent_contract(semantic_context, "semantic_modeler")
-        response = run_semantic_model_with_retries(
-            make_semantic_agent,
-            semantic_context,
-            log_context="entry",
-            index_name=state["entry_index_name"],
-        )
-        sm_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
-        state["total_context_tokens"] += sm_tokens
-        self._accumulate_cumulative_token_metadata(
-            state, response.metadata if response.metadata else {}
-        )
-
-        if response.success:
-            self.snapshot_store.save_snapshot(
-                state["entry_index_name"],
-                response.data,
-                semantic_context["code"],
-                dependency_context=semantic_context,
-            )
-            logger.info(
-                "[snapshot-llm] completed context=entry index_name=%s "
-                "success=true context_tokens=%d",
-                state["entry_index_name"],
-                sm_tokens,
-            )
-            state["notes"].append(f"Successfully modeled function: {state['entry_func']}")
-            self._record_engine_capability(
-                "semantic_entry_model",
-                status="complete",
-                active=True,
-                candidate_count=0,
-            )
-        else:
-            failure_reason = str((response.metadata or {}).get("reason") or "semantic_model_failed")
-            logger.warning(
-                "[snapshot-llm] completed context=entry index_name=%s "
-                "success=false context_tokens=%d reason=%s error=%s",
-                state["entry_index_name"],
-                sm_tokens,
-                failure_reason,
-                response.error,
-            )
-            state["notes"].append(f"Semantic modeling failed: {response.error}")
-            self._record_engine_failed_work(
-                state,
-                engine="semantic_entry_model",
-                function_name=str(state.get("entry_func") or ""),
-                reason=f"{failure_reason}: {response.error}",
-            )
-            self._record_engine_capability(
-                "semantic_entry_model",
-                status="failed",
-                active=True,
-                reason=failure_reason,
-            )
-
     def _step_collect_candidates(self, state: Dict[str, Any]) -> None:
+        if self._semantic_overlay is None or self._local_pattern_semantics is None:
+            self._prepare_single_entry_security_spec_runtime(state)
         agent_context = state["agent_context"]
         active_cfg = next(
-            (agent for agent in self.config.project.agents if agent.name == "active_discovery"),
+            (agent for agent in self.config.project.agents if agent.name == "hypothesis_hunter"),
             None,
         )
         task = str(
@@ -1053,252 +864,257 @@ class Analyzer:
         )
 
         if not getattr(self, "defer_validation_to_scan", False):
-            self._run_single_entry_active_discovery(state)
+            self._run_single_entry_hypothesis_hunter(state)
 
-    def _run_single_entry_active_discovery(self, state: Dict[str, Any]) -> None:
-        """Run the shared map/discovery stage before local validation."""
+    def _prepare_single_entry_security_spec_runtime(self, state: Dict[str, Any]) -> None:
+        """Compile strict SecuritySpecs before a standalone Analyzer collects candidates."""
 
-        if state.get("active_discovery_attempted"):
-            return
-        state["active_discovery_attempted"] = True
-        profile = resolve_discovery_profile(self.config)
-        discovery_mode = rollout_active_discovery_mode(self.config)
-        if profile.name == "fast" or discovery_mode == "disabled":
-            state["active_discovery"] = {
-                "enabled": False,
-                "profile": profile.name,
-                "status": (
-                    "disabled_by_profile" if profile.name == "fast" else "disabled_by_rollout"
-                ),
-                "visibility_mode": discovery_mode,
-                "rollout": rollout_runtime_policy(self.config),
-                "llm_semantic_model_calls": 0,
-                "llm_discovery_call_count": 0,
-            }
-            return
-
-        snapshot_dir = Path(self.config.analysis.snapshot_dir)
-        sidecar_path = snapshot_dir / "security_map.db"
-        export_path = snapshot_dir / "security_semantic_map.json"
-        ledger = state.get("candidate_ledger")
-        if not isinstance(ledger, CandidateLedger):
-            state["active_discovery"] = {
-                "enabled": True,
-                "profile": profile.name,
-                "status": "failed",
-                "failures": [{"reason": "candidate ledger unavailable"}],
-            }
-            return
-        before_clusters = {record.validation_cluster_uid for record in ledger.records()}
-        started = time.monotonic()
-        try:
-            entry = FunctionEntry(
-                function_name=str(state.get("entry_func") or self.config.project.entry_function),
-                file_path=str(state.get("entry_file_path") or "") or None,
-                signature=str(state.get("entry_signature") or "") or None,
-                diff_focus=(
-                    dict(state.get("diff_focus") or {})
-                    if isinstance(state.get("diff_focus"), dict)
-                    else None
-                ),
-            )
-            semantic_map = ZeroLLMSecurityMapBuilder(
-                self.code_index,
-                project_id=str(
-                    getattr(self.config.project, "project_id", "")
-                    or self.config.project.project_root.name
-                ),
-                revision=str(getattr(ledger, "revision", "") or ""),
-                profile=profile.name,
-                semantic_overlay=self._get_semantic_overlay(),
-                project_root=self.config.project.project_root,
-                max_functions=int(
-                    getattr(
-                        self.config.analysis,
-                        "security_map_max_functions",
-                        15_000 if profile.name == "deep" else 5_000,
-                    )
-                ),
-            ).build([entry])
-            store = SQLiteSecurityMapStore(sidecar_path)
-            registrar = CandidateRegistrar(
-                ledger,
-                project_id=str(
-                    getattr(self.config.project, "project_id", "")
-                    or self.config.project.project_root.name
-                ),
-                project_root=str(self.config.project.project_root),
-                revision=str(getattr(ledger, "revision", "") or ""),
-                run_id=str(state.get("run_id") or ""),
-                decision_fact_cache=self.decision_fact_cache,
-            )
-            discovery_llm_client = self._scan_role_llm_client("analysis")
-            modeling_llm_client = self._scan_role_llm_client("modeling")
-            report_runner = None
-            semantic_enricher = None
-            if discovery_llm_client is not None:
-                report_runner = make_agent_report_runner(ActiveDiscoveryAgent(discovery_llm_client))
-            if modeling_llm_client is not None:
-                semantic_enricher = SemanticMapEnricher(
-                    profile=profile,
-                    store=store,
-                    model_identity=str(
-                        (getattr(modeling_llm_client, "models", None) or ["unknown"])[0]
-                    ),
-                    user_semantics_fingerprint=str(
-                        semantic_map.fingerprints.get("semantic_overlay") or ""
-                    ),
-                    report_runner=make_semantic_enrichment_runner(
-                        SemanticEnrichmentAgent(modeling_llm_client)
-                    ),
-                    mode=str(
-                        getattr(
-                            self.config.analysis,
-                            "security_semantic_enrichment_mode",
-                            "shadow",
-                        )
-                        or "shadow"
-                    ),
+        profile = resolve_hunting_profile(self.config)
+        entry = FunctionEntry(
+            function_name=str(state.get("entry_func") or ""),
+            file_path=str(state.get("entry_file_path") or "") or None,
+            signature=str(state.get("entry_signature") or "") or None,
+        )
+        raw_overlay = SemanticOverlayCompiler(self.user_config).compile()
+        semantic_map = ZeroLLMSecurityMapBuilder(
+            self.code_index,
+            project_id=str(
+                getattr(self.config.project, "project_id", "")
+                or self.config.project.project_root.name
+            ),
+            revision=str(getattr(self.candidate_ledger, "revision", "") or ""),
+            profile=profile.name,
+            semantic_overlay=raw_overlay,
+            project_root=self.config.project.project_root,
+            max_functions=int(
+                getattr(
+                    self.config.analysis,
+                    "security_map_max_functions",
+                    15_000 if profile.name == "deep" else 5_000,
                 )
-            planned_map, discovery_state = ActiveDiscoveryCoordinator(
-                profile=profile,
-                store=store,
-                registrar=registrar,
-                report_runner=report_runner,
-                semantic_enricher=semantic_enricher,
-                visibility_mode=discovery_mode,
-                rollout_stage=str(rollout_runtime_policy(self.config).get("stage") or "unmanaged"),
-            ).run(
-                semantic_map,
-                covered_keys=candidate_coverage_keys(ledger),
-                known_variant_keys=historical_variant_keys(
-                    (
-                        state.get("historical_report", {}).get("issues", [])
-                        if isinstance(state.get("historical_report"), dict)
-                        else []
-                    )
-                ),
-                export_path=export_path,
+            ),
+        ).build([entry])
+        store = SecuritySpecStore(Path(self.config.analysis.snapshot_dir) / "security_specs")
+        qualification = load_builtin_qualification()
+        evidence_refs = {
+            str(ref)
+            for claim in semantic_map.claims
+            for ref in getattr(claim, "evidence_refs", ()) or ()
+        }
+        dependency_hashes = {
+            str(value)
+            for record in semantic_map.functions
+            for value in (
+                record.code_hash,
+                hashlib.sha256(
+                    json.dumps(
+                        record.backend_coverage,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
             )
-            discovery_state.update(
+            if str(value)
+        }
+        runtime = SecuritySpecRuntime(store).run(
+            semantic_map,
+            qualification_hashes=[str(qualification["content_sha256"])],
+            qualifications=[qualification],
+            resolvable_evidence_refs=evidence_refs,
+            current_dependency_hashes=dependency_hashes,
+            additional_specs=store.list_specs(),
+        )
+        overlay = SecuritySpecCompiler.semantic_overlay(runtime["compilation"])
+        self._semantic_overlay = overlay
+        self._local_pattern_semantics = self._local_semantics_from_compiled_specs(overlay)
+        authoritative_map = ZeroLLMSecurityMapBuilder(
+            self.code_index,
+            project_id=str(
+                getattr(self.config.project, "project_id", "")
+                or self.config.project.project_root.name
+            ),
+            revision=str(getattr(self.candidate_ledger, "revision", "") or ""),
+            profile=profile.name,
+            semantic_overlay=overlay,
+            project_root=self.config.project.project_root,
+            max_functions=int(
+                getattr(
+                    self.config.analysis,
+                    "security_map_max_functions",
+                    15_000 if profile.name == "deep" else 5_000,
+                )
+            ),
+        ).build([entry])
+        semantic_store = SQLiteSecurityMapStore(
+            Path(self.config.analysis.snapshot_dir) / "security_map.db"
+        )
+        semantic_store.save_map(authoritative_map)
+        semantic_store.export_json(
+            authoritative_map,
+            Path(self.config.analysis.snapshot_dir) / "security_semantic_map.json",
+        )
+        state["security_semantic_map"] = authoritative_map
+        state["security_spec_runtime"] = runtime
+        state["security_runtime"] = {
+            "enabled": profile.name != "fast",
+            "profile": profile.name,
+            "status": "security_spec_compiled",
+            "security_spec_runtime": runtime,
+        }
+        self.decision_trace_store.update_identity(
+            {
+                "security_spec_mode": "authoritative",
+                "security_spec_root_manifest_sha256": str(
+                    runtime.get("root_manifest_sha256") or ""
+                ),
+                "security_spec_artifact_refs": list(runtime.get("artifact_refs") or []),
+                "security_spec_decision": {
+                    "active_product_effect": "semantic_input",
+                    "compiled_spec_count": int(runtime.get("compiled_spec_count", 0) or 0),
+                    "reason_code": "security_spec_authoritative",
+                },
+            }
+        )
+
+    @staticmethod
+    def _local_semantics_from_compiled_specs(
+        overlay: Dict[str, Any],
+    ) -> LocalPatternSemantics:
+        semantics = LocalPatternSemantics()
+        for value in overlay.get("resource_models") or []:
+            if not isinstance(value, dict):
+                continue
+            category = {
+                "resource_acquire": "allocator",
+                "resource_release": "deallocator",
+                "resource_transfer": "reallocator",
+            }.get(str(value.get("kind") or ""))
+            if category:
+                semantics.add_api(category, str(value.get("name") or ""), "security_spec_compiler")
+        for value in overlay.get("lock_models") or []:
+            if isinstance(value, dict) and str(value.get("kind") or "") in {"lock", "unlock"}:
+                semantics.add_api(
+                    str(value["kind"]),
+                    str(value.get("name") or ""),
+                    "security_spec_compiler",
+                )
+        return semantics
+
+    def _run_single_entry_hypothesis_hunter(self, state: Dict[str, Any]) -> None:
+        """Run the same bounded Hunter contract used by batch scans."""
+
+        profile = resolve_hunting_profile(self.config)
+        if profile.name == "fast":
+            state["security_runtime"].update(
                 {
-                    "sidecar_path": str(sidecar_path),
-                    "json_export_path": str(export_path),
-                    "duration_seconds": round(time.monotonic() - started, 4),
+                    "enabled": False,
+                    "status": "disabled_by_profile",
+                    "llm_discovery_call_count": 0,
                 }
             )
-            planned_units = list(planned_map.audit_units)
-            missing_modeling = modeling_llm_client is None and bool(planned_units)
-            missing_discovery = discovery_llm_client is None and int(
-                discovery_state.get("completed_report_count", 0) or 0
-            ) < len(planned_units)
-            if missing_modeling or missing_discovery:
-                discovery_state["status"] = "planned_no_llm_client"
-                missing_roles = [
-                    role
-                    for role, missing in (
-                        ("modeling", missing_modeling),
-                        ("analysis", missing_discovery),
-                    )
-                    if missing
-                ]
-                discovery_state.setdefault("failures", []).append(
-                    {
-                        "reason": (
-                            "No LLM client was configured for required scan role(s): "
-                            + ", ".join(missing_roles)
-                        )
-                    }
-                )
-                discovery_state["uncovered_unit_ids"] = list(
-                    dict.fromkeys(
-                        [
-                            *list(discovery_state.get("uncovered_unit_ids") or []),
-                            *(unit.unit_id for unit in planned_units),
-                        ]
-                    )
-                )
-            state["active_discovery"] = discovery_state
-            for record in ledger.records():
-                if record.validation_cluster_uid in before_clusters:
-                    continue
-                evidence = (
-                    record.ticket.evidence if isinstance(record.ticket.evidence, dict) else {}
-                )
-                payload = evidence.get("candidate_payload")
-                if not isinstance(payload, dict):
-                    continue
-                if str(payload.get("candidate_source") or "") != "active_discovery":
-                    continue
-                issue = deepcopy(payload)
-                issue["evidence_pack"] = deepcopy(evidence)
-                issue.setdefault("code_snippet", record.ticket.context_slice)
-                state["pending_new_issues"].append(issue)
-            state["candidate_ledger_context"] = ledger.to_context()
-            state["candidate_ledger_summary"] = ledger.summary()
-            state["total_context_tokens"] += int(discovery_state.get("context_tokens", 0) or 0)
-            state["total_cumulative_prompt_tokens"] += int(
-                discovery_state.get("cumulative_prompt_tokens", 0) or 0
-            )
-            state["total_cumulative_completion_tokens"] += int(
-                discovery_state.get("cumulative_completion_tokens", 0) or 0
-            )
-            state["total_cumulative_total_tokens"] += int(
-                discovery_state.get("cumulative_total_tokens", 0) or 0
-            )
-        except Exception as exc:
-            state["active_discovery"] = {
-                "enabled": True,
-                "profile": profile.name,
-                "status": "failed",
-                "sidecar_path": str(sidecar_path),
-                "json_export_path": str(export_path),
-                "duration_seconds": round(time.monotonic() - started, 4),
-                "failures": [{"reason": f"{type(exc).__name__}: {exc}"}],
-            }
-            logger.exception("[active-discovery] single-entry stage failed")
-        discovery_status = str(
-            (state.get("active_discovery") or {}).get("status") or "failed"
-        ).lower()
-        capability_status = (
-            "partial"
-            if discovery_status
-            in {
-                "partial",
-                "planned_no_llm_client",
-            }
-            else ("complete" if discovery_status in {"complete", "semantic_only"} else "failed")
+            return
+        semantic_map = state.get("security_semantic_map")
+        spec_runtime = state.get("security_spec_runtime")
+        if semantic_map is None or not isinstance(spec_runtime, dict):
+            raise RuntimeError("authoritative_security_spec_runtime_missing")
+        compile_commands = getattr(self.code_index, "compile_commands_path", None)
+        fact_service = FunctionIRFactService(
+            Path(compile_commands) if compile_commands else None,
+            enabled=self._project_language() == "c_cpp",
         )
-        discovery_failures = (state.get("active_discovery") or {}).get("failures") or []
-        discovery_reason = ""
-        if isinstance(discovery_failures, list) and discovery_failures:
-            first_failure = discovery_failures[0]
-            discovery_reason = (
-                str(first_failure.get("reason") or "")
-                if isinstance(first_failure, dict)
-                else str(first_failure)
+
+        def graph_provider(record: Any, event: Any) -> Any:
+            raw_path = Path(str(record.file_path))
+            path = (
+                raw_path if raw_path.is_absolute() else self.config.project.project_root / raw_path
             )
-        self._record_engine_capability(
-            "security_semantic_map.active_discovery",
-            status=capability_status,
-            reason=discovery_reason,
-            active=True,
-            profile=profile.name,
-            stage_status=discovery_status,
+            line = int(event.line or record.start_line or 0)
+            return fact_service.graph(
+                {
+                    "function": str(record.function_name),
+                    "function_signature": str(record.function_name),
+                    "file": str(path),
+                    "line": line,
+                    "source": {"line": line, "expression": str(event.expression or "")},
+                    "sink": {"line": line, "expression": str(event.expression or "")},
+                },
+                {},
+            )
+
+        client = self._scan_role_llm_client("analysis")
+        report_runner = None
+        if client is not None:
+            agent = HypothesisHunterAgent(client)
+
+            def report_runner(projection: Any, unit: Any, offers: Any) -> Any:
+                return agent.run(
+                    {"projection": projection, "audit_unit": unit, "offers": list(offers)}
+                )
+
+        registrar = CandidateRegistrar(
+            self.candidate_ledger,
+            project_id=str(
+                getattr(self.config.project, "project_id", "")
+                or self.config.project.project_root.name
+            ),
+            project_root=str(self.config.project.project_root),
+            revision=str(getattr(self.candidate_ledger, "revision", "") or ""),
+            run_id=str(state.get("run_id") or ""),
+            decision_fact_cache=self.decision_fact_cache,
+        )
+        result = HypothesisHunterRuntime(
+            HypothesisArtifactStore(Path(self.config.analysis.snapshot_dir) / "hypothesis_hunter"),
+            risk_threshold=profile.risk_threshold,
+            max_units=profile.max_units,
+            model_profile=profile.name,
+        ).run(
+            semantic_map,
+            candidate_registrar=registrar,
+            security_spec_runtime=spec_runtime,
+            proof_bundle_provider=HypothesisProofCatalog(graph_provider).bundles,
+            report_runner=report_runner,
+        )
+        state["security_runtime"].update(
+            {
+                "enabled": True,
+                "status": "complete",
+                "hypothesis_hunter_runtime": result,
+                "hypothesis_count": int(result.get("hypothesis_count", 0) or 0),
+                "llm_discovery_call_count": int(result.get("llm_call_count", 0) or 0),
+            }
+        )
+        self.decision_trace_store.update_identity(
+            {
+                "hypothesis_hunter_mode": "active",
+                "hypothesis_hunter_root_manifest_sha256": str(
+                    result.get("root_manifest_sha256") or ""
+                ),
+                "hypothesis_hunter_artifact_refs": list(result.get("artifact_refs") or []),
+                "hypothesis_hunter_decision": {
+                    "active_product_effect": "candidate_registration_only",
+                    "reason_code": "hypothesis_hunter_candidate_registration_only",
+                    "coverage_summary": dict(result.get("coverage_summary") or {}),
+                },
+            }
         )
 
     def _scan_role_llm_client(self, role: str) -> Optional[LLMClient]:
-        """Resolve the public scan role mapping ahead of legacy Agent fields."""
+        """Resolve the public P5 scan role mapping."""
 
         profiles = getattr(getattr(self.config, "scan", None), "llm_profiles", None)
         configured_ref = str(getattr(profiles, role, "") or "")
         if not configured_ref:
-            legacy_names = ("active_discovery",) if role == "analysis" else ("semantic_modeler",)
+            role_names = {
+                "modeling": ("security_spec_miner",),
+                "analysis": ("hypothesis_hunter",),
+                "validation": ("proof_engine",),
+            }.get(role, ())
             configured_ref = next(
                 (
                     str(getattr(item, "llm_ref", "") or "")
                     for item in self.config.project.agents
-                    if str(getattr(item, "name", "") or "") in legacy_names
+                    if str(getattr(item, "name", "") or "") in role_names
                     and bool(getattr(item, "enabled", True))
                     and str(getattr(item, "llm_ref", "") or "")
                 ),
@@ -1741,20 +1557,8 @@ class Analyzer:
 
     def _direct_callee_rule_scan_budget(self, state: Dict[str, Any]) -> Dict[str, int]:
         budget = self._current_effective_budget(state)
-        hard_caps = _as_dict(budget.get("hard_caps"))
-        analysis_config = getattr(getattr(self, "config", None), "analysis", None)
-        configured_breadth = int(
-            budget.get("premodel_callees")
-            or hard_caps.get("max_premodel_callees")
-            or getattr(analysis_config, "max_premodel_callees", 16)
-            or 16
-        )
-        configured_depth = int(
-            budget.get("premodel_depth")
-            or hard_caps.get("max_premodel_depth")
-            or getattr(analysis_config, "max_premodel_depth", 2)
-            or 2
-        )
+        configured_breadth = int(budget.get("graph_functions") or 16)
+        configured_depth = int(budget.get("graph_depth") or 2)
         limit = max(16, min(64, configured_breadth))
         max_depth = max(2, min(4, configured_depth))
         total_limit = max(80, min(256, limit * max_depth * 4))
@@ -3632,7 +3436,7 @@ class Analyzer:
 
     def _get_semantic_overlay(self) -> Dict[str, Any]:
         if self._semantic_overlay is None:
-            self._semantic_overlay = SemanticOverlayCompiler(self.user_config).compile()
+            raise RuntimeError("authoritative_security_spec_overlay_not_prepared")
         return self._semantic_overlay
 
     def _annotate_candidate_issues(
@@ -3938,14 +3742,9 @@ class Analyzer:
         }.get(self._candidate_backend_profile(), "knowledge_db_backend_signal_adapter")
 
     def _get_local_pattern_semantics(self) -> LocalPatternSemantics:
-        """Build once-per-run local-pattern aliases and project API semantics."""
+        """Return qualification-backed semantics compiled for this scan."""
         if self._local_pattern_semantics is None:
-            self._local_pattern_semantics = LocalPatternSemanticBuilder(
-                self.code_index,
-                self.user_config,
-                self.snapshot_store,
-                (Path(path) for path in self.config.project.exclude_paths),
-            ).build()
+            raise RuntimeError("authoritative_security_spec_semantics_not_prepared")
         return self._local_pattern_semantics
 
     def _get_knowledge_db(self) -> Optional[Any]:
@@ -4312,7 +4111,6 @@ class Analyzer:
             pipeline = ValidationPipeline(
                 user_config,
                 issue_key_fn=self._canonical_issue_key,
-                enable_deterministic_proof_routing=True,
             )
         return pipeline.score_components(issue, val_data)
 
@@ -4418,6 +4216,62 @@ class Analyzer:
             else dict(state.get("candidate_ledger_summary", {}))
         )
         state["candidate_ledger_summary"] = ledger_summary
+        commit_sha = self._git_commit_sha(self.config.project.project_root)
+        source_tree_hash = self._git_tree_sha(self.config.project.project_root) or commit_sha
+        if not source_tree_hash:
+            source_tree_hash = hashlib.sha256(
+                str(self.config.project.project_root).encode("utf-8")
+            ).hexdigest()
+        config_hash = self._config_hash()
+        security_runtime = state.get("security_runtime")
+        security_runtime = security_runtime if isinstance(security_runtime, dict) else {}
+        spec_runtime = security_runtime.get("security_spec_runtime")
+        if not isinstance(spec_runtime, dict):
+            spec_runtime = state.get("security_spec_runtime")
+        spec_runtime = spec_runtime if isinstance(spec_runtime, dict) else {}
+        hunter_runtime = security_runtime.get("hypothesis_hunter_runtime")
+        hunter_runtime = hunter_runtime if isinstance(hunter_runtime, dict) else {}
+        lifecycle = state.get("candidate_lifecycle_snapshot")
+        lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+        outcomes = lifecycle.get("outcomes")
+        outcomes = outcomes if isinstance(outcomes, list) else []
+        proof_identity = [
+            {
+                "cluster": str(value.get("validation_cluster_uid") or ""),
+                "refs": list(value.get("proof_kernel_artifact_refs") or []),
+                "terminal": value.get("terminal_authority_decision") or {},
+            }
+            for value in outcomes
+            if isinstance(value, dict)
+        ]
+        runtime_authority = build_runtime_authority_manifest(
+            source_tree_hash=source_tree_hash,
+            config_sha256=config_hash,
+            backend_sha256=hashlib.sha256(
+                json.dumps(
+                    {
+                        "profile": self._candidate_backend_profile(),
+                        "knowledge_db": self._knowledge_db_version(),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            security_spec_root_sha256=str(spec_runtime.get("root_manifest_sha256") or ""),
+            hypothesis_hunter_root_sha256=str(hunter_runtime.get("root_manifest_sha256") or ""),
+            proof_root_sha256=hashlib.sha256(
+                json.dumps(proof_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            revisions={
+                "security_spec_compiler": SecuritySpecCompiler.compiler_version,
+                "hypothesis_hunter": "hypothesis-hunter.v2",
+                "proof_registry": "proof-kernel.v2",
+                "proof_checker": "proof-checker.v2",
+                "proof_provider": "proof-provider.v2",
+                "terminal_authority": "terminal-authority.v3",
+            },
+        )
+        state["runtime_authority_manifest"] = runtime_authority
         return {
             "timestamp": datetime.datetime.now().isoformat(),
             "run_id": state.get("run_id", ""),
@@ -4430,8 +4284,10 @@ class Analyzer:
                 or self.config.project.project_root.name
             ),
             "source_root": str(self.config.project.source_root),
-            "commit_sha": self._git_commit_sha(self.config.project.project_root),
-            "config_hash": self._config_hash(),
+            "commit_sha": commit_sha,
+            "source_tree_hash": source_tree_hash,
+            "config_hash": config_hash,
+            "runtime_authority_manifest": runtime_authority,
             "model_manifest_hash": self._model_manifest_hash(),
             "effective_rules_sha256": self._effective_rules_sha256(),
             "rule_catalog": serialize_effective_rules(self.effective_rules),
@@ -4479,7 +4335,7 @@ class Analyzer:
             "current_workflow_step": self.workflow_executor.current_step,
             "candidate_ledger_summary": dict(ledger_summary),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
-            "active_discovery": dict(state.get("active_discovery", {}) or {}),
+            "security_runtime": dict(state.get("security_runtime", {}) or {}),
             "deferred_deterministic_work_count": len(state.get("deferred_deterministic_work", [])),
             "deferred_deterministic_work": list(state.get("deferred_deterministic_work", [])),
             "validation_performance": {
@@ -4950,16 +4806,30 @@ class Analyzer:
 
     @staticmethod
     def _git_commit_sha(project_root: Path) -> str:
-        git_dir = project_root / ".git"
-        head_path = git_dir / "HEAD"
         try:
-            head = head_path.read_text(encoding="utf-8").strip()
-            if head.startswith("ref:"):
-                ref_path = git_dir / head.split(":", 1)[1].strip()
-                if ref_path.exists():
-                    return ref_path.read_text(encoding="utf-8").strip()
-            return head
-        except OSError:
+            result = subprocess.run(
+                ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    @staticmethod
+    def _git_tree_sha(project_root: Path) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(project_root), "rev-parse", "HEAD^{tree}"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
             return ""
 
     def _knowledge_db_version(self) -> str:
@@ -5034,7 +4904,7 @@ class Analyzer:
     def _candidate_first_skill_selection(self, extra_skills: Sequence[str]) -> SkillSelection:
         """Return every language-compatible deterministic skill."""
         get_agent = getattr(self.spec_registry, "get_agent", None)
-        active_spec = get_agent("active_discovery") if callable(get_agent) else None
+        active_spec = get_agent("hypothesis_hunter") if callable(get_agent) else None
         available = list(getattr(active_spec, "skills", []) or self.spec_registry.skills)
         available.extend(str(skill) for skill in extra_skills if str(skill))
         available = self._language_filtered_analysis_skills(list(dict.fromkeys(available)))
@@ -5094,13 +4964,11 @@ class Analyzer:
         self,
         agent_name: Optional[str] = None,
         *,
-        enable_on_demand_snapshots: bool = True,
         active_skill_names: Optional[List[str]] = None,
     ) -> List[Any]:
         """Initialize and return the set of tools."""
         from ...tools.registry import build_tool_registry
 
-        snapshot_resolver = self._get_or_build_snapshot if enable_on_demand_snapshots else None
         include_advanced = getattr(self.code_index, "backend_name", "") in {
             "joern",
             "svf",
@@ -5111,7 +4979,6 @@ class Analyzer:
                 self.code_index,
                 self.snapshot_store,
                 self.user_config,
-                snapshot_resolver=snapshot_resolver,
                 include_advanced=include_advanced,
             ).values()
         )
@@ -5144,196 +5011,6 @@ class Analyzer:
     def _tool_audit_log_path(self) -> Optional[Path]:
         return tool_audit_log_path(getattr(self, "config", None))
 
-    def _get_or_build_snapshot(
-        self, func_name: str, file_path: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Load a snapshot, or build and persist one under the snapshot lock."""
-        try:
-            context = build_semantic_model_input(
-                self.code_index,
-                func_name,
-                file_path=file_path or "",
-                include_context=True,
-            )
-            context = hydrate_project_callee_summaries(
-                context,
-                self.code_index,
-                self.snapshot_store,
-            )
-        except SemanticModelInputError as exc:
-            return {"success": False, "error": str(exc), "reason": exc.reason}
-
-        index_name = str(context["index_name"])
-        existing = self.snapshot_store.load_snapshot(index_name)
-        if existing is not None:
-            needs_refresh, reason = self.snapshot_store.needs_refresh(
-                index_name,
-                context["code"],
-                context,
-            )
-            if not needs_refresh:
-                return {
-                    "success": True,
-                    "data": existing,
-                    "message": (
-                        f"Snapshot is current ({reason})." if reason else "Snapshot is current."
-                    ),
-                }
-            self.snapshot_store.lock_manager.invalidate(index_name)
-
-        lock_started = time.monotonic()
-        logger.info(
-            "[snapshot-lock] waiting context=on_demand index_name=%s",
-            index_name,
-        )
-        status = self.snapshot_store.lock_manager.acquire(index_name, timeout=120.0)
-        logger.info(
-            "[snapshot-lock] outcome context=on_demand index_name=%s status=%s waited=%.2fs",
-            index_name,
-            status,
-            time.monotonic() - lock_started,
-        )
-        if status == "done":
-            snapshot = self.snapshot_store.load_snapshot(index_name)
-            return {
-                "success": True,
-                "data": snapshot,
-                "message": "Snapshot was built concurrently by another worker.",
-            }
-        if status == "timeout":
-            return {
-                "success": False,
-                "error": f"Timed out waiting for snapshot build of '{index_name}'",
-                "reason": "snapshot_lock_timeout",
-            }
-
-        success = False
-        try:
-            existing = self.snapshot_store.load_snapshot(index_name)
-            if existing is not None:
-                needs_refresh, reason = self.snapshot_store.needs_refresh(
-                    index_name,
-                    context["code"],
-                    context,
-                )
-                if not needs_refresh:
-                    success = True
-                    return {
-                        "success": True,
-                        "data": existing,
-                        "message": (
-                            f"Snapshot is current ({reason})." if reason else "Snapshot is current."
-                        ),
-                    }
-
-            if self._is_lightweight_snapshot_candidate(context["func_name"], context):
-                snapshot = self._build_lightweight_snapshot(context["func_name"], context)
-                self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
-                success = True
-                return {
-                    "success": True,
-                    "data": snapshot,
-                    "message": "Generated and saved lightweight static snapshot.",
-                }
-
-            if self._is_trivial_function(
-                context["code"],
-                self.config.analysis.trivial_function_max_lines,
-            ):
-                snapshot = self._build_trivial_snapshot(context["func_name"], context)
-                self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
-                success = True
-                return {
-                    "success": True,
-                    "data": snapshot,
-                    "message": "Generated and saved syntactic snapshot for trivial function.",
-                }
-
-            sm_agent_cfg = next(
-                (a for a in self.config.project.agents if a.name == "semantic_modeler"),
-                None,
-            )
-            sm_llm_ref = (
-                sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
-            )
-            sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients.get("default"))
-            if sm_client is None:
-                return {
-                    "success": False,
-                    "error": "No LLM client configured for snapshot build",
-                    "reason": "semantic_model_llm_missing",
-                }
-
-            def make_semantic_agent() -> SemanticModeler:
-                return SemanticModeler(
-                    sm_client,
-                    self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
-                    tool_policy=self._tool_policy_for_agent("semantic_modeler"),
-                )
-
-            self._attach_agent_contract(context, "semantic_modeler")
-            logger.info("[snapshot] On-demand modeling index_name=%s", index_name)
-            response = run_semantic_model_with_retries(
-                make_semantic_agent,
-                context,
-                log_context="on_demand",
-                index_name=index_name,
-            )
-            response_metadata = response.metadata or {}
-            context_tokens = int(
-                response_metadata.get("context_tokens", 0)
-                or response_metadata.get("total_tokens", 0)
-                or 0
-            )
-            if not response.success:
-                failure_reason = str(response_metadata.get("reason") or "semantic_model_failed")
-                logger.warning(
-                    "[snapshot-llm] completed context=on_demand index_name=%s "
-                    "success=false context_tokens=%d reason=%s error=%s",
-                    index_name,
-                    context_tokens,
-                    failure_reason,
-                    response.error,
-                )
-                return {
-                    "success": False,
-                    "error": f"On-demand snapshot build failed for '{index_name}': {response.error}",
-                    "metadata": response.metadata,
-                    "reason": failure_reason,
-                }
-            self.snapshot_store.save_snapshot(
-                index_name,
-                response.data,
-                context["code"],
-                dependency_context=context,
-            )
-            logger.info(
-                "[snapshot-llm] completed context=on_demand index_name=%s "
-                "success=true context_tokens=%d",
-                index_name,
-                context_tokens,
-            )
-            success = True
-            return {
-                "success": True,
-                "data": response.data,
-                "metadata": response.metadata,
-                "message": "Generated and saved semantic snapshot on demand.",
-            }
-        except Exception as exc:
-            logger.exception(
-                "[snapshot-llm] failed context=on_demand index_name=%s "
-                "success=false reason=semantic_model_exception",
-                index_name,
-            )
-            return {
-                "success": False,
-                "error": str(exc),
-                "reason": "semantic_model_exception",
-            }
-        finally:
-            self.snapshot_store.lock_manager.release(index_name, success=success)
-
     @staticmethod
     def _build_trivial_snapshot(func_name: str, impl: Dict[str, Any]) -> Dict[str, Any]:
         return build_trivial_snapshot(func_name, impl)
@@ -5352,415 +5029,6 @@ class Analyzer:
     @staticmethod
     def _build_lightweight_snapshot(func_name: str, impl: Dict[str, Any]) -> Dict[str, Any]:
         return build_lightweight_snapshot(func_name, impl)
-
-    def _premodel_callees(
-        self,
-        entry_func: str,
-        sm_client: "LLMClient",
-        max_depth: int = 3,
-        max_callees: int = 20,
-        *,
-        state: Optional[Dict[str, Any]] = None,
-    ) -> tuple[int, int, int]:
-        """
-        Recursively pre-model reachable callees for an entry function.
-        Returns:
-            (modeled_count, skipped_count, total_context_tokens)
-        """
-        # 1. BFS 閺€鍫曟肠閸欘垵鎻?callee 閸?
-        callee_graph: Dict[str, List[str]] = {}
-        visited: Set[str] = set()
-        scheduled: Set[str] = {entry_func}
-        queue = deque([(entry_func, 0)])
-        expanded_by_depth: Dict[int, int] = {}
-        capped_depths: Set[int] = set()
-        impl_cache: Dict[str, Any] = {}
-        last_progress_log = time.monotonic()
-
-        logger.info(
-            "[premodel] Collecting reachable callees for '%s' (depth<=%s, per-level<=%s)",
-            entry_func,
-            max_depth,
-            max_callees,
-        )
-
-        while queue:
-            func, depth = queue.popleft()
-            if func in visited or depth > max_depth:
-                continue
-            visited.add(func)
-            if depth >= max_depth:
-                callee_graph.setdefault(func, [])
-                try:
-                    capped_callees = self.code_index.get_callees(
-                        func,
-                        limit=1_000_000,
-                    )
-                except Exception as exc:
-                    self._record_engine_failed_work(
-                        state,
-                        engine="semantic_premodel",
-                        function_name=func,
-                        reason=f"{type(exc).__name__}: {exc}",
-                    )
-                    capped_callees = []
-                for item in capped_callees or []:
-                    callee_name = str(item.get("name") or "") if isinstance(item, dict) else ""
-                    if callee_name:
-                        self._record_deferred_deterministic_work(
-                            state,
-                            engine="semantic_premodel",
-                            function_name=callee_name,
-                            reason="semantic_premodel_max_depth",
-                            parent=func,
-                        )
-                continue
-
-            try:
-                # Enumerating the call graph is cheap deterministic work.  Fetch
-                # it completely, then apply the semantic-modeling budget while
-                # recording every deferred function.
-                callees_raw = self.code_index.get_callees(func, limit=1_000_000)
-            except Exception as exc:
-                logger.warning(
-                    "[premodel] Failed to retrieve callees for '%s'; "
-                    "continuing without this branch: %s",
-                    func,
-                    exc,
-                    exc_info=True,
-                )
-                callee_graph[func] = []
-                self._record_engine_failed_work(
-                    state,
-                    engine="semantic_premodel",
-                    function_name=func,
-                    reason=f"{type(exc).__name__}: {exc}",
-                )
-                continue
-            callee_names = [c["name"] for c in callees_raw if c.get("name")]
-
-            # Only premodel callees with source implementations.
-            resolvable = []
-            next_depth = depth + 1
-            for c in callee_names:
-                if c in visited or c in scheduled:
-                    continue
-                if expanded_by_depth.get(next_depth, 0) >= max_callees:
-                    capped_depths.add(next_depth)
-                    self._record_deferred_deterministic_work(
-                        state,
-                        engine="semantic_premodel",
-                        function_name=c,
-                        reason="semantic_premodel_breadth_budget",
-                        parent=func,
-                    )
-                    continue
-                try:
-                    impl = self.code_index.get_function_impl(
-                        c,
-                        warn_missing=False,
-                        include_context=False,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[premodel] Failed to resolve callee '%s'; skipping: %s",
-                        c,
-                        exc,
-                        exc_info=True,
-                    )
-                    self._record_engine_failed_work(
-                        state,
-                        engine="semantic_premodel",
-                        function_name=c,
-                        reason=f"{type(exc).__name__}: {exc}",
-                        parent=func,
-                    )
-                    continue
-                if impl is not None:
-                    impl_cache[c] = impl
-                    resolvable.append(c)
-                    scheduled.add(c)
-                    expanded_by_depth[next_depth] = expanded_by_depth.get(next_depth, 0) + 1
-                    if not self._is_lightweight_snapshot_candidate(c, impl):
-                        queue.append((c, next_depth))
-                else:
-                    logger.debug("[premodel] Skipping unresolved callee '%s'", c)
-
-            callee_graph[func] = resolvable
-            now = time.monotonic()
-            if now - last_progress_log >= 30.0:
-                logger.info(
-                    "[premodel] Still collecting callees for '%s': visited=%s queued=%s",
-                    entry_func,
-                    len(visited),
-                    len(queue),
-                )
-                last_progress_log = now
-
-        # 2. 逆拓扑排序：叶子函数优先
-        if capped_depths:
-            logger.info(
-                "[premodel] Breadth cap reached for '%s' at depth(s): %s",
-                entry_func,
-                ", ".join(str(d) for d in sorted(capped_depths)),
-            )
-
-        order = self._topo_sort(callee_graph, entry_func)
-        # 过滤掉入口函数本身（由主流程建模）
-        order = [f for f in order if f != entry_func]
-
-        if not order:
-            deferred_count = sum(
-                1
-                for item in (state or {}).get("deferred_deterministic_work", [])
-                if item.get("engine") == "semantic_premodel"
-                and item.get("candidate_disposition") == "deferred_budget"
-            )
-            failed_count = sum(
-                1
-                for item in (state or {}).get("deferred_deterministic_work", [])
-                if item.get("engine") == "semantic_premodel"
-                and item.get("candidate_disposition") == "engine_failed"
-            )
-            self._record_engine_capability(
-                "semantic_premodel",
-                status=(
-                    "failed" if failed_count else ("degraded" if deferred_count else "complete")
-                ),
-                active=True,
-                reason=(
-                    "semantic_premodel_failed"
-                    if failed_count
-                    else ("semantic_premodel_budget_deferred" if deferred_count else "")
-                ),
-                modeled_count=0,
-                cache_hit_count=0,
-                deferred_count=deferred_count,
-                failed_count=failed_count,
-            )
-            return 0, 0, 0
-
-        logger.info(f"[premodel] {len(order)} reachable callees to pre-model for '{entry_func}'")
-
-        # 3. 逐个建模
-        def make_semantic_agent() -> SemanticModeler:
-            return SemanticModeler(
-                sm_client,
-                self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
-                tool_policy=self._tool_policy_for_agent("semantic_modeler"),
-            )
-
-        modeled = 0
-        skipped = 0
-        total_tokens = 0
-
-        for func in order:
-            try:
-                impl = impl_cache.get(func) or self.code_index.get_function_impl(
-                    func,
-                    warn_missing=False,
-                    include_context=False,
-                )
-            except Exception as exc:
-                self._record_engine_failed_work(
-                    state,
-                    engine="semantic_premodel",
-                    function_name=func,
-                    reason=f"{type(exc).__name__}: {exc}",
-                )
-                continue
-            if not impl:
-                continue
-            impl_file = str(impl.get("file") or "")
-            try:
-                context = build_semantic_model_input(
-                    self.code_index,
-                    func,
-                    file_path=impl_file,
-                    index_name=str(impl.get("index_name") or ""),
-                    start_line=int(impl.get("start_line") or 0) or None,
-                    include_context=True,
-                )
-                context = hydrate_project_callee_summaries(
-                    context,
-                    self.code_index,
-                    self.snapshot_store,
-                )
-            except SemanticModelInputError as exc:
-                logger.warning(
-                    "[premodel] Skipping unresolved semantic input func=%s reason=%s",
-                    func,
-                    exc.reason,
-                )
-                self._record_engine_failed_work(
-                    state,
-                    engine="semantic_premodel",
-                    function_name=func,
-                    reason=f"semantic_input:{exc.reason}",
-                )
-                continue
-            index_name = str(context["index_name"])
-
-            existing = self.snapshot_store.load_snapshot(index_name)
-            if existing is not None:
-                needs_refresh, _reason = self.snapshot_store.needs_refresh(
-                    index_name,
-                    context["code"],
-                    context,
-                )
-                if not needs_refresh:
-                    skipped += 1
-                    continue
-                self.snapshot_store.lock_manager.invalidate(index_name)
-
-            # 跨线程锁保护。
-            lock_started = time.monotonic()
-            logger.info(
-                "[snapshot-lock] waiting context=premodel entry=%s index_name=%s",
-                entry_func,
-                index_name,
-            )
-            status = self.snapshot_store.lock_manager.acquire(
-                index_name,
-                timeout=120.0,
-            )
-            lock_wait = time.monotonic() - lock_started
-            logger.info(
-                "[snapshot-lock] outcome context=premodel entry=%s index_name=%s status=%s waited=%.2fs",
-                entry_func,
-                index_name,
-                status,
-                lock_wait,
-            )
-            if status == "done":
-                skipped += 1
-                continue
-            if status == "timeout":
-                logger.warning(f"[premodel] Timeout waiting for '{func}', skipping.")
-                self._record_engine_failed_work(
-                    state,
-                    engine="semantic_premodel",
-                    function_name=func,
-                    reason="snapshot_lock_timeout",
-                )
-                continue
-
-            # status == "acquired"：由当前 Worker 建模
-            success = False
-            try:
-                if self._is_lightweight_snapshot_candidate(func, context):
-                    logger.info(f"[premodel] Auto-summarizing lightweight helper '{func}'")
-                    snapshot = self._build_lightweight_snapshot(context["func_name"], context)
-                    self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
-                    success = True
-                    modeled += 1
-                    continue
-
-                # 高效拦截：平凡函数不需要让大模型看
-                if self._is_trivial_function(
-                    context["code"], self.config.analysis.trivial_function_max_lines
-                ):
-                    logger.info(f"[premodel] Auto-summarizing trivial function '{func}'")
-                    snapshot = self._build_trivial_snapshot(context["func_name"], context)
-                    self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
-                    success = True
-                    modeled += 1
-                    continue
-                self._attach_agent_contract(context, "semantic_modeler")
-
-                logger.info(
-                    "[premodel] Modeling callee index_name=%s ...",
-                    context["index_name"],
-                )
-                resp = run_semantic_model_with_retries(
-                    make_semantic_agent,
-                    context,
-                    log_context="premodel",
-                    index_name=index_name,
-                )
-                call_tokens = resp.metadata.get("context_tokens", 0) if resp.metadata else 0
-                total_tokens += call_tokens
-
-                if resp.success:
-                    self.snapshot_store.save_snapshot(
-                        index_name,
-                        resp.data,
-                        context["code"],
-                        dependency_context=context,
-                    )
-                    logger.info(
-                        "[snapshot-llm] completed context=premodel index_name=%s "
-                        "success=true context_tokens=%d",
-                        index_name,
-                        call_tokens,
-                    )
-                    success = True
-                    modeled += 1
-                else:
-                    failure_reason = str(
-                        (resp.metadata or {}).get("reason") or "semantic_model_failed"
-                    )
-                    logger.warning(
-                        "[snapshot-llm] completed context=premodel index_name=%s "
-                        "success=false context_tokens=%d reason=%s error=%s",
-                        index_name,
-                        call_tokens,
-                        failure_reason,
-                        resp.error,
-                    )
-                    self._record_engine_failed_work(
-                        state,
-                        engine="semantic_premodel",
-                        function_name=func,
-                        reason=f"{failure_reason}: {resp.error}",
-                    )
-            except Exception as e:
-                logger.exception(
-                    "[snapshot-llm] failed context=premodel index_name=%s "
-                    "success=false reason=semantic_model_exception error=%s",
-                    index_name,
-                    e,
-                )
-                self._record_engine_failed_work(
-                    state,
-                    engine="semantic_premodel",
-                    function_name=func,
-                    reason=f"{type(e).__name__}: {e}",
-                )
-            finally:
-                self.snapshot_store.lock_manager.release(index_name, success=success)
-
-        deferred_count = sum(
-            1
-            for item in (state or {}).get("deferred_deterministic_work", [])
-            if item.get("engine") == "semantic_premodel"
-            and item.get("candidate_disposition") == "deferred_budget"
-        )
-        failed_count = sum(
-            1
-            for item in (state or {}).get("deferred_deterministic_work", [])
-            if item.get("engine") == "semantic_premodel"
-            and item.get("candidate_disposition") == "engine_failed"
-        )
-        self._record_engine_capability(
-            "semantic_premodel",
-            status=("failed" if failed_count else ("degraded" if deferred_count else "complete")),
-            active=True,
-            reason=(
-                "semantic_premodel_failed"
-                if failed_count
-                else ("semantic_premodel_budget_deferred" if deferred_count else "")
-            ),
-            modeled_count=modeled,
-            cache_hit_count=skipped,
-            deferred_count=deferred_count,
-            failed_count=failed_count,
-        )
-
-        logger.info(
-            f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx ≈{total_tokens:,} tokens)"
-        )
-        return modeled, skipped, total_tokens
 
     @staticmethod
     def _is_trivial_function(code: str, max_lines_threshold: int) -> bool:
@@ -5799,7 +5067,7 @@ class Analyzer:
         1. Get current code.
         2. Check if snapshot exists.
         3. If snapshot exists, check if code changed (hash check).
-        4. If code changed, ask LLM if refresh is needed.
+        4. If code changed, fail closed and refuse the pre-P5 snapshot.
         """
         # 1. Get real implementation
         impl_result = self.tools_runtime.execute_tool("get_function_impl", args)
@@ -5850,100 +5118,14 @@ class Analyzer:
             }
 
         if reason == "code_changed":
-            # 3. Ask LLM if we really need to refresh (semantic check)
-            # This requires a mini-LLM call.
             logger.info(
-                "Code changed index_name=%s; checking with LLM if refresh is needed",
+                "Code changed index_name=%s; invalidating legacy semantic snapshot",
                 index_name,
             )
-            snapshot = self.snapshot_store.load_snapshot(index_name)
-            decision = self._ask_refresh_decision(func_name, snapshot or {}, current_code)
+            self.snapshot_store.lock_manager.invalidate(index_name)
 
-            if not decision.get("refresh_needed"):
-                logger.info(f"LLM decided refresh NOT needed for '{func_name}'")
-                return {
-                    "success": True,
-                    "data": impl_result["data"],
-                    "snapshot": snapshot,
-                    "note": "Code changed but LLM deemed snapshot still valid.",
-                }
-
-            logger.info(f"Refresh needed for '{func_name}': {decision.get('reason')}")
-
-        # If we are here, we return the code and expect the LLM to analyze it and produce a new snapshot
+        # P5 consumers use source/IR facts; no model may bless a stale snapshot.
         return impl_result
-
-    def _default_llm_client(self) -> LLMClient:
-        client = self.llm_clients.get("default")
-        if client is None:
-            try:
-                client = next(iter(self.llm_clients.values()))
-            except StopIteration as exc:
-                raise RuntimeError("No LLM clients configured") from exc
-        return client
-
-    def _ask_refresh_decision(
-        self, func_name: str, old_snapshot: Dict[str, Any], new_code: str
-    ) -> Dict[str, Any]:
-        """Ask LLM if snapshot needs refresh."""
-        prompt = (
-            f"Function '{func_name}' has changed.\n"
-            f"Old Snapshot Summary: {old_snapshot.get('summary')}\n"
-            f"Old Fingerprint: {old_snapshot.get('semantic_fingerprint')}\n\n"
-            "New Code:\n"
-            "```c\n"
-            f"{new_code}\n"
-            "```\n\n"
-            "Determine if the semantic contract/behavior relevant to defect attributes "
-            "(resources, errors, concurrency) has changed. Output only JSON of type "
-            "'snapshot_refresh_decision'."
-        )
-        messages = [
-            {
-                "role": "system",
-                "content": self._snapshot_refresh_decision_system_prompt(),
-            },
-            {"role": "user", "content": prompt},
-        ]
-
-        # Use a separate simpler call (no tools)
-        try:
-            response = self._default_llm_client().chat_completion(
-                messages,
-                max_tokens=500,
-                trace_agent="snapshot_refresh_decision",
-                trace_label=f"function={func_name}",
-                trace_iteration=1,
-            )
-            content = response["choices"][0]["message"]["content"]
-            decision = self._extract_json_block(content, "snapshot_refresh_decision")
-            return decision or {"refresh_needed": True, "reason": "Failed to parse decision"}
-        except Exception as e:
-            logger.error(f"Failed to get refresh decision: {e}")
-            return {"refresh_needed": True, "reason": "Error calling LLM"}
-
-    def _snapshot_refresh_decision_system_prompt(self) -> str:
-        skill = self.spec_registry.get_skill("snapshot_refresh_decision")
-        skill_contract = (
-            skill.to_prompt_block(
-                allowed_tools=[],
-                allowed_mcp_tools=[],
-                allowed_mcp_resources=[],
-            )
-            if skill
-            else (
-                "## Skill: snapshot_refresh_decision\n"
-                "Determine whether an existing function snapshot must be refreshed after code changes.\n"
-                "Return exactly one JSON object with type=snapshot_refresh_decision."
-            )
-        )
-        return (
-            "You are the Z-SCOPE snapshot refresh decision reviewer. Decide whether "
-            "the old semantic snapshot still captures defect-relevant behavior in the "
-            "new implementation. No tools or MCP resources are available in this call.\n\n"
-            "[Loaded Skill Contract]\n"
-            f"{skill_contract}"
-        )
 
     def _extract_final_report(self, text: str) -> Optional[FinalReport]:
         """Parse final report from text."""
@@ -5996,54 +5178,6 @@ class Analyzer:
         return None
 
         return None
-
-    def _save_snapshot_from_llm(self, snapshot_data: Dict[str, Any]) -> None:
-        """Save a snapshot emitted by LLM."""
-        index_name = str(snapshot_data.get("index_name") or "")
-        if not index_name:
-            return
-        try:
-            context = build_semantic_model_input(
-                self.code_index,
-                index_name,
-                index_name=index_name,
-                include_context=False,
-            )
-            context = hydrate_project_callee_summaries(
-                context,
-                self.code_index,
-                self.snapshot_store,
-            )
-        except SemanticModelInputError as exc:
-            logger.warning(
-                "Skipping LLM snapshot save index_name=%s reason=%s",
-                index_name,
-                exc.reason,
-            )
-            return
-
-        for field in (
-            "project_callees",
-            "external_callees",
-            "referenced_globals",
-            "referenced_macros",
-            "referenced_types",
-            "project_callees_truncation",
-            "external_callees_truncation",
-            "referenced_globals_truncation",
-            "referenced_macros_truncation",
-            "unresolved_referenced_types",
-            "referenced_types_truncation",
-        ):
-            if field in context:
-                snapshot_data[field] = deepcopy(context[field])
-        if context.get("code"):
-            self.snapshot_store.save_snapshot(
-                index_name=index_name,
-                snapshot=snapshot_data,
-                code=context["code"],
-                dependency_context=context,
-            )
 
     def _resolve_issue_locations(self, issues: List[Dict[str, Any]]) -> None:
         """Format absolute line numbers outputted by LLM into standard file:line format."""

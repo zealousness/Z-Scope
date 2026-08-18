@@ -204,9 +204,7 @@ def test_get_type_info_retries_without_wrong_file_path_and_returns_all_matches()
     )
     tool = GetTypeInfoTool(index)
 
-    result = tool.execute(
-        {"type_name": "State", "file_path": "include/wrong.h"}
-    )
+    result = tool.execute({"type_name": "State", "file_path": "include/wrong.h"})
 
     assert result == {
         "success": True,
@@ -459,16 +457,3 @@ def test_runtime_does_not_negative_cache_successful_file_path_fallback() -> None
         ("State", "include/wrong.h"),
         ("State", ""),
     ]
-
-
-def test_semantic_modeler_policy_distinguishes_multi_match_tools() -> None:
-    agent_text = (
-        Path(__file__).resolve().parents[1]
-        / "zscope"
-        / "agents"
-        / "semantic_modeler"
-        / "AGENT.md"
-    ).read_text(encoding="utf-8")
-
-    assert "`get_function_info` and `get_type_info` may return multiple matches" in agent_text
-    assert "`get_function_snapshot` and `get_callers` require a unique match" in agent_text

@@ -17,6 +17,7 @@ from .models import (
     validate_review_event,
     validate_security_spec,
 )
+from .lifecycle import SECURITY_SPEC_MODE
 
 
 _REF_RE = re.compile(r"^sha256:([0-9a-f]{64})$")
@@ -105,7 +106,7 @@ class SecuritySpecObjectStore:
             raise ValueError("security_spec_manifest_reference_invalid")
         body = {
             "schema_version": "zscope.security-spec-root-manifest.v1",
-            "mode": "shadow",
+            "mode": SECURITY_SPEC_MODE,
             "artifact_refs": refs,
         }
         manifest = {**body, "content_sha256": content_sha256(body)}

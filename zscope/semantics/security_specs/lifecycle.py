@@ -1,15 +1,21 @@
-"""P3 lifecycle authority boundary."""
+"""P5 Security Spec authority boundary."""
 
 from __future__ import annotations
 
 
-SECURITY_SPEC_MODE = "shadow"
+SECURITY_SPEC_MODE = "authoritative"
 REVIEWER_IDENTITY_MODE = "unavailable_read_only"
 
 
+def require_authoritative_mode(mode: str) -> None:
+    if mode != SECURITY_SPEC_MODE:
+        raise ValueError("security_spec_mode_is_not_configurable")
+
+
 def require_shadow_mode(mode: str) -> None:
-    if mode != "shadow":
-        raise ValueError("security_spec_authority_requires_p5_complete")
+    """Compatibility name for callers migrated during the P5 cutover."""
+
+    require_authoritative_mode(mode)
 
 
 def reject_review_write() -> None:

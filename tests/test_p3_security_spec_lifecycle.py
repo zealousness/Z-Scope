@@ -8,13 +8,12 @@ def test_repository_security_spec_lifecycle_gate_passes() -> None:
     assert check() == []
 
 
-def test_authoritative_security_spec_mode_is_rejected_before_p5(tmp_path: Path) -> None:
+def test_shadow_security_spec_mode_is_rejected_during_p5(tmp_path: Path) -> None:
     source = Path(__file__).resolve().parents[1]
     package = tmp_path / "zscope/semantics/security_specs"
     package.mkdir(parents=True)
     (package / "lifecycle.py").write_text(
-        'SECURITY_SPEC_MODE = "authoritative"\n'
-        'REVIEWER_IDENTITY_MODE = "unavailable_read_only"\n',
+        'SECURITY_SPEC_MODE = "shadow"\n' 'REVIEWER_IDENTITY_MODE = "unavailable_read_only"\n',
         encoding="utf-8",
     )
     (tmp_path / "zscope/config").mkdir(parents=True)
@@ -27,7 +26,7 @@ def test_authoritative_security_spec_mode_is_rejected_before_p5(tmp_path: Path) 
     )
     manifest["phase_status"]["P5"] = "pending"
     (design / "design-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    assert "SecuritySpec mode must remain shadow until P5 is complete" in check(tmp_path)
+    assert "SecuritySpec mode must be authoritative during the P5 cutover" in check(tmp_path)
 
 
 def test_user_controllable_security_spec_mode_is_rejected(tmp_path: Path) -> None:
@@ -35,7 +34,8 @@ def test_user_controllable_security_spec_mode_is_rejected(tmp_path: Path) -> Non
     package = tmp_path / "zscope/semantics/security_specs"
     package.mkdir(parents=True)
     (package / "lifecycle.py").write_text(
-        'SECURITY_SPEC_MODE = "shadow"\n' 'REVIEWER_IDENTITY_MODE = "unavailable_read_only"\n',
+        'SECURITY_SPEC_MODE = "authoritative"\n'
+        'REVIEWER_IDENTITY_MODE = "unavailable_read_only"\n',
         encoding="utf-8",
     )
     config = tmp_path / "zscope/config"

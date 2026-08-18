@@ -1,18 +1,20 @@
-"""Unified P3 shadow snapshot orchestration."""
+"""P5 authoritative Security Spec mining and compilation runtime."""
 
 from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
 
+from .canonical import content_sha256
 from .compiler import SecuritySpecCompiler
 from .lifecycle import SECURITY_SPEC_MODE
 from .miner import SecuritySpecMiner
 from .models import build_security_spec, validate_qualification
+from .registry import registry_manifest
 from .store import SecuritySpecStore
 
 
-class SecuritySpecShadowRuntime:
-    """Mine and compile specs without exposing an authority-bearing return value."""
+class SecuritySpecRuntime:
+    """Mine specs and compile only independently qualified stable revisions."""
 
     def __init__(self, store: SecuritySpecStore) -> None:
         self.store = store
@@ -30,11 +32,33 @@ class SecuritySpecShadowRuntime:
         additional_specs: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         mining = self.miner.mine(semantic_map)
+        requested_qualification_hashes = {
+            str(value) for value in qualification_hashes if str(value)
+        }
+        qualification_candidates = {
+            str(value.get("content_sha256") or ""): dict(value)
+            for value in (
+                *self.store.list_artifacts("qualification"),
+                *qualifications,
+            )
+            if isinstance(value, Mapping) and str(value.get("content_sha256") or "")
+        }
+        missing_qualifications = requested_qualification_hashes - set(qualification_candidates)
+        if missing_qualifications:
+            raise ValueError("security_spec_qualification_hash_unresolved")
         qualification_values = []
-        for qualification in qualifications:
+        active_hashes = requested_qualification_hashes or set(qualification_candidates)
+        for digest in sorted(active_hashes):
+            qualification = qualification_candidates[digest]
             valid, reason = validate_qualification(qualification)
             if not valid:
-                raise ValueError("security_spec_shadow_qualification_invalid:" + reason)
+                raise ValueError("security_spec_qualification_invalid:" + reason)
+            if qualification["registry_sha256"] != content_sha256(registry_manifest()):
+                raise ValueError("security_spec_qualification_registry_stale")
+            if qualification["compiler_sha256"] != content_sha256(
+                {"compiler_version": SecuritySpecCompiler.compiler_version}
+            ):
+                raise ValueError("security_spec_qualification_compiler_stale")
             qualification_values.append(dict(qualification))
             self.store.put_qualification(qualification)
         qualified_by_predicate = {
@@ -96,7 +120,7 @@ class SecuritySpecShadowRuntime:
                     qualification_ref=qualification_ref,
                     explanation=(
                         str(spec.get("explanation") or "")
-                        + "; activated only in P3 shadow by qualification"
+                        + "; activated by independent qualification"
                     ),
                     impact_preview=spec["impact_preview"],
                 )
@@ -115,7 +139,6 @@ class SecuritySpecShadowRuntime:
         compilation = self.compiler.compile(
             specs,
             qualification_hashes=[
-                *map(str, qualification_hashes),
                 *(str(value["content_sha256"]) for value in qualification_values),
             ],
             resolvable_evidence_refs=resolvable_evidence_refs,
@@ -125,7 +148,7 @@ class SecuritySpecShadowRuntime:
         references = self.store.artifact_refs()
         root = self.store.cas.write_root_manifest(references)
         return {
-            "schema_version": "zscope.security-spec-shadow-result.v2",
+            "schema_version": "zscope.security-spec-runtime-result.v1",
             "security_spec_mode": SECURITY_SPEC_MODE,
             "mined_spec_count": len(mining["specs"]),
             "observation_count": len(mining["observations"]),
@@ -133,5 +156,5 @@ class SecuritySpecShadowRuntime:
             "compilation": compilation,
             "artifact_refs": references,
             "root_manifest_sha256": root["content_sha256"],
-            "active_product_effect": "none",
+            "active_product_effect": "semantic_input",
         }

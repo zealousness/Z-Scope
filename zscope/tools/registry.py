@@ -1,7 +1,7 @@
 """Construction helpers for the built-in analysis tools."""
 
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Dict, Optional, TYPE_CHECKING
 
 from ..framework.base import BaseTool
 from .call_graph import GetCallGraphTool
@@ -25,15 +25,11 @@ if TYPE_CHECKING:
     from ..snapshots.store import SnapshotStore
 
 
-SnapshotResolver = Callable[[str, Optional[str]], Dict[str, Any]]
-
-
 def build_tool_registry(
     code_index: "CodeIndex",
     snapshot_store: "SnapshotStore",
     user_config: Optional["UserConfigStore"] = None,
     *,
-    snapshot_resolver: Optional[SnapshotResolver] = None,
     include_advanced: bool = True,
 ) -> Dict[str, BaseTool]:
     """Build the ordered registry of built-in tools for one analysis context."""
@@ -43,7 +39,6 @@ def build_tool_registry(
         GetFunctionSnapshotTool(
             snapshot_store,
             code_index=code_index,
-            resolver=snapshot_resolver,
             user_config=user_config,
         ),
         GetSecuritySemanticsTool(

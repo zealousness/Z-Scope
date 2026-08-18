@@ -12,7 +12,7 @@ def _analyzer_with_specs() -> Analyzer:
 def test_agent_tool_policy_uses_agent_allowlist() -> None:
     analyzer = _analyzer_with_specs()
 
-    policy = analyzer._tool_policy_for_agent("validator_agent")
+    policy = analyzer._tool_policy_for_agent("proof_engine")
 
     assert policy.enforce_tool("get_function_info", {}, actor="test") is None
     assert policy.enforce_tool("get_data_flow", {}, actor="test") is None
@@ -21,11 +21,11 @@ def test_agent_tool_policy_uses_agent_allowlist() -> None:
     assert blocked_impl["policy_decision"] == "deny"
 
 
-def test_active_discovery_policy_is_tool_free() -> None:
+def test_hypothesis_hunter_policy_is_tool_free() -> None:
     analyzer = _analyzer_with_specs()
 
     policy = analyzer._tool_policy_for_agent(
-        "active_discovery",
+        "hypothesis_hunter",
         active_skill_names=["stack_escape"],
     )
 
@@ -39,12 +39,11 @@ def test_prompt_contract_lists_only_visible_tools() -> None:
     context = {}
     attach_agent_contract(
         context,
-        "active_discovery",
+        "hypothesis_hunter",
         SpecRegistry(),
         active_skill_names=["stack_escape"],
         visible_tool_names=[],
     )
 
     assert "Allowed tools: none" in context["agent_contract"]
-    assert "Allowed tools: none" in context["skill_contracts"]
-    assert "get_function_impl" not in context["skill_contracts"]
+    assert "skill_contracts" not in context

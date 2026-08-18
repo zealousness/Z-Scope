@@ -24,7 +24,7 @@ REQUIRED_MODULES = {
         "models.py",
         "qualification.py",
         "registry.py",
-        "shadow.py",
+        "runtime.py",
         "store.py",
     )
 }

@@ -270,13 +270,13 @@ def test_analyzer_uses_registry_backend_grouping() -> None:
     analyzer.snapshot_store = EmptySnapshotStore()
     analyzer.user_config = None
 
-    advanced_tools = analyzer._get_tools(enable_on_demand_snapshots=True)
+    advanced_tools = analyzer._get_tools()
     advanced_names = [tool.name for tool in advanced_tools]
     analyzer.code_index.backend_name = "regex"
-    base_tools = analyzer._get_tools(enable_on_demand_snapshots=False)
+    base_tools = analyzer._get_tools()
     base_names = [tool.name for tool in base_tools]
 
     assert advanced_names == EXPECTED_TOOL_NAMES
     assert base_names == EXPECTED_TOOL_NAMES[:8]
-    assert advanced_tools[2].resolver is not None
+    assert advanced_tools[2].resolver is None
     assert base_tools[2].resolver is None

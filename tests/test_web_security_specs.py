@@ -39,7 +39,7 @@ def test_security_spec_review_service_lists_details_and_exports(tmp_path: Path) 
 
     payload = service.list_payload("status=verified_scoped")
     assert payload["read_only"] is True
-    assert payload["security_spec_mode"] == "shadow"
+    assert payload["security_spec_mode"] == "authoritative"
     assert payload["reviewer_identity_mode"] == "unavailable_read_only"
     assert payload["specs"] == [spec]
 

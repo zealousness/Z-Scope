@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, cast
 
 
-DECISION_TRACE_SCHEMA_VERSION = "zscope.issue-decision-trace.v1"
-DECISION_EVENT_SCHEMA_VERSION = "zscope.issue-decision-event.v1"
-DECISION_TRACE_MANIFEST_VERSION = "zscope.decision-trace-manifest.v1"
+DECISION_TRACE_SCHEMA_VERSION = "zscope.issue-decision-trace.v3"
+DECISION_EVENT_SCHEMA_VERSION = "zscope.issue-decision-event.v3"
+DECISION_TRACE_MANIFEST_VERSION = "zscope.decision-trace-manifest.v3"
 COVERAGE_TRACE_SCHEMA_VERSION = "zscope.coverage-trace.v1"
 EVIDENCE_OBJECT_SCHEMA_VERSION = "zscope.evidence-object.v1"
 MODEL_EVENT_SCHEMA_VERSION = "zscope.model-event.v1"
@@ -196,35 +196,37 @@ def _disposition(issue: Mapping[str, Any]) -> str:
 
 
 def terminal_reason_codes(issue: Mapping[str, Any]) -> tuple[str, ...]:
-    """Infer the stable terminal explanation without reading free-form text."""
+    """Project only the P5 TerminalAuthorityDecision v3 explanation."""
 
     disposition = _disposition(issue)
+    authority = issue.get("terminal_authority_decision")
+    authority = authority if isinstance(authority, Mapping) else {}
+    valid_authority = bool(
+        authority.get("schema_version") == "zscope.terminal-authority-decision.v3"
+        and authority.get("terminal") is True
+        and str(authority.get("disposition") or "") == disposition
+        and str(authority.get("authority") or "")
+        in {"zscope.proof-checker", "zscope.proof-checker-conflict-resolver"}
+    )
     if disposition in {"confirmed", "validated"}:
-        if issue.get("decision_proof") and issue.get("proof_coverage") == "complete":
-            return ("CONFIRMED_DETERMINISTIC_PROOF",)
-        return ("CONFIRMED_VERIFIED_CLOSURE",)
+        if not valid_authority:
+            return ("NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",)
+        return (str(authority.get("reason_code") or "CONFIRMED_VERIFIED_CLOSURE"),)
     if disposition in {"rejected", "rejected_with_proof"}:
-        return ("REJECTED_DETERMINISTIC_COUNTERPROOF",)
+        if not valid_authority:
+            return ("NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",)
+        return (str(authority.get("reason_code") or "REJECTED_DETERMINISTIC_COUNTERPROOF"),)
     if disposition == "deduplicated_alias":
         return ("ROOT_ALIAS", "VIEW_EXCLUDED")
     if disposition in {"engine_failed", "interrupted"}:
         return ("NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE", "VIEW_EXCLUDED")
     if disposition in {"shadow", "shadow_observation"}:
         return ("VIEW_EXCLUDED",)
-    if bool(issue.get("evidence_conflict")):
-        return ("NEEDS_REVIEW_EVIDENCE_CONFLICT",)
-    verdict = str(issue.get("model_verdict") or issue.get("validator_verdict") or "").lower()
-    if verdict == "rejected":
-        return ("NEEDS_REVIEW_MODEL_REJECT_NO_PROOF",)
-    if verdict == "verified":
-        return ("NEEDS_REVIEW_VERIFIED_BUT_PROMOTION_BLOCKED",)
-    if str(issue.get("validator_stop_reason") or "") in {
-        "malformed_output",
-        "output_truncated",
-        "fact_timeout",
-    }:
-        return ("NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",)
-    return ("NEEDS_REVIEW_OPEN_CLAUSES",)
+    if valid_authority:
+        reason = str(authority.get("reason_code") or "")
+        if reason in TERMINAL_REASON_CODES:
+            return (reason,)
+    return ("NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",)
 
 
 class DecisionTraceError(ValueError):
@@ -481,6 +483,29 @@ class DecisionTraceStore:
         cluster_uid = str(issue.get("validation_cluster_uid") or "").strip()
         if not cluster_uid:
             return issue
+        disposition = _disposition(issue)
+        terminal_authority = issue.get("terminal_authority_decision")
+        terminal_authority = terminal_authority if isinstance(terminal_authority, Mapping) else {}
+        security_terminal = disposition in {
+            "confirmed",
+            "validated",
+            "rejected",
+            "rejected_with_proof",
+            "needs_review",
+        }
+        operational = str(issue.get("record_role") or "") == "operational_obligation"
+        if security_terminal and not operational:
+            if not (
+                terminal_authority.get("schema_version") == "zscope.terminal-authority-decision.v3"
+                and terminal_authority.get("terminal") is True
+                and str(terminal_authority.get("disposition") or "")
+                in {disposition, "confirmed" if disposition == "validated" else disposition}
+                and str(terminal_authority.get("authority") or "")
+                in {"zscope.proof-checker", "zscope.proof-checker-conflict-resolver"}
+            ):
+                raise DecisionTraceError(
+                    "security terminal requires TerminalAuthorityDecision v3 from Proof Engine"
+                )
         explicit_reasons = issue.get("terminal_reason_codes")
         reasons = (
             tuple(str(value) for value in explicit_reasons if str(value) in TERMINAL_REASON_CODES)
@@ -492,67 +517,75 @@ class DecisionTraceStore:
             reasons[0],
         )
         security_spec_mode = str(
-            issue.get("security_spec_mode") or self.identity.get("security_spec_mode") or "shadow"
+            issue.get("security_spec_mode")
+            or self.identity.get("security_spec_mode")
+            or "authoritative"
         )
         security_spec_artifact_refs = _sanitize(
             issue.get("security_spec_artifact_refs")
             or self.identity.get("security_spec_artifact_refs")
             or []
         )
-        security_spec_shadow_decision = _sanitize(
-            issue.get("security_spec_shadow_decision")
-            or self.identity.get("security_spec_shadow_decision")
+        security_spec_decision = _sanitize(
+            issue.get("security_spec_decision")
+            or self.identity.get("security_spec_decision")
             or {
-                "active_product_effect": "none",
-                "reason_code": "security_spec_shadow_only",
+                "active_product_effect": "semantic_input",
+                "reason_code": "security_spec_manifest_unavailable",
             }
         )
         hypothesis_hunter_mode = str(
             issue.get("hypothesis_hunter_mode")
             or self.identity.get("hypothesis_hunter_mode")
-            or "shadow"
+            or "active"
         )
         hypothesis_hunter_artifact_refs = _sanitize(
             issue.get("hypothesis_hunter_artifact_refs")
             or self.identity.get("hypothesis_hunter_artifact_refs")
             or []
         )
-        hypothesis_hunter_shadow_decision = _sanitize(
-            issue.get("hypothesis_hunter_shadow_decision")
-            or self.identity.get("hypothesis_hunter_shadow_decision")
+        hypothesis_hunter_decision = _sanitize(
+            issue.get("hypothesis_hunter_decision")
+            or self.identity.get("hypothesis_hunter_decision")
             or {
-                "active_product_effect": "none",
-                "reason_code": "hypothesis_hunter_shadow_only",
+                "active_product_effect": "candidate_registration_only",
+                "reason_code": "hypothesis_hunter_manifest_unavailable",
             }
         )
         policy_ref = self.put_evidence(
             kind="terminal_policy_input",
             payload={
                 "issue": self._state_projection(issue),
-                "decision_proof": _sanitize(issue.get("decision_proof") or {}),
-                "evidence_closure_state": _sanitize(issue.get("evidence_closure_state") or {}),
-                "v3_evidence_closure": _sanitize(issue.get("v3_evidence_closure") or {}),
                 "terminal_authority_decision": _sanitize(
                     issue.get("terminal_authority_decision") or {}
                 ),
-                "proof_kernel_mode": str(issue.get("proof_kernel_mode") or "shadow"),
+                "proof_kernel_mode": str(issue.get("proof_kernel_mode") or "authoritative"),
                 "proof_kernel_artifact_refs": _sanitize(
                     issue.get("proof_kernel_artifact_refs") or []
                 ),
                 "proof_kernel_checker_results": _sanitize(
                     issue.get("proof_kernel_checker_results") or []
                 ),
-                "proof_kernel_shadow_decision": _sanitize(
-                    issue.get("proof_kernel_shadow_decision")
-                    or issue.get("proof_kernel_shadow_terminal_authority_decision")
+                "proof_kernel_checker_result_refs": _sanitize(
+                    issue.get("proof_kernel_checker_result_refs") or []
+                ),
+                "proof_kernel_root_manifest_sha256": str(
+                    issue.get("proof_kernel_root_manifest_sha256") or ""
+                ),
+                "proof_kernel_decision": _sanitize(
+                    issue.get("proof_kernel_decision")
+                    or issue.get("proof_kernel_terminal_authority_decision")
                     or {}
+                ),
+                "proof_kernel_terminal_authority_decision": _sanitize(
+                    issue.get("proof_kernel_terminal_authority_decision") or {}
                 ),
                 "security_spec_mode": security_spec_mode,
                 "security_spec_artifact_refs": security_spec_artifact_refs,
-                "security_spec_shadow_decision": security_spec_shadow_decision,
+                "security_spec_decision": security_spec_decision,
                 "hypothesis_hunter_mode": hypothesis_hunter_mode,
                 "hypothesis_hunter_artifact_refs": hypothesis_hunter_artifact_refs,
-                "hypothesis_hunter_shadow_decision": hypothesis_hunter_shadow_decision,
+                "hypothesis_hunter_decision": hypothesis_hunter_decision,
             },
             producer="terminal_authority_evaluator",
         )
@@ -567,6 +600,15 @@ class DecisionTraceStore:
                 ),
                 None,
             )
+        with self._lock:
+            prior_terminal_events = [
+                deepcopy(event)
+                for event in self._trace(cluster_uid)["events"]
+                if event.get("stage") == "policy"
+                and str(event.get("reason_code") or "") in TERMINAL_REASON_CODES
+            ]
+        if prior_terminal_events and existing_terminal is None:
+            raise DecisionTraceError("cluster already has a different terminal event")
         terminal = existing_terminal or self.append_event(
             cluster_uid,
             stage="policy",
@@ -577,15 +619,12 @@ class DecisionTraceStore:
             disposition_after=_disposition(issue),
             open_clause_ids=self._open_clause_ids(issue),
             details={
-                "model_verdict": issue.get("model_verdict"),
-                "policy_disposition": issue.get("policy_disposition"),
-                "proof_coverage": issue.get("proof_coverage"),
                 "security_spec_mode": security_spec_mode,
                 "security_spec_artifact_refs": security_spec_artifact_refs,
-                "security_spec_shadow_decision": security_spec_shadow_decision,
+                "security_spec_decision": security_spec_decision,
                 "hypothesis_hunter_mode": hypothesis_hunter_mode,
                 "hypothesis_hunter_artifact_refs": hypothesis_hunter_artifact_refs,
-                "hypothesis_hunter_shadow_decision": hypothesis_hunter_shadow_decision,
+                "hypothesis_hunter_decision": hypothesis_hunter_decision,
             },
             dedupe_key=f"terminal:{terminal_reason}:{_disposition(issue)}",
         )
@@ -817,7 +856,10 @@ class DecisionTraceStore:
                 root = self.root.resolve()
                 if resolved == root or root in resolved.parents:
                     relative_path = resolved.relative_to(root).as_posix()
-                    file_sha = hashlib.sha256(resolved.read_bytes()).hexdigest()
+                    if resolved.is_file():
+                        file_sha = hashlib.sha256(resolved.read_bytes()).hexdigest()
+                    elif events:
+                        missing.append("usage_sidecar_unreadable:FileNotFoundError")
                 else:
                     missing.append("usage_sidecar_outside_trace_root")
             except OSError as exc:

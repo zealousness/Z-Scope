@@ -7,16 +7,16 @@ import pytest
 
 from zscope.core.validation.function_ir import FunctionIRGraph
 from zscope.core.validation.proof_kernel import ProofKernelEngine
-from zscope.orchestration.candidates import CandidateLedger
+from zscope.orchestration.candidates import CandidateLedger, CandidateRegistrar
 from zscope.orchestration.hypothesis_hunter import (
     AttackSurfacePlanner,
     CandidateBlindProjectionError,
     HypothesisArtifactStore,
     HypothesisHunterAgent,
-    HypothesisHunterShadowRuntime,
+    HypothesisHunterRuntime,
     HypothesisProofCatalog,
     build_candidate_blind_projection,
-    load_hypothesis_shadow_identity,
+    load_hypothesis_manifest_identity,
 )
 from zscope.orchestration.hypothesis_hunter.blind import assert_candidate_blind
 from zscope.orchestration.hypothesis_hunter.models import validate_hunt_report
@@ -185,6 +185,8 @@ def test_candidate_blind_projection_checks_keys_scalars_and_unicode_variants() -
     projection = build_candidate_blind_projection(planned.audit_unit, planned.offers)
     assert "risk_score" not in json.dumps(projection, sort_keys=True)
     assert projection["audit_unit"]["risk_level"] > 0
+    assert "localized_signal_desert" in projection["audit_unit"]["attack_signals"]
+    assert "localized_candidate_desert" not in json.dumps(projection, sort_keys=True)
     with pytest.raises(CandidateBlindProjectionError):
         assert_candidate_blind({"verdict": "unknown"})
     with pytest.raises(CandidateBlindProjectionError):
@@ -265,11 +267,35 @@ def test_alias_cluster_schedules_only_one_representative_unit() -> None:
     )
 
 
-def test_shadow_runtime_freezes_separate_ledger_and_reuses_exact_cache(tmp_path: Path) -> None:
+def test_non_candidate_structural_alias_root_schedules_one_observation() -> None:
+    semantic_map = _semantic_map()
+    baseline = AttackSurfacePlanner(risk_threshold=35).plan(semantic_map)
+    assert len(baseline) >= 2
+    roots = {
+        str(value.audit_unit["localized_coverage_key"]["key_uid"]): "ALIAS_NO_CANDIDATE"
+        for value in baseline
+    }
+    planner = AttackSurfacePlanner(risk_threshold=35)
+    planned = planner.plan(
+        semantic_map,
+        canonical_investigation_roots=roots,
+        proof_bundle_provider=None,
+    )
+
+    assert len(planned) == 1
+    assert planned[0].offers == ()
+    assert any(
+        value["reason_code"] == "ALIAS_CLUSTER_ALREADY_SCHEDULED" for value in planner.diagnostics
+    )
+
+
+def test_active_runtime_registers_live_unconfirmed_candidates_and_reuses_exact_cache(
+    tmp_path: Path,
+) -> None:
     semantic_map = _semantic_map()
     catalog = HypothesisProofCatalog(lambda record, event: _graph())
     live = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
-    live_before = live.lifecycle_snapshot()
+    registrar = CandidateRegistrar(live)
     calls = []
 
     def runner(projection, unit, offers):
@@ -277,71 +303,86 @@ def test_shadow_runtime_freezes_separate_ledger_and_reuses_exact_cache(tmp_path:
         return _select_report(unit, offers)
 
     store = HypothesisArtifactStore(tmp_path / "hypothesis_hunter")
-    runtime = HypothesisHunterShadowRuntime(store, risk_threshold=35, model_profile="test")
+    runtime = HypothesisHunterRuntime(store, risk_threshold=35, model_profile="test")
     first = runtime.run(
         semantic_map,
+        candidate_registrar=registrar,
         proof_bundle_provider=catalog.bundles,
         report_runner=runner,
     )
-    assert first["mode"] == "shadow"
-    assert first["active_product_effect"] == "none"
-    assert first["shadow_ledger_snapshot"]["summary"]["total"] > 0
+    assert first["mode"] == "active"
+    assert first["active_product_effect"] == "candidate_registration_only"
+    assert live.lifecycle_snapshot()["summary"]["total"] > 0
     assert first["coverage_summary"]["hypothesis_count"] > 0
-    assert live.lifecycle_snapshot() == live_before
+    assert first["coverage_summary"]["coverage_status_counts"]["complete"] > 0
+    assert isinstance(first["coverage_summary"]["reason_code_distribution"], dict)
     first_call_count = len(calls)
 
-    second = HypothesisHunterShadowRuntime(
+    second = HypothesisHunterRuntime(
         store,
         risk_threshold=35,
         model_profile="test",
     ).run(
         semantic_map,
+        candidate_registrar=registrar,
         proof_bundle_provider=catalog.bundles,
         report_runner=runner,
     )
     assert len(calls) == first_call_count
     assert second["coverage_summary"]["cache_hit_count"] > 0
-    identity = load_hypothesis_shadow_identity(
+    identity = load_hypothesis_manifest_identity(
         tmp_path / "hypothesis_hunter",
         consumer="test",
     )
-    assert identity["hypothesis_hunter_mode"] == "shadow"
-    assert identity["hypothesis_hunter_shadow_decision"]["active_product_effect"] == "none"
+    assert identity["hypothesis_hunter_mode"] == "active"
+    assert identity["hypothesis_hunter_decision"]["active_product_effect"] == (
+        "candidate_registration_only"
+    )
 
 
 def test_incomplete_unit_is_observation_not_candidate(tmp_path: Path) -> None:
-    runtime = HypothesisHunterShadowRuntime(
+    ledger = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
+    runtime = HypothesisHunterRuntime(
         HypothesisArtifactStore(tmp_path),
         risk_threshold=35,
     )
-    result = runtime.run(_semantic_map(), proof_bundle_provider=None, report_runner=None)
+    result = runtime.run(
+        _semantic_map(),
+        candidate_registrar=CandidateRegistrar(ledger),
+        proof_bundle_provider=None,
+        report_runner=None,
+    )
     assert result["coverage_summary"]["hypothesis_count"] == 0
     assert result["coverage_summary"]["observation_count"] > 0
-    assert result["shadow_ledger_snapshot"]["summary"]["total"] == 0
+    assert ledger.lifecycle_snapshot()["summary"]["total"] == 0
 
 
 def test_invalid_hunter_output_is_observation_not_candidate(tmp_path: Path) -> None:
     catalog = HypothesisProofCatalog(lambda record, event: _graph())
-    result = HypothesisHunterShadowRuntime(
+    ledger = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
+    result = HypothesisHunterRuntime(
         HypothesisArtifactStore(tmp_path),
         risk_threshold=35,
     ).run(
         _semantic_map(),
+        candidate_registrar=CandidateRegistrar(ledger),
         proof_bundle_provider=catalog.bundles,
         report_runner=lambda projection, unit, offers: {"selected_offers": []},
     )
     assert result["coverage_summary"]["observation_count"] > 0
-    assert result["shadow_ledger_snapshot"]["summary"]["total"] == 0
+    assert ledger.lifecycle_snapshot()["summary"]["total"] == 0
 
 
 def test_fast_runtime_has_no_units_or_model_calls(tmp_path: Path) -> None:
     calls = []
-    result = HypothesisHunterShadowRuntime(
+    ledger = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
+    result = HypothesisHunterRuntime(
         HypothesisArtifactStore(tmp_path),
         risk_threshold=101,
         max_units=0,
     ).run(
         _semantic_map(),
+        candidate_registrar=CandidateRegistrar(ledger),
         report_runner=lambda projection, unit, offers: calls.append(unit),
     )
     assert result["coverage_summary"]["planned_unit_count"] == 0
@@ -373,16 +414,16 @@ def test_manifest_loader_rejects_shadow_ledger_hash_tampering(tmp_path: Path) ->
     reference = store.put("neutral", {"value": 1})
     manifest = store.write_root_manifest(
         (reference,),
-        shadow_ledger_sha256="a" * 64,
+        registered_candidate_uids=(),
         coverage_summary={"planned_unit_count": 0},
     )
-    manifest["shadow_ledger_sha256"] = "not-a-hash"
+    manifest["candidate_registration_sha256"] = "not-a-hash"
     (tmp_path / "hypothesis_hunter_manifest.json").write_text(
         json.dumps(manifest),
         encoding="utf-8",
     )
 
-    identity = load_hypothesis_shadow_identity(tmp_path, consumer="test")
+    identity = load_hypothesis_manifest_identity(tmp_path, consumer="test")
 
     assert identity["hypothesis_hunter_root_manifest_sha256"] == ""
     assert identity["hypothesis_hunter_artifact_refs"] == []

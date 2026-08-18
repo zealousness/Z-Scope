@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from zscope.alerts.verifier import AlertVerifier
 from zscope.semantics.security_specs.archive import (
     archive_from_json_bytes,
     archive_from_xlsx,
@@ -17,6 +16,7 @@ from zscope.semantics.security_specs.archive import (
 )
 from zscope.semantics.security_specs.canonical import content_sha256
 from zscope.semantics.security_specs.compiler import SecuritySpecCompiler
+from zscope.semantics.security_specs.manifest import load_manifest_identity
 from zscope.semantics.security_specs.miner import SecuritySpecMiner, SecuritySpecProposalEngine
 from zscope.semantics.security_specs.models import (
     build_qualification,
@@ -26,9 +26,13 @@ from zscope.semantics.security_specs.models import (
     validate_qualification,
     validate_security_spec,
 )
-from zscope.semantics.security_specs.registry import PREDICATE_REGISTRY, validate_parameters
+from zscope.semantics.security_specs.registry import (
+    PREDICATE_REGISTRY,
+    registry_manifest,
+    validate_parameters,
+)
 from zscope.semantics.security_specs.qualification import load_builtin_qualification
-from zscope.semantics.security_specs.shadow import SecuritySpecShadowRuntime
+from zscope.semantics.security_specs.runtime import SecuritySpecRuntime
 from zscope.semantics.security_specs.store import SecuritySpecStore
 
 
@@ -39,8 +43,8 @@ HASH_C = "c" * 64
 
 def _qualification() -> dict:
     return build_qualification(
-        registry_sha256=HASH_A,
-        compiler_sha256=HASH_B,
+        registry_sha256=content_sha256(registry_manifest()),
+        compiler_sha256=content_sha256({"compiler_version": SecuritySpecCompiler.compiler_version}),
         corpus_sha256=HASH_C,
         qualified_predicates=sorted(PREDICATE_REGISTRY),
         source_projects=["callback-service", "procedural-runtime", "raii-library"],
@@ -166,7 +170,7 @@ def test_compiler_accepts_only_resolved_qualification_backed_stable_specs() -> N
         resolvable_evidence_refs=stable["evidence_refs"],
         current_dependency_hashes=[HASH_A, HASH_B],
     )
-    assert result["mode"] == "shadow"
+    assert result["mode"] == "authoritative"
     assert [value["spec_uid"] for value in result["compiled_specs"]] == [stable["spec_uid"]]
     assert {value["reason"] for value in result["excluded_specs"]} == {
         "not_qualification_backed_stable"
@@ -344,15 +348,15 @@ def test_proposal_engine_rejects_model_invented_proposal_id(tmp_path: Path) -> N
         )
 
 
-def test_shadow_runtime_compiles_only_qualification_backed_stable_specs(
+def test_authoritative_runtime_compiles_only_qualification_backed_stable_specs(
     tmp_path: Path,
 ) -> None:
     qualification = _qualification()
     stable = _spec(status="stable", qualification_ref=qualification["content_sha256"])
-    store = SecuritySpecStore(tmp_path / "shadow")
+    store = SecuritySpecStore(tmp_path / "runtime")
     store.put_qualification(qualification)
 
-    result = SecuritySpecShadowRuntime(store).run(
+    result = SecuritySpecRuntime(store).run(
         SimpleNamespace(language="c_cpp", functions=(), claims=()),
         qualification_hashes=[qualification["content_sha256"]],
         resolvable_evidence_refs=stable["evidence_refs"],
@@ -360,23 +364,25 @@ def test_shadow_runtime_compiles_only_qualification_backed_stable_specs(
         additional_specs=[stable],
     )
 
-    assert result["security_spec_mode"] == "shadow"
-    assert result["active_product_effect"] == "none"
+    assert result["security_spec_mode"] == "authoritative"
+    assert result["active_product_effect"] == "semantic_input"
     assert result["compiled_spec_count"] == 1
     assert store.cas.verify_ref(result["artifact_refs"][-1])
     assert (store.root / "security_spec_manifest.json").is_file()
 
-    verifier = object.__new__(AlertVerifier)
-    verifier.config = SimpleNamespace(analysis=SimpleNamespace(snapshot_dir=str(tmp_path)))
-    # The alert path uses the same snapshot/security_specs location as scans.
+    # Alert verification reads the same frozen identity but never executes the
+    # compiler or converts a SecuritySpec into external-alert proof.
     store.root.rename(tmp_path / "security_specs")
-    identity = verifier._security_spec_shadow_identity()
+    identity = load_manifest_identity(
+        tmp_path / "security_specs",
+        consumer="alert_verify",
+    )
     assert identity["security_spec_root_manifest_sha256"] == result["root_manifest_sha256"]
-    assert identity["security_spec_shadow_decision"]["compiled_spec_count"] == 1
-    assert identity["security_spec_shadow_decision"]["active_product_effect"] == "none"
+    assert identity["security_spec_decision"]["compiled_spec_count"] == 1
+    assert identity["security_spec_decision"]["active_product_effect"] == "semantic_input"
 
 
-def test_builtin_qualification_promotes_exact_program_fact_only_in_shadow(
+def test_builtin_qualification_promotes_exact_program_fact_for_authority(
     tmp_path: Path,
 ) -> None:
     store = SecuritySpecStore(tmp_path / "security_specs")
@@ -398,7 +404,7 @@ def test_builtin_qualification_promotes_exact_program_fact_only_in_shadow(
     semantic_map = SimpleNamespace(language="c_cpp", functions=(record,), claims=(claim,))
     dependencies = [HASH_A, content_sha256(record.backend_coverage)]
     qualification = load_builtin_qualification()
-    runtime = SecuritySpecShadowRuntime(store)
+    runtime = SecuritySpecRuntime(store)
 
     first = runtime.run(
         semantic_map,
@@ -421,7 +427,7 @@ def test_builtin_qualification_promotes_exact_program_fact_only_in_shadow(
     stable = store.list_specs()[0]
     assert stable["status"] == "stable"
     assert stable["qualification_ref"] == qualification["content_sha256"]
-    assert first["active_product_effect"] == second["active_product_effect"] == "none"
+    assert first["active_product_effect"] == second["active_product_effect"] == "semantic_input"
 
 
 def test_deterministic_miner_preserves_inexact_claim_as_observation() -> None:

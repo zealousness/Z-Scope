@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import zscope.orchestration.specs as specs_module
-from zscope.agents.validator_agent.agent import ValidatorAgent
+from zscope.agents.proof_engine.agent import ProofEngineAgent
 from zscope.orchestration.agent_policy import attach_agent_contract
 from zscope.orchestration.specs import AgentSpec, SkillSpec, SpecRegistry
 
@@ -123,22 +123,22 @@ def test_skill_prompt_block_keeps_explicit_truncation_compatibility() -> None:
     assert tail not in prompt
 
 
-def test_validator_system_message_contains_the_complete_agent_contract() -> None:
+def test_proof_engine_system_message_contains_the_complete_agent_contract() -> None:
     registry = SpecRegistry()
-    spec = registry.get_agent("validator_agent")
+    spec = registry.get_agent("proof_engine")
     assert spec is not None
-    assert len(spec.body) > 5000
+    assert len(spec.body) > 500
 
     context = {}
-    attach_agent_contract(context, "validator_agent", registry)
-    messages = ValidatorAgent(object(), [])._messages(context, "validate this finding")
+    attach_agent_contract(context, "proof_engine", registry)
+    messages = ProofEngineAgent(object(), [])._messages(context, "validate this finding")
     system_prompt = str(messages[0]["content"])
 
     assert context["agent_contract"] == spec.to_prompt_block()
     assert system_prompt.endswith(spec.body)
     assert "[truncated]" not in system_prompt
-    assert "Field requirements:" in system_prompt
-    assert "must be in Chinese." in system_prompt
+    assert "Proof Checker" in system_prompt
+    assert "Never invent a predicate" in system_prompt
 
 
 def test_builtin_skills_declare_strict_language_scopes() -> None:

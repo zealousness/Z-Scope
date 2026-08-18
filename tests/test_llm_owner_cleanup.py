@@ -42,14 +42,17 @@ def test_parallel_analyzer_close_closes_shared_clients_once() -> None:
     assert client.close_count == 1
 
 
-def test_alert_and_rule_analyzers_close_llm_clients_once() -> None:
+def test_offline_alert_verifier_does_not_own_an_llm_client() -> None:
     alert_client = CloseTrackingClient()
     verifier = AlertVerifier.__new__(AlertVerifier)
     verifier.llm_client = alert_client
 
     verifier.close()
 
-    assert alert_client.close_count == 1
+    assert alert_client.close_count == 0
+
+
+def test_rule_analyzer_closes_llm_clients_once() -> None:
 
     rule_client = CloseTrackingClient()
     rule_analyzer = RuleDrivenAnalyzer.__new__(RuleDrivenAnalyzer)

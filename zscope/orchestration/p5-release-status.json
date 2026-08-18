@@ -1,0 +1,13 @@
+{
+  "schema_version": "zscope.p5-release-status.v1",
+  "phase": "P5",
+  "status": "in_progress",
+  "reviewed_commit": "",
+  "reviewed_tree": "",
+  "qualification_manifest_sha256": "",
+  "review_artifact_sha256": {
+    "product_architecture": "",
+    "proof_security": ""
+  },
+  "content_sha256": "0b734b5c6984ba709127ba56501fc37f71cdd00b55762f791540c3ce8f122d49"
+}

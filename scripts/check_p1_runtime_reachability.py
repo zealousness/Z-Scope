@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed when removed P1 runtime components remain importable or packaged."""
+"""Fail closed when removed P1/P5 runtime components remain reachable."""
 
 from __future__ import annotations
 
@@ -13,20 +13,32 @@ from typing import Iterable, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOVED_MODULES = (
+    "zscope.agents.active_discovery",
     "zscope.agents.deep_worker",
     "zscope.agents.issue_reconciler",
+    "zscope.agents.global_modeler",
+    "zscope.agents.semantic_modeler",
+    "zscope.agents.validator_agent",
     "zscope.agents.vulnerability_analyzer",
+    "zscope.orchestration.active_discovery",
+    "zscope.orchestration.global_modeler",
     "zscope.orchestration.subagents",
+    "zscope.semantics.security_specs.shadow",
 )
 REMOVED_WHEEL_FRAGMENTS = tuple(value.replace(".", "/") for value in REMOVED_MODULES)
 REQUIRED_WHEEL_ENTRIES = (
-    "zscope/agents/active_discovery/AGENT.md",
     "zscope/agents/history_maintenance/AGENT.md",
     "zscope/agents/history_maintenance/agent.py",
+    "zscope/agents/hypothesis_hunter/AGENT.md",
+    "zscope/agents/proof_engine/AGENT.md",
+    "zscope/agents/proof_engine/agent.py",
     "zscope/compat/__init__.py",
     "zscope/compat/config.py",
     "zscope/compat/reports.py",
     "zscope/compat/usage.py",
+    "zscope/orchestration/runtime_authority.py",
+    "zscope/orchestration/schemas/runtime-authority-manifest-v1.schema.json",
+    "zscope/semantics/security_specs/runtime.py",
 )
 COMPAT_DENIED_IMPORTS = (
     "zscope.agents",
@@ -34,6 +46,13 @@ COMPAT_DENIED_IMPORTS = (
     "zscope.orchestration.parallel_analyzer",
     "zscope.orchestration.workflow_executor",
     "zscope.core.validation",
+)
+LIVE_DENIED_IMPORTS = ("zscope.benchmarking", "zscope.compat")
+LIVE_IMPORT_EXEMPT_PREFIXES = (
+    "zscope.benchmarking",
+    "zscope.compat",
+    "zscope.cli.benchmark",
+    "zscope.cli.config_cli",
 )
 
 
@@ -66,6 +85,12 @@ def source_import_errors(repo_root: Path) -> list[str]:
                 COMPAT_DENIED_IMPORTS
             ):
                 errors.append(f"{relative.as_posix()}: compat imports live runtime {imported}")
+            if not module.startswith(LIVE_IMPORT_EXEMPT_PREFIXES) and imported.startswith(
+                LIVE_DENIED_IMPORTS
+            ):
+                errors.append(
+                    f"{relative.as_posix()}: live runtime imports isolated package {imported}"
+                )
     return errors
 
 
@@ -88,6 +113,10 @@ def wheel_errors(wheel_path: Path) -> list[str]:
             for imported in _imports(source, module=module):
                 if imported.startswith(REMOVED_MODULES):
                     errors.append(f"{name}: imports removed module {imported}")
+                if not module.startswith(LIVE_IMPORT_EXEMPT_PREFIXES) and imported.startswith(
+                    LIVE_DENIED_IMPORTS
+                ):
+                    errors.append(f"{name}: live runtime imports isolated package {imported}")
     return errors
 
 
@@ -106,9 +135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 2
-    print(
-        "P1 runtime reachability gate passed: removed modules absent from source imports and wheel"
-    )
+    print("P5 runtime reachability gate passed: legacy actors absent and live imports isolated")
     return 0
 
 

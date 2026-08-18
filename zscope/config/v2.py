@@ -204,17 +204,21 @@ def _deep_merge(base: MutableMapping[str, Any], override: Mapping[str, Any]) -> 
 
 
 _RUNTIME_AGENT_NAMES = {
-    "semantic_modeler",
-    "active_discovery",
+    "security_spec_miner",
+    "hypothesis_hunter",
     "history_maintenance_agent",
-    "validator_agent",
+    "proof_engine",
 }
 
 _REMOVED_RUNTIME_AGENTS = {
-    "vulnerability_analyzer": "active_discovery",
+    "semantic_modeler": "security_spec_miner",
+    "global_modeler": "security_spec_miner",
+    "active_discovery": "hypothesis_hunter",
+    "validator_agent": "proof_engine",
+    "vulnerability_analyzer": "hypothesis_hunter",
     "issue_reconciler_agent": "history_maintenance_agent",
-    "deep_worker": "active_discovery",
-    "subagent_orchestrator": "active_discovery",
+    "deep_worker": "hypothesis_hunter",
+    "subagent_orchestrator": "hypothesis_hunter",
 }
 
 _REMOVED_ANALYSIS_KEYS = {
@@ -225,6 +229,10 @@ _REMOVED_ANALYSIS_KEYS = {
     "subagent_spawn_allowlist",
     "subagent_skill_llm_refs",
     "subagent_skill_efforts",
+    "enable_global_model",
+    "max_premodel_depth",
+    "max_premodel_callees",
+    "security_semantic_enrichment_mode",
 }
 
 
@@ -274,11 +282,7 @@ def _validate_runtime_shape(raw: Mapping[str, Any], *, partial: bool) -> None:
             "max_tool_iterations",
             "enable_snapshot_cache",
             "validation_cache_entries",
-            "enable_global_model",
-            "max_premodel_depth",
-            "max_premodel_callees",
             "trivial_function_max_lines",
-            "security_semantic_enrichment_mode",
             "request_deadline_seconds",
             "validation_deadline_seconds",
             "entry_deadline_seconds",
@@ -334,14 +338,7 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
         max_tool_iterations=integer("max_tool_iterations", 50),
         enable_snapshot_cache=boolean("enable_snapshot_cache", True),
         validation_cache_entries=integer("validation_cache_entries", 4096, non_negative=True),
-        enable_global_model=boolean("enable_global_model", False),
-        max_premodel_depth=integer("max_premodel_depth", 3, non_negative=True),
-        max_premodel_callees=integer("max_premodel_callees", 20, non_negative=True),
         trivial_function_max_lines=integer("trivial_function_max_lines", 5, non_negative=True),
-        security_semantic_enrichment_mode=_string(
-            data.get("security_semantic_enrichment_mode", "shadow"),
-            "runtime.analysis.security_semantic_enrichment_mode",
-        ),
         request_deadline_seconds=deadline("request_deadline_seconds", 120.0),
         validation_deadline_seconds=deadline("validation_deadline_seconds", 240.0),
         entry_deadline_seconds=deadline("entry_deadline_seconds", 1800.0),
@@ -915,7 +912,7 @@ def _agents_from_runtime(runtime: RuntimeSpec, scan: ScanConfig) -> List[AgentCo
             AgentConfig(
                 name=spec.name,
                 enabled=spec.enabled,
-                task=scan.task if spec.name == "active_discovery" else "",
+                task=scan.task if spec.name == "hypothesis_hunter" else "",
                 llm_ref=role_refs[spec.llm_role],
             )
         )

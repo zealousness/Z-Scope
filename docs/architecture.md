@@ -2,9 +2,9 @@
 
 ## 1. 架构定位
 
-Z-SCOPE 是面向大型 C/C++ 项目的证据优先静态分析平台，并提供 Java Preview。系统以结构化代码事实、程序分析后端信号、项目语义快照和多智能体验证为基础，构建可审计、可恢复、可扩展的缺陷发现流水线。
+Z-SCOPE 是面向大型 C/C++ 项目的证据优先静态分析平台，并提供 Java Preview。系统以结构化代码事实、资格支持的 SecuritySpec、受限假设选择和可离线重算的 Proof Engine 为基础，构建可审计、可恢复、可扩展的缺陷发现流水线。
 
-平台采用“静态事实先行、语义推理收敛”的架构原则。C/C++ 内存、资源生命周期和并发问题首先由 Regex、Clang、SVF/Saber 与规则产生证据；Java 由 source/java_unified 结构索引、SootUp/WALA/Joern 信号和 Java 规则产生证据。LLM Agent 负责在受控上下文中补全跨模块意图、判断业务约束、验证可利用性，并将结果收敛为可追踪报告。C/C++ Joern 在 1.x 中仅保留弃用兼容入口。
+平台采用“静态事实先行、程序验真收敛”的架构原则。C/C++ 内存、资源生命周期和并发问题首先由 Regex、Clang、SVF/Saber 与规则产生证据；Java 由 source/java_unified 结构索引、SootUp/WALA/Joern 信号和 Java 规则产生证据。模型只能在系统预绑定的规格、假设和 EvidenceAction 目录中选择，不能提交事实、coverage 或终态；独立 Checker 从冻结 IR 重算后，由 TerminalAuthority 关闭候选。C/C++ Joern 在 1.x 中仅保留弃用兼容入口。
 
 Z-SCOPE 的定位可以归纳为三个层面：
 
@@ -27,8 +27,8 @@ Z-SCOPE 的定位可以归纳为三个层面：
 
 Z-SCOPE 的架构目标可以概括为四句话：
 
-1. **高检出**：多个来源并行产生候选，包括 Clang/SVF、Java 结构与信号提供器、通用规则、跨函数图候选、入口发现、diff impact 受影响入口、语义快照和 LLM 挖掘。
-2. **低误报**：每个候选必须携带 source/sink、路径、对象或锁、正反证据、稳定去重键，并经过 Validator、评分、用户反馈和报告分层。
+1. **高检出**：多个来源并行产生候选，包括 Clang/SVF、Java 结构与信号提供器、通用规则、跨函数图候选、入口发现、diff impact 受影响入口、SecuritySpec 和受限 Hypothesis Hunter。
+2. **低误报**：每个候选必须携带 source/sink、路径、对象或锁、正反证据、稳定去重键，并由 Proof Engine 的完整 Checker closure 产生 `confirmed`、`rejected_with_proof` 或 `needs_review`。
 3. **可恢复**：所有关键中间产物和最终报告落地到 SQLite/JSON，支持断点续扫、增量维护和失败后的继续分析。
 4. **可演进**：后端、Agent、Skill、Workflow、MCP 工具和 Web 反馈均是边界清晰的可插拔模块。
 
@@ -60,33 +60,27 @@ flowchart TB
 
     subgraph EvidencePlane["证据平面"]
         Candidate["CandidatePipeline<br/>rules + graph + backend signals"]
-        SecurityMap["Security Semantic Map<br/>facts + evidence-backed claims"]
-        Gap["Coverage-gap Planner<br/>candidate-blind units"]
-        Discovery["Active Discovery<br/>hypotheses only"]
-        Ledger["CandidateLedger<br/>dedup + freeze"]
-        P4Planner["P4 Attack-surface Planner<br/>localized coverage"]
-        Hunter["Hypothesis Hunter<br/>ID selection only"]
-        ShadowLedger["P4 Shadow CandidateLedger<br/>isolated + freeze"]
+        SecurityMap["Security Semantic Map<br/>program facts only"]
+        Spec["SecuritySpecCompiler<br/>qualified stable specs"]
+        Planner["Attack-surface Planner<br/>localized signal coverage"]
+        Hunter["Hypothesis Hunter<br/>offered IDs only"]
+        Ledger["CandidateLedger<br/>all sources + freeze"]
         FindingRoot["Finding-root v2<br/>sole display projection"]
     end
 
     TokenUsage["ScanTokenUsageLedger<br/>call-level measurement only"]
     subgraph ValidationPlane["验证平面"]
-        V0["V0 deterministic proof"]
-        V1["V1 one structured decision"]
-        V2["V2 fact delta recheck"]
-        V3["V3 bounded investigation"]
-        ClaimVerifier["EvidenceClaimVerifier<br/>recompute structured claim"]
+        Adapter["Proof Engine adapter<br/>bounded action selection"]
         ProofIR["ProgramProofIR v2<br/>frozen language-neutral IR"]
         ProofProvider["Finite proof providers<br/>certificate proposals only"]
         ProofChecker["Independent Proof Checker<br/>offline recomputation"]
-        Authority["TerminalAuthorityEvaluator<br/>proof stop + P2 shadow closure"]
+        Authority["TerminalAuthorityEvaluator<br/>sole terminal authority"]
     end
-    ReviewMemory["ReviewMemory<br/>baseline + suppression + validator memory"]
+    ReviewMemory["ReviewMemory<br/>baseline + suppression + history"]
     Tools["ToolsRuntime<br/>ToolPolicy + agent tools"]
-    Snapshot["SnapshotStore<br/>snapshots + reports"]
+    Snapshot["SnapshotStore<br/>reports + legacy read-only history"]
     UserCfg["UserConfigStore<br/>user_config.xlsx + feedback state"]
-    Report["ReportAssembler<br/>views / semantic dedup / SARIF / metadata"]
+    Report["ReportAssembler<br/>Finding-root views / SARIF / metadata"]
     DecisionTrace["IssueDecisionTrace<br/>hash chain + content-addressed evidence"]
     ProofCAS["Proof artifact CAS<br/>immutable + atomic"]
 
@@ -101,64 +95,52 @@ flowchart TB
     Workflow --> Snapshot
     Workflow --> UserCfg
     KDB --> Candidate
-    Snapshot --> Candidate
-    UserCfg --> Candidate
+    UserCfg --> Spec
     Candidate --> Ledger
-    KDB --> SecurityMap --> Gap --> Discovery --> Ledger
-    SecurityMap --> P4Planner --> Hunter --> ShadowLedger
-    Hunter --> ProofIR
-    Ledger --> V0 --> V1 --> V2 --> V3
-    V3 --> ClaimVerifier --> Authority
-    V0 --> ProofIR
-    V2 --> ProofIR
-    V3 --> ProofIR --> ProofProvider --> ProofChecker --> Authority
+    KDB --> SecurityMap --> Spec --> Planner --> Hunter --> Ledger
+    Spec --> Ledger
+    Ledger --> ProofIR --> ProofProvider --> ProofChecker --> Authority
+    Adapter --> ProofProvider
+    Adapter --> ProofChecker
     ProofIR --> ProofCAS
     ProofProvider --> ProofCAS
     ProofChecker --> ProofCAS
-    V0 --> Authority
-    V1 --> Authority
-    V2 --> Authority
-    TokenUsage --> SecurityMap
-    TokenUsage --> Discovery
-    TokenUsage --> V1
-    TokenUsage --> V2
-    TokenUsage --> V3
-    V3 --> ReviewMemory
-    Tools --> SecurityMap
-    Tools --> Discovery
-    Tools --> V3
+    TokenUsage --> Spec
+    TokenUsage --> Hunter
+    TokenUsage --> Adapter
+    Authority --> ReviewMemory
+    Tools --> Adapter
     Index --> Tools
     Snapshot --> Tools
     UserCfg --> Tools
-    V3 --> FindingRoot --> Report
+    Authority --> Ledger
+    Ledger --> FindingRoot --> Report
     Ledger --> DecisionTrace
-    V0 --> DecisionTrace
-    V1 --> DecisionTrace
-    V2 --> DecisionTrace
-    V3 --> DecisionTrace
-    ClaimVerifier --> DecisionTrace
+    Spec --> DecisionTrace
+    Hunter --> DecisionTrace
+    ProofChecker --> DecisionTrace
     Authority --> DecisionTrace
     Report --> DecisionTrace
     Report --> Snapshot
     Report --> UserCfg
 ```
 
-总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面保留确定性快车道，并在 balanced/deep 中用独立安全语义地图和 candidate-blind coverage gap 扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof，或经过程序验真的完整 evidence closure 改变终态；live 模型只能选择系统给出的固定 EvidenceAction ID，不能直接创造事实、自由参数、coverage 或 terminal disposition。反馈平面通过 SnapshotStore、Security Map sidecar、UserConfigStore、ReviewMemory 与 IssueDecisionTrace 保留中间产物、因果事件、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 仅向 V3 调查和受控发现开放白名单内的只读查询。
+总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面把内置/用户语义和程序事实收敛为 qualification-backed `stable` SecuritySpec，balanced/deep 再从局部 signal gap 生成系统 offer 供 Hunter 选择；确定性候选与 Hunter 未确认候选统一进入全局 Candidate Ledger 并冻结。验证平面只让独立 Checker 接纳的完整 proof/counterproof closure 改变终态；模型只能选择系统给出的固定 EvidenceAction ID，不能创造事实、自由参数、coverage 或 terminal disposition。反馈平面通过 SnapshotStore、SecuritySpec/Hunter/Proof CAS、UserConfigStore、ReviewMemory 与 IssueDecisionTrace 保留中间产物、因果事件、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；历史 semantic snapshot 只能只读展示，不能形成 P5 proof 或可复用终态。
 
 跨语言规则治理在既有候选生命周期上增加严格预检：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；包内目录、YAML pack、指定 provider、Skill 契约和 disabled IDs 组合为不可变 `EffectiveRuleSet`。重复 ID/alias、未知字段、语言错配、缺失 Skill 或能力错配在任何外部工具/LLM 启动前失败。`zscope.candidate.v3.3` 仍是内部候选协议，规则 provenance 以兼容字段追加，不改变稳定候选身份算法。
 
-v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、精度和可审计性：diff impact 从反向入口枚举收敛为语义义务与覆盖计划；Unified/SVF 增加入口聚类、互斥/共享 bitcode pool 与缓存 manifest；Clang/KnowledgeDB 强化增量缓存、macro 和删除文件处理；Validator、alert-verify 与 LLM 客户端增加并行、fast-path、endpoint 容量控制和成本统计。v1.0 已经把原来集中在 `Analyzer` 和 `zscope/core/*.py` 的职责拆成可测试模块：
+P5 在不改变 P1 workflow step ID 的前提下完成运行时断代：SecuritySpecCompiler 取代旧语义模型，Hypothesis Hunter 取代旧主动发现，Proof Engine/Checker 取得唯一终态权威；`alert-verify` 只离线复验冻结 proof。旧报告、semantic snapshot 和 validation cache 因新 cache epoch 只能由 compat 或历史复核读取。主要模块为：
 
 | 模块 | 主要文件 | 职责 |
 |------|----------|------|
 | Analysis | `zscope/core/analysis/analyzer.py` | 顶层协调器，装配 pipelines、agents、tools、workflow、budget、snapshot 与 agent policy |
 | Candidates | `zscope/core/candidates/` | regex、Clang AST/CFG、SVF/Saber、Java rules/signals、Graph、KnowledgeDB 后端信号和 candidate evidence |
 | Rules | `zscope/rules/` | 内置目录、descriptor/alias、`EffectiveRuleSet`、YAML pack、Provider V2、预检与 provenance |
-| Validation | `zscope/core/validation/` | Validator evidence pack、验证运行、suppression、baseline、score、`needs_review` 分流 |
+| Validation | `zscope/core/validation/` | ProgramProofIR、有限 provider、独立 Checker、Proof Engine adapter 与 TerminalAuthority |
 | Reporting | `zscope/reporting/` | `FinalReport`、Finding-root v2 report views、JSON/Markdown、SARIF v2.1.0 |
 | Identity | `zscope/common/issue_identity.py` | `canonical_issue_key`、`stable_issue_fingerprint`、source context fingerprint、根因级去重 |
-| Review Memory | `zscope/memory/review_memory.py` | 人工 false-positive、finding baseline、Validator memory 的统一门面 |
-| Semantics | `zscope/semantics/` | 内置默认 API 语义、项目 overlay、用户配置上下文、语义推断 |
+| Review Memory | `zscope/memory/review_memory.py` | 人工 false-positive、finding baseline 与历史复核状态的统一门面 |
+| Semantics | `zscope/semantics/` | SecuritySpec v2、有限 DSL、qualification/store/compiler 与程序语义事实 |
 | Orchestration | `zscope/orchestration/` | workflow、entry discovery、diff impact、risk budget、Candidate Ledger、history reconciler、parallel analyzer |
 | Tools | `zscope/tools/` | LLM 工具运行时、参数校验、ToolPolicy、敏感路径 hook 和审计 |
 | Web / MCP | `zscope/web/`、`zscope/mcp/` | Dashboard service layer、stdio/HTTP MCP、远程安全校验 |
@@ -258,8 +240,8 @@ v1.2 继续沿用证据候选层，并把候选收集、合并、统计和 IR �
 - `zscope/core/candidates/clang_ast_cfg.py`：用本地 AST/CFG 视图补足结构化控制流、协议字段和 copy/size 证据。
 - `zscope/core/candidates/graph.py`：基于调用图、锁区域、资源协议和生命周期形态生成跨函数候选。
 - `zscope/core/candidates/svf_value_flow.py` 与 `backend_signals.py`：把 SVF/Saber、KnowledgeDB、Joern/CPG 等后端信号归一化为 candidate。
-- 语义快照中的历史线索只作为有来源的事实或 observation 参与 Security Map/gap plan；候选必须经 CandidateRegistrar 进入 `CandidateLedger`，不能由旧的逐入口规划旁路确认。
-- Agent 新发现和 `CandidatePipeline` 产生的 merged candidates 会在 vulnerability mining 后一起进入 `pending_new_issues`，再由 Validator 统一处理。
+- P5 前的语义快照只允许通过 compat 或历史复核只读展示，不得转换为 SecuritySpec、proof evidence 或新终态。
+- Hunter 选择和 `CandidatePipeline` 产生的 merged candidates 都必须经公共 `CandidateRegistrar` 进入 `CandidateLedger`；Hunter 来源一律强制未确认，再由 Proof Engine 统一处理。
 
 #### 确定性规则、后端信号与规则目录
 
@@ -273,11 +255,11 @@ v1.2 继续沿用证据候选层，并把候选收集、合并、统计和 IR �
 |------------------|------------|----------------|
 | `deterministic_rule` | Regex、Clang CFG/matcher、Graph、Java local、YAML pack、Python provider | 必须有已登记 canonical `rule_id`，descriptor/qualification 决定默认状态，受 `enabled_ids`/`disabled_ids` 控制 |
 | `backend_signal` | SVF/Saber、Joern、Java signal provider 等后端原生事实 | 不要求目录 ID，保留 `signal_source` 和 `native_rule_id`，由 `indexing` 控制 |
-| `llm_observation` | LLM 主动审计新发现 | 受 active Skill 与 Validator 约束，不伪造确定性规则 ID |
+| `llm_observation` | Hunter 从系统 offer 中选择的假设 | 强制未确认，受 active Skill 与 Proof Engine 约束，不伪造确定性规则 ID |
 
 Skill trigger 是主动发现/调查的路由依据，不是漏洞规则；finding suppression 是 ReviewMemory 中的人工决策，也不是规则开关。`disabled_ids` 优先于 `enabled_ids`，只停止指定确定性检测器，其他规则、backend signal 或 LLM 仍可独立发现等价问题。中央候选门禁会在 merge/ledger 前再校验 descriptor 一致性并丢弃已禁用候选，防止实现绕过引擎内部门禁。
 
-目录原始字节与规范化内容、qualification、相关引擎源码、enabled/disabled IDs、pack/provider 内容与版本、当前语言/backend capability 共同形成 effective SHA-256。该哈希进入规则候选、gap plan、Validator environment fingerprint 和报告 provenance，但不参与既有 candidate/finding 稳定身份算法，也不会使独立程序事实或 Security Map 骨架缓存失效。
+目录原始字节与规范化内容、qualification、相关引擎源码、enabled/disabled IDs、pack/provider 内容与版本、当前语言/backend capability 共同形成 effective SHA-256。该哈希进入规则候选、攻击面计划、Proof Engine environment fingerprint 和报告 provenance，但不参与既有 candidate/finding 稳定身份算法，也不会使独立程序事实骨架缓存失效。
 
 C/C++ 确定性引擎对外保留 `RegexCandidateGenerator`、`ClangAstCfgCandidateGenerator` 和 `GraphCandidateGenerator` 稳定 facade，内部按资源/生命周期、内存/边界/整数、并发/锁/共享状态、协议/所有权/逻辑四个领域调度 detector。每个 facade 只解析一次源码/图事实，共享只读 `RuleContext` 和 `CandidateEmitter`，并保持原规则顺序、候选身份、dedup key、evidence 与置信度。Graph 查询缓存/错误记录仍归 facade；旧模块路径仅作 re-export 兼容层。Worker 中的 `SKILL_TRIGGERS`/`JAVA_SKILL_TRIGGERS` 只是路由启发式，不参与规则目录。
 
@@ -295,7 +277,7 @@ C/C++ 确定性引擎对外保留 `RegexCandidateGenerator`、`ClangAstCfgCandid
 | local inference | typedef、宏别名、历史 snapshot 和函数命名启发式补充 |
 | filtered context | `user_config_context.py` 按入口函数和文件 scope 注入 prompt 所需片段 |
 
-图候选弥补单函数词法规则的边界，当前覆盖持锁调用会重入加锁的 helper、错误清理类型、线程参数生命周期、全局容器生命周期、对象发布后初始化、容器解链后释放、timer/pipe 等级联等待、锁顺序反转、协议状态机、字节序逻辑、fd 类型契约、shared-memory create-if-absent race、signal handler deadlock、callback self-destroy 以及 stale tree/list 链接等形态。图候选输出仍保持与其他 candidate 相同的数据形状，因此直接进入全局 Ledger 与分层 Validator，不形成旁路报告。
+图候选弥补单函数词法规则的边界，当前覆盖持锁调用会重入加锁的 helper、错误清理类型、线程参数生命周期、全局容器生命周期、对象发布后初始化、容器解链后释放、timer/pipe 等级联等待、锁顺序反转、协议状态机、字节序逻辑、fd 类型契约、shared-memory create-if-absent race、signal handler deadlock、callback self-destroy 以及 stale tree/list 链接等形态。图候选输出仍保持与其他 candidate 相同的数据形状，因此直接进入全局 Ledger 与 Proof Engine，不形成旁路报告。
 
 候选会被 `CandidateLedger` 统一登记、合并并关闭生命周期。验证组的冻结 outcome 是稳定终态的唯一输入；Finding-root v2 只把这些 outcome 投影为 primary/alias 展示关系，不取得 proof 或 terminal authority。live 单入口和批量报告不再执行 report-time LLM 判重，也不从 entry-local `issues[]` 补造 finding。`zscope/common/issue_identity.py` 中的确定性 identity helper 继续用于候选注册、历史兼容读取和审计字段，但不能越过 Ledger 改写终态。每个候选携带：
 
@@ -311,7 +293,7 @@ C/C++ 确定性引擎对外保留 `RegexCandidateGenerator`、`ClangAstCfgCandid
 | `negative_evidence` | 可能降低可信度的保护条件或未决事实 |
 | `evidence_pack` | 结构化证据包，包含路径、对象、规则、证据引用 |
 | `evidence_refs` | 指向 `ir_path_slices`、资源/锁/共享状态事件等 IR 表 |
-| `validation_required` | 默认要求候选进入 Validator / ValidationPipeline，而不是由规则层直接报告 |
+| `validation_required` | 默认要求候选进入 Proof Engine / TerminalAuthority，而不是由规则层直接报告 |
 
 主动发现继续使用档位风险阈值、同 Skill 合并和 generated/vendor/test 排除，但 balanced/deep 不再用 audit unit 数量截断召回。单元函数数和初始上下文仍有界；无法执行的 audit unit 必须作为未覆盖区域留痕，已有候选仍保留在 Ledger。
 
@@ -325,26 +307,24 @@ public v2 提供 `fast / balanced / deep`，档位决定启用的分析阶段、
 
 ### 5.5 智能体平面：Agent + Skill + Tool
 
-Z-SCOPE 不再默认逐入口复活旧式全量多 Agent fanout；LLM 职责围绕选择性语义、candidate-blind 发现和分层验证拆分：
+Z-SCOPE 不再逐入口运行旧式全量多 Agent fanout；运行时模型职责只剩有限规格提议、offer 选择和 EvidenceAction 选择：
 
 | Agent | 职责 | 关键输入 | 关键输出 |
 |-------|------|----------|----------|
-| Semantic Map enrichment | 仅补全高风险 audit unit 的关键契约 | 零 LLM 骨架、代码/后端事实 | 带可解析 evidence ref 的 semantic delta |
-| `active_discovery` | 对 coverage gap 做候选盲审 | audit unit、地图投影、Skill | hypothesis / observation，不能 confirmed |
-| `hypothesis_hunter` | 在P4 shadow中选择系统offer/fact/evidence/action ID | allowlist投影、预绑定Proof clause/action | `SecurityHypothesis v2`或coverage observation；无live authority |
-| `validator_agent` V1/V2 | 单次结构化判定与新增事实复判 | 有界 evidence slice / evidence delta | verified / rejected / uncertain 模型意见 |
-| `validator_agent` V3 | balanced 调查 high/critical 或外部可达未决项，deep 调查全部无反证且有可执行证明动作的非 shadow 未决项 | 一次连续会话、有限 EvidenceAction、证书、Skill | 带程序验真事实的 investigation synthesis |
+| `security_spec_miner` | 对 unknown 规格单元选择系统提供的 subject/scope/evidence/predicate/slot ID | 程序事实与有限 DSL offer | 最高为 `proposed` 的 SecuritySpec；不能激活或确认 |
+| `hypothesis_hunter` | 选择系统 offer/fact/evidence/action ID | candidate-blind allowlist 投影、预绑定 Proof clause/action | `SecurityHypothesis v2`或coverage observation；登记时强制未确认 |
+| `proof_engine` | 对未闭合 clause 选择系统 EvidenceAction ID | 冻结 evidence slice、obligation/action catalog | 受限请求或建议；不能提交事实或终态 |
 | `history_maintenance_agent` | 仅在增量维护中复核历史缺陷是否仍可见 | 历史 issue、新代码 | advisory still_exists；缺失结论不能自行清除历史 finding |
 
 Skill 是漏洞领域契约，用于约束分析目标和证据要求，不是检测规则。每个 `SKILL.md` 通过 frontmatter `languages` 声明适用于 `c_cpp`、`java` 或两者。`scan.task` 会被解析为 active skills，例如 `bounds_and_integer`、`resource_lifecycle`、`temporal_memory`、`shared_state_race` 等；空字符串启用当前语言全部适用 Skill，非空文本只表达审计重点。规则 descriptor 必须引用一个存在且支持相同语言的 Skill。
 
-LLMClient 是所有 Agent 的 OpenAI-compatible 调用门面。它支持多 endpoint 容量选择、限流/cooldown、线程本地 session 和共享 scan token 计量。V1/V2 各只发起一次无工具调用：V1/V2 的 truncated 或 malformed 输出直接保持可复核并交给 V3 资格判断，不追加格式修复调用。V3 使用一个最长 50 次模型迭代的连续会话；多轮 reasoning metadata 可在会话内传递，但永不落入普通日志或报告。
+LLMClient 是所有 Agent 的 OpenAI-compatible 调用门面。它支持多 endpoint 容量选择、限流/cooldown、线程本地 session 和共享 scan token 计量。模型调用只返回严格结构化 ID 选择；被选择的 action 仍由 provider 与独立 Checker 从冻结 IR 重算。完整正证、反证或确定 needs-review 后，当前 cluster 不再发生模型或工具调用。多轮 reasoning metadata 只可在受限会话内传递，永不落入普通日志或报告。
 
 ToolsRuntime 定义最多 12 个内置代码查询工具：
 
 `get_function_impl`、`get_function_snapshot`、`list_known_functions`、`get_file_snippet`、`get_callers`、`get_type_info`、`get_call_graph`、`get_data_flow`、`find_function_pointers`、`query_indirect_callees`（旧名 `query_pointer_alias`）、`verify_taint_reachability`、`get_deep_call_context`。
 
-Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根据后端能力提供基础及高级查询，再由对应 `AGENT.md` 与 `ToolPolicy` 过滤。V1/V2 不开放工具；live V3 也不再把普通仓库查询直接暴露为证明能力，而只暴露 `FactCapabilityRegistry` 为当前开放 clause 生成的有限 `EvidenceAction`。普通工具仍可服务其他 Agent 与历史回放，但 call graph 只证明调用关系、indirect-callee 查询只证明可能目标、SVF bug-signature 查询只证明该专用后端信号，三者不能替代 CFG/HB/ownership 证书。active discovery 只接收预先构造的 candidate-blind 投影。MCP 侧复用 ToolsRuntime schema，但还会额外提供 `query_knowledge`、`discover_entries` 和 namespaced aliases，因此 MCP 工具集合与单个 Agent 的可见工具集合并不完全相同。
+Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根据后端能力提供基础及高级查询，再由对应 `AGENT.md` 与 `ToolPolicy` 过滤。`hypothesis_hunter`没有 repository tool；`proof_engine`也不再看到旧 semantic snapshot resolver，只能在当前开放 clause 的有限 EvidenceAction 目录内选择。普通工具仍可服务只读 MCP 与历史展示，但 call graph 只证明调用关系、indirect-callee 查询只证明可能目标、SVF bug-signature 查询只证明该专用后端信号，三者不能替代 CFG/HB/ownership 证书。MCP 侧复用 ToolsRuntime schema，但还会额外提供 `query_knowledge`、`discover_entries` 和 namespaced aliases，因此 MCP 工具集合与单个 Agent 的可见工具集合并不完全相同。
 
 工具层还做了三类重要防护：
 
@@ -352,27 +332,27 @@ Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根�
 - 绝对行号注入，缓解 LLM 通过相对偏移定位源码时的行号幻觉。
 - `ToolPolicy` 约束工具、资源、文件读取和知识库查询，并通过敏感路径 hook 降低远程或自动化场景中的越界访问风险。
 
-### 5.6 验证平面：ValidationRunner + ValidationPipeline
+### 5.6 验证平面：Proof Engine + TerminalAuthority
 
 自 v1.0 起，验证逻辑已经从 `Analyzer` 主流程中拆出：
 
 | 模块 | 职责 |
 |------|------|
-| `zscope/core/validation/evidence.py` | 构造 Validator input、evidence pack、漏洞类别特定验证要求和 retry/修正规则所需证据 |
-| `zscope/core/validation/runner.py` | 运行 Validator，处理 entry-root dead-code retry、contract-scope rejection 修正和 ReviewMemory 写入 |
-| `zscope/core/validation/pipeline.py` | 应用 suppression、baseline、history feedback、score、`validated`/`needs_review`/`uncertain`/`rejected` 分流 |
+| `zscope/core/validation/evidence.py` | 构造冻结 evidence slice、SecurityObligation 与 action 请求所需证据 |
+| `zscope/core/validation/runner.py` | 编译 obligation/action、调用 Checker、停止已闭合 cluster 并由 TerminalAuthority 写 outcome |
+| `zscope/core/validation/pipeline.py` | 应用 suppression、baseline、history feedback 和诊断 score；不能以模型意见晋级 |
 
-这层的设计目标是让所有候选都先保持“待验证证据”的形态，再由统一的验证门禁决定是否进入 `issues[]`、`metadata.audit_observations[]` 或被 suppression/baseline 拦截。高置信规则也不再绕过验证流水线；它们只能在证据完整、无反证且满足评分门槛时被自动接受。
+这层的设计目标是让所有候选都先保持“待证明”的形态，再由统一的 Proof Engine 门禁决定是否形成 `confirmed`、`rejected_with_proof` 或 `needs_review`。规则置信度、历史 disposition、模型 verdict 和诊断 score 都不能绕过 Checker closure。
 
-验证阶段使用 bounded `ValidatorEvidenceSlice v3`：每个 cluster 只传 canonical occurrence、可读事实 payload、proof、必要路径/claim 与代码窗口，输入上限 12K tokens。当前产品先运行 bounded V0；完整且无冲突的稳定正/反 proof 可立即终止。未闭合项进入 V1 单次无工具结构化判定；V1 只能提出一个新的合法请求，有真实 delta hash 变化才执行一次无历史 V2。
+Proof Engine 仍可使用 bounded v3 evidence slice 作为模型适配器输入，但它只允许选择系统预绑定的 EvidenceAction ID。每个 required executable clause 必须有独立 Checker 结果；未选择 action、缺少 coverage、Java Preview 能力不完整或 predicate 不可执行时保持 `needs_review`，不能回退到旧 Validator 或启发式确认。
 
-P2 Proof Kernel 把唯一、完整的 `FunctionIRGraph v1` 转换为语言中立 `ProgramProofIR v2`，并把 `ProofObligation`、固定参数 `EvidenceAction v2`、provider 提出的 `EvidenceCertificate v2` 和独立 Checker 重算的 `ProofCheckResult` 写入不可变 CAS 与 Decision Trace。四组 provider 不能产出终态或自证 coverage；只有 Checker 对冻结 IR、subject、region、scope、量词、CFG/出口、assumption allowlist 及 code/IR/backend/dependency hash 全部复算一致后才会形成 accepted fact。缺字段的早期同名证书仅为 `legacy_preview`，不能关闭 P2 clause；`zscope-explain reverify` 从冻结 IR 重算，不再把哈希完整等同于语义成立。
+Proof Kernel 把唯一、完整的 `FunctionIRGraph v1` 转换为语言中立 `ProgramProofIR v2`，并把 `ProofObligation`、固定参数 `EvidenceAction v2`、provider 提出的 `EvidenceCertificate v2` 和独立 Checker 重算的 `ProofCheckResult` 写入不可变 CAS 与 Decision Trace。四组 provider 不能产出终态或自证 coverage；只有 Checker 对冻结 IR、subject、region、scope、量词、CFG/出口、assumption allowlist 及 code/IR/backend/dependency hash 全部复算一致后才会形成 accepted fact。缺字段的早期同名证书仅为 `legacy_preview`，不能关闭 live clause；`zscope-explain reverify` 与 `alert-verify` 都从冻结 IR 离线重算。
 
-Proof Kernel 在 P2 完成后仍固定为不可配置的 `shadow`：V0/RequiredFactPlan、V1/V2、V3 与 alert-verify 都冻结相同的 proof artifact refs、Checker result 和 shadow decision，但不会改写稳定 Candidate Ledger outcome、Finding-root 视图或产品终态；只有 P5 完成后才能转移 runtime authority。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3；balanced 不使用 top-K，调查 high/critical 或外部可达且 registry 具有可执行 action 的 cluster，deep 调查全部无完整反证、非 shadow 且有 action 的 cluster。V3 单会话最多50次模型迭代且只能选择固定 action ID；完整 proof 后程序在当前工具轮直接终止。`model_verdict` 与最终 `policy_disposition` 分离；没有 proof 的模型 rejected 只能进入 needs-review。
+P5 候选中 Proof Engine 固定为不可配置的 `authoritative`。`TerminalAuthorityDecision v3` 只接纳当前运行从严格 proof input 重算得到的 Checker refs、proof root 和 `integrity_status=verified`；旧 certificate、旧 proof 字段、compat bridge 或模型文本都保持 needs-review。完整正证、反证或确定 needs-review 后程序立即停止当前 cluster 的后续模型/工具调用。每个 cluster 恰好写一个 terminal event，同时冻结 active SecuritySpec/Hunter/Proof refs、最终 disposition、reason code 和完整性状态。
 
-P3 Security Spec Kernel 在 `zscope/semantics/security_specs/` 建立独立严格对象、13 类有限 DSL、内容寻址存储、qualification、review hash chain 与 shadow compiler。确定性程序事实优先；模型适配器只在 unknown audit unit 上选择系统提供的 subject/scope/evidence/predicate/slot ID，且最高产生 `proposed`。只有 qualification-backed `stable` 规格可进入 P3 shadow compilation；冲突、过期依赖、未知字段、空 scope 或证据不可解析一律不编译。default、resume、maintain 与 alert-verify 在唯一 terminal trace 上附加同一 spec manifest/ref 和 `active_product_effect=none`，旧 SemanticModeler/SecuritySemanticMap 继续提供产品语义，Candidate Ledger、Proof Kernel authority、Finding-root 与稳定终态均不改变。Web Review Center 因缺少可信 reviewer identity 固定只读，review/apply-import 返回 fail-closed 403；P5 前不存在用户可控 authority 开关。
+Security Spec Kernel 在 `zscope/semantics/security_specs/` 维护严格对象、13 类有限 DSL、内容寻址存储、qualification、review hash chain 与 authoritative compiler。确定性程序事实优先；模型适配器只在 unknown audit unit 上选择系统提供的 subject/scope/evidence/predicate/slot ID，且最高产生 `proposed`。运行时按 `spec_uid`只取最高有效 revision，且只有 qualification-backed `stable`、revision/freshness/evidence/dependency 均有效的规格可参与 live compilation；冲突、过期依赖、未知字段、空 scope 或证据不可解析一律 fail closed。Web Review Center 因缺少可信 reviewer identity继续固定只读，review/apply-import返回403，compile preview必须绑定实际scan facts且仍非权威。
 
-P4在`zscope/orchestration/hypothesis_hunter/`增加严格攻击面单元、局部coverage key、系统生成offer、一次结构化Hunter选择和独立CAS。Hunter没有repository tool，只能选择投影内的offer、fact、evidence与EvidenceAction ID；key和scalar在序列化前后都执行Unicode归一化泄漏检查。合格选择由P2 Checker从冻结IR重算，只有完整确认proof才经同一`CandidateRegistrar`写入独立shadow Ledger并显式freeze；unknown、反证、无offer或协议失败只形成coverage observation。该Ledger没有DecisionTrace终态、不会进入live validation queue、Finding-root或报告视图。default/resume/maintain共享同一shadow runtime，fast和alert-verify只读加载已有manifest；唯一产品terminal event只附加P4 refs和`active_product_effect=none`。
+Hypothesis Hunter 在 `zscope/orchestration/hypothesis_hunter/`维护严格攻击面单元、局部coverage key、系统生成offer、一次结构化选择和独立CAS。Hunter没有repository tool，也看不到live Candidate内容、Finding-root或历史 verdict，只能选择投影内的offer、fact、evidence与EvidenceAction ID；key和scalar在序列化前后都执行Unicode归一化泄漏检查。合格 hypothesis 经公共 `CandidateRegistrar`写入live Ledger时始终强制未确认，随后只由 Proof Engine 关闭。fast固定不运行Hunter；balanced/deep可运行Hunter；alert-verify只加载冻结proof且不运行Hunter或模型。
 
 ### 5.7 持久化与反馈平面
 
@@ -381,10 +361,10 @@ Z-SCOPE 使用五类主要持久化区域：
 | 存储 | 内容 | 作用 |
 |------|------|------|
 | `.zscope_knowledge/code_knowledge.db` | 代码事实、SVF 信号、Inspection IR | 全局代码知识图谱和候选证据审计 |
-| `.zscope_snapshots/snapshots.db` | 语义快照索引、final report 索引 | `--resume`、`--maintain` 和函数级缓存 |
+| `.zscope_snapshots/snapshots.db` | final report 索引与P5前历史快照 | P5完整报告复用；旧快照仅compat/历史只读 |
 | `.zscope_snapshots/security_map.db` | 程序安全事实、semantic claim、unknown/conflict、audit unit | balanced/deep 的只读 Security Semantic Map sidecar |
-| `.zscope_snapshots/security_specs/` | SecuritySpec revision、qualification/review chain、shadow compilation、CAS root manifest | P3 只读 Review Center与跨 workflow shadow replay |
-| `.zscope_snapshots/hypothesis_hunter/` | P4 audit unit、offer、report、hypothesis/observation、proof结果、独立shadow Ledger与CAS root manifest | P5前仅供shadow对照和离线复验 |
+| `.zscope_snapshots/security_specs/` | SecuritySpec revision、qualification/review chain、authoritative compilation、CAS root manifest | live语义输入与只读 Review Center |
+| `.zscope_snapshots/hypothesis_hunter/` | audit unit、offer、report、hypothesis/observation、proof选择结果与CAS root manifest | balanced/deep候选登记审计；alert-verify只读身份 |
 | `.zscope_snapshots/user_config.xlsx` | 外部函数、配对函数、函数指针、dispatcher、模块生命周期、函数意图 | 人工可审阅的用户领域知识 |
 | `.zscope_snapshots/user_config.state.db` 或 `user_config.db` | 抑制、baseline、配置告警和历史兼容数据 | 误报反馈与旧 SQLite 配置兼容 |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划 | 审计本次 SVF 分析实际纳入了哪些翻译单元；WSL `/mnt/...` 场景可能写入 Linux 原生临时 bitcode 目录 |
@@ -402,9 +382,9 @@ Z-SCOPE 使用五类主要持久化区域：
 
 旧 SQLite 路径仍然保留 `external_functions`、`paired_functions`、`function_pointer_targets`、`function_intent`、`config_warnings`、`finding_suppressions` 和 `finding_baselines`。当配置路径指向 `.xlsx`，语义配置走工作簿，反馈状态写入同名 `.state.db`；当配置路径指向目录且存在 `user_config.xlsx`，目录模式也会自动优先使用工作簿。
 
-快照策略不再只区分“完整 LLM 语义”和“跳过”。`zscope/snapshots/policy.py` 会为短函数构造 syntactic snapshot，并把协议版本过滤、fd 编码/类型契约、协议长度、状态恢复、error status 和 facade forwarding 等短函数风险放入 `suspicious_points`；常见宏和轻量 wrapper 可以生成 lightweight snapshot，避免为纯表达式宏或 guard macro 消耗 LLM，同时保留调用方审计线索。
+P5不再提供on-demand LLM semantic snapshot补全。`zscope/snapshots/policy.py`仍可为短函数和常见宏构造纯程序化syntactic/lightweight历史视图，但Proof Engine工具不可见旧snapshot resolver；P5前快照也不会迁移为SecuritySpec、proof evidence或可复用终态。
 
-人工反馈不会只是前端状态。Web 保存验证结果时会持久化 baseline 和 suppression，下一次扫描会在验证前参与过滤和评分。`ReviewMemory` 封装 false-positive suppression、finding baseline 查询与 Validator 记忆写入；`UserConfigStore.get_finding_baseline_for_issue()` 先按 `dedup_key` 精确命中，再按 `stable_fingerprint` 或回填后的稳定指纹命中，并把 `match_strategy` 写回结果，避免行号漂移后人工 rejected 失效。
+人工反馈不会只是前端状态。Web 保存验证结果时会持久化 baseline 和 suppression，下一次扫描会在证明前作为advisory历史参与过滤和诊断，不能替代Checker closure。`ReviewMemory` 封装 false-positive suppression、finding baseline 查询与历史复核写入；`UserConfigStore.get_finding_baseline_for_issue()` 先按 `dedup_key` 精确命中，再按 `stable_fingerprint` 或回填后的稳定指纹命中，并把 `match_strategy` 写回结果。
 
 Issue identity 由 `zscope/common/issue_identity.py` 统一提供。`canonical_issue_key` 适合单次报告内根因合并，`stable_issue_fingerprint` 用于长期 baseline、SARIF partial fingerprints 和 benchmark 匹配；可选的 `source_context_fingerprint` 从源码片段或 evidence snippet 生成第三层校验，双方都有上下文且冲突时会阻止过宽的 stable baseline 命中。
 
@@ -416,11 +396,11 @@ Issue identity 由 `zscope/common/issue_identity.py` 统一提供。`canonical_i
 
 ### 6.1 同类工具的架构参照系
 
-Z-SCOPE 的优势更适合放在同类工具架构取向中理解。开源工具通常强调可验证的规则、查询语言或编译器级程序事实；商用工具通常强调平台化治理、规则库覆盖、企业流程集成和集中化误报管理。Z-SCOPE 的架构重点是把这些能力中最有价值的信号转化为统一候选，再通过多智能体和反馈闭环完成二次验证。
+Z-SCOPE 的优势更适合放在同类工具架构取向中理解。开源工具通常强调可验证的规则、查询语言或编译器级程序事实；商用工具通常强调平台化治理、规则库覆盖、企业流程集成和集中化误报管理。Z-SCOPE 的架构重点是把这些能力中最有价值的信号转化为统一候选，再通过离线可重算的 Proof Engine 和反馈闭环完成终态判断。
 
 | 类型 | 代表工具 | 架构重心 | 常见优势 | Z-SCOPE 的补强方向 |
 |------|----------|----------|----------|--------------------|
-| 编译器/路径分析型开源工具 | Clang Static Analyzer、Cppcheck | AST、CFG、路径约束、规则检查 | 本地运行、结果可复核、工程依赖少 | 引入跨入口语义快照、用户领域知识和 LLM 可利用性验证 |
+| 编译器/路径分析型开源工具 | Clang Static Analyzer、Cppcheck | AST、CFG、路径约束、规则检查 | 本地运行、结果可复核、工程依赖少 | 引入跨入口SecuritySpec、用户领域知识和可重放proof |
 | CPG/查询型开源工具 | CodeQL、Joern | 代码数据库、查询语言、数据流/控制流建模 | 适合沉淀漏洞模式和变体查询 | 将查询结果进入候选、去重、评分、验证和报告同一链路 |
 | 规则/策略型工具 | Semgrep、各类自定义规则引擎 | 模式匹配、污点规则、策略分发 | 编写规则快，适合 CI 和团队规范 | 用 KnowledgeDB IR 与 Agent 验证补足 C 指针、资源和并发语义 |
 | 商用 SAST 平台 | SonarQube、Checkmarx、Coverity、Fortify、Snyk Code | 规则库、数据流引擎、集中治理、告警流转 | 语言覆盖广，治理能力成熟，集成生态完善 | 本地可审计证据库、MCP 开放接口、SARIF 二次验证和可解释反馈闭环 |
@@ -428,7 +408,7 @@ Z-SCOPE 的优势更适合放在同类工具架构取向中理解。开源工具
 
 ### 6.2 静态证据驱动的智能体分析
 
-Z-SCOPE 将 LLM 放在“选择性语义补全、候选盲主动发现、证据闭合”三个受控位置，而非事实抽取的起点。Clang、Joern、SVF/Saber、确定性规则和 KnowledgeDB 先提供可定位、可复核的程序事实；LLM 只为带风险和 coverage gap 的审计单元补语义或提出 hypothesis，再由统一 Ledger 与 Validator 收敛。这样既不把召回上限锁死在既有规则，也不恢复逐入口全量多 Agent 的重复上下文成本。
+Z-SCOPE 将 LLM 放在“有限规格提议、候选盲offer选择、EvidenceAction选择”三个受控位置，而非事实抽取或终态判断的起点。Clang、Joern、SVF/Saber、确定性规则和 KnowledgeDB 先提供可定位、可复核的程序事实；系统先绑定可选ID，模型只做选择，再由统一 Ledger、Checker 与 TerminalAuthority 收敛。这样既不把召回上限锁死在既有规则，也不让自然语言判断替代程序证明。
 
 ### 6.3 多源候选提高召回上限
 
@@ -439,18 +419,18 @@ Z-SCOPE 将 LLM 放在“选择性语义补全、候选盲主动发现、证据�
 - Joern/CPG 和 SARIF 外部告警提供的规则或第三方工具信号。
 - 通用 C 确定性规则提供的本地高信号候选。
 - 图候选提供跨函数协议、锁顺序、生命周期和 liveness 信号。
-- 语义模型快照提供的函数职责、状态变化和跨调用摘要。
-- LLM Agent 提供的项目语义、跨 handler 生命周期和业务约束理解。
+- qualification-backed SecuritySpec提供精确scope的函数角色、状态变化和调用契约。
+- Hypothesis Hunter在局部signal gap中选择系统预绑定的结构化假设。
 
-多源候选统一进入 `CandidateLedger` 后再做去重、合并、验证和评分，使召回能力不绑定到单个后端或单个提示词。
+多源候选统一进入 `CandidateLedger` 后再做去重、冻结和proof closure，使召回能力不绑定到单个后端或单个提示词。
 
 ### 6.4 分层验证降低误报
 
-Z-SCOPE 将“hypothesis/候选”“模型 verdict”“policy disposition”“确认漏洞”分为不同层级。候选先由 `CandidateLedger` 根因合并，再经过 V0–V3 分层验证、`issues`/`audit_observations` 分层输出，以及用户 baseline/suppression 历史反馈。确定性 proof、模型判定和人工决策具有独立 attribution；这种设计既把降噪前移到证据闭合阶段，也保留模型拒绝但无反证的可复查线索。
+Z-SCOPE 将“hypothesis/候选”“模型选择”“Checker closure”“terminal disposition”分为不同层级。候选先由 `CandidateLedger` 登记并冻结，再由同一 Proof Engine 生成 `confirmed`、`rejected_with_proof` 或 `needs_review`，最后由 Finding-root 投影双视图。模型选择和历史反馈只有独立 attribution，不具终态权限；这既把降噪前移到证据闭合阶段，也保留没有完整正反proof的可复查线索。
 
 ### 6.5 工程化运行与开放集成
 
-每个函数的语义快照、最终报告、批量汇总、候选 IR 和用户反馈都有落地点。大规模扫描中断后可以 `--resume`，代码小改后可以 `--maintain`，旧报告覆盖前有自动备份。MCP Server 还暴露 `zscope://config`、`zscope://knowledge/stats`、`zscope://knowledge/functions`、`zscope://snapshots/list` 等资源，并在 `ToolPolicy` 过滤后提供 `query_knowledge`、`discover_entries`、代码查询工具和 namespaced aliases，使 Z-SCOPE 可以作为本地代码知识底座接入外部 AI IDE。
+SecuritySpec、Hunter、Proof CAS、最终报告、批量汇总、候选 IR 和用户反馈都有落地点。大规模扫描中断后可以 `--resume`，代码小改后可以 `--maintain`；只有cache epoch、RuntimeAuthorityManifest和完整trace均相同的P5报告可复用。MCP Server还提供受ToolPolicy约束的配置、知识库、历史快照和代码查询资源；旧快照只读返回，不取得scan authority。
 
 ## 7. 业界领先或差异化特性
 
@@ -460,8 +440,8 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 |----------|------------------|----------------------|--------------|
 | AI 与静态分析结合 | AI 工具偏语义解释；传统 SAST 偏规则和数据流 | `evidence_pack`、`evidence_refs`、IR path/resource/lock/shared-access 证据共同约束 LLM | 模型判断具有证据锚点，可降低开放式代码点评风险 |
 | C/C++ 深度语义 | 开源工具各有优势但信号分散；商用工具多为封闭引擎 | Clang、Joern、SVF/Saber、确定性规则信号统一进入候选层 | 多个后端的强项可以在同一报告里汇合 |
-| 告警复核 | 商用平台依赖人工 triage；开源工具通常输出原始告警 | SARIF `alert-verify` 将外部告警转成 `ExternalAlert` 并复用 Validator | 可作为其他 SAST 的二次确认器 |
-| 不确定性处理 | 一些工具以热点、严重级别或人工状态区分风险 | `verified` / `rejected` / `uncertain` 三态，加 `needs_review` 审计观察项 | 低证据问题不阻断 CI，但也不丢失 |
+| 告警复核 | 商用平台依赖人工 triage；开源工具通常输出原始告警 | SARIF `alert-verify` 只离线重验随告警冻结的Proof Kernel artifacts | 不带可重放proof的外部告警保持needs-review |
+| 不确定性处理 | 一些工具以热点、严重级别或人工状态区分风险 | `confirmed` / `rejected_with_proof` / `needs_review` authority三态 | 缺证据问题不伪装成已确认或已否决 |
 | 大规模扫描 | 商用平台治理强；开源工具常需自行拼接缓存和恢复 | `snapshots.db`、`--resume`、`--maintain`、批量报告备份内建 | 大型项目能长期维护扫描状态 |
 | 可解释反馈 | 商用平台支持误报状态；AI 工具常依赖对话记忆 | `finding_suppressions` 与 `finding_baselines` 落在 SQLite，可查、可删、可过期 | 审计经验成为可治理数据 |
 | AI IDE 集成 | 多数 SAST 以报告或平台页面为主 | MCP 暴露配置、知识库、快照和代码查询工具 | 扫描器同时也是本地代码知识服务 |
@@ -469,7 +449,7 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 
 ## 8. 高检出如何实现
 
-高检出来自“入口覆盖、事实覆盖、候选覆盖、分析覆盖”四层叠加。与只运行规则集或只分析外部告警相比，Z-SCOPE 会主动扩大入口、事实和候选来源，再通过 Agent 和 Validator 收敛结果。
+高检出来自“入口覆盖、事实覆盖、候选覆盖、分析覆盖”四层叠加。与只运行规则集或只分析外部告警相比，Z-SCOPE 会主动扩大入口、事实和候选来源，再通过 Hunter、Proof Engine 和 TerminalAuthority 收敛结果。
 
 ### 8.1 检出链路对比
 
@@ -477,9 +457,9 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 |------|------------------|------------------|--------------|
 | 入口发现 | 通常依赖配置、构建数据库或查询入口 | 依赖扫描配置、仓库集成和语言前端 | `entry_functions_list` + `--discover-entries` / `project.entry_discovery.enabled` 落盘 + `entry_discovery.search_root` |
 | 代码事实 | AST/CFG/CPG/规则匹配，各工具侧重点不同 | 专有前端和数据流引擎 | `CodeIndex` 统一 Clang、Joern、Regex、Unified 后端 |
-| 跨函数关系 | 依赖数据流查询、库模型或指针分析能力 | 专有模型和框架配置 | SVF Andersen、Saber、调用图、语义快照共同补强 |
+| 跨函数关系 | 依赖数据流查询、库模型或指针分析能力 | 专有模型和框架配置 | SVF Andersen、Saber、调用图和SecuritySpec共同补强 |
 | 候选生成 | 查询或规则命中即输出告警 | 内置规则和数据流引擎输出告警 | 确定性规则、后端信号、candidate-blind hypothesis、外部 SARIF 统一入 ledger |
-| 深度验证 | 主要依赖规则精度和人工复核 | 平台化 triage 与审计流转 | V0 proof + V1/V2 结构化复判 + 高风险 V3 短调查 |
+| 深度验证 | 主要依赖规则精度和人工复核 | 平台化 triage 与审计流转 | 有限provider + 独立Checker + TerminalAuthority |
 
 ### 8.2 入口覆盖
 
@@ -505,11 +485,11 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 
 ### 8.5 分析覆盖
 
-- Security Semantic Map 先以零 LLM 骨架覆盖入口、调用边、危险事件、globals/types 与 backend coverage，只在高风险 audit unit 补语义。
-- Coverage-gap planner 按 known variant、diff、外部可达敏感路径、candidate desert、动态边/alias 缺口、backend 降级、跨模块协议和 semantic unknown/conflict 打分。其中 candidate desert 只消费事件家族级的覆盖 presence/count，不读取候选 ID、source/sink、位置、规则名或结论；这些候选内容也不会进入主动发现 Prompt。
-- Balanced/deep 不再按 audit unit 数量截断；风险阈值继续分别过滤规划结果。每单元最多 16 个函数、24K 初始上下文，重合至少 60% 且同 Skill 的单元合并。
-- Active worker 看不到 candidate/rule/truth/verdict，只能提出有位置、路径、正反证据和缺失事实的 hypothesis；缺证据内容保留为 observation。
-- SARIF 和 ruledriven 模式复用统一 Ledger、归因、token 账本和分层 Validator。
+- Security Semantic Map先以零模型程序骨架覆盖入口、调用边、危险事件、globals/types与backend coverage，SecuritySpecCompiler只激活qualification-backed stable规格。
+- Attack-surface planner按diff、外部可达敏感路径、localized signal desert、动态边/alias缺口、backend降级和spec unknown/conflict规划；它不读取live Candidate内容、Finding-root或历史verdict。
+- Balanced/deep按局部结构coverage key调度Hunter；同cluster/alias只调查一个代表单元。fast固定不运行Hunter。
+- Hunter看不到candidate/rule/truth/verdict，只能选择系统offer；缺location、subject、region、证据、clause或action的输出只形成coverage observation。
+- C/C++ `--mode ruledriven`明确拒绝；Java Preview暂保留ruledriven。SARIF alert-verify不运行Hunter或模型，只复验冻结proof。
 
 ## 9. 低误报如何实现
 
@@ -520,39 +500,39 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 | 机制 | 同类工具常见做法 | Z-SCOPE 做法 |
 |------|------------------|--------------|
 | 告警前置条件 | 规则命中、查询命中或数据流路径命中 | 候选必须尽量具备 source、sink、路径、对象/锁身份、正反证据和稳定去重键 |
-| 不确定结果 | 作为告警、热点、低严重级别或人工待审 | `uncertain` 与 `needs_review` 默认进入 `metadata.audit_observations` |
+| 不确定结果 | 作为告警、热点、低严重级别或人工待审 | 缺完整Checker closure统一为`needs_review`并进入审计视图 |
 | 误报过滤 | 规则关闭、注释、平台状态或 suppression | `finding_suppressions` 在验证前过滤，并可按 scope、rule、过期时间治理 |
-| 历史经验 | 平台状态或外部审计记录 | `finding_baselines` 参与 `history_feedback` 评分分量 |
+| 历史经验 | 平台状态或外部审计记录 | `finding_baselines` 仅作advisory诊断，不能形成proof |
 | 重复报告 | 按规则 ID、文件行或平台实例 ID 合并 | issue identity / `deduplicate_issues()` 按类别、scope、root cause、source/sink 和文本证据合并 |
-| 可解释性 | 报告引用代码位置或数据流路径 | 报告引用 `evidence_pack`、IR path/resource/lock/shared-access 证据和 Validator 理由 |
+| 可解释性 | 报告引用代码位置或数据流路径 | 报告引用 `evidence_pack`、IR、Checker refs、proof root与TerminalAuthority原因码 |
 
 ### 9.2 候选证据结构化
 
-候选需要尽量提供 source、sink、路径完整性、对象/锁身份、正向证据和反向证据。证据会被写入 `evidence_pack` 和 KnowledgeDB IR，供 Security Map、Validator、报告和人工复查复用。结构化证据使误报控制可以基于事实判断，减少对告警文本或模型解释的单点依赖。
+候选需要尽量提供 source、sink、路径完整性、对象/锁身份、正向证据和反向证据。证据会被写入 `evidence_pack`、KnowledgeDB IR与Proof CAS，供SecuritySpec、Checker、报告和人工复查复用。结构化证据使误报控制基于可重算事实，而不是告警文本或模型解释。
 
-### 9.3 三态 Validator
+### 9.3 三态 TerminalAuthority
 
-Validator 可以返回：
+TerminalAuthority 只根据完整Checker closure返回：
 
-| verdict | 含义 | 默认处理 |
+| disposition | 含义 | 默认处理 |
 |---------|------|----------|
-| `verified` | source-to-sink 路径、可控性、保护缺失可以闭合 | 根据 `final_score` 进入 `issues` 或 `needs_review` |
-| `rejected` | 源码保护、所有权转移、不可达路径等证据否决候选 | 丢弃或记录为抑制反馈 |
-| `uncertain` | 候选有价值但缺少决定性证据 | 进入 `metadata.audit_observations` |
+| `confirmed` | 所有required confirmation clauses都有Checker接纳的正证且无冲突 | 进入default Finding-root投影 |
+| `rejected_with_proof` | 完整反证closure否决候选 | 保留在冻结Ledger outcome和terminal trace，不进入默认finding |
+| `needs_review` | clause未闭合、能力unknown、冲突或完整性不足 | 仅进入with-needs-review投影和审计元数据 |
 
-### 9.4 综合评分
+### 9.4 诊断评分
 
-`ValidationPipeline` 当前使用五个分量计算 `final_score`：
+`ValidationPipeline` 可继续计算以下 `final_score` 供排序和诊断，但该分数不具promotion或terminal authority：
 
 | 分量 | 权重 | 作用 |
 |------|------|------|
 | `rule_confidence` | 0.25 | 规则或后端信号本身可信度 |
 | `path_completeness` | 0.25 | source/sink/path 是否闭合 |
 | `contract_consistency` | 0.20 | 是否被用户配置、保护条件或反证削弱 |
-| `validation_confidence` | 0.20 | Validator 的置信度 |
+| `validation_confidence` | 0.20 | 适配器建议的置信度，仅作诊断 |
 | `history_feedback` | 0.10 | baseline 中的历史反馈 |
 
-Validator 启用时，`verified` 且满足 policy 才默认进入 `issues`；未决项进入审计观察。只有完整确定性反 proof 或未来的 dynamic/human 决策能安全地隐藏 rejected；单独的 LLM `rejected` 必须保留为 `needs_review`。V4 `DynamicReproductionRequest/Result` 和 `decision_level=V4` 只定义数据接口，本里程碑不调度 PoC、ASan 或沙箱执行。
+无论score多高，只有完整Checker正证closure才能进入`confirmed`；无论模型如何拒绝，缺少完整反证closure都保持`needs_review`。V4 `DynamicReproductionRequest/Result`和`decision_level=V4`只定义数据接口，本里程碑不调度PoC、ASan或沙箱执行。
 
 ### 9.5 人工反馈与报告分层
 

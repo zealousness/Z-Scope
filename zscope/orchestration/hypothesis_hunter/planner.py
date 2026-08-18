@@ -75,7 +75,7 @@ class AttackSurfacePlanner:
         self,
         semantic_map: SecuritySemanticMap,
         *,
-        security_spec_shadow: Mapping[str, Any] | None = None,
+        security_spec_runtime: Mapping[str, Any] | None = None,
         covered_localized_keys: Iterable[str] = (),
         canonical_investigation_roots: Mapping[str, str] | None = None,
         proof_bundle_provider: ProofBundleProvider | None = None,
@@ -88,7 +88,7 @@ class AttackSurfacePlanner:
             for key, value in (canonical_investigation_roots or {}).items()
             if str(key) and str(value)
         }
-        spec_refs, conflicting_subjects = self._spec_state(security_spec_shadow or {})
+        spec_refs, conflicting_subjects = self._spec_state(security_spec_runtime or {})
         unknown_by_subject = {
             str(value.subject_uid): str(value.unknown_id) for value in semantic_map.unknowns
         }
@@ -290,9 +290,9 @@ class AttackSurfacePlanner:
 
     @staticmethod
     def _spec_state(
-        shadow: Mapping[str, Any],
+        runtime: Mapping[str, Any],
     ) -> tuple[dict[str, tuple[str, ...]], set[str]]:
-        compilation = shadow.get("compilation")
+        compilation = runtime.get("compilation")
         compilation = compilation if isinstance(compilation, Mapping) else {}
         refs: dict[str, list[str]] = {}
         conflicts: set[str] = set()
@@ -305,7 +305,7 @@ class AttackSurfacePlanner:
             ref = str(value.get("content_sha256") or value.get("compiled_uid") or "")
             if uid and ref:
                 refs.setdefault(uid, []).append(ref)
-        for value in shadow.get("conflicting_specs") or []:
+        for value in runtime.get("conflicting_specs") or []:
             if not isinstance(value, Mapping):
                 continue
             subject = value.get("subject")

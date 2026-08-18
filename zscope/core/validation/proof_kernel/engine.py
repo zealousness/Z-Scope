@@ -1,12 +1,13 @@
-"""Unified, model-independent Proof Engine shadow evaluation."""
+"""Unified, model-independent authoritative Proof Engine evaluation."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+from .canonical import content_sha256
 from .checker import ProofChecker
-from .lifecycle import PROOF_KERNEL_MODE, assert_shadow_mode
+from .lifecycle import PROOF_KERNEL_MODE, require_authoritative_mode
 from .models import build_evidence_action, validate_obligation, validate_program_ir
 from .provider import ProofProvider
 from .registry import PREDICATE_REGISTRY
@@ -15,13 +16,16 @@ from .store import ProofArtifactStore
 
 @dataclass(frozen=True)
 class ProofKernelEvaluation:
+    schema_version: str
     proof_kernel_mode: str
-    shadow_decision: str
+    decision: str
     reason_code: str
     actions: Tuple[Dict[str, Any], ...]
     certificates: Tuple[Dict[str, Any], ...]
     check_results: Tuple[Dict[str, Any], ...]
     artifact_refs: Tuple[str, ...]
+    checker_result_refs: Tuple[str, ...]
+    root_manifest_sha256: str
 
 
 class ProofKernelEngine:
@@ -35,7 +39,7 @@ class ProofKernelEngine:
         provider: Optional[ProofProvider] = None,
         store: Optional[ProofArtifactStore] = None,
     ) -> None:
-        assert_shadow_mode(mode)
+        require_authoritative_mode(mode)
         self.mode = mode
         self.checker = checker or ProofChecker()
         self.provider = provider or ProofProvider()
@@ -135,6 +139,7 @@ class ProofKernelEngine:
         certificates = []
         results = []
         refs = []
+        checker_refs = []
         if self.store is not None:
             refs.append(self.store.put("program_proof_ir", proof_ir))
             refs.append(self.store.put("proof_obligation", obligation, dependency_refs=refs[:1]))
@@ -160,22 +165,52 @@ class ProofKernelEngine:
                     "proof_check_result", result, dependency_refs=(certificate_ref,)
                 )
                 refs.extend((action_ref, certificate_ref, check_ref))
-        decision, reason = self._shadow_closure(obligation, tuple(results))
+                checker_refs.append(check_ref)
+        decision, reason = self._authoritative_closure(
+            obligation,
+            tuple(results),
+            executable_action_uids={str(value["action_uid"]) for value in executable},
+            catalog=tuple(catalog),
+        )
         if self.store is not None:
-            self.store.write_root_manifest(refs)
+            root_manifest = self.store.write_root_manifest(refs)
+            root_manifest_sha256 = str(root_manifest["content_sha256"])
+        else:
+            # The caller may persist these objects in its own immutable trace
+            # store.  Even without a filesystem CAS, the evaluation remains
+            # content-addressed and its root is deterministic.
+            refs = [
+                "sha256:" + content_sha256(value)
+                for value in (proof_ir, obligation, *actions, *certificates, *results)
+            ]
+            checker_refs = ["sha256:" + content_sha256(value) for value in results]
+            root_manifest_sha256 = content_sha256(
+                {
+                    "schema_version": "zscope.proof-root-manifest.v1",
+                    "artifact_refs": sorted(set(refs)),
+                    "checker_result_refs": sorted(set(checker_refs)),
+                }
+            )
         return ProofKernelEvaluation(
+            schema_version="zscope.proof-kernel-evaluation.v1",
             proof_kernel_mode=self.mode,
-            shadow_decision=decision,
+            decision=decision,
             reason_code=reason,
             actions=tuple(actions),
             certificates=tuple(certificates),
             check_results=tuple(results),
             artifact_refs=tuple(refs),
+            checker_result_refs=tuple(checker_refs),
+            root_manifest_sha256=root_manifest_sha256,
         )
 
     @staticmethod
-    def _shadow_closure(
-        obligation: Mapping[str, Any], results: Tuple[Mapping[str, Any], ...]
+    def _authoritative_closure(
+        obligation: Mapping[str, Any],
+        results: Tuple[Mapping[str, Any], ...],
+        *,
+        executable_action_uids: set[str],
+        catalog: Tuple[Mapping[str, Any], ...],
     ) -> tuple[str, str]:
         accepted_confirmation = {
             str(value.get("clause_uid") or "")
@@ -194,10 +229,33 @@ class ProofKernelEngine:
             for value in obligation.get("confirmation_clauses") or []
             if value.get("required") is True
         }
+        required_counterproof = {
+            str(value.get("clause_uid") or "")
+            for value in obligation.get("counterproof_clauses") or []
+            if value.get("required") is True
+        }
+        required_executable = {
+            str(value.get("clause_uid") or "")
+            for value in catalog
+            if str(value.get("action_uid") or "") in executable_action_uids
+        }
+        selected_result_clauses = {str(value.get("clause_uid") or "") for value in results}
+        all_required_executable = {
+            str(value.get("clause_uid") or "")
+            for value in catalog
+            if str(value.get("clause_uid") or "") in (required_confirmation | required_counterproof)
+        }
+        # A model selection cannot turn an omitted executable required clause
+        # into an implicit success. Every required action must have a Checker
+        # result before an authoritative closure is possible.
+        if not all_required_executable.issubset(required_executable):
+            return "needs_review", "required_executable_clause_not_selected"
+        if not required_executable.issubset(selected_result_clauses):
+            return "needs_review", "required_executable_clause_not_checked"
         if accepted_confirmation and accepted_counterproof:
             return "needs_review", "programmatic_proof_conflict"
         if accepted_counterproof:
-            return "rejected", "verified_counterproof"
+            return "rejected_with_proof", "verified_counterproof"
         if obligation.get("open_clauses"):
             return "needs_review", "open_or_unknown_proof_clause"
         if required_confirmation and required_confirmation <= accepted_confirmation:

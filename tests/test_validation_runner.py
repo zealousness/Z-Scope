@@ -1,5 +1,4 @@
 import json
-import hashlib
 import logging
 import threading
 import time
@@ -15,11 +14,6 @@ from zscope.common.cancellation import (
 )
 from zscope.core.validation.pipeline import ValidationPipeline
 from zscope.core.validation.runner import ValidationResultCache, ValidationRunner
-from zscope.core.validation.claim_verifier import (
-    EvidenceClaimRequest,
-    EvidenceClaimVerifier,
-    verify_evidence_certificate,
-)
 from zscope.core.validation.function_ir import FunctionIRGraph
 from zscope.framework.base import AgentResponse
 from zscope.orchestration.scheduler import ScanScheduler
@@ -75,7 +69,7 @@ def _runner(
     memory=None,
     analysis=None,
     code_index=None,
-    validator_agent_factory=None,
+    proof_engine_agent_factory=None,
     result_cache=None,
     scheduler=None,
     get_tools=None,
@@ -85,14 +79,17 @@ def _runner(
     memory = memory if memory is not None else []
     config = SimpleNamespace(
         analysis=analysis,
-        scan=scan,
+        # Tests that exercise the Proof Engine adapter use the model-capable
+        # balanced profile unless they explicitly select fast.  P5 fast is a
+        # hard zero-model path.
+        scan=scan or SimpleNamespace(depth="balanced"),
         concurrency=concurrency
         or SimpleNamespace(
             validator_workers=2,
             evidence_completion_workers=2,
         ),
         project=SimpleNamespace(
-            agents=[SimpleNamespace(name="validator_agent", enabled=enabled, llm_ref="default")]
+            agents=[SimpleNamespace(name="proof_engine", enabled=enabled, llm_ref="default")]
         ),
     )
     return ValidationRunner(
@@ -107,7 +104,7 @@ def _runner(
             {"agent_contract": agent_name}
         ),
         remember_validation_result=lambda issue, status: memory.append((issue["id"], status)),
-        validator_agent_factory=validator_agent_factory or (lambda *args, **kwargs: agent),
+        proof_engine_agent_factory=proof_engine_agent_factory or (lambda *args, **kwargs: agent),
         result_cache=result_cache,
         scheduler=scheduler,
     )
@@ -166,66 +163,6 @@ def _validator_v3_result(
         "missing_fact_request": missing_fact_request,
         "stop_reason": stop_reason,
     }
-
-
-def _verified_v3_fact(*, fact_kind="value_range", subject_uid="wire_len", ref="TOOLFACT_RANGE"):
-    predicate = {
-        "value_range": "value_range_is_proved",
-        "lockset": "lock_must_hold_at_access",
-    }[fact_kind]
-    true_key = {
-        "value_range": "value_range_proved",
-        "lockset": "lock_must_hold",
-    }[fact_kind]
-    result_payload = {
-        "success": True,
-        "data": {true_key: True, "analysis_complete": True},
-    }
-    result_hash = hashlib.sha256(
-        json.dumps(
-            result_payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    catalog = {
-        ref: {
-            "evidence_ref": ref,
-            "tool_name": "get_data_flow",
-            "arguments": {"query": fact_kind},
-            "arguments_hash": "a" * 64,
-            "result_hash": result_hash,
-            "result_payload": result_payload,
-            "dependency_code_hash": result_hash,
-            "location": {
-                "file": "src/demo.c",
-                "function": "sink_func",
-                "start_line": 10,
-                "end_line": 14,
-            },
-        }
-    }
-    claim = EvidenceClaimRequest.from_mapping(
-        {
-            "obligation_uid": "OBL_TEST",
-            "fact_kind": fact_kind,
-            "predicate": predicate,
-            "polarity": "supports",
-            "subject_uid": subject_uid,
-            "decision_region_uid": "",
-            "arguments": {"query": fact_kind},
-            "cited_evidence_refs": [ref],
-        }
-    )
-    verification = EvidenceClaimVerifier().verify(
-        claim,
-        issue={},
-        tool_catalog=catalog,
-    )
-    assert verification.verified_fact is not None
-    return verification.verified_fact, catalog
 
 
 def _function_ir_graph(*, duplicate_sink: bool = False) -> dict:
@@ -518,8 +455,8 @@ def test_validation_runner_coalesces_identical_inflight_work_across_entry_runner
         )
 
     assert len(calls) == 1
-    assert len(first_state["issues"]) == 1
-    assert len(second_state["issues"]) == 1
+    assert len(first_state["observations"]) == 1
+    assert len(second_state["observations"]) == 1
     cache_hits = int(first_state.get("validator_cache_hit", 0)) + int(
         second_state.get("validator_cache_hit", 0)
     )
@@ -547,15 +484,16 @@ def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     _runner(agent, memory=memory).run(state)
 
     assert state["pending_new_issues"] == []
-    assert len(state["issues"]) == 1
-    assert state["issues"][0]["validation_status"] == "validated"
-    assert state["issues"][0]["validator_verdict"] == "verified"
-    assert state["issues"][0]["model_verdict"] == "verified"
-    assert state["issues"][0]["policy_disposition"] == "confirmed"
-    assert state["issues"][0]["attribution"]["discovered_by"] == []
-    assert state["issues"][0]["attribution"]["decided_by"] == "validator_llm"
-    assert memory == [("ISSUE_1", "validated")]
-    assert agent.inputs[0]["agent_contract"] == "validator_agent"
+    assert state["issues"] == []
+    assert len(state["observations"]) == 1
+    assert state["observations"][0]["validation_status"] == "needs_review"
+    assert state["observations"][0]["validator_verdict"] == "verified"
+    assert state["observations"][0]["model_verdict"] == "verified"
+    assert state["observations"][0]["policy_disposition"] == "needs_review"
+    assert state["observations"][0]["attribution"]["discovered_by"] == []
+    assert state["observations"][0]["attribution"]["decided_by"] == "proof_engine"
+    assert memory == [("ISSUE_1", "needs_review")]
+    assert agent.inputs[0]["agent_contract"] == "proof_engine"
 
 
 def test_validation_runner_v2_recheck_sees_all_required_typed_fact_deltas_once() -> None:
@@ -614,21 +552,13 @@ def test_validation_runner_v2_recheck_sees_all_required_typed_fact_deltas_once()
         "zscope.evidence-certificate.v2"
     )
     v1_fact_kinds = {
-        fact["fact_kind"]
-        for fact in agent.inputs[0]["evidence_slice"]["decision_facts"]["facts"]
+        fact["fact_kind"] for fact in agent.inputs[0]["evidence_slice"]["decision_facts"]["facts"]
     }
-    # The proof kernel remains shadow-only until P2 qualification: its
-    # fact-first projection is auditable, but it must not rewrite the stable
-    # V1 decision slice.
-    assert "source_sink_reachability" not in v1_fact_kinds
-    shadow_fact_kinds = {
-        fact["fact_kind"]
-        for fact in issue["proof_kernel_fact_first"]["decision_fact_slice"]["facts"]
-    }
-    assert "source_sink_reachability" in shadow_fact_kinds
+    assert "source_sink_reachability" in v1_fact_kinds
+    assert issue["proof_kernel_mode"] == "authoritative"
     assert issue["validator_fact_resolution"]["status"] == "completed_partial"
     assert issue["validator_pass_history"][-1]["pass"] == "evidence_recheck"
-    assert issue["evidence_completion_attempt_count"] == 1
+    assert issue["evidence_completion_attempt_count"] == 2
 
 
 def test_validation_runner_does_not_recheck_without_evidence_delta() -> None:
@@ -758,7 +688,7 @@ def test_balanced_runs_long_v3_for_high_risk_external_candidate() -> None:
     assert len(kwargs["evidence_actions"]) == 2
     assert callable(kwargs["evidence_action_executor"])
     assert issue["validator_pass_history"][-1]["pass"] == "investigation_synthesis"
-    assert issue["attribution"]["decision_level"] == "V3"
+    assert issue["attribution"]["decision_level"] == "V0"
 
 
 def test_v3_rejects_another_action_after_its_clause_was_closed() -> None:
@@ -803,10 +733,7 @@ def test_v3_rejects_another_action_after_its_clause_was_closed() -> None:
     assert agent.action_results[0]["status"] == "verified_true"
     assert agent.action_results[0]["newly_accepted"] is True
     assert agent.action_results[1]["status"] == "unknown"
-    assert (
-        agent.action_results[1]["reason_code"]
-        == "evidence_action_clause_already_closed"
-    )
+    assert agent.action_results[1]["reason_code"] == "evidence_action_clause_already_closed"
 
 
 def test_balanced_does_not_run_v3_when_no_executable_certificate_provider_exists() -> None:
@@ -1007,64 +934,6 @@ def test_balanced_escalates_unclosed_model_verdicts_to_v3(verdict) -> None:
     assert issue["validator_v3_eligibility"]["risk_basis"]["truth_fields_consulted"] is False
 
 
-def test_v3_legacy_generic_tool_fact_cannot_reenter_live_promotion_policy() -> None:
-    class ClosingValidator(FakeValidatorAgent):
-        def __init__(self):
-            super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
-            self.calls = 0
-
-        def investigate(self, input_data, **kwargs):
-            self.calls += 1
-            fact, catalog = _verified_v3_fact()
-            fact_uid = fact["fact_uid"]
-            return AgentResponse(
-                success=True,
-                data=_validator_v3_result(
-                    verdict="verified",
-                    validation_pass="investigation_synthesis",
-                    stop_reason="investigation_complete",
-                )
-                | {"evidence_refs": [fact_uid]},
-                metadata={
-                    "iterations": 4,
-                    "tool_call_count": 3,
-                    "validator_tool_fact_catalog": catalog,
-                    "validator_investigation_facts": [fact],
-                },
-            )
-
-    agent = ClosingValidator()
-    issue = _executable_path_issue(
-        candidate_uid="CAND_V3",
-        validation_cluster_uid="VAL_V3",
-        severity="high",
-        impact_level="high",
-        reachable_from_entry=True,
-        decision_context_version="zscope.decision-context.v3.1",
-        source_identity="wire_len",
-        subject_uid="wire_len",
-        obligation_uid="OBL_MULTI",
-        sink_identity="memcpy",
-        decision_fact_slice={
-            "fact_uids": ["FACT_BASE"],
-            "dependency_code_hashes": ["base-code-sha"],
-            "missing_fact_kinds": ["source_sink_reachability"],
-            "coverage": "partial",
-        },
-        decision_fact_coverage="partial",
-    )
-    state = _state(issue)
-
-    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
-
-    assert agent.calls == 1
-    assert state["issues"] == []
-    assert issue["candidate_disposition"] == "needs_review"
-    assert issue["v3_evidence_closure"]["complete"] is False
-    assert issue["decision_fact_coverage"] == "partial"
-    assert issue["v3_tool_fact_catalog"]["TOOLFACT_RANGE"]["tool_name"] == "get_data_flow"
-
-
 def test_v3_is_not_started_for_external_contract_without_program_provider() -> None:
     holder = {}
 
@@ -1173,8 +1042,7 @@ def test_v3_rejects_unbacked_fact_uid_from_default_promotion() -> None:
                             "dependency_code_hash": "invented-code-sha",
                             "locations": [{"file": "src/demo.c", "start_line": 10}],
                         }
-                    ],
-                    "validator_tool_fact_catalog": {},
+                    ]
                 },
             )
 
@@ -1203,158 +1071,6 @@ def test_v3_rejects_unbacked_fact_uid_from_default_promotion() -> None:
     assert issue["candidate_disposition"] == "needs_review"
     assert issue["v3_evidence_closure"]["complete"] is False
     assert issue["v3_investigation_cited_fact_count"] == 0
-
-
-def test_v3_closure_normalizes_obligation_event_aliases() -> None:
-    issue = {
-        "allow_legacy_v3_claim_replay": True,
-        "missing_fact_kinds": ["event:shared_state_access", "lockset"],
-        "decision_fact_slice": {
-            "fact_uids": ["FACT_BASE"],
-            "dependency_code_hashes": ["base-code-sha"],
-            "missing_fact_kinds": ["event:shared_state_access", "lockset"],
-            "coverage": "partial",
-        },
-    }
-    fact, catalog = _verified_v3_fact(
-        fact_kind="lockset",
-        subject_uid="shared_state",
-        ref="TOOLFACT_LOCKSET",
-    )
-
-    ValidationRunner._apply_v3_investigation_facts(
-        issue,
-        {"evidence_refs": [fact["fact_uid"]]},
-        {
-            "validator_investigation_facts": [fact],
-            "validator_tool_fact_catalog": catalog,
-        },
-    )
-
-    assert issue["v3_evidence_closure"]["complete"] is True
-    assert issue["v3_evidence_closure"]["resolved_fact_kinds"] == ["lockset"]
-    assert issue["missing_fact_kinds"] == []
-
-
-def test_v3_legacy_claim_is_not_accepted_by_live_strict_verifier() -> None:
-    class ClaimingValidator(FakeValidatorAgent):
-        def __init__(self):
-            super().__init__(
-                [
-                    AgentResponse(success=True, data=_validator_v3_result()),
-                    AgentResponse(
-                        success=True,
-                        data=_validator_v3_result(validation_pass="evidence_recheck"),
-                    ),
-                ]
-            )
-
-        def investigate(self, input_data, *, max_iterations=50, claim_verifier=None):
-            _, catalog = _verified_v3_fact()
-            assert max_iterations == 50
-            assert claim_verifier is not None
-            verification = claim_verifier(
-                {
-                    "obligation_uid": "OBL_PATH",
-                    "fact_kind": "value_range",
-                    "predicate": "value_range_is_proved",
-                    "polarity": "supports",
-                    "subject_uid": "wire_len",
-                    "decision_region_uid": "REGION_PATH",
-                    "arguments": {"query": "value_range"},
-                    "cited_evidence_refs": ["TOOLFACT_RANGE"],
-                },
-                catalog,
-            )
-            assert verification["status"] == "unknown"
-            assert verification["reason_code"] == "claim_protocol_invalid"
-            assert verification.get("accepted_into_decision_slice") is not True
-            return AgentResponse(
-                success=True,
-                data=_validator_v3_result(
-                    verdict="uncertain",
-                    validation_pass="investigation_synthesis",
-                    stop_reason="investigation_exhausted",
-                ),
-                metadata={
-                    "iterations": 5,
-                    "tool_call_count": 2,
-                    "validator_tool_fact_catalog": catalog,
-                    "validator_investigation_facts": [verification["verified_fact"]],
-                },
-            )
-
-    issue = _executable_path_issue(
-        candidate_uid="CAND_V3",
-        validation_cluster_uid="VAL_V3",
-        severity="high",
-        impact_level="high",
-        externally_reachable=True,
-        decision_context_version="zscope.decision-context.v3.1",
-        source_identity="wire_len",
-        subject_uid="wire_len",
-        obligation_uid="OBL_MULTI",
-        sink_identity="memcpy",
-        decision_fact_slice={
-            "fact_uids": ["FACT_BASE"],
-            "dependency_code_hashes": ["base-code-sha"],
-            "missing_fact_kinds": ["source_sink_reachability"],
-            "coverage": "partial",
-        },
-        decision_fact_coverage="partial",
-    )
-
-    _runner(ClaimingValidator(), scan=SimpleNamespace(depth="balanced")).run(_state(issue))
-
-    assert issue["candidate_disposition"] == "needs_review"
-    shadow_closure = issue["proof_kernel_fact_first"]["evidence_closure_state"]
-    assert "value_range" not in shadow_closure["resolved_fact_kinds"]
-    assert issue["validator_pass_history"][-1]["new_fact_count"] == 0
-
-
-def test_v3_invalid_claim_is_unknown_and_persisted_in_trace(tmp_path) -> None:
-    runner = _runner(
-        None,
-        analysis=SimpleNamespace(snapshot_dir=str(tmp_path)),
-    )
-    issue = _issue(
-        candidate_uid="CAND_V3",
-        validation_cluster_uid="VAL_V3_INVALID_CLAIM",
-        obligation_uid="OBL_TEST",
-        subject_uid="wire_len",
-        decision_region_uid="REGION_1",
-    )
-
-    verification = runner._verify_v3_claim(
-        issue,
-        {
-            "fact_kind": "value_range",
-            # A model may pick two independently valid enum members that do
-            # not form a valid fact/predicate pair.  This must be traceable,
-            # not swallowed by the Agent tool loop.
-            "predicate": "caller_contract_holds",
-            "polarity": "supports",
-            "subject_uid": "wire_len",
-            "decision_region_uid": "REGION_1",
-            "arguments": {"query": "value_range"},
-            "cited_evidence_refs": ["TOOLFACT_RANGE"],
-        },
-        {},
-    )
-
-    assert verification["status"] == "unknown"
-    assert verification["reason_code"] == "claim_protocol_invalid"
-    trace = runner._decision_trace_store.trace("VAL_V3_INVALID_CLAIM")
-    verifier_events = [event for event in trace["events"] if event["stage"] == "verifier"]
-    assert len(verifier_events) == 1
-    assert verifier_events[0]["reason_code"] == "FACT_UNKNOWN"
-    assert verifier_events[0]["details"]["verification_reason"] == "claim_protocol_invalid"
-    assert verifier_events[0]["input_refs"]
-    assert verifier_events[0]["output_refs"]
-    certificate_object = json.loads(
-        (tmp_path / verifier_events[0]["output_refs"][0]).read_text(encoding="utf-8")
-    )
-    assert verify_evidence_certificate(certificate_object["payload"]) == (True, "ok")
 
 
 def test_deep_runs_v3_for_every_unclosed_non_shadow_candidate() -> None:
@@ -1397,8 +1113,10 @@ def test_deep_runs_v3_for_every_unclosed_non_shadow_candidate() -> None:
     assert issue["validator_result_pass"] == "investigation_synthesis"
 
 
-def test_validation_runner_always_skips_validator_for_prevalidation_proof() -> None:
-    agent = FakeValidatorAgent([])
+def test_legacy_prevalidation_proof_cannot_close_p5_candidate() -> None:
+    agent = FakeValidatorAgent(
+        [AgentResponse(success=True, data=_validator_v3_result(verdict="verified"))]
+    )
     runner = _runner(agent)
     issue = _issue(
         deterministic_proofs=[
@@ -1417,16 +1135,17 @@ def test_validation_runner_always_skips_validator_for_prevalidation_proof() -> N
 
     runner.run(state)
 
-    assert agent.inputs == []
-    assert state["issues"] == [issue]
-    assert state["validator_avoided_count"] == 1
-    assert state["deterministic_prevalidation_confirmed_count"] == 1
-    assert issue["attribution"]["decided_by"] == "deterministic_proof"
-    assert issue["attribution"]["decision_level"] == "V0"
+    assert len(agent.inputs) == 1
+    assert state["issues"] == []
+    assert state["observations"] == [issue]
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["terminal_authority"] == "zscope.proof-checker"
 
 
-def test_validation_runner_restores_bounded_completion_before_v1() -> None:
-    agent = FakeValidatorAgent([])
+def test_legacy_completion_proof_cannot_close_p5_candidate() -> None:
+    agent = FakeValidatorAgent(
+        [AgentResponse(success=True, data=_validator_v3_result(verdict="verified"))]
+    )
     runner = _runner(agent)
     issue = _issue(
         evidence_completion_proofs=[
@@ -1445,14 +1164,13 @@ def test_validation_runner_restores_bounded_completion_before_v1() -> None:
 
     runner.run(state)
 
-    assert agent.inputs == []
-    assert state["issues"] == [issue]
-    assert issue["prevalidation_fact_completion"] == "completed_with_proof"
-    assert issue["candidate_disposition"] == "confirmed"
-    assert issue["attribution"]["decided_by"] == "deterministic_proof"
+    assert len(agent.inputs) == 1
+    assert state["issues"] == []
+    assert state["observations"] == [issue]
+    assert issue["candidate_disposition"] == "needs_review"
 
 
-def test_shadow_proof_kernel_cannot_downgrade_stable_verified_policy() -> None:
+def test_model_verdict_cannot_upgrade_authoritative_open_proof() -> None:
     agent = FakeValidatorAgent(
         [AgentResponse(success=True, data=_validator_v3_result(verdict="verified"))]
     )
@@ -1474,14 +1192,12 @@ def test_shadow_proof_kernel_cannot_downgrade_stable_verified_policy() -> None:
 
     _runner(agent, scan=SimpleNamespace(depth="fast")).run(state)
 
-    assert state["issues"] == [issue]
-    assert issue["candidate_disposition"] == "confirmed"
-    assert issue["terminal_authority"] == "validation_pipeline_compat"
-    assert issue["proof_kernel_mode"] == "shadow"
-    assert (
-        issue["proof_kernel_shadow_terminal_authority_decision"]["disposition"]
-        == "needs_review"
-    )
+    assert agent.inputs == []
+    assert state["issues"] == []
+    assert state["observations"] == [issue]
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["terminal_authority"] == "zscope.proof-checker"
+    assert issue["proof_kernel_mode"] == "authoritative"
 
 
 def test_stable_validator_evidence_slice_disables_open_ended_tools() -> None:
@@ -1493,11 +1209,12 @@ def test_stable_validator_evidence_slice_disables_open_ended_tools() -> None:
 
     runner = _runner(
         FakeValidatorAgent([]),
-        validator_agent_factory=factory,
+        proof_engine_agent_factory=factory,
         get_tools=lambda _agent_name: ["broad_code_browser"],
+        scan=SimpleNamespace(depth="fast"),
     )
 
-    runner._build_validator_agent()
+    runner._build_proof_engine_agent()
 
     assert captured["tools"] == []
 
@@ -1512,12 +1229,12 @@ def test_balanced_validator_receives_readonly_v3_tools_but_v1_remains_direct() -
 
     runner = _runner(
         FakeValidatorAgent([]),
-        validator_agent_factory=factory,
+        proof_engine_agent_factory=factory,
         get_tools=lambda _agent_name: readonly_tools,
         scan=SimpleNamespace(depth="balanced"),
     )
 
-    runner._build_validator_agent()
+    runner._build_proof_engine_agent()
 
     assert captured["tools"] == readonly_tools
 
@@ -1598,7 +1315,7 @@ def test_validation_runner_keeps_entry_root_rejection_without_proof_for_review()
     assert state["issues"] == []
     assert len(state["observations"]) == 1
     assert state["observations"][0]["validation_status"] == "needs_review"
-    assert state["observations"][0]["attribution"]["decided_by"] == "unresolved"
+    assert state["observations"][0]["attribution"]["decided_by"] == "proof_engine"
     assert memory == [("ISSUE_2", "needs_review")]
 
 
@@ -1744,11 +1461,15 @@ def test_validation_runner_parallel_workers_preserve_order_and_token_totals() ->
 
     runner = _runner(
         None,
-        validator_agent_factory=lambda *args, **kwargs: PerIssueValidatorAgent(),
+        proof_engine_agent_factory=lambda *args, **kwargs: PerIssueValidatorAgent(),
     )
     runner.run(state)
 
-    assert [issue["id"] for issue in state["issues"]] == ["ISSUE_1", "ISSUE_2", "ISSUE_3"]
+    assert [issue["id"] for issue in state["observations"]] == [
+        "ISSUE_1",
+        "ISSUE_2",
+        "ISSUE_3",
+    ]
     assert state["total_context_tokens"] == 30
     assert state["total_cumulative_prompt_tokens"] == 60
     assert state["total_cumulative_completion_tokens"] == 15
@@ -1780,8 +1501,8 @@ def test_validation_deadline_is_a_soft_budget_and_retains_late_result() -> None:
 
     runner.run(state)
 
-    assert [item["id"] for item in state["issues"]] == ["ISSUE_SOFT_BUDGET"]
-    assert issue["validation_status"] == "validated"
+    assert [item["id"] for item in state["observations"]] == ["ISSUE_SOFT_BUDGET"]
+    assert issue["validation_status"] == "needs_review"
     assert issue["validation_soft_budget_overrun"] is True
     assert issue["validation_soft_budget_overrun_seconds"] > 0
     assert issue["validation_duration_seconds"] >= 0.02
@@ -1825,7 +1546,7 @@ def test_parent_cancellation_cancels_unstarted_validation_futures_without_draini
         analysis=SimpleNamespace(
             validation_deadline_seconds=0.001,
         ),
-        validator_agent_factory=lambda *args, **kwargs: BlockingValidator(),
+        proof_engine_agent_factory=lambda *args, **kwargs: BlockingValidator(),
     )
     parent = CancellationToken()
 
@@ -1885,7 +1606,7 @@ def test_parent_deadline_is_a_hard_cutoff_for_parallel_validation_batch() -> Non
         analysis=SimpleNamespace(
             validation_deadline_seconds=0.001,
         ),
-        validator_agent_factory=lambda *args, **kwargs: BlockingValidator(),
+        proof_engine_agent_factory=lambda *args, **kwargs: BlockingValidator(),
     )
     parent = CancellationToken(timeout_seconds=0.05)
 
@@ -1944,7 +1665,7 @@ def test_parent_cancellation_cancels_queued_scan_scheduler_validations() -> None
         analysis=SimpleNamespace(
             validation_deadline_seconds=0.001,
         ),
-        validator_agent_factory=lambda *args, **kwargs: BlockingValidator(),
+        proof_engine_agent_factory=lambda *args, **kwargs: BlockingValidator(),
         scheduler=scheduler,
     )
 

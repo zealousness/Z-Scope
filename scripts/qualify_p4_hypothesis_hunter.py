@@ -287,10 +287,10 @@ def _artifacts(
         "proof_obligation": obligation,
         "evidence_action": action,
         "security_hypothesis": hypothesis,
-        "proof_shadow_decision": evaluation.shadow_decision,
+        "proof_shadow_decision": evaluation.decision,
         "proof_reason_code": evaluation.reason_code,
         "checker_results": list(evaluation.check_results),
-        "registered_in_shadow_ledger": evaluation.shadow_decision == "confirmed",
+        "registered_in_shadow_ledger": evaluation.decision == "confirmed",
         "contracts_resolvable": valid_offer and valid_hypothesis,
         "contract_validation": {
             "offer": offer_reason,

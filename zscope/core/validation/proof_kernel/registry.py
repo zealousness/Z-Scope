@@ -581,10 +581,44 @@ def evaluate_predicate(
         entry_events = [
             event for event in _events(summary) if event.get("kind") == "entry_parameter"
         ]
-        signature_frozen = bool(entry_events) and all(
-            isinstance(event.get("attributes"), Mapping)
-            and event["attributes"].get("entry_signature_complete") is True
-            for event in entry_events
+        signature = str(summary.get("signature") or "")
+        signature_frozen = bool(entry_events)
+        declared_counts: set[int] = set()
+        slots: list[int] = []
+        identities: list[str] = []
+        for event in entry_events:
+            attributes = event.get("attributes")
+            attributes = attributes if isinstance(attributes, Mapping) else {}
+            subjects = [str(value) for value in event.get("subject_uids") or [] if str(value)]
+            raw_slot = attributes.get("parameter_slot")
+            raw_count = attributes.get("parameter_count")
+            if raw_slot is None or raw_count is None:
+                signature_frozen = False
+                continue
+            try:
+                slot = int(raw_slot)
+                count = int(raw_count)
+            except (TypeError, ValueError):
+                signature_frozen = False
+                continue
+            if (
+                attributes.get("entry_signature_complete") is not True
+                or str(attributes.get("entry_signature") or "") != signature
+                or len(subjects) != 1
+                or slot < 0
+                or count <= 0
+                or slot >= count
+            ):
+                signature_frozen = False
+            declared_counts.add(count)
+            slots.append(slot)
+            identities.extend(subjects)
+        declared_count = next(iter(declared_counts)) if len(declared_counts) == 1 else -1
+        signature_frozen = bool(
+            signature_frozen
+            and declared_count == len(entry_events)
+            and sorted(slots) == list(range(declared_count))
+            and len(set(identities)) == len(identities) == declared_count
         )
         if not signature_frozen:
             return _unknown(spec, "entry_signature_not_frozen")
@@ -596,7 +630,8 @@ def evaluate_predicate(
             if (
                 event.get("kind") == "entry_parameter"
                 and parameter_uid in subjects
-                and str(attributes.get("parameter_slot") or "") == parameter_slot
+                and str(attributes.get("parameter_slot")) == parameter_slot
+                and len(subjects) == 1
             ):
                 matches.append(str(event.get("event_uid") or ""))
         if len(matches) > 1:

@@ -1,4 +1,4 @@
-"""Authority-free P4 planner, Hunter, proof replay, and shadow ledger."""
+"""P5 planner, Hunter selection, proof replay, and live candidate registration."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from ...core.validation.proof_kernel import ProofKernelEngine
 from ...framework.base import AgentResponse
 from ...framework.llm_usage import llm_usage_attribution_scope
 from ...semantics.security_map import SecuritySemanticMap
-from ..candidates import CandidateLedger, CandidateRegistrar
+from ..candidates import CandidateRegistrar
+from .lifecycle import ACTIVE_PRODUCT_EFFECT, HYPOTHESIS_HUNTER_MODE
 from .blind import CandidateBlindProjectionError, build_candidate_blind_projection
 from .models import (
     build_coverage_observation,
@@ -23,8 +24,8 @@ from .store import HypothesisArtifactStore
 ReportRunner = Callable[[Mapping[str, Any], Mapping[str, Any], Sequence[Mapping[str, Any]]], Any]
 
 
-class HypothesisHunterShadowRuntime:
-    """Run P4 in a storage and lifecycle boundary disconnected from live authority."""
+class HypothesisHunterRuntime:
+    """Register hypotheses without granting the Hunter terminal authority."""
 
     def __init__(
         self,
@@ -48,7 +49,8 @@ class HypothesisHunterShadowRuntime:
         self,
         semantic_map: SecuritySemanticMap,
         *,
-        security_spec_shadow: Mapping[str, Any] | None = None,
+        candidate_registrar: CandidateRegistrar,
+        security_spec_runtime: Mapping[str, Any] | None = None,
         covered_localized_keys: Sequence[str] = (),
         canonical_investigation_roots: Mapping[str, str] | None = None,
         proof_bundle_provider: ProofBundleProvider | None = None,
@@ -56,21 +58,10 @@ class HypothesisHunterShadowRuntime:
     ) -> dict[str, Any]:
         planned = self.planner.plan(
             semantic_map,
-            security_spec_shadow=security_spec_shadow,
+            security_spec_runtime=security_spec_runtime,
             covered_localized_keys=covered_localized_keys,
             canonical_investigation_roots=canonical_investigation_roots,
             proof_bundle_provider=proof_bundle_provider,
-        )
-        shadow_ledger = CandidateLedger(
-            project_id=semantic_map.project_id,
-            revision=semantic_map.revision,
-            decision_trace_store=None,
-        )
-        registrar = CandidateRegistrar(
-            shadow_ledger,
-            project_id=semantic_map.project_id,
-            revision=semantic_map.revision,
-            run_id="hypothesis-hunter-shadow",
         )
         references: list[str] = []
         hypotheses: list[dict[str, Any]] = []
@@ -78,6 +69,7 @@ class HypothesisHunterShadowRuntime:
         proof_decisions: list[dict[str, Any]] = []
         llm_calls = 0
         cache_hits = 0
+        coverage_status_counts = {"complete": 0, "partial": 0, "failed": 0}
 
         for hunt in planned:
             unit = dict(hunt.audit_unit)
@@ -90,6 +82,7 @@ class HypothesisHunterShadowRuntime:
             ]
             references.extend(offer_refs)
             if not offers:
+                coverage_status_counts["partial"] += 1
                 observation = self._observation(unit, "no_executable_proof_offer")
                 observations.append(observation)
                 references.append(
@@ -103,6 +96,7 @@ class HypothesisHunterShadowRuntime:
             try:
                 projection = build_candidate_blind_projection(unit, offers)
             except (CandidateBlindProjectionError, ValueError) as exc:
+                coverage_status_counts["failed"] += 1
                 observation = self._observation(
                     unit,
                     "candidate_blind_projection_rejected",
@@ -123,7 +117,7 @@ class HypothesisHunterShadowRuntime:
                 dependency_refs=(unit_ref, *offer_refs),
             )
             references.append(projection_ref)
-            cache_key = self._cache_key(unit, offers, security_spec_shadow or {})
+            cache_key = self._cache_key(unit, offers, security_spec_runtime or {})
             report = self.store.load_cached_report(cache_key)
             if report is not None:
                 valid, _ = validate_hunt_report(report, audit_unit=unit, offers=offers)
@@ -153,6 +147,7 @@ class HypothesisHunterShadowRuntime:
                     else:
                         report = None
             if report is None:
+                coverage_status_counts["failed"] += 1
                 observation = self._observation(unit, "hunter_report_unavailable_or_invalid")
                 observations.append(observation)
                 references.append(
@@ -163,6 +158,10 @@ class HypothesisHunterShadowRuntime:
                     )
                 )
                 continue
+            coverage_status = str(report.get("coverage_status") or "failed")
+            coverage_status_counts[
+                coverage_status if coverage_status in coverage_status_counts else "failed"
+            ] += 1
             report_ref = self.store.put(
                 "hypothesis_hunt_report",
                 report,
@@ -202,18 +201,15 @@ class HypothesisHunterShadowRuntime:
                     obligation=offer["proof_obligation"],
                     selected_action_uids=hypothesis["evidence_action_uids"],
                 )
-                registered_candidate_ids: list[str] = []
-                if proof.shadow_decision == "confirmed":
-                    registration = registrar.register_issues(
-                        (self._shadow_issue(hypothesis),),
-                        source="hypothesis_hunter",
-                        default_entry_identity=str(
-                            (unit.get("root_entry_uids") or ["__project__"])[0]
-                        ),
-                        force_unconfirmed=True,
-                    )
-                    registered_candidate_ids = list(registration.candidate_ids)
-                else:
+                issue = self._live_issue(hypothesis, offer=offer, proof=asdict(proof))
+                registration = candidate_registrar.register_issues(
+                    (issue,),
+                    source="hypothesis_hunter",
+                    default_entry_identity=str((unit.get("root_entry_uids") or ["__project__"])[0]),
+                    force_unconfirmed=True,
+                )
+                registered_candidate_ids = list(registration.candidate_ids)
+                if proof.decision != "confirmed":
                     observation = self._observation(
                         unit,
                         "selected_hypothesis_not_proven",
@@ -234,15 +230,16 @@ class HypothesisHunterShadowRuntime:
                 proof_decisions.append(proof_value)
                 references.append(
                     self.store.put(
-                        "hypothesis_proof_shadow_decision",
+                        "hypothesis_proof_decision",
                         proof_value,
                         dependency_refs=(hypothesis_ref,),
                     )
                 )
 
-        ledger_snapshot = shadow_ledger.freeze()
-        ledger_ref = self.store.put("shadow_candidate_ledger", ledger_snapshot)
-        references.append(ledger_ref)
+        reason_code_distribution: dict[str, int] = {}
+        for value in (*observations, *self.planner.diagnostics):
+            reason_code = str(value.get("reason_code") or "UNSPECIFIED")
+            reason_code_distribution[reason_code] = reason_code_distribution.get(reason_code, 0) + 1
         coverage_summary = {
             "planned_unit_count": len(planned),
             "offer_count": sum(len(value.offers) for value in planned),
@@ -252,18 +249,23 @@ class HypothesisHunterShadowRuntime:
             "llm_call_count": llm_calls,
             "cache_hit_count": cache_hits,
             "planner_diagnostic_count": len(self.planner.diagnostics),
+            "coverage_status_counts": coverage_status_counts,
+            "reason_code_distribution": dict(sorted(reason_code_distribution.items())),
         }
         manifest = self.store.write_root_manifest(
             references,
-            shadow_ledger_sha256=ledger_snapshot_sha256(ledger_snapshot),
+            registered_candidate_uids=tuple(
+                candidate_uid
+                for value in proof_decisions
+                for candidate_uid in value.get("registered_candidate_uids") or []
+            ),
             coverage_summary=coverage_summary,
         )
         return {
-            "schema_version": "zscope.hypothesis-hunter-shadow-result.v2",
-            "mode": "shadow",
-            "active_product_effect": "none",
+            "schema_version": "zscope.hypothesis-hunter-runtime-result.v1",
+            "mode": HYPOTHESIS_HUNTER_MODE,
+            "active_product_effect": ACTIVE_PRODUCT_EFFECT,
             "status": "complete",
-            "shadow_ledger_snapshot": ledger_snapshot,
             "proof_decisions": proof_decisions,
             "artifact_refs": list(manifest["artifact_refs"]),
             "root_manifest_sha256": manifest["content_sha256"],
@@ -275,7 +277,7 @@ class HypothesisHunterShadowRuntime:
         self,
         unit: Mapping[str, Any],
         offers: Sequence[Mapping[str, Any]],
-        spec_shadow: Mapping[str, Any],
+        spec_runtime: Mapping[str, Any],
     ) -> str:
         from ...core.validation.proof_kernel.canonical import content_sha256
 
@@ -283,7 +285,9 @@ class HypothesisHunterShadowRuntime:
             {
                 "unit_fingerprint_sha256": unit["unit_fingerprint_sha256"],
                 "offer_hashes": [value["content_sha256"] for value in offers],
-                "security_spec_manifest_sha256": str(spec_shadow.get("root_manifest_sha256") or ""),
+                "security_spec_manifest_sha256": str(
+                    spec_runtime.get("root_manifest_sha256") or ""
+                ),
                 "proof_registry_revision": "proof-kernel.v2",
                 "prompt_revision": self.prompt_revision,
                 "model_profile": self.model_profile,
@@ -308,13 +312,18 @@ class HypothesisHunterShadowRuntime:
         )
 
     @staticmethod
-    def _shadow_issue(hypothesis: Mapping[str, Any]) -> dict[str, Any]:
+    def _live_issue(
+        hypothesis: Mapping[str, Any],
+        *,
+        offer: Mapping[str, Any],
+        proof: Mapping[str, Any],
+    ) -> dict[str, Any]:
         location = hypothesis.get("location") or {}
         return {
             "id": str(hypothesis["hypothesis_uid"]),
             "category": str(hypothesis["defect_family"]),
             "defect_class": str(hypothesis["defect_family"]),
-            "description": "Bounded security hypothesis awaiting authoritative validation.",
+            "description": "Bounded security hypothesis queued for Proof Engine validation.",
             "function": str(location.get("function_uid") or ""),
             "file": str(location.get("file") or ""),
             "line": int(location.get("start_line") or 0),
@@ -322,17 +331,22 @@ class HypothesisHunterShadowRuntime:
             "source": str(hypothesis.get("source_ref") or ""),
             "sink": str(hypothesis.get("sink_ref") or ""),
             "resource": str(hypothesis.get("resource_ref") or ""),
-            "candidate_source": "hypothesis_hunter_shadow",
+            "candidate_source": "hypothesis_hunter",
             "audit_unit_uid": str(hypothesis["audit_unit_uid"]),
-            "candidate_disposition": "shadow",
-            "shadow_only": True,
+            "candidate_disposition": "needs_review",
             "security_hypothesis": dict(hypothesis),
+            "proof_kernel_evaluation": dict(proof),
+            "proof_kernel_input": {
+                "proof_ir": dict(offer["proof_ir"]),
+                "proof_obligation": dict(offer["proof_obligation"]),
+                "selected_action_uids": list(hypothesis["evidence_action_uids"]),
+            },
             "attribution": {
-                "schema_version": "zscope.finding-attribution.v1",
-                "discovered_by": ["llm_active_discovery"],
+                "schema_version": "zscope.finding-attribution.v2",
+                "discovered_by": ["hypothesis_hunter"],
                 "discovery_details": [
                     {
-                        "kind": "llm_active_discovery",
+                        "kind": "hypothesis_hunter",
                         "source_id": str(hypothesis["offer_uid"]),
                     }
                 ],
@@ -341,9 +355,3 @@ class HypothesisHunterShadowRuntime:
                 "decision_details": {},
             },
         }
-
-
-def ledger_snapshot_sha256(value: Mapping[str, Any]) -> str:
-    from ...core.validation.proof_kernel.canonical import content_sha256
-
-    return content_sha256(value)

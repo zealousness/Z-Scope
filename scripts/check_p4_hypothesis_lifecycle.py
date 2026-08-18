@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed if P4 can reach live authority before P5."""
+"""Fail closed unless P5 Hunter is active but candidate-registration-only."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ def check(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     design = root / "docs/design/zscope-2.0-security-architecture/design-manifest.json"
     manifest = json.loads(design.read_text(encoding="utf-8"))
-    p5_complete = (manifest.get("phase_status") or {}).get("P5") == "complete"
     package = root / "zscope/orchestration/hypothesis_hunter"
     lifecycle = package / "lifecycle.py"
     tree = ast.parse(lifecycle.read_text(encoding="utf-8"), filename=str(lifecycle))
@@ -26,10 +25,10 @@ def check(root: Path = ROOT) -> list[str]:
         for target in node.targets
         if isinstance(target, ast.Name)
     }
-    if not p5_complete and assignments.get("HYPOTHESIS_HUNTER_MODE") != "shadow":
-        errors.append("Hypothesis Hunter mode must remain shadow until P5 is complete")
-    if assignments.get("ACTIVE_PRODUCT_EFFECT") != "none":
-        errors.append("Hypothesis Hunter active product effect must remain none")
+    if assignments.get("HYPOTHESIS_HUNTER_MODE") != "active":
+        errors.append("Hypothesis Hunter mode must be active during the P5 cutover")
+    if assignments.get("ACTIVE_PRODUCT_EFFECT") != "candidate_registration_only":
+        errors.append("Hypothesis Hunter effect must remain candidate_registration_only")
 
     forbidden_imports = (
         "zscope.benchmarking",
@@ -94,21 +93,21 @@ def check(root: Path = ROOT) -> list[str]:
                     )
 
     parallel = (root / "zscope/orchestration/parallel_analyzer.py").read_text(encoding="utf-8")
-    if '"active_product_effect": "none"' not in parallel:
-        errors.append("parallel analyzer does not freeze P4 active_product_effect=none")
-    active_call = parallel.find("self._run_active_discovery(entries, discovery_profile)")
+    if '"active_product_effect": "candidate_registration_only"' not in parallel:
+        errors.append("parallel analyzer does not freeze Hunter candidate-only effect")
+    active_call = parallel.find("self._run_authoritative_hunter(discovery_profile)")
     validation_call = parallel.find("self._run_scan_validation_queue()", active_call)
     if (
         active_call < 0
         or validation_call < 0
         or active_call > validation_call
-        or "self._run_hypothesis_hunter_shadow(" not in parallel
+        or "self._run_hypothesis_hunter(" not in parallel
     ):
-        errors.append("P4 shadow runtime is not ordered before live validation queue")
+        errors.append("P5 Hunter registration is not ordered before live Ledger freeze")
     if 'HypothesisArtifactStore(snapshot_dir / "hypothesis_hunter")' not in parallel:
         errors.append("P4 does not use its independent artifact store")
     alert = (root / "zscope/alerts/verifier.py").read_text(encoding="utf-8")
-    if "load_hypothesis_shadow_identity" not in alert:
+    if "load_hypothesis_manifest_identity" not in alert:
         errors.append("alert-verify does not replay the frozen P4 manifest")
     return sorted(set(errors))
 
@@ -119,7 +118,7 @@ def main() -> int:
         for value in errors:
             print(value)
         return 1
-    print("P4 Hypothesis Hunter lifecycle gate passed: shadow ledger isolated; authority=P5")
+    print("P5 Hypothesis Hunter lifecycle gate passed: active candidate registration only")
     return 0
 
 
