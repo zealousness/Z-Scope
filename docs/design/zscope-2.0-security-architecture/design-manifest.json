@@ -2,7 +2,7 @@
   "schema_version": "zscope.design-manifest.v1",
   "design_id": "zscope-2.0-security-architecture",
   "design_version": "1.0.0",
-  "status": "reviewed",
+  "status": "approved",
   "created_at": "2026-08-17T00:00:00+08:00",
   "current_product_authority": "docs/architecture.md and current source/tests",
   "target_design_root": "docs/design/zscope-2.0-security-architecture",
@@ -17,12 +17,12 @@
   },
   "document_hashes": {
     "docs/design/README.md": "049ceb43d18afdbf21162b2ca4c0965026dc0b1cdeff6fd71f282d82fdb46a99",
-    "README.md": "dec8a243e4e59d22077ce61ca332bfb03f4402610445bc898eb5857c1f0fb0a5",
+    "README.md": "cc636b1621d59025387f00c3a3bdc6af681e740206434654eefb7df4cbf16163",
     "architecture.md": "5a0197bf5469ce18d468aabbfce706b952f1ced98c499a0e5a72cdb0136c801b",
     "contracts.md": "d058a16eb13641ba951948943b8f400dcfc58baeb72e15a08e74d5e9c0f04745",
     "deprecation-plan.md": "a2475243e5ba10b191b50152a08e27dd762c032eaaf0cfceb4ad6ac2c7f97b9a",
     "benchmark-v5.md": "41489f657e4cce712e4c8467646d6184f0a58c42759c9abf068f328e993a294e",
-    "implementation-governance.md": "526bd13419a79b82c928d08ccf3655a3c9e7bfba6a536ffec7b05533710aa462",
+    "implementation-governance.md": "d662fb3a3024d876d1db30eab321c9bbfdb572fd0728831844d66c49e96dad1a",
     "CHANGELOG.md": "ed40b740873a9222da29eaf8eee803df4e9938f21e6c2b9adee4fd370b26722a",
     "adr/0001-replace-vulnerability-analyzer-with-hypothesis-hunter.md": "2bfa0ddcb882802dba9585d4dac2b71535825041aaf0eba848146b9e21581809",
     "adr/0002-finite-security-spec-dsl-and-user-review.md": "cf970220db9d65700d0678feb548a5e58db476b249836f0f39cea19c9111a8b9",
@@ -38,11 +38,16 @@
     "phases/P5-runtime-cutover.md": "1859da91841e60bc9e2a24836cdeb69ce25c00441c1967dc059de8c083120641",
     "phases/P6-pilot-validation.md": "0cfcddd02820343931e8a988a753939c325861c17abdfcc36dec93b4da7fd93d",
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
-    "acceptance/evidence-index.schema.json": "74f62a4e58a900a641a3aa837f5f24b6e05809141108d23ed1bfa476299e2361",
+    "acceptance/evidence-index.schema.json": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4",
     "acceptance/runtime-reachability-manifest.json": "735ad6e1cbebadd8aad9edb7e25bf4d9e9b845950245612bd169d99c11ba2b88",
-    "acceptance/baseline-artifact-manifest.json": "5a3553e0c14a200563c0393396068c238f397895ea8aada7bf7f90e286c88c00",
+    "acceptance/baseline-artifact-manifest.json": "0e96b854c81e299f48b4bff7e687b1f6504ebb059114c853c844179473bc3d50",
     "acceptance/p0-execution-preflight.json": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b",
-    "acceptance/p0-cold-baseline-summary.json": "ebd95c07957e3f0a4bef7c446f2e079caebfad1d6395e45ed4cc1b06476a3b49"
+    "acceptance/p0-cold-baseline-summary.json": "ebd95c07957e3f0a4bef7c446f2e079caebfad1d6395e45ed4cc1b06476a3b49",
+    "acceptance/p0-fast-regression-repair.json": "77820c8d4f11d830bafc6bb536f0ff8960a3e09f516d01edc976a81ddb5f98d8",
+    "acceptance/p0-review.schema.json": "715e78ff5b96167b2f0c5c9b399a210c22a57ddbb23b001f59a8231b19003b92",
+    "acceptance/reviews/p0-product-architecture.json": "3f5041fcecd635c38f2722aaa59e8fae69addfb1fa3d0db2f53e437b08d91037",
+    "acceptance/reviews/p0-proof-security.json": "be5df762187bfc920c14144f4b8ca382280bd503558bbaae64185c8ddcade530",
+    "acceptance/reviews/p0-independent-benchmark.json": "96348ecbbd6b4c75750ecc291b1f32c5e02d67a27904599d8d4c35cefd74bfe0"
   },
   "adrs": [
     {"id": "ADR-0001", "status": "accepted-for-design", "affected_phases": ["P1", "P4", "P5"]},
@@ -53,7 +58,7 @@
     {"id": "ADR-0006", "status": "accepted-for-design", "affected_phases": ["P0", "P1", "P2", "P3", "P4", "P5", "E0", "P6", "P7"]}
   ],
   "phase_status": {
-    "P0": "in_progress",
+    "P0": "complete",
     "P1": "pending",
     "P2": "pending",
     "P3": "pending",
@@ -64,18 +69,45 @@
     "P7": "pending"
   },
   "review_roles": {
-    "product_architecture": "pending_assignment",
-    "proof_security": "pending_assignment",
-    "independent_benchmark": "pending_assignment"
+    "product_architecture": "claude-opus-5",
+    "proof_security": "deepseek-v4-pro",
+    "independent_benchmark": "claude-fable-5"
+  },
+  "formal_reviews": {
+    "schema": "acceptance/p0-review.schema.json",
+    "reviewed_commit": "b74e6b6e82224d487392ad7e03d794d6592a514a",
+    "reviewed_tree": "aca131c453e2176944527a1bd3902c08d1bc3948",
+    "artifacts": {
+      "product_architecture": {
+        "path": "acceptance/reviews/p0-product-architecture.json",
+        "reviewer_model": "claude-opus-5",
+        "harness": "claude-code/2.1.233; permission_mode=read-only"
+      },
+      "proof_security": {
+        "path": "acceptance/reviews/p0-proof-security.json",
+        "reviewer_model": "deepseek-v4-pro",
+        "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only"
+      },
+      "independent_benchmark": {
+        "path": "acceptance/reviews/p0-independent-benchmark.json",
+        "reviewer_model": "claude-fable-5",
+        "harness": "claude-code/2.1.233; permission_mode=read-only"
+      }
+    }
   },
   "approval": {
-    "approved_at": "",
-    "approved_commit": "",
+    "approved_at": "2026-08-17T15:04:33+08:00",
+    "approved_commit": "b74e6b6e82224d487392ad7e03d794d6592a514a",
     "tag": "design-zscope-2.0-security-architecture-v1",
-    "tag_created": false,
-    "blocked_reasons": [
-      "formal review roles have not signed the evidence index"
-    ]
+    "tag_created": true,
+    "tag_hash_bindings": {
+      "design-manifest-sha256": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
+      "evidence-index-sha256": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.json",
+      "product-architecture-review-sha256": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p0-product-architecture.json",
+      "proof-security-review-sha256": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p0-proof-security.json",
+      "independent-benchmark-review-sha256": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p0-independent-benchmark.json"
+    },
+    "blocked_reasons": []
   },
   "evidence_index": {
     "path": "acceptance/evidence-index.json",
