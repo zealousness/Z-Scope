@@ -393,9 +393,7 @@ def test_truth_v16_strictly_binds_records_anchors_pairs_and_fixture(tmp_path: Pa
 def test_truth_v16_rejects_duplicate_clauses_and_pair_uid(tmp_path: Path) -> None:
     truth, pair_root = _truth_v16(tmp_path)
     duplicate = deepcopy(truth)
-    clauses = duplicate["vulnerabilities"][0]["verification_contract"][
-        "required_evidence_clauses"
-    ]
+    clauses = duplicate["vulnerabilities"][0]["verification_contract"]["required_evidence_clauses"]
     clauses.append(deepcopy(clauses[0]))
     with pytest.raises(ValueError, match="clause identities are duplicate"):
         validate_truth_v16(duplicate, pair_root=pair_root)
@@ -414,9 +412,7 @@ def test_truth_v16_json_schema_matches_strict_contract(tmp_path: Path) -> None:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["properties"]["version"] == {"const": 16}
-    assert schema["properties"]["vulnerabilities"]["minItems"] == len(
-        truth["vulnerabilities"]
-    )
+    assert schema["properties"]["vulnerabilities"]["minItems"] == len(truth["vulnerabilities"])
     contract_schema = schema["$defs"]["verificationContract"]
     assert contract_schema["additionalProperties"] is False
     assert set(contract_schema["required"]) == set(
@@ -431,9 +427,7 @@ def test_safe_pair_json_schema_matches_manifest_contract(tmp_path: Path) -> None
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == set(manifest)
-    assert schema["properties"]["schema_version"] == {
-        "const": "zscope.range-v16-safe-pair.v1"
-    }
+    assert schema["properties"]["schema_version"] == {"const": "zscope.range-v16-safe-pair.v1"}
 
 
 def test_pair_index_dereferences_every_manifest_and_rejects_tampering(tmp_path: Path) -> None:

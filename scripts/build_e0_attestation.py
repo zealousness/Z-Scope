@@ -49,9 +49,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--safe-pair-manifest", required=True, type=Path)
     parser.add_argument("--defect-taxonomy", required=True, type=Path)
     parser.add_argument("--benchmark-policy", required=True, type=Path)
-    parser.add_argument(
-        "--scorer-bundle-file", required=True, action="append", type=Path
-    )
+    parser.add_argument("--scorer-bundle-file", required=True, action="append", type=Path)
     parser.add_argument("--opus-review-count", required=True, type=int)
     parser.add_argument("--output", required=True, type=Path)
     return parser
@@ -107,9 +105,7 @@ def _scorer_bundle_sha256(paths: Sequence[Path]) -> str:
         if relative in seen or path.is_symlink() or not path.is_file():
             raise E0GovernanceError("scorer bundle member is duplicate or not a regular file")
         seen.add(relative)
-        records.append(
-            {"path": relative, "size": path.stat().st_size, "sha256": sha256_file(path)}
-        )
+        records.append({"path": relative, "size": path.stat().st_size, "sha256": sha256_file(path)})
     if seen != _SCORER_BUNDLE_PATHS:
         raise E0GovernanceError("scorer bundle does not bind the fixed v5 dependency set")
     records.sort(key=lambda record: str(record["path"]))

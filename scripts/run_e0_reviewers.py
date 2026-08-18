@@ -360,9 +360,15 @@ def validate_decision_against_packet(
     if not isinstance(windows, list) or not windows:
         raise E0GovernanceError("review packet has no code windows")
     anchors = decision.get("structured_anchors")
-    if not isinstance(anchors, list) or sum(
-        1 for anchor in anchors if isinstance(anchor, Mapping) and anchor.get("kind") == "primary"
-    ) != 1:
+    if (
+        not isinstance(anchors, list)
+        or sum(
+            1
+            for anchor in anchors
+            if isinstance(anchor, Mapping) and anchor.get("kind") == "primary"
+        )
+        != 1
+    ):
         raise E0GovernanceError("review decision requires exactly one primary anchor")
     source_functions = {
         str(value)
@@ -401,9 +407,7 @@ def validate_decision_against_packet(
         and decision.get("contract_kind") in {"concrete_trigger", "public_api_contract"}
         and not direct_refs
     ):
-        raise E0GovernanceError(
-            "confirmable review decision requires direct trigger evidence refs"
-        )
+        raise E0GovernanceError("confirmable review decision requires direct trigger evidence refs")
     refs = list(direct_refs)
     for clause in decision.get("required_evidence_clauses") or []:
         if isinstance(clause, Mapping):
@@ -757,9 +761,7 @@ def _validate_existing_primary(
                 "stderr_sha256",
             }
             or retry.get("exit_code") != 0
-            or not re.fullmatch(
-                r"[0-9a-f]{64}", str(retry.get("original_stdout_sha256") or "")
-            )
+            or not re.fullmatch(r"[0-9a-f]{64}", str(retry.get("original_stdout_sha256") or ""))
             or retry.get("original_stdout_retained") is not False
             or not isinstance(retry.get("stderr_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", str(retry["stderr_sha256"]))
