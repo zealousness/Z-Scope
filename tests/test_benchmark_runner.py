@@ -151,12 +151,13 @@ def test_individual_run_release_eligibility_requires_formal_mode_and_gates() -> 
     assert _run_release_eligible("formal", {"queue_empty": True}, [])
 
 
-def test_cpp_benchmark_restores_validator_capacity_without_raising_llm_cap() -> None:
+def test_cpp_benchmark_uses_eight_worker_pilot_capacity() -> None:
     config = yaml.safe_load(SPECS["c_cpp"].config_path.read_text(encoding="utf-8"))
 
-    assert config["concurrency"]["validator_workers"] == 4
-    assert config["concurrency"]["llm_max_inflight"] == 4
-    assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 4
+    assert config["concurrency"]["entry_workers"] == 8
+    assert config["concurrency"]["validator_workers"] == 8
+    assert config["concurrency"]["llm_max_inflight"] == 8
+    assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 8
 
 
 def test_wsl_cpp_work_root_rejects_windows_mount(monkeypatch, tmp_path: Path) -> None:
