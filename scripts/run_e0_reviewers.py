@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -50,6 +51,7 @@ DISPUTED_IDS = {
 MATERIAL_DECISION_FIELDS = (
     "contract_kind",
     "disposition",
+    "confidence",
     "defect_taxonomy_id",
     "cwe_ids",
     "structured_anchors",
@@ -60,6 +62,16 @@ MATERIAL_DECISION_FIELDS = (
     "safe_pair_recommendation",
     "reason_codes",
 )
+
+_HIDDEN_REASONING_KEYS = {
+    "analysis",
+    "chain_of_thought",
+    "chainofthought",
+    "hidden_reasoning",
+    "reasoning_content",
+    "thinking",
+    "thinking_content",
+}
 
 
 def decision_disagreement_fields(
@@ -275,9 +287,13 @@ rule behavior, or desired recall. A confirmable contract requires evidence in
 the supplied code/contract; unsupported deployment assumptions must remain a
 pattern_model. Retire only if the record is positively disproved, duplicate, or
 incorrect. Recommend a vulnerable/fixed or near-miss safe pair without changing
-the product implementation. Return exactly one JSON object matching the stated
-nested fields, with no markdown, prose wrapper, external citation, or hidden
-reasoning transcript.
+the product implementation. Use exactly one primary anchor. Every anchor must
+fall wholly inside a supplied code window; do not combine a file from one window
+with line numbers from another. Every non-empty evidence_refs item must be the
+exact canonical ``path:start-end`` of one supplied window or a contained range,
+with no label or prose prefix. Return exactly one JSON object matching the
+stated nested fields, with no markdown, prose wrapper, external citation, or
+hidden reasoning transcript.
 
 Assigned reviewer_role: {role}
 Assigned reviewer_model: {model}
@@ -308,6 +324,124 @@ def _extract_deepseek_decision(stdout: str) -> Mapping[str, Any]:
     return dict(value)
 
 
+def assert_no_hidden_reasoning_output(stdout: str) -> None:
+    """Fail closed if a provider emits hidden reasoning in its JSON envelope."""
+
+    try:
+        value = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise E0GovernanceError("reviewer output is not a JSON artifact") from exc
+
+    def visit(item: Any, *, path: str) -> None:
+        if isinstance(item, Mapping):
+            for raw_key, nested in item.items():
+                key = re.sub(r"[^a-z0-9]+", "_", str(raw_key).strip().lower()).strip("_")
+                if key in _HIDDEN_REASONING_KEYS:
+                    raise E0GovernanceError(
+                        f"reviewer output contains hidden reasoning at {path}.{raw_key}"
+                    )
+                visit(nested, path=f"{path}.{raw_key}")
+        elif isinstance(item, list):
+            for index, nested in enumerate(item):
+                visit(nested, path=f"{path}[{index}]")
+
+    visit(value, path="$")
+
+
+def validate_decision_against_packet(
+    decision: Mapping[str, Any],
+    packet: Mapping[str, Any],
+    *,
+    require_resolvable_evidence: bool,
+) -> None:
+    """Bind corrected anchors and final evidence refs to supplied code windows."""
+
+    windows = packet.get("code_windows")
+    if not isinstance(windows, list) or not windows:
+        raise E0GovernanceError("review packet has no code windows")
+    anchors = decision.get("structured_anchors")
+    if not isinstance(anchors, list) or sum(
+        1 for anchor in anchors if isinstance(anchor, Mapping) and anchor.get("kind") == "primary"
+    ) != 1:
+        raise E0GovernanceError("review decision requires exactly one primary anchor")
+    source_functions = {
+        str(value)
+        for key, value in dict(packet.get("truth_record") or {}).items()
+        if "function" in str(key).lower() and isinstance(value, str) and value
+    }
+    for anchor in anchors:
+        if not isinstance(anchor, Mapping):
+            raise E0GovernanceError("review decision anchor is invalid")
+        file_name = str(anchor.get("file") or "")
+        function = str(anchor.get("function") or "")
+        start = anchor.get("start_line")
+        end = anchor.get("end_line")
+        contained = any(
+            isinstance(window, Mapping)
+            and window.get("path") == file_name
+            and isinstance(start, int)
+            and isinstance(end, int)
+            and int(window.get("start_line", 0)) <= start
+            and end <= int(window.get("end_line", 0))
+            for window in windows
+        )
+        function_grounded = function in source_functions or any(
+            isinstance(window, Mapping)
+            and window.get("path") == file_name
+            and isinstance(window.get("content"), str)
+            and function in str(window["content"])
+            for window in windows
+        )
+        if not contained or not function_grounded:
+            raise E0GovernanceError("review decision anchor is outside the supplied code windows")
+
+    if not require_resolvable_evidence:
+        return
+    refs = list(decision.get("evidence_refs") or [])
+    for clause in decision.get("required_evidence_clauses") or []:
+        if isinstance(clause, Mapping):
+            refs.extend(clause.get("evidence_refs") or [])
+    window_paths = {str(window["path"]) for window in windows if isinstance(window, Mapping)}
+    for ref in refs:
+        if not isinstance(ref, str):
+            raise E0GovernanceError("review decision evidence ref is invalid")
+        match = re.fullmatch(r"([^:\\]+(?:/[^:\\]+)*):(\d+)(?:-(\d+))?", ref)
+        if not match or match.group(1) not in window_paths:
+            raise E0GovernanceError("review decision evidence ref is not canonical")
+        start = int(match.group(2))
+        end = int(match.group(3) or start)
+        if end < start or not any(
+            isinstance(window, Mapping)
+            and window.get("path") == match.group(1)
+            and int(window.get("start_line", 0)) <= start
+            and end <= int(window.get("end_line", 0))
+            for window in windows
+        ):
+            raise E0GovernanceError("review decision evidence ref is outside the supplied windows")
+
+
+def _claude_arguments(reviewer: str) -> list[str]:
+    if reviewer not in {"fable", "opus"}:
+        raise E0GovernanceError("Claude reviewer identity is invalid")
+    return [
+        "--print",
+        "--model",
+        "claude-fable-5" if reviewer == "fable" else "claude-opus-5",
+        "--effort",
+        "high" if reviewer == "fable" else "max",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(_decision_schema_for_model(), separators=(",", ":")),
+        "--permission-mode",
+        "plan",
+        "--tools",
+        "",
+        "--no-session-persistence",
+        "--disable-slash-commands",
+    ]
+
+
 def _run_model(
     packet: Mapping[str, Any],
     *,
@@ -336,27 +470,13 @@ def _run_model(
         temp_root = Path(raw_temp)
         _json_dump(temp_root / "packet.json", packet)
         _json_dump(temp_root / "decision-schema.json", _decision_schema_for_model())
+        (temp_root / "review-instructions.txt").write_text(prompt, encoding="utf-8")
         if primary_decisions:
             _json_dump(temp_root / "primary-decisions.json", list(primary_decisions))
 
         patch_path: Path | None = None
         if reviewer in {"fable", "opus"}:
-            command = [
-                str(claude_command),
-                "--print",
-                "--model",
-                "claude-fable-5" if reviewer == "fable" else "claude-opus-5",
-                "--effort",
-                "high" if reviewer == "fable" else "max",
-                "--output-format",
-                "json",
-                "--json-schema",
-                json.dumps(_decision_schema_for_model(), separators=(",", ":")),
-                "--permission-mode",
-                "plan",
-                "--no-session-persistence",
-                "--disable-slash-commands",
-            ]
+            command = [str(claude_command), *_claude_arguments(reviewer)]
         else:
             patch_path = temp_root / "deepseek-max.patch.yml"
             patch_path.write_text(
@@ -402,11 +522,11 @@ def _run_model(
                 "headless",
                 "--patch",
                 str(patch_path),
-                "Read packet.json and decision-schema.json from the isolated current "
-                "directory. Review only that packet and return exactly one JSON object "
-                "matching the schema. Set reviewer_role=primary_deepseek and "
-                "reviewer_model=deepseek-v4-pro:max. Do not use web search or external "
-                "knowledge.",
+                "Read review-instructions.txt, packet.json, and decision-schema.json from "
+                "the isolated current directory. Follow those instructions, review only "
+                "that packet, and return exactly one JSON object matching the schema. Set "
+                "reviewer_role=primary_deepseek and reviewer_model=deepseek-v4-pro:max. "
+                "Do not use web search or external knowledge.",
             ]
 
         env = {
@@ -454,14 +574,13 @@ def _run_model(
             "stdout": completed.stdout,
             "stderr_sha256": sha256_value(completed.stderr),
         }
-        if raw_output_path is not None:
-            _json_dump(raw_output_path, raw)
         if completed.returncode != 0:
             raise E0GovernanceError(
                 f"{reviewer} reviewer failed for {packet['packet_uid']}; "
                 f"stderr_sha256={raw['stderr_sha256']}"
             )
         try:
+            assert_no_hidden_reasoning_output(completed.stdout)
             decision = (
                 _extract_deepseek_decision(completed.stdout)
                 if reviewer == "deepseek"
@@ -498,14 +617,17 @@ def _run_model(
             )
             raw["format_retry"] = {
                 "exit_code": retry.returncode,
-                "stdout": retry.stdout,
+                "original_stdout_sha256": sha256_value(completed.stdout),
+                "original_stdout_retained": False,
                 "stderr_sha256": sha256_value(retry.stderr),
             }
-            if raw_output_path is not None:
-                _json_dump(raw_output_path, raw)
             if retry.returncode != 0:
                 raise E0GovernanceError("DeepSeek format-only retry failed") from exc
+            assert_no_hidden_reasoning_output(retry.stdout)
             decision = _extract_deepseek_decision(retry.stdout)
+            raw["stdout"] = retry.stdout
+        if raw_output_path is not None:
+            _json_dump(raw_output_path, raw)
 
     validate_review_decision(
         decision,
@@ -515,6 +637,11 @@ def _run_model(
     )
     if decision.get("reviewer_model") != model:
         raise E0GovernanceError("reviewer model identity mismatch")
+    validate_decision_against_packet(
+        decision,
+        packet,
+        require_resolvable_evidence=reviewer == "opus",
+    )
     return dict(decision), raw
 
 
@@ -535,6 +662,25 @@ def _reviewer_identity(reviewer: str) -> tuple[str, str]:
     raise E0GovernanceError(f"unsupported reviewer: {reviewer}")
 
 
+def _validate_command_identity(values: Any, *, reviewer: str) -> None:
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise E0GovernanceError("review command identity is invalid")
+    if reviewer == "deepseek":
+        if (
+            len(values) != 5
+            or values[:4] != ["dsh", "--profile", "headless", "--patch"]
+            or not re.fullmatch(r"<ephemeral-patch-sha256:[0-9a-f]{64}>", values[4])
+        ):
+            raise E0GovernanceError("DeepSeek command identity is invalid")
+        return
+    if (
+        len(values) != 16
+        or values[0] not in {"claude", "claude.cmd"}
+        or values[1:] != _claude_arguments(reviewer)
+    ):
+        raise E0GovernanceError("Claude command identity is invalid")
+
+
 def _validate_existing_primary(
     packet: Mapping[str, Any],
     *,
@@ -552,6 +698,11 @@ def _validate_existing_primary(
     )
     if decision.get("reviewer_model") != model:
         raise E0GovernanceError("existing reviewer model identity mismatch")
+    validate_decision_against_packet(
+        decision,
+        packet,
+        require_resolvable_evidence=reviewer == "opus",
+    )
     raw = load_json_strict(raw_path)
     if not isinstance(raw, Mapping):
         raise E0GovernanceError("existing raw review envelope must be an object")
@@ -580,12 +731,33 @@ def _validate_existing_primary(
         or raw.get("input_delivery") != expected_delivery
         or raw.get("exit_code") != 0
         or not isinstance(raw.get("stdout"), str)
-        or not isinstance(raw.get("command_identity"), list)
-        or not all(isinstance(value, str) for value in raw["command_identity"])
         or not isinstance(raw.get("stderr_sha256"), str)
         or len(raw["stderr_sha256"]) != 64
     ):
         raise E0GovernanceError("existing raw review envelope is invalid")
+    _validate_command_identity(raw.get("command_identity"), reviewer=reviewer)
+    assert_no_hidden_reasoning_output(str(raw["stdout"]))
+    retry = raw.get("format_retry")
+    if retry is not None:
+        if (
+            reviewer != "deepseek"
+            or not isinstance(retry, Mapping)
+            or set(retry)
+            != {
+                "exit_code",
+                "original_stdout_sha256",
+                "original_stdout_retained",
+                "stderr_sha256",
+            }
+            or retry.get("exit_code") != 0
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", str(retry.get("original_stdout_sha256") or "")
+            )
+            or retry.get("original_stdout_retained") is not False
+            or not isinstance(retry.get("stderr_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(retry["stderr_sha256"]))
+        ):
+            raise E0GovernanceError("existing format retry envelope is invalid")
 
 
 def _run_primary_packet(
