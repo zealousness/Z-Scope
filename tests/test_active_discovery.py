@@ -6,6 +6,7 @@ import pytest
 
 from zscope.orchestration.active_discovery import (
     AUDIT_RISK_WEIGHTS,
+    ActiveDiscoveryAgent,
     ActiveDiscoveryCoordinator,
     CoverageGapPlanner,
     SemanticMapEnricher,
@@ -18,6 +19,7 @@ from zscope.orchestration.active_discovery import (
     resolve_discovery_profile,
 )
 from zscope.orchestration.candidates import CandidateLedger, CandidateRegistrar
+from zscope.orchestration.decision_trace import DecisionTraceStore
 from zscope.semantics.security_map import (
     DISCOVERY_REPORT_SCHEMA_VERSION,
     SEMANTIC_CLAIM_DELTA_SCHEMA_VERSION,
@@ -144,23 +146,84 @@ def test_planner_uses_coverage_gap_threshold_and_profile_budget() -> None:
         type("Config", (), {"scan": type("S", (), {"depth": "deep"})()})()
     )
 
-    uncovered = CoverageGapPlanner(balanced).plan(semantic_map)
-    covered = CoverageGapPlanner(balanced).plan(semantic_map, covered_keys={"family:memory_bounds"})
-    deep_covered = CoverageGapPlanner(deep).plan(
-        semantic_map, covered_keys={"family:memory_bounds"}
+    local_ticket = SimpleNamespace(
+        skill="memory_bounds_integer",
+        origin="deterministic_rule",
+        sink="memcpy",
+        function="copy",
+        line=12,
+        evidence={
+            "function": "copy",
+            "file": "src/demo.c",
+            "line": 12,
+            "candidate_payload": {"category": "buffer_overflow"},
+        },
     )
+    local_ledger = SimpleNamespace(
+        records=lambda: [
+            SimpleNamespace(
+                ticket=local_ticket,
+                candidate_uid="CAND_local",
+                defect_class="buffer_overflow",
+            )
+        ]
+    )
+    covered_keys = candidate_coverage_keys(local_ledger)
+
+    uncovered = CoverageGapPlanner(balanced).plan(semantic_map)
+    covered = CoverageGapPlanner(balanced).plan(semantic_map, covered_keys=covered_keys)
+    deep_covered = CoverageGapPlanner(deep).plan(semantic_map, covered_keys=covered_keys)
 
     assert len(uncovered) == 1
     assert uncovered[0].candidate_desert is True
     assert uncovered[0].risk_score >= balanced.risk_threshold
     assert covered == ()
     assert len(deep_covered) == 1
+    assert deep_covered[0].candidate_desert is False
     assert balanced.max_units is None
     assert deep.max_units is None
     assert balanced.max_functions_per_unit == 16
 
 
-def test_candidate_coverage_projection_contains_only_event_family_presence() -> None:
+def test_planner_treats_unknown_configured_entry_as_potentially_external() -> None:
+    semantic_map = _semantic_map()
+    record = replace(semantic_map.functions[0], diff_focus={})
+    input_claim = SemanticClaim(
+        claim_id="CLAIM_entry_unknown",
+        subject_uid=record.function_uid,
+        kind="input_origin",
+        value={"origin": "entry_unknown", "entry_identity": "entry"},
+        locations=({"file": "src/demo.c", "line": 10, "function": "copy"},),
+        evidence_refs=("source:src/demo.c:12",),
+        origin="program",
+        confidence=1.0,
+        status="unknown",
+    )
+    dynamic_unknown = SemanticUnknown(
+        unknown_id="UNKNOWN_callback",
+        subject_uid=record.function_uid,
+        kind="dynamic_callback_target",
+        reason="callback target is unresolved",
+        evidence_refs=("source:src/demo.c:12",),
+    )
+    semantic_map = replace(
+        semantic_map,
+        functions=(record,),
+        claims=(semantic_map.claims[0], input_claim),
+        unknowns=(dynamic_unknown,),
+    )
+    balanced = resolve_discovery_profile(
+        type("Config", (), {"scan": type("S", (), {"depth": "balanced"})()})()
+    )
+
+    units = CoverageGapPlanner(balanced).plan(semantic_map)
+
+    assert len(units) == 1
+    assert "external_reachable_sensitive=+20" in units[0].risk_reasons
+    assert units[0].risk_score >= balanced.risk_threshold
+
+
+def test_candidate_coverage_projection_is_local_and_hashed() -> None:
     ticket = SimpleNamespace(
         skill="memory_bounds_integer",
         origin="SECRET_ORIGIN",
@@ -184,8 +247,45 @@ def test_candidate_coverage_projection_contains_only_event_family_presence() -> 
 
     keys = candidate_coverage_keys(ledger)
 
-    assert keys == {"family:memory_bounds"}
+    assert keys
+    assert all(key.startswith("coverage:memory_bounds:") for key in keys)
     assert "secret" not in json.dumps(sorted(keys)).lower()
+
+
+def test_same_family_candidate_in_other_function_does_not_suppress_unit() -> None:
+    semantic_map = _semantic_map()
+    balanced = resolve_discovery_profile(
+        type("Config", (), {"scan": type("S", (), {"depth": "balanced"})()})()
+    )
+    ticket = SimpleNamespace(
+        skill="memory_bounds_integer",
+        origin="deterministic_rule",
+        sink="memcpy",
+        function="unrelated_copy",
+        line=412,
+        evidence={
+            "function": "unrelated_copy",
+            "file": "src/other.c",
+            "line": 412,
+            "candidate_payload": {"category": "buffer_overflow"},
+        },
+    )
+    ledger = SimpleNamespace(
+        records=lambda: [
+            SimpleNamespace(
+                ticket=ticket,
+                candidate_uid="CAND_other",
+                defect_class="buffer_overflow",
+            )
+        ]
+    )
+
+    units = CoverageGapPlanner(balanced).plan(
+        semantic_map, covered_keys=candidate_coverage_keys(ledger)
+    )
+
+    assert len(units) == 1
+    assert units[0].candidate_desert is True
 
 
 @pytest.mark.parametrize(
@@ -390,12 +490,96 @@ def test_prompt_projection_hard_caps_initial_context() -> None:
     assert fitted["projection_estimated_tokens"] <= 24_000
 
 
+@pytest.mark.parametrize("first_failure", ["length", "outside_function"])
+def test_active_discovery_direct_terminal_retry_is_stateless_and_bounded(
+    first_failure,
+) -> None:
+    semantic_map = _semantic_map()
+    profile = resolve_discovery_profile(
+        type("Config", (), {"scan": type("S", (), {"depth": "balanced"})()})()
+    )
+    unit = CoverageGapPlanner(profile).plan(semantic_map)[0]
+    projection = candidate_blind_prompt_projection(semantic_map, unit)
+    valid_payload = _report_payload(unit)
+    invalid_payload = json.loads(json.dumps(valid_payload))
+    invalid_payload["hypotheses"][0]["function"] = "FUNC_outside"
+
+    class DirectRetryLLM:
+        models = ["unit-model"]
+
+        def __init__(self):
+            self.calls = []
+
+        def chat_completion(self, messages, **kwargs):
+            self.calls.append((list(messages), kwargs))
+            assert kwargs["max_tokens"] == 8192
+            assert kwargs["tool_choice"]["function"]["name"] == "emit_discovery_report"
+            if len(self.calls) == 1 and first_failure == "length":
+                return {
+                    "model": "unit-model",
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"role": "assistant", "content": ""},
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 8},
+                }
+            payload = (
+                invalid_payload
+                if len(self.calls) == 1 and first_failure == "outside_function"
+                else valid_payload
+            )
+            return {
+                "model": "unit-model",
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": f"call_{len(self.calls)}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "emit_discovery_report",
+                                        "arguments": json.dumps(payload),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            }
+
+    llm = DirectRetryLLM()
+    response = ActiveDiscoveryAgent(llm).run_projection(
+        projection,
+        max_hypotheses=profile.max_hypotheses_per_unit,
+    )
+
+    assert response.success is True
+    assert len(llm.calls) == 2
+    assert all(message["role"] in {"system", "user"} for message in llm.calls[1][0])
+    assert response.metadata["api_call_count"] == 2
+    assert response.metadata["compact_retry_count"] == 1
+    assert response.data["hypotheses"][0]["function"] == "FUNC_copy"
+
+
 def test_discovery_hypothesis_only_enters_ledger_as_open_obligation(tmp_path) -> None:
     semantic_map = _semantic_map()
     profile = resolve_discovery_profile(
         type("Config", (), {"scan": type("S", (), {"depth": "balanced"})()})()
     )
-    ledger = CandidateLedger(project_id="demo", project_root=str(tmp_path), revision="rev")
+    trace_store = DecisionTraceStore(tmp_path / "traces")
+    ledger = CandidateLedger(
+        project_id="demo",
+        project_root=str(tmp_path),
+        revision="rev",
+        decision_trace_store=trace_store,
+    )
     registrar = CandidateRegistrar(
         ledger,
         project_id="demo",
@@ -433,6 +617,11 @@ def test_discovery_hypothesis_only_enters_ledger_as_open_obligation(tmp_path) ->
     assert attribution["decided_by"] == "unresolved"
     assert attribution["decision_level"] == "none"
     assert attribution["discovery_details"][0]["unit_id"] == planned_map.audit_units[0].unit_id
+    trace_manifest = trace_store.snapshot()
+    assert trace_manifest["coverage_trace_count"] == 1
+    unit_trace = trace_manifest["coverage_traces"][planned_map.audit_units[0].unit_id]
+    coverage = json.loads((trace_store.root / unit_trace["path"]).read_text(encoding="utf-8"))
+    assert coverage["events"][0]["reason_code"] == "AUDIT_UNIT_CREATED"
 
     # The report is cached by the semantic unit fingerprint; a second run
     # must not call the model again.

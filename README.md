@@ -523,6 +523,15 @@ zscope -c zscope.yaml --export-sarif zscope-results.sarif
 # 仅构建代码索引（预热，不执行分析）
 zscope --build-index -c zscope.yaml
 # --build-cpg 仅是 1.x 弃用别名，2.0 删除
+
+# 扫描后解释一个 validation cluster；不调用 LLM
+zscope-explain --report report.json --cluster <validation_cluster_uid> --format text
+
+# 只在冻结事实之上重跑终态/promotion policy
+zscope-explain --report report.json --cluster <validation_cluster_uid> --mode policy-replay
+
+# 只重放该 cluster 的 verifier 输入；代码 revision 变化时拒绝比较
+zscope-explain --report report.json --cluster <validation_cluster_uid> --mode reverify
 ```
 
 ### Step 3：查看分析结果
@@ -542,13 +551,16 @@ zscope --build-index -c zscope.yaml
 | `.zscope_snapshots/` | 语义快照缓存（加速重复扫描） |
 | `.zscope_snapshots/security_map.db` | 只读 Security Semantic Map sidecar；与历史函数 snapshot 分离 |
 | `.zscope_snapshots/security_semantic_map.json` | 本轮安全语义地图、coverage、unknown/conflict 与 audit unit 的只读导出（balanced/deep；实际目录取 `runtime.analysis.snapshot_dir`） |
+| `.zscope_snapshots/decision_trace_manifest.json` | 本轮 cluster/coverage trace、内容寻址证据、模型结构化事件与 usage sidecar 的完整性清单 |
+| `.zscope_snapshots/decision_traces/` / `coverage_traces/` | 每个 validation cluster 与无候选 audit unit 的 hash-chain 因果时间线 |
+| `.zscope_snapshots/evidence_objects/` / `model_events/` | 去重后的候选、proof、fact、工具结果、policy 输入和模型结构化输入输出；不保存隐藏思维 |
 | `.zscope_snapshots/user_config.xlsx` | `--infer-user-config` 生成的人工可审阅用户配置工作簿 |
 | `.zscope_snapshots/user_config.state.db` | 配置告警、finding suppression 与 baseline 的旁路状态库（若 `project.user_config_file` 指向其他 workbook，则与该 workbook 同名） |
 | `.zscope_knowledge/code_knowledge.db` | 代码索引、SVF/Saber 信号和候选证据 IR |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划，记录选中的源码、bitcode、可达函数、link variants、重复符号和回退原因；WSL/NTFS 场景可能重定向到 Linux 原生临时目录 |
 | `.zscope_bc/entry_cluster_layout_<group>.json` / `bitcode_manifest.json` | SVF 入口聚类布局与 bitcode/link 缓存 manifest，用于复用未变化的聚类和构建产物 |
 
-单函数最终报告的 `metadata` 会记录 effective scan depth、实际 consumed token、按 agent/stage 的 usage、finish reason、候选漏斗、发现/决策归因、Validator verdict transition、Security Semantic Map coverage、主动发现单元，以及现有 rule/candidate/diff/report-view 统计。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。没有确定性反证时，LLM 的 rejected 也只能成为 needs-review，不能被静默隐藏。
+单函数最终报告的 `metadata` 会记录 effective scan depth、实际 consumed token、按 agent/stage 的 usage、finish reason、候选漏斗、发现/决策归因、Validator verdict transition、Security Semantic Map coverage、主动发现单元，以及现有 rule/candidate/diff/report-view 统计。每条 finding 还包含 `decision_trace_ref`、完整文档 hash、唯一终态事件、终态权威、原因码和 open clauses。`report_views.default` 只包含 confirmed primary，`report_views.with_needs_review` 额外包含 needs-review primary；rejected、shadow、engine failure 与 Finding-root aliases 只保留在 terminal trace。没有确定性反证时，LLM 的 rejected 也只能成为 needs-review，不能被静默隐藏。
 
 退出码：完整扫描中，默认漏洞报告的 `issues` 非空返回 `1`，无缺陷返回 `0`。阶段因超时、取消、工具失败等原因未完成时，结果仍会保存并标记 `completeness=partial`，CLI 返回 `2`；fast 中未请求的语义/主动发现阶段不会触发 partial。token 成本超出 Benchmark 预期不会截断产品扫描。
 

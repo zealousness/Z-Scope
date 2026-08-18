@@ -623,6 +623,9 @@ def main(
             ]
             engine_status = "failed" if failed_results else "complete"
             llm_usage = scan_token_usage_snapshot(zscope_config)
+            trace_store = getattr(zscope_config, "decision_trace_store", None)
+            trace_snapshot = getattr(trace_store, "snapshot", None)
+            decision_trace_manifest = trace_snapshot() if callable(trace_snapshot) else {}
             alert_metadata = {
                 "workflow": "alert-verify",
                 "runtime_spec": dict(vars(zscope_config.runtime_provenance)),
@@ -645,6 +648,7 @@ def main(
                 state={
                     "any_failure": bool(failed_results),
                     "llm_usage": llm_usage,
+                    "decision_trace_manifest": decision_trace_manifest,
                     "engine_capabilities": {
                         "alert_verifier": {
                             "status": engine_status,

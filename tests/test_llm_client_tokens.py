@@ -71,6 +71,66 @@ def test_run_conversation_with_tools_accumulates_api_tokens(monkeypatch) -> None
     assert result["context_tokens"] < result["cumulative_total_tokens"]
 
 
+def test_programmatic_terminal_stops_after_current_tool_round(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+    terminal = {}
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append((list(messages), kwargs))
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "proof_action",
+                                "type": "function",
+                                "function": {
+                                    "name": "prove",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+
+    def execute(_name, _args):
+        terminal.update({"type": "result", "value": 9})
+        return {"success": True, "proof_complete": True}
+
+    setattr(execute, "_zscope_programmatic_terminal_payload", lambda: dict(terminal) or None)
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[{"type": "function", "function": {"name": "prove", "parameters": {}}}],
+        tool_executor=execute,
+        terminal_tool_name="emit_result",
+        terminal_tool_handler=lambda payload: {
+            "valid": payload.get("type") == "result",
+            "payload": payload,
+        },
+        terminal_tool_required=True,
+        max_iterations=50,
+    )
+
+    assert len(calls) == 1
+    assert result["programmatic_terminal"] is True
+    assert result["terminal_tool_payload"] == {"type": "result", "value": 9}
+    assert result["api_call_count"] == 1
+
+
 def test_run_conversation_stops_on_valid_terminal_tool(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",
@@ -795,6 +855,79 @@ def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call
         if msg.get("role") == "tool" and "cached_tool_result" in str(msg.get("content", ""))
     ]
     assert cached_tool_messages
+
+
+def test_run_conversation_can_block_first_repeat_without_cached_replay(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    chat_calls = []
+    tool_calls = []
+
+    def fake_chat_completion(messages, **kwargs):
+        chat_calls.append(list(messages))
+        if len(chat_calls) == 3:
+            assert kwargs.get("tools") is None
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "done"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 4},
+            }
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"call_{len(chat_calls)}",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_file_snippet",
+                                    "arguments": json.dumps(
+                                        {
+                                            "file_path": "src/demo.c",
+                                            "start_line": 1,
+                                            "end_line": 10,
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        }
+
+    def fake_tool_executor(name, args):
+        tool_calls.append((name, args))
+        return {"success": True, "data": "snippet"}
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[],
+        tool_executor=fake_tool_executor,
+        max_iterations=10,
+        max_identical_tool_calls=1,
+        replay_identical_tool_result=False,
+    )
+
+    assert result["loop_guard_triggered"] is True
+    assert result["iterations"] == 3
+    assert len(chat_calls) == 3
+    assert len(tool_calls) == 1
+    assert result["repeated_tool_call"]["repeat_count"] == 2
 
 
 def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> None:

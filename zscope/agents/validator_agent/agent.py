@@ -1,12 +1,13 @@
 import hashlib
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..base import JsonOutputSpec, JsonToolAgent
 from ...tools.policy import ToolPolicy
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
+from ...framework.llm_usage import llm_usage_attribution_scope
 from ...common.utils import extract_json_blocks
 from ...common.validator_protocol import (
     VALIDATOR_PROTOCOL_VERSION as VALIDATOR_PROTOCOL_V3,
@@ -17,6 +18,63 @@ from ...common.validator_protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CLAIM_PREDICATES = {
+    "guard_dominance": "guard_dominates_sink",
+    "caller_contract": "caller_contract_holds",
+    "source_controllability": "source_is_externally_controllable",
+    "ownership_transfer": "ownership_transfer_exists",
+    "cleanup_coverage": "cleanup_covers_all_exits",
+    "lockset": "lock_must_hold_at_access",
+    "happens_before": "happens_before_edge_exists",
+    "object_identity": "same_object_identity",
+    "value_range": "value_range_is_proved",
+    "source_sink_reachability": "source_sink_path_exists",
+    "signal_context": "signal_context_is_reachable",
+    "container_reachability": "container_path_is_reachable",
+    "type_layout": "type_layout_is_resolved",
+}
+
+# Historical replay only.  These tools produce observations, not proof
+# certificates.  Live V3 sessions use finite EvidenceAction records instead.
+_LEGACY_REPLAY_OBSERVATION_TOOLS = {
+    "source_sink_reachability": (
+        "get_data_flow",
+        "get_call_graph",
+        "get_callers",
+    ),
+    "guard_dominance": ("get_data_flow",),
+    "lockset": ("get_data_flow", "query_pointer_alias"),
+    "happens_before": ("get_data_flow", "get_call_graph"),
+    "cleanup_coverage": ("get_data_flow", "get_call_graph"),
+    "ownership_transfer": (
+        "get_data_flow",
+        "query_pointer_alias",
+    ),
+    "caller_contract": ("get_callers", "get_call_graph"),
+    "source_controllability": (
+        "get_data_flow",
+        "get_callers",
+        "get_call_graph",
+    ),
+    "object_identity": (
+        "query_pointer_alias",
+        "get_data_flow",
+        "get_type_info",
+    ),
+    "value_range": ("get_data_flow", "get_type_info"),
+    "type_layout": ("get_type_info",),
+    "signal_context": (
+        "get_callers",
+        "get_call_graph",
+        "find_function_pointers",
+    ),
+    "container_reachability": (
+        "get_data_flow",
+        "get_call_graph",
+        "query_pointer_alias",
+    ),
+}
 
 _NON_EVIDENCE_TOOL_RESULT_KEYS = frozenset(
     {
@@ -265,7 +323,18 @@ class ValidatorAgent(JsonToolAgent):
         prompt = self._validator_v3_prompt(evidence_slice, expected_pass)
         messages = self._messages(input_data, prompt)
         evidence_delta = evidence_slice.get("evidence_delta")
-        new_fact_count = self._v3_evidence_delta_count(evidence_delta)
+        # ``new_fact_count`` is call-output telemetry, not the number of facts
+        # already present in the call input.  V2 is the one exception: its
+        # evidence delta was accepted into the decision slice immediately
+        # before this stateless recheck, so attributing that delta to the V2
+        # call is intentional.  A V3 terminal/synthesis call must start at
+        # zero; ValidationRunner later assigns only the facts that its
+        # programmatic verifier actually accepted during that session.
+        new_fact_count = (
+            self._v3_evidence_delta_count(evidence_delta)
+            if expected_pass == "evidence_recheck"
+            else 0
+        )
 
         response, result = self._direct_v3_completion(
             messages,
@@ -461,9 +530,18 @@ class ValidatorAgent(JsonToolAgent):
         allowed_refs: List[str],
     ) -> Optional[Dict[str, Any]]:
         spec = self._validation_json_output_spec_v3()
-        values: List[Any] = list(
-            self._final_tool_payloads(result, result.get("conversation", []), spec)
-        )
+        # A real tool session marks an invalid/exhausted terminal explicitly.
+        # Do not recover the rejected payload by scanning conversation history.
+        if "terminal_tool_valid" in result and result.get("terminal_tool_valid") is not True:
+            return None
+        values: List[Any] = []
+        terminal_payload = result.get("terminal_tool_payload")
+        if result.get("terminal_tool_valid") is True and isinstance(terminal_payload, dict):
+            values.append(terminal_payload)
+        else:
+            # Compatibility for deterministic test/legacy adapters that
+            # return a conversation without terminal-loop metadata.
+            values.extend(self._final_tool_payloads(result, result.get("conversation", []), spec))
         # Provider reasoning metadata is deliberately excluded from the
         # terminal protocol.  It may be preserved in-memory between bounded
         # V3 turns, but only public assistant content or the required terminal
@@ -539,6 +617,11 @@ class ValidatorAgent(JsonToolAgent):
         input_data: Dict[str, Any],
         *,
         max_iterations: int = 50,
+        claim_verifier: Optional[
+            Callable[[Dict[str, Any], Mapping[str, Mapping[str, Any]]], Dict[str, Any]]
+        ] = None,
+        evidence_actions: Optional[Iterable[Mapping[str, Any]]] = None,
+        evidence_action_executor: Optional[Callable[[str], Dict[str, Any]]] = None,
     ) -> AgentResponse:
         """Run one continuous, tool-backed V3 investigation session."""
 
@@ -565,7 +648,16 @@ class ValidatorAgent(JsonToolAgent):
             for value in (raw_missing if isinstance(raw_missing, list) else [])
             if str(value).strip()
         }
-        if not allowed_fact_kinds:
+        action_records = [
+            dict(value) for value in evidence_actions or [] if isinstance(value, Mapping)
+        ]
+        action_by_id = {
+            str(value.get("action_id") or ""): value
+            for value in action_records
+            if str(value.get("action_id") or "")
+        }
+        action_mode = evidence_action_executor is not None
+        if not allowed_fact_kinds and not action_mode:
             allowed_fact_kinds = {
                 "guard_dominance",
                 "caller_contract",
@@ -582,6 +674,28 @@ class ValidatorAgent(JsonToolAgent):
                 "type_layout",
             }
         iteration_limit = max(1, min(50, int(max_iterations or 50)))
+        canonical_subject_uid = str(obligation.get("subject_uid") or "")
+        canonical_region_uid = str(
+            obligation.get("decision_region_uid") or obligation.get("obligation_uid") or ""
+        )
+        authoritative_tool_guidance = {
+            fact_kind: {
+                "predicate": _CLAIM_PREDICATES.get(fact_kind, ""),
+                "tools": list(_LEGACY_REPLAY_OBSERVATION_TOOLS.get(fact_kind, ())),
+            }
+            for fact_kind in sorted(allowed_fact_kinds)
+            if _LEGACY_REPLAY_OBSERVATION_TOOLS.get(fact_kind)
+        }
+        v3_tool_names = {
+            tool_name
+            for fact_kind in allowed_fact_kinds
+            for tool_name in _LEGACY_REPLAY_OBSERVATION_TOOLS.get(fact_kind, ())
+        }
+        v3_tools_schema = [
+            schema
+            for schema in self.tools_schema
+            if str((schema.get("function") or {}).get("name") or "") in v3_tool_names
+        ]
         aggregate: Dict[str, Any] = {
             "context_tokens": 0,
             "cumulative_prompt_tokens": 0,
@@ -596,14 +710,16 @@ class ValidatorAgent(JsonToolAgent):
         }
         spec = self._validation_json_output_spec_v3()
         terminal_schema = self._final_json_tool_schema(spec)
-        fact_tool_name = "record_validator_investigation_fact"
-        fact_tool_schema = {
+        claim_tool_name = "submit_validator_evidence_claim"
+        claim_tool_schema = {
             "type": "function",
             "function": {
-                "name": fact_tool_name,
+                "name": claim_tool_name,
                 "description": (
-                    "Record one evidence-backed fact resolved by prior read-only tool results. "
-                    "This only updates the current Validator session."
+                    "Submit one structured predicate over prior read-only tool results. "
+                    "Z-Scope independently re-runs the predicate verifier; the model cannot "
+                    "create an authoritative fact. Only the fact-kind-specific authoritative "
+                    "tools listed in the investigation prompt may be cited."
                 ),
                 "parameters": {
                     "type": "object",
@@ -613,41 +729,121 @@ class ValidatorAgent(JsonToolAgent):
                             "type": "string",
                             "enum": sorted(allowed_fact_kinds),
                         },
-                        "evidence_refs": {
+                        "predicate": {
+                            "type": "string",
+                            "enum": sorted(
+                                {
+                                    _CLAIM_PREDICATES[value]
+                                    for value in allowed_fact_kinds
+                                    if value in _CLAIM_PREDICATES
+                                }
+                            ),
+                        },
+                        "polarity": {"type": "string", "enum": ["supports", "refutes"]},
+                        "subject_uid": {
+                            "type": "string",
+                            "enum": [canonical_subject_uid],
+                            "description": "Exact canonical subject UID from the obligation.",
+                        },
+                        "decision_region_uid": {
+                            "type": "string",
+                            "enum": [canonical_region_uid],
+                            "description": (
+                                "Exact canonical decision region UID from the obligation."
+                            ),
+                        },
+                        "arguments": {
+                            "type": "object",
+                            "description": (
+                                "Exact structured key/value pairs copied from cited tool results. "
+                                "Do not add prose conclusions or inferred values."
+                            ),
+                        },
+                        "cited_evidence_refs": {
                             "type": "array",
                             "minItems": 1,
                             "maxItems": 8,
                             "items": {"type": "string"},
                         },
-                        "summary": {"type": "string", "minLength": 1, "maxLength": 1000},
                     },
-                    "required": ["fact_kind", "evidence_refs", "summary"],
+                    "required": [
+                        "fact_kind",
+                        "predicate",
+                        "polarity",
+                        "subject_uid",
+                        "decision_region_uid",
+                        "arguments",
+                        "cited_evidence_refs",
+                    ],
                 },
             },
         }
-        prompt = (
-            "Targeted Validator V3 investigation. Use only the supplied read-only repository "
-            "tools. There is no independent tool-query quota, but the entire session has at "
-            f"most {iteration_limit} model iterations. Every useful repository result returns "
-            "a TOOLFACT evidence_ref (raw evidence progress, not an obligation-closing fact). "
-            "When it resolves a required fact, call "
-            f"{fact_tool_name} with that TOOLFACT ref before the final decision. The final "
-            "evidence_refs must cite recorded FACT_V3 refs or supplied catalog refs. A rejected "
-            "verdict requires blocking evidence; missing context is uncertain. Finish with one "
-            "strict investigation_synthesis result.\n\n"
-            + json.dumps(evidence_slice, ensure_ascii=False, separators=(",", ":"))
-        )
+        action_tool_name = "execute_validator_evidence_action"
+        action_tool_schema = {
+            "type": "function",
+            "function": {
+                "name": action_tool_name,
+                "description": (
+                    "Select one finite deterministic proof action. Z-Scope binds the subject, "
+                    "decision region, parameters, code snapshot and verifier; the model cannot "
+                    "supply or alter them."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "action_id": {
+                            "type": "string",
+                            "enum": sorted(action_by_id),
+                        }
+                    },
+                    "required": ["action_id"],
+                },
+            },
+        }
+        if action_mode:
+            v3_tools_schema = []
+            prompt = (
+                "Targeted Validator V3 proof-action session. You may only choose one of the "
+                "finite EvidenceAction records below; their subject, decision region and "
+                "parameters are system-bound. There is no independent action-count quota, but "
+                f"the session has at most {iteration_limit} model iterations. Select actions "
+                "that can close an open clause. A certificate is authoritative only when the "
+                "program returns verified_true with complete coverage. Repeated actions are "
+                "rejected and two consecutive rounds without an accepted fact stop the session. "
+                "A rejected verdict still requires a deterministic counterproof; otherwise use "
+                "uncertain. Finish with one strict investigation_synthesis result. Actions: "
+                + json.dumps(action_records, ensure_ascii=False, sort_keys=True)
+                + "\n\n"
+                + json.dumps(evidence_slice, ensure_ascii=False, separators=(",", ":"))
+            )
+        else:
+            prompt = (
+                "Legacy replay-only Validator V3 investigation. Use only the supplied read-only "
+                "repository tools. There is no independent tool-query quota, but the entire "
+                f"session has at most {iteration_limit} model iterations. Every useful repository "
+                "result returns a TOOLFACT observation. Submit it through "
+                f"{claim_tool_name}; the program independently verifies the predicate. "
+                "Authoritative tools by fact kind are: "
+                + json.dumps(authoritative_tool_guidance, ensure_ascii=False, sort_keys=True)
+                + ". A rejected verdict requires blocking evidence; missing context is uncertain. "
+                "Finish with one strict investigation_synthesis result.\n\n"
+                + json.dumps(evidence_slice, ensure_ascii=False, separators=(",", ":"))
+            )
         messages = self._messages(input_data, prompt)
         tool_result_hashes: set[str] = set()
         tool_call_signatures: set[str] = set()
         evidence_atoms: set[str] = set()
         tool_fact_catalog: Dict[str, Dict[str, Any]] = {}
         investigation_facts: List[Dict[str, Any]] = []
+        investigation_claims: List[Dict[str, Any]] = []
+        claim_verifications: List[Dict[str, Any]] = []
         consecutive_no_evidence_fact_iterations = 0
         current_model_iteration = 0
         last_started_iteration = 0
-        evidence_facts_at_iteration_start = 0
+        progress_at_iteration_start = 0
         no_new_evidence_fact_stop = False
+        programmatic_terminal_payload: Optional[Dict[str, Any]] = None
 
         def evidence_location(args: Any, result: Dict[str, Any]) -> Dict[str, Any]:
             arguments = args if isinstance(args, dict) else {}
@@ -662,54 +858,213 @@ class ValidatorAgent(JsonToolAgent):
 
         def session_executor(name: str, args: Any) -> Dict[str, Any]:
             nonlocal no_new_evidence_fact_stop
-            if name == fact_tool_name:
+            nonlocal programmatic_terminal_payload
+            if name == action_tool_name and action_mode:
                 if not isinstance(args, dict):
-                    return {"success": False, "error": "fact arguments must be an object"}
-                fact_kind = str(args.get("fact_kind") or "").strip().lower()
-                refs = args.get("evidence_refs")
-                refs = [str(value) for value in refs] if isinstance(refs, list) else []
-                if fact_kind not in allowed_fact_kinds:
-                    return {"success": False, "error": "unsupported investigation fact kind"}
-                if not refs or any(ref not in tool_fact_catalog for ref in refs):
                     return {
                         "success": False,
-                        "error": "investigation facts must cite prior TOOLFACT refs",
+                        "error": "evidence action arguments must be an object",
                     }
-                summary = str(args.get("summary") or "").strip()
-                if not summary or len(summary) > 1000:
-                    return {"success": False, "error": "fact summary is invalid"}
-                backing = [tool_fact_catalog[ref] for ref in refs]
-                payload = {
-                    "cluster": cluster_uid,
-                    "fact_kind": fact_kind,
-                    "evidence_refs": sorted(refs),
-                    "summary": summary,
-                    "dependency_hashes": sorted(
-                        {str(value.get("dependency_code_hash") or "") for value in backing}
+                action_id = str(args.get("action_id") or "")
+                if action_id not in action_by_id:
+                    return {"success": False, "error": "unknown_validator_evidence_action"}
+                signature = hashlib.sha256(f"action:{action_id}".encode("utf-8")).hexdigest()
+                if signature in tool_call_signatures:
+                    return {"success": False, "error": "validator_v3_duplicate_evidence_action"}
+                tool_call_signatures.add(signature)
+                if no_new_evidence_fact_stop:
+                    return {
+                        "success": False,
+                        "error": "validator_v3_no_new_evidence_fact_stop; emit the final result",
+                    }
+                try:
+                    outcome = (
+                        evidence_action_executor(action_id)
+                        if evidence_action_executor
+                        else {}
+                    )
+                except Exception as exc:
+                    outcome = {
+                        "status": "unknown",
+                        "reason_code": "evidence_action_executor_error",
+                        "error": f"{type(exc).__name__}: {exc}"[:500],
+                    }
+                if not isinstance(outcome, dict):
+                    outcome = {
+                        "status": "unknown",
+                        "reason_code": "evidence_action_invalid_result",
+                    }
+                fact = outcome.get("verified_fact")
+                if (
+                    str(outcome.get("status") or "") == "verified_true"
+                    and isinstance(fact, dict)
+                    and str(fact.get("fact_uid") or "")
+                ):
+                    fact_uid = str(fact["fact_uid"])
+                    if not any(value.get("fact_uid") == fact_uid for value in investigation_facts):
+                        investigation_facts.append(dict(fact))
+                    allowed_refs.add(fact_uid)
+                claim_verifications.append(dict(outcome))
+                authority = outcome.get("terminal_authority")
+                authority = authority if isinstance(authority, Mapping) else {}
+                disposition = str(authority.get("disposition") or "")
+                if authority.get("terminal") is True and disposition in {
+                    "confirmed",
+                    "rejected_with_proof",
+                    "needs_review",
+                }:
+                    fact_uid = str(fact.get("fact_uid") or "") if isinstance(fact, dict) else ""
+                    proof_terminal = disposition in {"confirmed", "rejected_with_proof"}
+                    programmatic_terminal_payload = {
+                        "schema_version": "zscope.validator-result.v3",
+                        "candidate_uid": candidate_uid,
+                        "validation_cluster_uid": cluster_uid,
+                        "pass": "investigation_synthesis",
+                        "verdict": (
+                            "verified"
+                            if disposition == "confirmed"
+                            else (
+                                "rejected"
+                                if disposition == "rejected_with_proof"
+                                else "uncertain"
+                            )
+                        ),
+                        "reasoning": (
+                            "Programmatic evidence action produced a complete deterministic "
+                            "decision proof; no further model investigation is authorized."
+                            if proof_terminal
+                            else (
+                                "Programmatic evidence action exhausted the currently executable "
+                                "proof gaps. Remaining clauses require review; no further model "
+                                "investigation is authorized."
+                            )
+                        ),
+                        "positive_evidence": (
+                            [fact_uid]
+                            if disposition == "confirmed" and fact_uid
+                            else []
+                        ),
+                        "negative_evidence": (
+                            [fact_uid]
+                            if disposition == "rejected_with_proof" and fact_uid
+                            else []
+                        ),
+                        "evidence_refs": ([fact_uid] if fact_uid else []),
+                        "blocking_negative_evidence": disposition == "rejected_with_proof",
+                        "missing_fact_request": None,
+                        "stop_reason": (
+                            "decision_complete" if proof_terminal else "investigation_exhausted"
+                        ),
+                    }
+                return {
+                    "success": True,
+                    "action_id": action_id,
+                    "fact_kind": action_by_id[action_id].get("fact_kind"),
+                    "status": outcome.get("status"),
+                    "reason_code": outcome.get("reason_code"),
+                    "verified_fact": fact if isinstance(fact, dict) else None,
+                    "certificate_ref": outcome.get("certificate_ref"),
+                    "terminal_authority": outcome.get("terminal_authority"),
+                    "instruction": (
+                        "The action was programmatically recomputed. Only a returned verified_fact "
+                        "closes a clause; otherwise choose a different available action or finish "
+                        "uncertain."
                     ),
                 }
-                fact_uid = (
-                    "FACT_V3_"
-                    + hashlib.sha256(
-                        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
-                    ).hexdigest()[:32]
+            if name == claim_tool_name:
+                if not isinstance(args, dict):
+                    return {"success": False, "error": "claim arguments must be an object"}
+                fact_kind = str(args.get("fact_kind") or "").strip().lower()
+                refs = args.get("cited_evidence_refs")
+                refs = [str(value) for value in refs] if isinstance(refs, list) else []
+                claim = dict(args)
+                claim["fact_kind"] = fact_kind
+                submitted_refs = sorted(set(refs))
+                known_tool_refs = [ref for ref in submitted_refs if ref in tool_fact_catalog]
+                claim["submitted_cited_evidence_refs"] = submitted_refs
+                # Initial FACT/location/catalog refs may support the final
+                # narrative, but executable claims are replayed only over
+                # frozen TOOLFACT payloads. Preserve the raw list above for
+                # traceability and drop unrelated context refs here.
+                claim["cited_evidence_refs"] = known_tool_refs or submitted_refs
+                claim.setdefault(
+                    "obligation_uid", str(obligation.get("obligation_uid") or candidate_uid)
                 )
-                fact = {
-                    "fact_uid": fact_uid,
-                    "fact_kind": fact_kind,
-                    "summary": summary,
-                    "evidence_refs": sorted(refs),
-                    "producer_engine": "validator_readonly_tool_session",
-                    "dependency_code_hash": hashlib.sha256(
-                        "\n".join(payload["dependency_hashes"]).encode("utf-8")
-                    ).hexdigest(),
-                    "locations": [value.get("location") for value in backing],
-                    "origin": "validator_tool_evidence",
+                investigation_claims.append(claim)
+                if claim_verifier is None:
+                    verification = {
+                        "schema_version": "zscope.evidence-claim-verification.v1",
+                        "status": "unknown",
+                        "reason_code": "claim_verifier_unavailable",
+                        "verified_fact": None,
+                    }
+                else:
+                    try:
+                        verification = claim_verifier(claim, tool_fact_catalog)
+                    except Exception as exc:
+                        verification = {
+                            "schema_version": "zscope.evidence-claim-verification.v1",
+                            "status": "unknown",
+                            "reason_code": "claim_verifier_error",
+                            "error": f"{type(exc).__name__}: {exc}"[:500],
+                            "verified_fact": None,
+                        }
+                if not isinstance(verification, dict):
+                    verification = {
+                        "schema_version": "zscope.evidence-claim-verification.v1",
+                        "status": "unknown",
+                        "reason_code": "claim_verifier_invalid_result",
+                        "verified_fact": None,
+                    }
+                claim_verifications.append(dict(verification))
+                fact = verification.get("verified_fact")
+                if (
+                    str(verification.get("status") or "") == "verified_true"
+                    and isinstance(fact, dict)
+                    and str(fact.get("fact_uid") or "")
+                ):
+                    fact_uid = str(fact["fact_uid"])
+                    if not any(value.get("fact_uid") == fact_uid for value in investigation_facts):
+                        investigation_facts.append(dict(fact))
+                    allowed_refs.add(fact_uid)
+                response: Dict[str, Any] = {
+                    "success": True,
+                    "claim_status": verification.get("status"),
+                    "reason_code": verification.get("reason_code"),
+                    "verified_fact": fact if isinstance(fact, dict) else None,
+                    "instruction": (
+                        "Only verified_true closes an obligation clause; unknown, false, or "
+                        "conflicting claims require another executable query or needs_review."
+                    ),
                 }
-                if not any(value.get("fact_uid") == fact_uid for value in investigation_facts):
-                    investigation_facts.append(fact)
-                allowed_refs.add(fact_uid)
-                return {"success": True, "fact": fact}
+                if str(verification.get("reason_code") or "") in {
+                    "tool_not_authoritative_for_predicate",
+                    "claim_protocol_invalid",
+                    "unknown_evidence_ref",
+                    "claim_arguments_not_replayed",
+                }:
+                    response.update(
+                        {
+                            "expected_predicate": _CLAIM_PREDICATES.get(fact_kind, ""),
+                            "allowed_tools": list(
+                                _LEGACY_REPLAY_OBSERVATION_TOOLS.get(fact_kind, ())
+                            ),
+                            "allowed_evidence_refs": sorted(tool_fact_catalog),
+                            "instruction": (
+                                "Use the exact expected predicate and cite a result from one "
+                                "of the allowed deterministic tools. Semantic snapshots and "
+                                "code snippets are observations only."
+                            ),
+                        }
+                    )
+                return response
+
+            if name not in v3_tool_names:
+                return {
+                    "success": False,
+                    "error": "validator_v3_tool_not_exposed_for_open_clauses",
+                    "allowed_tools": sorted(v3_tool_names),
+                }
 
             stable_args = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
             signature = hashlib.sha256(f"{name}:{stable_args}".encode("utf-8")).hexdigest()
@@ -724,7 +1079,17 @@ class ValidatorAgent(JsonToolAgent):
                     "success": False,
                     "error": "validator_v3_no_new_evidence_fact_stop; emit the final result",
                 }
-            tool_result = self._tool_executor(name, args)
+            # Some read-only tools resolve a missing function snapshot by
+            # invoking the SemanticModeler synchronously.  Preserve the
+            # owning validation identity across that nested provider call so
+            # its usage can be charged to and replayed with this cluster.
+            with llm_usage_attribution_scope(
+                validation_cluster_uid=cluster_uid,
+                candidate_uid=candidate_uid,
+                finding_uid=candidate_uid,
+                call_kind="v3_tool_dependency",
+            ):
+                tool_result = self._tool_executor(name, args)
             stable_result = json.dumps(
                 tool_result,
                 ensure_ascii=False,
@@ -754,10 +1119,16 @@ class ValidatorAgent(JsonToolAgent):
             record = {
                 "evidence_ref": ref,
                 "tool_name": name,
+                "arguments": args if isinstance(args, dict) else {},
                 "arguments_hash": hashlib.sha256(stable_args.encode("utf-8")).hexdigest(),
                 "result_hash": fingerprint,
                 "dependency_code_hash": fingerprint,
                 "location": evidence_location(args, tool_result),
+                "result_payload": (
+                    dict(tool_result)
+                    if isinstance(tool_result, dict)
+                    else {"success": True, "data": tool_result}
+                ),
             }
             tool_fact_catalog[ref] = record
             allowed_refs.add(ref)
@@ -765,7 +1136,7 @@ class ValidatorAgent(JsonToolAgent):
             result["evidence_ref"] = ref
             result["validator_new_evidence"] = True
             result["instruction"] = (
-                f"If this resolves a required fact, call {fact_tool_name} citing {ref}."
+                f"If this appears to resolve a required fact, call {claim_tool_name} citing {ref}."
             )
             return result
 
@@ -774,38 +1145,49 @@ class ValidatorAgent(JsonToolAgent):
             current_model_iteration = max(0, int(iteration or 0))
 
         def start_model_iteration(iteration: int) -> bool:
-            """Stop only after two rounds add no structured tool/final fact.
-
-            A repository tool result with a stable source and evidence record
-            is a fact for investigation-progress purposes.  It is not by
-            itself an obligation-closing promotion fact; that still requires
-            a ``FACT_V3`` record with an allowed fact kind.
-            """
+            """Stop after the scout window and two rounds add no evidence state."""
 
             nonlocal consecutive_no_evidence_fact_iterations
             nonlocal current_model_iteration
-            nonlocal evidence_facts_at_iteration_start
+            nonlocal progress_at_iteration_start
             nonlocal last_started_iteration
             nonlocal no_new_evidence_fact_stop
             normalized = max(1, int(iteration or 1))
             if normalized <= last_started_iteration:
                 return no_new_evidence_fact_stop
-            current_evidence_fact_count = len(tool_fact_catalog) + len(investigation_facts)
-            if last_started_iteration:
-                if current_evidence_fact_count > evidence_facts_at_iteration_start:
+            # Raw tool results are observations.  Only a fact accepted by the
+            # program verifier changes the obligation state and resets the
+            # no-progress counter.
+            current_progress = len(investigation_facts)
+            if not action_mode and normalized <= 4:
+                consecutive_no_evidence_fact_iterations = 0
+                progress_at_iteration_start = current_progress
+            elif last_started_iteration:
+                if current_progress > progress_at_iteration_start:
                     consecutive_no_evidence_fact_iterations = 0
                 else:
                     consecutive_no_evidence_fact_iterations += 1
-                evidence_facts_at_iteration_start = current_evidence_fact_count
+                progress_at_iteration_start = current_progress
             else:
-                evidence_facts_at_iteration_start = current_evidence_fact_count
+                progress_at_iteration_start = current_progress
             last_started_iteration = normalized
             current_model_iteration = normalized
-            no_new_evidence_fact_stop = consecutive_no_evidence_fact_iterations >= 2
+            # New finite EvidenceAction sessions stop after two completed
+            # no-fact rounds.  The legacy free-tool bridge retains its former
+            # four-turn scout window only for historical replay compatibility.
+            no_new_evidence_fact_stop = (
+                consecutive_no_evidence_fact_iterations >= 2
+                and (action_mode or normalized > 4)
+            )
             return no_new_evidence_fact_stop
 
         setattr(session_executor, "_zscope_set_iteration", set_model_iteration)
         setattr(session_executor, "_zscope_start_iteration", start_model_iteration)
+        setattr(
+            session_executor,
+            "_zscope_programmatic_terminal_payload",
+            lambda: programmatic_terminal_payload,
+        )
 
         def terminal_handler(payload: Dict[str, Any]) -> Dict[str, Any]:
             parsed = parse_validator_result_v3(
@@ -817,6 +1199,40 @@ class ValidatorAgent(JsonToolAgent):
             )
             if parsed is None:
                 return {"valid": False, "error": "invalid ValidatorResult v3 payload"}
+            if parsed.verdict == "verified":
+                accepted_refs = {
+                    str(fact.get("fact_uid") or "")
+                    for fact in investigation_facts
+                    if str(fact.get("fact_uid") or "")
+                }
+                if not accepted_refs or not accepted_refs.intersection(parsed.evidence_refs):
+                    if no_new_evidence_fact_stop:
+                        # The session has already exhausted its executable
+                        # evidence actions.  Continuing to reject the same
+                        # unsupported verified terminal would turn the
+                        # no-progress guard into an accidental 50-turn loop.
+                        # Close conservatively; the policy layer will retain
+                        # the candidate in needs_review.
+                        terminal = self._v3_uncertain_result(
+                            candidate_uid,
+                            cluster_uid,
+                            "investigation_synthesis",
+                            stop_reason="investigation_exhausted",
+                            reasoning=(
+                                "V3 stopped after two consecutive model iterations produced "
+                                "no program-verified evidence-state change."
+                            ),
+                        )
+                        return {"valid": True, "payload": terminal}
+                    return {
+                        "valid": False,
+                        "error": (
+                            "A verified V3 terminal requires at least one program-verified "
+                            "FACT reference. Query a read-only tool, submit the resulting "
+                            "TOOLFACT through submit_validator_evidence_claim, and cite the "
+                            "accepted FACT in evidence_refs; otherwise return uncertain."
+                        ),
+                    }
             return {"valid": True, "payload": parsed.to_dict()}
 
         try:
@@ -828,11 +1244,19 @@ class ValidatorAgent(JsonToolAgent):
                     f"candidate_uid={candidate_uid[:120]}; "
                     f"validation_cluster_uid={cluster_uid[:120]}"
                 ),
-                additional_tools_schema=[fact_tool_schema, terminal_schema],
+                base_tools_schema=v3_tools_schema,
+                additional_tools_schema=[
+                    action_tool_schema if action_mode else claim_tool_schema,
+                    terminal_schema,
+                ],
                 terminal_tool_name=spec.final_tool_name,
                 terminal_tool_handler=terminal_handler,
                 terminal_tool_required=True,
                 tool_executor=session_executor,
+                # A repeated read-only query cannot add evidence.  Reject the
+                # first repeat instead of replaying it for another model turn.
+                max_identical_tool_calls=1,
+                replay_identical_tool_result=False,
                 preserve_reasoning_metadata=True,
             )
         except Exception as exc:
@@ -842,7 +1266,12 @@ class ValidatorAgent(JsonToolAgent):
         aggregate["validator_api_call_count"] = int(aggregate.get("iterations", 0) or 0)
         aggregate["validator_investigation_trajectory_count"] = 1
         aggregate["validator_investigation_facts"] = investigation_facts
+        aggregate["validator_investigation_claims"] = investigation_claims
+        aggregate["validator_claim_verifications"] = claim_verifications
         aggregate["validator_tool_fact_catalog"] = tool_fact_catalog
+        aggregate["validator_evidence_actions"] = action_records
+        aggregate["validator_evidence_action_count"] = len(action_by_id)
+        aggregate["validator_evidence_action_mode"] = action_mode
         aggregate["validator_investigation_tool_fact_count"] = len(tool_fact_catalog)
         aggregate["new_fact_count"] = len(investigation_facts)
         aggregate["consecutive_no_new_evidence_fact_iterations"] = (
@@ -997,7 +1426,8 @@ class ValidatorAgent(JsonToolAgent):
             {
                 "role": "user",
                 "content": (
-                    "Fast-path validation: use only the suspected finding and Compact Evidence Pack. "
+                    "Fast-path validation: use only the suspected finding and "
+                    "Compact Evidence Pack. "
                     "Do not ask for tools. Return exactly one validation_result JSON block. "
                     "Use `uncertain` if a decisive fact requires code not present in the pack."
                 ),
@@ -1106,7 +1536,10 @@ class ValidatorAgent(JsonToolAgent):
                 "negative_evidence": {"type": "array", "items": {"type": "string"}},
                 "blocking_negative_evidence": {
                     "type": "boolean",
-                    "description": "True only when a concrete guard, ownership, lock, reachability, or contract fact blocks confirmation; uncertainty alone is false.",
+                    "description": (
+                        "True only when a concrete guard, ownership, lock, reachability, "
+                        "or contract fact blocks confirmation; uncertainty alone is false."
+                    ),
                 },
                 "missing_context": {"type": "array", "items": {"type": "string"}},
                 "exploit_scenario": {"type": "string"},

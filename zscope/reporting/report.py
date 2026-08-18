@@ -134,6 +134,12 @@ class Issue:
     validator_result_pass: Optional[str] = None
     validator_pass_history: Optional[List[Dict[str, Any]]] = None
     validator_policy_outcome: Optional[Dict[str, Any]] = None
+    decision_trace_ref: Optional[str] = None
+    decision_trace_sha256: Optional[str] = None
+    terminal_event_uid: Optional[str] = None
+    terminal_authority: Optional[str] = None
+    terminal_reason_codes: Optional[List[str]] = None
+    open_clause_ids: Optional[List[str]] = None
 
     @classmethod
     def from_dict(

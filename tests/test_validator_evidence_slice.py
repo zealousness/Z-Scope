@@ -1,7 +1,10 @@
 import json
 
 from zscope.agents.validator_agent.agent import ValidatorAgent
-from zscope.core.validation.evidence import build_validator_evidence_slice_v2
+from zscope.core.validation.evidence import (
+    build_validator_evidence_slice_v2,
+    build_validator_evidence_slice_v3,
+)
 
 
 class _UnusedLLM:
@@ -58,9 +61,7 @@ def test_alias_growth_does_not_copy_alias_uids_into_validator_payload() -> None:
 def test_evidence_slice_keeps_one_representative_path_and_compact_code() -> None:
     issue = _issue(20)
     issue["entry_paths"] = [["entry", "wrapper", "sink"], ["other", "sink"]]
-    evidence = {
-        "function_context": {"code": "\n".join(f"line_{line};" for line in range(200))}
-    }
+    evidence = {"function_context": {"code": "\n".join(f"line_{line};" for line in range(200))}}
 
     result = build_validator_evidence_slice_v2(issue, evidence, "")
 
@@ -71,6 +72,25 @@ def test_evidence_slice_keeps_one_representative_path_and_compact_code() -> None
     ]
     assert "other" not in json.dumps(result, ensure_ascii=False)
     assert len(result["code"]["function_context"].splitlines()) <= 111
+
+
+def test_v3_evidence_slice_projects_canonical_subject_and_decision_region() -> None:
+    issue = _issue(0)
+    issue["security_obligation"] = {
+        "obligation_uid": "OBL_CANONICAL",
+        "defect_family": "bounds",
+        "obligation_shape": "source_sink_path",
+        "subject_uid": "SUBJECT_CANONICAL",
+        "source_uid": "SOURCE_CANONICAL",
+        "sink_uid": "SINK_CANONICAL",
+        "decision_region_uid": "REGION_CANONICAL",
+    }
+
+    result = build_validator_evidence_slice_v3(issue, {}, "")
+
+    assert result["obligation"]["obligation_uid"] == "OBL_CANONICAL"
+    assert result["obligation"]["subject_uid"] == "SUBJECT_CANONICAL"
+    assert result["obligation"]["decision_region_uid"] == "REGION_CANONICAL"
 
 
 def test_validator_v2_protocol_accepts_one_response_without_tools(monkeypatch) -> None:
