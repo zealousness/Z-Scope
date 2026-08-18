@@ -576,12 +576,8 @@ def test_combined_derived_rebuild_uses_one_semantic_request_per_file(
 
         assert result["errors"] == {}
         assert semantic_calls == 1
-        assert extractor.get_last_derived_stats("function_symbol_context")[
-            "semantic_requests"
-        ] == 1
-        assert extractor.get_last_derived_stats("function_type_refs")[
-            "semantic_requests"
-        ] == 1
+        assert extractor.get_last_derived_stats("function_symbol_context")["semantic_requests"] == 1
+        assert extractor.get_last_derived_stats("function_type_refs")["semantic_requests"] == 1
     finally:
         db.close()
 
@@ -701,9 +697,7 @@ def test_reference_cache_eviction_removes_stale_reverse_coordinates(
 
     assert list(semantic_context["reference_cache"]) == [second_key]
     assert first_coordinate not in semantic_context["reference_coordinate_index"]
-    assert semantic_context["reference_coordinate_index"][second_coordinate] == {
-        second_key[1]
-    }
+    assert semantic_context["reference_coordinate_index"][second_coordinate] == {second_key[1]}
     assert stats["reference_cache_evictions"] == 1
 
 
@@ -1014,8 +1008,7 @@ def test_symbol_rebuild_runs_files_concurrently(tmp_path, monkeypatch) -> None:
         for index in range(2):
             source = tmp_path / f"symbol_{index}.c"
             source.write_text(
-                f"int shared_{index};\n"
-                f"int f{index}(void) {{ return shared_{index}; }}\n",
+                f"int shared_{index};\n" f"int f{index}(void) {{ return shared_{index}; }}\n",
                 encoding="utf-8",
             )
             db.insert_function(f"f{index}", source.name, 2, 2, signature=f"int f{index}(void)")
@@ -1039,9 +1032,9 @@ def test_symbol_rebuild_runs_files_concurrently(tmp_path, monkeypatch) -> None:
                     concurrent.set()
             assert concurrent.wait(2.0), "symbol files were processed serially"
             symbol_name = f"shared_{str(function['name'])[1:]}"
-            aggregated[(function["name"], function_file, symbol_name, "global", function_file, 2)] = (
-                "read"
-            )
+            aggregated[
+                (function["name"], function_file, symbol_name, "global", function_file, 2)
+            ] = "read"
             with lock:
                 active -= 1
 
@@ -1109,9 +1102,9 @@ def test_combined_rebuild_parallelizes_files_but_requests_semantics_once_per_fil
         def collect_symbols(function, function_file, *_args):
             aggregated = _args[4]
             symbol_name = f"shared_{str(function['name'])[1:]}"
-            aggregated[(function["name"], function_file, symbol_name, "global", function_file, 3)] = (
-                "write"
-            )
+            aggregated[
+                (function["name"], function_file, symbol_name, "global", function_file, 3)
+            ] = "write"
 
         def collect_types(function, function_file, _source_path, _lines, types_by_name, *_args):
             type_name = f"ProjectType{str(function['name'])[1:]}"
@@ -1367,9 +1360,9 @@ def test_combined_parallel_failure_stops_only_failed_index(tmp_path, monkeypatch
         def collect_symbols(function, function_file, *_args):
             aggregated = _args[4]
             symbol_name = f"shared_{str(function['name'])[1:]}"
-            aggregated[(function["name"], function_file, symbol_name, "global", function_file, 3)] = (
-                "write"
-            )
+            aggregated[
+                (function["name"], function_file, symbol_name, "global", function_file, 3)
+            ] = "write"
 
         def collect_types(function, *_args):
             if function["name"] == "f0":

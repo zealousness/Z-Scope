@@ -1235,9 +1235,7 @@ class ValidationPipeline:
         resolved = {
             str(value)
             for value in (
-                (closure.get("resolved_fact_kinds") or [])
-                if isinstance(closure, dict)
-                else []
+                (closure.get("resolved_fact_kinds") or []) if isinstance(closure, dict) else []
             )
             if str(value)
         }
@@ -1273,9 +1271,7 @@ class ValidationPipeline:
         resolved = {
             str(value)
             for value in (
-                (closure.get("resolved_fact_kinds") or [])
-                if isinstance(closure, dict)
-                else []
+                (closure.get("resolved_fact_kinds") or []) if isinstance(closure, dict) else []
             )
             if str(value)
         }

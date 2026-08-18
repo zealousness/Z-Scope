@@ -2111,9 +2111,7 @@ class ParallelAnalyzer:
         llm_iteration_budget_summary = self._llm_iteration_budget_summary(results)
         scan_budget_summary = dict(getattr(self, "_last_scan_budget_metadata", {}) or {})
         llm_usage_summary = self._llm_usage_summary()
-        scan_token_usage = (
-            scan_token_usage_snapshot(base_config) if base_config is not None else {}
-        )
+        scan_token_usage = scan_token_usage_snapshot(base_config) if base_config is not None else {}
         llm_usage_summary["scan_token_usage"] = scan_token_usage
         retained_prompt_tokens = sum(r.cumulative_prompt_tokens for r in results.values())
         retained_completion_tokens = sum(r.cumulative_completion_tokens for r in results.values())

@@ -521,14 +521,12 @@ def test_writer_failure_wakes_pending_request(tmp_path) -> None:
     assert extractor.get_transport_metrics()["write_failures"] == 1
 
 
-def test_reader_frames_fragmented_large_utf8_payload_with_bytearray(
-    tmp_path, monkeypatch
-) -> None:
+def test_reader_frames_fragmented_large_utf8_payload_with_bytearray(tmp_path, monkeypatch) -> None:
     extractor = ClangExtractor(tmp_path)
     result = {"名字": "值", "blob": "x" * 100_000}
-    body = json.dumps(
-        {"jsonrpc": "2.0", "id": 41, "result": result}, ensure_ascii=False
-    ).encode("utf-8")
+    body = json.dumps({"jsonrpc": "2.0", "id": 41, "result": result}, ensure_ascii=False).encode(
+        "utf-8"
+    )
     wire = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
     chunks = iter(wire[index : index + 997] for index in range(0, len(wire), 997))
 
@@ -632,9 +630,9 @@ def test_start_replaces_dead_process_with_new_generation(tmp_path, monkeypatch) 
     monkeypatch.setattr(
         extractor,
         "send_request",
-        lambda method, _params, timeout=120: {"capabilities": {}}
-        if method == "initialize"
-        else None,
+        lambda method, _params, timeout=120: (
+            {"capabilities": {}} if method == "initialize" else None
+        ),
     )
     monkeypatch.setattr(extractor, "send_notification", lambda _method, _params: True)
 

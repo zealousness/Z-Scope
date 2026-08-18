@@ -47,14 +47,14 @@ def test_usage_ledger_conserves_tokens_by_agent_and_stage() -> None:
     assert snapshot["consumed_tokens"] == 4_000
     assert snapshot["reserved_tokens"] == 0
     assert snapshot["usage_attribution"]["totals"]["total_tokens"] == 4_000
-    assert sum(
-        row["total_tokens"]
-        for row in snapshot["usage_attribution"]["by_agent"].values()
-    ) == 4_000
-    assert sum(
-        row["total_tokens"]
-        for row in snapshot["usage_attribution"]["by_stage"].values()
-    ) == 4_000
+    assert (
+        sum(row["total_tokens"] for row in snapshot["usage_attribution"]["by_agent"].values())
+        == 4_000
+    )
+    assert (
+        sum(row["total_tokens"] for row in snapshot["usage_attribution"]["by_stage"].values())
+        == 4_000
+    )
 
 
 def test_unknown_provider_usage_is_conservatively_measured_not_denied() -> None:

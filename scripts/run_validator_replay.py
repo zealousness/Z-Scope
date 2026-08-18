@@ -65,9 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-total-tokens",
         type=int,
         required=False,
-        help=(
-            "Optional post-run cost expectation. It never rejects or truncates a replay call."
-        ),
+        help=("Optional post-run cost expectation. It never rejects or truncates a replay call."),
     )
     executor_group = parser.add_mutually_exclusive_group()
     executor_group.add_argument(
