@@ -116,6 +116,9 @@ jobs:
           if invalid:
               raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
           PY
+          test "$(claude --version | awk '{print $1}')" = "2.1.233"
+          test "$(dsh --version)" = "0.1.0-rc.6"
+          test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
       - uses: actions/download-artifact@v8
         with:
           name: range-v16-primary-fable-${{ inputs.source_sha }}
