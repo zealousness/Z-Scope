@@ -277,6 +277,14 @@ def test_review_provenance_separates_workflow_and_packet_commits() -> None:
         )
 
 
+def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
+    workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
+    assert workflow.count('claude --version | awk \'{print $1}\'') == 2
+    assert workflow.count('dsh --version') == 2
+    assert workflow.count('"2.1.233"') == 2
+    assert workflow.count('"0.1.0-rc.6"') == 2
+
+
 def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
