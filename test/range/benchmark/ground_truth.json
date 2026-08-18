@@ -1,8 +1,8 @@
 {
   "benchmark": "zscope-range-service-runtime",
-  "version": 14,
+  "version": 15,
   "total_vulnerabilities": 136,
-  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 14 adds ISSUE43 stream-journal and lock-cache runtime models for missing C memory, concurrency, and resource CWE coverage; version 13 removes ISSUE42-012/log_level_misuse as a code-style-only case and strengthens issue #41/#42 models with concrete impact chains; version 12 neutralizes benchmark function names, refreshes ISSUE42 to natural runtime API flows, and adds wrapper/evidence anchors for scoring; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite; version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors.",
+  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 15 corrects the REAL-029 primary source range and adds the concrete ISSUE42-028 signal-record helper anchor without changing the truth count; version 14 adds ISSUE43 stream-journal and lock-cache runtime models for missing C memory, concurrency, and resource CWE coverage; version 13 removes ISSUE42-012/log_level_misuse as a code-style-only case and strengthens issue #41/#42 models with concrete impact chains; version 12 neutralizes benchmark function names, refreshes ISSUE42 to natural runtime API flows, and adds wrapper/evidence anchors for scoring; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite; version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors.",
   "vulnerabilities": [
     {
       "id": "RANGE-001",
@@ -1722,8 +1722,8 @@
       "title": "Closed descriptor remains globally watched and is reused for later receive dispatch",
       "file": "src/lifecycle.c",
       "function": "_runtime_reopen_cached_descriptor",
-      "line": 1539,
-      "end_line": 1543,
+      "line": 1550,
+      "end_line": 1553,
       "severity": "high",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -3382,6 +3382,12 @@
       "secondary_line": 2951,
       "secondary_end_line": 2956,
       "additional_locations": [
+        {
+          "file": "src/lifecycle.c",
+          "function": "_runtime_record_signal_event",
+          "line": 2762,
+          "end_line": 2769
+        },
         {
           "file": "src/main.c",
           "function": "_signal_handler",
