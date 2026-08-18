@@ -23,6 +23,15 @@ from e0_review_governance import (
 )
 
 
+_SCORER_BUNDLE_PATHS = frozenset(
+    {
+        "zscope/benchmarking/benchmark_v5.py",
+        "zscope/benchmarking/protocol.py",
+        "zscope/benchmarking/truth_contract.py",
+    }
+)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--governance-commit", required=True)
@@ -40,7 +49,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--safe-pair-manifest", required=True, type=Path)
     parser.add_argument("--defect-taxonomy", required=True, type=Path)
     parser.add_argument("--benchmark-policy", required=True, type=Path)
-    parser.add_argument("--scorer-bundle", required=True, type=Path)
+    parser.add_argument(
+        "--scorer-bundle-file", required=True, action="append", type=Path
+    )
     parser.add_argument("--opus-review-count", required=True, type=int)
     parser.add_argument("--output", required=True, type=Path)
     return parser
@@ -83,6 +94,28 @@ def _validate_review_bundle(root: Path, manifest: Mapping[str, Any]) -> str:
     return str(manifest["bundle_sha256"])
 
 
+def _scorer_bundle_sha256(paths: Sequence[Path]) -> str:
+    repo_root = Path.cwd().resolve(strict=True)
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in paths:
+        path = candidate.resolve(strict=True)
+        try:
+            relative = path.relative_to(repo_root).as_posix()
+        except ValueError as exc:
+            raise E0GovernanceError("scorer bundle member escapes the repository") from exc
+        if relative in seen or path.is_symlink() or not path.is_file():
+            raise E0GovernanceError("scorer bundle member is duplicate or not a regular file")
+        seen.add(relative)
+        records.append(
+            {"path": relative, "size": path.stat().st_size, "sha256": sha256_file(path)}
+        )
+    if seen != _SCORER_BUNDLE_PATHS:
+        raise E0GovernanceError("scorer bundle does not bind the fixed v5 dependency set")
+    records.sort(key=lambda record: str(record["path"]))
+    return sha256_value(records)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     run_id = str(os.environ.get("GITHUB_RUN_ID") or "")
@@ -103,12 +136,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "safe_pair_manifest": args.safe_pair_manifest,
         "defect_taxonomy": args.defect_taxonomy,
         "benchmark_policy": args.benchmark_policy,
-        "scorer_bundle": args.scorer_bundle,
     }
     try:
         artifacts = {
             name: sha256_file(path.resolve(strict=True)) for name, path in artifact_paths.items()
         }
+        artifacts["scorer_bundle"] = _scorer_bundle_sha256(args.scorer_bundle_file)
         truth = _object(args.truth)
         truth_manifest = _object(args.truth_manifest)
         packet_catalog = _object(args.review_packet_catalog)

@@ -173,7 +173,9 @@ jobs:
             --safe-pair-manifest test/range/benchmark/v16/safe-pair-manifest.json \
             --defect-taxonomy zscope/benchmarking/defect-taxonomy.v1.json \
             --benchmark-policy zscope/benchmarking/benchmark_policy.v2.json \
-            --scorer-bundle zscope/benchmarking/benchmark_v5.py \
+            --scorer-bundle-file zscope/benchmarking/benchmark_v5.py \
+            --scorer-bundle-file zscope/benchmarking/protocol.py \
+            --scorer-bundle-file zscope/benchmarking/truth_contract.py \
             --opus-review-count "$(python3 -c 'import json; print(json.load(open("protected-review-evidence/opus/manifest.json"))["reviewed_count"])')" \
             --output release-evidence/e0-attestation.json
           python3 scripts/verify_e0_attestation.py \

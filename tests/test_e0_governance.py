@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import run_e0_reviewers as reviewer_runner
+from scripts import build_e0_attestation as attestation_builder
 
 from scripts.e0_review_governance import (
     ATTESTATION_SCHEMA_VERSION,
@@ -283,6 +284,28 @@ def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     assert workflow.count('dsh --version') == 2
     assert workflow.count('"2.1.233"') == 2
     assert workflow.count('"0.1.0-rc.6"') == 2
+
+
+def test_e0_attestation_scorer_bundle_binds_exact_dependency_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    relative_paths = {
+        "scripts/score.py",
+        "zscope/benchmarking/matcher.py",
+    }
+    paths = []
+    for relative in sorted(relative_paths):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative, encoding="utf-8")
+        paths.append(path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(attestation_builder, "_SCORER_BUNDLE_PATHS", relative_paths)
+    original = attestation_builder._scorer_bundle_sha256(paths)
+    paths[0].write_text("changed", encoding="utf-8")
+    assert attestation_builder._scorer_bundle_sha256(paths) != original
+    with pytest.raises(ValueError, match="fixed v5 dependency set"):
+        attestation_builder._scorer_bundle_sha256(paths[:1])
 
 
 def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
