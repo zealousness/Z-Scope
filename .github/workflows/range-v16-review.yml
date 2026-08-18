@@ -76,13 +76,32 @@ jobs:
             --packet-dir test/range/benchmark/v16/review-packets \
             --fable-dir review-evidence/fable \
             --deepseek-dir review-evidence/deepseek \
-            --output-dir review-evidence/opus
+            --output-dir review-evidence/opus \
+            --workers 4
           python3 scripts/build_e0_review_manifest.py \
             --review-root review-evidence \
             --output review-evidence/review-bundle-manifest.json
-      - uses: actions/upload-artifact@v7
+      - id: upload-reviewed
+        uses: actions/upload-artifact@v7
         with:
           name: range-v16-reviewed-${{ inputs.source_sha }}
           path: review-evidence
+          if-no-files-found: error
+          retention-days: 90
+      - name: Bind protected review provenance
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          python3 scripts/build_e0_review_provenance.py \
+            --packet-catalog test/range/benchmark/v16/review-packet-catalog.json \
+            --review-bundle-manifest review-evidence/review-bundle-manifest.json \
+            --artifact-name 'range-v16-reviewed-${{ inputs.source_sha }}' \
+            --artifact-digest '${{ steps.upload-reviewed.outputs.artifact-digest }}' \
+            --head-sha '${{ inputs.source_sha }}' \
+            --output review-provenance/review-provenance.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-review-provenance-${{ inputs.source_sha }}
+          path: review-provenance/review-provenance.json
           if-no-files-found: error
           retention-days: 90

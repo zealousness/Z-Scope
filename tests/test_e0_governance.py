@@ -35,9 +35,7 @@ def _packet() -> dict:
                 "start_line": 1,
                 "end_line": 2,
                 "content": "void f(void) {}\nreturn;\n",
-                "sha256": hashlib.sha256(
-                    b"void f(void) {}\nreturn;\n"
-                ).hexdigest(),
+                "sha256": hashlib.sha256(b"void f(void) {}\nreturn;\n").hexdigest(),
             }
         ],
         "threat_assumptions": ["The public function can receive untrusted input."],
@@ -148,6 +146,24 @@ def test_review_packet_and_decision_bind_exact_packet() -> None:
     )
 
 
+def test_every_material_primary_difference_requires_arbitration() -> None:
+    packet = _packet()
+    left = _decision(packet)
+    right = deepcopy(left)
+    assert reviewer_runner.decision_disagreement_fields(left, right) == ()
+    for field in reviewer_runner.MATERIAL_DECISION_FIELDS:
+        changed = deepcopy(right)
+        if field == "required_evidence_clauses":
+            changed[field][0]["predicate"] = "A different evidence obligation."
+        elif field == "safe_pair_recommendation":
+            changed[field]["safe_summary"] = "A different safe behavior."
+        elif isinstance(changed[field], list):
+            changed[field] = [*changed[field], "different"]
+        else:
+            changed[field] = "different"
+        assert field in reviewer_runner.decision_disagreement_fields(left, changed)
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -220,9 +236,7 @@ def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
         unsigned.pop("packet_sha256")
         packet["packet_sha256"] = sha256_value(unsigned)
         packets.append(packet)
-        (packet_dir / f"{truth_id}.json").write_text(
-            json.dumps(packet), encoding="utf-8"
-        )
+        (packet_dir / f"{truth_id}.json").write_text(json.dumps(packet), encoding="utf-8")
 
     def raw_for(packet: dict) -> dict:
         return {
@@ -245,9 +259,7 @@ def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
     (output_dir / "decisions" / "CASE-000.json").write_text(
         json.dumps(first_decision), encoding="utf-8"
     )
-    (output_dir / "raw" / "CASE-000.json").write_text(
-        json.dumps(raw_for(first)), encoding="utf-8"
-    )
+    (output_dir / "raw" / "CASE-000.json").write_text(json.dumps(raw_for(first)), encoding="utf-8")
 
     reviewed: list[str] = []
 
