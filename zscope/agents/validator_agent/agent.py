@@ -879,9 +879,7 @@ class ValidatorAgent(JsonToolAgent):
                     }
                 try:
                     outcome = (
-                        evidence_action_executor(action_id)
-                        if evidence_action_executor
-                        else {}
+                        evidence_action_executor(action_id) if evidence_action_executor else {}
                     )
                 except Exception as exc:
                     outcome = {
@@ -924,9 +922,7 @@ class ValidatorAgent(JsonToolAgent):
                             "verified"
                             if disposition == "confirmed"
                             else (
-                                "rejected"
-                                if disposition == "rejected_with_proof"
-                                else "uncertain"
+                                "rejected" if disposition == "rejected_with_proof" else "uncertain"
                             )
                         ),
                         "reasoning": (
@@ -940,14 +936,10 @@ class ValidatorAgent(JsonToolAgent):
                             )
                         ),
                         "positive_evidence": (
-                            [fact_uid]
-                            if disposition == "confirmed" and fact_uid
-                            else []
+                            [fact_uid] if disposition == "confirmed" and fact_uid else []
                         ),
                         "negative_evidence": (
-                            [fact_uid]
-                            if disposition == "rejected_with_proof" and fact_uid
-                            else []
+                            [fact_uid] if disposition == "rejected_with_proof" and fact_uid else []
                         ),
                         "evidence_refs": ([fact_uid] if fact_uid else []),
                         "blocking_negative_evidence": disposition == "rejected_with_proof",
@@ -1175,9 +1167,8 @@ class ValidatorAgent(JsonToolAgent):
             # New finite EvidenceAction sessions stop after two completed
             # no-fact rounds.  The legacy free-tool bridge retains its former
             # four-turn scout window only for historical replay compatibility.
-            no_new_evidence_fact_stop = (
-                consecutive_no_evidence_fact_iterations >= 2
-                and (action_mode or normalized > 4)
+            no_new_evidence_fact_stop = consecutive_no_evidence_fact_iterations >= 2 and (
+                action_mode or normalized > 4
             )
             return no_new_evidence_fact_stop
 

@@ -284,9 +284,7 @@ def run_canary(
                         "reason_code": "evidence_action_clause_already_closed",
                         "verified_fact": None,
                         "terminal_authority": {
-                            "terminal": not bool(
-                                service.actions(issue, evidence_slice, remaining)
-                            ),
+                            "terminal": not bool(service.actions(issue, evidence_slice, remaining)),
                             "disposition": "needs_review",
                         },
                     }
@@ -294,16 +292,12 @@ def run_canary(
                 fact = outcome.fact
                 if isinstance(fact, Mapping):
                     satisfies = {
-                        str(value)
-                        for value in fact.get("satisfies_fact_kinds") or []
-                        if str(value)
+                        str(value) for value in fact.get("satisfies_fact_kinds") or [] if str(value)
                     }
                     newly_closed = remaining & satisfies
                     closed.update(newly_closed)
                     remaining.difference_update(newly_closed)
-                certificate_hash = str(
-                    outcome.certificate.get("certificate_sha256") or ""
-                )
+                certificate_hash = str(outcome.certificate.get("certificate_sha256") or "")
                 if certificate_hash:
                     certificate_sha256.append(certificate_hash)
                 proof = fact.get("deterministic_proof") if isinstance(fact, Mapping) else None
@@ -379,9 +373,7 @@ def run_canary(
                 "tool_call_count": int(metadata.get("tool_call_count") or 0),
                 "new_fact_count": int(metadata.get("new_fact_count") or 0),
                 "prompt_tokens": int(metadata.get("cumulative_prompt_tokens") or 0),
-                "completion_tokens": int(
-                    metadata.get("cumulative_completion_tokens") or 0
-                ),
+                "completion_tokens": int(metadata.get("cumulative_completion_tokens") or 0),
                 "total_tokens": int(metadata.get("cumulative_total_tokens") or 0),
                 "historical_v3_tokens": int(row["historical_v3_tokens"]),
                 "protocol_errors": protocol_errors,
@@ -403,20 +395,12 @@ def run_canary(
     provider_usage = client.usage_snapshot()
     usage_snapshot = usage_ledger.snapshot(include_events=False)
     current_tokens = sum(int(value["total_tokens"]) for value in results)
-    comparable_rows = [
-        value for value in results if int(value["historical_v3_tokens"]) > 0
-    ]
-    historical_tokens = sum(
-        int(value["historical_v3_tokens"]) for value in comparable_rows
-    )
-    comparable_current_tokens = sum(
-        int(value["total_tokens"]) for value in comparable_rows
-    )
+    comparable_rows = [value for value in results if int(value["historical_v3_tokens"]) > 0]
+    historical_tokens = sum(int(value["historical_v3_tokens"]) for value in comparable_rows)
+    comparable_current_tokens = sum(int(value["total_tokens"]) for value in comparable_rows)
     closing = sum(bool(value["closed_fact_kinds"]) for value in results)
     comparable_reduction = (
-        1.0 - (comparable_current_tokens / historical_tokens)
-        if historical_tokens
-        else None
+        1.0 - (comparable_current_tokens / historical_tokens) if historical_tokens else None
     )
     passed = bool(
         len(results) >= 3
