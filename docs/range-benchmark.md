@@ -17,6 +17,24 @@ zscope-benchmark run --language c_cpp --mode formal --runs 5
 
 `test/range/benchmark/ground_truth.json` 是唯一评分真源。当前 v15 只用于描述性回归；新 formal 结果必须绑定独立签发的 v16 truth contract。任一版本的 `total_vulnerabilities` 都必须与记录数及唯一 ID 一致，文档不维护另一份漏洞表。
 
+E0完成后，v16位于独立的`benchmark/v16/`治理目录，使用`zscope.range-truth-contract.v2`和动态confirmable分母；`pattern_model`只进入design-risk/with-review指标，`retired`不评分。`scripts/score_range_v5.py`产生`zscope.benchmark.v5`，正式五轮聚合产生`zscope.formal-benchmark.v4`。v4/v15保持只读，不能与v5/v16直接宣称召回回归；缺少受保护E0 attestation时formal v5必须fail closed。
+
+单轮formal v5还要求Security Spec、Hypothesis Hunter、Proof Engine、provider usage、token守恒和answer-isolation字段齐全；paired结果必须逐项绑定Truth v16中的pair UID、manifest/source hash及两个扫描报告hash。五轮聚合必须显式传入冻结基线precision，用于执行policy v2的precision-delta门禁：
+
+```bash
+python scripts/score_range_v5.py aggregate \
+  --trial run-1/score-v5.json --trial run-2/score-v5.json \
+  --trial run-3/score-v5.json --trial run-4/score-v5.json \
+  --trial run-5/score-v5.json \
+  --e0-attestation e0-attestation.json \
+  --workflow-run-id "$TRUSTED_E0_RUN_ID" \
+  --head-sha "$TRUSTED_E0_HEAD_SHA" \
+  --baseline-actionable-precision 0.95 \
+  --output formal-v4.json
+```
+
+`--workflow-run-id`和`--head-sha`必须来自调用方已验证的受保护GitHub artifact元数据，不能从attestation正文自取。输入JSON拒绝重复key和非有限数。
+
 每轮从 fixture 复制严格 allowlist：`src/**`、`include/**`、`internal/**`、`CMakeLists.txt` 和中性 README。整个 `benchmark/`、报告、缓存、构建目录和本地运行历史都不能进入 scan-input。health/index/scan 环境不含 truth 路径，报告落盘后才由独立 score 子进程读取 truth。Range 仅是分布内开发回归集；它没有 safe control，也不能代替跨项目 public external、sealed 与 shadow 结果。
 
 `benchmark/deterministic_entries.json` 只服务无 LLM 的确定性候选回归，不是 fixed-entry 正式协议，也不参与自动入口发现。
