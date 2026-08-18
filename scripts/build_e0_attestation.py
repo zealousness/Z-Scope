@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-truth-v15", required=True, type=Path)
     parser.add_argument("--review-packet-catalog", required=True, type=Path)
     parser.add_argument("--normalized-decisions", required=True, type=Path)
+    parser.add_argument("--safe-pair-author-manifest", required=True, type=Path)
+    parser.add_argument("--safe-pair-author-artifact-digest", required=True)
     parser.add_argument("--review-bundle", required=True, type=Path)
     parser.add_argument("--review-provenance", required=True, type=Path)
     parser.add_argument("--safe-pair-manifest", required=True, type=Path)
@@ -94,6 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "source_truth_v15": args.source_truth_v15,
         "review_packet_catalog": args.review_packet_catalog,
         "normalized_decisions": args.normalized_decisions,
+        "safe_pair_author_manifest": args.safe_pair_author_manifest,
         "review_bundle": args.review_bundle,
         "review_provenance": args.review_provenance,
         "safe_pair_manifest": args.safe_pair_manifest,
@@ -109,6 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         truth_manifest = _object(args.truth_manifest)
         packet_catalog = _object(args.review_packet_catalog)
         normalized = _object(args.normalized_decisions)
+        pair_author_manifest = _object(args.safe_pair_author_manifest)
         review_bundle = _object(args.review_bundle)
         review_provenance = _object(args.review_provenance)
         pair_manifest = _object(args.safe_pair_manifest)
@@ -119,6 +124,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.review_bundle.resolve(strict=True).parent,
             review_bundle,
         )
+        pair_author_digest = str(args.safe_pair_author_artifact_digest)
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", pair_author_digest):
+            raise E0GovernanceError("safe-pair author artifact digest is invalid")
+        if (
+            set(pair_author_manifest)
+            != {
+                "schema_version",
+                "author_model",
+                "record_count",
+                "normalized_decisions_sha256",
+                "records",
+                "content_sha256",
+            }
+            or pair_author_manifest.get("schema_version")
+            != "zscope.range-v16-safe-pair-author-run.v1"
+            or pair_author_manifest.get("author_model") != "claude-opus-5"
+            or pair_author_manifest.get("record_count") != truth_contract.get("safe_unit_count")
+            or pair_author_manifest.get("normalized_decisions_sha256")
+            != artifacts["normalized_decisions"]
+            or pair_author_manifest.get("content_sha256")
+            != sha256_value(pair_author_manifest.get("records"))
+        ):
+            raise E0GovernanceError("safe-pair author manifest is invalid")
         if truth_manifest.get("truth_sha256") != artifacts["truth_v16"]:
             raise E0GovernanceError("truth manifest does not bind Truth v16 bytes")
         if truth_manifest.get("source_v15_sha256") != artifacts["source_truth_v15"]:
@@ -131,6 +159,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise E0GovernanceError("normalized decisions source Truth v15 binding mismatch")
         if normalized.get("packet_catalog_sha256") != packet_catalog.get("catalog_sha256"):
             raise E0GovernanceError("normalized decisions packet catalog binding mismatch")
+        if normalized.get("review_provenance") != review_provenance:
+            raise E0GovernanceError("normalized decisions protected provenance mismatch")
         if truth_manifest.get("truth_contract_manifest_sha256") != truth_contract.get(
             "manifest_sha256"
         ):
@@ -174,6 +204,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "truth_contract_manifest": str(truth_contract["manifest_sha256"]),
                 "review_packet_catalog_content": str(packet_catalog["catalog_sha256"]),
                 "normalized_decisions_content": str(normalized["content_sha256"]),
+                "safe_pair_author_content": str(pair_author_manifest["content_sha256"]),
+                "safe_pair_author_artifact": pair_author_digest.removeprefix("sha256:"),
                 "review_bundle_content": review_bundle_content,
             }
         )
