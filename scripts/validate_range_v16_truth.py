@@ -341,7 +341,9 @@ def validate_pair_index(value: Mapping[str, Any], *, pair_root: Path) -> set[str
             "fixed_or_near_miss_sha256": bound["fixed_or_near_miss"]["sha256"],
             "content_sha256": manifest["content_sha256"],
         }
-        if any(record.get(field) != expected_value for field, expected_value in expected_values.items()):
+        if any(
+            record.get(field) != expected_value for field, expected_value in expected_values.items()
+        ):
             raise E0GovernanceError(f"safe-pair index binding mismatch: {truth_id}")
     manifest_ids = {
         path.parent.name
@@ -388,9 +390,10 @@ def validate_truth_manifest(
         "content_sha256",
     }:
         _strict_sha(value.get(field), field=f"Truth v16 manifest {field}")
-    if value.get("v15_v16_directly_comparable") is not False or value.get(
-        "v4_v5_directly_comparable"
-    ) is not False:
+    if (
+        value.get("v15_v16_directly_comparable") is not False
+        or value.get("v4_v5_directly_comparable") is not False
+    ):
         raise E0GovernanceError("Truth v16 manifest must declare historical scores incomparable")
 
     truth = load_json_strict(truth_path.resolve(strict=True))
@@ -594,9 +597,7 @@ def _validate_truth_record_contract(
         raise E0GovernanceError(f"Truth v16 {truth_id} retired status is inconsistent")
 
     taxonomy_id = contract.get("defect_taxonomy_id")
-    if not isinstance(taxonomy_id, str) or not re.fullmatch(
-        r"[a-z][a-z0-9_]{1,127}", taxonomy_id
-    ):
+    if not isinstance(taxonomy_id, str) or not re.fullmatch(r"[a-z][a-z0-9_]{1,127}", taxonomy_id):
         raise E0GovernanceError(f"Truth v16 {truth_id} taxonomy identity is invalid")
     if record.get("category") != taxonomy_id:
         raise E0GovernanceError(f"Truth v16 {truth_id} category/taxonomy identity mismatch")
@@ -613,9 +614,7 @@ def _validate_truth_record_contract(
         anchor_kind = anchor.get("kind")
         if anchor_kind not in ANCHOR_KINDS:
             raise E0GovernanceError(f"Truth v16 {truth_id} anchor kind is invalid")
-        file_name = _canonical_path(
-            anchor.get("file"), field=f"Truth v16 {truth_id} anchor file"
-        )
+        file_name = _canonical_path(anchor.get("file"), field=f"Truth v16 {truth_id} anchor file")
         function = anchor.get("function")
         if not isinstance(function, str) or not function.strip():
             raise E0GovernanceError(f"Truth v16 {truth_id} anchor function is invalid")
@@ -772,9 +771,8 @@ def validate_truth_v16(truth: Mapping[str, Any], *, pair_root: Path) -> dict[str
         if not isinstance(record, Mapping):
             raise E0GovernanceError("Truth v16 record must be an object")
         record_fields = set(record)
-        if (
-            not TRUTH_ENTRY_REQUIRED_FIELDS.issubset(record_fields)
-            or not record_fields.issubset(TRUTH_ENTRY_ALLOWED_FIELDS)
+        if not TRUTH_ENTRY_REQUIRED_FIELDS.issubset(record_fields) or not record_fields.issubset(
+            TRUTH_ENTRY_ALLOWED_FIELDS
         ):
             raise E0GovernanceError("Truth v16 source record fields are invalid")
         truth_id = str(record.get("id") or "")
