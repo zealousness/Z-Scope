@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from zscope.benchmarking.attestation import load_balanced_attestation
+from zscope.benchmarking.protocol import MATCHER_VERSION
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
 from zscope.benchmarking.isolation import validate_oci_execution_evidence
 from zscope.benchmarking.replay_bundle import (
@@ -60,7 +61,7 @@ CPP_FORMAL_LIMITS = {
         *DEFAULT_BENCHMARK_POLICY.range_gates["telemetry_complete_rate"],
     ),
 }
-CPP_RANGE_AGGREGATE_LIMITS = {
+CPP_RANGE_AGGREGATE_LIMITS: Dict[str, tuple[tuple[str, ...], str, float]] = {
     name: ((name,), operator, threshold)
     for name, (operator, threshold) in DEFAULT_BENCHMARK_POLICY.range_gates.items()
 }
@@ -270,6 +271,18 @@ def _evaluate_formal_artifact(
         if not complete or leaked_truth:
             hard_blockers.append(f"{language}:run_{run_number}_incomplete")
         if current_frontend:
+            try:
+                score_payload = json.loads((run_dir / "score.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                score_payload = None
+            scoring_contract = (
+                score_payload.get("scoring_contract") if isinstance(score_payload, dict) else None
+            )
+            if (
+                not isinstance(scoring_contract, dict)
+                or scoring_contract.get("matcher_version") != MATCHER_VERSION
+            ):
+                hard_blockers.append(f"{language}:run_{run_number}_truth_matcher_not_current")
             artifact_hashes = run.get("artifact_hashes")
             expected_artifact_names = {
                 "report.json",
