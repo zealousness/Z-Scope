@@ -1,17 +1,20 @@
 {
   "schema_version": "zscope.runtime-reachability-manifest.v1",
   "design_version": "1.0.1",
-  "phase": "P3",
-  "audit_status": "p3_complete_with_approved_dual_reviews",
+  "phase": "P4",
+  "audit_status": "p4_complete_with_approved_dual_reviews",
   "p0_complete_commit": "314cddf299387cad7c998cc62990194535d2cb9b",
   "p1_complete_commit": "8d36b3f2f579f5d57d6d0bf1bcdabc2662164d72",
   "p2_complete_commit": "cba2e218cae69340c72f25eefcdbd9b00541565f",
   "p3_candidate_commit": "e69bce195d948e2d0832919eb105d82ba1d49ed4",
   "p3_candidate_tree": "edbd217754849a91e1990cafad7371532c23d695",
+  "p4_candidate_commit": "cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58",
+  "p4_candidate_tree": "71a63eb25fbf6d5c65f1294fa948caa88b64f026",
   "frozen_replay": {
     "p1_fixture_manifest": "tests/fixtures/p1_frozen_replay/manifest.json",
     "p2_qualification_manifest": "docs/design/zscope-2.0-security-architecture/acceptance/p2-qualification-manifest.json",
     "p3_corpus_manifest": "tests/fixtures/p3_security_specs/manifest.json",
+    "p4_qualification_manifest": "docs/design/zscope-2.0-security-architecture/acceptance/p4-qualification-manifest.json",
     "answer_free": true,
     "external_model_calls": 0,
     "network": false,
@@ -41,6 +44,23 @@
     "reviewer_identity_mode": "unavailable_read_only",
     "final_reviews": "approved_zero_blocking_findings"
   },
+  "hypothesis_hunter_qualification": {
+    "manifest": "docs/design/zscope-2.0-security-architecture/acceptance/p4-qualification-manifest.json",
+    "source_corpus": "tests/fixtures/p4_hypothesis_hunter/source-corpus.json",
+    "expected_results": "tests/fixtures/p4_hypothesis_hunter/expected-results.json",
+    "case_count": 120,
+    "positive_case_count": 36,
+    "safe_case_count": 48,
+    "near_miss_case_count": 36,
+    "safe_false_registration_count": 0,
+    "near_miss_false_registration_count": 0,
+    "contract_resolution_rate": 1.0,
+    "project_with_replayable_proof_count": 3,
+    "metamorphic_consistency": true,
+    "mode": "shadow",
+    "active_product_effect": "none",
+    "final_reviews": "approved_zero_blocking_findings"
+  },
   "audit_methods": [
     "strict schema and canonical-content validation",
     "finite thirteen-operation DSL registry validation",
@@ -58,9 +78,52 @@
     "zero-model P1 Candidate Ledger and P2 Proof Kernel replay",
     "public CLI, Web and MCP installed-wheel smoke",
     "wheel package-data, forbidden import and P1/P2/P3 reachability gates",
-    "full pytest, compileall, mypy and changed-Python Black validation"
+    "full pytest, compileall, mypy and changed-Python Black validation",
+    "candidate-blind key and scalar value rejection including Unicode/case variants",
+    "system-generated offer/action binding and selected-action fail-closed validation",
+    "independent shadow Candidate Ledger freeze and live-ledger isolation",
+    "P4 CAS, cache, root manifest and shadow-ledger hash tamper tests",
+    "120-unit answer-free qualification across four provider families and three projects",
+    "fast zero-model and alert-verify read-only P4 manifest replay",
+    "approved product-architecture and proof-security reviews on one candidate tree"
   ],
   "classifications": [
+    {
+      "component": "hypothesis_hunter_planner",
+      "classification": "localized_structural_shadow_planning",
+      "evidence": [
+        "audit units bind function, defect family, subject, region and structural fingerprint",
+        "system-owned Proof Kernel registry creates the finite offer/action catalog",
+        "alias roots schedule only one representative investigation"
+      ]
+    },
+    {
+      "component": "hypothesis_hunter_agent",
+      "classification": "one_call_tool_free_bounded_selection",
+      "evidence": [
+        "no repository tool is exposed",
+        "key and scalar prompt projection is recursively candidate-blind",
+        "model output can select only offered IDs and cannot submit facts or terminal state"
+      ]
+    },
+    {
+      "component": "hypothesis_hunter_shadow_ledger",
+      "classification": "independent_frozen_non_authoritative_ledger",
+      "evidence": [
+        "uses the common CandidateRegistrar with force_unconfirmed",
+        "has no live DecisionTrace store or validation queue edge",
+        "cannot reach Finding-root, report projection, promotion or TerminalAuthority"
+      ]
+    },
+    {
+      "component": "hypothesis_hunter_store",
+      "classification": "immutable_content_addressed_shadow_store",
+      "evidence": [
+        "atomic object and root-manifest writes",
+        "content, dependency, cache and ledger hashes are cross-validated",
+        "tampering fails closed to an empty shadow identity"
+      ]
+    },
     {
       "component": "security_spec_v2_contracts",
       "classification": "strict_immutable_shadow_artifacts",
@@ -174,37 +237,44 @@
     "default": ["discover_entries", "collect_candidates", "validate_candidates", "persist_report"],
     "resume": ["discover_entries", "plan_resume", "run_pending_entries", "merge_reused_reports"],
     "maintain": ["discover_entries", "compare_entry_state", "reuse_unchanged_report", "reconcile_history", "run_changed_entry"],
-    "alert_verify": "reuses the same valid frozen SecuritySpec manifest without write or authority",
+    "alert_verify": "reuses the same valid frozen SecuritySpec and Hypothesis Hunter manifests without write, model call or authority",
     "progress_invariant": "P1 frozen workflow progress is byte-equivalent after semantic normalization"
   },
   "public_entrypoints_validated": [
     "CLI source and installed-wheel imports",
     "CLI default/resume/maintain workflow",
-    "CLI alert-verify frozen SecuritySpec replay",
+    "CLI alert-verify frozen SecuritySpec and Hypothesis Hunter replay",
     "Web scan dispatch and read-only Security Spec Center",
     "MCP scan dispatch"
   ],
   "wheel_inventory": {
     "filename": "zscope-1.3.1-py3-none-any.whl",
-    "sha256": "5a5a3c1705f8120cd5d8a456e5d5aa10102b836b520f21778b496f3786c398ab",
-    "size_bytes": 1448933,
-    "entry_count": 268,
+    "sha256": "1be227391e4203170e98866fc17b44be6734681894f314de009a24653cc31074",
+    "size_bytes": 1517781,
+    "entry_count": 286,
     "build_command": "python -m pip wheel . --no-deps --no-build-isolation --no-cache-dir",
     "security_spec_module_count": 12,
     "security_spec_schema_count": 5,
     "qualification_artifact_count": 1,
+    "hypothesis_hunter_module_count": 10,
+    "hypothesis_hunter_schema_count": 6,
+    "hypothesis_hunter_prompt_count": 1,
+    "hypothesis_hunter_qualification_artifact_count": 1,
     "forbidden_security_spec_import_count": 0,
     "removed_p1_component_entry_count": 0,
     "proof_kernel_package_gate": "passed",
+    "p3_security_spec_package_gate": "passed",
+    "p4_hypothesis_package_gate": "passed",
     "installed_wheel_cli_web_mcp_import_smoke": "passed"
   },
   "limitations": [
     "The wheel is a local ignored artifact; its hash and inventory are recorded, but the wheel itself is not committed.",
     "Native Windows Black 25.11.0 hangs during grammar initialization; the same version passed all changed Python files under local WSL.",
     "No remote CI ran because no push or PR is authorized.",
-    "No external-model benchmark ran; the only external-model actions were the separately authorized read-only P3 architecture and proof-security reviews.",
+    "No external-model benchmark ran; the only P4 external-model actions were the separately authorized read-only architecture and proof-security reviews.",
     "Historical P0 benchmark aggregates remain unavailable locally and were not represented as replayed.",
-    "The Web Review Center remains read-only because the current server has no trusted reviewer identity."
+    "The Web Review Center remains read-only because the current server has no trusted reviewer identity.",
+    "The first full P4 suite run had one transient Windows timing assertion failure; the isolated rerun and clean exact-candidate full rerun passed."
   ],
   "stop_conditions": {
     "anonymous_write_succeeds": "not_observed",
@@ -215,6 +285,9 @@
     "public_entrypoint_breakage": "not_observed",
     "wheel_or_import_graph_failure": "not_observed",
     "authority_before_p5": "not_observed",
+    "candidate_blind_leak": "not_observed",
+    "safe_or_near_miss_false_registration": "not_observed",
+    "second_terminal_event": "not_observed",
     "formal_review_blocker": "approved_zero_blocking_findings"
   }
 }

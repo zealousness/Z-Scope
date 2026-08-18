@@ -1,0 +1,145 @@
+{
+  "schema_version": "zscope.p4-hypothesis-qualification-manifest.v1",
+  "status": "passed",
+  "candidate_commit": "cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58",
+  "candidate_tree": "71a63eb25fbf6d5c65f1294fa948caa88b64f026",
+  "hypothesis_hunter_mode": "shadow",
+  "active_product_effect": "none",
+  "case_count": 120,
+  "positive_case_count": 36,
+  "safe_case_count": 48,
+  "near_miss_case_count": 36,
+  "safe_and_near_miss_case_count": 84,
+  "project_count": 3,
+  "provider_family_count": 4,
+  "project_with_replayable_proof_count": 3,
+  "safe_false_registration_count": 0,
+  "near_miss_false_registration_count": 0,
+  "schema_resolution_rate": 1.0,
+  "evidence_resolution_rate": 1.0,
+  "action_resolution_rate": 1.0,
+  "metamorphic_consistency": true,
+  "llm_calls": 0,
+  "network": false,
+  "external_model_benchmark": false,
+  "answer_free": true,
+  "schema_hashes": {
+    "localized-coverage-key-v2": "4467752748c9726140a5f46243d885ce70d179a43c99203830b7f53da8eea9c9",
+    "attack-surface-audit-unit-v2": "f35cd25a21ddcd132524d876d3628b5cb4319022faca402094fc2ee1ddde9d11",
+    "hypothesis-offer-v2": "44b91d6a7621e39a8708c893c0592d72f9f89e0ac9edfb64f1c4337ae0b6771d",
+    "hypothesis-hunt-report-v2": "a150bea822705ec73db14bcab10f61d3d3277758f0934e42c4b198b948d89963",
+    "security-hypothesis-v2": "259c7fb3a148b5a6cc93cf3527de4cdb97278031b6474b121bbd5f03a8af19a0",
+    "hypothesis-coverage-observation-v1": "4f458c78ef663c2a5f9677c40e0ea3094319c88840dee2b70cfa65af3aa54cf2"
+  },
+  "corpus_hashes": {
+    "tests/fixtures/p4_hypothesis_hunter/source-corpus.json": "85c623e1d7a10e53b8a09d2b98ba5d4d57282847874ee7658ebcbbbd3abf3e79",
+    "tests/fixtures/p4_hypothesis_hunter/expected-results.json": "bedc0bbaedbf074ef5bbf286b1672785439091b4ff17dd57bba832751e5adc91",
+    "tests/fixtures/p4_hypothesis_hunter/qualification-contract.json": "ee58b4d35d65022e279ee86a4c742e36b8b1357a1ee3e72f5f8f095ca4f70c54",
+    "source-corpus-semantic": "ebd98bc94b68ccc8c2577cec427f97147d41d16fb5d0e9ab1732c6c841a329f5",
+    "expected-results-semantic": "6e1d1e8d81ce458062d3aa71e893a04c2b19c9865311dd2b018c4d0758a2121c"
+  },
+  "artifact_hashes": {
+    "zscope/orchestration/hypothesis_hunter/qualification/qualification-artifact.json": "fe546fe0538131e818097e7e0e484aa66c2df34e312f8775ffa71b3c3832a0e9",
+    "scripts/qualify_p4_hypothesis_hunter.py": "c4b7c9f3d20fc85e5c0b6fc9531dc1a0a37bfa5219c5af8f93806f11d2cfd1e4",
+    "scripts/check_p4_hypothesis_lifecycle.py": "4436726cadfa58b3dae1369310d10de80aeea929ae810961402068f714a2bdc7",
+    "scripts/check_p4_hypothesis_package.py": "14a7d69ef329d883c72849184d6f22420a410bc931e2430bc44bd72e0f5be82f",
+    "zscope/agents/hypothesis_hunter/AGENT.md": "6b3e80126f273215df21f199811a648cbb2405a9165fbd7041ebd29435c96a69",
+    "local-wheel/zscope-1.3.1-py3-none-any.whl": "1be227391e4203170e98866fc17b44be6734681894f314de009a24653cc31074"
+  },
+  "qualification": {
+    "content_sha256": "35bb10c4fa80ab0280fcb19d48e1d55b9587d182137cb4b9248c247f39631ad9",
+    "source_project_uids": ["PROJECT_HARBOR", "PROJECT_ORCHARD", "PROJECT_SUMMIT"],
+    "provider_families": ["concurrency", "resource", "path_guard", "contract_type"],
+    "positive_registered_count": 36,
+    "safe_false_registration_count": 0,
+    "near_miss_false_registration_count": 0
+  },
+  "environment": {
+    "host": "Windows-10-10.0.26200-SP0 with local WSL Ubuntu 24.04",
+    "python": "3.10.5",
+    "git": "2.52.0.windows.1",
+    "black": "25.11.0 under WSL Python 3.12.3",
+    "wheel_build": "local no-isolation/no-dependency build",
+    "qualification_model_and_network": "deterministic frozen IR replay only; no model or network"
+  },
+  "wheel": {
+    "filename": "zscope-1.3.1-py3-none-any.whl",
+    "sha256": "1be227391e4203170e98866fc17b44be6734681894f314de009a24653cc31074",
+    "size_bytes": 1517781,
+    "entry_count": 286,
+    "hypothesis_hunter_module_count": 10,
+    "hypothesis_schema_count": 6,
+    "qualification_artifact_count": 1,
+    "prompt_count": 1,
+    "p1_removed_runtime_reachability_gate": "passed",
+    "p2_proof_package_gate": "passed",
+    "p3_security_spec_package_gate": "passed",
+    "p4_hypothesis_package_gate": "passed",
+    "installed_wheel_import_and_package_data_smoke": "passed"
+  },
+  "commands": [
+    {"command": "python -m pytest -q", "status": "passed", "result": "1961 passed, 7 skipped in 216.60 seconds"},
+    {"command": "python -m compileall -f -q zscope scripts test tests", "status": "passed"},
+    {"command": "python -m mypy zscope", "status": "passed", "result": "225 source files"},
+    {"command": "Black 25.11.0 --check on 26 changed Python files under local WSL", "status": "passed"},
+    {"command": "python scripts/qualify_p4_hypothesis_hunter.py --check", "status": "passed"},
+    {"command": "python scripts/check_p4_hypothesis_lifecycle.py", "status": "passed"},
+    {"command": "python scripts/check_benchmark_hygiene.py", "status": "passed"},
+    {"command": "python scripts/check_zscope_2_design_evidence.py", "status": "passed_with_three_historical_external_artifact_warnings"},
+    {"command": "python scripts/check_zscope_2_change_scope.py --base 57ac77d2cba03b1169f7fbfe6f565b5575011172 --head cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58", "status": "passed_product_only"},
+    {"command": "python -m pip wheel . --no-deps --no-build-isolation --no-cache-dir", "status": "passed"},
+    {"command": "python scripts/check_p1_runtime_reachability.py --wheel tmp/p4-candidate-wheel/zscope-1.3.1-py3-none-any.whl", "status": "passed"},
+    {"command": "python scripts/check_p2_proof_package.py tmp/p4-candidate-wheel/zscope-1.3.1-py3-none-any.whl", "status": "passed"},
+    {"command": "python scripts/check_p3_security_spec_package.py tmp/p4-candidate-wheel/zscope-1.3.1-py3-none-any.whl", "status": "passed"},
+    {"command": "python scripts/check_p4_hypothesis_package.py tmp/p4-candidate-wheel/zscope-1.3.1-py3-none-any.whl", "status": "passed"},
+    {"command": "isolated installed-wheel P4 import and package-data smoke", "status": "passed"},
+    {"command": "public CLI/Web/MCP test and help smoke", "status": "passed"},
+    {"command": "git diff --check", "status": "passed"}
+  ],
+  "stable_replay": {
+    "p1_frozen_replay": "passed",
+    "p2_proof_replay": "passed",
+    "p3_security_spec_replay": "passed",
+    "candidate_outcomes_changed": false,
+    "finding_root_views_changed": false,
+    "workflow_progress_changed": false,
+    "terminal_event_count_changed": false,
+    "proof_shadow_decision_changed": false,
+    "default_resume_maintain_alert_verify": "passed"
+  },
+  "limitations": [
+    "The three large historical P0 benchmark aggregates are absent from this worktree; their recorded hashes remain historical limitations and were not represented as replayed.",
+    "The first full-suite run had one transient Windows timing assertion failure; the isolated test passed immediately and the clean exact-candidate rerun passed 1961 tests with 7 skipped.",
+    "Native Windows Black 25.11.0 hangs during grammar initialization; the identical release passed all 26 changed Python files under local WSL, with intermittent WSL E_ACCESSDENIED retries recorded as an environment limitation.",
+    "The wheel is a local ignored artifact; only its hash, size, inventory and installed-target package/import results are recorded.",
+    "No external-model benchmark, remote CI, push, PR or design tag was executed.",
+    "The two external-model actions were the separately authorized read-only P4 product-architecture and proof-security reviews; neither was a benchmark."
+  ],
+  "stop_conditions": {
+    "candidate_blind_leak": "not_observed",
+    "safe_or_near_miss_false_registration": "not_observed",
+    "proof_not_replayable": "not_observed",
+    "stable_replay_drift": "not_observed",
+    "second_terminal_event": "not_observed",
+    "shadow_takes_authority": "not_observed",
+    "wheel_or_import_graph_failure": "not_observed",
+    "formal_review_blocker": "approved_zero_blocking_findings"
+  },
+  "review_status": "approved",
+  "reviews": {
+    "product_architecture": {
+      "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p4-product-architecture.json",
+      "reviewer": "claude-code/claude-opus-5",
+      "scope": "final_product_architecture",
+      "decision": "approved",
+      "blocking_finding_count": 0
+    },
+    "proof_security": {
+      "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p4-proof-security.json",
+      "reviewer": "dsh/deepseek-v4-pro:max",
+      "scope": "final_proof_security",
+      "decision": "approved",
+      "blocking_finding_count": 0
+    }
+  }
+}
