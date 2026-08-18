@@ -1474,10 +1474,7 @@ def test_shadow_proof_kernel_cannot_downgrade_stable_verified_policy() -> None:
     assert issue["candidate_disposition"] == "confirmed"
     assert issue["terminal_authority"] == "validation_pipeline_compat"
     assert issue["proof_kernel_mode"] == "shadow"
-    assert (
-        issue["proof_kernel_shadow_terminal_authority_decision"]["disposition"]
-        == "needs_review"
-    )
+    assert issue["proof_kernel_shadow_terminal_authority_decision"]["disposition"] == "needs_review"
 
 
 def test_stable_validator_evidence_slice_disables_open_ended_tools() -> None:
