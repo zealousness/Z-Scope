@@ -494,6 +494,87 @@ def test_engine_resolves_conflict_programmatically_and_stays_shadow() -> None:
     assert result.reason_code == "programmatic_proof_conflict"
 
 
+def test_authoritative_closure_requires_verified_true_for_every_required_clause() -> None:
+    graph = _graph(complete=False)
+    proof_ir = program_proof_ir_from_graph(
+        graph, project_uid="PROJECT_NEUTRAL", revision_uid="REV_NEUTRAL"
+    )
+    spec = PREDICATE_REGISTRY["source_sink_path_exists"]
+    confirmation = build_proof_clause(
+        role="confirmation",
+        provider_family=spec.provider_family,
+        predicate_id=spec.predicate_id,
+        fact_kind=spec.fact_kind,
+        quantifier=spec.quantifier,
+        expected_value={"path_exists": True},
+        parameters={"source_node_uid": "B3", "sink_node_uid": "B1"},
+    )
+    counterproof = build_proof_clause(
+        role="counterproof",
+        provider_family=spec.provider_family,
+        predicate_id=spec.predicate_id,
+        fact_kind=spec.fact_kind,
+        quantifier=spec.quantifier,
+        expected_value={"path_exists": False},
+        parameters={"source_node_uid": "B1", "sink_node_uid": "B3"},
+    )
+    obligation = build_proof_obligation(
+        validation_cluster_uid="VAL_REQUIRED_COUNTERPROOF",
+        defect_family="neutral_family",
+        subject_uid="SUBJECT_NEUTRAL",
+        decision_region_uid="REGION_NEUTRAL",
+        confirmation_clauses=(confirmation,),
+        counterproof_clauses=(counterproof,),
+        dependency_hashes=proof_ir["dependency_hashes"],
+    )
+
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=proof_ir,
+        obligation=obligation,
+    )
+
+    assert [value["status"] for value in evaluation.check_results] == [
+        "accepted",
+        "unknown",
+    ]
+    assert evaluation.decision == "needs_review"
+    assert evaluation.reason_code == "open_or_unknown_proof_clause"
+
+
+def test_authoritative_closure_rejects_required_non_executable_clause() -> None:
+    proof_ir, base_obligation, _ = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    counterproof = build_proof_clause(
+        role="counterproof",
+        provider_family="contract_type",
+        predicate_id="value_range",
+        fact_kind="value_range",
+        quantifier="exact_binding",
+        expected_value={"within_safe_range": True},
+        parameters={"value_uid": "SUBJECT_NEUTRAL"},
+    )
+    obligation = build_proof_obligation(
+        validation_cluster_uid="VAL_NON_EXECUTABLE_COUNTERPROOF",
+        defect_family="neutral_family",
+        subject_uid="SUBJECT_NEUTRAL",
+        decision_region_uid="REGION_NEUTRAL",
+        confirmation_clauses=base_obligation["confirmation_clauses"],
+        counterproof_clauses=(counterproof,),
+        dependency_hashes=proof_ir["dependency_hashes"],
+    )
+
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=proof_ir,
+        obligation=obligation,
+    )
+
+    assert evaluation.decision == "needs_review"
+    assert evaluation.reason_code == "required_clause_not_executable"
+
+
 def test_cas_rejects_tampered_object_and_unsafe_reference(tmp_path: Path) -> None:
     store = ProofArtifactStore(tmp_path)
     reference = store.put("sample", {"value": 1})
