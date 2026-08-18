@@ -10,6 +10,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 
 TRUTH_CONTRACT_SCHEMA_VERSION = "zscope.range-truth-contract.v1"
+TRUTH_CONTRACT_V2_SCHEMA_VERSION = "zscope.range-truth-contract.v2"
 TRUTH_CONTRACT_KINDS = frozenset(
     {"concrete_trigger", "public_api_contract", "pattern_model", "retired"}
 )
@@ -41,6 +42,8 @@ def summarize_truth_contract(truth: Mapping[str, Any]) -> Dict[str, Any]:
             "attestation_sha256": "",
             "reason": "historical truth has no independently attested verification contract",
         }
+    if manifest.get("schema_version") == TRUTH_CONTRACT_V2_SCHEMA_VERSION:
+        return _summarize_truth_contract_v2(truth, manifest)
     allowed = {
         "schema_version",
         "manifest_sha256",
@@ -138,6 +141,179 @@ def summarize_truth_contract(truth: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _summarize_truth_contract_v2(
+    truth: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> Dict[str, Any]:
+    allowed_manifest = {
+        "schema_version",
+        "manifest_sha256",
+        "review_bundle_sha256",
+        "taxonomy_sha256",
+        "independent_review_complete",
+        "review_protocol",
+        "safe_unit_count",
+    }
+    if set(manifest) != allowed_manifest:
+        raise ValueError("truth_contract v2 fields do not match the contract")
+    for field in ("manifest_sha256", "review_bundle_sha256", "taxonomy_sha256"):
+        if not _SHA256_RE.fullmatch(str(manifest.get(field) or "")):
+            raise ValueError(f"truth contract v2 {field} must be sha256")
+    if manifest.get("independent_review_complete") is not True:
+        raise ValueError("truth contract v2 requires completed independent review")
+    safe_unit_count = manifest.get("safe_unit_count")
+    if isinstance(safe_unit_count, bool) or not isinstance(safe_unit_count, int):
+        raise ValueError("truth contract v2 safe_unit_count must be an integer")
+    if safe_unit_count < 0:
+        raise ValueError("truth contract v2 safe_unit_count cannot be negative")
+
+    expected_contract_fields = {
+        "schema_version",
+        "kind",
+        "adjudication_status",
+        "defect_taxonomy_id",
+        "structured_anchors",
+        "trigger",
+        "threat_assumptions",
+        "required_evidence_clauses",
+        "review_artifacts",
+        "safe_pair",
+        "fixture_sha256",
+    }
+    counts = {kind: 0 for kind in sorted(TRUTH_CONTRACT_KINDS)}
+    canonical_records: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in _records(truth):
+        truth_id = str(record.get("id") or "")
+        if not truth_id or truth_id in seen:
+            raise ValueError("truth contract v2 IDs must be unique and non-empty")
+        seen.add(truth_id)
+        contract = record.get("verification_contract")
+        if not isinstance(contract, Mapping) or set(contract) != expected_contract_fields:
+            raise ValueError(f"truth {truth_id} verification_contract v2 fields are invalid")
+        if contract.get("schema_version") != "zscope.range-truth-record.v2":
+            raise ValueError(f"truth {truth_id} record contract schema is invalid")
+        kind = str(contract.get("kind") or "")
+        status = str(contract.get("adjudication_status") or "")
+        if kind not in TRUTH_CONTRACT_KINDS:
+            raise ValueError(f"truth {truth_id} has invalid verification contract kind")
+        if status not in TRUTH_ADJUDICATION_STATUSES:
+            raise ValueError(f"truth {truth_id} has invalid adjudication status")
+        if kind == "retired" and status != "retired":
+            raise ValueError(f"truth {truth_id} retired contract must have retired status")
+        taxonomy_id = str(contract.get("defect_taxonomy_id") or "")
+        if not taxonomy_id:
+            raise ValueError(f"truth {truth_id} defect taxonomy identity is missing")
+        anchors = contract.get("structured_anchors")
+        if not isinstance(anchors, list) or not anchors:
+            raise ValueError(f"truth {truth_id} structured anchors are missing")
+        for anchor in anchors:
+            if not isinstance(anchor, Mapping) or set(anchor) != {
+                "kind",
+                "file",
+                "function",
+                "start_line",
+                "end_line",
+            }:
+                raise ValueError(f"truth {truth_id} structured anchor is invalid")
+            if not str(anchor.get("file") or "") or not str(anchor.get("function") or ""):
+                raise ValueError(f"truth {truth_id} anchor file/function is missing")
+            start = anchor.get("start_line")
+            end = anchor.get("end_line")
+            if (
+                isinstance(start, bool)
+                or isinstance(end, bool)
+                or not isinstance(start, int)
+                or not isinstance(end, int)
+                or start < 1
+                or end < start
+            ):
+                raise ValueError(f"truth {truth_id} anchor line range is invalid")
+        trigger = contract.get("trigger")
+        if not isinstance(trigger, Mapping) or set(trigger) != {"summary", "evidence_refs"}:
+            raise ValueError(f"truth {truth_id} trigger contract is invalid")
+        if not str(trigger.get("summary") or ""):
+            raise ValueError(f"truth {truth_id} trigger summary is missing")
+        evidence_refs = trigger.get("evidence_refs")
+        if not isinstance(evidence_refs, list) or not all(
+            isinstance(value, str) and value.strip() for value in evidence_refs
+        ):
+            raise ValueError(f"truth {truth_id} trigger evidence refs are invalid")
+        assumptions = contract.get("threat_assumptions")
+        clauses = contract.get("required_evidence_clauses")
+        if not isinstance(assumptions, list) or not all(
+            isinstance(value, str) and value.strip() for value in assumptions
+        ):
+            raise ValueError(f"truth {truth_id} threat assumptions are invalid")
+        if not isinstance(clauses, list) or not clauses or not all(
+            isinstance(value, Mapping) and str(value.get("clause_id") or "").strip()
+            for value in clauses
+        ):
+            raise ValueError(f"truth {truth_id} required evidence clauses are invalid")
+        reviews = contract.get("review_artifacts")
+        required_reviews = {"fable_sha256", "deepseek_sha256", "normalized_sha256"}
+        if not isinstance(reviews, Mapping) or not required_reviews.issubset(reviews):
+            raise ValueError(f"truth {truth_id} dual review artifacts are missing")
+        if set(reviews) - (required_reviews | {"opus_sha256"}):
+            raise ValueError(f"truth {truth_id} review artifacts contain unknown fields")
+        if not all(_SHA256_RE.fullmatch(str(value or "")) for value in reviews.values()):
+            raise ValueError(f"truth {truth_id} review artifact hash is invalid")
+        pair = contract.get("safe_pair")
+        if not isinstance(pair, Mapping):
+            raise ValueError(f"truth {truth_id} safe pair contract is invalid")
+        if kind in {"concrete_trigger", "public_api_contract"}:
+            required_pair = {
+                "pair_uid",
+                "manifest_sha256",
+                "vulnerable_sha256",
+                "fixed_or_near_miss_sha256",
+            }
+            if set(pair) != required_pair or not str(pair.get("pair_uid") or ""):
+                raise ValueError(f"truth {truth_id} confirmable contract requires a safe pair")
+            if not all(
+                _SHA256_RE.fullmatch(str(value or ""))
+                for key, value in pair.items()
+                if key != "pair_uid"
+            ):
+                raise ValueError(f"truth {truth_id} safe pair hash is invalid")
+        elif pair:
+            raise ValueError(f"truth {truth_id} non-confirmable contract cannot bind a safe pair")
+        if not _SHA256_RE.fullmatch(str(contract.get("fixture_sha256") or "")):
+            raise ValueError(f"truth {truth_id} fixture hash is invalid")
+        counts[kind] += 1
+        canonical_records.append({"truth_id": truth_id, **dict(contract)})
+
+    calculated_manifest = hashlib.sha256(
+        json.dumps(
+            canonical_records,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if calculated_manifest != str(manifest.get("manifest_sha256")):
+        raise ValueError("truth contract v2 manifest hash does not bind verification records")
+    confirmable = counts["concrete_trigger"] + counts["public_api_contract"]
+    if safe_unit_count < confirmable:
+        raise ValueError("truth contract v2 safe units do not cover confirmable truth")
+    return {
+        "schema_version": TRUTH_CONTRACT_V2_SCHEMA_VERSION,
+        "present": True,
+        "formal_eligible": True,
+        "truth_version": str(truth.get("version") or ""),
+        "confirmable_truth_count": confirmable,
+        "pattern_model_count": counts["pattern_model"],
+        "retired_count": counts["retired"],
+        "required_confirmed_tp": math.ceil(0.85 * confirmable),
+        "counts_by_kind": counts,
+        "safe_unit_count": safe_unit_count,
+        "manifest_sha256": str(manifest.get("manifest_sha256")),
+        "review_bundle_sha256": str(manifest.get("review_bundle_sha256")),
+        "taxonomy_sha256": str(manifest.get("taxonomy_sha256")),
+        "attestation_sha256": "",
+        "review_protocol": str(manifest.get("review_protocol") or ""),
+    }
+
+
 def truth_records_for_contract(
     truth: Mapping[str, Any],
     *,
@@ -158,6 +334,7 @@ __all__ = [
     "TRUTH_ADJUDICATION_STATUSES",
     "TRUTH_CONTRACT_KINDS",
     "TRUTH_CONTRACT_SCHEMA_VERSION",
+    "TRUTH_CONTRACT_V2_SCHEMA_VERSION",
     "summarize_truth_contract",
     "truth_records_for_contract",
 ]

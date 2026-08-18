@@ -83,6 +83,7 @@ tests:
 - trial扫描失败或人工早停时，runner在清理临时answer-free workspace前只归档usage、decision/coverage trace、evidence objects和model events，生成`zscope.interrupted-benchmark-diagnostics.v1`并固定`release_eligible=false`；不得复制源码、配置、truth、scorer或reasoning正文。正常完成的run仍必须走report绑定的严格归档与守恒校验，partial诊断不能替代正式结果。
 - Range 是分布内开发/回归集，不是生产泛化结论。发布必须依次报告 Range、public external、独立团队保管的 sealed 集和真实项目 shadow；没有 sealed attestation 不能宣称通过生产门禁。
 - formal/sealed 扫描必须在 rootless OCI 隔离中运行，只挂载 answer-free 项目、配置、工具链和输出目录；scanner cwd、mount 和环境不得可达源码 checkout、`test/`、truth 或 scorer。缺少 Podman/Docker 隔离能力时 fail closed。
+- Z-SCOPE 2.0 的评测轨新增 `zscope.benchmark.v5`、`zscope.formal-benchmark.v4`、`zscope.benchmark-policy.v2` 与 `zscope.defect-taxonomy.v1`。v5继续复用matcher v2的强结构化配对，不允许keyword、自由文本或跨锚点拼接形成TP；confirmable、pattern-model和retired truth分开计量。Security Spec、Hypothesis Hunter与Proof Engine指标缺失时开发评分显示`not_available`，formal v5则fail closed。Token在v5中只作运行后成本与Pareto度量，不是产品运行时门限。
 - formal workflow 除要求 `repository@sha256:<digest>` 外，还校验 scanner image 的 `org.opencontainers.image.revision` 等于被测 Git SHA；每轮 summary 绑定 report、score、input manifest、tool health、Validator replay bundle 与原始 usage sidecar 的实际字节 SHA，Release evaluator 会从下载 artifact 重新计算并逐项对账。
 - public external formal 必须把项目复制到 checkout 外的临时 sealed input，再复制到独立的 writable cache project；只读输入、writable artifact 和 writable cache 三个 mount 必须互不包含。entries 要先通过 answer-key 字段检查，容器 config/compile commands 只含容器路径，truth 必须等 scanner 退出并通过 `require_release_isolation` 后才由 host scorer 加载。
 - 正式 unified 结果要求 Linux 用户态和完整工具链，SVF/Saber 降级结果不能冒充正式结果。
