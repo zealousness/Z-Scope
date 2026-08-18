@@ -9,7 +9,8 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 - 状态：`reviewed`
 - 当前阶段：`P0 baseline-and-design-freeze`
 - 当前产品事实：仍以[`docs/architecture.md`](../../architecture.md)为准
-- 进入`approved`的阻塞：基线工作树仍有未归档修改；详见`design-manifest.json`
+- 基线状态：已拆分为Truth、运行配置、Scorer和产品四个可审计提交，工作树干净
+- 进入`approved`的阻塞：cold fast/balanced基线已冻结，但三方正式审核尚未完成；详见`design-manifest.json`
 
 ## 权威文件
 
