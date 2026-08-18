@@ -19,10 +19,13 @@ flowchart LR
     Facts --> Planner["Attack-surface Planner"]
     Planner --> Hunter["Hypothesis Hunter"]
     Hunter --> Hypothesis["SecurityHypothesis v2"]
-    Hypothesis --> Ledger["Candidate Ledger + Freeze"]
-    Ledger --> Proof["Proof Engine"]
+    Hypothesis --> ShadowLedger["P4 Shadow Ledger + Freeze"]
+    ShadowLedger --> Proof["Proof Engine shadow"]
     Facts --> Proof
-    Proof --> Terminal["confirmed / needs_review / rejected"]
+    Proof --> ShadowDecision["shadow proof decision"]
+    Facts --> LiveLedger["Stable Candidate Ledger + Freeze"]
+    LiveLedger --> Terminal["stable product terminal"]
+    ShadowDecision -. refs only .-> Trace["Decision Trace"]
     Terminal --> Trace["Decision Trace"]
     Terminal --> Score["Benchmark v5"]
 ```
@@ -53,8 +56,9 @@ Security Spec是声明式分析数据，不是机器学习模型。编译器只�
 - Planner只从攻击面、语义unknown/conflict、动态调用缺口和局部candidate desert触发。
 - Hunter输出defect family、subject、decision region、正反clause和可执行EvidenceAction。
 - Hunter不得读取truth、score、规则结论、candidate ID或完整Candidate Ledger。
-- Hunter不得直接写confirmed；假设必须经CandidateRegistrar、Ledger freeze和Proof Engine。
+- Hunter不得直接写confirmed；严格选择先经Proof Checker重算，只有完整确认proof才可由CandidateRegistrar写入独立shadow Ledger并freeze；其他结果只写coverage observation。
 - `fast`不运行Hunter；`balanced/deep`按coverage gap运行。
+- P5前shadow Ledger不连接live ValidationRunner、promotion、Finding-root或默认报告；alert-verify只离线加载并复验已有artifact。
 
 ## Proof Engine
 

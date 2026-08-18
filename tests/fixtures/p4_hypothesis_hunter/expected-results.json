@@ -1,0 +1,31 @@
+{
+  "schema_version": "zscope.p4-hypothesis-expected-results.v1",
+  "classification_by_variant_index": {
+    "0": "positive",
+    "1": "positive",
+    "2": "positive",
+    "3": "safe",
+    "4": "safe",
+    "5": "safe",
+    "6": "safe",
+    "7": "near_miss",
+    "8": "near_miss",
+    "9": "near_miss"
+  },
+  "expected_registration": {
+    "positive": true,
+    "safe": false,
+    "near_miss": false
+  },
+  "expected_shadow_decision": {
+    "positive": "confirmed",
+    "safe": "needs_review",
+    "near_miss": "needs_review"
+  },
+  "minimums": {
+    "audit_units": 120,
+    "safe_units": 48,
+    "project_count": 3,
+    "provider_family_count": 4
+  }
+}

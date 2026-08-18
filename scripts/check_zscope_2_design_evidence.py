@@ -22,6 +22,7 @@ P0_REVIEW_ROLES = ("product_architecture", "proof_security", "independent_benchm
 P1_REVIEW_ROLES = ("product_architecture",)
 P2_REVIEW_ROLES = ("proof_security",)
 P3_REVIEW_ROLES = ("product_architecture", "proof_security")
+P4_REVIEW_ROLES = ("product_architecture", "proof_security")
 DESIGN_STATUSES = (
     "draft",
     "reviewed",
@@ -474,6 +475,62 @@ def validate_p3_review_documents(
     return errors
 
 
+def validate_p4_review_documents(
+    phase_review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+) -> list[str]:
+    """Validate the two independent reviews required to complete P4."""
+
+    errors: list[str] = []
+    artifacts = phase_review.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P4_REVIEW_ROLES):
+        return ["P4 phase review must contain product_architecture and proof_security"]
+    reviewed_commit = str(phase_review.get("reviewed_commit") or "")
+    reviewed_tree = str(phase_review.get("reviewed_tree") or "")
+    if HEX_40.fullmatch(reviewed_commit) is None:
+        errors.append("P4 phase review reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(reviewed_tree) is None:
+        errors.append("P4 phase review reviewed_tree must be a full Git tree")
+    requirements = {
+        "product_architecture": ("final_product_architecture", "claude-opus-5"),
+        "proof_security": ("final_proof_security", "deepseek-v4-pro"),
+    }
+    for role in P4_REVIEW_ROLES:
+        spec = artifacts.get(role)
+        review = reviews.get(role)
+        if not isinstance(spec, dict) or not isinstance(review, dict):
+            errors.append(f"P4 {role}: review specification or document is missing")
+            continue
+        errors.extend(f"P4 {role}: {row}" for row in validate_json_schema(review, review_schema))
+        expected_scope, expected_model = requirements[role]
+        if review.get("review_scope") != expected_scope:
+            errors.append(f"P4 {role}: review scope must be {expected_scope}")
+        if review.get("role") != role:
+            errors.append(f"P4 {role}: review document has the wrong role")
+        if review.get("reviewer_model") != expected_model:
+            errors.append(f"P4 {role}: reviewer model is not the assigned model")
+        if review.get("reviewer_model") != spec.get("reviewer_model"):
+            errors.append(f"P4 {role}: reviewer model differs from the phase assignment")
+        if review.get("harness") != spec.get("harness"):
+            errors.append(f"P4 {role}: harness differs from the phase assignment")
+        if "read-only" not in str(review.get("harness") or ""):
+            errors.append(f"P4 {role}: completion review must be read-only")
+        if role == "proof_security" and "reasoning_effort=max" not in str(
+            review.get("harness") or ""
+        ):
+            errors.append("P4 proof_security: completion review must use maximum reasoning")
+        if review.get("reviewed_commit") != reviewed_commit:
+            errors.append(f"P4 {role}: reviewed commit differs from the phase target")
+        if review.get("reviewed_tree") != reviewed_tree:
+            errors.append(f"P4 {role}: reviewed tree differs from the phase target")
+        if review.get("decision") != "approved":
+            errors.append(f"P4 {role}: completion requires an approved review decision")
+        if review.get("blocking_findings") != []:
+            errors.append(f"P4 {role}: completion requires zero blocking findings")
+    return errors
+
+
 def _validate_approval_tag(
     repo_root: Path, manifest: Mapping[str, Any], report: ValidationReport
 ) -> None:
@@ -645,6 +702,17 @@ def validate_phase_gates(
             errors.append("P3 completion requires product_architecture and proof_security reviews")
         elif not isinstance(p3_review.get("qualification_manifest"), str):
             errors.append("P3 completion requires a qualification manifest binding")
+    if raw_manifest_phases.get("P4") in {"in_progress", "complete"} and (
+        raw_manifest_phases.get("P2") != "complete" or raw_manifest_phases.get("P3") != "complete"
+    ):
+        errors.append("P4 requires P2 and P3 complete")
+    if raw_manifest_phases.get("P4") == "complete":
+        phase_reviews = manifest.get("phase_reviews")
+        p4_review = phase_reviews.get("P4") if isinstance(phase_reviews, dict) else None
+        if not isinstance(p4_review, dict):
+            errors.append("P4 completion requires product_architecture and proof_security reviews")
+        elif not isinstance(p4_review.get("qualification_manifest"), str):
+            errors.append("P4 completion requires a qualification manifest binding")
 
     approval = manifest.get("approval")
     review_roles = manifest.get("review_roles")
@@ -1037,8 +1105,15 @@ def validate_design_evidence(
                     report.error(
                         "P3 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
                     )
-                changed = _git_text(
-                    repo_root, "diff", "--name-only", f"{reviewed_commit}..HEAD", "--"
+                p4_status = (
+                    manifest.get("phase_status", {}).get("P4")
+                    if isinstance(manifest.get("phase_status"), dict)
+                    else None
+                )
+                changed = (
+                    _git_text(repo_root, "diff", "--name-only", f"{reviewed_commit}..HEAD", "--")
+                    if p4_status == "pending"
+                    else None
                 )
                 if changed is not None:
                     allowed = {
@@ -1057,6 +1132,134 @@ def validate_design_evidence(
                     if unexpected:
                         report.error(
                             "P3 reviewed candidate has post-review product/corpus changes: "
+                            + ", ".join(unexpected)
+                        )
+
+    p4_complete = (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P4") == "complete"
+    )
+    if p4_complete:
+        p4_review = phase_reviews.get("P4") if isinstance(phase_reviews, dict) else None
+        if isinstance(p4_review, dict):
+            try:
+                p4_schema_path = resolve_repository_path(
+                    repo_root, str(p4_review.get("schema", "")), relative_root=design_root
+                )
+                p4_qualification_path = resolve_repository_path(
+                    repo_root,
+                    str(p4_review.get("qualification_manifest", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(f"P4 phase review: {exc}")
+                p4_schema_path = None
+                p4_qualification_path = None
+            p4_schema = (
+                _read_governance_json(p4_schema_path, report)
+                if p4_schema_path is not None
+                else None
+            )
+            p4_qualification = (
+                _read_governance_json(p4_qualification_path, report)
+                if p4_qualification_path is not None
+                else None
+            )
+            p4_reviews: dict[str, Any] = {}
+            p4_artifacts = p4_review.get("artifacts")
+            if isinstance(p4_artifacts, dict):
+                for role, spec in p4_artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("P4 phase review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root, str(spec.get("path", "")), relative_root=design_root
+                        )
+                    except ValueError as exc:
+                        report.error(f"P4 {role}: {exc}")
+                        continue
+                    p4_reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(p4_schema, dict):
+                report.errors.extend(validate_p4_review_documents(p4_review, p4_reviews, p4_schema))
+            reviewed_commit = str(p4_review.get("reviewed_commit", ""))
+            reviewed_tree = str(p4_review.get("reviewed_tree", ""))
+            if isinstance(p4_qualification, dict):
+                required_values = {
+                    "status": "passed",
+                    "candidate_commit": reviewed_commit,
+                    "candidate_tree": reviewed_tree,
+                    "hypothesis_hunter_mode": "shadow",
+                    "active_product_effect": "none",
+                    "safe_false_registration_count": 0,
+                    "near_miss_false_registration_count": 0,
+                    "schema_resolution_rate": 1.0,
+                    "evidence_resolution_rate": 1.0,
+                    "action_resolution_rate": 1.0,
+                    "network": False,
+                    "external_model_benchmark": False,
+                }
+                for key, expected in required_values.items():
+                    if p4_qualification.get(key) != expected:
+                        report.error(
+                            f"P4 qualification {key} must equal the reviewed candidate value"
+                        )
+                numeric_minimums = {
+                    "case_count": 120,
+                    "safe_and_near_miss_case_count": 80,
+                    "project_count": 3,
+                    "project_with_replayable_proof_count": 3,
+                }
+                for key, minimum in numeric_minimums.items():
+                    raw_actual = p4_qualification.get(key)
+                    if (
+                        not isinstance(raw_actual, int)
+                        or isinstance(raw_actual, bool)
+                        or raw_actual < minimum
+                    ):
+                        report.error(f"P4 qualification {key} is below its threshold")
+                if p4_qualification.get("metamorphic_consistency") is not True:
+                    report.error("P4 qualification metamorphic consistency must pass")
+                for key in (
+                    "schema_hashes",
+                    "corpus_hashes",
+                    "artifact_hashes",
+                    "commands",
+                    "limitations",
+                    "wheel",
+                ):
+                    if not p4_qualification.get(key):
+                        report.error(f"P4 qualification must record non-empty {key}")
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(f"P4 review commit is unavailable in Git: {reviewed_commit}")
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "P4 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
+                    )
+                changed = _git_text(
+                    repo_root, "diff", "--name-only", f"{reviewed_commit}..HEAD", "--"
+                )
+                if changed is not None:
+                    allowed = {
+                        DESIGN_MANIFEST.as_posix(),
+                        (design_root / "README.md").as_posix(),
+                        (design_root / "phases/P4-hypothesis-driven-hunting.md").as_posix(),
+                        (design_root / "acceptance/evidence-index.json").as_posix(),
+                        (design_root / "acceptance/p4-qualification-manifest.json").as_posix(),
+                        (
+                            design_root / "acceptance/reviews/p4-product-architecture.json"
+                        ).as_posix(),
+                        (design_root / "acceptance/reviews/p4-proof-security.json").as_posix(),
+                        (design_root / "acceptance/runtime-reachability-manifest.json").as_posix(),
+                    }
+                    unexpected = sorted(
+                        value for value in changed.splitlines() if value and value not in allowed
+                    )
+                    if unexpected:
+                        report.error(
+                            "P4 reviewed candidate has post-review product/corpus changes: "
                             + ", ".join(unexpected)
                         )
 

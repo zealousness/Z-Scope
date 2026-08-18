@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .checker import ProofChecker
 from .lifecycle import PROOF_KERNEL_MODE, assert_shadow_mode
@@ -47,6 +47,22 @@ class ProofKernelEngine:
         proof_ir: Mapping[str, Any],
         obligation: Mapping[str, Any],
     ) -> ProofKernelEvaluation:
+        """Evaluate every executable frozen clause (the P2 compatibility path)."""
+
+        return self._evaluate(
+            proof_ir=proof_ir,
+            obligation=obligation,
+            selected_action_uids=None,
+        )
+
+    def action_catalog(
+        self,
+        *,
+        proof_ir: Mapping[str, Any],
+        obligation: Mapping[str, Any],
+    ) -> Tuple[Dict[str, Any], ...]:
+        """Return the only EvidenceAction values a model may select."""
+
         for value, validator in (
             (proof_ir, validate_program_ir),
             (obligation, validate_obligation),
@@ -55,45 +71,95 @@ class ProofKernelEngine:
             if not valid:
                 raise ValueError(reason)
         actions = []
+        for bucket in ("confirmation_clauses", "counterproof_clauses"):
+            for clause in obligation.get(bucket) or []:
+                spec = PREDICATE_REGISTRY.get(str(clause.get("predicate_id") or ""))
+                if spec is None:
+                    continue
+                actions.append(
+                    build_evidence_action(
+                        obligation=obligation,
+                        clause=clause,
+                        proof_ir=proof_ir,
+                        provider_id=spec.provider_id,
+                        verifier_id=spec.verifier_id,
+                    )
+                )
+        return tuple(actions)
+
+    def evaluate_selected_actions(
+        self,
+        *,
+        proof_ir: Mapping[str, Any],
+        obligation: Mapping[str, Any],
+        selected_action_uids: Sequence[str],
+    ) -> ProofKernelEvaluation:
+        """Execute only system-generated action IDs selected by the P4 Hunter.
+
+        The input intentionally accepts identifiers rather than action objects,
+        so a model cannot submit a predicate, fixed parameter or coverage claim.
+        """
+
+        normalized = [str(value) for value in selected_action_uids]
+        if not normalized or any(not value for value in normalized):
+            raise ValueError("selected_evidence_action_ids_required")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("duplicate_selected_evidence_action_id")
+        return self._evaluate(
+            proof_ir=proof_ir,
+            obligation=obligation,
+            selected_action_uids=tuple(normalized),
+        )
+
+    def _evaluate(
+        self,
+        *,
+        proof_ir: Mapping[str, Any],
+        obligation: Mapping[str, Any],
+        selected_action_uids: Optional[Sequence[str]],
+    ) -> ProofKernelEvaluation:
+        catalog = self.action_catalog(proof_ir=proof_ir, obligation=obligation)
+        by_uid = {str(value["action_uid"]): value for value in catalog}
+        if selected_action_uids is None:
+            executable = list(catalog)
+        else:
+            unknown = sorted(set(map(str, selected_action_uids)) - set(by_uid))
+            if unknown:
+                raise ValueError("selected_evidence_action_not_in_frozen_catalog")
+            selected = set(map(str, selected_action_uids))
+            # Preserve the deterministic obligation/clause order rather than
+            # trusting model-provided ordering as execution policy.
+            executable = [value for value in catalog if str(value["action_uid"]) in selected]
+
+        actions = []
         certificates = []
         results = []
         refs = []
         if self.store is not None:
             refs.append(self.store.put("program_proof_ir", proof_ir))
             refs.append(self.store.put("proof_obligation", obligation, dependency_refs=refs[:1]))
-        for bucket in ("confirmation_clauses", "counterproof_clauses"):
-            for clause in obligation.get(bucket) or []:
-                spec = PREDICATE_REGISTRY.get(str(clause.get("predicate_id") or ""))
-                if spec is None:
-                    continue
-                action = build_evidence_action(
-                    obligation=obligation,
-                    clause=clause,
-                    proof_ir=proof_ir,
-                    provider_id=spec.provider_id,
-                    verifier_id=spec.verifier_id,
+        for action in executable:
+            certificate = self.provider.produce(
+                proof_ir=proof_ir, obligation=obligation, action=action
+            )
+            result = self.checker.check(
+                proof_ir=proof_ir,
+                obligation=obligation,
+                action=action,
+                certificate=certificate,
+            )
+            actions.append(action)
+            certificates.append(certificate)
+            results.append(result)
+            if self.store is not None:
+                action_ref = self.store.put("evidence_action", action, dependency_refs=refs[:2])
+                certificate_ref = self.store.put(
+                    "evidence_certificate", certificate, dependency_refs=(action_ref,)
                 )
-                certificate = self.provider.produce(
-                    proof_ir=proof_ir, obligation=obligation, action=action
+                check_ref = self.store.put(
+                    "proof_check_result", result, dependency_refs=(certificate_ref,)
                 )
-                result = self.checker.check(
-                    proof_ir=proof_ir,
-                    obligation=obligation,
-                    action=action,
-                    certificate=certificate,
-                )
-                actions.append(action)
-                certificates.append(certificate)
-                results.append(result)
-                if self.store is not None:
-                    action_ref = self.store.put("evidence_action", action, dependency_refs=refs[:2])
-                    certificate_ref = self.store.put(
-                        "evidence_certificate", certificate, dependency_refs=(action_ref,)
-                    )
-                    check_ref = self.store.put(
-                        "proof_check_result", result, dependency_refs=(certificate_ref,)
-                    )
-                    refs.extend((action_ref, certificate_ref, check_ref))
+                refs.extend((action_ref, certificate_ref, check_ref))
         decision, reason = self._shadow_closure(obligation, tuple(results))
         if self.store is not None:
             self.store.write_root_manifest(refs)

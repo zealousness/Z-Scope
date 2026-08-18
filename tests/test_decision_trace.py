@@ -106,6 +106,38 @@ def test_terminal_event_freezes_security_spec_shadow_without_second_terminal(
     }
 
 
+def test_terminal_event_attaches_p4_shadow_refs_without_second_terminal(
+    tmp_path: Path,
+) -> None:
+    store = DecisionTraceStore(tmp_path, scan_uid="SCAN_P4")
+    store.update_identity(
+        {
+            "hypothesis_hunter_mode": "shadow",
+            "hypothesis_hunter_artifact_refs": ["sha256:" + "b" * 64],
+            "hypothesis_hunter_shadow_decision": {
+                "active_product_effect": "none",
+                "reason_code": "hypothesis_hunter_shadow_only",
+            },
+        }
+    )
+    issue = {
+        "validation_cluster_uid": "VAL_P4",
+        "candidate_disposition": "needs_review",
+    }
+    store.finalize_issue(issue, view_memberships=("with_needs_review",))
+    store.finalize_issue(issue, view_memberships=("with_needs_review",))
+
+    trace = store.trace("VAL_P4")
+    terminal = [value for value in trace["events"] if value["stage"] == "policy"]
+    assert len(terminal) == 1
+    assert terminal[0]["details"]["hypothesis_hunter_mode"] == "shadow"
+    assert terminal[0]["details"]["hypothesis_hunter_artifact_refs"] == ["sha256:" + "b" * 64]
+    assert terminal[0]["details"]["hypothesis_hunter_shadow_decision"] == {
+        "active_product_effect": "none",
+        "reason_code": "hypothesis_hunter_shadow_only",
+    }
+
+
 def test_trace_and_evidence_tampering_are_detected(tmp_path: Path) -> None:
     store = DecisionTraceStore(tmp_path)
     evidence_ref = store.put_evidence(

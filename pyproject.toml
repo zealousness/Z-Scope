@@ -67,6 +67,8 @@ zscope = [
     "semantics/security_specs/schemas/*.json",
     "semantics/security_specs/qualification/*.json",
     "core/validation/proof_kernel/schemas/*.json",
+    "orchestration/hypothesis_hunter/schemas/*.json",
+    "orchestration/hypothesis_hunter/qualification/*.json",
     "workflows/*.yaml",
     "web/static/*.html",
 ]

@@ -155,3 +155,6 @@ def test_alert_validator_v3_rejection_is_policy_uncertain() -> None:
         "accepted_fact_kinds": [],
         "missing_fact_kinds": ["external_alert_program_evidence"],
     }
+    assert result["hypothesis_hunter_mode"] == "shadow"
+    assert result["hypothesis_hunter_artifact_refs"] == []
+    assert result["hypothesis_hunter_shadow_decision"]["active_product_effect"] == "none"

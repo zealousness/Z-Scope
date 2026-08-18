@@ -14,7 +14,7 @@ import time
 import uuid
 from copy import copy, deepcopy
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set
 from dataclasses import dataclass, field, replace
 
 from ..config.config import ZScopeConfig, minimum_optional_positive_seconds
@@ -25,6 +25,7 @@ from ..core.candidates.decision_facts import DecisionFactGraphCache
 from ..core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from ..core.analysis.analyzer import Analyzer
 from ..core.validation.runner import ValidationResultCache
+from ..core.validation.fact_capabilities import FunctionIRFactService
 from ..framework.llm_client import LLMClient
 from ..framework.llm_usage import (
     ensure_scan_token_usage_ledger,
@@ -51,6 +52,13 @@ from ..orchestration.active_discovery import (
     resolve_discovery_profile,
 )
 from ..orchestration.candidates import CandidateLedger, CandidateRegistrar
+from ..orchestration.hypothesis_hunter import (
+    HypothesisArtifactStore,
+    HypothesisHunterAgent,
+    HypothesisHunterShadowRuntime,
+    HypothesisProofCatalog,
+    load_hypothesis_shadow_identity,
+)
 from ..orchestration.decision_trace import DecisionTraceStore, ensure_decision_trace_store
 from ..orchestration.candidate_envelope import annotate_issue_identity
 from ..orchestration.global_modeler import GlobalModeler
@@ -456,6 +464,27 @@ class ParallelAnalyzer:
                     "reason_code": spec_identity["security_spec_shadow_decision"]["reason_code"],
                 }
                 self._decision_trace_store.update_identity(spec_identity)
+                hypothesis_identity = load_hypothesis_shadow_identity(
+                    Path(self.base_config.analysis.snapshot_dir) / "hypothesis_hunter",
+                    consumer="scan",
+                )
+                self._active_discovery_state["hypothesis_hunter_shadow"] = {
+                    "schema_version": "zscope.hypothesis-hunter-shadow-result.v2",
+                    "mode": "shadow",
+                    "active_product_effect": "none",
+                    "status": "replayed_read_only",
+                    "root_manifest_sha256": hypothesis_identity[
+                        "hypothesis_hunter_root_manifest_sha256"
+                    ],
+                    "artifact_refs": hypothesis_identity["hypothesis_hunter_artifact_refs"],
+                    "coverage_summary": hypothesis_identity[
+                        "hypothesis_hunter_shadow_decision"
+                    ].get("coverage_summary", {}),
+                    "reason_code": hypothesis_identity["hypothesis_hunter_shadow_decision"][
+                        "reason_code"
+                    ],
+                }
+                self._decision_trace_store.update_identity(hypothesis_identity)
             else:
                 self._run_active_discovery(entries, discovery_profile)
 
@@ -1266,6 +1295,33 @@ class ParallelAnalyzer:
                         },
                     }
                 )
+                try:
+                    self._run_hypothesis_hunter_shadow(
+                        planned_map,
+                        profile=profile,
+                        security_spec_shadow=spec_shadow,
+                        state=state,
+                        analysis_llm_client=discovery_llm_client,
+                    )
+                except Exception as exc:
+                    state["hypothesis_hunter_shadow"] = {
+                        "schema_version": "zscope.hypothesis-hunter-shadow-result.v2",
+                        "mode": "shadow",
+                        "active_product_effect": "none",
+                        "status": "failed_closed",
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
+                    self._decision_trace_store.update_identity(
+                        {
+                            "hypothesis_hunter_mode": "shadow",
+                            "hypothesis_hunter_artifact_refs": [],
+                            "hypothesis_hunter_shadow_decision": {
+                                "active_product_effect": "none",
+                                "reason_code": "hypothesis_hunter_failed_closed",
+                            },
+                        }
+                    )
+                    logger.exception("[hypothesis-hunter] shadow stage failed closed")
             except Exception as exc:
                 state["security_spec_shadow"] = {
                     "schema_version": "zscope.security-spec-shadow-result.v2",
@@ -1281,6 +1337,23 @@ class ParallelAnalyzer:
                         "security_spec_shadow_decision": {
                             "active_product_effect": "none",
                             "reason_code": "security_spec_shadow_failed_closed",
+                        },
+                    }
+                )
+                state["hypothesis_hunter_shadow"] = {
+                    "schema_version": "zscope.hypothesis-hunter-shadow-result.v2",
+                    "mode": "shadow",
+                    "active_product_effect": "none",
+                    "status": "failed_closed",
+                    "reason": "security_spec_shadow_prerequisite_failed",
+                }
+                self._decision_trace_store.update_identity(
+                    {
+                        "hypothesis_hunter_mode": "shadow",
+                        "hypothesis_hunter_artifact_refs": [],
+                        "hypothesis_hunter_shadow_decision": {
+                            "active_product_effect": "none",
+                            "reason_code": "hypothesis_hunter_prerequisite_failed_closed",
                         },
                     }
                 )
@@ -1339,6 +1412,89 @@ class ParallelAnalyzer:
                 int(state.get("new_validation_group_count", 0) or 0),
                 state["duration_seconds"],
             )
+
+    def _run_hypothesis_hunter_shadow(
+        self,
+        semantic_map: Any,
+        *,
+        profile: Any,
+        security_spec_shadow: Mapping[str, Any],
+        state: Dict[str, Any],
+        analysis_llm_client: Any,
+    ) -> None:
+        """Run P4 after P3 and before the live Candidate Ledger is frozen."""
+
+        snapshot_dir = Path(self.base_config.analysis.snapshot_dir)
+        compile_commands = getattr(self.code_index, "compile_commands_path", None)
+        fact_service = FunctionIRFactService(
+            Path(compile_commands) if compile_commands else None,
+            enabled=str(getattr(self.base_config.project, "language", "")) == "c_cpp",
+        )
+
+        def graph_provider(record: Any, event: Any) -> Any:
+            raw_path = Path(str(record.file_path))
+            file_path = (
+                raw_path
+                if raw_path.is_absolute()
+                else Path(self.base_config.project.project_root) / raw_path
+            )
+            issue = {
+                "function": str(record.function_name),
+                "function_signature": str(record.function_name),
+                "file": str(file_path),
+                "line": int(event.line or record.start_line or 0),
+                "source": {
+                    "line": int(event.line or 0),
+                    "expression": str(event.expression or ""),
+                },
+                "sink": {
+                    "line": int(event.line or 0),
+                    "expression": str(event.expression or ""),
+                },
+            }
+            return fact_service.graph(issue, {})
+
+        catalog = HypothesisProofCatalog(graph_provider)
+        report_runner = None
+        if analysis_llm_client is not None:
+            agent = HypothesisHunterAgent(analysis_llm_client)
+
+            def report_runner(projection: Any, unit: Any, offers: Any) -> Any:
+                self._cancellation_token.raise_if_cancelled()
+                return agent.run(
+                    {
+                        "projection": projection,
+                        "audit_unit": unit,
+                        "offers": list(offers),
+                    }
+                )
+
+        result = HypothesisHunterShadowRuntime(
+            HypothesisArtifactStore(snapshot_dir / "hypothesis_hunter"),
+            risk_threshold=int(profile.risk_threshold),
+            max_units=profile.max_units,
+            model_profile=str(profile.name),
+        ).run(
+            semantic_map,
+            security_spec_shadow=security_spec_shadow,
+            proof_bundle_provider=catalog.bundles,
+            report_runner=report_runner,
+        )
+        state["hypothesis_hunter_shadow"] = result
+        self._decision_trace_store.update_identity(
+            {
+                "hypothesis_hunter_mode": "shadow",
+                "hypothesis_hunter_root_manifest_sha256": str(
+                    result.get("root_manifest_sha256") or ""
+                ),
+                "hypothesis_hunter_artifact_refs": list(result.get("artifact_refs") or []),
+                "hypothesis_hunter_shadow_decision": {
+                    "active_product_effect": "none",
+                    "reason_code": "hypothesis_hunter_shadow_only",
+                    "coverage_summary": dict(result.get("coverage_summary") or {}),
+                },
+            }
+        )
 
     def _historical_variant_keys_for_map(self, semantic_map: Any) -> Set[str]:
         """Read prior confirmed reports for the functions in this map."""
@@ -2306,6 +2462,20 @@ class ParallelAnalyzer:
                         "compiled_spec_count": int(spec_shadow.get("compiled_spec_count", 0) or 0),
                         "root_manifest_sha256": str(spec_shadow.get("root_manifest_sha256") or ""),
                         "artifact_refs": list(spec_shadow.get("artifact_refs") or []),
+                    }
+                }
+            hypothesis_shadow = active_discovery_state.get("hypothesis_hunter_shadow")
+            if isinstance(hypothesis_shadow, dict):
+                engine_capabilities["__hypothesis_hunter_shadow__"] = {
+                    "hypothesis_hunter": {
+                        "status": str(hypothesis_shadow.get("status") or "complete"),
+                        "mode": "shadow",
+                        "active_product_effect": "none",
+                        "root_manifest_sha256": str(
+                            hypothesis_shadow.get("root_manifest_sha256") or ""
+                        ),
+                        "artifact_refs": list(hypothesis_shadow.get("artifact_refs") or []),
+                        "coverage_summary": dict(hypothesis_shadow.get("coverage_summary") or {}),
                     }
                 }
         error_result_count = sum(

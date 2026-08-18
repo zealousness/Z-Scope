@@ -62,6 +62,7 @@ tests:
 - semantics 合并内置 defaults、工作簿、源码推断和历史信息，为候选与 prompt 提供当前入口相关的语义片段。
 - `security_map.db` 是独立于历史函数 snapshot 的只读安全语义 sidecar：零 LLM 骨架记录入口、调用、危险事件和 backend coverage；有证据引用的选择性 LLM delta 才能成为 claim，无可解析引用的内容仅是 observation。
 - `security_specs/security_specs.db` 与同目录不可变 CAS 保存 SecuritySpec revision、qualification、review chain、shadow compilation 和 root manifest。P3 的 13 类有限 DSL 不接受脚本、正则、查询代码或自然语言条件；程序事实若不能精确绑定 subject、slot、scope、evidence 与 dependency hash，只能保留为 observation。
+- `hypothesis_hunter/`是P4独立不可变CAS，保存audit unit、offer、report、hypothesis/observation、Proof Kernel结果、shadow Ledger和root manifest。缓存键绑定代码/IR、P3 manifest、P2 registry、prompt、analysis model profile与依赖hash；无用户配置开关，P5前mode固定shadow。
 - snapshot policy 决定完整、轻量或语法快照，store 负责持久化与复用。
 - `ReviewMemory` 是验证反馈门面；`issue_identity.py` 为报告、baseline、SARIF 和 benchmark 提供统一身份。
 
@@ -81,6 +82,7 @@ tests:
 - 人工填写的配置不能被自动推断静默覆盖；推断行必须保留来源和置信度。
 - 历史 snapshot cache key 必须覆盖影响其内容的代码、public config、RuntimeSpec provenance、Agent/Skill 和后端版本因素。Security Semantic Map 则分层缓存：程序骨架只依赖 code/symbol/type/call-edge/IR/backend 版本，LLM delta 再依赖 model/prompt/skill/用户语义；规则变化只重算 gap plan，callee 契约变化按反向消费者和 SCC 原子传播。
 - Security Spec cache 额外绑定 audit-unit fingerprint、registry/compiler/prompt revision、model profile 与依赖 hashes；dependency 或 scope 变化只通过反向索引失效命中的 spec、函数与调用依赖。P5 前 `security_spec_mode` 固定为不可配置的 `shadow`，compiled artifact 不得回流 Candidate Ledger、Proof closure 或 terminal disposition。
+- P4局部coverage key必须同时绑定function、defect family、subject、decision region和结构fingerprint；只能抑制同一cluster/alias root，不能做family级全局抑制。P4缓存复用不得改变live Candidate Ledger、稳定outcome或workflow progress。
 - 入口 canonical identity 必须保留实现文件和可调用实体；当后端给出的 signature 不含方法名时（如 Java 的返回值/参数描述符），必须同时保留全限定函数名，不能因去重而丢失入口。
 - canonical key、stable fingerprint 和 source-context fingerprint 的用途不能互换；身份算法变更要考虑历史 baseline 兼容性。
 
