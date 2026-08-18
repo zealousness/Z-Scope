@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 
@@ -171,14 +171,58 @@ def validate_review_packet(packet: Mapping[str, Any]) -> None:
         raise E0GovernanceError("review packet UID is invalid")
     if not SHA256_RE.fullmatch(str(packet.get("source_truth_sha256") or "")):
         raise E0GovernanceError("review packet source truth hash is invalid")
+    truth_record = packet.get("truth_record")
+    if not isinstance(truth_record, Mapping) or not str(truth_record.get("id") or ""):
+        raise E0GovernanceError("review packet truth record is invalid")
+    if packet.get("packet_uid") != f"range-v16:{truth_record['id']}":
+        raise E0GovernanceError("review packet UID does not bind the truth record")
     windows = packet.get("code_windows")
     if not isinstance(windows, list) or not windows:
         raise E0GovernanceError("review packet requires code windows")
+    for window in windows:
+        if not isinstance(window, Mapping) or set(window) != {
+            "path",
+            "start_line",
+            "end_line",
+            "content",
+            "sha256",
+        }:
+            raise E0GovernanceError("review packet code window fields are invalid")
+        raw_path = window.get("path")
+        if not isinstance(raw_path, str) or not raw_path or "\\" in raw_path:
+            raise E0GovernanceError("review packet code window path is invalid")
+        path = PurePosixPath(raw_path)
+        if path.is_absolute() or str(path) != raw_path or any(
+            part in {"", ".", ".."} for part in path.parts
+        ):
+            raise E0GovernanceError("review packet code window path is not canonical")
+        start_line = window.get("start_line")
+        end_line = window.get("end_line")
+        if (
+            isinstance(start_line, bool)
+            or not isinstance(start_line, int)
+            or isinstance(end_line, bool)
+            or not isinstance(end_line, int)
+            or start_line < 1
+            or end_line < start_line
+        ):
+            raise E0GovernanceError("review packet code window line range is invalid")
+        content = window.get("content")
+        if not isinstance(content, str) or not content:
+            raise E0GovernanceError("review packet code window content is invalid")
+        expected_line_count = end_line - start_line + 1
+        if len(content.splitlines()) != expected_line_count:
+            raise E0GovernanceError("review packet code window line count is inconsistent")
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if window.get("sha256") != content_hash:
+            raise E0GovernanceError("review packet code window hash mismatch")
     assumptions = packet.get("threat_assumptions")
     if not isinstance(assumptions, list) or not all(
         isinstance(item, str) and item.strip() for item in assumptions
     ):
         raise E0GovernanceError("review packet threat assumptions are invalid")
+    if not isinstance(packet.get("safe_pair_candidate"), Mapping):
+        raise E0GovernanceError("review packet safe pair candidate is invalid")
     assert_minimal_review_packet(packet)
     claimed = str(packet.get("packet_sha256") or "")
     unsigned = dict(packet)
