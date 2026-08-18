@@ -216,6 +216,9 @@ class ValidationPipeline:
                     "candidate_disposition": "needs_review",
                     "finding_kind": "needs_review",
                     "evidence_conflict": True,
+                    "positive_decision_proof": confirmation_proof.to_dict(),
+                    "negative_decision_proof": rejection_proof.to_dict(),
+                    "proof_coverage": "complete",
                     "deterministic_prevalidation_decision": "evidence_conflict",
                     "validation_reasoning": (
                         "Conflicting complete deterministic confirmation and rejection proofs "
@@ -466,6 +469,9 @@ class ValidationPipeline:
             issue["candidate_disposition"] = "needs_review"
             issue["finding_kind"] = "needs_review"
             issue["evidence_conflict"] = True
+            issue["positive_decision_proof"] = confirmation_proof.to_dict()
+            issue["negative_decision_proof"] = rejection_proof.to_dict()
+            issue["proof_coverage"] = "complete"
             issue["validation_reasoning"] = (
                 "Conflicting complete deterministic confirmation and rejection proofs "
                 "require human review."

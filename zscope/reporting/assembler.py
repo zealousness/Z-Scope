@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional, cast
 
@@ -60,6 +61,20 @@ class ReportAssembler:
 
     def build(self, state: Dict[str, Any]) -> FinalReport:
         metadata = self.metadata_factory(state)
+        trace_store = state.get("decision_trace_store")
+        update_trace_identity = getattr(trace_store, "update_identity", None)
+        if callable(update_trace_identity):
+            update_trace_identity(
+                {
+                    "source_revision": str(
+                        metadata.get("commit_sha") or metadata.get("source_revision") or ""
+                    ),
+                    "source_tree_hash": str(metadata.get("source_tree_hash") or ""),
+                    "config_hash": str(metadata.get("config_hash") or ""),
+                    "model_manifest_hash": str(metadata.get("model_manifest_hash") or ""),
+                    "effective_rules_sha256": str(metadata.get("effective_rules_sha256") or ""),
+                }
+            )
         all_issues = state.get("issues", []) + state.get("verified_hist_issues", [])
         observations = list(state.get("observations", []))
         identity_kwargs = {
@@ -172,6 +187,20 @@ class ReportAssembler:
                 for existing in terminal_states
             ):
                 terminal_states.append(item)
+        finalize_trace = getattr(trace_store, "finalize_issue", None)
+        if callable(finalize_trace):
+            for item in terminal_states:
+                if item.get("decision_trace_ref"):
+                    continue
+                if not item.get("validation_cluster_uid"):
+                    stable = terminal_candidate_identity(item) or str(item)
+                    item["validation_cluster_uid"] = (
+                        "VAL_ENGINE_" + hashlib.sha256(stable.encode("utf-8")).hexdigest()[:32]
+                    )
+                finalize_trace(item, view_memberships=("excluded",))
+            snapshot_trace = getattr(trace_store, "snapshot", None)
+            if callable(snapshot_trace):
+                state["decision_trace_manifest"] = snapshot_trace()
         if finding == "clean" and any(
             str(item.get("candidate_disposition") or "").lower() == "needs_review"
             for item in terminal_states
@@ -259,6 +288,25 @@ class ReportAssembler:
         final_report.run_manifest["finding_root_alias_count"] = int(
             state.get("finding_root_alias_count", 0) or 0
         )
+        final_report.run_manifest["finding_root_projection"] = dict(
+            state.get("finding_root_projection_summary") or {}
+        )
+        trace_manifest = state.get("decision_trace_manifest")
+        if isinstance(trace_manifest, dict):
+            final_report.run_manifest["decision_trace"] = {
+                key: deepcopy(trace_manifest.get(key))
+                for key in (
+                    "schema_version",
+                    "manifest_path",
+                    "manifest_sha256",
+                    "trace_count",
+                    "coverage_trace_count",
+                    "evidence_object_count",
+                    "model_event_count",
+                    "complete",
+                    "errors",
+                )
+            }
         final_report.run_manifest.update(self._release_observability(state))
         self.refresh(final_report, state)
         state["final_report"] = final_report
@@ -602,11 +650,33 @@ class ReportAssembler:
                 value["validation_status"] = "operational"
             result.append(value)
         result.sort(key=lambda item: str(item.get("validation_cluster_uid") or ""))
-        if bool(state.get("finding_root_v1_enabled", False)):
+        if bool(
+            state.get(
+                "finding_root_projection_enabled",
+                state.get("finding_root_v1_enabled", False),
+            )
+        ):
             projection = project_finding_roots(result)
             state["finding_root_count"] = projection.finding_root_count
             state["finding_root_alias_count"] = projection.finding_root_alias_count
+            state["finding_root_projection_summary"] = dict(projection.summary)
             result = list(projection.outcomes)
+        trace_store = state.get("decision_trace_store")
+        finalize_issue = getattr(trace_store, "finalize_issue", None)
+        if callable(finalize_issue):
+            for item in result:
+                disposition = str(item.get("candidate_disposition") or "").lower()
+                memberships: List[str] = []
+                if disposition == "confirmed":
+                    memberships = ["default", "with_needs_review"]
+                elif disposition == "needs_review":
+                    memberships = ["with_needs_review"]
+                else:
+                    memberships = ["excluded"]
+                finalize_issue(item, view_memberships=memberships)
+            snapshot = getattr(trace_store, "snapshot", None)
+            if callable(snapshot):
+                state["decision_trace_manifest"] = snapshot()
         return result
 
     @staticmethod

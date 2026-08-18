@@ -685,7 +685,7 @@ def test_rule_driven_uses_shared_v0_without_calling_validator(tmp_path: Path) ->
     assert analyzer._last_validation_state["validator_avoided_count"] == 1
 
 
-def test_rule_driven_uses_fact_resolution_v2_and_eligible_v3(tmp_path: Path) -> None:
+def test_rule_driven_does_not_promote_uncertified_fact_or_enter_v3(tmp_path: Path) -> None:
     class LayeredValidator:
         def __init__(self) -> None:
             self.passes: list[str] = []
@@ -757,11 +757,11 @@ def test_rule_driven_uses_fact_resolution_v2_and_eligible_v3(tmp_path: Path) -> 
         ],
     )
 
-    assert validator.passes == ["initial", "evidence_recheck"]
-    assert validator.investigations == 1
+    assert validator.passes == ["initial"]
+    assert validator.investigations == 0
     issue = issues[0]
-    assert issue["validator_fact_resolution"]["status"] == "completed_partial"
-    assert issue["validator_result_pass"] == "investigation_synthesis"
-    assert issue["validator_invocation_count"] == 3
+    assert issue["validator_fact_resolution"]["status"] == "no_new_parameterized_request"
+    assert issue["validator_result_pass"] == "initial"
+    assert issue["validator_invocation_count"] == 1
     assert issue["attribution"]["discovered_by"] == ["backend_signal"]
-    assert issue["attribution"]["decision_level"] == "V3"
+    assert issue["attribution"]["decision_level"] == "V1"

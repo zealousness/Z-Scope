@@ -10,6 +10,7 @@ sources:
   - zscope/orchestration/scan_session.py
   - zscope/orchestration/parallel_analyzer.py
   - zscope/orchestration/rollout.py
+  - zscope/orchestration/decision_trace.py
   - zscope/orchestration/workflow_runner.py
   - zscope/orchestration/workflow_executor.py
   - zscope/workflows/default.yaml
@@ -21,6 +22,7 @@ tests:
   - tests/test_scan_session_resume_svf.py
   - tests/test_active_discovery.py
   - tests/test_balanced_rollout.py
+  - tests/test_decision_trace.py
 ---
 
 # 执行与编排
@@ -38,6 +40,7 @@ tests:
 - `WorkflowRunner` 创建单入口运行态并调用 `WorkflowExecutor`。
 - `zscope/workflows/*.yaml` 只声明阶段顺序；具体 handler 由 Python 编排层提供。
 - 批量任务经 scheduler/parallel analyzer 分发。确定性候选完成后，balanced/deep 在全局验证之前依次构建 Security Semantic Map、规划 coverage gap、登记主动发现 hypothesis；所有来源统一冻结 Ledger，最后按 validation cluster 验证和装配报告。单入口必须保持同样的阶段顺序。
+- `DecisionTraceStore` 由单次扫描共享：Candidate Ledger、coverage planner、ValidationRunner、usage ledger 与 Finding-root 投影只追加结构化事件/内容寻址对象，最终生成一个可离线校验的 manifest。
 
 ## 必须保持的不变量
 
@@ -47,8 +50,9 @@ tests:
 - 入口发现、断点续扫、历史报告备份和取消状态必须保持可审计。
 - 批量完整性检查必须以实际物化并调度的入口身份对齐结果，不能用签名不完整的原始入口把已完成任务误判为中断。
 - Workflow 文件和 handler 名称必须一一对应，未知 step 应明确失败。
-- `fast` 不运行语义补全或主动发现；它们未启用时不能误标 partial。balanced/deep 中已启用阶段因预算跳过审计单元时必须保存已得结果、标记 `completeness=partial`，CLI 退出码为 2。
-- scan-wide token manager 必须在配置生效边界创建一次并注入所有入口、Agent 和 LLM profile，不能为并行入口各建一份预算。
+- `fast` 不运行语义补全或主动发现；它们未启用时不能误标 partial。balanced/deep 中已启用阶段因超时、取消、provider/工具故障跳过审计单元时必须保存已得结果、标记 `completeness=partial`，CLI 退出码为 2。
+- scan-wide token usage ledger 必须在配置生效边界创建一次并注入所有入口、Agent 和 LLM profile，不能为并行入口各建一份账本。它只计量，不按产品硬预算停止调用。
+- Ledger 必须在全部 producer 结束后显式 freeze；freeze 后不能登记新候选。每个 terminal cluster 和无候选 audit unit 都必须分别有 decision/coverage trace，usage call ID 与 token 总数必须和 JSONL sidecar 守恒。
 
 ## Balanced 持久灰度决策
 

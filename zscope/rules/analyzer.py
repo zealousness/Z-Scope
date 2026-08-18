@@ -23,10 +23,12 @@ from .catalog import EffectiveRuleSet, serialize_effective_rules
 from .extensions import preflight_rules
 from ..orchestration.agent_policy import attach_agent_contract, tool_policy_for_agent
 from ..orchestration.candidates import CandidateLedger, CandidateRegistrar
+from ..orchestration.decision_trace import ensure_decision_trace_store
 from ..orchestration.specs import SpecRegistry
 from ..reporting.attribution import FindingAttribution
 from ..reporting.report import FinalReport, Issue, ReportGenerator
 from ..reporting.schema import apply_report_schema_v2
+from ..reporting.assembler import ReportAssembler
 from ..reporting.views import build_report_views
 from ..framework.llm_client import LLMClient
 from ..framework.llm_usage import (
@@ -280,6 +282,7 @@ class RuleDrivenAnalyzer:
             project_id=project_id,
             project_root=project_root,
             revision=revision,
+            decision_trace_store=ensure_decision_trace_store(self.config),
         )
         registrar = CandidateRegistrar(
             ledger,
@@ -399,6 +402,8 @@ class RuleDrivenAnalyzer:
                 "candidate_ledger_summary": ledger_summary,
                 "candidate_lifecycle_records": list(lifecycle.get("records") or []),
                 "candidate_terminal_states": list(lifecycle.get("outcomes") or []),
+                "candidate_lifecycle_snapshot": lifecycle,
+                "decision_trace_store": ensure_decision_trace_store(self.config),
             }
         )
         return terminal
@@ -714,6 +719,14 @@ class RuleDrivenAnalyzer:
         return filtered
 
     def _build_report(self, issues: List[Dict[str, Any]], notes: List[str]) -> Dict[str, Any]:
+        validation_state = dict(getattr(self, "_last_validation_state", {}) or {})
+        validation_state.setdefault("finding_root_projection_enabled", True)
+        config = getattr(self, "config", None)
+        if config is not None:
+            validation_state.setdefault("decision_trace_store", ensure_decision_trace_store(config))
+        canonical = ReportAssembler._canonical_outcome_items(validation_state)
+        if canonical is not None:
+            issues = canonical
         confirmed = [
             issue
             for issue in issues
@@ -757,7 +770,6 @@ class RuleDrivenAnalyzer:
                     native_ids.add(native_id)
             for native_id in native_ids:
                 backend_signal_counts[native_id] = backend_signal_counts.get(native_id, 0) + 1
-        config = getattr(self, "config", None)
         scan = getattr(config, "scan", None)
         llm_usage = scan_token_usage_snapshot(config) if config is not None else {}
         report.metadata = {
@@ -787,7 +799,6 @@ class RuleDrivenAnalyzer:
             observations,
             canonical_projection=True,
         )
-        validation_state = dict(getattr(self, "_last_validation_state", {}) or {})
         lifecycle_terminal_states = validation_state.get("candidate_terminal_states")
         if not isinstance(lifecycle_terminal_states, list):
             lifecycle_terminal_states = issues
