@@ -14,6 +14,10 @@ from zscope.benchmarking.protocol import (
     score_report,
     score_report_views,
 )
+from zscope.benchmarking.postscore_trace import (
+    build_postscore_decision_trace,
+    write_postscore_decision_trace,
+)
 from zscope.common.issue_identity import deduplicate_issues
 from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from zscope.core.candidates.graph import GraphCandidateGenerator
@@ -361,6 +365,18 @@ def main() -> None:
     parser.add_argument("--min-recall", type=float, default=None)
     parser.add_argument("--min-f1", type=float, default=None)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--postscore-trace-output",
+        type=Path,
+        default=None,
+        help="write a truth-bearing post-score diagnostic after report scoring",
+    )
+    parser.add_argument(
+        "--snapshot-dir",
+        type=Path,
+        default=None,
+        help="frozen answer-free decision-trace directory for post-score diagnostics",
+    )
     args = parser.parse_args()
 
     result = evaluate_range_regression(
@@ -380,6 +396,20 @@ def main() -> None:
     output = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:
         args.output.write_text(output + "\n", encoding="utf-8")
+    if args.postscore_trace_output:
+        if args.report is None or args.snapshot_dir is None:
+            parser.error("--postscore-trace-output requires --report and --snapshot-dir")
+        truth_path = (
+            args.truth
+            or (args.benchmark_dir or args.project_root / "benchmark") / "ground_truth.json"
+        )
+        postscore = build_postscore_decision_trace(
+            report=_load_json(args.report),
+            truth=_load_json(truth_path),
+            score_views=result["report_views"],
+            snapshot_dir=args.snapshot_dir,
+        )
+        write_postscore_decision_trace(args.postscore_trace_output, postscore)
     print(output)
     if result.get("threshold_status") == "failed":
         raise SystemExit(1)

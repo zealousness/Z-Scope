@@ -14,6 +14,7 @@ sources:
   - zscope/benchmarking/validator_experiment.py
   - zscope/benchmarking/discovery_ablation.py
   - zscope/benchmarking/discovery_ablation_experiment.py
+  - zscope/benchmarking/postscore_trace.py
   - zscope/cli/benchmark.py
   - scripts/external_benchmark.py
   - scripts/evaluate_range_regression.py
@@ -26,6 +27,8 @@ sources:
   - scripts/plan_discovery_ablation.py
   - scripts/run_discovery_ablation_request.py
   - scripts/score_discovery_ablation_experiment.py
+  - scripts/compare_range_matchers.py
+  - scripts/build_postscore_decision_trace.py
   - docs/range-benchmark.md
   - test/range/benchmark/check_entry_coverage.py
 tests:
@@ -43,6 +46,8 @@ tests:
   - tests/test_external_benchmark_oci.py
   - tests/test_discovery_ablation.py
   - tests/test_discovery_ablation_experiment.py
+  - tests/test_range_matcher_comparison.py
+  - tests/test_postscore_decision_trace.py
 ---
 
 # Benchmark
@@ -60,7 +65,7 @@ tests:
 - `scripts/external_benchmark.py` 是外部 suite 和 Range JSON 报告的标准评测入口。public external formal 当前只接受 `full_zscope_pipeline`，通过 `RootlessOciExecutor` 实际执行 scanner、采集 inspect evidence 并在容器退出后由 host scorer 读 truth；静态 `oci_capability` 不能形成 formal 结果。
 - `scripts/evaluate_range_regression.py` 评估确定性候选的 Range 覆盖。
 - `check_entry_coverage.py` 在正式扫描前核对入口覆盖；它可以读取 truth，但不得把 truth 传入扫描 prompt。
-- 扫描报告生成后，独立 scorer 读取报告与 ground truth，输出 matched pairs、TP、FN、raw/effective FP、precision、recall 和 F1。
+- 扫描报告生成后，独立 scorer 读取报告与 ground truth，输出 matched pairs、TP、FN、raw/effective FP、precision、recall 和 F1。`zscope.truth-matcher.v2` 只把类别兼容且 `file + function + line range` 来自同一结构化锚点的 pair 交给最大权匹配；关键词、自由文本、call path 和 `related_functions` 只能形成审计记录。
 - `zscope.formal-benchmark.v3` 聚合至少五轮 cold run；`zscope.benchmark-policy.v1` 是发布门禁的唯一政策源。
 - answer-free `validator_replay_bundle.v1` 只导出 canonical validation groups、证据/事实与哈希，不含 truth、历史 Validator verdict 或评分结果，用于固定候选集上的 A–E 隔离实验。bundle 合约显式区分 V1 初始 facts 与 provider-resolvable frozen reservoir；同一 fact record 或 UID 出现在两个分区时 fail closed，V2 只能从 reservoir 取得新增量。
 - balanced/deep 产品分档召回实验与历史 A–E arm 分开解释：生产 V3 已移除 top-5%/top-20% 截断，balanced 调查 high/critical 或外部可达且有可闭合证据缺口的未决 cluster，deep 调查全部无完整反证的非 shadow 未决 cluster；每个 cluster 使用一个最多 50 次模型迭代的只读工具会话。实验必须先做 cold pilot 的 eligible→entered→promotion 链路检查，通过后才运行每档五轮，并同时归档双视图、V3 fact/transition 与逐 agent/stage token。
@@ -75,6 +80,7 @@ tests:
 
 - 扫描上下文与评分答案严格隔离；benchmark leakage 测试必须持续通过。
 - replay bundle 必须把同一 canonical cluster 的 alias occurrences、evidence 和 facts 做顺序无关的 union，并绑定 candidate/occurrence/entry/evidence/facts 的内容哈希；初始 facts 与 frozen reservoir 必须分区且无 record/UID 重叠。执行时还必须由调用方提供预期 bundle SHA，防止攻击者修改内容后自行重算内部哈希。
+- trial扫描失败或人工早停时，runner在清理临时answer-free workspace前只归档usage、decision/coverage trace、evidence objects和model events，生成`zscope.interrupted-benchmark-diagnostics.v1`并固定`release_eligible=false`；不得复制源码、配置、truth、scorer或reasoning正文。正常完成的run仍必须走report绑定的严格归档与守恒校验，partial诊断不能替代正式结果。
 - Range 是分布内开发/回归集，不是生产泛化结论。发布必须依次报告 Range、public external、独立团队保管的 sealed 集和真实项目 shadow；没有 sealed attestation 不能宣称通过生产门禁。
 - formal/sealed 扫描必须在 rootless OCI 隔离中运行，只挂载 answer-free 项目、配置、工具链和输出目录；scanner cwd、mount 和环境不得可达源码 checkout、`test/`、truth 或 scorer。缺少 Podman/Docker 隔离能力时 fail closed。
 - formal workflow 除要求 `repository@sha256:<digest>` 外，还校验 scanner image 的 `org.opencontainers.image.revision` 等于被测 Git SHA；每轮 summary 绑定 report、score、input manifest、tool health、Validator replay bundle 与原始 usage sidecar 的实际字节 SHA，Release evaluator 会从下载 artifact 重新计算并逐项对账。
@@ -83,12 +89,14 @@ tests:
 - Windows 主机使用 WSL；原生 Linux 直接运行等价命令；原生 Windows 不形成正式结果。
 - `test/` 不包含执行 runner、历史报告或后台 launcher；fixture 根每种语言只保留一份正式配置。
 - C/C++ formal 不读取 deterministic entry manifest，入口必须由隔离副本中的自动发现产生。
-- scorer 以结构化 file/function/category/location/evidence 匹配，并保留 `matched_pairs` 供人工审计。
-- raw FP、duplicate-of-matched 和 effective FP 必须分开保留，不能通过静默删除重复报告美化指标。
+- scorer 以结构化 file/function/category/location/evidence 的同锚点 pair 匹配，并保留 `matched_pairs` 供人工审计；新 formal artifact 必须使用 `zscope.truth-matcher.v2`，缺失 matcher 版本的历史 v4 artifact 只能只读。
+- raw FP、`same_product_root`、`truth_covered_additional`、`cross_anchor_overlap`、`weak_legacy_overlap` 和 effective FP 必须分开保留，不能通过静默删除重复报告美化指标。`duplicate_of_matched_count` 仅作为 `same_product_root_count` 的弃用别名。
 - 没有 safe units/true negatives 的数据集不得把 `FP/(TP+FP)` 称为经典 FPR；应报告 actionable FDR、raw FP 和 precision。经典 FPR 仅在 truth 明确给出 safe units 时计算。
 - 每次正式评分必须输出 `discovered_by × decided_by` 交叉表、LLM 独占 TP、tokens/TP、marginal tokens/新增 TP、tokens/KLOC、p50/p95、五轮 Jaccard/极差和 Range→sealed generalization gap。
 - 新 formal finding 显式归因覆盖率必须至少 99%，call 级 usage 与 run summary、by-agent、by-stage 聚合必须守恒。
-- 新 formal Range 使用冻结 Arm A 的五轮 paired baseline；聚合器实际执行 111 TP、10M 中位数、12M 单轮硬上限、FDR +1pp、TP Jaccard 0.90、recall 极差 2pp，以及 provider usage、归因、队列、telemetry、token 守恒和协议异常门禁。缺失字段不能按零值或历史默认通过。
+- v15 及更早 truth 是只读描述性回归；新 formal Range 必须具有独立签发的 `zscope.range-truth-contract.v1`，confirmed 门槛按 `ceil(0.85 × confirmable_truth_count)` 动态计算。历史 111/136、116/136 和 10M/12M 只能作为旧实验/成本期望，不是产品 token admission。聚合器继续执行 FDR、TP Jaccard、recall 极差、provider usage、归因、队列、telemetry、token 守恒和协议异常门禁；缺少 v16 contract 或任一字段均 fail closed。
+- `zscope.range-gap-analysis.v1` 是 answer-bearing 后置分析：每个 default FN 只能有一个主因，输出绑定 report/score/truth/usage/replay SHA 与 run identity。它不参与扫描或候选生成，避免把 truth 反馈进产品逻辑。
+- `zscope.postscore-decision-trace.v1` 只在报告和 scorer 输出都冻结后读取 truth，把 TP/FP/FN 关联到 decision/coverage trace，并指出最早可诊断环节。该产物固定 `answer_material_present=true`、`product_trace_mutated=false`；不能被扫描器、Planner、Agent 或产品 trace 读取。
 - Balanced 默认切换与后续非回归分别读取 policy 的 `sealed_delta_gates` 和 `non_regression_gates`。public external、sealed 与 shadow 结论只能由独立 attestation 注入，scanner 自己的报告不能自我签发。`zscope.balanced-default-attestation.v1` 绑定 Juliet/SV-COMP/Magma formal aggregate、dataset、truth、scanner bundle、scorer、Git、配置、rules、policy、model spec 和 baseline SHA。benchmark 聚合也必须通过 `--balanced-attestation-workflow-run-id` 接受调用方从受保护工作流取得的独立运行身份，缺失或与 artifact 不一致时 fail closed；它不把自包含 content hash 当成签名。受保护的 `balanced-default-attestation.yml` 只能从 scanner checkout 之外导入独立测试团队保管的证据；Release 按 workflow run ID 下载不可变 artifact，并通过 `evaluate_release_candidate.py --balanced-default-attestation --balanced-attestation-workflow-run-id` 同时绑定 release SHA 与签发运行身份。内容摘要负责完整性，签发信任来自受保护的独立测试环境和 artifact 链。
 - 性能门禁只读取 `scan_wall_seconds`；`end_to_end_wall_seconds` 单独展示，`wall_seconds` 仅作为历史 v2 artifact 的兼容别名。
 - confirmed 与 with-review 的 recall/precision 必须同时展示，旧顶层 `recall` 只能解释为 confirmed 兼容视图。

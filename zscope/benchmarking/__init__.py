@@ -57,6 +57,23 @@ from .discovery_ablation_experiment import (
     validate_discovery_ablation_experiment,
     write_discovery_ablation_experiment,
 )
+from .gap_analysis import (
+    GAP_ANALYSIS_SCHEMA_VERSION,
+    GAP_CAUSES,
+    analyze_range_gap_files,
+    analyze_range_gaps,
+)
+from .truth_contract import (
+    TRUTH_CONTRACT_KINDS,
+    TRUTH_CONTRACT_SCHEMA_VERSION,
+    summarize_truth_contract,
+    truth_records_for_contract,
+)
+from .postscore_trace import (
+    POSTSCORE_TRACE_SCHEMA_VERSION,
+    build_postscore_decision_trace,
+    write_postscore_decision_trace,
+)
 
 __all__ = [
     "ATTESTATION_SCHEMA_VERSION",
@@ -77,6 +94,17 @@ __all__ = [
     "DiscoveryAblationRuntimeOverride",
     "DISCOVERY_ABLATION_EXPERIMENT_SCHEMA_VERSION",
     "DiscoveryAblationExperimentError",
+    "GAP_ANALYSIS_SCHEMA_VERSION",
+    "GAP_CAUSES",
+    "analyze_range_gap_files",
+    "analyze_range_gaps",
+    "TRUTH_CONTRACT_KINDS",
+    "TRUTH_CONTRACT_SCHEMA_VERSION",
+    "summarize_truth_contract",
+    "truth_records_for_contract",
+    "POSTSCORE_TRACE_SCHEMA_VERSION",
+    "build_postscore_decision_trace",
+    "write_postscore_decision_trace",
     "build_discovery_ablation_plan",
     "build_discovery_ablation_run_request",
     "discovery_ablation_runtime_override",
