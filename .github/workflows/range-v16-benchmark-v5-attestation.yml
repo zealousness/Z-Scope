@@ -1,0 +1,99 @@
+name: Range v16 and Benchmark v5 Attestation
+
+on:
+  workflow_dispatch:
+    inputs:
+      governance_commit:
+        description: Merged E0 governance commit
+        required: true
+      scorer_commit:
+        description: Merged Benchmark v5 scorer commit
+        required: true
+      truth_commit:
+        description: Merged Truth v16 commit
+        required: true
+      review_run_id:
+        description: Successful protected Range v16 review workflow run ID
+        required: true
+      review_source_sha:
+        description: Frozen commit used to generate the protected review run
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  attest:
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.truth_commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Verify component ancestry and protected review run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+        run: |
+          test "$(git rev-parse HEAD)" = '${{ inputs.truth_commit }}'
+          git merge-base --is-ancestor '${{ inputs.governance_commit }}' HEAD
+          git merge-base --is-ancestor '${{ inputs.scorer_commit }}' HEAD
+          git merge-base --is-ancestor '${{ inputs.review_source_sha }}' HEAD
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .event)" = "workflow_dispatch"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .conclusion)" = "success"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .path)" = ".github/workflows/range-v16-review.yml"
+      - uses: actions/download-artifact@v8
+        with:
+          name: range-v16-reviewed-${{ inputs.review_source_sha }}
+          path: protected-review-evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.review_run_id }}
+          digest-mismatch: error
+      - name: Validate Truth v16, Benchmark v5, pairs, and answer isolation
+        run: |
+          python3 -m pip install --require-hashes -r requirements/constraints/py313.txt
+          python3 -m pip install --no-deps -e .
+          python3 scripts/validate_range_v16_truth.py \
+            --truth test/range/benchmark/v16/ground_truth.json \
+            --review-root protected-review-evidence \
+            --require-protected-reviews
+          python3 -m pytest -q \
+            tests/test_truth_contract_v2.py \
+            tests/test_benchmark_v5.py \
+            tests/test_benchmark_hygiene.py \
+            tests/test_zscope_2_change_scope.py
+      - name: Issue protected E0 attestation
+        env:
+          Z_SCOPE_ATTESTATION_ENVIRONMENT: sealed-benchmark
+        run: |
+          mkdir -p release-evidence
+          python3 scripts/build_e0_attestation.py \
+            --governance-commit '${{ inputs.governance_commit }}' \
+            --scorer-commit '${{ inputs.scorer_commit }}' \
+            --truth-commit '${{ inputs.truth_commit }}' \
+            --truth test/range/benchmark/v16/ground_truth.json \
+            --truth-manifest test/range/benchmark/v16/truth-manifest.json \
+            --review-bundle protected-review-evidence/review-bundle-manifest.json \
+            --safe-pair-manifest test/range/benchmark/v16/safe-pair-manifest.json \
+            --defect-taxonomy zscope/benchmarking/defect-taxonomy.v1.json \
+            --benchmark-policy zscope/benchmarking/benchmark_policy.v2.json \
+            --scorer-bundle zscope/benchmarking/benchmark_v5.py \
+            --opus-review-count "$(python3 -c 'import json; print(json.load(open("protected-review-evidence/opus/manifest.json"))["reviewed_count"])')" \
+            --output release-evidence/e0-attestation.json
+          python3 scripts/verify_e0_attestation.py \
+            --attestation release-evidence/e0-attestation.json \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --head-sha "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: e0-range-v16-benchmark-v5-${{ inputs.truth_commit }}
+          path: release-evidence/e0-attestation.json
+          if-no-files-found: error
+          retention-days: 90

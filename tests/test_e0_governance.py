@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+from copy import deepcopy
+
+import pytest
+
+from scripts.e0_review_governance import (
+    ATTESTATION_SCHEMA_VERSION,
+    DECISION_SCHEMA_VERSION,
+    E0GovernanceError,
+    PACKET_SCHEMA_VERSION,
+    attestation_content_sha256,
+    sha256_value,
+    validate_e0_attestation,
+    validate_review_decision,
+    validate_review_packet,
+)
+
+
+def _packet() -> dict:
+    packet = {
+        "schema_version": PACKET_SCHEMA_VERSION,
+        "packet_uid": "range-v16:RANGE-001",
+        "source_truth_sha256": "1" * 64,
+        "truth_record": {"id": "RANGE-001", "category": "bounds"},
+        "code_windows": [
+            {
+                "path": "src/example.c",
+                "start_line": 1,
+                "end_line": 2,
+                "content": "void f(void) {}\n",
+                "sha256": "2" * 64,
+            }
+        ],
+        "threat_assumptions": ["The public function can receive untrusted input."],
+        "safe_pair_candidate": {"kind": "fixed"},
+        "packet_sha256": "",
+    }
+    unsigned = dict(packet)
+    unsigned.pop("packet_sha256")
+    packet["packet_sha256"] = sha256_value(unsigned)
+    return packet
+
+
+def _decision(packet: dict) -> dict:
+    return {
+        "schema_version": DECISION_SCHEMA_VERSION,
+        "packet_uid": packet["packet_uid"],
+        "packet_sha256": packet["packet_sha256"],
+        "reviewer_role": "primary_fable",
+        "reviewer_model": "claude-fable-5",
+        "contract_kind": "concrete_trigger",
+        "disposition": "keep",
+        "confidence": 0.9,
+        "structured_anchors": [],
+        "required_evidence_clauses": [{"clause": "path"}],
+        "evidence_refs": ["src/example.c:1"],
+        "safe_pair_recommendation": {"kind": "fixed"},
+        "reason_codes": ["TRIGGER_PRESENT", "SAFE_PAIR_REQUIRED"],
+    }
+
+
+def _attestation() -> dict:
+    payload = {
+        "schema_version": ATTESTATION_SCHEMA_VERSION,
+        "issued_at": "2026-08-18T00:00:00+00:00",
+        "workflow": {
+            "path": ".github/workflows/range-v16-benchmark-v5-attestation.yml",
+            "run_id": "123",
+            "head_sha": "a" * 40,
+            "environment": "sealed-benchmark",
+        },
+        "component_commits": {
+            "governance": "b" * 40,
+            "scorer": "c" * 40,
+            "truth": "d" * 40,
+        },
+        "artifacts": {
+            "truth_v16": "1" * 64,
+            "truth_manifest": "2" * 64,
+            "review_bundle": "3" * 64,
+            "safe_pair_manifest": "4" * 64,
+            "defect_taxonomy": "5" * 64,
+            "benchmark_policy": "6" * 64,
+            "scorer_bundle": "7" * 64,
+        },
+        "review_summary": {
+            "record_count": 136,
+            "dual_review_count": 136,
+            "opus_review_count": 12,
+            "disputed_opus_count": 9,
+        },
+        "invariants": {
+            "matcher_v2_unchanged": True,
+            "v15_read_only": True,
+            "safe_units_cover_confirmable_truth": True,
+            "scanner_answer_isolated": True,
+            "raw_reviews_artifact_only": True,
+            "product_runtime_unchanged": True,
+        },
+        "content_sha256": "",
+    }
+    payload["content_sha256"] = attestation_content_sha256(payload)
+    return payload
+
+
+def test_review_packet_and_decision_bind_exact_packet() -> None:
+    packet = _packet()
+    validate_review_packet(packet)
+    validate_review_decision(
+        _decision(packet),
+        expected_packet_uid=packet["packet_uid"],
+        expected_packet_sha256=packet["packet_sha256"],
+        expected_role="primary_fable",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"candidate_uid": "secret"},
+        {"notes": "copied from benchmark-artifacts/run/report.json"},
+        {"nested": [{"text": "api_key=do-not-send"}]},
+    ],
+)
+def test_review_packet_recursively_rejects_product_results_and_credentials(value: dict) -> None:
+    packet = _packet()
+    packet["safe_pair_candidate"] = value
+    unsigned = dict(packet)
+    unsigned.pop("packet_sha256")
+    packet["packet_sha256"] = sha256_value(unsigned)
+    with pytest.raises(E0GovernanceError):
+        validate_review_packet(packet)
+
+
+def test_review_packet_rejects_content_tampering() -> None:
+    packet = _packet()
+    packet["truth_record"]["category"] = "state_machine"
+    with pytest.raises(E0GovernanceError, match="hash mismatch"):
+        validate_review_packet(packet)
+
+
+def test_e0_attestation_requires_external_workflow_identity_and_hash() -> None:
+    payload = _attestation()
+    validate_e0_attestation(payload, expected_workflow_run_id="123", expected_head_sha="a" * 40)
+    with pytest.raises(E0GovernanceError, match="run ID"):
+        validate_e0_attestation(
+            payload,
+            expected_workflow_run_id="self-asserted",
+            expected_head_sha="a" * 40,
+        )
+    tampered = deepcopy(payload)
+    tampered["invariants"]["matcher_v2_unchanged"] = False
+    with pytest.raises(E0GovernanceError):
+        validate_e0_attestation(
+            tampered,
+            expected_workflow_run_id="123",
+            expected_head_sha="a" * 40,
+        )
