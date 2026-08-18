@@ -2,7 +2,8 @@
 
 The package is deliberately independent from model clients and promotion code.
 Providers may propose certificates, but only :class:`ProofChecker` can accept
-one as a decision fact.  P2 keeps every resulting terminal decision in shadow.
+one as a decision fact. P5 makes complete Checker closure the sole live
+terminal authority.
 """
 
 from .checker import ProofChecker
