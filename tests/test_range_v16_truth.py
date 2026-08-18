@@ -382,6 +382,13 @@ def test_truth_v16_strictly_binds_records_anchors_pairs_and_fixture(tmp_path: Pa
     with pytest.raises(ValueError, match="one fixture snapshot"):
         validate_truth_v16(mixed_fixture, pair_root=pair_root)
 
+    missing_trigger_evidence = deepcopy(truth)
+    missing_trigger_evidence["vulnerabilities"][0]["verification_contract"]["trigger"][
+        "evidence_refs"
+    ] = []
+    with pytest.raises(ValueError, match="trigger evidence refs"):
+        validate_truth_v16(missing_trigger_evidence, pair_root=pair_root)
+
 
 def test_truth_v16_rejects_duplicate_clauses_and_pair_uid(tmp_path: Path) -> None:
     truth, pair_root = _truth_v16(tmp_path)

@@ -236,7 +236,12 @@ def normalize_reviews(
         disagreement_fields = sorted(
             field for field in MATERIAL_DECISION_FIELDS if fable.get(field) != deepseek.get(field)
         )
-        opus_required = truth_id in DISPUTED_IDS or bool(disagreement_fields)
+        evidence_deficit = any(
+            decision.get("contract_kind") in {"concrete_trigger", "public_api_contract"}
+            and not decision.get("evidence_refs")
+            for decision in (fable, deepseek)
+        )
+        opus_required = truth_id in DISPUTED_IDS or bool(disagreement_fields) or evidence_deficit
         opus_binding: dict[str, str] = {}
         selected = fable
         if opus_required:

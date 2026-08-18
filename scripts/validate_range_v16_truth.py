@@ -655,7 +655,9 @@ def _validate_truth_record_contract(
     if not isinstance(trigger.get("summary"), str) or not trigger["summary"].strip():
         raise E0GovernanceError(f"Truth v16 {truth_id} trigger summary is missing")
     _nonempty_string_list(
-        trigger.get("evidence_refs"), field=f"Truth v16 {truth_id} trigger evidence refs"
+        trigger.get("evidence_refs"),
+        field=f"Truth v16 {truth_id} trigger evidence refs",
+        allow_empty=kind not in {"concrete_trigger", "public_api_contract"},
     )
     _nonempty_string_list(
         contract.get("threat_assumptions"),
