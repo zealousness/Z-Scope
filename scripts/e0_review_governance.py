@@ -36,6 +36,7 @@ REASON_CODES = {
 }
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+CLAUSE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 
 _FORBIDDEN_KEYS = {
     "candidate_id",
@@ -272,14 +273,89 @@ def validate_review_decision(
         raise E0GovernanceError("review decision confidence must be numeric")
     if not math.isfinite(float(confidence)) or not 0 <= float(confidence) <= 1:
         raise E0GovernanceError("review decision confidence is outside [0,1]")
-    for field in ("structured_anchors", "required_evidence_clauses", "evidence_refs"):
-        if not isinstance(decision.get(field), list):
-            raise E0GovernanceError(f"review decision {field} must be a list")
+    anchors = decision.get("structured_anchors")
+    if not isinstance(anchors, list) or not anchors:
+        raise E0GovernanceError("review decision structured_anchors must be non-empty")
+    for anchor in anchors:
+        if not isinstance(anchor, Mapping) or set(anchor) != {
+            "kind",
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+        }:
+            raise E0GovernanceError("review decision structured anchor fields are invalid")
+        if anchor.get("kind") not in {"primary", "secondary", "additional", "corrected"}:
+            raise E0GovernanceError("review decision structured anchor kind is invalid")
+        if not isinstance(anchor.get("file"), str) or not anchor["file"]:
+            raise E0GovernanceError("review decision structured anchor file is invalid")
+        path = PurePosixPath(str(anchor["file"]))
+        if path.is_absolute() or str(path) != anchor["file"] or any(
+            part in {"", ".", ".."} for part in path.parts
+        ):
+            raise E0GovernanceError("review decision structured anchor path is not canonical")
+        if not isinstance(anchor.get("function"), str) or not anchor["function"]:
+            raise E0GovernanceError("review decision structured anchor function is invalid")
+        start = anchor.get("start_line")
+        end = anchor.get("end_line")
+        if (
+            isinstance(start, bool)
+            or not isinstance(start, int)
+            or isinstance(end, bool)
+            or not isinstance(end, int)
+            or start < 1
+            or end < start
+        ):
+            raise E0GovernanceError("review decision structured anchor range is invalid")
+    clauses = decision.get("required_evidence_clauses")
+    if not isinstance(clauses, list) or not clauses:
+        raise E0GovernanceError("review decision required evidence clauses must be non-empty")
+    clause_ids: set[str] = set()
+    for clause in clauses:
+        if not isinstance(clause, Mapping) or set(clause) != {
+            "clause_id",
+            "predicate",
+            "evidence_refs",
+        }:
+            raise E0GovernanceError("review decision evidence clause fields are invalid")
+        clause_id = str(clause.get("clause_id") or "")
+        if not CLAUSE_ID_RE.fullmatch(clause_id) or clause_id in clause_ids:
+            raise E0GovernanceError("review decision evidence clause ID is invalid or duplicate")
+        clause_ids.add(clause_id)
+        if not isinstance(clause.get("predicate"), str) or not clause["predicate"].strip():
+            raise E0GovernanceError("review decision evidence clause predicate is invalid")
+        clause_refs = clause.get("evidence_refs")
+        if not isinstance(clause_refs, list) or not all(
+            isinstance(value, str) and value.strip() for value in clause_refs
+        ):
+            raise E0GovernanceError("review decision evidence clause refs are invalid")
+    evidence_refs = decision.get("evidence_refs")
+    if not isinstance(evidence_refs, list) or not all(
+        isinstance(value, str) and value.strip() for value in evidence_refs
+    ):
+        raise E0GovernanceError("review decision evidence refs are invalid")
     codes = decision.get("reason_codes")
     if not isinstance(codes, list) or not codes or not set(codes).issubset(REASON_CODES):
         raise E0GovernanceError("review decision reason codes are invalid")
-    if not isinstance(decision.get("safe_pair_recommendation"), Mapping):
+    safe_pair = decision.get("safe_pair_recommendation")
+    if not isinstance(safe_pair, Mapping) or set(safe_pair) != {
+        "kind",
+        "invariant_summary",
+        "vulnerable_summary",
+        "safe_summary",
+        "compile_requirements",
+    }:
         raise E0GovernanceError("review decision safe pair recommendation is invalid")
+    if safe_pair.get("kind") not in {"fixed", "near_miss"}:
+        raise E0GovernanceError("review decision safe pair kind is invalid")
+    for field in ("invariant_summary", "vulnerable_summary", "safe_summary"):
+        if not isinstance(safe_pair.get(field), str) or not safe_pair[field].strip():
+            raise E0GovernanceError(f"review decision safe pair {field} is invalid")
+    compile_requirements = safe_pair.get("compile_requirements")
+    if not isinstance(compile_requirements, list) or not compile_requirements or not all(
+        isinstance(value, str) and value.strip() for value in compile_requirements
+    ):
+        raise E0GovernanceError("review decision compile requirements are invalid")
 
 
 def attestation_content_sha256(payload: Mapping[str, Any]) -> str:
