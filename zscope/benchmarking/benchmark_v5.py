@@ -66,6 +66,12 @@ _COUNT_METRICS = frozenset(
     {"exclusive_confirmed_tp", "false_acceptance_count", "post_proof_extra_calls"}
 )
 _NULLABLE_COST_METRICS = frozenset({"tokens_per_exclusive_tp"})
+_FINDING_ROOT_VERSION = "zscope.finding-root.v2"
+_SCORER_BUNDLE_FILES = (
+    "benchmark_v5.py",
+    "protocol.py",
+    "truth_contract.py",
+)
 
 
 class BenchmarkV5Error(ValueError):
@@ -84,6 +90,24 @@ def _canonical_bytes(value: Any) -> bytes:
 
 def _sha256_value(value: Any) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _scorer_bundle_sha256() -> str:
+    root = Path(__file__).resolve().parent
+    records = []
+    for name in _SCORER_BUNDLE_FILES:
+        path = (root / name).resolve(strict=True)
+        if path.parent != root or path.is_symlink() or not path.is_file():
+            raise BenchmarkV5Error("Benchmark v5 scorer bundle member is invalid")
+        data = path.read_bytes()
+        records.append(
+            {
+                "path": f"zscope/benchmarking/{name}",
+                "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        )
+    return _sha256_value(records)
 
 
 def _load_object(path: Path) -> Dict[str, Any]:
@@ -172,6 +196,11 @@ def _component_section(report: Mapping[str, Any], name: str) -> Dict[str, Any]:
             "reason": str(value.get("reason") or f"{name} metrics unavailable"),
         }
     required = _COMPONENT_METRICS[name]
+    if set(value) != required | {"status"}:
+        return {
+            "status": "not_available",
+            "reason": f"{name} metric fields do not match the v5 contract",
+        }
     missing = sorted(required - set(value))
     if missing:
         return {
@@ -185,6 +214,8 @@ def _component_section(report: Mapping[str, Any], name: str) -> Dict[str, Any]:
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             return {"status": "not_available", "reason": f"{name}.{metric} is not numeric"}
         number = float(raw)
+        if not math.isfinite(number):
+            return {"status": "not_available", "reason": f"{name}.{metric} is not finite"}
         if metric in _COUNT_METRICS or metric in _NULLABLE_COST_METRICS:
             if number < 0 or (metric in _COUNT_METRICS and not number.is_integer()):
                 return {
@@ -222,6 +253,65 @@ def _cost_metrics(report: Mapping[str, Any], confirmed_tp: int) -> Dict[str, Any
         "provider_usage_coverage": usage.get("provider_usage_coverage"),
         "token_conservation": usage.get("token_conservation"),
     }
+
+
+def _usage_dimension_total(value: Any, *, dimension: str) -> int:
+    rows = _mapping(value)
+    total = 0
+    for name, raw in rows.items():
+        row = _mapping(raw)
+        tokens = row.get("total_tokens")
+        if (
+            not isinstance(name, str)
+            or not name
+            or isinstance(tokens, bool)
+            or not isinstance(tokens, int)
+            or tokens < 0
+        ):
+            raise BenchmarkV5Error(f"formal Benchmark v5 {dimension} usage is invalid")
+        total += tokens
+    return total
+
+
+def _validate_formal_cost_contract(cost: Mapping[str, Any]) -> None:
+    total_tokens = cost.get("total_tokens")
+    wall_time = cost.get("wall_time_seconds")
+    provider_coverage = cost.get("provider_usage_coverage")
+    if (
+        isinstance(total_tokens, bool)
+        or not isinstance(total_tokens, int)
+        or total_tokens < 0
+        or isinstance(wall_time, bool)
+        or not isinstance(wall_time, (int, float))
+        or not math.isfinite(float(wall_time))
+        or float(wall_time) < 0.0
+        or isinstance(provider_coverage, bool)
+        or not isinstance(provider_coverage, (int, float))
+        or not math.isfinite(float(provider_coverage))
+        or float(provider_coverage) != 1.0
+        or cost.get("token_conservation") is not True
+    ):
+        raise BenchmarkV5Error("formal Benchmark v5 requires complete provider/token telemetry")
+    for field in ("tokens_per_kloc", "tokens_per_confirmed_tp"):
+        value = cost.get(field)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+        ):
+            raise BenchmarkV5Error(f"formal Benchmark v5 cost metric is invalid: {field}")
+    by_agent = _usage_dimension_total(cost.get("usage_by_agent"), dimension="by-agent")
+    by_stage = _usage_dimension_total(cost.get("usage_by_stage"), dimension="by-stage")
+    if by_agent != total_tokens or by_stage != total_tokens:
+        raise BenchmarkV5Error("formal Benchmark v5 token dimensions do not conserve total tokens")
+
+
+def _validate_formal_runtime_contract(report: Mapping[str, Any], cost: Mapping[str, Any]) -> None:
+    _validate_formal_cost_contract(cost)
+    projection = _mapping(_mapping(report.get("run_manifest")).get("finding_root_projection"))
+    if projection.get("schema_version") != _FINDING_ROOT_VERSION:
+        raise BenchmarkV5Error("formal Benchmark v5 requires Finding-root v2 projection")
 
 
 def _safe_pair_metrics(
@@ -427,8 +517,7 @@ def score_benchmark_v5(
         if report.get("answer_material_present") is not False:
             raise BenchmarkV5Error("formal Benchmark v5 requires answer-isolated scanner output")
         cost = _cost_metrics(report, int(product_views["default"]["true_positives"]))
-        if cost.get("provider_usage_coverage") != 1.0 or cost.get("token_conservation") is not True:
-            raise BenchmarkV5Error("formal Benchmark v5 requires complete provider/token telemetry")
+        _validate_formal_runtime_contract(report, cost)
     else:
         cost = _cost_metrics(report, int(product_views["default"]["true_positives"]))
     result = {
@@ -443,6 +532,12 @@ def score_benchmark_v5(
             "policy_schema_version": POLICY_V2_SCHEMA_VERSION,
             "policy_sha256": policy["source_sha256"],
             "v4_comparison_policy": "incomparable",
+            "finding_root_version": str(
+                _mapping(_mapping(report.get("run_manifest")).get("finding_root_projection")).get(
+                    "schema_version"
+                )
+                or ""
+            ),
         },
         "artifact_bindings": {
             "truth_v16_content": _sha256_value(truth),
@@ -450,6 +545,7 @@ def score_benchmark_v5(
             "review_bundle_content": str(contract["review_bundle_sha256"]),
             "defect_taxonomy": taxonomy["source_sha256"],
             "benchmark_policy": policy["source_sha256"],
+            "scorer_bundle": _scorer_bundle_sha256(),
         },
         "product": product_views,
         "design_risk": {
@@ -478,11 +574,138 @@ def _jaccard(sets: Sequence[set[str]]) -> float:
 def _required_number(value: Any, *, field: str, integer: bool = False) -> float | int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise BenchmarkV5Error(f"formal Benchmark v5 metric is missing or invalid: {field}")
+    if not math.isfinite(float(value)):
+        raise BenchmarkV5Error(f"formal Benchmark v5 metric is not finite: {field}")
     if integer:
         if not float(value).is_integer():
             raise BenchmarkV5Error(f"formal Benchmark v5 metric must be an integer: {field}")
         return int(value)
     return float(value)
+
+
+def _distribution(values: Sequence[float | int]) -> Dict[str, float | int]:
+    ordered = sorted(values)
+    index = max(0, math.ceil(0.95 * len(ordered)) - 1)
+    return {
+        "median": statistics.median(ordered),
+        "min": min(ordered),
+        "max": max(ordered),
+        "p95": ordered[index],
+    }
+
+
+def _view_stability(trials: Sequence[Mapping[str, Any]], view: str) -> Dict[str, Any]:
+    rows = [_mapping(_mapping(trial.get("product")).get(view)) for trial in trials]
+    recalls = [float(_required_number(row.get("recall"), field=f"product.{view}.recall")) for row in rows]
+    precisions = [
+        float(
+            _required_number(
+                row.get("actionable_precision"),
+                field=f"product.{view}.actionable_precision",
+            )
+        )
+        for row in rows
+    ]
+    tp_sets = [set(str(value) for value in row.get("matched", [])) for row in rows]
+    return {
+        "recall": _distribution(recalls),
+        "actionable_precision": _distribution(precisions),
+        "recall_range_pp": (max(recalls) - min(recalls)) * 100.0,
+        "true_positive_jaccard": _jaccard(tp_sets),
+    }
+
+
+def _component_stability(
+    trials: Sequence[Mapping[str, Any]], name: str
+) -> Dict[str, Any]:
+    output: Dict[str, Any] = {}
+    for metric in sorted(_COMPONENT_METRICS[name]):
+        raw_values = [_mapping(trial.get(name)).get(metric) for trial in trials]
+        if metric in _NULLABLE_COST_METRICS and all(value is None for value in raw_values):
+            output[metric] = {
+                "status": "not_available",
+                "reason": "no exclusive confirmed TP in any trial",
+            }
+            continue
+        if any(value is None for value in raw_values):
+            raise BenchmarkV5Error(
+                f"formal Benchmark v5 metric availability differs across trials: {name}.{metric}"
+            )
+        values = [
+            _required_number(
+                value,
+                field=f"{name}.{metric}",
+                integer=metric in _COUNT_METRICS,
+            )
+            for value in raw_values
+        ]
+        output[metric] = _distribution(values)
+    return output
+
+
+def _validate_formal_score_result(trial: Mapping[str, Any]) -> None:
+    scoring = _mapping(trial.get("scoring_contract"))
+    if (
+        scoring.get("matcher_version") != MATCHER_VERSION
+        or scoring.get("finding_root_version") != _FINDING_ROOT_VERSION
+        or scoring.get("v4_comparison_policy") != "incomparable"
+    ):
+        raise BenchmarkV5Error("formal Benchmark v5 score contract is incomplete")
+    bindings = _mapping(trial.get("artifact_bindings"))
+    if set(bindings) != {
+        "truth_v16_content",
+        "truth_contract_manifest",
+        "review_bundle_content",
+        "defect_taxonomy",
+        "benchmark_policy",
+        "scorer_bundle",
+    } or not all(_SHA256_RE.fullmatch(str(value or "")) for value in bindings.values()):
+        raise BenchmarkV5Error("formal Benchmark v5 artifact bindings are incomplete")
+    for name in _COMPONENT_METRICS:
+        section = _mapping(trial.get(name))
+        if section.get("status") != "available" or set(section) != _COMPONENT_METRICS[name] | {
+            "status"
+        }:
+            raise BenchmarkV5Error(f"formal Benchmark v5 component is incomplete: {name}")
+        for metric in _COMPONENT_METRICS[name]:
+            value = section.get(metric)
+            if metric in _NULLABLE_COST_METRICS and value is None:
+                continue
+            _required_number(
+                value,
+                field=f"{name}.{metric}",
+                integer=metric in _COUNT_METRICS,
+            )
+    pairs = _mapping(trial.get("safe_pairs"))
+    if pairs.get("status") != "available" or pairs.get("formal_bindings_verified") is not True:
+        raise BenchmarkV5Error("formal Benchmark v5 safe-pair evidence is incomplete")
+    _validate_formal_cost_contract(_mapping(trial.get("cost")))
+    for view in ("default", "with_needs_review"):
+        row = _mapping(_mapping(trial.get("product")).get(view))
+        for metric in ("recall", "actionable_precision"):
+            value = float(_required_number(row.get(metric), field=f"product.{view}.{metric}"))
+            if not 0.0 <= value <= 1.0:
+                raise BenchmarkV5Error(f"formal Benchmark v5 product metric is invalid: {view}")
+        matched = row.get("matched")
+        if not isinstance(matched, list) or len(matched) != len(set(str(item) for item in matched)):
+            raise BenchmarkV5Error(f"formal Benchmark v5 matched truth IDs are invalid: {view}")
+    cost = _mapping(trial.get("cost"))
+    source_loc = cost.get("source_loc")
+    total_tokens = int(cost.get("total_tokens") or 0)
+    default_tp = int(_mapping(_mapping(trial.get("product")).get("default")).get("true_positives") or 0)
+    if isinstance(source_loc, bool) or not isinstance(source_loc, int) or source_loc <= 0:
+        raise BenchmarkV5Error("formal Benchmark v5 requires a positive source LOC")
+    expected_per_kloc = total_tokens / (source_loc / 1000.0)
+    expected_per_tp = total_tokens / default_tp if default_tp else None
+    if not math.isclose(float(cost.get("tokens_per_kloc") or -1.0), expected_per_kloc):
+        raise BenchmarkV5Error("formal Benchmark v5 tokens/KLOC is inconsistent")
+    if (
+        expected_per_tp is None
+        and cost.get("tokens_per_confirmed_tp") is not None
+        or expected_per_tp is not None
+        and not math.isclose(float(cost.get("tokens_per_confirmed_tp") or -1.0), expected_per_tp)
+    ):
+        raise BenchmarkV5Error("formal Benchmark v5 tokens/TP is inconsistent")
 
 
 def aggregate_benchmark_v5(
@@ -502,6 +725,7 @@ def aggregate_benchmark_v5(
         supplied_score_sha = str(unsigned_trial.pop("score_sha256", ""))
         if supplied_score_sha != _sha256_value(unsigned_trial):
             raise BenchmarkV5Error("formal Benchmark v5 trial score hash is invalid")
+        _validate_formal_score_result(trial)
     if any(trial.get("formal_ready") is not True for trial in trials):
         raise BenchmarkV5Error("formal Benchmark v5 trial is not component-complete")
     contracts = [_mapping(trial.get("truth_contract")) for trial in trials]
@@ -518,16 +742,37 @@ def aggregate_benchmark_v5(
         expected_artifacts=bindings[0],
     )
     defaults = [_mapping(_mapping(trial.get("product")).get("default")) for trial in trials]
-    recalls = [float(item.get("recall") or 0.0) for item in defaults]
-    precisions = [float(item.get("actionable_precision") or 0.0) for item in defaults]
-    tokens = [int(_mapping(trial.get("cost")).get("total_tokens") or 0) for trial in trials]
-    tp_sets = [set(str(value) for value in item.get("matched", [])) for item in defaults]
+    recalls = [
+        float(_required_number(item.get("recall"), field="product.default.recall"))
+        for item in defaults
+    ]
+    precisions = [
+        float(
+            _required_number(
+                item.get("actionable_precision"),
+                field="product.default.actionable_precision",
+            )
+        )
+        for item in defaults
+    ]
+    tokens = [
+        int(
+            _required_number(
+                _mapping(trial.get("cost")).get("total_tokens"),
+                field="cost.total_tokens",
+                integer=True,
+            )
+        )
+        for trial in trials
+    ]
     if not 0.0 <= baseline_actionable_precision <= 1.0:
         raise BenchmarkV5Error("formal Benchmark v5 baseline precision is invalid")
     median_recall = statistics.median(recalls)
     median_precision = statistics.median(precisions)
     recall_range_pp = (max(recalls) - min(recalls)) * 100.0
-    jaccard = _jaccard(tp_sets)
+    default_stability = _view_stability(trials, "default")
+    with_review_stability = _view_stability(trials, "with_needs_review")
+    jaccard = float(default_stability["true_positive_jaccard"])
     pair_alert_rates = [
         float(
             _required_number(
@@ -568,6 +813,33 @@ def aggregate_benchmark_v5(
     conservation = [
         _mapping(trial.get("cost")).get("token_conservation") is True for trial in trials
     ]
+    tokens_per_kloc = [
+        float(
+            _required_number(
+                _mapping(trial.get("cost")).get("tokens_per_kloc"),
+                field="cost.tokens_per_kloc",
+            )
+        )
+        for trial in trials
+    ]
+    tokens_per_tp = [
+        float(
+            _required_number(
+                _mapping(trial.get("cost")).get("tokens_per_confirmed_tp"),
+                field="cost.tokens_per_confirmed_tp",
+            )
+        )
+        for trial in trials
+    ]
+    wall_times = [
+        float(
+            _required_number(
+                _mapping(trial.get("cost")).get("wall_time_seconds"),
+                field="cost.wall_time_seconds",
+            )
+        )
+        for trial in trials
+    ]
     policy = load_benchmark_v5_policy()
     observed = {
         "confirmed_recall": median_recall,
@@ -606,20 +878,35 @@ def aggregate_benchmark_v5(
         "truth_manifest_sha256": next(iter(manifests)),
         "e0_attestation_sha256": str(e0_attestation.get("content_sha256") or ""),
         "quality": {
-            "median_recall": median_recall,
-            "min_recall": min(recalls),
-            "max_recall": max(recalls),
-            "recall_range_pp": recall_range_pp,
-            "median_actionable_precision": median_precision,
+            "default": default_stability,
+            "with_needs_review": with_review_stability,
             "baseline_actionable_precision": baseline_actionable_precision,
             "actionable_precision_delta_pp": observed["actionable_precision_delta_pp"],
-            "true_positive_jaccard": jaccard,
+        },
+        "components": {
+            name: _component_stability(trials, name)
+            for name in sorted(_COMPONENT_METRICS)
+        },
+        "safe_pairs": {
+            "safe_entry_alert_rate": _distribution(pair_alert_rates),
+            "consistency_rate": _distribution(
+                [
+                    float(
+                        _required_number(
+                            _mapping(trial.get("safe_pairs")).get("consistency_rate"),
+                            field="safe_pairs.consistency_rate",
+                        )
+                    )
+                    for trial in trials
+                ]
+            ),
         },
         "cost": {
             "runtime_token_limit_applied": False,
-            "median_total_tokens": statistics.median(tokens),
-            "min_total_tokens": min(tokens),
-            "max_total_tokens": max(tokens),
+            "total_tokens": _distribution(tokens),
+            "tokens_per_kloc": _distribution(tokens_per_kloc),
+            "tokens_per_confirmed_tp": _distribution(tokens_per_tp),
+            "wall_time_seconds": _distribution(wall_times),
         },
         "policy_evaluation": {
             "policy_schema_version": POLICY_V2_SCHEMA_VERSION,
@@ -699,6 +986,7 @@ def _validate_e0_attestation_binding(
         "review_bundle_content",
         "defect_taxonomy",
         "benchmark_policy",
+        "scorer_bundle",
     ):
         if artifacts.get(name) != expected_artifacts.get(name):
             raise BenchmarkV5Error(f"E0 attestation does not bind trial artifact: {name}")
