@@ -226,12 +226,13 @@ def resolve_discovery_profile(config_or_analysis: Any) -> DiscoveryProfile:
 
 
 def candidate_coverage_keys(ledger: CandidateLedger) -> Set[str]:
-    """Project the ledger to event-family presence for planning only.
+    """Project candidates to hashed, function/region-local coverage identities.
 
     The planner is intentionally not allowed to inspect candidate identities,
-    sources, sinks, locations, or rule conclusions.  Those values are neither
-    prompt material nor trigger inputs; a family-level coverage count/presence
-    bit is the only information that crosses this boundary.
+    sources, sinks, locations, or rule conclusions.  Raw values never cross
+    this boundary: only content-addressed family/function/region presence bits
+    are returned.  A candidate elsewhere in the project therefore cannot
+    suppress an unrelated audit unit from the same broad event family.
     """
 
     keys: Set[str] = set()
@@ -242,8 +243,55 @@ def candidate_coverage_keys(ledger: CandidateLedger) -> Set[str]:
         if not isinstance(payload, dict):
             payload = {}
         family = _candidate_event_family(record, payload)
-        if family:
-            keys.add(_normalize_key(f"family:{family}"))
+        if not family:
+            continue
+        function_values = _candidate_local_values(
+            ticket,
+            evidence,
+            payload,
+            fields=("function_uid", "function", "func_name", "entry_function"),
+        )
+        for path in getattr(ticket, "call_paths", ()) or ():
+            if isinstance(path, (list, tuple)) and path:
+                function_values.add(str(path[-1]))
+        file_values = _candidate_local_values(
+            ticket,
+            evidence,
+            payload,
+            fields=("file", "file_path", "path"),
+        )
+        raw_line = payload.get("line") or evidence.get("line") or getattr(ticket, "line", 0)
+        try:
+            line = max(0, int(raw_line or 0))
+        except (TypeError, ValueError):
+            line = 0
+        for function_value in function_values:
+            keys.add(_localized_coverage_key(family, "function", function_value))
+            if line:
+                for file_value in file_values or {""}:
+                    keys.add(
+                        _localized_coverage_key(
+                            family,
+                            "region",
+                            function_value,
+                            file_value,
+                            str(line // 25),
+                        )
+                    )
+        subject_values = _candidate_local_values(
+            ticket,
+            evidence,
+            payload,
+            fields=(
+                "subject_uid",
+                "resource_identity",
+                "source_identity",
+                "sink_identity",
+                "decision_region_uid",
+            ),
+        )
+        for subject_value in subject_values:
+            keys.add(_localized_coverage_key(family, "subject", subject_value))
     return keys
 
 
@@ -336,6 +384,7 @@ class CoverageGapPlanner:
     def __init__(self, profile: DiscoveryProfile, *, merge_overlap: float = 0.60):
         self.profile = profile
         self.merge_overlap = max(0.0, min(1.0, float(merge_overlap)))
+        self.last_diagnostics: List[Dict[str, Any]] = []
 
     def plan(
         self,
@@ -344,6 +393,7 @@ class CoverageGapPlanner:
         covered_keys: Iterable[str] = (),
         known_variant_keys: Iterable[str] = (),
     ) -> Tuple[AuditUnit, ...]:
+        self.last_diagnostics = []
         if self.profile.max_units == 0:
             return ()
         covered = {_normalize_key(value) for value in covered_keys if _normalize_key(value)}
@@ -362,9 +412,13 @@ class CoverageGapPlanner:
             unknowns_by_subject.setdefault(unknown.subject_uid, []).append(unknown)
         external_entry_identities: Set[str] = set()
         for subject_uid, subject_claims in claims_by_subject.items():
+            # ``entry_unknown`` is not promotion evidence.  It does mean that
+            # a configured scan root may be externally reachable, so discovery
+            # must conservatively audit it instead of suppressing every unit
+            # until a deployment-specific trust claim is supplied.
             is_external = any(
                 claim.kind == "input_origin"
-                and str(claim.value.get("origin") or "").lower() == "external"
+                and str(claim.value.get("origin") or "").lower() in {"external", "entry_unknown"}
                 or claim.kind == "trust_boundary"
                 and bool(claim.value.get("externally_exposed"))
                 for claim in subject_claims
@@ -376,6 +430,17 @@ class CoverageGapPlanner:
         seeds: List[AuditUnit] = []
         for record in semantic_map.functions:
             if self._record_is_default_excluded(record):
+                self.last_diagnostics.append(
+                    {
+                        "audit_unit_uid": "AUDIT_"
+                        + hashlib.sha256(
+                            f"excluded:{record.function_uid}".encode("utf-8")
+                        ).hexdigest()[:20],
+                        "reason_code": "AUDIT_UNIT_EXCLUDED_GENERATED_VENDOR_TEST",
+                        "function_uid": record.function_uid,
+                        "file_path": record.file_path,
+                    }
+                )
                 continue
             by_family: Dict[str, List[Any]] = {}
             for event in record.events:
@@ -423,6 +488,24 @@ class CoverageGapPlanner:
                     ),
                 )
                 if score < self.profile.risk_threshold:
+                    self.last_diagnostics.append(
+                        {
+                            "audit_unit_uid": "AUDIT_"
+                            + hashlib.sha256(
+                                f"unplanned:{record.function_uid}:{family}".encode("utf-8")
+                            ).hexdigest()[:20],
+                            "reason_code": (
+                                "AUDIT_UNIT_SUPPRESSED_LOCAL_COVERAGE"
+                                if not desert
+                                else "PRODUCER_NO_SIGNAL"
+                            ),
+                            "function_uid": record.function_uid,
+                            "family": family,
+                            "risk_score": score,
+                            "risk_threshold": self.profile.risk_threshold,
+                            "candidate_desert": desert,
+                        }
+                    )
                     continue
                 event_refs = tuple(sorted(event.event_id for event in events))
                 claim_refs = tuple(
@@ -599,8 +682,43 @@ class CoverageGapPlanner:
         records: Sequence[FunctionSecurityRecord],
         covered: Set[str],
     ) -> bool:
-        del records
-        return _normalize_key(f"family:{family}") in covered
+        if not covered:
+            return False
+        for record in records:
+            identities = {
+                value
+                for value in (
+                    record.function_uid,
+                    record.index_name,
+                    record.function_name,
+                )
+                if value
+            }
+            for identity in identities:
+                if _localized_coverage_key(family, "function", identity) in covered:
+                    # Function-level keys are a fallback for candidates that
+                    # lack a trustworthy source line.  Line-bearing candidates
+                    # also carry region keys and are checked below.
+                    function_only = not any(
+                        key.startswith(_localized_coverage_prefix(family, "region", identity))
+                        for key in covered
+                    )
+                    if function_only:
+                        return True
+                for event in record.events:
+                    if event.family != family or not event.line:
+                        continue
+                    for file_value in {record.file_path, event.file, ""}:
+                        key = _localized_coverage_key(
+                            family,
+                            "region",
+                            identity,
+                            file_value,
+                            str(int(event.line) // 25),
+                        )
+                        if key in covered:
+                            return True
+        return False
 
     @staticmethod
     def _is_known_variant(record: FunctionSecurityRecord, known_variants: Set[str]) -> bool:
@@ -1009,6 +1127,219 @@ def fit_candidate_blind_prompt_projection(
     return fitted
 
 
+def _projection_member_ids(projection: Mapping[str, Any]) -> Tuple[str, ...]:
+    unit = projection.get("audit_unit")
+    unit = unit if isinstance(unit, Mapping) else {}
+    return tuple(str(value) for value in unit.get("member_functions", []) if str(value))
+
+
+def _projection_claim_ids(projection: Mapping[str, Any]) -> Tuple[str, ...]:
+    unit = projection.get("audit_unit")
+    unit = unit if isinstance(unit, Mapping) else {}
+    return tuple(str(value) for value in unit.get("claim_refs", []) if str(value))
+
+
+def _bounded_semantic_delta_schema(projection: Mapping[str, Any]) -> Dict[str, Any]:
+    schema = deepcopy(SEMANTIC_CLAIM_DELTA_JSON_SCHEMA)
+    unit = projection.get("audit_unit")
+    unit = unit if isinstance(unit, Mapping) else {}
+    members = list(_projection_member_ids(projection))
+    allowed_refs = [str(value) for value in projection.get("allowed_evidence_refs", [])]
+    properties = schema["properties"]
+    properties["unit_id"] = {"const": str(unit.get("unit_id") or "")}
+    properties["unit_fingerprint"] = {"const": str(unit.get("unit_fingerprint") or "")}
+    properties["claims"]["maxItems"] = 12
+    claim = properties["claims"]["items"]
+    claim["properties"]["subject_uid"] = {"type": "string", "enum": members}
+    claim["properties"]["origin"] = {"const": "llm"}
+    claim["properties"]["evidence_refs"]["maxItems"] = 8
+    claim["properties"]["evidence_refs"]["items"] = {
+        "type": "string",
+        "enum": allowed_refs,
+    }
+    claim["properties"]["locations"]["maxItems"] = 4
+    claim["properties"]["value"]["maxProperties"] = 16
+    properties["unknowns"]["maxItems"] = 12
+    unknown = properties["unknowns"]["items"]
+    unknown["properties"]["subject_uid"] = {"type": "string", "enum": members}
+    unknown["properties"]["reason"]["maxLength"] = 600
+    unknown["properties"]["evidence_refs"]["maxItems"] = 8
+    unknown["properties"]["evidence_refs"]["items"] = {
+        "type": "string",
+        "enum": allowed_refs,
+    }
+    properties["unresolved_facts"]["maxItems"] = 16
+    properties["unresolved_facts"]["items"]["maxLength"] = 300
+    return schema
+
+
+def _bounded_discovery_report_schema(
+    projection: Mapping[str, Any],
+    *,
+    max_hypotheses: int,
+) -> Dict[str, Any]:
+    schema = deepcopy(DISCOVERY_REPORT_JSON_SCHEMA)
+    unit = projection.get("audit_unit")
+    unit = unit if isinstance(unit, Mapping) else {}
+    members = list(_projection_member_ids(projection))
+    claim_ids = list(_projection_claim_ids(projection))
+    allowed_refs = [str(value) for value in projection.get("allowed_evidence_refs", [])]
+    properties = schema["properties"]
+    properties["unit_id"] = {"const": str(unit.get("unit_id") or "")}
+    properties["unit_fingerprint"] = {"const": str(unit.get("unit_fingerprint") or "")}
+    properties["reviewed_function_uids"]["maxItems"] = len(members)
+    properties["reviewed_function_uids"]["items"] = {
+        "type": "string",
+        "enum": members,
+    }
+    properties["reviewed_claim_ids"]["maxItems"] = len(claim_ids)
+    properties["reviewed_claim_ids"]["items"] = {
+        "type": "string",
+        "enum": claim_ids,
+    }
+    properties["tool_evidence_refs"]["maxItems"] = min(32, len(allowed_refs))
+    properties["tool_evidence_refs"]["items"] = {
+        "type": "string",
+        "enum": allowed_refs,
+    }
+    properties["hypotheses"]["maxItems"] = max(0, int(max_hypotheses))
+    hypothesis = properties["hypotheses"]["items"]
+    hypothesis["properties"]["function"] = {"type": "string", "enum": members}
+    for name, limit in (
+        ("hypothesis_id", 160),
+        ("defect_class", 160),
+        ("location", 300),
+        ("source", 400),
+        ("sink", 400),
+        ("resource", 400),
+        ("description", 1000),
+        ("reasoning", 1000),
+        ("root_cause", 800),
+    ):
+        hypothesis["properties"][name]["maxLength"] = limit
+    hypothesis["properties"]["entry_paths"]["maxItems"] = 8
+    hypothesis["properties"]["entry_paths"]["items"]["maxItems"] = 16
+    hypothesis["properties"]["path_conditions"]["maxItems"] = 12
+    hypothesis["properties"]["path_conditions"]["items"]["maxLength"] = 500
+    for name in ("positive_evidence_refs", "negative_evidence_refs"):
+        hypothesis["properties"][name]["maxItems"] = 8
+        hypothesis["properties"][name]["items"] = {
+            "type": "string",
+            "enum": allowed_refs,
+        }
+    hypothesis["properties"]["missing_fact_kinds"]["maxItems"] = 12
+    hypothesis["properties"]["missing_fact_kinds"]["items"]["maxLength"] = 160
+    properties["unresolved_facts"]["maxItems"] = 24
+    properties["unresolved_facts"]["items"]["maxLength"] = 300
+    return schema
+
+
+def _merge_direct_attempt_metadata(
+    responses: Sequence[Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]],
+) -> Dict[str, Any]:
+    prompt_tokens = 0
+    completion_tokens = 0
+    tool_calls = 0
+    finish_reason = ""
+    provider_model = ""
+    for response, messages, message in responses:
+        prompt, completion = LLMClient._response_token_usage(response, messages, message)
+        prompt_tokens += prompt
+        completion_tokens += completion
+        calls = message.get("tool_calls")
+        tool_calls += len(calls) if isinstance(calls, list) else 0
+        choices = response.get("choices") or []
+        choice = choices[0] if choices and isinstance(choices[0], Mapping) else {}
+        finish_reason = str(choice.get("finish_reason") or finish_reason)
+        provider_model = str(response.get("model") or provider_model)
+    return {
+        "context_tokens": sum(LLMClient.estimate_tokens(messages) for _, messages, _ in responses),
+        "cumulative_prompt_tokens": prompt_tokens,
+        "cumulative_completion_tokens": completion_tokens,
+        "cumulative_total_tokens": prompt_tokens + completion_tokens,
+        "iterations": len(responses),
+        "api_call_count": len(responses),
+        "tool_call_count": tool_calls,
+        "finish_reason": finish_reason,
+        "provider_model": provider_model,
+        "compact_retry_count": max(0, len(responses) - 1),
+        "truncated": finish_reason == "length",
+        "finalization_mode": "direct_terminal_tool",
+    }
+
+
+def _run_direct_terminal_tool(
+    agent: JsonToolAgent,
+    *,
+    prompts: Sequence[str],
+    input_data: Mapping[str, Any],
+    spec: JsonOutputSpec,
+    trace_label: str,
+    parse_label: str,
+) -> Optional[AgentResponse]:
+    chat_completion = getattr(agent.llm_client, "chat_completion", None)
+    if not callable(chat_completion):
+        return None
+    tool = agent._final_json_tool_schema(spec)
+    attempts: List[Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]] = []
+    last_error = f"Failed to produce {parse_label} with terminal tool."
+    for attempt_index, prompt in enumerate(prompts, start=1):
+        messages = agent._messages(dict(input_data), prompt)
+        label = trace_label
+        if attempt_index > 1:
+            label += f"; compact_retry={attempt_index - 1}"
+        try:
+            response = chat_completion(
+                messages,
+                tools=[tool],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": spec.final_tool_name},
+                },
+                max_tokens=8192,
+                trace_agent=agent.name,
+                trace_label=label,
+                trace_iteration=attempt_index,
+            )
+        except Exception as exc:
+            metadata = _merge_direct_attempt_metadata(attempts)
+            metadata["direct_terminal_error"] = type(exc).__name__
+            return AgentResponse(success=False, data={}, error=str(exc), metadata=metadata)
+        choices = response.get("choices") or []
+        choice = choices[0] if choices and isinstance(choices[0], Mapping) else {}
+        message = choice.get("message")
+        message = dict(message) if isinstance(message, Mapping) else {"role": "assistant"}
+        attempts.append((response, messages, message))
+        result = {
+            "content": str(message.get("content") or ""),
+            "message": message,
+            "conversation": [*messages, message],
+            "finish_reason": choice.get("finish_reason"),
+            "provider_model": response.get("model"),
+        }
+        parsed = agent._extract_structured_json_payload(
+            str(message.get("content") or ""),
+            result,
+            result["conversation"],
+            spec,
+        )
+        if parsed is not None:
+            metadata = _merge_direct_attempt_metadata(attempts)
+            metadata["terminal_tool_name"] = spec.final_tool_name
+            metadata["terminal_tool_valid"] = True
+            return AgentResponse(success=True, data=parsed, metadata=metadata)
+        finish_reason = str(choice.get("finish_reason") or "")
+        last_error = (
+            f"{parse_label} output truncated"
+            if finish_reason == "length"
+            else f"Invalid {parse_label} terminal payload"
+        )
+    metadata = _merge_direct_attempt_metadata(attempts)
+    metadata["terminal_tool_name"] = spec.final_tool_name
+    metadata["terminal_tool_valid"] = False
+    return AgentResponse(success=False, data={}, error=last_error, metadata=metadata)
+
+
 class SemanticEnrichmentAgent(JsonToolAgent):
     """Strict one-pass semantic-claim delta producer for a selected unit."""
 
@@ -1041,9 +1372,39 @@ class SemanticEnrichmentAgent(JsonToolAgent):
     ) -> AgentResponse:
         projection = fit_candidate_blind_prompt_projection(projection, max_tokens=24_000)
         unit = projection.get("audit_unit") or {}
-        prompt = "Produce a strict semantic_claim_delta for this unit.\n" + json.dumps(
-            projection, ensure_ascii=False, sort_keys=True
+        rendered = json.dumps(projection, ensure_ascii=False, sort_keys=True)
+        prompt = (
+            "Call emit_semantic_claim_delta immediately. Add only concise, evidence-backed "
+            "claims that are absent from the deterministic map; keep uncertain items as "
+            "unknowns. Use only member function UIDs and evidence refs in this projection.\n"
+            + rendered
         )
+        compact_prompt = (
+            "Immediately call emit_semantic_claim_delta. Return no prose, at most 12 concise "
+            "claims and 12 unknowns, and use only the exact unit/function/evidence identities "
+            "listed below. Empty arrays are valid when evidence is insufficient.\n" + rendered
+        )
+        spec = JsonOutputSpec(
+            type_name="semantic_claim_delta",
+            schema=_bounded_semantic_delta_schema(projection),
+            final_tool_name="emit_semantic_claim_delta",
+            final_tool_description="Emit the strict evidence-backed semantic claim delta.",
+            validator=lambda value: self._is_delta_for_projection(value, projection),
+            metadata_prefix="semantic_enrichment",
+        )
+        direct = _run_direct_terminal_tool(
+            self,
+            prompts=(prompt, compact_prompt),
+            input_data={"agent_contract": SEMANTIC_ENRICHMENT_CONTRACT},
+            spec=spec,
+            trace_label=(
+                f"unit={unit.get('unit_id') or ''}; skill=semantic_enrichment; "
+                "call_kind=semantic_delta"
+            ),
+            parse_label="semantic_claim_delta JSON",
+        )
+        if direct is not None:
+            return direct
         return self._run_json_conversation(
             self._messages({"agent_contract": SEMANTIC_ENRICHMENT_CONTRACT}, prompt),
             extractor=lambda content, result, conversation: self._extract_valid_payload(
@@ -1058,14 +1419,7 @@ class SemanticEnrichmentAgent(JsonToolAgent):
             max_iterations=max(1, int(max_iterations)),
             max_json_retries=0,
             fail_on_truncated=True,
-            json_output_spec=JsonOutputSpec(
-                type_name="semantic_claim_delta",
-                schema=SEMANTIC_CLAIM_DELTA_JSON_SCHEMA,
-                final_tool_name="emit_semantic_claim_delta",
-                final_tool_description="Emit the strict evidence-backed semantic claim delta.",
-                validator=self._is_delta,
-                metadata_prefix="semantic_enrichment",
-            ),
+            json_output_spec=spec,
             require_structured_finalization=True,
             single_pass_final_tool=True,
         )
@@ -1077,6 +1431,32 @@ class SemanticEnrichmentAgent(JsonToolAgent):
             return True
         except (TypeError, ValueError):
             return False
+
+    @staticmethod
+    def _is_delta_for_projection(value: Any, projection: Mapping[str, Any]) -> bool:
+        try:
+            delta = SemanticClaimDelta.from_dict(value)
+        except (TypeError, ValueError):
+            return False
+        unit = projection.get("audit_unit")
+        unit = unit if isinstance(unit, Mapping) else {}
+        if delta.unit_id != str(unit.get("unit_id") or ""):
+            return False
+        if delta.unit_fingerprint != str(unit.get("unit_fingerprint") or ""):
+            return False
+        members = set(_projection_member_ids(projection))
+        allowed = {str(value) for value in projection.get("allowed_evidence_refs", [])}
+        if len(delta.claims) > 12 or len(delta.unknowns) > 12:
+            return False
+        return all(
+            claim.subject_uid in members
+            and claim.origin == "llm"
+            and set(claim.evidence_refs).issubset(allowed)
+            for claim in delta.claims
+        ) and all(
+            unknown.subject_uid in members and set(unknown.evidence_refs).issubset(allowed)
+            for unknown in delta.unknowns
+        )
 
 
 SemanticDeltaRunner = Callable[[Mapping[str, Any], DiscoveryProfile], Any]
@@ -1135,6 +1515,7 @@ class SemanticMapEnricher:
         prompt_tokens = 0
         completion_tokens = 0
         total_tokens = 0
+        api_call_count = 0
         uncovered_unit_ids: List[str] = []
         for unit_index, unit in enumerate(units):
             key = self.cache_key(
@@ -1160,6 +1541,7 @@ class SemanticMapEnricher:
                     prompt_tokens += usage["prompt_tokens"]
                     completion_tokens += usage["completion_tokens"]
                     total_tokens += usage["total_tokens"]
+                    api_call_count += usage["api_call_count"]
                     delta = self._coerce_delta(raw)
                     self._validate_delta(delta, unit, projection)
                     self.store.save_semantic_delta(key, delta)
@@ -1207,6 +1589,7 @@ class SemanticMapEnricher:
             "cumulative_prompt_tokens": prompt_tokens,
             "cumulative_completion_tokens": completion_tokens,
             "cumulative_total_tokens": total_tokens,
+            "llm_api_call_count": api_call_count,
         }
         return result_map, state, tuple(deltas)
 
@@ -1278,6 +1661,7 @@ class ActiveDiscoveryAgent(JsonToolAgent):
         return self.run_projection(
             projection,
             max_iterations=int(input_data.get("max_iterations") or 1),
+            max_hypotheses=int(input_data.get("max_hypotheses") or 4),
         )
 
     def run_projection(
@@ -1285,17 +1669,52 @@ class ActiveDiscoveryAgent(JsonToolAgent):
         projection: Mapping[str, Any],
         *,
         max_iterations: int = 1,
+        max_hypotheses: int = 4,
     ) -> AgentResponse:
         projection = fit_candidate_blind_prompt_projection(
             projection,
             max_tokens=24_000,
         )
         audit_unit = projection.get("audit_unit") or {}
+        rendered = json.dumps(projection, ensure_ascii=False, sort_keys=True)
         prompt = (
-            "Audit exactly this bounded semantic unit and emit a strict discovery_report.\n"
-            + json.dumps(projection, ensure_ascii=False, sort_keys=True)
+            "Audit exactly this bounded semantic unit. Call emit_discovery_report immediately; "
+            "return no prose. Hypothesis.function and reviewed_function_uids must use only exact "
+            "member function UIDs in audit_unit.member_functions. Cite only allowed evidence refs, "
+            f"keep text concise, and emit at most {max(0, int(max_hypotheses))} hypotheses.\n"
+            + rendered
+        )
+        compact_prompt = (
+            "Immediately call emit_discovery_report with no prose. Use the exact unit identity, "
+            "only listed member function UIDs and evidence refs, and short strings. Empty "
+            "hypotheses are valid when evidence is insufficient.\n" + rendered
         )
         input_data = {"agent_contract": ACTIVE_DISCOVERY_CONTRACT}
+        spec = JsonOutputSpec(
+            type_name="discovery_report",
+            schema=_bounded_discovery_report_schema(
+                projection,
+                max_hypotheses=max_hypotheses,
+            ),
+            final_tool_name="emit_discovery_report",
+            final_tool_description="Emit the strict candidate-blind discovery report.",
+            validator=lambda value: self._is_discovery_report_for_projection(
+                value,
+                projection,
+                max_hypotheses=max_hypotheses,
+            ),
+            metadata_prefix="active_discovery",
+        )
+        direct = _run_direct_terminal_tool(
+            self,
+            prompts=(prompt, compact_prompt),
+            input_data=input_data,
+            spec=spec,
+            trace_label=(f"unit={audit_unit.get('unit_id') or ''}; call_kind=discovery_report"),
+            parse_label="discovery_report JSON",
+        )
+        if direct is not None:
+            return direct
         return self._run_json_conversation(
             self._messages(input_data, prompt),
             extractor=lambda content, result, conversation: self._extract_valid_payload(
@@ -1310,14 +1729,7 @@ class ActiveDiscoveryAgent(JsonToolAgent):
             max_iterations=max(1, int(max_iterations)),
             max_json_retries=0,
             fail_on_truncated=True,
-            json_output_spec=JsonOutputSpec(
-                type_name="discovery_report",
-                schema=DISCOVERY_REPORT_JSON_SCHEMA,
-                final_tool_name="emit_discovery_report",
-                final_tool_description="Emit the strict candidate-blind discovery report.",
-                validator=self._is_discovery_report,
-                metadata_prefix="active_discovery",
-            ),
+            json_output_spec=spec,
             require_structured_finalization=True,
             single_pass_final_tool=True,
         )
@@ -1329,6 +1741,41 @@ class ActiveDiscoveryAgent(JsonToolAgent):
             return True
         except (TypeError, ValueError):
             return False
+
+    @staticmethod
+    def _is_discovery_report_for_projection(
+        value: Any,
+        projection: Mapping[str, Any],
+        *,
+        max_hypotheses: int,
+    ) -> bool:
+        try:
+            report = DiscoveryReport.from_dict(value)
+        except (TypeError, ValueError):
+            return False
+        unit = projection.get("audit_unit")
+        unit = unit if isinstance(unit, Mapping) else {}
+        if report.unit_id != str(unit.get("unit_id") or ""):
+            return False
+        if report.unit_fingerprint != str(unit.get("unit_fingerprint") or ""):
+            return False
+        members = set(_projection_member_ids(projection))
+        claim_ids = set(_projection_claim_ids(projection))
+        allowed = {str(value) for value in projection.get("allowed_evidence_refs", [])}
+        if len(report.hypotheses) > max(0, int(max_hypotheses)):
+            return False
+        if not set(report.reviewed_function_uids).issubset(members):
+            return False
+        if not set(report.reviewed_claim_ids).issubset(claim_ids):
+            return False
+        if not set(report.tool_evidence_refs).issubset(allowed):
+            return False
+        return all(
+            hypothesis.function in members
+            and set(hypothesis.positive_evidence_refs).issubset(allowed)
+            and set(hypothesis.negative_evidence_refs).issubset(allowed)
+            for hypothesis in report.hypotheses
+        )
 
 
 ReportRunner = Callable[[Mapping[str, Any], DiscoveryProfile], Any]
@@ -1348,6 +1795,7 @@ class ActiveDiscoveryCoordinator:
         discovery_enabled: bool = True,
         visibility_mode: str = "active",
         rollout_stage: str = "unmanaged",
+        decision_trace_store: Any = None,
     ) -> None:
         self.profile = profile
         self.store = store
@@ -1360,6 +1808,11 @@ class ActiveDiscoveryCoordinator:
             normalized_visibility if normalized_visibility in {"active", "shadow"} else "shadow"
         )
         self.rollout_stage = str(rollout_stage or "unmanaged")
+        self.decision_trace_store = (
+            decision_trace_store
+            if decision_trace_store is not None
+            else getattr(getattr(registrar, "ledger", None), "decision_trace_store", None)
+        )
 
     def run(
         self,
@@ -1377,6 +1830,38 @@ class ActiveDiscoveryCoordinator:
             covered_keys=covered_key_values,
             known_variant_keys=known_variant_key_values,
         )
+        if self.decision_trace_store is not None:
+            for diagnostic in planner.last_diagnostics:
+                self.decision_trace_store.record_coverage_event(
+                    str(diagnostic.get("audit_unit_uid") or ""),
+                    reason_code=str(diagnostic.get("reason_code") or "PRODUCER_NO_SIGNAL"),
+                    producer="coverage_gap_planner",
+                    details=diagnostic,
+                )
+            for unit in units:
+                self.decision_trace_store.record_coverage_event(
+                    unit.unit_id,
+                    reason_code="AUDIT_UNIT_CREATED",
+                    producer="coverage_gap_planner",
+                    details={
+                        "unit_kind": unit.unit_kind,
+                        "unit_fingerprint": unit.fingerprint,
+                        "risk_score": unit.risk_score,
+                        "risk_reasons": list(unit.risk_reasons),
+                        "member_functions": list(unit.member_functions),
+                        "candidate_desert": unit.candidate_desert,
+                    },
+                )
+                if any(
+                    str(value).lower() in {"unknown", "unavailable", "degraded", "regex", "none"}
+                    for value in unit.backend_coverage.get("backends", [])
+                ):
+                    self.decision_trace_store.record_coverage_event(
+                        unit.unit_id,
+                        reason_code="BACKEND_UNAVAILABLE_OR_DEGRADED",
+                        producer="coverage_gap_planner",
+                        details={"backend_coverage": dict(unit.backend_coverage)},
+                    )
         enrichment_state: Dict[str, Any] = {
             "mode": "disabled",
             "selected_unit_count": 0,
@@ -1411,6 +1896,7 @@ class ActiveDiscoveryCoordinator:
         prompt_tokens = int(enrichment_state.get("cumulative_prompt_tokens", 0) or 0)
         completion_tokens = int(enrichment_state.get("cumulative_completion_tokens", 0) or 0)
         total_tokens = int(enrichment_state.get("cumulative_total_tokens", 0) or 0)
+        discovery_api_calls = 0
         context_tokens = 0
 
         discovery_units = units if self.discovery_enabled else []
@@ -1433,6 +1919,7 @@ class ActiveDiscoveryCoordinator:
                     completion_tokens += usage["completion_tokens"]
                     total_tokens += usage["total_tokens"]
                     context_tokens += usage["context_tokens"]
+                    discovery_api_calls += usage["api_call_count"]
                     report = self._coerce_report(raw)
                     self._validate_report(report, unit, projection)
                     self.store.save_discovery_report(report)
@@ -1448,6 +1935,13 @@ class ActiveDiscoveryCoordinator:
                         unit.unit_id,
                         exc,
                     )
+                    if self.decision_trace_store is not None:
+                        self.decision_trace_store.record_coverage_event(
+                            unit.unit_id,
+                            reason_code="PRODUCER_NO_SIGNAL",
+                            producer="active_discovery",
+                            details={"error": f"{type(exc).__name__}: {exc}"[:500]},
+                        )
                     continue
             # Cache rows predate this process and must pass the same current
             # contract before they are allowed to register obligations.
@@ -1466,14 +1960,38 @@ class ActiveDiscoveryCoordinator:
                 )
                 continue
             reports.append(report)
-            result = self.registrar.register_issues(
-                self._hypothesis_issues(report, unit, planned_map),
-                source="active_discovery",
-                default_entry_identity=(
-                    unit.root_entries[0] if unit.root_entries else "__project__"
-                ),
-                force_unconfirmed=True,
-            )
+            hypothesis_issues = self._hypothesis_issues(report, unit, planned_map)
+            if not hypothesis_issues and self.decision_trace_store is not None:
+                self.decision_trace_store.record_coverage_event(
+                    unit.unit_id,
+                    reason_code="PRODUCER_NO_SIGNAL",
+                    producer="active_discovery",
+                    details={"coverage_status": report.coverage_status},
+                )
+            try:
+                result = self.registrar.register_issues(
+                    hypothesis_issues,
+                    source="active_discovery",
+                    default_entry_identity=(
+                        unit.root_entries[0] if unit.root_entries else "__project__"
+                    ),
+                    force_unconfirmed=True,
+                )
+            except (RuntimeError, TypeError, ValueError) as exc:
+                if self.decision_trace_store is not None:
+                    self.decision_trace_store.record_coverage_event(
+                        unit.unit_id,
+                        reason_code="SIGNAL_REGISTRATION_REJECTED",
+                        producer="candidate_registrar",
+                        details={"error": f"{type(exc).__name__}: {exc}"[:500]},
+                    )
+                failed.append(
+                    {
+                        "unit_id": unit.unit_id,
+                        "reason": f"registration_{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
             registration = CandidateRegistrationResult(
                 registration.submitted_issue_count + result.submitted_issue_count,
                 registration.registered_occurrence_count + result.registered_occurrence_count,
@@ -1511,7 +2029,14 @@ class ActiveDiscoveryCoordinator:
             "reachable_function_count": len(planned_map.functions),
             "semantic_claim_count": len(planned_map.claims),
             "semantic_unknown_count": len(planned_map.unknowns),
+            "localized_coverage_key_count": len(covered_key_values),
+            "localized_coverage_hash": hashlib.sha256(
+                _stable_json(sorted(set(covered_key_values))).encode("utf-8")
+            ).hexdigest(),
             "planned_unit_count": len(units),
+            "candidate_desert_unit_count": sum(
+                1 for unit in units if bool(getattr(unit, "candidate_desert", False))
+            ),
             "attempted_unit_count": attempted,
             "cached_report_count": cache_hits,
             "completed_report_count": len(reports),
@@ -1528,7 +2053,7 @@ class ActiveDiscoveryCoordinator:
             "failures": failed,
             "semantic_enrichment": enrichment_state,
             "llm_semantic_model_calls": int(enrichment_state.get("attempted_unit_count", 0) or 0),
-            "llm_discovery_call_count": attempted,
+            "llm_discovery_call_count": discovery_api_calls,
             "cumulative_prompt_tokens": prompt_tokens,
             "cumulative_completion_tokens": completion_tokens,
             "cumulative_total_tokens": total_tokens,
@@ -1590,6 +2115,7 @@ class ActiveDiscoveryCoordinator:
             "completion_tokens": completion,
             "total_tokens": total,
             "context_tokens": number("context_tokens", "estimated_context_tokens"),
+            "api_call_count": number("api_call_count", "iterations"),
         }
 
     def _validate_report(
@@ -1729,6 +2255,7 @@ def make_agent_report_runner(agent: ActiveDiscoveryAgent) -> ReportRunner:
         return agent.run_projection(
             projection,
             max_iterations=max(1, profile.max_agent_iterations),
+            max_hypotheses=profile.max_hypotheses_per_unit,
         )
 
     return run
@@ -1788,6 +2315,52 @@ def _compact_json_value(value: Any, max_chars: int) -> Any:
 
 def _normalize_key(value: Any) -> str:
     return " ".join(str(value or "").strip().lower().replace("\\", "/").split())
+
+
+def _coverage_component(value: Any) -> str:
+    normalized = _normalize_key(value)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:20]
+
+
+def _localized_coverage_key(family: str, scope: str, *parts: Any) -> str:
+    prefix = f"coverage:{_normalize_key(family)}:{_normalize_key(scope)}"
+    encoded = ":".join(_coverage_component(value) for value in parts)
+    return f"{prefix}:{encoded}" if encoded else prefix
+
+
+def _localized_coverage_prefix(family: str, scope: str, *parts: Any) -> str:
+    return _localized_coverage_key(family, scope, *parts) + ":"
+
+
+def _candidate_local_values(
+    ticket: Any,
+    evidence: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    fields: Sequence[str],
+) -> Set[str]:
+    """Collect local identities for hashing; raw values never leave this function."""
+
+    result: Set[str] = set()
+    sources: tuple[Any, ...] = (payload, evidence)
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        for field_name in fields:
+            value = source.get(field_name)
+            if value not in (None, ""):
+                result.add(str(value))
+        location = source.get("location")
+        if isinstance(location, Mapping):
+            for field_name in fields:
+                value = location.get(field_name)
+                if value not in (None, ""):
+                    result.add(str(value))
+    for field_name in fields:
+        value = getattr(ticket, field_name, None)
+        if value not in (None, ""):
+            result.add(str(value))
+    return {value for value in result if _normalize_key(value)}
 
 
 def _candidate_event_family(record: Any, payload: Mapping[str, Any]) -> str:

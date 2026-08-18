@@ -560,19 +560,41 @@ def test_validator_v3_outcome_summary_reports_fact_success_and_transitions() -> 
     summary = ParallelAnalyzer._validator_v3_outcome_summary(
         [
             {
-                "validator_fact_resolution": {"status": "completed_partial"},
+                "validator_fact_resolutions": [
+                    {
+                        "fact_kind": "caller_contract",
+                        "status": "completed_partial",
+                        "terminal_status": "resolved",
+                    }
+                ],
                 "validator_pass_history": [
                     {"pass": "initial", "verdict": "uncertain"},
                     {"pass": "evidence_recheck", "verdict": "verified"},
                 ],
             },
-            {"validator_fact_resolution": {"status": "unsupported"}},
+            {
+                "validator_fact_resolutions": [
+                    {
+                        "fact_kind": "value_range",
+                        "status": "unsupported",
+                        "terminal_status": "unsupported",
+                    }
+                ]
+            },
         ]
     )
 
     assert summary["validator_fact_request_count"] == 2
     assert summary["validator_fact_resolution_success_count"] == 1
     assert summary["validator_fact_resolution_success_rate"] == 0.5
+    assert summary["validator_fact_resolution_by_kind"] == {
+        "caller_contract": {"resolved": 1},
+        "value_range": {"unsupported": 1},
+    }
+    assert summary["validator_fact_terminal_status_counts"] == {
+        "resolved": 1,
+        "unsupported": 1,
+    }
     assert summary["validator_verdict_transitions"] == {
         "initial:uncertain->evidence_recheck:verified": 1
     }

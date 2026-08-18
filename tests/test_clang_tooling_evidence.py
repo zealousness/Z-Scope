@@ -1,4 +1,6 @@
 import json
+import os
+from types import SimpleNamespace
 
 from zscope.retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
 
@@ -14,7 +16,15 @@ def test_clang_tooling_evidence_prepares_ast_and_cfg_commands(tmp_path) -> None:
                 {
                     "directory": str(tmp_path),
                     "file": str(source),
-                    "arguments": ["clang", "-Iinclude", "-DDEBUG=1", "-c", str(source), "-o", "demo.o"],
+                    "arguments": [
+                        "clang",
+                        "-Iinclude",
+                        "-DDEBUG=1",
+                        "-c",
+                        str(source),
+                        "-o",
+                        "demo.o",
+                    ],
                 }
             ]
         ),
@@ -37,6 +47,7 @@ def test_clang_tooling_evidence_prepares_ast_and_cfg_commands(tmp_path) -> None:
     assert str(source) in evidence["ast_dump_command"]
     assert "--analyze" in evidence["cfg_dump_command"]
     assert "-analyzer-checker=debug.DumpCFG" in evidence["cfg_dump_command"]
+    assert evidence["cfg_dump_command"][evidence["cfg_dump_command"].index("-o") + 1] == os.devnull
 
 
 def test_clang_tooling_evidence_handles_missing_compile_command(tmp_path) -> None:
@@ -63,7 +74,12 @@ def test_clang_tooling_summarizes_ast_json() -> None:
                 "loc": {"line": 10},
                 "type": {"qualType": "int (char *)"},
                 "inner": [
-                    {"kind": "VarDecl", "name": "p", "loc": {"line": 11}, "type": {"qualType": "char *"}},
+                    {
+                        "kind": "VarDecl",
+                        "name": "p",
+                        "loc": {"line": 11},
+                        "type": {"qualType": "char *"},
+                    },
                     {
                         "kind": "IfStmt",
                         "inner": [
@@ -139,12 +155,41 @@ def test_clang_tooling_summarizes_ast_json() -> None:
     assert "clang_ast_resource_balance_summary" in matcher_rules
     assert "clang_ast_same_argument_released_twice" in matcher_rules
     assert "clang_ast_release_then_call_argument_use" in matcher_rules
-    double_free = next(fact for fact in target["matcher_facts"] if fact["rule_id"] == "clang_ast_same_argument_released_twice")
+    double_free = next(
+        fact
+        for fact in target["matcher_facts"]
+        if fact["rule_id"] == "clang_ast_same_argument_released_twice"
+    )
     assert double_free["resource_symbol"] == "p"
     assert double_free["first_release_line"] == 15
     assert double_free["second_release_line"] == 16
     assert target["if_count"] == 1
     assert target["return_count"] == 1
+
+
+def test_ast_summary_ignores_stderr_diagnostics(monkeypatch) -> None:
+    ast = {
+        "kind": "TranslationUnitDecl",
+        "inner": [{"kind": "FunctionDecl", "name": "demo", "inner": []}],
+    }
+    monkeypatch.setattr(
+        "zscope.retrieval.clang_tooling_evidence.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(ast),
+            stderr="warning: diagnostic emitted after the JSON payload",
+        ),
+    )
+
+    result = ClangToolingEvidenceProvider(None)._run_tool(
+        ["clang", "demo.c"],
+        summary_kind="ast",
+        func_name="demo",
+    )
+
+    assert result["ok"] is True
+    assert result["summary"]["parse_ok"] is True
+    assert result["summary"]["target_function"]["name"] == "demo"
 
 
 def test_clang_tooling_summarizes_cfg_dump() -> None:

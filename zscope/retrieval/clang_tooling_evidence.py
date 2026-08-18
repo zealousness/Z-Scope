@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional, cast
 
 
@@ -47,6 +48,8 @@ class ClangToolingEvidenceProvider:
         )
         self.timeout = timeout
         self._commands: Optional[List[Dict[str, Any]]] = None
+        self._result_cache: Dict[tuple[str, str, int, int], Dict[str, Any]] = {}
+        self._cache_lock = Lock()
 
     def collect_for_function(
         self,
@@ -56,6 +59,11 @@ class ClangToolingEvidenceProvider:
         start_line: int = 0,
         end_line: int = 0,
     ) -> Dict[str, Any]:
+        cache_key = (func_name, self._normalize_path(file_path), int(start_line), int(end_line))
+        with self._cache_lock:
+            cached = self._result_cache.get(cache_key)
+            if cached is not None:
+                return cast(Dict[str, Any], json.loads(json.dumps(cached, ensure_ascii=False)))
         command = self._compile_command_for(file_path)
         evidence: Dict[str, Any] = {
             "schema": "clang_tooling_evidence_v1",
@@ -70,6 +78,17 @@ class ClangToolingEvidenceProvider:
         if not command:
             evidence["status"] = "compile_command_not_found"
             return evidence
+        source_path = self._source_path(command)
+        if source_path and source_path.is_file():
+            try:
+                import hashlib
+
+                evidence["code_snapshot_sha256"] = hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest()
+                evidence["resolved_source_file"] = str(source_path)
+            except OSError:
+                pass
         ast_cmd = self._tool_command(command, ast=True)
         cfg_cmd = self._tool_command(command, ast=False)
         evidence["ast_dump_command"] = ast_cmd
@@ -83,7 +102,23 @@ class ClangToolingEvidenceProvider:
         evidence["ast_dump"] = self._run_tool(ast_cmd, summary_kind="ast", func_name=func_name)
         evidence["cfg_dump"] = self._run_tool(cfg_cmd, summary_kind="cfg", func_name=func_name)
         evidence["status"] = "executed"
+        with self._cache_lock:
+            self._result_cache[cache_key] = json.loads(json.dumps(evidence, ensure_ascii=False))
         return evidence
+
+    @staticmethod
+    def _source_path(compile_row: Dict[str, Any]) -> Optional[Path]:
+        raw = str(compile_row.get("file") or "")
+        if not raw:
+            return None
+        path = Path(raw)
+        if not path.is_absolute():
+            directory = Path(str(compile_row.get("directory") or "."))
+            path = directory / path
+        try:
+            return path.resolve()
+        except OSError:
+            return path
 
     def _compile_command_for(self, file_path: str) -> Dict[str, Any]:
         target = self._normalize_path(file_path)
@@ -137,6 +172,8 @@ class ClangToolingEvidenceProvider:
             "--analyze",
             "-Xclang",
             "-analyzer-checker=debug.DumpCFG",
+            "-o",
+            os.devnull,
             *filtered,
             source_file,
         ]
@@ -185,7 +222,9 @@ class ClangToolingEvidenceProvider:
             proc = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout)
         except Exception as exc:
             return {"ok": False, "error": str(exc), "command": command}
-        output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        output = stdout + ("\n" + stderr if stderr else "")
         result = {
             "ok": proc.returncode == 0,
             "returncode": proc.returncode,
@@ -194,7 +233,11 @@ class ClangToolingEvidenceProvider:
             "line_count": len(output.splitlines()),
         }
         if summary_kind == "ast":
-            result["summary"] = self._summarize_ast_json(output, func_name=func_name)
+            # Clang writes diagnostics to stderr even when the AST JSON on
+            # stdout is complete.  Appending those diagnostics makes valid
+            # JSON unparsable and silently strips every AST-derived call and
+            # source location from FunctionIR.
+            result["summary"] = self._summarize_ast_json(stdout, func_name=func_name)
         elif summary_kind == "cfg":
             result["summary"] = self._summarize_cfg_dump(output, func_name=func_name)
         return result
@@ -414,9 +457,10 @@ class ClangToolingEvidenceProvider:
 
     @classmethod
     def _summarize_cfg_dump(cls, output: str, *, func_name: str = "") -> Dict[str, Any]:
+        section, unique, section_error = cls._cfg_function_section(output, func_name=func_name)
         blocks: Dict[str, Dict[str, Any]] = {}
         current = ""
-        for raw in str(output or "").splitlines():
+        for raw in section.splitlines():
             line = raw.rstrip()
             header = re.match(r"\s*\[B(?P<id>\d+)(?P<label>[^\]]*)\]", line)
             if header:
@@ -450,6 +494,8 @@ class ClangToolingEvidenceProvider:
         return {
             "parse_ok": bool(blocks),
             "function": func_name,
+            "function_section_unique": unique,
+            "parse_error": section_error,
             "block_count": len(block_list),
             "entry_blocks": [
                 block["id"] for block in block_list if "ENTRY" in block.get("label", "")
@@ -458,17 +504,56 @@ class ClangToolingEvidenceProvider:
                 block["id"] for block in block_list if "EXIT" in block.get("label", "")
             ],
             "edge_count": sum(len(block.get("successors", [])) for block in block_list),
+            "truncated": False,
             "blocks": [
                 {
                     "id": block["id"],
                     "label": block.get("label", ""),
-                    "successors": block.get("successors", [])[:8],
-                    "predecessors": block.get("predecessors", [])[:8],
-                    "statements": block.get("statements", [])[:8],
+                    "successors": block.get("successors", []),
+                    "predecessors": block.get("predecessors", []),
+                    "statements": block.get("statements", []),
                 }
-                for block in block_list[:32]
+                for block in block_list
             ],
         }
+
+    @staticmethod
+    def _cfg_function_section(output: str, *, func_name: str) -> tuple[str, bool, str]:
+        """Isolate one function from clang ``debug.DumpCFG`` output.
+
+        Clang prints a declaration line immediately before each function's Bn
+        blocks.  Reusing B0/B1 from another function would create a fabricated
+        path certificate, so ambiguous sections fail closed.  A header-less
+        snippet remains supported for deterministic unit fixtures.
+        """
+
+        text = str(output or "")
+        lines = text.splitlines()
+        headers: list[tuple[int, str]] = []
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if (
+                not stripped
+                or stripped.startswith("[")
+                or re.match(r"^\d+:\s", stripped)
+                or "=" in stripped
+            ):
+                continue
+            if re.search(r"\b[A-Za-z_]\w*\s*\([^;]*\)\s*(?:const)?\s*$", stripped):
+                headers.append((index, stripped))
+        if not headers:
+            return text, True, ""
+        matches = [
+            (index, header)
+            for index, header in headers
+            if re.search(rf"\b{re.escape(func_name)}\s*\(", header)
+        ]
+        if len(matches) != 1:
+            return "", False, "function_section_missing_or_ambiguous"
+        start = matches[0][0] + 1
+        following = [index for index, _ in headers if index > matches[0][0]]
+        end = min(following) if following else len(lines)
+        return "\n".join(lines[start:end]), True, ""
 
     @staticmethod
     def _cfg_block_ids(value: str) -> List[str]:

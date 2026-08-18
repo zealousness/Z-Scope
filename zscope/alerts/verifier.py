@@ -24,6 +24,8 @@ from ..reporting.attribution import FindingAttribution
 from ..reporting.report import FinalReport, Issue, ReportGenerator
 from ..orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
 from ..orchestration.specs import SpecRegistry
+from ..orchestration.decision_trace import ensure_decision_trace_store
+from ..core.validation.authority import TerminalAuthorityEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,8 @@ class AlertVerifier:
         self.scheduler = scheduler
         self.snapshot_store = SnapshotStore.from_config(config)
         self.spec_registry = SpecRegistry(project_root=config.project.project_root)
+        self.decision_trace_store = ensure_decision_trace_store(config)
+        self.terminal_authority = TerminalAuthorityEvaluator()
         self.tools_runtime = ToolsRuntime(
             code_index=code_index,
             snapshot_store=self.snapshot_store,
@@ -147,7 +151,42 @@ class AlertVerifier:
             rejected,
             uncertain,
         )
+        trace_store = getattr(self, "decision_trace_store", None)
+        for idx, (alert, result) in enumerate(zip(alerts, results), start=1):
+            candidate_uid, cluster_uid = self._alert_identity(alert)
+            result.setdefault("candidate_uid", candidate_uid)
+            result.setdefault("validation_cluster_uid", cluster_uid)
+            if trace_store is None:
+                continue
+            trace_store.bind_candidate(
+                cluster_uid,
+                candidate_uids=(candidate_uid,),
+            )
+            disposition = str(result.get("candidate_disposition") or "engine_failed")
+            memberships = (
+                ("default", "with_needs_review")
+                if disposition == "confirmed"
+                else ("with_needs_review",) if disposition == "needs_review" else ("excluded",)
+            )
+            trace_store.finalize_issue(
+                result,
+                view_memberships=memberships,
+            )
         return results
+
+    @staticmethod
+    def _alert_identity(alert: ExternalAlert) -> tuple[str, str]:
+        identity = {
+            "tool": alert.tool,
+            "rule_id": alert.rule_id,
+            "file": alert.file_path,
+            "line": alert.line,
+            "function": alert.function,
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        return f"CAND_ALERT_{digest}", f"VCL_ALERT_{digest}"
 
     def _worker_count(self, alert_count: int, max_workers: int) -> int:
         if alert_count <= 1:
@@ -209,11 +248,8 @@ class AlertVerifier:
             "line": alert.line,
             "function": alert.function,
         }
-        digest = hashlib.sha256(
-            json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        ).hexdigest()
-        candidate_uid = f"CAND_ALERT_{digest}"
-        cluster_uid = f"VCL_ALERT_{digest}"
+        candidate_uid, cluster_uid = self._alert_identity(alert)
+        digest = candidate_uid.removeprefix("CAND_ALERT_")
         fact_uid = f"fact:external-alert:{digest}"
         issue = {
             "candidate_uid": candidate_uid,
@@ -270,13 +306,44 @@ class AlertVerifier:
             code,
             validation_pass="initial",
         )
-        response = ValidatorAgent(self.llm_client, []).run(
-            {
-                "finding_uid": candidate_uid,
-                "validation_cluster_uid": cluster_uid,
-                "validation_pass": "initial",
-                "evidence_slice": evidence_slice,
-            }
+        validator_input = {
+            "finding_uid": candidate_uid,
+            "validation_cluster_uid": cluster_uid,
+            "validation_pass": "initial",
+            "evidence_slice": evidence_slice,
+        }
+        usage_ledger = getattr(self.config, "scan_token_usage_ledger", None)
+        usage_getter = getattr(usage_ledger, "events_for_cluster", None)
+        usage_start = len(usage_getter(cluster_uid)) if callable(usage_getter) else 0
+        response = ValidatorAgent(self.llm_client, []).run(validator_input)
+        usage_events = (
+            list(usage_getter(cluster_uid))[usage_start:] if callable(usage_getter) else []
+        )
+        call_ids = tuple(
+            str(value.get("call_id") or "") for value in usage_events if value.get("call_id")
+        )
+        model_ref = self.decision_trace_store.put_model_event(
+            call_identity=f"{cluster_uid}:V1:{usage_start}",
+            stage="V1",
+            validation_cluster_uid=cluster_uid,
+            structured_input=validator_input,
+            structured_output=(
+                response.data
+                if response.success and isinstance(response.data, dict)
+                else {"protocol_failure": True}
+            ),
+            call_ids=call_ids,
+            prompt_revision="zscope.validator-protocol.v3",
+        )
+        self.decision_trace_store.append_event(
+            cluster_uid,
+            stage="V1",
+            actor="validator_agent",
+            reason_code="V1_COMPLETED",
+            output_refs=(model_ref,),
+            call_ids=call_ids,
+            token_delta=sum(int(value.get("total_tokens") or 0) for value in usage_events),
+            details={"external_alert": True, "success": bool(response.success)},
         )
         if not response.success:
             return self._make_error_result(
@@ -302,8 +369,25 @@ class AlertVerifier:
         cluster_uid: str,
     ) -> Dict[str, Any]:
         model_verdict = str(data.get("verdict") or "uncertain")
-        confirmed = model_verdict == "verified"
-        policy_disposition = "confirmed" if confirmed else "needs_review"
+        proposed_disposition = "confirmed" if model_verdict == "verified" else "needs_review"
+        terminal_authority = (
+            getattr(self, "terminal_authority", None) or TerminalAuthorityEvaluator()
+        )
+        authority = terminal_authority.evaluate(
+            {
+                "candidate_uid": candidate_uid,
+                "validation_cluster_uid": cluster_uid,
+                "candidate_disposition": proposed_disposition,
+                "model_verdict": model_verdict,
+                "evidence_closure_state": {
+                    "complete": False,
+                    "missing_fact_kinds": ["external_alert_program_evidence"],
+                },
+            },
+            model_result=data,
+        )
+        confirmed = authority.disposition == "confirmed"
+        policy_disposition = authority.disposition
         return {
             "alert_id": alert_id,
             "candidate_uid": candidate_uid,
@@ -333,6 +417,10 @@ class AlertVerifier:
                 "policy_disposition": policy_disposition,
                 "stop_reason": str(data.get("stop_reason") or ""),
             },
+            "terminal_authority": authority.authority,
+            "terminal_authority_decision": authority.to_dict(),
+            "terminal_reason_codes": [authority.reason_code],
+            "open_clause_ids": ([] if confirmed else ["external_alert_program_evidence"]),
             "attribution": FindingAttribution(
                 discovered_by=("backend_signal",),
                 discovery_details=({"tool": alert.tool, "native_rule_id": alert.rule_id},),
@@ -471,8 +559,11 @@ class AlertVerifier:
         return base
 
     def _make_error_result(self, alert: ExternalAlert, idx: int, error: str) -> Dict[str, Any]:
+        candidate_uid, cluster_uid = self._alert_identity(alert)
         return {
             "alert_id": f"ALERT_{idx}",
+            "candidate_uid": candidate_uid,
+            "validation_cluster_uid": cluster_uid,
             "tool": alert.tool,
             "rule_id": alert.rule_id,
             "file": alert.file_path,

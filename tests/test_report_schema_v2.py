@@ -51,6 +51,36 @@ def test_fast_disabled_discovery_does_not_mark_report_partial() -> None:
     )
 
 
+def test_run_manifest_preserves_finding_root_v2_projection_summary() -> None:
+    report = {"issues": []}
+    projection = {
+        "schema_version": "zscope.finding-root.v2",
+        "input_outcome_count": 10,
+        "finding_root_count": 8,
+        "finding_root_alias_count": 2,
+        "counts_by_merge_contract": {"same_candidate_uid": 2},
+        "unprojectable_count": 0,
+        "unprojectable_by_reason": {},
+    }
+
+    apply_report_schema_v2(
+        report,
+        state={
+            "finding_root_count": 8,
+            "finding_root_alias_count": 2,
+            "finding_root_projection_summary": projection,
+        },
+        issues=[],
+        observations=[],
+        metadata={"run_id": "RUN"},
+        entry_function="entry",
+    )
+
+    assert report["run_manifest"]["finding_root_count"] == 8
+    assert report["run_manifest"]["finding_root_alias_count"] == 2
+    assert report["run_manifest"]["finding_root_projection"] == projection
+
+
 def test_report_invariant_rejects_open_evidence_completion() -> None:
     confirmed = {
         "candidate_disposition": "confirmed",

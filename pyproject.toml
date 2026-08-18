@@ -42,6 +42,7 @@ zscope-config = "zscope.cli.config_cli:main"
 zscope-rules = "zscope.cli.rules:main"
 zscope-maven-cache = "zscope.cli.maven_cache:main"
 zscope-benchmark = "zscope.cli.benchmark:main"
+zscope-explain = "zscope.cli.explain:main"
 
 # sqlite3 is part of Python's standard library and therefore is not a pip
 # dependency. This constrains the SQLite library reported by

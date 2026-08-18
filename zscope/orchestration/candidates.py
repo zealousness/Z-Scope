@@ -19,6 +19,7 @@ from .candidate_envelope import (
     validation_cluster_uid_for,
 )
 from .subagents import SubAgentTicket
+from .decision_trace import DecisionTraceStore
 from ..reporting.attribution import (
     FindingAttribution,
     finding_attribution_mapping_errors,
@@ -567,12 +568,14 @@ class CandidateLedger:
         project_id: str = "project",
         project_root: str = "",
         revision: str = "",
+        decision_trace_store: Optional[DecisionTraceStore] = None,
     ) -> None:
         self._records: Dict[str, CandidateRecord] = {}
         self._lock = threading.RLock()
         self.project_id = self._normalize_project_id(project_id)
         self.project_root = str(project_root or "")
         self.revision = str(revision or "")
+        self.decision_trace_store = decision_trace_store
         self._frozen = False
 
     def add(
@@ -698,6 +701,38 @@ class CandidateLedger:
             )
             if occurrence not in record.occurrences:
                 record.occurrences.append(occurrence)
+
+            trace_store = self.decision_trace_store
+            if trace_store is not None and record.record_role == "validation_obligation":
+                trace_store.bind_candidate(
+                    record.validation_cluster_uid,
+                    candidate_uids=(record.candidate_uid,),
+                    occurrence_uids=(occurrence_uid,),
+                )
+                trace_store.append_event(
+                    record.validation_cluster_uid,
+                    stage="registrar",
+                    actor="candidate_ledger",
+                    reason_code=("CANDIDATE_REGISTERED" if is_new else "LEDGER_ALIAS_MERGED"),
+                    after_state={
+                        "candidate_uid": record.candidate_uid,
+                        "validation_cluster_uid": record.validation_cluster_uid,
+                        "occurrence_uid": occurrence_uid,
+                        "record_role": record.record_role,
+                        "source": source,
+                    },
+                    disposition_after=str(record.disposition or ""),
+                    details={
+                        "candidate_id": record.candidate_id,
+                        "entry_identity": resolved_entry,
+                        "duplicate_count": record.duplicate_count,
+                        "source": source,
+                    },
+                    dedupe_key=(
+                        f"registrar:{record.validation_cluster_uid}:{occurrence_uid}:"
+                        f"{'new' if is_new else 'alias'}"
+                    ),
+                )
 
             return record, is_new
 
@@ -927,6 +962,30 @@ class CandidateLedger:
 
         with self._lock:
             self._frozen = True
+            trace_store = self.decision_trace_store
+            if trace_store is not None:
+                for record in self._records.values():
+                    if record.record_role != "validation_obligation":
+                        continue
+                    trace_store.append_event(
+                        record.validation_cluster_uid,
+                        stage="registrar",
+                        actor="candidate_ledger",
+                        reason_code="LEDGER_FROZEN",
+                        after_state={
+                            "candidate_uid": record.candidate_uid,
+                            "validation_cluster_uid": record.validation_cluster_uid,
+                            "occurrence_uids": list(record.occurrence_uids),
+                            "validation_group_count": len(
+                                [
+                                    item
+                                    for item in self._records.values()
+                                    if item.record_role == "validation_obligation"
+                                ]
+                            ),
+                        },
+                        dedupe_key=f"ledger-frozen:{record.validation_cluster_uid}",
+                    )
             return self.lifecycle_snapshot()
 
     def to_context(self, limit: int = 50) -> List[Dict[str, Any]]:
