@@ -87,7 +87,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "06621354146ca09b08c0e885cf09ed3b7c0ee5e33671b136b6934c79b9963c2e"
+          "sha256": "b7165aa6ec079bec7dc84badc1e05bba773585056bd03ca7b9bd38e6e1dd2fa9"
         }
       ],
       "review_status": "approved",
@@ -266,11 +266,11 @@
       "artifacts": [
         {
           "path": "scripts/check_zscope_2_design_evidence.py",
-          "sha256": "26b6d4c5fbf4a682926c224fae64cda66b2617e6bedb25ca745f6e180c7e03c2"
+          "sha256": "821ada408a86d90e713776395f54e6d2e4d3ecf2ab5d5722f77c9c20c96519f1"
         },
         {
           "path": "tests/test_zscope_2_design_evidence.py",
-          "sha256": "4782202899623aa83c180e747c898f87323d5c4f03faa597e33a6640cdc24478"
+          "sha256": "7157e2588b5516a31a5e7a2ae8594906291393d91fa58fd936d1b34849110600"
         },
         {
           "path": ".github/workflows/zscope-2-design-evidence.yml",
@@ -413,11 +413,11 @@
       "artifacts": [
         {
           "path": "scripts/check_zscope_2_design_evidence.py",
-          "sha256": "26b6d4c5fbf4a682926c224fae64cda66b2617e6bedb25ca745f6e180c7e03c2"
+          "sha256": "821ada408a86d90e713776395f54e6d2e4d3ecf2ab5d5722f77c9c20c96519f1"
         },
         {
           "path": "tests/test_zscope_2_design_evidence.py",
-          "sha256": "4782202899623aa83c180e747c898f87323d5c4f03faa597e33a6640cdc24478"
+          "sha256": "7157e2588b5516a31a5e7a2ae8594906291393d91fa58fd936d1b34849110600"
         },
         {
           "path": ".github/workflows/zscope-2-design-evidence.yml",
