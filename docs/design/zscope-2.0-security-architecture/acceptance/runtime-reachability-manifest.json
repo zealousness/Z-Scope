@@ -2,7 +2,7 @@
   "schema_version": "zscope.runtime-reachability-manifest.v1",
   "design_version": "1.0.1",
   "phase": "P5",
-  "audit_status": "p5_in_progress_candidate_gates_passed_release_blocked_pending_dual_review",
+  "audit_status": "p5_in_progress_soundness_blocker_fixed_release_blocked_pending_fresh_dual_review",
   "p0_complete_commit": "314cddf299387cad7c998cc62990194535d2cb9b",
   "p1_complete_commit": "8d36b3f2f579f5d57d6d0bf1bcdabc2662164d72",
   "p2_complete_commit": "cba2e218cae69340c72f25eefcdbd9b00541565f",
@@ -79,7 +79,8 @@
       "component": "proof_engine",
       "classification": "sole_terminal_authority",
       "evidence": [
-        "every required executable clause needs an independently recomputed Checker result",
+        "every required clause must be executable, selected and independently recomputed to accepted verified_true before it is closed",
+        "an unknown, conflicting or rejected required counterproof remains open and cannot be interpreted as counterproof absence",
         "the model adapter exposes only system-bound EvidenceAction IDs and rejects v2, free parameters, generic tools and model claims",
         "TerminalAuthorityDecision v3 binds checker refs, proof root and verified integrity",
         "model verdicts, legacy certificates, old proof fields and compat cannot close a candidate"
@@ -139,8 +140,8 @@
   "wheel_inventory": {
     "candidate_status": "built_all_package_and_isolated_import_gates_passed_release_blocked",
     "filename": "zscope-1.3.1-py3-none-any.whl",
-    "sha256": "45724395242214b45e8302b33f82af60bff3d75b047ea12eed2ba3ca96a8c0bd",
-    "size_bytes": 1449251,
+    "sha256": "4340fd77b57a8741e2d782dedd8ad0c46875ceba71946f11c87d4e016c5f6b94",
+    "size_bytes": 1449506,
     "entry_count": 283,
     "schema_count": 19,
     "required_data": [
@@ -159,7 +160,7 @@
     ]
   },
   "limitations": [
-    "The candidate commit/tree, complete qualification manifest and dual reviews are not yet recorded; P5 remains in_progress and the hash-bound candidate wheel is not publishable.",
+    "The replacement candidate commit/tree, complete qualification manifest and fresh dual reviews are not yet recorded after closing PS-P5-001; P5 remains in_progress and the hash-bound candidate wheel is not publishable.",
     "The P4 rollback wheel is an ignored local artifact; its exact hash is recorded but the wheel is not committed.",
     "No remote CI, push, PR, design tag or external-model benchmark is authorized or performed.",
     "Historical P0 benchmark aggregates remain unavailable locally and are not represented as replayed.",
@@ -168,11 +169,12 @@
   "stop_conditions": {
     "public_entrypoint_bypass": "not_observed_in_candidate_tests",
     "legacy_cache_reuse": "not_observed_in_candidate_tests",
-    "required_clause_without_checker_result": "not_observed_in_candidate_tests",
+    "required_clause_without_checker_result": "verified_fail_closed_in_engine_and_alert_verify_regressions",
+    "required_clause_without_accepted_verified_true": "verified_fail_closed_for_unknown_conflicting_rejected_and_non_executable_clauses",
     "post_proof_model_or_tool_call": "not_observed_in_candidate_tests",
     "multiple_terminal_events": "not_observed_in_candidate_tests",
     "wheel_or_import_graph_failure": "not_observed_in_clean_candidate_wheel",
     "candidate_wheel_release": "blocked_until_p5_complete",
-    "formal_review_blocker": "pending_dual_review"
+    "formal_review_blocker": "initial_ps_p5_001_fixed_pending_fresh_dual_review"
   }
 }

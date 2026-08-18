@@ -1306,8 +1306,21 @@ def validate_design_evidence(
                     report.error(
                         "P4 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
                     )
-                changed = _git_text(
-                    repo_root, "diff", "--name-only", f"{reviewed_commit}..HEAD", "--"
+                p5_status = (
+                    manifest.get("phase_status", {}).get("P5")
+                    if isinstance(manifest.get("phase_status"), dict)
+                    else None
+                )
+                changed = (
+                    _git_text(
+                        repo_root,
+                        "diff",
+                        "--name-only",
+                        f"{reviewed_commit}..HEAD",
+                        "--",
+                    )
+                    if p5_status == "pending"
+                    else None
                 )
                 if changed is not None:
                     allowed = {

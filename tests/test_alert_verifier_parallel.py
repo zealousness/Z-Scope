@@ -3,6 +3,14 @@ import threading
 from zscope.alerts.adapter import ExternalAlert
 from zscope.alerts.verifier import AlertVerifier
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
+from zscope.core.validation.function_ir import FunctionIRGraph
+from zscope.core.validation.proof_kernel import (
+    PREDICATE_REGISTRY,
+    ProofKernelEngine,
+    build_proof_clause,
+    build_proof_obligation,
+    program_proof_ir_from_graph,
+)
 
 
 def _alert(idx: int, *, raw=None) -> ExternalAlert:
@@ -14,6 +22,94 @@ def _alert(idx: int, *, raw=None) -> ExternalAlert:
         line=idx,
         raw=raw or {},
     )
+
+
+def _proof_input_with_unknown_required_counterproof() -> dict:
+    graph = FunctionIRGraph.from_clang_evidence(
+        {
+            "clang_path": "clang-21.1.8",
+            "code_snapshot_sha256": "a" * 64,
+            "unresolved_dynamic_edges": True,
+            "cfg_dump": {
+                "summary": {
+                    "parse_ok": True,
+                    "function": "neutral_worker",
+                    "function_section_unique": True,
+                    "entry_blocks": ["B2"],
+                    "exit_blocks": ["B0"],
+                    "blocks": [
+                        {
+                            "id": "B2",
+                            "label": "ENTRY",
+                            "successors": ["B1"],
+                            "predecessors": [],
+                            "statements": ["consume(input)"],
+                        },
+                        {
+                            "id": "B1",
+                            "label": "",
+                            "successors": ["B0"],
+                            "predecessors": ["B2"],
+                            "statements": ["return 0"],
+                        },
+                        {
+                            "id": "B0",
+                            "label": "EXIT",
+                            "successors": [],
+                            "predecessors": ["B1"],
+                            "statements": [],
+                        },
+                    ],
+                }
+            },
+            "ast_dump": {
+                "summary": {"target_function": {"call_exprs": [{"callee": "consume", "line": 3}]}}
+            },
+        },
+        function="neutral_worker",
+        file="src/neutral_worker.c",
+    )
+    assert graph is not None
+    proof_ir = program_proof_ir_from_graph(
+        graph, project_uid="PROJECT_ALERT", revision_uid="REV_ALERT"
+    )
+    spec = PREDICATE_REGISTRY["source_sink_path_exists"]
+    confirmation = build_proof_clause(
+        role="confirmation",
+        provider_family=spec.provider_family,
+        predicate_id=spec.predicate_id,
+        fact_kind=spec.fact_kind,
+        quantifier=spec.quantifier,
+        expected_value={"path_exists": True},
+        parameters={"source_node_uid": "B2", "sink_node_uid": "B1"},
+    )
+    counterproof = build_proof_clause(
+        role="counterproof",
+        provider_family=spec.provider_family,
+        predicate_id=spec.predicate_id,
+        fact_kind=spec.fact_kind,
+        quantifier=spec.quantifier,
+        expected_value={"path_exists": False},
+        parameters={"source_node_uid": "B1", "sink_node_uid": "B2"},
+    )
+    obligation = build_proof_obligation(
+        validation_cluster_uid="VAL_ALERT_REQUIRED_COUNTERPROOF",
+        defect_family="neutral_family",
+        subject_uid="SUBJECT_ALERT",
+        decision_region_uid="REGION_ALERT",
+        confirmation_clauses=(confirmation,),
+        counterproof_clauses=(counterproof,),
+        dependency_hashes=proof_ir["dependency_hashes"],
+    )
+    actions = ProofKernelEngine().action_catalog(
+        proof_ir=proof_ir,
+        obligation=obligation,
+    )
+    return {
+        "proof_ir": proof_ir,
+        "proof_obligation": obligation,
+        "selected_action_uids": [value["action_uid"] for value in actions],
+    }
 
 
 def test_alert_verifier_uses_workers_and_preserves_order() -> None:
@@ -91,3 +187,21 @@ def test_alert_tampered_proof_input_fails_closed_without_execution() -> None:
     assert result["proof_kernel_decision"]["reason_code"] == (
         "alert_verify_proof_input_schema_invalid"
     )
+
+
+def test_alert_required_unknown_counterproof_cannot_confirm() -> None:
+    verifier = AlertVerifier.__new__(AlertVerifier)
+    verifier.terminal_authority = TerminalAuthorityEvaluator()
+    alert = _alert(
+        1,
+        raw={
+            "properties": {
+                "zscopeProofKernelInput": (_proof_input_with_unknown_required_counterproof())
+            }
+        },
+    )
+
+    result = verifier._verify_single(alert, 1)
+
+    assert result["candidate_disposition"] == "needs_review"
+    assert result["proof_kernel_decision"]["reason_code"] == ("open_or_unknown_proof_clause")

@@ -34,6 +34,8 @@
 - 旧缓存不能误复用为新证据。
 - 所有P0冻结结果差异均可归因到具体trace事件。
 - 100% confirmed/needs-review具有完整trace。
+- required confirmation/counterproof clause必须逐项取得Checker `accepted/verified_true`
+  closure；non-executable、未选择或unknown clause一律保持needs-review。
 - full pytest、compileall、mypy、Black、docs和package-data通过。
 - 最终Claude Opus 5 product-architecture与DeepSeek-V4-Pro Max proof-security审核绑定同一clean commit/tree，均approved且blocking finding为空。
 

@@ -234,27 +234,36 @@ class ProofKernelEngine:
             for value in obligation.get("counterproof_clauses") or []
             if value.get("required") is True
         }
+        all_required = required_confirmation | required_counterproof
+        catalog_clause_uids = {str(value.get("clause_uid") or "") for value in catalog}
         required_executable = {
             str(value.get("clause_uid") or "")
             for value in catalog
             if str(value.get("action_uid") or "") in executable_action_uids
         }
         selected_result_clauses = {str(value.get("clause_uid") or "") for value in results}
-        all_required_executable = {
-            str(value.get("clause_uid") or "")
-            for value in catalog
-            if str(value.get("clause_uid") or "") in (required_confirmation | required_counterproof)
-        }
+        accepted_clauses = accepted_confirmation | accepted_counterproof
+        # A required clause outside the executable registry is an explicit
+        # open proof obligation.  Omitting it from the action catalog must not
+        # make another accepted clause look like a complete closure.
+        if not all_required.issubset(catalog_clause_uids):
+            return "needs_review", "required_clause_not_executable"
         # A model selection cannot turn an omitted executable required clause
         # into an implicit success. Every required action must have a Checker
         # result before an authoritative closure is possible.
-        if not all_required_executable.issubset(required_executable):
+        if not all_required.issubset(required_executable):
             return "needs_review", "required_executable_clause_not_selected"
-        if not required_executable.issubset(selected_result_clauses):
+        if not all_required.issubset(selected_result_clauses):
             return "needs_review", "required_executable_clause_not_checked"
+        # A Checker result with unknown/conflicting/rejected status records an
+        # attempt, but only accepted verified_true evidence closes its clause.
+        # This is especially important for required counterproof clauses: an
+        # unknown safety predicate can never be interpreted as its absence.
+        if not all_required.issubset(accepted_clauses):
+            return "needs_review", "open_or_unknown_proof_clause"
         if accepted_confirmation and accepted_counterproof:
             return "needs_review", "programmatic_proof_conflict"
-        if accepted_counterproof:
+        if required_counterproof and required_counterproof <= accepted_counterproof:
             return "rejected_with_proof", "verified_counterproof"
         if obligation.get("open_clauses"):
             return "needs_review", "open_or_unknown_proof_clause"
