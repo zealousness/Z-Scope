@@ -1958,6 +1958,31 @@ def test_structured_ir_observation_is_v2_delta_but_not_false_closure() -> None:
     assert issue["evidence_closure_state"]["complete"] is False
 
 
+def test_certificate_mode_keeps_uncertified_observation_out_of_v2_delta() -> None:
+    queue = EvidenceCompletionQueue(
+        enable_v11_providers=False,
+        enable_v12_providers=False,
+        require_replayable_certificates=True,
+    )
+    issue = {
+        "validation_cluster_uid": "VAL_STRICT_OBSERVATION",
+        "function": "inspect_input",
+        "file": "src/anonymous.c",
+        "line": 20,
+        "security_obligation": {"required_fact_kinds": ["caller_contract"]},
+        "missing_fact_kinds": ["caller_contract"],
+        "fact_completion_by_kind": {
+            "caller_contract": [{"value": "a caller reaches the function"}],
+        },
+    }
+
+    batch = queue.resolve_required_facts(issue, validator_data={"verdict": "uncertain"})
+
+    assert batch.has_evidence_delta is False
+    assert issue["evidence_completion_facts"][0]["certificate_authoritative"] is False
+    assert issue["evidence_closure_state"]["missing_fact_kinds"] == ["caller_contract"]
+
+
 def test_required_fact_plan_invalidates_stale_complete_slice() -> None:
     queue = EvidenceCompletionQueue(
         enable_v11_providers=False,
