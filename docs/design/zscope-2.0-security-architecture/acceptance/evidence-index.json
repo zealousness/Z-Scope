@@ -3,10 +3,10 @@
   "design_version": "1.0.0",
   "design_status": "reviewed",
   "baseline": {
-    "git_commit": "17a9fc0100ea8a991bc25f3cfa76ca2dbb111ef8",
-    "git_tree": "c6dc2204da666ee3f7085894c5bce824d58c5486",
-    "clean": false,
-    "worktree_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23"
+    "git_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+    "git_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
+    "clean": true,
+    "worktree_patch_sha256": ""
   },
   "phases": [
     {"phase": "P0", "status": "in_progress", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
@@ -25,19 +25,19 @@
       "phase": "P0",
       "kind": "design_archive",
       "status": "collected",
-      "implementation_commit": "",
+      "implementation_commit": "7acbe3561d008971310c024349066ba9593bd652",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
-          "sha256": "5ce204f6b804ada7309afa24e2bc87cd0c080aafd262f6c808ec490ad6cec82b"
+          "sha256": "2823b629dc5ee5d4fdab19d52196d0d49c5e807b015fbfd2f62c26e028787827"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
-          "sha256": "6c02241a88176e2b8fe5960bb95d3fe225161df62b20e6c938db17a515eeca02"
+          "sha256": "735ad6e1cbebadd8aad9edb7e25bf4d9e9b845950245612bd169d99c11ba2b88"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/baseline-artifact-manifest.json",
-          "sha256": "625563db309dc2b1046400764e197764c7a1e333dbc774cc22cd41421b6627cc"
+          "sha256": "5a3553e0c14a200563c0393396068c238f397895ea8aada7bf7f90e286c88c00"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
@@ -45,7 +45,68 @@
         }
       ],
       "reviewed_by": [],
-      "notes": "Normative documents and initial static audit are present. The implementation_commit and formal reviews remain empty until the design-only commit and clean baseline review are complete."
+      "notes": "The design-only archive commit is recorded, the previously dirty baseline has been split into domain-separated commits, and cold runtime artifacts are hash-bound. Formal reviews remain outstanding."
+    },
+    {
+      "evidence_uid": "P0-CHANGE-SCOPE-GATE",
+      "phase": "P0",
+      "kind": "governance_ci",
+      "status": "passed",
+      "implementation_commit": "9fa105f618b531de2d303991640c28658806b083",
+      "artifacts": [
+        {
+          "path": "scripts/check_zscope_2_change_scope.py",
+          "sha256": "6bab6a88b63ed19b3f86c34c480caf8fbf5a5909d1b92b6c465b6434e05d9c26"
+        },
+        {
+          "path": "tests/test_zscope_2_change_scope.py",
+          "sha256": "37d430188282bed22bbb31618fa6788df221decc706788511ce888435fe90162"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "06621354146ca09b08c0e885cf09ed3b7c0ee5e33671b136b6934c79b9963c2e"
+        }
+      ],
+      "reviewed_by": [],
+      "notes": "Unit tests, Black, mypy and compileall passed locally. The implementation commit is bound; independent reviewer sign-off remains open."
+    },
+    {
+      "evidence_uid": "P0-COLD-BASELINE-PREFLIGHT",
+      "phase": "P0",
+      "kind": "execution_preflight",
+      "status": "passed",
+      "implementation_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-execution-preflight.json",
+          "sha256": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b"
+        }
+      ],
+      "reviewed_by": [],
+      "notes": "The documented WSL toolchain and shared libraries were verified, smoke passed without model/network use, and the explicit glm-5.1 provider identity was used without recording secrets."
+    },
+    {
+      "evidence_uid": "P0-COLD-FAST-BALANCED-BASELINE",
+      "phase": "P0",
+      "kind": "cold_runtime_baseline",
+      "status": "passed",
+      "implementation_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-cold-baseline-summary.json",
+          "sha256": "ebd95c07957e3f0a4bef7c446f2e079caebfad1d6395e45ed4cc1b06476a3b49"
+        },
+        {
+          "path": "benchmark-artifacts/zscope2-p0-fast-r2/aggregate.json",
+          "sha256": "43e3719d0f00f0419e076f055e13d89c0771f867e52b5dadd5913ec5d7bf9d96"
+        },
+        {
+          "path": "benchmark-artifacts/zscope2-p0-balanced/aggregate.json",
+          "sha256": "7694a7940799954337578d5e2b565d83119a1ac07331234a30d7a813ea7f7eb7"
+        }
+      ],
+      "reviewed_by": [],
+      "notes": "One cold fast and one cold balanced trial completed on the same commit/tree/input/model. Usage, traces, replay bundles, scoped runtime actor observations and matcher-v2 scores are hash-bound and answer-isolated. These P0 behavior baselines are not formal or release-eligible quality results."
     }
   ]
 }
