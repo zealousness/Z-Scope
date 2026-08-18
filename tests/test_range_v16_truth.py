@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from copy import deepcopy
 from pathlib import Path
 
@@ -404,6 +405,33 @@ def test_truth_v16_rejects_duplicate_clauses_and_pair_uid(tmp_path: Path) -> Non
     ] = "range-v16-pair:other"
     with pytest.raises(ValueError, match="safe pair UID"):
         validate_truth_v16(wrong_pair, pair_root=pair_root)
+
+
+def test_truth_v16_requires_independent_safe_pair_sources(tmp_path: Path) -> None:
+    truth, pair_root = _truth_v16(tmp_path)
+    source_dir = pair_root / "T-001"
+    duplicate_dir = pair_root / "T-002"
+    shutil.copytree(source_dir, duplicate_dir)
+    duplicate_manifest_path = duplicate_dir / "manifest.json"
+    duplicate_manifest = json.loads(duplicate_manifest_path.read_text(encoding="utf-8"))
+    duplicate_manifest["truth_id"] = "T-002"
+    duplicate_manifest["pair_uid"] = "range-v16-pair:T-002"
+    unsigned_manifest = dict(duplicate_manifest)
+    unsigned_manifest.pop("content_sha256")
+    duplicate_manifest["content_sha256"] = sha256_value(unsigned_manifest)
+    _write(duplicate_manifest_path, duplicate_manifest)
+
+    duplicate_contract = truth["vulnerabilities"][1]["verification_contract"]
+    duplicate_contract["kind"] = "concrete_trigger"
+    duplicate_contract["safe_pair"] = {
+        "pair_uid": duplicate_manifest["pair_uid"],
+        "manifest_sha256": sha256_file(duplicate_manifest_path),
+        "vulnerable_sha256": duplicate_manifest["vulnerable"]["sha256"],
+        "fixed_or_near_miss_sha256": duplicate_manifest["fixed_or_near_miss"]["sha256"],
+    }
+    truth["truth_contract"]["safe_unit_count"] = 2
+    with pytest.raises(ValueError, match="independent safe-pair sources"):
+        validate_truth_v16(truth, pair_root=pair_root)
 
 
 def test_truth_v16_json_schema_matches_strict_contract(tmp_path: Path) -> None:
