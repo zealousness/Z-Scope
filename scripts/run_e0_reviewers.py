@@ -395,9 +395,16 @@ def validate_decision_against_packet(
         if not contained or not function_grounded:
             raise E0GovernanceError("review decision anchor is outside the supplied code windows")
 
-    if not require_resolvable_evidence:
-        return
-    refs = list(decision.get("evidence_refs") or [])
+    direct_refs = list(decision.get("evidence_refs") or [])
+    if (
+        require_resolvable_evidence
+        and decision.get("contract_kind") in {"concrete_trigger", "public_api_contract"}
+        and not direct_refs
+    ):
+        raise E0GovernanceError(
+            "confirmable review decision requires direct trigger evidence refs"
+        )
+    refs = list(direct_refs)
     for clause in decision.get("required_evidence_clauses") or []:
         if isinstance(clause, Mapping):
             refs.extend(clause.get("evidence_refs") or [])
@@ -940,6 +947,7 @@ def run_arbitration(args: argparse.Namespace) -> int:
     if manifest_path.exists():
         raise E0GovernanceError("Opus arbitration is already complete")
     disagreements: set[str] = set()
+    evidence_deficits: set[str] = set()
     work: list[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]] = []
     fable_dir = args.fable_dir.resolve(strict=True)
     deepseek_dir = args.deepseek_dir.resolve(strict=True)
@@ -958,7 +966,14 @@ def run_arbitration(args: argparse.Namespace) -> int:
         disagreement_fields = decision_disagreement_fields(fable, deepseek)
         if disagreement_fields:
             disagreements.add(truth_id)
-        if truth_id not in DISPUTED_IDS and not disagreement_fields:
+        evidence_deficit = any(
+            decision.get("contract_kind") in {"concrete_trigger", "public_api_contract"}
+            and not decision.get("evidence_refs")
+            for decision in (fable, deepseek)
+        )
+        if evidence_deficit:
+            evidence_deficits.add(truth_id)
+        if truth_id not in DISPUTED_IDS and not disagreement_fields and not evidence_deficit:
             continue
         work.append((packet, truth_id, (fable, deepseek)))
     records: list[dict[str, Any]] = []
@@ -998,6 +1013,7 @@ def run_arbitration(args: argparse.Namespace) -> int:
             "reviewer": "opus",
             "reviewed_count": len(reviewed),
             "disagreement_count": len(disagreements),
+            "evidence_deficit_count": len(evidence_deficits),
             "mandatory_disputed_ids": sorted(DISPUTED_IDS),
             "reviewed_ids": sorted(reviewed),
             "records": records,

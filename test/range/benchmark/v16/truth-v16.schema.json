@@ -174,7 +174,14 @@
               "kind": {"enum": ["concrete_trigger", "public_api_contract"]}
             }
           },
-          "then": {"properties": {"safe_pair": {"$ref": "#/$defs/safePair"}}},
+          "then": {
+            "properties": {
+              "safe_pair": {"$ref": "#/$defs/safePair"},
+              "trigger": {
+                "properties": {"evidence_refs": {"minItems": 1}}
+              }
+            }
+          },
           "else": {"properties": {"safe_pair": {"maxProperties": 0}}}
         },
         {

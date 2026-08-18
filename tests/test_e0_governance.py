@@ -93,6 +93,39 @@ def _decision(packet: dict) -> dict:
     }
 
 
+def test_confirmable_final_decision_requires_direct_trigger_evidence() -> None:
+    packet = _packet()
+    decision = _decision(packet)
+    decision["evidence_refs"] = []
+    with pytest.raises(
+        ValueError, match="confirmable review decision requires direct trigger evidence"
+    ):
+        reviewer_runner.validate_decision_against_packet(
+            decision,
+            packet,
+            require_resolvable_evidence=True,
+        )
+
+    decision["contract_kind"] = "pattern_model"
+    reviewer_runner.validate_decision_against_packet(
+        decision,
+        packet,
+        require_resolvable_evidence=True,
+    )
+
+
+def test_primary_review_still_rejects_noncanonical_supplied_evidence() -> None:
+    packet = _packet()
+    decision = _decision(packet)
+    decision["evidence_refs"] = ["src/other.c:1"]
+    with pytest.raises(ValueError, match="evidence ref is not canonical"):
+        reviewer_runner.validate_decision_against_packet(
+            decision,
+            packet,
+            require_resolvable_evidence=False,
+        )
+
+
 def _attestation() -> dict:
     payload = {
         "schema_version": ATTESTATION_SCHEMA_VERSION,
