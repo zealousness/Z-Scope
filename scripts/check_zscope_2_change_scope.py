@@ -47,10 +47,14 @@ def classify_path(path: str) -> str | None:
         "test/java_range/benchmark/ground_truth.json",
     }
     truth_prefixes = (
+        "test/range/benchmark/v16/",
+        "test/java_range/benchmark/v16/",
         "test/range/src/",
         "test/java_range/src/",
         "docs/benchmark-maintenance/range/",
         "docs/benchmark-maintenance/java-range/",
+        "scripts/generate_range_v16_",
+        "scripts/validate_range_v16_",
     )
     if value in truth_paths or value.startswith(truth_prefixes):
         return "truth_fixture"

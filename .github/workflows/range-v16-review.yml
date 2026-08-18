@@ -1,0 +1,87 @@
+name: Range v16 Independent Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Commit containing the frozen 136 minimal review packets
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  primary:
+    strategy:
+      fail-fast: true
+      matrix:
+        reviewer: [fable, deepseek]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Verify frozen review harnesses
+        run: |
+          test "$(claude --version | awk '{print $1}')" = "2.1.233"
+          test "$(dsh --version)" = "0.1.0-rc.6"
+          test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
+      - name: Run independent primary reviewer
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          umask 077
+          python3 scripts/run_e0_reviewers.py primary \
+            --reviewer '${{ matrix.reviewer }}' \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --output-dir 'review-evidence/${{ matrix.reviewer }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-primary-${{ matrix.reviewer }}-${{ inputs.source_sha }}
+          path: review-evidence/${{ matrix.reviewer }}
+          if-no-files-found: error
+          retention-days: 90
+
+  arbitrate:
+    needs: primary
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          name: range-v16-primary-fable-${{ inputs.source_sha }}
+          path: review-evidence/fable
+      - uses: actions/download-artifact@v8
+        with:
+          name: range-v16-primary-deepseek-${{ inputs.source_sha }}
+          path: review-evidence/deepseek
+      - name: Run mandatory and disagreement arbitration
+        run: |
+          umask 077
+          python3 scripts/run_e0_reviewers.py arbitrate \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --fable-dir review-evidence/fable \
+            --deepseek-dir review-evidence/deepseek \
+            --output-dir review-evidence/opus
+          python3 scripts/build_e0_review_manifest.py \
+            --review-root review-evidence \
+            --output review-evidence/review-bundle-manifest.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-reviewed-${{ inputs.source_sha }}
+          path: review-evidence
+          if-no-files-found: error
+          retention-days: 90

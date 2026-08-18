@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/e0-review-decision.v1.json",
+  "title": "Z-SCOPE E0 independent truth review decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "packet_uid",
+    "packet_sha256",
+    "reviewer_role",
+    "reviewer_model",
+    "contract_kind",
+    "disposition",
+    "confidence",
+    "structured_anchors",
+    "required_evidence_clauses",
+    "evidence_refs",
+    "safe_pair_recommendation",
+    "reason_codes"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.range-v16-review-decision.v1"},
+    "packet_uid": {"type": "string", "minLength": 1},
+    "packet_sha256": {"$ref": "#/$defs/sha256"},
+    "reviewer_role": {"enum": ["primary_fable", "primary_deepseek", "arbiter_opus"]},
+    "reviewer_model": {"type": "string", "minLength": 1},
+    "contract_kind": {
+      "enum": ["concrete_trigger", "public_api_contract", "pattern_model", "retired"]
+    },
+    "disposition": {"enum": ["keep", "correct", "retire", "unresolved"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "structured_anchors": {"type": "array", "items": {"type": "object"}},
+    "required_evidence_clauses": {
+      "type": "array",
+      "items": {"type": "object", "minProperties": 1}
+    },
+    "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "safe_pair_recommendation": {"type": "object"},
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "TRIGGER_PRESENT",
+          "PUBLIC_CONTRACT_SUPPORTED",
+          "TRIGGER_INCOMPLETE",
+          "THREAT_ASSUMPTION_UNSUPPORTED",
+          "ANCHOR_CORRECTION_REQUIRED",
+          "CATEGORY_CORRECTION_REQUIRED",
+          "DUPLICATE_TRUTH",
+          "CODE_COUNTEREVIDENCE",
+          "SAFE_PAIR_REQUIRED",
+          "INSUFFICIENT_EVIDENCE"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
