@@ -81,9 +81,7 @@ def _report(*, components: bool = False) -> dict:
     return {
         "answer_material_present": False,
         "issues": [confirmed],
-        "run_manifest": {
-            "finding_root_projection": {"schema_version": "zscope.finding-root.v2"}
-        },
+        "run_manifest": {"finding_root_projection": {"schema_version": "zscope.finding-root.v2"}},
         "report_views": {
             "default": {"issues": [confirmed]},
             "with_needs_review": {"issues": [confirmed, needs_review]},
@@ -306,9 +304,9 @@ def test_formal_v5_rejects_answer_or_telemetry_gaps_and_trial_tampering() -> Non
         score_benchmark_v5(report, truth_v16(), pair_results=_pairs(formal=True), formal=True)
 
     report = _report(components=True)
-    report["metadata"]["benchmark_v5_components"]["proof_engine"][
-        "certificate_replay_rate"
-    ] = float("nan")
+    report["metadata"]["benchmark_v5_components"]["proof_engine"]["certificate_replay_rate"] = (
+        float("nan")
+    )
     with pytest.raises(BenchmarkV5Error, match="component metrics"):
         score_benchmark_v5(report, truth_v16(), pair_results=_pairs(formal=True), formal=True)
 

@@ -596,7 +596,9 @@ def _distribution(values: Sequence[float | int]) -> Dict[str, float | int]:
 
 def _view_stability(trials: Sequence[Mapping[str, Any]], view: str) -> Dict[str, Any]:
     rows = [_mapping(_mapping(trial.get("product")).get(view)) for trial in trials]
-    recalls = [float(_required_number(row.get("recall"), field=f"product.{view}.recall")) for row in rows]
+    recalls = [
+        float(_required_number(row.get("recall"), field=f"product.{view}.recall")) for row in rows
+    ]
     precisions = [
         float(
             _required_number(
@@ -615,9 +617,7 @@ def _view_stability(trials: Sequence[Mapping[str, Any]], view: str) -> Dict[str,
     }
 
 
-def _component_stability(
-    trials: Sequence[Mapping[str, Any]], name: str
-) -> Dict[str, Any]:
+def _component_stability(trials: Sequence[Mapping[str, Any]], name: str) -> Dict[str, Any]:
     output: Dict[str, Any] = {}
     for metric in sorted(_COMPONENT_METRICS[name]):
         raw_values = [_mapping(trial.get(name)).get(metric) for trial in trials]
@@ -692,7 +692,9 @@ def _validate_formal_score_result(trial: Mapping[str, Any]) -> None:
     cost = _mapping(trial.get("cost"))
     source_loc = cost.get("source_loc")
     total_tokens = int(cost.get("total_tokens") or 0)
-    default_tp = int(_mapping(_mapping(trial.get("product")).get("default")).get("true_positives") or 0)
+    default_tp = int(
+        _mapping(_mapping(trial.get("product")).get("default")).get("true_positives") or 0
+    )
     if isinstance(source_loc, bool) or not isinstance(source_loc, int) or source_loc <= 0:
         raise BenchmarkV5Error("formal Benchmark v5 requires a positive source LOC")
     expected_per_kloc = total_tokens / (source_loc / 1000.0)
@@ -884,8 +886,7 @@ def aggregate_benchmark_v5(
             "actionable_precision_delta_pp": observed["actionable_precision_delta_pp"],
         },
         "components": {
-            name: _component_stability(trials, name)
-            for name in sorted(_COMPONENT_METRICS)
+            name: _component_stability(trials, name) for name in sorted(_COMPONENT_METRICS)
         },
         "safe_pairs": {
             "safe_entry_alert_rate": _distribution(pair_alert_rates),
