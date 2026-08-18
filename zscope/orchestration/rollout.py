@@ -1127,12 +1127,14 @@ class BalancedRolloutController:
     @staticmethod
     def _lock_file(handle: BinaryIO) -> None:
         handle.seek(0)
-        if os.name == "nt":  # pragma: no cover - platform-selected branch
-            import msvcrt
-
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            return
         import importlib
+
+        if os.name == "nt":  # pragma: no cover - platform-selected branch
+            msvcrt = importlib.import_module("msvcrt")
+            getattr(msvcrt, "locking")(
+                handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1
+            )
+            return
 
         fcntl = importlib.import_module("fcntl")
         getattr(fcntl, "flock")(handle.fileno(), getattr(fcntl, "LOCK_EX"))
@@ -1140,12 +1142,14 @@ class BalancedRolloutController:
     @staticmethod
     def _unlock_file(handle: BinaryIO) -> None:
         handle.seek(0)
-        if os.name == "nt":  # pragma: no cover - platform-selected branch
-            import msvcrt
-
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            return
         import importlib
+
+        if os.name == "nt":  # pragma: no cover - platform-selected branch
+            msvcrt = importlib.import_module("msvcrt")
+            getattr(msvcrt, "locking")(
+                handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+            )
+            return
 
         fcntl = importlib.import_module("fcntl")
         getattr(fcntl, "flock")(handle.fileno(), getattr(fcntl, "LOCK_UN"))
