@@ -13,7 +13,7 @@
     {"phase": "P1", "status": "complete", "entry_gate": "P0 complete", "exit_gate": "dead runtime removed with frozen replay equivalence and approved product architecture review", "review_roles": ["product_architecture"]},
     {"phase": "P2", "status": "complete", "entry_gate": "P1 complete and ADR-0007 contract-freeze proof-security review approved", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
     {"phase": "P3", "status": "complete", "entry_gate": "P2 contracts stable and SecuritySpec DSL/state/reviewer policy frozen", "exit_gate": "spec blind qualification, read-only review center and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
-    {"phase": "P4", "status": "in_progress", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind and non-Range hypothesis gates pass", "review_roles": ["product_architecture", "proof_security"]},
+    {"phase": "P4", "status": "complete", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind qualification, shadow isolation and dual review gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P5", "status": "pending", "entry_gate": "P2-P4 pass", "exit_gate": "all public paths cut over and legacy runtime absent", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "E0", "status": "pending", "entry_gate": "P0 design approved", "exit_gate": "truth v16 and benchmark v5 independently attested", "review_roles": ["independent_benchmark"]},
     {"phase": "P6", "status": "pending", "entry_gate": "P1-P5 and E0 complete", "exit_gate": "offline replay and cold pilot invariants pass", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
@@ -716,7 +716,7 @@
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
-          "sha256": "ff6c6678d2aada985b705c63f21a638bd55f0b064240bca780d3fada8b8fa860"
+          "sha256": "2183a7201d23b54503411b66583abc352b69d0cd1e964f57d55050de7e9fdd38"
         },
         {
           "path": "tests/fixtures/p2_proof_kernel/corpus.json",
@@ -833,7 +833,7 @@
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
-          "sha256": "ff6c6678d2aada985b705c63f21a638bd55f0b064240bca780d3fada8b8fa860"
+          "sha256": "2183a7201d23b54503411b66583abc352b69d0cd1e964f57d55050de7e9fdd38"
         },
         {
           "path": "tests/fixtures/p3_security_specs/source-corpus.json",
@@ -983,6 +983,163 @@
         ]
       },
       "notes": "DeepSeek-V4-Pro Max approved the exact P3 candidate with zero blocking findings; SecuritySpec and Proof Kernel remain shadow until P5."
+    },
+    {
+      "evidence_uid": "P4-HYPOTHESIS-HUNTER-QUALIFICATION",
+      "phase": "P4",
+      "kind": "implementation_validation",
+      "status": "passed",
+      "implementation_commit": "cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58",
+      "implementation_tree": "71a63eb25fbf6d5c65f1294fa948caa88b64f026",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p4-qualification-manifest.json",
+          "sha256": "4521fb25f21678d8028cc80f08c0bb5bbcd8430bb720a72272967da08cb55500"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
+          "sha256": "2183a7201d23b54503411b66583abc352b69d0cd1e964f57d55050de7e9fdd38"
+        },
+        {
+          "path": "tests/fixtures/p4_hypothesis_hunter/source-corpus.json",
+          "sha256": "85c623e1d7a10e53b8a09d2b98ba5d4d57282847874ee7658ebcbbbd3abf3e79"
+        },
+        {
+          "path": "tests/fixtures/p4_hypothesis_hunter/expected-results.json",
+          "sha256": "bedc0bbaedbf074ef5bbf286b1672785439091b4ff17dd57bba832751e5adc91"
+        },
+        {
+          "path": "zscope/orchestration/hypothesis_hunter/qualification/qualification-artifact.json",
+          "sha256": "fe546fe0538131e818097e7e0e484aa66c2df34e312f8775ffa71b3c3832a0e9"
+        },
+        {
+          "path": "scripts/qualify_p4_hypothesis_hunter.py",
+          "sha256": "c4b7c9f3d20fc85e5c0b6fc9531dc1a0a37bfa5219c5af8f93806f11d2cfd1e4"
+        },
+        {
+          "path": "scripts/check_p4_hypothesis_lifecycle.py",
+          "sha256": "4436726cadfa58b3dae1369310d10de80aeea929ae810961402068f714a2bdc7"
+        },
+        {
+          "path": "scripts/check_p4_hypothesis_package.py",
+          "sha256": "14a7d69ef329d883c72849184d6f22420a410bc931e2430bc44bd72e0f5be82f"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max"
+      ],
+      "verification": {
+        "environment": {
+          "host": "Windows-10-10.0.26200-SP0 with local WSL Ubuntu 24.04",
+          "python": "3.10.5",
+          "black": "25.11.0 under WSL Python 3.12.3",
+          "network_and_model_use": "none for implementation, qualification and tests"
+        },
+        "commands": [
+          {"command": "python -m pytest -q (1961 passed, 7 skipped in 216.60 seconds)", "status": "passed"},
+          {"command": "python -m compileall -f -q zscope scripts test tests", "status": "passed"},
+          {"command": "python -m mypy zscope (225 source files)", "status": "passed"},
+          {"command": "Black 25.11.0 --check on all 26 changed Python files under local WSL", "status": "passed"},
+          {"command": "python scripts/qualify_p4_hypothesis_hunter.py --check", "status": "passed"},
+          {"command": "python scripts/check_p4_hypothesis_lifecycle.py", "status": "passed"},
+          {"command": "python scripts/check_benchmark_hygiene.py", "status": "passed"},
+          {"command": "python scripts/check_zscope_2_change_scope.py --base 57ac77d2cba03b1169f7fbfe6f565b5575011172 --head cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58", "status": "passed"},
+          {"command": "python scripts/check_p1_runtime_reachability.py and P2/P3/P4 package gates against the candidate wheel", "status": "passed"},
+          {"command": "isolated installed-wheel import and package-data smoke", "status": "passed"},
+          {"command": "git diff --check", "status": "passed"}
+        ],
+        "limitations": [
+          "The exact clean candidate full suite passed after one preceding transient Windows timing assertion failure; the isolated assertion also passed.",
+          "Three historical P0 benchmark aggregates are absent and were not replayed.",
+          "Native Windows Black hangs during grammar initialization; Black 25.11.0 passed the changed files under WSL with intermittent environment-level WSL access retries.",
+          "The local candidate wheel is ignored and not committed; SHA-256, size, inventory and isolated import results are bound in the qualification manifest.",
+          "No external-model benchmark, remote CI, push, PR or design tag was executed."
+        ]
+      },
+      "notes": "The product-only P4 candidate adds strict hypothesis contracts, a bounded one-call Hunter, system offer/action binding, an independent frozen shadow ledger and CAS, selected-action Checker replay and a 120-unit answer-free qualification without changing stable product authority."
+    },
+    {
+      "evidence_uid": "P4-FINAL-PRODUCT-ARCHITECTURE-REVIEW",
+      "phase": "P4",
+      "kind": "formal_review",
+      "status": "passed",
+      "implementation_commit": "cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58",
+      "implementation_tree": "71a63eb25fbf6d5c65f1294fa948caa88b64f026",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p4-review.schema.json",
+          "sha256": "c08009657940f18b8642b2fa04bbe361706258ea7893a7c008ef03b6241eb3fe"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p4-product-architecture.json",
+          "sha256": "e49db548806251c20f0d2498974e7381cf868078ce640f6f6c99cc586f7bacc0"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": ["claude-code/claude-opus-5"],
+      "verification": {
+        "environment": {
+          "harness": "Claude Code 2.1.233",
+          "model": "claude-opus-5",
+          "permission_mode": "plan-read-only",
+          "review_target": "cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58 / 71a63eb25fbf6d5c65f1294fa948caa88b64f026"
+        },
+        "commands": [
+          {
+            "command": "claude --print --model claude-opus-5 --effort high --permission-mode plan < P4 product architecture review prompt",
+            "status": "passed"
+          }
+        ],
+        "limitations": [
+          "The review was read-only and accepted the exact-candidate local full-suite and wheel results after independent source and gate inspection.",
+          "No external-model benchmark ran and Range truth, fixtures and Scorer inputs were not read.",
+          "Three recommendations are non-blocking P5 observability or maintenance hardening."
+        ]
+      },
+      "notes": "Claude Opus 5 approved the exact P4 candidate with zero blocking findings."
+    },
+    {
+      "evidence_uid": "P4-FINAL-PROOF-SECURITY-REVIEW",
+      "phase": "P4",
+      "kind": "formal_review",
+      "status": "passed",
+      "implementation_commit": "cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58",
+      "implementation_tree": "71a63eb25fbf6d5c65f1294fa948caa88b64f026",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p4-review.schema.json",
+          "sha256": "c08009657940f18b8642b2fa04bbe361706258ea7893a7c008ef03b6241eb3fe"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p4-proof-security.json",
+          "sha256": "a21d6418a6025b7a8d885eb0dbd544b4ff8170e6c6c9365f68c5436ccec7dee4"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": ["dsh/deepseek-v4-pro:max"],
+      "verification": {
+        "environment": {
+          "harness": "DSH 0.1.0-rc.6",
+          "model": "deepseek-v4-pro",
+          "reasoning_effort": "max",
+          "permission_mode": "read-only",
+          "review_target": "cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58 / 71a63eb25fbf6d5c65f1294fa948caa88b64f026"
+        },
+        "commands": [
+          {
+            "command": "dsh --profile headless --patch <deepseek-v4-pro max settings> under DSH_PERMISSION_MODE=read-only < P4 proof-security review prompt",
+            "status": "passed"
+          }
+        ],
+        "limitations": [
+          "The read-only sandbox accepted the exact-candidate local test and wheel results after inspecting code, tests, gates and the frozen qualification artifact.",
+          "No external-model benchmark ran and Range truth, fixture answers and Scorer inputs were not read.",
+          "Four defense-in-depth recommendations are non-blocking and become P5 prerequisites if multi-clause or authority behavior is introduced."
+        ]
+      },
+      "notes": "DeepSeek-V4-Pro Max approved the exact P4 candidate with zero blocking findings; Hypothesis Hunter, SecuritySpec and Proof Kernel remain shadow until P5."
     }
   ]
 }

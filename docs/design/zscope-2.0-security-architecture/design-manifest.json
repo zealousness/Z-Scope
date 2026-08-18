@@ -17,7 +17,7 @@
   },
   "document_hashes": {
     "docs/design/README.md": "049ceb43d18afdbf21162b2ca4c0965026dc0b1cdeff6fd71f282d82fdb46a99",
-    "README.md": "15dc03bd4f480aca23301bbf3282174993a21cb80adadc321bf54107eb7efaf6",
+    "README.md": "4825eda9115ec7dc3861c34b53a807e43842887f953fe3461e66cd857ae895a5",
     "architecture.md": "ffbf5b1d4c39e13e793a7551f68d1428b175f89ae09d76b12680bdc461633909",
     "contracts.md": "64a3198e97022ea3e6c9443efb6eb72e0c2ee42581739cbb5340f55af8c4bd5d",
     "deprecation-plan.md": "a2475243e5ba10b191b50152a08e27dd762c032eaaf0cfceb4ad6ac2c7f97b9a",
@@ -35,14 +35,15 @@
     "phases/P1-dead-code-and-workflow-cleanup.md": "1202aa0adea4c77ea282c053438239dde8829498f4d41dd3d5e8ff793a37e0cf",
     "phases/P2-proof-kernel.md": "9f47fc56a72c20b7ab213c6b1565eadf1fb8a79a1d7f799ee9c85e2ea517e80e",
     "phases/P3-security-spec-mining-and-review.md": "4eb9fa3c8163571bae0143ac50d1f5115329096ce70c15c92c843c8f48663205",
-    "phases/P4-hypothesis-driven-hunting.md": "77429fc64370a520dbd0380f215b98c63adbc66bf64e821592fc9cc66827584c",
+    "phases/P4-hypothesis-driven-hunting.md": "ed77aed8a01443699828fecaed9ddc818564556de21cf6af5d2e9ea791d2ba93",
     "phases/P5-runtime-cutover.md": "1859da91841e60bc9e2a24836cdeb69ce25c00441c1967dc059de8c083120641",
     "phases/P6-pilot-validation.md": "0cfcddd02820343931e8a988a753939c325861c17abdfcc36dec93b4da7fd93d",
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4",
-    "acceptance/runtime-reachability-manifest.json": "ff6c6678d2aada985b705c63f21a638bd55f0b064240bca780d3fada8b8fa860",
+    "acceptance/runtime-reachability-manifest.json": "2183a7201d23b54503411b66583abc352b69d0cd1e964f57d55050de7e9fdd38",
     "acceptance/p2-qualification-manifest.json": "7e0b606f4943a4d1fbc8bda8df87cbd4b6f9758810ecfae1eb840bfd6fd6f904",
     "acceptance/p3-qualification-manifest.json": "cdfe7dae89e1d0f952fc01399e3ecfb9e81a5010ad56ba7d515da3c1a93daeb9",
+    "acceptance/p4-qualification-manifest.json": "4521fb25f21678d8028cc80f08c0bb5bbcd8430bb720a72272967da08cb55500",
     "acceptance/baseline-artifact-manifest.json": "0e96b854c81e299f48b4bff7e687b1f6504ebb059114c853c844179473bc3d50",
     "acceptance/p0-execution-preflight.json": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b",
     "acceptance/p0-cold-baseline-summary.json": "ebd95c07957e3f0a4bef7c446f2e079caebfad1d6395e45ed4cc1b06476a3b49",
@@ -76,7 +77,9 @@
     "acceptance/reviews/p2-contract-freeze-proof-security.json": "9febdfb5eda063cf585a198f922018b0ee82936b241a76ac083ec58267f1327d",
     "acceptance/reviews/p2-final-proof-security.json": "02d1f586ed32d5b8657b5188a3bfd773528a6bc38402e26d4ecd841102c34ba9",
     "acceptance/reviews/p3-product-architecture.json": "e0a6194c43c388d059f25f96a1beed6b27a55efda66d970940b8ed315efc854f",
-    "acceptance/reviews/p3-proof-security.json": "b5c4a62a7d33112b965a718840f132c9da824d3b2c270da816b6af13d6f90ee4"
+    "acceptance/reviews/p3-proof-security.json": "b5c4a62a7d33112b965a718840f132c9da824d3b2c270da816b6af13d6f90ee4",
+    "acceptance/reviews/p4-product-architecture.json": "e49db548806251c20f0d2498974e7381cf868078ce640f6f6c99cc586f7bacc0",
+    "acceptance/reviews/p4-proof-security.json": "a21d6418a6025b7a8d885eb0dbd544b4ff8170e6c6c9365f68c5436ccec7dee4"
   },
   "adrs": [
     {"id": "ADR-0001", "status": "accepted-for-design", "affected_phases": ["P1", "P4", "P5"]},
@@ -92,7 +95,7 @@
     "P1": "complete",
     "P2": "complete",
     "P3": "complete",
-    "P4": "in_progress",
+    "P4": "complete",
     "P5": "pending",
     "E0": "pending",
     "P6": "pending",
@@ -164,6 +167,24 @@
         },
         "proof_security": {
           "path": "acceptance/reviews/p3-proof-security.json",
+          "reviewer_model": "deepseek-v4-pro",
+          "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only"
+        }
+      }
+    },
+    "P4": {
+      "schema": "acceptance/p4-review.schema.json",
+      "qualification_manifest": "acceptance/p4-qualification-manifest.json",
+      "reviewed_commit": "cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58",
+      "reviewed_tree": "71a63eb25fbf6d5c65f1294fa948caa88b64f026",
+      "artifacts": {
+        "product_architecture": {
+          "path": "acceptance/reviews/p4-product-architecture.json",
+          "reviewer_model": "claude-opus-5",
+          "harness": "claude-code/2.1.233; permission_mode=plan-read-only"
+        },
+        "proof_security": {
+          "path": "acceptance/reviews/p4-proof-security.json",
           "reviewer_model": "deepseek-v4-pro",
           "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only"
         }
