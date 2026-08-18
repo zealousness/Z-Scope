@@ -325,9 +325,7 @@ def test_formal_runner_routes_every_scan_phase_through_executor(
         (destination / "demo.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
         return benchmark_runner.scan_input_manifest(destination)
 
-    def write_config(
-        _spec: Any, project: Path, path: Path, *, scan_depth: str
-    ) -> dict[str, Any]:
+    def write_config(_spec: Any, project: Path, path: Path, *, scan_depth: str) -> dict[str, Any]:
         assert scan_depth == "fast"
         raw = {"config_version": 2, "project": {"root": str(project), "source_root": "."}}
         path.write_text(benchmark_runner.yaml.safe_dump(raw), encoding="utf-8")

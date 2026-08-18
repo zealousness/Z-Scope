@@ -25,6 +25,7 @@ INTERRUPTED_MARKERS = (
 )
 FAILURE_TAIL_LINES = 200
 
+
 def detect_scan_status(log_text: str, *, task_id: str = "") -> dict[str, Any]:
     text = str(log_text or "")
     task = str(task_id or "").strip()
@@ -147,11 +148,21 @@ def build_parser() -> argparse.ArgumentParser:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--log", type=Path, help="Z-SCOPE scan log path.")
     source.add_argument("--log-dir", type=Path, help="Directory containing Z-SCOPE scan logs.")
-    parser.add_argument("--task-id", default="", help="Optional task ID marker to match in the log. Required with --log-dir.")
+    parser.add_argument(
+        "--task-id",
+        default="",
+        help="Optional task ID marker to match in the log. Required with --log-dir.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    parser.add_argument("--watch", action="store_true", help="Poll until a terminal status or timeout.")
-    parser.add_argument("--interval", type=float, default=5.0, help="Watch polling interval in seconds.")
-    parser.add_argument("--timeout", type=float, default=0.0, help="Watch timeout in seconds; 0 means no timeout.")
+    parser.add_argument(
+        "--watch", action="store_true", help="Poll until a terminal status or timeout."
+    )
+    parser.add_argument(
+        "--interval", type=float, default=5.0, help="Watch polling interval in seconds."
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=0.0, help="Watch timeout in seconds; 0 means no timeout."
+    )
     return parser
 
 

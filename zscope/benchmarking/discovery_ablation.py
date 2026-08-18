@@ -937,7 +937,10 @@ def validate_discovery_ablation_run_request(
     if request.get("executor_sha256") != expected_executor:
         raise DiscoveryAblationError("ablation run request executor identity mismatch")
     fixed = request.get("fixed_contract")
-    if not isinstance(fixed, Mapping) or fixed.get("expected_max_tokens") != ABLATION_EXPECTED_MAX_TOKENS:
+    if (
+        not isinstance(fixed, Mapping)
+        or fixed.get("expected_max_tokens") != ABLATION_EXPECTED_MAX_TOKENS
+    ):
         raise DiscoveryAblationError("ablation run request fixed contract is invalid")
     if request.get("request_sha256") != canonical_json_sha256(
         _without_hash(request, "request_sha256")
