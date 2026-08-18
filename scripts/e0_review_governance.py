@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import re
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -468,8 +469,22 @@ def validate_e0_attestation(
     }
     if set(payload) != expected or payload.get("schema_version") != ATTESTATION_SCHEMA_VERSION:
         raise E0GovernanceError("E0 attestation fields or schema are invalid")
+    issued_at = payload.get("issued_at")
+    if not isinstance(issued_at, str):
+        raise E0GovernanceError("E0 attestation issue time is invalid")
+    try:
+        issued = datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise E0GovernanceError("E0 attestation issue time is invalid") from exc
+    if issued.tzinfo is None:
+        raise E0GovernanceError("E0 attestation issue time must include a timezone")
     workflow = payload.get("workflow")
-    if not isinstance(workflow, Mapping):
+    if not isinstance(workflow, Mapping) or set(workflow) != {
+        "path",
+        "run_id",
+        "head_sha",
+        "environment",
+    }:
         raise E0GovernanceError("E0 attestation workflow identity is missing")
     if workflow.get("path") != ".github/workflows/range-v16-benchmark-v5-attestation.yml":
         raise E0GovernanceError("E0 attestation workflow path is untrusted")
@@ -492,6 +507,11 @@ def validate_e0_attestation(
         "truth_v16_content",
         "truth_contract_manifest",
         "truth_manifest",
+        "source_truth_v15",
+        "review_packet_catalog",
+        "review_packet_catalog_content",
+        "normalized_decisions",
+        "normalized_decisions_content",
         "review_bundle",
         "review_bundle_content",
         "review_provenance",
@@ -505,11 +525,22 @@ def validate_e0_attestation(
     if not all(SHA256_RE.fullmatch(str(item or "")) for item in artifacts.values()):
         raise E0GovernanceError("E0 artifact SHA is invalid")
     summary = payload.get("review_summary")
-    if not isinstance(summary, Mapping):
+    if not isinstance(summary, Mapping) or set(summary) != {
+        "record_count",
+        "dual_review_count",
+        "opus_review_count",
+        "disputed_opus_count",
+    }:
         raise E0GovernanceError("E0 review summary is missing")
     if summary.get("record_count") != 136 or summary.get("dual_review_count") != 136:
         raise E0GovernanceError("E0 requires 136 dual-reviewed records")
-    if int(summary.get("opus_review_count") or 0) < 9 or summary.get("disputed_opus_count") != 9:
+    opus_count = summary.get("opus_review_count")
+    if (
+        isinstance(opus_count, bool)
+        or not isinstance(opus_count, int)
+        or not 9 <= opus_count <= 136
+        or summary.get("disputed_opus_count") != 9
+    ):
         raise E0GovernanceError("E0 Opus arbitration coverage is incomplete")
     invariants = payload.get("invariants")
     required_invariants = {
