@@ -1,0 +1,76 @@
+{
+  "schema_version": "zscope.runtime-reachability-manifest.v1",
+  "design_version": "1.0.0",
+  "audit_status": "partial_static_audit",
+  "baseline_git_commit": "17a9fc0100ea8a991bc25f3cfa76ca2dbb111ef8",
+  "baseline_git_tree": "c6dc2204da666ee3f7085894c5bce824d58c5486",
+  "baseline_worktree_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23",
+  "audit_methods": [
+    "static import and constructor search",
+    "workflow step-to-handler inspection",
+    "public CLI dispatch inspection",
+    "runtime defaults inspection",
+    "package file inventory"
+  ],
+  "classifications": [
+    {
+      "component": "validator_agent",
+      "classification": "production_reachable",
+      "evidence": ["default validation queue", "rule-driven compatibility", "alert verification"]
+    },
+    {
+      "component": "issue_reconciler_agent",
+      "classification": "production_reachable_mixed_responsibility",
+      "evidence": ["maintain reconciliation", "optional report semantic dedup"]
+    },
+    {
+      "component": "semantic_modeler/global_modeler",
+      "classification": "migration_reachable_feature_flagged",
+      "evidence": ["parallel analyzer enable_global_model path", "snapshot modeling helpers"]
+    },
+    {
+      "component": "vulnerability_analyzer",
+      "classification": "production_not_instantiated",
+      "evidence": ["class and tests exist", "no production constructor call found", "workflow name wraps deterministic candidate collection"]
+    },
+    {
+      "component": "deep_worker/subagent_orchestrator",
+      "classification": "reachable_only_from_unreachable_block",
+      "evidence": ["focused subagent planning returns before orchestration", "tests instantiate the worker"]
+    },
+    {
+      "component": "focused_subagent_planning_after_return",
+      "classification": "unreachable",
+      "evidence": ["unconditional return precedes planning implementation"]
+    },
+    {
+      "component": "c_cpp_ruledriven_mode",
+      "classification": "deprecated_public_compatibility",
+      "evidence": ["CLI warning announces removal in 2.0", "default pipeline already accepts deterministic rules"]
+    },
+    {
+      "component": "alert_verify",
+      "classification": "production_reachable_keep_and_migrate",
+      "evidence": ["public CLI mode", "SARIF adapter and report output"]
+    },
+    {
+      "component": "validator_replay_arms_A_E_and_discovery_D4",
+      "classification": "benchmark_compatibility_only",
+      "evidence": ["answer-free replay contracts", "external legacy executor boundary"]
+    }
+  ],
+  "public_entrypoints_reviewed": [
+    "CLI default/resume/maintain",
+    "CLI ruledriven",
+    "CLI alert-verify",
+    "Web scan service",
+    "MCP scan provider",
+    "Range benchmark runner"
+  ],
+  "completion_blockers": [
+    "baseline worktree is not clean",
+    "wheel inventory has not yet been built from the frozen baseline",
+    "dynamic import coverage and runtime trace have not yet been collected",
+    "frozen no-LLM replay equivalence has not yet been executed"
+  ]
+}
