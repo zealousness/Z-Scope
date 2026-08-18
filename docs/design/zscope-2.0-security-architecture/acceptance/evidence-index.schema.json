@@ -49,15 +49,28 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["evidence_uid", "phase", "kind", "status", "artifacts", "reviewed_by"],
+        "required": [
+          "evidence_uid",
+          "phase",
+          "kind",
+          "status",
+          "implementation_commit",
+          "implementation_tree",
+          "artifacts",
+          "review_status",
+          "reviewed_by",
+          "verification"
+        ],
         "properties": {
           "evidence_uid": {"type": "string", "minLength": 1},
           "phase": {"type": "string", "pattern": "^(P[0-7]|E0)$"},
           "kind": {"type": "string", "minLength": 1},
           "status": {"enum": ["planned", "collected", "passed", "failed", "superseded"]},
-          "implementation_commit": {"type": "string", "pattern": "^$|^[0-9a-f]{40}$"},
+          "implementation_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "implementation_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
           "artifacts": {
             "type": "array",
+            "minItems": 1,
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -68,7 +81,39 @@
               }
             }
           },
+          "review_status": {
+            "enum": ["pending", "partially_reviewed", "approved", "rejected"]
+          },
           "reviewed_by": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "verification": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["environment", "commands", "limitations"],
+            "properties": {
+              "environment": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": {"type": "string", "minLength": 1}
+              },
+              "commands": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["command", "status"],
+                  "properties": {
+                    "command": {"type": "string", "minLength": 1},
+                    "status": {"enum": ["passed", "failed", "not_run", "not_recorded"]}
+                  }
+                }
+              },
+              "limitations": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1}
+              }
+            }
+          },
           "notes": {"type": "string"}
         }
       }

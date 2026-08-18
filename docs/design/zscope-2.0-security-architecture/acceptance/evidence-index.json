@@ -1,7 +1,7 @@
 {
   "schema_version": "zscope.design-evidence-index.v1",
   "design_version": "1.0.0",
-  "design_status": "reviewed",
+  "design_status": "approved",
   "baseline": {
     "git_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
     "git_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
@@ -9,7 +9,7 @@
     "worktree_patch_sha256": ""
   },
   "phases": [
-    {"phase": "P0", "status": "in_progress", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
+    {"phase": "P0", "status": "complete", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
     {"phase": "P1", "status": "pending", "entry_gate": "P0 complete", "exit_gate": "dead runtime removed with frozen replay equivalence", "review_roles": ["product_architecture"]},
     {"phase": "P2", "status": "pending", "entry_gate": "P1 complete", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
     {"phase": "P3", "status": "pending", "entry_gate": "P2 contracts stable", "exit_gate": "spec blind review, user review and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
@@ -26,10 +26,11 @@
       "kind": "design_archive",
       "status": "collected",
       "implementation_commit": "7acbe3561d008971310c024349066ba9593bd652",
+      "implementation_tree": "523306581ae20e350ec9dd213a0ca71fc9e8d28f",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
-          "sha256": "2823b629dc5ee5d4fdab19d52196d0d49c5e807b015fbfd2f62c26e028787827"
+          "sha256": "a858c935f5bf2c7d01ec36b711bb273db0ef1bab8ba9ad305c992411fe948c3f"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
@@ -37,15 +38,36 @@
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/baseline-artifact-manifest.json",
-          "sha256": "5a3553e0c14a200563c0393396068c238f397895ea8aada7bf7f90e286c88c00"
+          "sha256": "0e96b854c81e299f48b4bff7e687b1f6504ebb059114c853c844179473bc3d50"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
-          "sha256": "74f62a4e58a900a641a3aa837f5f24b6e05809141108d23ed1bfa476299e2361"
+          "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4"
         }
       ],
-      "reviewed_by": [],
-      "notes": "The design-only archive commit is recorded, the previously dirty baseline has been split into domain-separated commits, and cold runtime artifacts are hash-bound. Formal reviews remain outstanding."
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
+      "verification": {
+        "environment": {
+          "execution_context": "repository design archive",
+          "runtime": "not applicable; archival change only"
+        },
+        "commands": [
+          {
+            "command": "historical archival checks; exact command line was not recorded",
+            "status": "not_recorded"
+          }
+        ],
+        "limitations": [
+          "The initial archive predates structured command and environment evidence fields.",
+          "The initial archive predates the later three-role review artifacts; those reviews are recorded separately under P0-THREE-ROLE-INDEPENDENT-REVIEWS."
+        ]
+      },
+      "notes": "The design-only archive commit is recorded, the previously dirty baseline has been split into domain-separated commits, and cold runtime artifacts are hash-bound. The final three-role review approved the common b74e6b6/aca131c4 target with no blockers."
     },
     {
       "evidence_uid": "P0-CHANGE-SCOPE-GATE",
@@ -53,6 +75,7 @@
       "kind": "governance_ci",
       "status": "passed",
       "implementation_commit": "9fa105f618b531de2d303991640c28658806b083",
+      "implementation_tree": "62527003c6e39773fe599921084be11ff8463368",
       "artifacts": [
         {
           "path": "scripts/check_zscope_2_change_scope.py",
@@ -64,11 +87,41 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "06621354146ca09b08c0e885cf09ed3b7c0ee5e33671b136b6934c79b9963c2e"
+          "sha256": "b7165aa6ec079bec7dc84badc1e05bba773585056bd03ca7b9bd38e6e1dd2fa9"
         }
       ],
-      "reviewed_by": [],
-      "notes": "Unit tests, Black, mypy and compileall passed locally. The implementation commit is bound; independent reviewer sign-off remains open."
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
+      "verification": {
+        "environment": {
+          "execution_context": "local repository validation",
+          "os_python": "not recorded in the original evidence"
+        },
+        "commands": [
+          {
+            "command": "python -m pytest -q tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m compileall -f -q zscope scripts test tests",
+            "status": "passed"
+          },
+          {"command": "python -m mypy zscope", "status": "passed"},
+          {
+            "command": "python -m black --check scripts/check_zscope_2_change_scope.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          }
+        ],
+        "limitations": [
+          "The original evidence did not record the exact OS and Python version.",
+          "The original execution record predates the final three-role sign-off; the review artifacts bind the later approval."
+        ]
+      },
+      "notes": "Unit tests, Black, mypy and compileall passed locally for the original gate. The implementation commit is bound and the final three-role review approved the P0 governance boundary."
     },
     {
       "evidence_uid": "P0-COLD-BASELINE-PREFLIGHT",
@@ -76,13 +129,37 @@
       "kind": "execution_preflight",
       "status": "passed",
       "implementation_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+      "implementation_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-execution-preflight.json",
           "sha256": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b"
         }
       ],
-      "reviewed_by": [],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
+      "verification": {
+        "environment": {
+          "host": "windows_with_wsl",
+          "linux_user": "zeal",
+          "model": "glm-5.1",
+          "toolchain": "activated documented WSL toolchain; shared libraries resolved"
+        },
+        "commands": [
+          {
+            "command": "preflight, quality and smoke commands summarized in p0-execution-preflight.json; exact shell transcript was not archived",
+            "status": "not_recorded"
+          }
+        ],
+        "limitations": [
+          "The default non-interactive WSL PATH requires explicit activation.",
+          "The evidence stores summaries and hashes rather than a full shell transcript."
+        ]
+      },
       "notes": "The documented WSL toolchain and shared libraries were verified, smoke passed without model/network use, and the explicit glm-5.1 provider identity was used without recording secrets."
     },
     {
@@ -91,6 +168,7 @@
       "kind": "cold_runtime_baseline",
       "status": "passed",
       "implementation_commit": "e3459a51efbf1223eef84213ed9f3a9ed77afcb0",
+      "implementation_tree": "f945838d5550d2c3a4ce481a3547f4e886959a7d",
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-cold-baseline-summary.json",
@@ -105,8 +183,308 @@
           "sha256": "7694a7940799954337578d5e2b565d83119a1ac07331234a30d7a813ea7f7eb7"
         }
       ],
-      "reviewed_by": [],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
+      "verification": {
+        "environment": {
+          "host": "windows_with_wsl",
+          "language": "c_cpp",
+          "model": "glm-5.1",
+          "provider": "https://open.bigmodel.cn/api/paas/v4/"
+        },
+        "commands": [
+          {
+            "command": "cold fast and balanced trial commands; exact argv is not archived in the evidence summary",
+            "status": "not_recorded"
+          }
+        ],
+        "limitations": [
+          "Only one cold trial per depth was executed.",
+          "Large answer-free artifacts are ignored locally and are available only when separately retained under benchmark-artifacts.",
+          "The trials are P0 behavior baselines, not formal or release-eligible quality results.",
+          "The baseline is approved only as P0 behavior evidence; it remains non-formal and non-release-eligible."
+        ]
+      },
       "notes": "One cold fast and one cold balanced trial completed on the same commit/tree/input/model. Usage, traces, replay bundles, scoped runtime actor observations and matcher-v2 scores are hash-bound and answer-isolated. These P0 behavior baselines are not formal or release-eligible quality results."
+    },
+    {
+      "evidence_uid": "P0-FAST-DISPOSITION-REGRESSION-REPAIR",
+      "phase": "P0",
+      "kind": "cold_regression_verification",
+      "status": "passed",
+      "implementation_commit": "abffcc65213a79e5e622b5de94184eb728380f2c",
+      "implementation_tree": "941cfd17cf5eb4f4342429e184672daf86afab22",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-fast-regression-repair.json",
+          "sha256": "77820c8d4f11d830bafc6bb536f0ff8960a3e09f516d01edc976a81ddb5f98d8"
+        },
+        {
+          "path": "benchmark-artifacts/zscope2-regression-fast-abffcc6/aggregate.json",
+          "sha256": "58c4b816cb10cb6644ea1d8bc07307c0bf32160c209795f082d8a89c9c7da54f"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
+      "verification": {
+        "environment": {
+          "host": "windows_with_wsl",
+          "language": "c_cpp",
+          "model": "glm-5.1",
+          "scan_depth": "fast"
+        },
+        "commands": [
+          {
+            "command": "cold fast regression trial command; exact argv is not archived in the evidence summary",
+            "status": "not_recorded"
+          }
+        ],
+        "limitations": [
+          "This is a single cold trial and does not establish a stability distribution.",
+          "Range is an in-distribution diagnostic and does not establish production generalization.",
+          "Large answer-free artifacts may be absent from a fresh worktree and remain hash-bound only.",
+          "The three P0 reviews are complete; all later soundness, external, formal, stability and release gates remain outstanding."
+        ]
+      },
+      "notes": "The cold fast trial recovered 48 matcher-v2 default TPs without losing any TP from the regressed run. Its deterministic contribution exactly matches the older healthy fast reference; the remaining four-reference-TP difference is confined to successful V1 uncertain outcomes with open facts and is not a candidate, scorer, projection or protocol loss. This single trial is not a stability or release result."
+    },
+    {
+      "evidence_uid": "P0-DESIGN-EVIDENCE-VALIDATION-GATE",
+      "phase": "P0",
+      "kind": "governance_ci",
+      "status": "passed",
+      "implementation_commit": "f37af3258afdb01973756c608ebd85a49dd35314",
+      "implementation_tree": "96d484d9e06e42f7f3a072811f03a28336351242",
+      "artifacts": [
+        {
+          "path": "scripts/check_zscope_2_design_evidence.py",
+          "sha256": "821ada408a86d90e713776395f54e6d2e4d3ecf2ab5d5722f77c9c20c96519f1"
+        },
+        {
+          "path": "tests/test_zscope_2_design_evidence.py",
+          "sha256": "7157e2588b5516a31a5e7a2ae8594906291393d91fa58fd936d1b34849110600"
+        },
+        {
+          "path": ".github/workflows/zscope-2-design-evidence.yml",
+          "sha256": "0a5132cfd220c0111f93854d01860ab3348a7ff3a318f9458d49850b549797db"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
+          "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
+      "verification": {
+        "environment": {
+          "host": "Microsoft Windows NT 10.0.26200.0",
+          "python": "3.10.5 from the existing repository virtual environment",
+          "git": "2.52.0.windows.1",
+          "network_and_model_use": "none"
+        },
+        "commands": [
+          {
+            "command": "python scripts/check_zscope_2_design_evidence.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m pytest -q tests/test_zscope_2_design_evidence.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m pytest -q tests/test_agent_docs.py tests/test_release_contract.py tests/test_benchmark_v4_contract.py tests/test_zscope_2_design_evidence.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {"command": "python -m pytest -q", "status": "passed"},
+          {
+            "command": "python -m compileall -f -q zscope scripts test tests",
+            "status": "passed"
+          },
+          {"command": "python -m mypy zscope", "status": "passed"},
+          {
+            "command": "python -m mypy --explicit-package-bases scripts/check_zscope_2_design_evidence.py",
+            "status": "passed"
+          },
+          {"command": "python scripts/check_benchmark_hygiene.py", "status": "passed"},
+          {
+            "command": "python scripts/check_zscope_2_change_scope.py --path <each changed path>",
+            "status": "passed"
+          },
+          {"command": "git diff --check", "status": "passed"},
+          {
+            "command": "python -m black --check scripts/check_zscope_2_design_evidence.py tests/test_zscope_2_design_evidence.py",
+            "status": "not_run"
+          },
+          {
+            "command": "python scripts/check_zscope_2_design_evidence.py --strict-external-artifacts",
+            "status": "not_run"
+          }
+        ],
+        "limitations": [
+          "The existing Windows virtual environment hangs while importing Black, including for --version; the local Black gate could not complete and remains for CI verification.",
+          "Three ignored benchmark aggregate artifacts are absent from this worktree, so strict external-artifact hash verification was not possible; the default validator reports each as an explicit limitation.",
+          "The first full pytest attempt had one Clang latency timer flake; the isolated retry passed and a complete second run passed with 1873 passed and 7 skipped.",
+          "The new CI workflow has not run remotely because this branch was not pushed.",
+          "The original gate commit predates formal review/tag closure; P0 approval is separately bound by the three review artifacts and annotated tag."
+        ]
+      },
+      "notes": "The P0 design/evidence gate now fails closed on schema drift, hash mismatch, missing repository artifacts, commit/tree mismatch, premature phase entry and false approval state. It tolerates only explicitly classified missing ignored benchmark artifacts, which remain unverified locally."
+    },
+    {
+      "evidence_uid": "P0-THREE-ROLE-INDEPENDENT-REVIEWS",
+      "phase": "P0",
+      "kind": "formal_review",
+      "status": "passed",
+      "implementation_commit": "b74e6b6e82224d487392ad7e03d794d6592a514a",
+      "implementation_tree": "aca131c453e2176944527a1bd3902c08d1bc3948",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p0-review.schema.json",
+          "sha256": "715e78ff5b96167b2f0c5c9b399a210c22a57ddbb23b001f59a8231b19003b92"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p0-product-architecture.json",
+          "sha256": "3f5041fcecd635c38f2722aaa59e8fae69addfb1fa3d0db2f53e437b08d91037"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p0-proof-security.json",
+          "sha256": "be5df762187bfc920c14144f4b8ca382280bd503558bbaae64185c8ddcade530"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p0-independent-benchmark.json",
+          "sha256": "96348ecbbd6b4c75750ecc291b1f32c5e02d67a27904599d8d4c35cefd74bfe0"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max",
+        "claude-code/claude-fable-5"
+      ],
+      "verification": {
+        "environment": {
+          "product_architecture": "Claude Code 2.1.233, claude-opus-5, read-only",
+          "proof_security": "DSH 0.1.0-rc.6, deepseek-v4-pro, reasoning_effort=max, read-only",
+          "independent_benchmark": "Claude Code 2.1.233, claude-fable-5, read-only",
+          "review_target": "b74e6b6e82224d487392ad7e03d794d6592a514a / aca131c453e2176944527a1bd3902c08d1bc3948"
+        },
+        "commands": [
+          {
+            "command": "claude --print --model claude-opus-5 < product architecture review prompt",
+            "status": "passed"
+          },
+          {
+            "command": "dsh --profile headless --patch <max read-only settings> < proof security review prompt",
+            "status": "passed"
+          },
+          {
+            "command": "claude --print --model claude-fable-5 < independent benchmark review prompt",
+            "status": "passed"
+          }
+        ],
+        "limitations": [
+          "Reviewers ran read-only and did not independently rerun the full pytest suite.",
+          "Reviewers did not read Range truth content and did not execute an external-model benchmark.",
+          "Ignored benchmark aggregates were absent and were assessed through answer-free summaries and recorded hashes.",
+          "All three approvals are limited to P0 design freeze; none asserts P2 proof soundness or release eligibility."
+        ]
+      },
+      "notes": "All three assigned roles independently approved the same commit/tree with zero blocking findings. Non-blocking recommendations remain tracked in the review artifacts and do not relax later phase gates."
+    },
+    {
+      "evidence_uid": "P0-POST-TAG-LOCAL-VALIDATION",
+      "phase": "P0",
+      "kind": "local_gate_execution",
+      "status": "passed",
+      "implementation_commit": "9c343b7da8bc1f9837f87371df9c41f61726174c",
+      "implementation_tree": "cc5ce03aead26f8c43897b631e9653b4a0907da6",
+      "artifacts": [
+        {
+          "path": "scripts/check_zscope_2_design_evidence.py",
+          "sha256": "821ada408a86d90e713776395f54e6d2e4d3ecf2ab5d5722f77c9c20c96519f1"
+        },
+        {
+          "path": "tests/test_zscope_2_design_evidence.py",
+          "sha256": "7157e2588b5516a31a5e7a2ae8594906291393d91fa58fd936d1b34849110600"
+        },
+        {
+          "path": ".github/workflows/zscope-2-design-evidence.yml",
+          "sha256": "0a5132cfd220c0111f93854d01860ab3348a7ff3a318f9458d49850b549797db"
+        }
+      ],
+      "review_status": "partially_reviewed",
+      "reviewed_by": ["codex/local-gate-execution"],
+      "verification": {
+        "environment": {
+          "host": "Microsoft Windows NT 10.0.26200.0",
+          "python": "3.10.5 from C:/Users/10273/home/work/Z-Scope/.venv/Scripts/python.exe",
+          "git": "2.52.0.windows.1",
+          "network_and_model_use": "none",
+          "approval_tag": "design-zscope-2.0-security-architecture-v1 -> 9c343b7da8bc1f9837f87371df9c41f61726174c"
+        },
+        "commands": [
+          {
+            "command": "python scripts/check_zscope_2_design_evidence.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m pytest -q tests/test_zscope_2_design_evidence.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {
+            "command": "python -m pytest -q tests/test_agent_docs.py tests/test_release_contract.py tests/test_benchmark_v4_contract.py tests/test_zscope_2_design_evidence.py tests/test_zscope_2_change_scope.py",
+            "status": "passed"
+          },
+          {"command": "python -m pytest -q", "status": "passed"},
+          {
+            "command": "python -m compileall -f -q zscope scripts test tests",
+            "status": "passed"
+          },
+          {"command": "python -m mypy zscope", "status": "passed"},
+          {
+            "command": "python -m mypy --explicit-package-bases scripts/check_zscope_2_design_evidence.py",
+            "status": "passed"
+          },
+          {"command": "python scripts/check_benchmark_hygiene.py", "status": "passed"},
+          {
+            "command": "python scripts/check_zscope_2_change_scope.py --base main --head HEAD",
+            "status": "passed"
+          },
+          {"command": "git diff --check", "status": "passed"},
+          {
+            "command": "python -m black --check scripts/check_zscope_2_design_evidence.py tests/test_zscope_2_design_evidence.py (startup hung and was terminated after more than 60 seconds)",
+            "status": "not_run"
+          },
+          {
+            "command": "python scripts/check_zscope_2_design_evidence.py --strict-external-artifacts",
+            "status": "failed"
+          },
+          {
+            "command": "remote CI workflow .github/workflows/zscope-2-design-evidence.yml",
+            "status": "not_run"
+          }
+        ],
+        "limitations": [
+          "The full local suite passed with 1876 passed and 7 skipped in 159.16 seconds; test success is recorded separately from phase approval.",
+          "The shared Windows virtual environment again hung before Black produced output, so no Black result is claimed.",
+          "Strict external-artifact validation failed exactly on the three ignored aggregate files absent from this worktree; their expected hashes remain recorded and the default validator emits three explicit warnings.",
+          "Remote CI was not run because no push or PR was authorized.",
+          "This post-tag execution was not a fourth independent design review and is therefore marked partially_reviewed."
+        ]
+      },
+      "notes": "The annotated tag, local tag/hash replay, related tests, docs/package/reachability contracts, full pytest, compileall, mypy, benchmark hygiene and change-scope gate passed without network or model use. P1, E0 and all later release gates remain pending."
     }
   ]
 }
