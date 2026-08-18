@@ -1,0 +1,74 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-038",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-038",
+    "cwe": "CWE-772",
+    "category": "memory_leak",
+    "title": "Customize OPEN control messages create global sessions without any transport cleanup path",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_customize_control_message",
+    "line": 588,
+    "end_line": 600,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_lifecycle_customize_transport_cleanup",
+    "secondary_line": 604,
+    "secondary_end_line": 607,
+    "severity": "high",
+    "subtype": "GCR-B",
+    "keywords": [
+      "OPEN",
+      "_control_session_add_to_global",
+      "customize",
+      "global container",
+      "missing cleanup"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 576,
+      "end_line": 612,
+      "content": "\nint _lifecycle_mesh_disconnect(const char* key) {\n    if (!key) {\n        return -1;\n    }\n\n    if (g_mesh_control_hooks.pfnDropSession != NULL) {\n        return g_mesh_control_hooks.pfnDropSession(key);\n    }\n    return 0;\n}\n\nint _lifecycle_customize_control_message(const char* msg, int protocol_id) {\n    if (!msg) {\n        return -1;\n    }\n\n    if (strncmp(msg, \"OPEN:\", 5) == 0) {\n        char key[64];\n        const char* owner = NULL;\n        if (_parse_key_and_owner(msg + 5, key, sizeof(key), &owner) != 0) {\n            return -1;\n        }\n        return _control_session_add_to_global(key, owner, protocol_id);\n    }\n    return 0;\n}\n\nint _lifecycle_customize_transport_cleanup(int protocol_id) {\n    LOG_INFO(\"customize cleanup for protocol %d\", protocol_id);\n    return 0;\n}\n\nint _lifecycle_register_topic_subscription(const char* topic) {\n    if (!topic) {\n        return -1;\n    }\n",
+      "sha256": "72193821d7a4525f47e2cd906a373c21c329f7217bb6750aa3d8962371455f79"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 592,
+      "end_line": 619,
+      "content": "\n    if (strncmp(msg, \"OPEN:\", 5) == 0) {\n        char key[64];\n        const char* owner = NULL;\n        if (_parse_key_and_owner(msg + 5, key, sizeof(key), &owner) != 0) {\n            return -1;\n        }\n        return _control_session_add_to_global(key, owner, protocol_id);\n    }\n    return 0;\n}\n\nint _lifecycle_customize_transport_cleanup(int protocol_id) {\n    LOG_INFO(\"customize cleanup for protocol %d\", protocol_id);\n    return 0;\n}\n\nint _lifecycle_register_topic_subscription(const char* topic) {\n    if (!topic) {\n        return -1;\n    }\n\n    TopicSubscription* sub = (TopicSubscription*)_safe_calloc(1, sizeof(TopicSubscription));\n    if (!sub) {\n        return -1;\n    }\n\n    STR_COPY(sub->topic, topic);\n",
+      "sha256": "d19edfb0b44147987b9c7b867235fa1741bbcd9a543d40a23ed885d96dfeeb79"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 40,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "b1be7073f47fea7ca3788e83a07b1770e4b896f8473310bb03d7d798708caf3e"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "memory_leak",
+    "anchor_functions": [
+      "_lifecycle_customize_control_message",
+      "_lifecycle_customize_transport_cleanup"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "52bd9f0e6d99f53e38510e349feaef74d3079fe9fbecdda3f186b30c7cae330c"
+}

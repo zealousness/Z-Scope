@@ -1,0 +1,94 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE41-007",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE41-007",
+    "cwe": "CWE-362/CWE-415",
+    "category": "dynamic_array_race",
+    "title": "Task array expansion updates a global pointer and frees the old array without synchronization",
+    "file": "src/lifecycle.c",
+    "function": "_peer_expand_task_table",
+    "line": 1781,
+    "end_line": 1803,
+    "severity": "high",
+    "tier": "real_project_issue41",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+    "source_model": "VM-007 DAE-RiskDynamicArrayExpansion",
+    "keywords": [
+      "issue-41",
+      "dynamic array",
+      "realloc",
+      "global pointer",
+      "race",
+      "double free",
+      "task creation"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_peer_create_task_from_frame",
+    "secondary_line": 1900,
+    "secondary_end_line": 1923,
+    "flow": "distributed_cs_message_flow"
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1769,
+      "end_line": 1815,
+      "content": "    g_peer_partition_count++;\n    partition->resource_id = (int)g_peer_partition_count;\n    partition->tag = _str_dup(\"cs-shm-partition\");\n\n    if (retry_mode) {\n        return -1;\n    }\n\n    tag = partition->tag;\n    int rc = tag ? (int)tag[0] : 0;\n    SAFE_FREE(partition->tag);\n    SAFE_FREE(partition);\n    return rc;\n}\n\nint _peer_expand_task_table(size_t task_index) {\n    if (task_index >= g_peer_task_array_cap) {\n        size_t new_cap = ((task_index / 16u) + 1u) * 16u;\n        PeerSessionTask** new_array = (PeerSessionTask**)_safe_calloc(\n            new_cap, sizeof(PeerSessionTask*));\n        if (!new_array) {\n            return -1;\n        }\n        if (g_peer_task_array) {\n            memcpy(new_array, g_peer_task_array,\n                   g_peer_task_array_cap * sizeof(PeerSessionTask*));\n        }\n        PeerSessionTask** old_array = g_peer_task_array;\n        g_peer_task_array = new_array;\n        g_peer_task_array_cap = new_cap;\n        SAFE_FREE(old_array);\n    }\n\n    if (g_peer_task_array) {\n        g_peer_task_array[task_index] = g_peer_session_broker.tasks;\n    }\n    return 0;\n}\n\nint _peer_select_version_window(const unsigned char* report, size_t len) {\n    if (!report || len < 2) {\n        return -1;\n    }\n\n    uint8_t version = report[0];\n    uint8_t state = report[1];\n    (void)version;\n",
+      "sha256": "94c39b885e249f3bafb55eb13d479a9222c8edfec4f035ee6e10cbe6c8f0623e"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1888,
+      "end_line": 1935,
+      "content": "        };\n        memcpy(wire, &fallback, sizeof(fallback));\n        memcpy(wire + sizeof(fallback), \"PING\", 4);\n        got = (int)(sizeof(fallback) + 4);\n    }\n\n    frame->wire_len = (size_t)got;\n    if (_peer_decode_header_window(\n            wire, frame->wire_len, frame->body, sizeof(frame->body)) < 0) {\n        return -1;\n    }\n    memcpy(&frame->header, wire, sizeof(frame->header));\n    return 0;\n}\n\nstatic PeerSessionTask* _peer_create_task_from_frame(int listen_fd,\n                                                         int work_fd,\n                                                         int peer_protocol,\n                                                         const PeerSessionFrame* frame) {\n    PeerSessionTask* task = (PeerSessionTask*)_safe_calloc(1, sizeof(PeerSessionTask));\n    if (!task || !frame) {\n        SAFE_FREE(task);\n        return NULL;\n    }\n\n    task->task_id = (int)frame->header.request_id;\n    task->listen_fd = listen_fd;\n    task->work_fd = work_fd;\n    task->encoded_fd = PEER_ENCODE_FD((unsigned int)work_fd,\n                                         PEER_FD_CHECK_VALUE);\n    task->protocol_id = peer_protocol;\n    task->auth_level = frame->header.flags & 0x3;\n    task->body_len = (size_t)frame->header.length - sizeof(PeerSessionHeader);\n    STR_COPY(task->route_key, \"cs/server/task\");\n    memcpy(task->body, frame->body, task->body_len);\n\n    _peer_expand_task_table((size_t)task->task_id);\n    return task;\n}\n\nstatic void _peer_enqueue_task(PeerSessionTask* task) {\n    if (!task) {\n        return;\n    }\n\n    LOCK(&g_peer_session_broker.lock);\n    task->next = g_peer_session_broker.tasks;\n    g_peer_session_broker.tasks = task;\n",
+      "sha256": "81820cecf4181aa9847ddbaedb2e607ba7381b273286c99c7e702bc6b30d139d"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 34,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n",
+      "sha256": "df86312d5f83caed99c8bef1bd52db936fb893947425b0c1a5a6184c033a8861"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1037,
+      "end_line": 1040,
+      "content": "#define PEER_RESOURCE_LIMIT 2\n#define PEER_FD_CHECK_VALUE 0x5a5au\n#define PEER_ENCODE_FD(index, check) \\\n    ((((index) & 0xffffu)) | (((check) & 0xffffu) << 16))\n",
+      "sha256": "80a0c370b820c4241541bff17ec73eb4cb15be9e2e01f87dd11dd3838fb03035"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "dynamic_array_race",
+    "anchor_functions": [
+      "_peer_create_task_from_frame",
+      "_peer_expand_task_table"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "597e111dd17c8ec58de21ab139606a7d905ce4fea9289a7d753aa1a1fc145d09"
+}

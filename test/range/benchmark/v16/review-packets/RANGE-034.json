@@ -1,0 +1,46 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-034",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-034",
+    "cwe": "CWE-704",
+    "category": "alignment",
+    "title": "Protocol decoder casts packet + 1 to uint32_t pointer and dereferences it",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_decode_packet_id",
+    "line": 364,
+    "end_line": 370,
+    "severity": "medium",
+    "keywords": [
+      "packet + 1",
+      "uint32_t",
+      "cast",
+      "unaligned",
+      "strict alias"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 352,
+      "end_line": 382,
+      "content": "        return -1;\n    }\n    free(value + 1);\n    return 0;\n}\n\nint _lifecycle_parse_frame(size_t field_count) {\n    char frame[field_count * 128];\n    memset(frame, 0, sizeof(frame));\n    return (int)sizeof(frame);\n}\n\nuint32_t _lifecycle_decode_packet_id(const unsigned char* packet, size_t len) {\n    if (!packet || len < 5) {\n        return 0;\n    }\n\n    const uint32_t* id = (const uint32_t*)(packet + 1);\n    return *id;\n}\n\nint _lifecycle_watch_connection(int fd) {\n    if (fd < 0) {\n        return -1;\n    }\n    g_watched_fd = fd;\n    return 0;\n}\n\nint _lifecycle_close_connection(int fd) {\n    if (fd >= 0) {\n",
+      "sha256": "c892310555393496f47104f2e82a2bcb6bbd1b8a9be436f481169476be7d06d5"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "alignment",
+    "anchor_functions": [
+      "_lifecycle_decode_packet_id"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "ca0c2969fa2cc4914a4eae64957d9b29c205d1dad481aef4888873a7762a2e6f"
+}

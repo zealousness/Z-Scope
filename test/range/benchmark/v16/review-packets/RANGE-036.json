@@ -1,0 +1,59 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-036",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-036",
+    "cwe": "CWE-416",
+    "category": "use_after_free",
+    "title": "Rules mapping is unmapped without clearing the global pointer used by later rule matching",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_unload_rules",
+    "line": 415,
+    "end_line": 418,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_lifecycle_match_rule_byte",
+    "secondary_line": 422,
+    "secondary_end_line": 428,
+    "severity": "high",
+    "keywords": [
+      "munmap",
+      "g_rules_map",
+      "g_rules_len",
+      "use-after-free",
+      "mmap"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 403,
+      "end_line": 430,
+      "content": "    }\n\n    g_rules_map = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);\n    close(fd);\n    if (g_rules_map == MAP_FAILED) {\n        g_rules_map = NULL;\n        return -1;\n    }\n    g_rules_len = len;\n    return 0;\n}\n\nint _lifecycle_unload_rules(void) {\n    if (g_rules_map && g_rules_len > 0) {\n        munmap(g_rules_map, g_rules_len);\n    }\n    return 0;\n}\n\nint _lifecycle_match_rule_byte(size_t offset) {\n    if (!g_rules_map || offset >= g_rules_len) {\n        return -1;\n    }\n\n    const unsigned char* rules = (const unsigned char*)g_rules_map;\n    return rules[offset] == 0x42;\n}\n\n",
+      "sha256": "edeecd6bbe6c943c6eec48bb9df7fe6750cd4265b403133666b7664aca1a2c7c"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 410,
+      "end_line": 440,
+      "content": "    }\n    g_rules_len = len;\n    return 0;\n}\n\nint _lifecycle_unload_rules(void) {\n    if (g_rules_map && g_rules_len > 0) {\n        munmap(g_rules_map, g_rules_len);\n    }\n    return 0;\n}\n\nint _lifecycle_match_rule_byte(size_t offset) {\n    if (!g_rules_map || offset >= g_rules_len) {\n        return -1;\n    }\n\n    const unsigned char* rules = (const unsigned char*)g_rules_map;\n    return rules[offset] == 0x42;\n}\n\ntypedef struct ControlSession {\n    char key[64];\n    char* owner;\n    int transport_id;\n    pthread_mutex_t guard;\n    struct ControlSession* next;\n} ControlSession;\n\ntypedef int (*control_session_add_fn)(const char* key, const char* owner, int transport_id);\ntypedef int (*control_session_drop_fn)(const char* key);\n",
+      "sha256": "0abc28655e0598405dad2120657beede2f4534d85962470dc777ab6f4f82f0bf"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "use_after_free",
+    "anchor_functions": [
+      "_lifecycle_match_rule_byte",
+      "_lifecycle_unload_rules"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "78eb516670509f680ad9d21f2f9e98f9609f4952d8ee2b410d8a2ff4d1776292"
+}

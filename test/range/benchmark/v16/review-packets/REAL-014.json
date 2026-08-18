@@ -1,0 +1,94 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-014",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-014",
+    "cwe": "CWE-20",
+    "category": "bounds",
+    "title": "Offline parser lets an unchecked record count reach a copy sink before validating the 64-bit magic value",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_read_control_magic",
+    "line": 1375,
+    "end_line": 1384,
+    "severity": "high",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-014B",
+    "keywords": [
+      "issue-40",
+      "VM-014",
+      "magic",
+      "64-bit",
+      "parser",
+      "count",
+      "unchecked count",
+      "count before magic",
+      "memcpy",
+      "preview",
+      "validation",
+      "td_handle_protocol_message",
+      "_runtime_process_protocol_task",
+      "protocol dispatch"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_service_decode_protocol_header",
+    "secondary_line": 1602,
+    "secondary_end_line": 1621,
+    "flow": "real_protocol_message_flow"
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1363,
+      "end_line": 1396,
+      "content": "                                        unsigned char* out, size_t out_len) {\n    if (!packet || !out || packet_len < 4) {\n        return -1;\n    }\n    uint32_t units = packet[0];\n    size_t copy_len = (size_t)(units * 8);\n    if (copy_len <= out_len) {\n        memcpy(out, packet + 4, copy_len);\n    }\n    return (int)copy_len;\n}\n\nuint64_t _runtime_read_control_magic(const unsigned char* blob, size_t len) {\n    if (!blob || len < 16) {\n        return 0;\n    }\n    uint64_t count = 0;\n    memcpy(&count, blob + 8, sizeof(count));\n    unsigned char preview[16];\n    unsigned char seed[16] = {0};\n    memcpy(preview, seed, (size_t)count);\n    return count;\n}\n\nint _runtime_unload_resource_table(const char* key, int unload_now) {\n    ServiceNode* table = _service_alloc_node(key, \"table\");\n    if (!table) {\n        return -1;\n    }\n    table->children = _service_alloc_child(\"bucket\", 3);\n    if (unload_now) {\n        SAFE_FREE(table);\n        return 0;\n    }\n",
+      "sha256": "c591621906f9803eda7f684cb58b473e9324cd90cf8203cdae4920bc7eded977"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1590,
+      "end_line": 1633,
+      "content": "    if (want > sizeof(frame->payload)) {\n        want = sizeof(frame->payload);\n    }\n\n    int received = _net_recv_data(fd, frame->payload, want);\n    if (received < 0) {\n        return received;\n    }\n    frame->payload_len = (size_t)received;\n    return 0;\n}\n\nstatic int _service_decode_protocol_header(ServiceProtocolFrame* frame,\n                                              const char* fallback_key) {\n    if (!frame) {\n        return -1;\n    }\n\n    uint64_t declared_count = _runtime_read_control_magic(\n        frame->header, frame->header_len);\n    uint32_t packet_id = _runtime_message_header_probe(\n        frame->header, frame->header_len);\n    frame->session_id = (uint32_t)(declared_count ^ packet_id);\n\n    if (fallback_key && fallback_key[0]) {\n        STR_COPY(frame->route_key, fallback_key);\n    } else {\n        snprintf(frame->route_key, sizeof(frame->route_key), \"route-%u\",\n                 frame->session_id);\n    }\n    return 0;\n}\n\nstatic int _service_dispatch_protocol_message(ServiceProtocolFrame* frame,\n                                                 unsigned char* out,\n                                                 size_t out_len) {\n    if (!frame || !out || out_len == 0) {\n        return -1;\n    }\n\n    switch (frame->msg_type) {\n        case SERVICE_PROTOCOL_MSG_TLS_PROBE:\n            return _runtime_read_tls_record(frame->fd,\n                                                    frame->ssl_accept_times);\n",
+      "sha256": "dd829fbdf4598b71abdcc91e77d8b6047046a15f5c1a14a30f83e5254a2ceabc"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1008,
+      "end_line": 1010,
+      "content": "#define SERVICE_PROTOCOL_MSG_DATA 1\n#define SERVICE_PROTOCOL_MSG_TLS_PROBE 2\n#define SERVICE_PROTOCOL_MSG_POLICY 3\n",
+      "sha256": "e50f79e8b442903a3cbefa6bc2a66a6e3c5e09907c30f65831b69eaa7cf16eaf"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "bounds",
+    "anchor_functions": [
+      "_runtime_read_control_magic",
+      "_service_decode_protocol_header"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "a72f78aa03629d0732cde32230f49f2b9d649fa3bf729f6a0b8ef858237554b3"
+}

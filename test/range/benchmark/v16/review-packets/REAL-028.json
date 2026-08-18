@@ -1,0 +1,88 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-028",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-028",
+    "cwe": "CWE-195",
+    "category": "signed_unsigned",
+    "title": "Negative receive result is cast to size_t and used as a memcpy length",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_receive_record_payload",
+    "line": 1528,
+    "end_line": 1537,
+    "severity": "critical",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-SIGNED",
+    "keywords": [
+      "issue-40",
+      "negative",
+      "size_t",
+      "memcpy",
+      "signed unsigned",
+      "td_handle_protocol_message",
+      "_runtime_process_protocol_task",
+      "protocol dispatch"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_service_dispatch_protocol_message",
+    "secondary_line": 1612,
+    "secondary_end_line": 1637,
+    "flow": "real_protocol_message_flow"
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1516,
+      "end_line": 1549,
+      "content": "\nint _runtime_submit_background_work(const char* path) {\n    ServiceAsyncJob job;\n    memset(&job, 0, sizeof(job));\n    STR_COPY(job.path, path ? path : \"real\");\n    job.node = g_service_callback_node;\n    pthread_t tid;\n    if (pthread_create(&tid, NULL, _service_async_worker, &job) != 0) {\n        return -1;\n    }\n    pthread_detach(tid);\n    return 0;\n}\n\nint _runtime_resize_message_buffer(size_t count) {\n    g_service_metrics = (size_t*)_safe_realloc(g_service_metrics, count * sizeof(size_t));\n    if (!g_service_metrics) {\n        return -1;\n    }\n    g_service_metrics[0] = count;\n    return 0;\n}\n\nint _runtime_receive_record_payload(int fd, unsigned char* dst, size_t dst_len) {\n    unsigned char temp[128];\n    int rc = _net_recv_data(fd, temp, sizeof(temp));\n    size_t copy_len = (size_t)rc;\n    if (copy_len > dst_len) {\n        LOG_WARN(\"service packet shorter than requested\");\n    }\n    memcpy(dst, temp, copy_len);\n    return rc;\n}\n\n",
+      "sha256": "dcc3a0477bac7c9afae0eb0cfce11c06e2c8f5992fe72368199a4a3213110092"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1600,
+      "end_line": 1649,
+      "content": "}\n\nstatic int _service_decode_protocol_header(ServiceProtocolFrame* frame,\n                                              const char* fallback_key) {\n    if (!frame) {\n        return -1;\n    }\n\n    uint64_t declared_count = _runtime_read_control_magic(\n        frame->header, frame->header_len);\n    uint32_t packet_id = _runtime_message_header_probe(\n        frame->header, frame->header_len);\n    frame->session_id = (uint32_t)(declared_count ^ packet_id);\n\n    if (fallback_key && fallback_key[0]) {\n        STR_COPY(frame->route_key, fallback_key);\n    } else {\n        snprintf(frame->route_key, sizeof(frame->route_key), \"route-%u\",\n                 frame->session_id);\n    }\n    return 0;\n}\n\nstatic int _service_dispatch_protocol_message(ServiceProtocolFrame* frame,\n                                                 unsigned char* out,\n                                                 size_t out_len) {\n    if (!frame || !out || out_len == 0) {\n        return -1;\n    }\n\n    switch (frame->msg_type) {\n        case SERVICE_PROTOCOL_MSG_TLS_PROBE:\n            return _runtime_read_tls_record(frame->fd,\n                                                    frame->ssl_accept_times);\n        case SERVICE_PROTOCOL_MSG_POLICY:\n            _runtime_route_by_partition_key(frame->route_key,\n                                             (int)frame->session_id);\n            return _runtime_release_channel_role(frame->route_key,\n                                                      frame->role);\n        case SERVICE_PROTOCOL_MSG_CLOSE:\n            return _runtime_reopen_cached_descriptor(frame->fd, out, out_len);\n        case SERVICE_PROTOCOL_MSG_SIGNED_BODY:\n            return _runtime_receive_record_payload(frame->fd, out, out_len);\n        case SERVICE_PROTOCOL_MSG_DATA:\n        default:\n            return _runtime_protocol_frame_length(\n                frame->payload, frame->payload_len, out, out_len);\n    }\n}\n\n",
+      "sha256": "1e44d3425f003019232abbc90eeedce68ec518a77555de2c1b9db8b5648cd2f9"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 39,
+      "end_line": 41,
+      "content": "#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "5851042e63bb78bdc1160069d6474e10596ca676d1f7b9cd9943265940cb82a7"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1007,
+      "end_line": 1013,
+      "content": "#define SERVICE_PROTOCOL_PAYLOAD_CAP 512\n#define SERVICE_PROTOCOL_MSG_DATA 1\n#define SERVICE_PROTOCOL_MSG_TLS_PROBE 2\n#define SERVICE_PROTOCOL_MSG_POLICY 3\n#define SERVICE_PROTOCOL_MSG_CLOSE 4\n#define SERVICE_PROTOCOL_MSG_SIGNED_BODY 5\n\n",
+      "sha256": "010745650363dfef547801b25d46a32902f257cd26f1ce2a95758d8bd7cf4eac"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "signed_unsigned",
+    "anchor_functions": [
+      "_runtime_receive_record_payload",
+      "_service_dispatch_protocol_message"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "470080d52e1b1c928c2353677a6defaa2dbcaddd1d11ec6917a2068867aa34b2"
+}

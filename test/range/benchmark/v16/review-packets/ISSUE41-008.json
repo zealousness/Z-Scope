@@ -1,0 +1,86 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE41-008",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE41-008",
+    "cwe": "CWE-20",
+    "category": "version_filtering",
+    "title": "High-version subscriber processes low-version state reports without filtering version zero",
+    "file": "src/lifecycle.c",
+    "function": "_peer_select_version_window",
+    "line": 1805,
+    "end_line": 1817,
+    "severity": "high",
+    "tier": "real_project_issue41",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+    "source_model": "VM-008 VIC-MissingVersionFiltering",
+    "keywords": [
+      "issue-41",
+      "version",
+      "version zero",
+      "low version",
+      "state report",
+      "missing filter",
+      "_peer_dispatch_task"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_peer_dispatch_task",
+    "secondary_line": 1937,
+    "secondary_end_line": 1962,
+    "flow": "distributed_cs_message_flow"
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1793,
+      "end_line": 1829,
+      "content": "            memcpy(new_array, g_peer_task_array,\n                   g_peer_task_array_cap * sizeof(PeerSessionTask*));\n        }\n        PeerSessionTask** old_array = g_peer_task_array;\n        g_peer_task_array = new_array;\n        g_peer_task_array_cap = new_cap;\n        SAFE_FREE(old_array);\n    }\n\n    if (g_peer_task_array) {\n        g_peer_task_array[task_index] = g_peer_session_broker.tasks;\n    }\n    return 0;\n}\n\nint _peer_select_version_window(const unsigned char* report, size_t len) {\n    if (!report || len < 2) {\n        return -1;\n    }\n\n    uint8_t version = report[0];\n    uint8_t state = report[1];\n    (void)version;\n    if (state == TASK_STATUS_FAILED) {\n        return -1;\n    }\n    return 0;\n}\n\nint _peer_publish_shared_session(int resource_id, int close_now) {\n    LOCK(&g_peer_session_broker.lock);\n    PeerSessionResource* res = _peer_find_resource(resource_id);\n    if (!res) {\n        res = (PeerSessionResource*)_safe_calloc(1, sizeof(PeerSessionResource));\n        if (!res) {\n            UNLOCK(&g_peer_session_broker.lock);\n            return -1;\n",
+      "sha256": "a0b2cc56be989c886bfbdf4f7fcfb0656d123343c4530cdb2150994649e47c32"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1925,
+      "end_line": 1974,
+      "content": "    return task;\n}\n\nstatic void _peer_enqueue_task(PeerSessionTask* task) {\n    if (!task) {\n        return;\n    }\n\n    LOCK(&g_peer_session_broker.lock);\n    task->next = g_peer_session_broker.tasks;\n    g_peer_session_broker.tasks = task;\n    g_peer_session_broker.count++;\n    UNLOCK(&g_peer_session_broker.lock);\n}\n\nstatic int _peer_dispatch_task(PeerSessionTask* task, unsigned char* out,\n                                     size_t out_len) {\n    if (!task) {\n        return -1;\n    }\n\n    switch (task->protocol_id) {\n        case PEER_PROTOCOL_MESH:\n            _peer_route_protocol_context(task->protocol_id, task->auth_level);\n            return _peer_prepare_label_cache(PEER_SPEC_MAX_ELEMENTS);\n        case PEER_PROTOCOL_RPC:\n            _peer_select_version_window(task->body, task->body_len);\n            if (_peer_bridge_descriptor(task->encoded_fd) != 0) {\n                return -1;\n            }\n            _peer_export_descriptor_token(task->listen_fd, task->work_fd);\n            if (out && out_len > 0) {\n                out[0] = task->body[0];\n            }\n            return _peer_publish_shared_session(task->task_id, 1);\n        default:\n            _peer_prepare_retry_context(1);\n            return _peer_send_control_reply(task->work_fd, task->body,\n                                                task->body_len);\n    }\n}\n\nint _peer_process_session_message(int listen_fd, int work_fd, int peer_protocol,\n                                unsigned char* out, size_t out_len) {\n    unsigned char scratch[128];\n    PeerSessionFrame frame;\n    unsigned char* response = out ? out : scratch;\n    size_t response_len = out ? out_len : sizeof(scratch);\n\n    if (_peer_receive_frame(work_fd, &frame) != 0) {\n",
+      "sha256": "6177353394332dcc0fd137f8e9687000079d5b86d433596902a513dabc05b0be"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1031,
+      "end_line": 1036,
+      "content": "#define PEER_LABEL_CACHE_LIMIT (16u * 1024u)\n#define PEER_SPEC_MAX_ELEMENTS 500u\n#define PEER_ELEMENT_INFO_SIZE 48u\n#define PEER_PROTOCOL_MESH 1\n#define PEER_PROTOCOL_RPC 2\n#define PEER_AUTH_STRICT 2\n",
+      "sha256": "8f2aeca0acc745ee98ce705615a2a2e53e7e521b58b20a33ee6442ce489f12d2"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "version_filtering",
+    "anchor_functions": [
+      "_peer_dispatch_task",
+      "_peer_select_version_window"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "8099019fbcb71121607e8a4d870dda0ebdad8dba519f64b0583f8fa5f8d52751"
+}

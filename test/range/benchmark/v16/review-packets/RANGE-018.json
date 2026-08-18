@@ -1,0 +1,67 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-018",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-018",
+    "cwe": "CWE-476",
+    "category": "null_pointer_dereference",
+    "title": "Control message parser dereferences strchr result without checking for ':'",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_parse_control_message",
+    "line": 95,
+    "end_line": 104,
+    "severity": "high",
+    "keywords": [
+      "strchr",
+      "sep",
+      "NULL",
+      "sep[1]",
+      "control message"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 83,
+      "end_line": 116,
+      "content": "    }\n    g_lifecycle.entries = NULL;\n    UNLOCK(&g_lifecycle.lock);\n    SAFE_FREE(g_metrics);\n    return 0;\n}\n\nchar* _lifecycle_parse_control_message(const char* msg) {\n    if (!msg) {\n        return NULL;\n    }\n\n    const char* sep = strchr(msg, ':');\n    size_t key_len = (size_t)(sep - msg);\n    char* key = (char*)_safe_malloc(key_len + 1);\n    if (!key) {\n        return NULL;\n    }\n\n    memcpy(key, msg, key_len);\n    key[key_len] = '\\0';\n    LOG_INFO(\"control payload starts with %c\", sep[1]);\n    return key;\n}\n\nint _lifecycle_add_entry(const char* key, const char* value) {\n    if (!key || !value) {\n        return -1;\n    }\n\n    LifecycleEntry* entry = (LifecycleEntry*)_safe_calloc(1, sizeof(LifecycleEntry));\n    if (!entry) {\n        return -1;\n    }\n",
+      "sha256": "6e42604719fa7270c787af749412baf548d0c73b7c0e52aba4c544ea44c1b188"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 33,
+      "end_line": 35,
+      "content": "#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "b42cc9e4df95491ad9f3bc0f2b23aed84b518e0755e08a3b9629f80035117f6e"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 40,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "b1be7073f47fea7ca3788e83a07b1770e4b896f8473310bb03d7d798708caf3e"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "null_pointer_dereference",
+    "anchor_functions": [
+      "_lifecycle_parse_control_message"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "8debc3e286e7da487f3ae9f26d0b501c393d2a369f4eb3073080631b06b83940"
+}

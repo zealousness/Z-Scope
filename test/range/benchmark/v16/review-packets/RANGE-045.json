@@ -1,0 +1,103 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-045",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-045",
+    "cwe": "CWE-772",
+    "category": "memory_leak",
+    "title": "Deleting an OS node frees the primary list node without walking and releasing its ProcNode child list",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_delete_os_node",
+    "line": 825,
+    "end_line": 839,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_lifecycle_attach_proc_node",
+    "secondary_line": 794,
+    "secondary_end_line": 820,
+    "severity": "high",
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_update_os_policy",
+        "line": 420,
+        "end_line": 428
+      }
+    ],
+    "keywords": [
+      "OSNode",
+      "ProcNode",
+      "proc_head",
+      "SAFE_FREE(os)",
+      "child list leak"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 813,
+      "end_line": 851,
+      "content": "    if (!os) {\n        UNLOCK(&g_os_lock);\n        SAFE_FREE(proc->proc_name);\n        SAFE_FREE(proc);\n        return -1;\n    }\n    proc->next = os->proc_head;\n    os->proc_head = proc;\n    UNLOCK(&g_os_lock);\n    return 0;\n}\n\nint _lifecycle_delete_os_node(const char* os_name) {\n    if (!os_name) {\n        return -1;\n    }\n\n    LOCK(&g_os_lock);\n    OSNode** cursor = &g_os_nodes;\n    while (*cursor) {\n        OSNode* os = *cursor;\n        if (strcmp(os->os_name, os_name) == 0) {\n            *cursor = os->next;\n            UNLOCK(&g_os_lock);\n            SAFE_FREE(os);\n            return 0;\n        }\n        cursor = &os->next;\n    }\n    UNLOCK(&g_os_lock);\n    return -1;\n}\n\n#define POLICY_AVL_KEY_LIMIT 128\n\ntypedef struct PolicyAvlNode {\n    char key[POLICY_AVL_KEY_LIMIT];\n    int policy_id;\n    struct PolicyAvlNode* left;\n",
+      "sha256": "f8c6534694351133c231581447fe681e739a65c1fa58f099c0a5daf961c42ced"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 782,
+      "end_line": 832,
+      "content": "    if (!os) {\n        return -1;\n    }\n\n    STR_COPY(os->os_name, os_name);\n    LOCK(&g_os_lock);\n    os->next = g_os_nodes;\n    g_os_nodes = os;\n    UNLOCK(&g_os_lock);\n    return 0;\n}\n\nint _lifecycle_attach_proc_node(const char* os_name, int pid, const char* proc_name) {\n    if (!os_name || !proc_name) {\n        return -1;\n    }\n\n    ProcNode* proc = (ProcNode*)_safe_calloc(1, sizeof(ProcNode));\n    if (!proc) {\n        return -1;\n    }\n\n    proc->pid = pid;\n    proc->proc_name = _str_dup(proc_name);\n    if (!proc->proc_name) {\n        SAFE_FREE(proc);\n        return -1;\n    }\n\n    LOCK(&g_os_lock);\n    OSNode* os = _find_os_node_locked(os_name);\n    if (!os) {\n        UNLOCK(&g_os_lock);\n        SAFE_FREE(proc->proc_name);\n        SAFE_FREE(proc);\n        return -1;\n    }\n    proc->next = os->proc_head;\n    os->proc_head = proc;\n    UNLOCK(&g_os_lock);\n    return 0;\n}\n\nint _lifecycle_delete_os_node(const char* os_name) {\n    if (!os_name) {\n        return -1;\n    }\n\n    LOCK(&g_os_lock);\n    OSNode** cursor = &g_os_nodes;\n    while (*cursor) {\n",
+      "sha256": "431f220f1f4f4b02d8cbd59df9c861f9ca21ab54f15dcd6603c5ed9573a2a2d0"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 408,
+      "end_line": 440,
+      "content": "}\n\nint td_handle_protocol_message(int fd, const char* fallback_key,\n                                    unsigned char* out, size_t out_size) {\n    return _runtime_process_protocol_task(fd, fallback_key, out, out_size);\n}\n\nint td_handle_distributed_cs_message(int listen_fd, int work_fd, int peer_protocol,\n                                     unsigned char* out, size_t out_size) {\n    return _peer_process_session_message(listen_fd, work_fd, peer_protocol,\n                                       out, out_size);\n}\n\nint td_update_os_policy(const char* os_name, int pid, const char* proc_name,\n                        const char* policy_key, int route_key, uint32_t delta) {\n    _lifecycle_register_os_node(os_name);\n    _lifecycle_attach_proc_node(os_name, pid, proc_name);\n    _lifecycle_delete_os_node(os_name);\n    _lifecycle_avl_policy_upsert(policy_key, pid);\n    _lifecycle_avl_register_route(route_key, 1);\n    _lifecycle_avl_walk_duplicate_routes(16);\n    _lifecycle_update_counter_slot(delta);\n    return 0;\n}\n\ntypedef struct TdRangeWorkerArgs {\n    int fd;\n    int listen_fd;\n    int work_fd;\n    int peer_protocol;\n    char key[64];\n    unsigned char report[128];\n    size_t report_len;\n",
+      "sha256": "f90220e76adf1c2b6d5f9065c607ad94cce4148925c882c643c372ecabcfe7aa"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 845,
+      "end_line": 847,
+      "content": "\n#define POLICY_AVL_KEY_LIMIT 128\n\n",
+      "sha256": "4f0e6f67c4525f3abb90526a45d2f07240ec8e24fbb1dbacfeec60c1eed93d15"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "memory_leak",
+    "anchor_functions": [
+      "_lifecycle_attach_proc_node",
+      "_lifecycle_delete_os_node",
+      "td_update_os_policy"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "08233cae7d724f0a9e60f07b2bc34b8052dc648fdd37015f6a2125a348b1628e"
+}

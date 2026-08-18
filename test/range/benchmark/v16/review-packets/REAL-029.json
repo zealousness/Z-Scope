@@ -1,0 +1,88 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-029",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-029",
+    "cwe": "CWE-672",
+    "category": "stale_fd",
+    "title": "Closed descriptor remains globally watched and is reused for later receive dispatch",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_reopen_cached_descriptor",
+    "line": 1550,
+    "end_line": 1553,
+    "severity": "high",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-FD",
+    "keywords": [
+      "issue-40",
+      "close",
+      "stale fd",
+      "watched fd",
+      "recv",
+      "td_handle_protocol_message",
+      "_runtime_process_protocol_task",
+      "protocol dispatch"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_service_dispatch_protocol_message",
+    "secondary_line": 1612,
+    "secondary_end_line": 1637,
+    "flow": "real_protocol_message_flow"
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1538,
+      "end_line": 1565,
+      "content": "\nint _runtime_receive_record_payload(int fd, unsigned char* dst, size_t dst_len) {\n    unsigned char temp[128];\n    int rc = _net_recv_data(fd, temp, sizeof(temp));\n    size_t copy_len = (size_t)rc;\n    if (copy_len > dst_len) {\n        LOG_WARN(\"service packet shorter than requested\");\n    }\n    memcpy(dst, temp, copy_len);\n    return rc;\n}\n\nint _runtime_reopen_cached_descriptor(int fd, unsigned char* dst, size_t dst_len) {\n    g_service_watched_fd = fd;\n    close(fd);\n    return _net_recv_data(g_service_watched_fd, dst, dst_len);\n}\n\nint _runtime_route_by_partition_key(const char* route_key, int policy_id) {\n    ServiceNode* existing = _service_find_locked(route_key);\n    if (existing) {\n        existing->state = policy_id;\n        return 0;\n    }\n    ServiceNode* node = _service_alloc_node(route_key, \"policy\");\n    if (!node) {\n        return -1;\n    }\n",
+      "sha256": "c3f971f7668c4d3f6caafe50be2f5fd7976af9f3be6fe5ec9b835e4b5dd8a1f3"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1600,
+      "end_line": 1649,
+      "content": "}\n\nstatic int _service_decode_protocol_header(ServiceProtocolFrame* frame,\n                                              const char* fallback_key) {\n    if (!frame) {\n        return -1;\n    }\n\n    uint64_t declared_count = _runtime_read_control_magic(\n        frame->header, frame->header_len);\n    uint32_t packet_id = _runtime_message_header_probe(\n        frame->header, frame->header_len);\n    frame->session_id = (uint32_t)(declared_count ^ packet_id);\n\n    if (fallback_key && fallback_key[0]) {\n        STR_COPY(frame->route_key, fallback_key);\n    } else {\n        snprintf(frame->route_key, sizeof(frame->route_key), \"route-%u\",\n                 frame->session_id);\n    }\n    return 0;\n}\n\nstatic int _service_dispatch_protocol_message(ServiceProtocolFrame* frame,\n                                                 unsigned char* out,\n                                                 size_t out_len) {\n    if (!frame || !out || out_len == 0) {\n        return -1;\n    }\n\n    switch (frame->msg_type) {\n        case SERVICE_PROTOCOL_MSG_TLS_PROBE:\n            return _runtime_read_tls_record(frame->fd,\n                                                    frame->ssl_accept_times);\n        case SERVICE_PROTOCOL_MSG_POLICY:\n            _runtime_route_by_partition_key(frame->route_key,\n                                             (int)frame->session_id);\n            return _runtime_release_channel_role(frame->route_key,\n                                                      frame->role);\n        case SERVICE_PROTOCOL_MSG_CLOSE:\n            return _runtime_reopen_cached_descriptor(frame->fd, out, out_len);\n        case SERVICE_PROTOCOL_MSG_SIGNED_BODY:\n            return _runtime_receive_record_payload(frame->fd, out, out_len);\n        case SERVICE_PROTOCOL_MSG_DATA:\n        default:\n            return _runtime_protocol_frame_length(\n                frame->payload, frame->payload_len, out, out_len);\n    }\n}\n\n",
+      "sha256": "1e44d3425f003019232abbc90eeedce68ec518a77555de2c1b9db8b5648cd2f9"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 39,
+      "end_line": 41,
+      "content": "#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "5851042e63bb78bdc1160069d6474e10596ca676d1f7b9cd9943265940cb82a7"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1007,
+      "end_line": 1013,
+      "content": "#define SERVICE_PROTOCOL_PAYLOAD_CAP 512\n#define SERVICE_PROTOCOL_MSG_DATA 1\n#define SERVICE_PROTOCOL_MSG_TLS_PROBE 2\n#define SERVICE_PROTOCOL_MSG_POLICY 3\n#define SERVICE_PROTOCOL_MSG_CLOSE 4\n#define SERVICE_PROTOCOL_MSG_SIGNED_BODY 5\n\n",
+      "sha256": "010745650363dfef547801b25d46a32902f257cd26f1ce2a95758d8bd7cf4eac"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "stale_fd",
+    "anchor_functions": [
+      "_runtime_reopen_cached_descriptor",
+      "_service_dispatch_protocol_message"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "d1428b2626af116cc1fc911119d6bb23a1075c5181fe4a9a62b504fbc4bad758"
+}

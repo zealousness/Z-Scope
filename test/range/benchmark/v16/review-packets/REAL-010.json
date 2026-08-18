@@ -1,0 +1,88 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-010",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-010",
+    "cwe": "CWE-704",
+    "category": "alignment",
+    "title": "Message decoder casts an unaligned packet offset to uint32_t after only a two-byte length check",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_message_header_probe",
+    "line": 1325,
+    "end_line": 1331,
+    "severity": "high",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-010",
+    "keywords": [
+      "issue-40",
+      "VM-010",
+      "alignment",
+      "packet + 1",
+      "uint32_t",
+      "overread",
+      "td_handle_protocol_message",
+      "_runtime_process_protocol_task",
+      "protocol dispatch"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_service_decode_protocol_header",
+    "secondary_line": 1591,
+    "secondary_end_line": 1610,
+    "flow": "real_protocol_message_flow"
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1313,
+      "end_line": 1343,
+      "content": "    SAFE_FREE(log_copy);\n    return 0;\n}\n\nint _runtime_publish_init_sequence(const char* key, const char* value) {\n    ServiceNode* node = (ServiceNode*)_safe_calloc(1, sizeof(ServiceNode));\n    if (!node) {\n        return -1;\n    }\n    STR_COPY(node->key, key ? key : \"init\");\n\n    LOCK(&g_service_registry.lock);\n    _service_insert_locked(node);\n    UNLOCK(&g_service_registry.lock);\n\n    node->payload = _str_dup(value ? value : \"late\");\n    pthread_mutex_init(&node->mutex, NULL);\n    return 0;\n}\n\nuint32_t _runtime_message_header_probe(const unsigned char* packet, size_t len) {\n    if (!packet || len < 2) {\n        return 0;\n    }\n    const uint32_t* value = (const uint32_t*)(packet + 1);\n    return *value;\n}\n\nint _runtime_unload_patch_member(const char* key) {\n    ServiceNode* root = _service_alloc_node(key, \"patch\");\n    if (!root) {\n",
+      "sha256": "edc16629e4d713e6f08abc11437408bc2a3a06075428d7ccd2401ac1d34e298f"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1579,
+      "end_line": 1622,
+      "content": "\n    if (_runtime_read_peer_record(fd, frame->header, frame->header_len) != 0) {\n        return -1;\n    }\n\n    frame->msg_type = frame->header[0];\n    frame->role = frame->header[1];\n    frame->ssl_accept_times = frame->header[2];\n    frame->declared_payload_len = (size_t)frame->header[3] * 8u;\n\n    size_t want = frame->declared_payload_len;\n    if (want > sizeof(frame->payload)) {\n        want = sizeof(frame->payload);\n    }\n\n    int received = _net_recv_data(fd, frame->payload, want);\n    if (received < 0) {\n        return received;\n    }\n    frame->payload_len = (size_t)received;\n    return 0;\n}\n\nstatic int _service_decode_protocol_header(ServiceProtocolFrame* frame,\n                                              const char* fallback_key) {\n    if (!frame) {\n        return -1;\n    }\n\n    uint64_t declared_count = _runtime_read_control_magic(\n        frame->header, frame->header_len);\n    uint32_t packet_id = _runtime_message_header_probe(\n        frame->header, frame->header_len);\n    frame->session_id = (uint32_t)(declared_count ^ packet_id);\n\n    if (fallback_key && fallback_key[0]) {\n        STR_COPY(frame->route_key, fallback_key);\n    } else {\n        snprintf(frame->route_key, sizeof(frame->route_key), \"route-%u\",\n                 frame->session_id);\n    }\n    return 0;\n}\n\n",
+      "sha256": "843264eb0bda668807c2602650a1964f961485f732524db62bff189a64614eac"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "alignment",
+    "anchor_functions": [
+      "_runtime_message_header_probe",
+      "_service_decode_protocol_header"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "107291f6419dbaa6650c66eb5209682d20f32d06e24d8f75ab8ed8b56f73d99a"
+}

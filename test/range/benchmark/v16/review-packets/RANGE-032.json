@@ -1,0 +1,70 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-032",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-032",
+    "cwe": "CWE-590",
+    "category": "invalid_free",
+    "title": "Config value slice frees a pointer into the middle of the caller buffer",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_release_value_slice",
+    "line": 350,
+    "end_line": 354,
+    "severity": "high",
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_format_and_parse_frame",
+        "line": 371,
+        "end_line": 371
+      }
+    ],
+    "keywords": [
+      "strchr",
+      "free",
+      "value + 1",
+      "invalid free",
+      "non-heap"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 338,
+      "end_line": 366,
+      "content": "int _lifecycle_send_status(int fd) {\n    StatusReply reply;\n    reply.code = 200;\n    reply.task_count = (uint32_t)g_lifecycle.pending_jobs;\n    return _net_send_data(fd, &reply, sizeof(reply));\n}\n\nint _lifecycle_release_value_slice(char* line) {\n    if (!line) {\n        return -1;\n    }\n\n    char* value = strchr(line, '=');\n    if (!value) {\n        return -1;\n    }\n    free(value + 1);\n    return 0;\n}\n\nint _lifecycle_parse_frame(size_t field_count) {\n    char frame[field_count * 128];\n    memset(frame, 0, sizeof(frame));\n    return (int)sizeof(frame);\n}\n\nuint32_t _lifecycle_decode_packet_id(const unsigned char* packet, size_t len) {\n    if (!packet || len < 5) {\n        return 0;\n",
+      "sha256": "a1a0f750024955ce2d2a8d8c8534eb3d1b8dd7a54a91df564e96d577f34e8643"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 359,
+      "end_line": 383,
+      "content": "    _lifecycle_wait_for_work();\n    _lifecycle_resize_metrics(metric_count);\n    return rc;\n}\n\nint td_format_and_parse_frame(const char* prefix, uint32_t id, char* out, size_t out_size) {\n    unsigned char packet[8] = {0};\n    char line[MAX_PATH_LEN];\n\n    snprintf(line, sizeof(line), \"%s=value\", prefix ? prefix : \"topic\");\n    _lifecycle_format_topic(prefix, id, out, out_size);\n    _lifecycle_parse_frame((size_t)id);\n    _lifecycle_decode_packet_id(packet, sizeof(packet));\n    _lifecycle_release_value_slice(line);\n    return 0;\n}\n\nint td_watch_connection_event(int fd, char* buffer, size_t len) {\n    _lifecycle_watch_connection(fd);\n    _lifecycle_dispatch_watched_event(buffer, len);\n    return _lifecycle_close_connection(fd);\n}\n\nint td_configure_rules(const char* path, size_t len, size_t offset) {\n    int rc = _lifecycle_map_rules(path, len);\n",
+      "sha256": "deb85bc29a0820eea39ab02e83c9d1df11cdcf64231c80b0c1e4b2ecd5274689"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 14,
+      "end_line": 16,
+      "content": "#define MAX_COMMAND_LEN      4096\n#define MAX_PATH_LEN         256\n\n",
+      "sha256": "6d9d3ec6ab8dedd5f305a7c8ad04992c6e6d31db1d7991713b6ed5589eb7dfc8"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "invalid_free",
+    "anchor_functions": [
+      "_lifecycle_release_value_slice",
+      "td_format_and_parse_frame"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "632d1ea5667f117c5420f5526c1ee3b268e411b29c1e176c95cb65d1bfb73a42"
+}

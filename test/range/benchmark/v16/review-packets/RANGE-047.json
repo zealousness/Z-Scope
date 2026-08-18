@@ -1,0 +1,80 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-047",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-047",
+    "cwe": "CWE-416",
+    "category": "use_after_free",
+    "title": "Route registration frees a node after AVL insertion failure without removing stale tree links",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_avl_register_route",
+    "line": 929,
+    "end_line": 941,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_lifecycle_avl_walk_duplicate_routes",
+    "secondary_line": 945,
+    "secondary_end_line": 953,
+    "severity": "high",
+    "keywords": [
+      "_route_avl_insert_node",
+      "route_flags",
+      "free(node)",
+      "duplicate_next",
+      "use-after-free"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 917,
+      "end_line": 953,
+      "content": "            (*cursor)->duplicate_next = node;\n            return;\n        }\n        cursor = (node->key < (*cursor)->key) ? &(*cursor)->left : &(*cursor)->right;\n    }\n    *cursor = node;\n    if (node->key == 275) {\n        node->duplicate_next = g_route_duplicate_head;\n        g_route_duplicate_head = node;\n    }\n}\n\nint _lifecycle_avl_register_route(int key, int route_flags) {\n    RouteAvlNode* node = (RouteAvlNode*)_safe_calloc(1, sizeof(RouteAvlNode));\n    if (!node) {\n        return -1;\n    }\n\n    node->key = key;\n    node->route_state = TASK_STATUS_RUNNING;\n    _route_avl_insert_node(node);\n    if (route_flags) {\n        free(node);\n        return -1;\n    }\n    return 0;\n}\n\nint _lifecycle_avl_walk_duplicate_routes(int limit) {\n    int visited = 0;\n    RouteAvlNode* node = g_route_duplicate_head;\n    while (node && visited < limit) {\n        LOG_INFO(\"route key %d state %d\", node->key, node->route_state);\n        node = node->duplicate_next;\n        visited++;\n    }\n    return visited;\n",
+      "sha256": "79876f4f75c359b7adaedc2b405da91663975d8874ad200fffd50e9819601063"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 933,
+      "end_line": 965,
+      "content": "    }\n\n    node->key = key;\n    node->route_state = TASK_STATUS_RUNNING;\n    _route_avl_insert_node(node);\n    if (route_flags) {\n        free(node);\n        return -1;\n    }\n    return 0;\n}\n\nint _lifecycle_avl_walk_duplicate_routes(int limit) {\n    int visited = 0;\n    RouteAvlNode* node = g_route_duplicate_head;\n    while (node && visited < limit) {\n        LOG_INFO(\"route key %d state %d\", node->key, node->route_state);\n        node = node->duplicate_next;\n        visited++;\n    }\n    return visited;\n}\n\nstatic uint32_t g_lifecycle_counter_slot = 0;\nstatic pthread_mutex_t g_lifecycle_counter_lock = PTHREAD_MUTEX_INITIALIZER;\n\n#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__)\n#define COUNTER_SLOT_LOCK() LOCK(&g_lifecycle_counter_lock)\n#define COUNTER_SLOT_UNLOCK() UNLOCK(&g_lifecycle_counter_lock)\n#else\n#define COUNTER_SLOT_LOCK() do { } while (0)\n#define COUNTER_SLOT_UNLOCK() do { } while (0)\n#endif\n",
+      "sha256": "ccdb9e25bcf4fd74dff5a69b81179e57ca275a84ecf7d635f598afd2e2b93183"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 40,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "b1be7073f47fea7ca3788e83a07b1770e4b896f8473310bb03d7d798708caf3e"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 959,
+      "end_line": 965,
+      "content": "#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__)\n#define COUNTER_SLOT_LOCK() LOCK(&g_lifecycle_counter_lock)\n#define COUNTER_SLOT_UNLOCK() UNLOCK(&g_lifecycle_counter_lock)\n#else\n#define COUNTER_SLOT_LOCK() do { } while (0)\n#define COUNTER_SLOT_UNLOCK() do { } while (0)\n#endif\n",
+      "sha256": "1b38bd189622fa30ab1e6a2a6e733bfc6e6ecc93a8359c0bcb3a10d709f84dc3"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "use_after_free",
+    "anchor_functions": [
+      "_lifecycle_avl_register_route",
+      "_lifecycle_avl_walk_duplicate_routes"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "c46152aa2ed17a96b2b579e3cc14814fef59d02f4a956b7a758bfe4284ae08a1"
+}

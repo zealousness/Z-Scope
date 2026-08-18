@@ -1,0 +1,81 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-009",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-009",
+    "cwe": "CWE-362",
+    "category": "object_publication",
+    "title": "Initialization publishes a registry node before mutex and payload initialization complete",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_publish_init_sequence",
+    "line": 1309,
+    "end_line": 1323,
+    "severity": "critical",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-014",
+    "keywords": [
+      "issue-40",
+      "VM-014",
+      "initialization",
+      "published",
+      "payload",
+      "mutex",
+      "race"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1297,
+      "end_line": 1335,
+      "content": "        return 0;\n    }\n    _service_release_by_role(node, 0);\n    SAFE_FREE(node);\n    return 0;\n}\n\nint _runtime_flush_log_buffer(const char* message, int emit_error) {\n    char* log_copy = _str_dup(message ? message : \"log\");\n    if (!log_copy) {\n        return -1;\n    }\n    if (emit_error) {\n        LOG_ERROR(log_copy);\n        return -1;\n    }\n    SAFE_FREE(log_copy);\n    return 0;\n}\n\nint _runtime_publish_init_sequence(const char* key, const char* value) {\n    ServiceNode* node = (ServiceNode*)_safe_calloc(1, sizeof(ServiceNode));\n    if (!node) {\n        return -1;\n    }\n    STR_COPY(node->key, key ? key : \"init\");\n\n    LOCK(&g_service_registry.lock);\n    _service_insert_locked(node);\n    UNLOCK(&g_service_registry.lock);\n\n    node->payload = _str_dup(value ? value : \"late\");\n    pthread_mutex_init(&node->mutex, NULL);\n    return 0;\n}\n\nuint32_t _runtime_message_header_probe(const unsigned char* packet, size_t len) {\n    if (!packet || len < 2) {\n        return 0;\n",
+      "sha256": "9d2320c2eb18e689b918fbdc9322d3309eef0a1d355f7622c313d3eab6d400c8"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 40,
+      "end_line": 42,
+      "content": "#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "300b64a85c4571a691ff4d6cfaaec76e272d9de028fbab683ef813c4b5bf33fe"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "object_publication",
+    "anchor_functions": [
+      "_runtime_publish_init_sequence"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "d5562d68f8739f9a74b05557aa889a483259b3f6b6805aa77373f5cee786a736"
+}

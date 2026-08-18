@@ -1,0 +1,92 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-053",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-053",
+    "cwe": "CWE-362",
+    "category": "race",
+    "title": "Rules mapping globals are remapped and unmapped without synchronization",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_map_rules",
+    "line": 405,
+    "end_line": 411,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_lifecycle_unload_rules",
+    "secondary_line": 415,
+    "secondary_end_line": 418,
+    "severity": "medium",
+    "keywords": [
+      "g_rules_map",
+      "g_rules_len",
+      "mmap",
+      "munmap",
+      "td_configure_rules",
+      "data race",
+      "global state"
+    ],
+    "additional_locations": [
+      {
+        "file": "src/lifecycle.c",
+        "function": "_lifecycle_match_rule_byte",
+        "line": 422,
+        "end_line": 428
+      },
+      {
+        "file": "src/main.c",
+        "function": "td_configure_rules",
+        "line": 381,
+        "end_line": 385
+      }
+    ],
+    "notes": "Multiple public td_configure_rules callers can race while one path remaps or unmaps globals and another path reads them for matching."
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 393,
+      "end_line": 423,
+      "content": "}\n\nint _lifecycle_map_rules(const char* path, size_t len) {\n    if (!path || len == 0) {\n        return -1;\n    }\n\n    int fd = open(path, O_RDONLY);\n    if (fd < 0) {\n        return -1;\n    }\n\n    g_rules_map = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);\n    close(fd);\n    if (g_rules_map == MAP_FAILED) {\n        g_rules_map = NULL;\n        return -1;\n    }\n    g_rules_len = len;\n    return 0;\n}\n\nint _lifecycle_unload_rules(void) {\n    if (g_rules_map && g_rules_len > 0) {\n        munmap(g_rules_map, g_rules_len);\n    }\n    return 0;\n}\n\nint _lifecycle_match_rule_byte(size_t offset) {\n    if (!g_rules_map || offset >= g_rules_len) {\n",
+      "sha256": "b122eea9a420da59a7ecd44483b63b2753995a9dee834fc8b909fcfbf6385114"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 403,
+      "end_line": 430,
+      "content": "    }\n\n    g_rules_map = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);\n    close(fd);\n    if (g_rules_map == MAP_FAILED) {\n        g_rules_map = NULL;\n        return -1;\n    }\n    g_rules_len = len;\n    return 0;\n}\n\nint _lifecycle_unload_rules(void) {\n    if (g_rules_map && g_rules_len > 0) {\n        munmap(g_rules_map, g_rules_len);\n    }\n    return 0;\n}\n\nint _lifecycle_match_rule_byte(size_t offset) {\n    if (!g_rules_map || offset >= g_rules_len) {\n        return -1;\n    }\n\n    const unsigned char* rules = (const unsigned char*)g_rules_map;\n    return rules[offset] == 0x42;\n}\n\n",
+      "sha256": "edeecd6bbe6c943c6eec48bb9df7fe6750cd4265b403133666b7664aca1a2c7c"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 410,
+      "end_line": 440,
+      "content": "    }\n    g_rules_len = len;\n    return 0;\n}\n\nint _lifecycle_unload_rules(void) {\n    if (g_rules_map && g_rules_len > 0) {\n        munmap(g_rules_map, g_rules_len);\n    }\n    return 0;\n}\n\nint _lifecycle_match_rule_byte(size_t offset) {\n    if (!g_rules_map || offset >= g_rules_len) {\n        return -1;\n    }\n\n    const unsigned char* rules = (const unsigned char*)g_rules_map;\n    return rules[offset] == 0x42;\n}\n\ntypedef struct ControlSession {\n    char key[64];\n    char* owner;\n    int transport_id;\n    pthread_mutex_t guard;\n    struct ControlSession* next;\n} ControlSession;\n\ntypedef int (*control_session_add_fn)(const char* key, const char* owner, int transport_id);\ntypedef int (*control_session_drop_fn)(const char* key);\n",
+      "sha256": "0abc28655e0598405dad2120657beede2f4534d85962470dc777ab6f4f82f0bf"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 369,
+      "end_line": 397,
+      "content": "    _lifecycle_format_topic(prefix, id, out, out_size);\n    _lifecycle_parse_frame((size_t)id);\n    _lifecycle_decode_packet_id(packet, sizeof(packet));\n    _lifecycle_release_value_slice(line);\n    return 0;\n}\n\nint td_watch_connection_event(int fd, char* buffer, size_t len) {\n    _lifecycle_watch_connection(fd);\n    _lifecycle_dispatch_watched_event(buffer, len);\n    return _lifecycle_close_connection(fd);\n}\n\nint td_configure_rules(const char* path, size_t len, size_t offset) {\n    int rc = _lifecycle_map_rules(path, len);\n    _lifecycle_match_rule_byte(offset);\n    _lifecycle_unload_rules();\n    return rc;\n}\n\nint td_handle_mesh_message(const char* msg, int transport_id) {\n    _lifecycle_mesh_authorize_init();\n    _lifecycle_mesh_control_message(msg, transport_id);\n    _lifecycle_mesh_disconnect(msg);\n    _lifecycle_customize_control_message(msg, transport_id);\n    return _lifecycle_customize_transport_cleanup(transport_id);\n}\n\nint td_update_subscription(const char* topic) {\n",
+      "sha256": "4a3da3b4b975b0f3959223fbd61cba78e7402ca86eb629e6d59a3f2c4f3d7d2e"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "race",
+    "anchor_functions": [
+      "_lifecycle_map_rules",
+      "_lifecycle_match_rule_byte",
+      "_lifecycle_unload_rules",
+      "td_configure_rules"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "cb1fd87f3c2e1d1aa7eb3cc7d5a8f48255ae33ce55b99668df786f43cb6dfd38"
+}

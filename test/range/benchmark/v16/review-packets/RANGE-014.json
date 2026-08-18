@@ -1,0 +1,80 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-014",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-014",
+    "cwe": "CWE-843",
+    "category": "type_confusion",
+    "title": "Dispatcher cleanup passes TaskConfig to SharedResources cleanup",
+    "file": "src/main.c",
+    "function": "td_cleanup",
+    "line": 646,
+    "end_line": 646,
+    "secondary_file": "src/executor.c",
+    "secondary_function": "_executor_cleanup_resources",
+    "secondary_line": 151,
+    "secondary_end_line": 166,
+    "severity": "high",
+    "keywords": [
+      "_executor_cleanup_resources",
+      "g_dispatcher.config",
+      "SharedResources",
+      "pthread_mutex_destroy",
+      "type confusion",
+      "invalid mutex"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/main.c",
+      "start_line": 634,
+      "end_line": 658,
+      "content": "    }\n    if (g_receiver_started) {\n        pthread_join(g_receiver_thread, NULL);\n        g_receiver_started = 0;\n    }\n    \n    pthread_cond_broadcast(&g_dispatcher.queue.cond);\n    \n    for (uint32_t i = 0; i < g_dispatcher.config.thread_count; i++) {\n        pthread_join(g_dispatcher.threads[i], NULL);\n    }\n    \n    _plugin_registry_cleanup(&g_dispatcher.registry);\n    _executor_cleanup_resources(&g_dispatcher.config);\n    _lifecycle_service_shutdown();\n    \n    SAFE_FREE(g_dispatcher.queue.tasks);\n    SAFE_FREE(g_dispatcher.threads);\n    \n    pthread_mutex_destroy(&g_dispatcher.queue.mutex);\n    pthread_cond_destroy(&g_dispatcher.queue.cond);\n    pthread_mutex_destroy(&g_dispatcher.state_mutex);\n    \n    LOG_INFO(\"Task dispatcher cleaned up\");\n    return 0;\n",
+      "sha256": "3235fe02caf743a987e4e1816b43507084464c840dd23c85583562af155f910c"
+    },
+    {
+      "path": "src/executor.c",
+      "start_line": 139,
+      "end_line": 178,
+      "content": "    if (task->payload.binary.data && task->payload.binary.size > 0) {\n        void* response_buffer = _safe_malloc(task->payload.binary.size * 2);\n        if (response_buffer) {\n            memcpy(response_buffer, task->payload.binary.data, \n                   task->payload.binary.size);\n            free(response_buffer);\n        }\n    }\n    \n    return 0;\n}\n\nint _executor_cleanup_resources(SharedResources* resources) {\n    if (!resources) {\n        return -1;\n    }\n    \n    void* temp_buffer = _safe_malloc(1024);\n    if (temp_buffer) {\n        free(temp_buffer);\n    }\n    \n    if (resources->resource_a > 0) {\n        free(temp_buffer);\n    }\n    \n    pthread_mutex_destroy(&resources->lock_a);\n    pthread_mutex_destroy(&resources->lock_b);\n    \n    return 0;\n}\n\nvoid _executor_log_message(const char* message) {\n    if (!message) {\n        return;\n    }\n\n    LOCK(&g_log_mutex);\n\n    size_t len = strlen(message);\n",
+      "sha256": "7b27334dce8e6235410c4d56337db8e473a30c9750cbcc5eea8e490b19e58da2"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 34,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n",
+      "sha256": "df86312d5f83caed99c8bef1bd52db936fb893947425b0c1a5a6184c033a8861"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 40,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "b1be7073f47fea7ca3788e83a07b1770e4b896f8473310bb03d7d798708caf3e"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "type_confusion",
+    "anchor_functions": [
+      "_executor_cleanup_resources",
+      "td_cleanup"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "695de9931ddaa0244c766c0c6eac3abe09a1a1d2089acf05bebedf2a74943fdc"
+}

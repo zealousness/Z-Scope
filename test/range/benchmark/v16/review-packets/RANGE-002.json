@@ -1,0 +1,49 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-002",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-002",
+    "cwe": "CWE-190",
+    "category": "integer_overflow",
+    "title": "Internal network handler multiplies unchecked Task binary size before memcpy",
+    "file": "src/executor.c",
+    "function": "_executor_handle_network_request",
+    "line": 140,
+    "end_line": 143,
+    "severity": "high",
+    "scope": "internal_contract",
+    "notes": "Valid when the internal Task object is treated as untrusted at this entry. Through the current parser path payload_length is capped by MAX_TASK_SIZE, so reports should ideally mention the entry-scope assumption.",
+    "keywords": [
+      "size * 2",
+      "integer overflow",
+      "response_buffer",
+      "memcpy",
+      "Task"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/executor.c",
+      "start_line": 128,
+      "end_line": 155,
+      "content": "    }\n    \n    free(buffer);\n    return 0;\n}\n\nint _executor_handle_network_request(Task* task) {\n    if (!task) {\n        return -1;\n    }\n    \n    if (task->payload.binary.data && task->payload.binary.size > 0) {\n        void* response_buffer = _safe_malloc(task->payload.binary.size * 2);\n        if (response_buffer) {\n            memcpy(response_buffer, task->payload.binary.data, \n                   task->payload.binary.size);\n            free(response_buffer);\n        }\n    }\n    \n    return 0;\n}\n\nint _executor_cleanup_resources(SharedResources* resources) {\n    if (!resources) {\n        return -1;\n    }\n    \n",
+      "sha256": "d33628b7bcb3d2bf34ed4c228b5206a9478e8769670a5073dd7de35ec2e28ac2"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "integer_overflow",
+    "anchor_functions": [
+      "_executor_handle_network_request"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "a7a89b1d9c0f74caa1adc5ab40ff6bdb5019fa89014b5d3bc796d81cd791ce7d"
+}

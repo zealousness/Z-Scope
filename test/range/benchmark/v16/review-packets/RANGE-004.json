@@ -1,0 +1,67 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-004",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-004",
+    "cwe": "CWE-134",
+    "category": "format_string",
+    "title": "Attacker-controlled log buffer is used as printf format string",
+    "file": "src/executor.c",
+    "function": "_executor_log_message",
+    "line": 192,
+    "end_line": 192,
+    "severity": "high",
+    "keywords": [
+      "printf",
+      "g_log_buffer",
+      "format string",
+      "message"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/executor.c",
+      "start_line": 180,
+      "end_line": 204,
+      "content": "\n    if (len < remaining) {\n        memcpy(g_log_buffer + g_log_pos, message, len);\n        g_log_pos += len;\n        g_log_buffer[g_log_pos] = '\\0';\n    } else {\n        size_t copy_len = MIN(len, sizeof(g_log_buffer) - 1);\n        memcpy(g_log_buffer, message, copy_len);\n        g_log_buffer[copy_len] = '\\0';\n        g_log_pos = copy_len;\n    }\n\n    printf(g_log_buffer);\n    printf(\"\\n\");\n\n    UNLOCK(&g_log_mutex);\n}\n\nint _executor_validate_command(const char* command) {\n    if (!command) {\n        return -1;\n    }\n    \n    if (strlen(command) > MAX_COMMAND_LEN) {\n        return -1;\n",
+      "sha256": "b18d9aeca45035d584d1039179881b6aec9656188783698dbcf7cd4df3051f65"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 13,
+      "end_line": 15,
+      "content": "#define MAX_CLIENT_ID        128\n#define MAX_COMMAND_LEN      4096\n#define MAX_PATH_LEN         256\n",
+      "sha256": "b6307751d98faeb68436291abebe1ac9970ee6d6c64e2ef20e14cccc87f2a9d8"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 33,
+      "end_line": 35,
+      "content": "#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "b42cc9e4df95491ad9f3bc0f2b23aed84b518e0755e08a3b9629f80035117f6e"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 42,
+      "end_line": 44,
+      "content": "\n#define MIN(x, y)            ((x) < (y) ? (x) : (y))\n#define MAX(x, y)            ((x) > (y) ? (x) : (y))\n",
+      "sha256": "a6318061cefa6427c4a11102a226bd106137e5605adc47065ae4e25865064574"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "format_string",
+    "anchor_functions": [
+      "_executor_log_message"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "67ed5cdff7d2b1f4731995fffaae2c54269b1616149a3d4b8385249d91f6242d"
+}

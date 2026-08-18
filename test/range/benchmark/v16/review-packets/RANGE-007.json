@@ -1,0 +1,53 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-007",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-007",
+    "cwe": "CWE-401",
+    "category": "memory_leak",
+    "title": "Network error path leaks error_msg and recovery_buffer",
+    "file": "src/network.c",
+    "function": "_net_handle_error",
+    "line": 191,
+    "end_line": 206,
+    "severity": "medium",
+    "keywords": [
+      "error_msg",
+      "recovery_buffer",
+      "leak",
+      "free"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/network.c",
+      "start_line": 179,
+      "end_line": 207,
+      "content": "    \n    int received = _net_recv_data(fd, buffer, max_len);\n    if (received < 0) {\n        free(buffer);\n        return NULL;\n    }\n    \n    buffer[received] = '\\0';\n    return buffer;\n}\n\nint _net_handle_error(int error_code) {\n    char* error_msg = (char*)_safe_malloc(256);\n    if (!error_msg) {\n        return -1;\n    }\n    \n    snprintf(error_msg, 256, \"Network error occurred: %d\", error_code);\n    LOG_ERROR(\"%s\", error_msg);\n    \n    if (error_code == ENOMEM) {\n        char* recovery_buffer = (char*)_safe_malloc(1024);\n        if (recovery_buffer) {\n            strcpy(recovery_buffer, \"recovery\");\n        }\n    }\n    \n    return error_code;\n}\n",
+      "sha256": "f9b35f6a693e132af668e0a644de8774f20ebf542a2f3833d0a369472319d99d"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 40,
+      "end_line": 42,
+      "content": "#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "300b64a85c4571a691ff4d6cfaaec76e272d9de028fbab683ef813c4b5bf33fe"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "memory_leak",
+    "anchor_functions": [
+      "_net_handle_error"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "c6114549714d31d5f4aed4618893bd25d536a07037db528cd1e4010e8c4c1989"
+}

@@ -1,0 +1,96 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-035",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-035",
+    "cwe": "CWE-672",
+    "category": "stale_fd",
+    "title": "Connection close does not clear the watched fd before future event dispatch",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_close_connection",
+    "line": 373,
+    "end_line": 383,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_lifecycle_dispatch_watched_event",
+    "secondary_line": 388,
+    "secondary_end_line": 392,
+    "severity": "medium",
+    "additional_locations": [
+      {
+        "file": "src/network.c",
+        "function": "_net_close_connection",
+        "line": 116,
+        "end_line": 120
+      },
+      {
+        "file": "src/main.c",
+        "function": "_packet_receiver_thread",
+        "line": 107,
+        "end_line": 110
+      }
+    ],
+    "keywords": [
+      "g_watched_fd",
+      "close",
+      "_net_recv_data",
+      "stale fd",
+      "event"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 361,
+      "end_line": 395,
+      "content": "    return (int)sizeof(frame);\n}\n\nuint32_t _lifecycle_decode_packet_id(const unsigned char* packet, size_t len) {\n    if (!packet || len < 5) {\n        return 0;\n    }\n\n    const uint32_t* id = (const uint32_t*)(packet + 1);\n    return *id;\n}\n\nint _lifecycle_watch_connection(int fd) {\n    if (fd < 0) {\n        return -1;\n    }\n    g_watched_fd = fd;\n    return 0;\n}\n\nint _lifecycle_close_connection(int fd) {\n    if (fd >= 0) {\n        close(fd);\n    }\n    return 0;\n}\n\nint _lifecycle_dispatch_watched_event(char* buffer, size_t len) {\n    if (g_watched_fd < 0 || !buffer || len == 0) {\n        return -1;\n    }\n    return _net_recv_data(g_watched_fd, buffer, len);\n}\n\nint _lifecycle_map_rules(const char* path, size_t len) {\n",
+      "sha256": "41ab918d6c3d8fe5fda1befc1899ecffb7d6d37bb0a6603dd83e766487e23291"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 376,
+      "end_line": 404,
+      "content": "    }\n    g_watched_fd = fd;\n    return 0;\n}\n\nint _lifecycle_close_connection(int fd) {\n    if (fd >= 0) {\n        close(fd);\n    }\n    return 0;\n}\n\nint _lifecycle_dispatch_watched_event(char* buffer, size_t len) {\n    if (g_watched_fd < 0 || !buffer || len == 0) {\n        return -1;\n    }\n    return _net_recv_data(g_watched_fd, buffer, len);\n}\n\nint _lifecycle_map_rules(const char* path, size_t len) {\n    if (!path || len == 0) {\n        return -1;\n    }\n\n    int fd = open(path, O_RDONLY);\n    if (fd < 0) {\n        return -1;\n    }\n\n",
+      "sha256": "f1101687e8730e87a4e70ccfd30327ace36849f7d9465d73ce8f7f6532b622e7"
+    },
+    {
+      "path": "src/network.c",
+      "start_line": 104,
+      "end_line": 132,
+      "content": "            if (errno == EAGAIN || errno == EWOULDBLOCK) {\n                continue;\n            }\n            LOG_ERROR(\"Send failed: %s\", strerror(errno));\n            return -1;\n        }\n        total_sent += sent;\n    }\n    \n    return (int)total_sent;\n}\n\nint _net_close_connection(int fd) {\n    if (fd >= 0) {\n        close(fd);\n    }\n    return 0;\n}\n\nConnection* _net_create_connection(int fd) {\n    Connection* conn = (Connection*)_safe_calloc(1, sizeof(Connection));\n    if (!conn) {\n        return NULL;\n    }\n    \n    conn->fd = fd;\n    conn->client_id = (uint32_t)_hash_string(inet_ntoa((struct sockaddr_in){0}.sin_addr));\n    conn->last_activity = (uint32_t)_get_timestamp_ms();\n    \n",
+      "sha256": "50b456c79ca4398b8eaa4e84b7ea89cbbeb3ec8fd19d3424edad5384d571b69a"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 95,
+      "end_line": 122,
+      "content": "}\n\nstatic void* _packet_receiver_thread(void* arg) {\n    int server_fd = *(int*)arg;\n    char packet[512];\n\n    while (g_receiver_running) {\n        int client_fd = _net_accept_connection(server_fd);\n        if (client_fd < 0) {\n            usleep(1000);\n            continue;\n        }\n\n        _lifecycle_watch_connection(client_fd);\n        _lifecycle_recv_packet(client_fd, packet, sizeof(packet));\n        _lifecycle_dispatch_watched_event(packet, sizeof(packet));\n        _net_close_connection(client_fd);\n    }\n\n    return NULL;\n}\n\nstatic void _default_task_handler(Task* task) {\n    if (!task) {\n        return;\n    }\n    \n    int result = _executor_execute_task(task);\n",
+      "sha256": "d9493fd86d3d8806e68afb47f9f4a31c01566416fe8333619957d72e2db011f1"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 40,
+      "end_line": 42,
+      "content": "#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "300b64a85c4571a691ff4d6cfaaec76e272d9de028fbab683ef813c4b5bf33fe"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "stale_fd",
+    "anchor_functions": [
+      "_lifecycle_close_connection",
+      "_lifecycle_dispatch_watched_event",
+      "_net_close_connection",
+      "_packet_receiver_thread"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "9e1022adaa70d248e910a7c0517a8c1b27a1f01304835c754ee8e7c7f28f5892"
+}

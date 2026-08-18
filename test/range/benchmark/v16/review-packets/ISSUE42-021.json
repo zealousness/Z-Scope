@@ -1,0 +1,122 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE42-021",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE42-021",
+    "cwe": "CWE-362/CWE-401",
+    "category": "shared_memory_race",
+    "title": "Smmap zone creation checks for an existing name before taking the insert lock",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_create_shared_zone",
+    "line": 2613,
+    "end_line": 2634,
+    "severity": "high",
+    "tier": "real_project_issue42",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+    "source_model": "VM-019 Smmap Concurrent Creation Issue",
+    "keywords": [
+      "issue-42",
+      "Smmap",
+      "memzone",
+      "shared memory",
+      "concurrent create",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_configure_memory",
+      "_runtime_apply_memory_plan"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_runtime_apply_memory_plan",
+    "secondary_line": 2892,
+    "secondary_end_line": 2902,
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_apply_shared_memory_event",
+        "line": 697,
+        "end_line": 704
+      },
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_configure_memory",
+        "line": 712,
+        "end_line": 715
+      }
+    ],
+    "flow": "runtime_memory_plan_flow",
+    "related_functions": [
+      "td_runtime_configure_memory",
+      "_runtime_apply_memory_plan"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2601,
+      "end_line": 2646,
+      "content": "        g_runtime_event_base.level_trigger_list = &ev;\n        UNLOCK(&g_runtime_event_base.lock);\n        return 0;\n    }\n    return -1;\n}\n\nstatic RuntimeMemzone* _runtime_find_shared_zone(const char* name) {\n    for (RuntimeMemzone* zone = g_runtime_memzones; zone; zone = zone->next) {\n        if (strcmp(zone->name, name) == 0) {\n            return zone;\n        }\n    }\n    return NULL;\n}\n\nvoid* _runtime_create_shared_zone(const char* name, size_t size) {\n    const char* stable_name = name ? name : \"runtime-zone\";\n    if (_runtime_find_shared_zone(stable_name) != NULL) {\n        errno = EEXIST;\n        return NULL;\n    }\n\n    RuntimeMemzone* zone = (RuntimeMemzone*)_safe_calloc(1, sizeof(RuntimeMemzone));\n    if (!zone) {\n        errno = ENOMEM;\n        return NULL;\n    }\n    STR_COPY(zone->name, stable_name);\n    zone->size = size;\n    zone->addr = _safe_malloc(size ? size : 1);\n\n    LOCK(&g_runtime_memzone_lock);\n    zone->next = g_runtime_memzones;\n    g_runtime_memzones = zone;\n    UNLOCK(&g_runtime_memzone_lock);\n    return zone;\n}\n\nint _runtime_cleanup_tls_reserve(size_t reserve_size, int tlscb_ready) {\n    RuntimeTlscbInfo info;\n    memset(&info, 0, sizeof(info));\n    info.reserved_base = _safe_malloc(reserve_size ? reserve_size : 4096);\n    info.reserved_size = reserve_size;\n    if (tlscb_ready) {\n        info.tlscb = (char*)_safe_malloc(64);\n",
+      "sha256": "bc5669da8241bc27160912e919a3997bdbc2bdaadea5619c6a379a0eebb1947d"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2880,
+      "end_line": 2914,
+      "content": "    if (out && out_len >= sizeof(use_info)) {\n        memcpy(out, &use_info, sizeof(use_info));\n    }\n    return rc;\n}\n\nint _runtime_refresh_worker_context(size_t block_size, const char* worker_name,\n                                    uint32_t worker_id, int active_tasks) {\n    int rc = 0;\n    rc |= _runtime_close_thread_cache(block_size);\n    rc |= _runtime_prepare_worker_label(worker_name, worker_id);\n    rc |= _runtime_release_packet_pool(active_tasks);\n    rc |= _runtime_note_module_ready(active_tasks > 0);\n    return rc;\n}\n\nint _runtime_apply_memory_plan(const char* segment_name, uint32_t mode,\n                               uint64_t file_size, uint64_t map_size) {\n    const char* stable_name = segment_name ? segment_name : \"runtime-zone\";\n    int rc = 0;\n    rc |= _runtime_map_reserved_region(mode, file_size, map_size) ? 0 : -1;\n    rc |= _runtime_create_shared_zone(stable_name, (size_t)map_size) ? 0 : -1;\n    rc |= _runtime_make_shared_key(stable_name, (int)mode);\n    rc |= _runtime_cleanup_tls_reserve((size_t)map_size, 0);\n    rc |= _runtime_release_hash_node((size_t)map_size, 1);\n    return rc;\n}\n\nstatic int _runtime_apply_pool_ops(uint32_t lcore_limit, uint32_t configured_lcores) {\n    RuntimeFixpoolOps ops = {\n        .type = (int)(configured_lcores % RUNTIME_FIXPOOL_OPS_MAX),\n        .enqueue = _runtime_noop_op,\n        .dequeue = _runtime_noop_op,\n        .init = _runtime_noop_op,\n        .parse = _runtime_noop_op\n",
+      "sha256": "3298e1a75b733e864486d597e1a6559aa8fdf16adf6e426cf6867e663f8252a4"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 685,
+      "end_line": 716,
+      "content": "}\n\ntypedef struct {\n    uint32_t magic;\n    uint16_t family;\n    uint16_t flags;\n    uint32_t size;\n    uint32_t mode;\n    uint64_t value;\n    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\n",
+      "sha256": "f7aa80d615ee4d87b6807384219d7061aa45f43ccf035756b0469a58849e5f98"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 700,
+      "end_line": 727,
+      "content": "                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\nint td_runtime_configure_pool(uint32_t lcore_limit, uint32_t configured_lcores) {\n    return _runtime_apply_pool_plan(lcore_limit, configured_lcores);\n}\n\nint td_runtime_publish_process_state(uint32_t user_proc_id, uint32_t pid,\n                                     const char* proc_name) {\n    return _runtime_publish_process_record(user_proc_id, pid, proc_name);\n}\n\nint td_runtime_schedule_event(int same_core, int fast_mode,\n                              int destroy_in_callback) {\n",
+      "sha256": "909b31a65dccfa000e5fc25b73ce326303b3a3346f03672b1dd576b767050be7"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2009,
+      "end_line": 2011,
+      "content": "#define RUNTIME_AVAILABLE_LIST_LIMIT 64u\n#define RUNTIME_FIXPOOL_OPS_MAX 4u\n#define RUNTIME_PCM_PROC_MAX 8u\n",
+      "sha256": "e6f470f137968c5ed4c43afb7a3836155939517d110e74ef093a9aa60a3c4a22"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "shared_memory_race",
+    "anchor_functions": [
+      "_runtime_apply_memory_plan",
+      "_runtime_create_shared_zone",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_configure_memory"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "0c90a0cd23cc08881bfc68b51cdbbfd06b2ae32da8b9b15c4af507a87b10d1fe"
+}

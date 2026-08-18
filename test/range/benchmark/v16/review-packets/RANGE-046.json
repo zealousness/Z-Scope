@@ -1,0 +1,65 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-046",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-046",
+    "cwe": "CWE-187",
+    "category": "key_truncation",
+    "title": "Policy AVL upsert looks up full strings but inserts only the first 128 bytes of the key",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_avl_policy_upsert",
+    "line": 878,
+    "end_line": 898,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_policy_avl_find_route_key",
+    "secondary_line": 857,
+    "secondary_end_line": 867,
+    "severity": "medium",
+    "keywords": [
+      "strcmp",
+      "route_key",
+      "strncpy",
+      "POLICY_AVL_KEY_LIMIT",
+      "truncated"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 866,
+      "end_line": 910,
+      "content": "    return NULL;\n}\n\nstatic void _policy_avl_insert_route_key(PolicyAvlNode* node) {\n    PolicyAvlNode** cursor = &g_policy_avl_root;\n    while (*cursor) {\n        int cmp = strcmp(node->key, (*cursor)->key);\n        cursor = (cmp < 0) ? &(*cursor)->left : &(*cursor)->right;\n    }\n    *cursor = node;\n}\n\nint _lifecycle_avl_policy_upsert(const char* route_key, int policy_id) {\n    if (!route_key) {\n        return -1;\n    }\n\n    PolicyAvlNode* existing = _policy_avl_find_route_key(route_key);\n    if (existing) {\n        existing->policy_id = policy_id;\n        return 0;\n    }\n\n    PolicyAvlNode* node = (PolicyAvlNode*)_safe_calloc(1, sizeof(PolicyAvlNode));\n    if (!node) {\n        return -1;\n    }\n\n    strncpy(node->key, route_key, POLICY_AVL_KEY_LIMIT - 1);\n    node->key[POLICY_AVL_KEY_LIMIT - 1] = '\\0';\n    node->policy_id = policy_id;\n    _policy_avl_insert_route_key(node);\n    return 0;\n}\n\ntypedef struct RouteAvlNode {\n    int key;\n    int route_state;\n    struct RouteAvlNode* left;\n    struct RouteAvlNode* right;\n    struct RouteAvlNode* duplicate_next;\n} RouteAvlNode;\n\nstatic RouteAvlNode* g_route_avl_root = NULL;\nstatic RouteAvlNode* g_route_duplicate_head = NULL;\n",
+      "sha256": "c7a991133afd32bf3319e0c1522f4bcb20d932fec009760eefa378957a429a9d"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 845,
+      "end_line": 879,
+      "content": "\n#define POLICY_AVL_KEY_LIMIT 128\n\ntypedef struct PolicyAvlNode {\n    char key[POLICY_AVL_KEY_LIMIT];\n    int policy_id;\n    struct PolicyAvlNode* left;\n    struct PolicyAvlNode* right;\n} PolicyAvlNode;\n\nstatic PolicyAvlNode* g_policy_avl_root = NULL;\n\nstatic PolicyAvlNode* _policy_avl_find_route_key(const char* route_key) {\n    PolicyAvlNode* node = g_policy_avl_root;\n    while (node) {\n        int cmp = strcmp(route_key, node->key);\n        if (cmp == 0) {\n            return node;\n        }\n        node = (cmp < 0) ? node->left : node->right;\n    }\n    return NULL;\n}\n\nstatic void _policy_avl_insert_route_key(PolicyAvlNode* node) {\n    PolicyAvlNode** cursor = &g_policy_avl_root;\n    while (*cursor) {\n        int cmp = strcmp(node->key, (*cursor)->key);\n        cursor = (cmp < 0) ? &(*cursor)->left : &(*cursor)->right;\n    }\n    *cursor = node;\n}\n\nint _lifecycle_avl_policy_upsert(const char* route_key, int policy_id) {\n    if (!route_key) {\n",
+      "sha256": "9310e223cb53ca97888354933593c59a0f7d6a9dd40c564a184c94c4bc1388d3"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 845,
+      "end_line": 847,
+      "content": "\n#define POLICY_AVL_KEY_LIMIT 128\n\n",
+      "sha256": "4f0e6f67c4525f3abb90526a45d2f07240ec8e24fbb1dbacfeec60c1eed93d15"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "key_truncation",
+    "anchor_functions": [
+      "_lifecycle_avl_policy_upsert",
+      "_policy_avl_find_route_key"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "eb9b553a19cd8f59a60bf1dbff95453678509a112b69b685078c343b9e4e6232"
+}

@@ -1,0 +1,66 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-008",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-008",
+    "cwe": "CWE-401",
+    "category": "memory_leak",
+    "title": "Error logging path allocates a formatted message copy and returns without releasing it",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_flush_log_buffer",
+    "line": 1296,
+    "end_line": 1307,
+    "severity": "high",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-013",
+    "keywords": [
+      "issue-40",
+      "VM-013",
+      "log",
+      "LOG_ERROR",
+      "allocated message",
+      "leak"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1284,
+      "end_line": 1319,
+      "content": "    }\n    return 0;\n}\n\nint _runtime_release_reader_channel(const char* key, int role) {\n    ServiceNode* node = _service_alloc_node(key, \"reader\");\n    if (!node) {\n        return -1;\n    }\n    node->role = role;\n    if (node->role == 1) {\n        _service_release_by_role(node, 0);\n        SAFE_FREE(node);\n        return 0;\n    }\n    _service_release_by_role(node, 0);\n    SAFE_FREE(node);\n    return 0;\n}\n\nint _runtime_flush_log_buffer(const char* message, int emit_error) {\n    char* log_copy = _str_dup(message ? message : \"log\");\n    if (!log_copy) {\n        return -1;\n    }\n    if (emit_error) {\n        LOG_ERROR(log_copy);\n        return -1;\n    }\n    SAFE_FREE(log_copy);\n    return 0;\n}\n\nint _runtime_publish_init_sequence(const char* key, const char* value) {\n    ServiceNode* node = (ServiceNode*)_safe_calloc(1, sizeof(ServiceNode));\n    if (!node) {\n",
+      "sha256": "420cdae11459989524e3e736470f92ba880c69e02b395de46d2754c3e7ee7758"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 40,
+      "end_line": 42,
+      "content": "#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "300b64a85c4571a691ff4d6cfaaec76e272d9de028fbab683ef813c4b5bf33fe"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "memory_leak",
+    "anchor_functions": [
+      "_runtime_flush_log_buffer"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "a213e2cca14591c80ac9cfc54e2c5b65563f93ff44b67c6fad4a60bef32dc91a"
+}

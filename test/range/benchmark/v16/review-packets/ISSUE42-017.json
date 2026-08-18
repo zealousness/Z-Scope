@@ -1,0 +1,136 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE42-017",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE42-017",
+    "cwe": "CWE-362",
+    "category": "slot_race",
+    "title": "PCM process slot assignment ignores CAS failure and writes pid/name into a possibly stolen slot",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_claim_process_slot",
+    "line": 2518,
+    "end_line": 2540,
+    "severity": "high",
+    "tier": "real_project_issue42",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+    "source_model": "VM-015 PCM process slot race",
+    "keywords": [
+      "issue-42",
+      "PCM",
+      "process slot",
+      "CAS",
+      "race",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_publish_process_state",
+      "_runtime_publish_process_record"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_runtime_publish_process_record",
+    "secondary_line": 2932,
+    "secondary_end_line": 2940,
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_apply_shared_memory_event",
+        "line": 697,
+        "end_line": 704
+      },
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_publish_process_state",
+        "line": 721,
+        "end_line": 724
+      }
+    ],
+    "flow": "runtime_process_state_flow",
+    "related_functions": [
+      "td_runtime_publish_process_state",
+      "_runtime_publish_process_record"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2506,
+      "end_line": 2552,
+      "content": "}\n\nint _runtime_schedule_rcu_release(int use_qrcu, void* rcu, void* cb) {\n    g_runtime_use_qrcu = use_qrcu ? 1 : 0;\n    g_runtime_rcu_funcs[g_runtime_use_qrcu].reg = _runtime_rcu_register_callback;\n    g_runtime_rcu_funcs[g_runtime_use_qrcu].is_registered = 1;\n\n    if (!g_runtime_rcu_funcs[g_runtime_use_qrcu].is_registered ||\n        !g_runtime_rcu_funcs[g_runtime_use_qrcu].reg) {\n        LOG_ERROR(\"rcu thread not registered\");\n        return -1;\n    }\n    g_runtime_rcu_funcs[g_runtime_use_qrcu].reg(rcu, cb);\n    return 0;\n}\n\nuint32_t _runtime_claim_process_slot(uint32_t user_proc_id, uint32_t pid,\n                                        const char* proc_name) {\n    uint16_t logic_proc_id = 0;\n\n    LOCK(&g_runtime_pcm_table_lock);\n    for (uint16_t i = 0; i < RUNTIME_PCM_PROC_MAX; i++) {\n        if (g_runtime_proc_table[i].proc_state == TASK_STATUS_COMPLETED) {\n            logic_proc_id = i;\n            break;\n        }\n    }\n    UNLOCK(&g_runtime_pcm_table_lock);\n\n    RuntimePcmProc* tbl = &g_runtime_proc_table[logic_proc_id];\n    (void)__sync_bool_compare_and_swap(\n        (volatile uint32_t*)&tbl->proc_state,\n        TASK_STATUS_COMPLETED,\n        TASK_STATUS_RUNNING);\n    tbl->user_proc_id = user_proc_id;\n    tbl->pid = pid;\n    STR_COPY(tbl->proc_name, proc_name ? proc_name : \"pcm\");\n    return logic_proc_id;\n}\n\nint _runtime_open_named_segment(const char* shm_name, uint32_t requested_perm) {\n    g_runtime_named_pipe.fd = 42;\n    g_runtime_named_pipe.addr = (char*)_safe_malloc(RUNTIME_FRAME_BODY_CAP);\n    g_runtime_named_pipe.perm = 0660u;\n\n    if (shm_name && strcmp(shm_name, \"product-namedpipe\") == 0) {\n        LOG_INFO(\"using product-specific named pipe shared memory\");\n",
+      "sha256": "a7197dcd24cbf4bdbc00399c736e401952d813df33f128186f581d0bee341330"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2920,
+      "end_line": 2952,
+      "content": "\n    int rc = 0;\n    rc |= _runtime_register_pool_ops(&ops);\n    rc |= (int)_runtime_count_pool_cache(&pool, lcore_limit);\n    return rc;\n}\n\nint _runtime_apply_pool_plan(uint32_t lcore_limit, uint32_t configured_lcores) {\n    int rc = _runtime_apply_pool_ops(lcore_limit, configured_lcores);\n    rc |= _runtime_rebuild_available_list(configured_lcores);\n    rc |= (int)_runtime_walk_arena_groups(lcore_limit);\n    rc |= _runtime_enqueue_rcu_batch(1, (int)configured_lcores);\n    rc |= _runtime_schedule_rcu_release(0, &g_runtime_proc_table[0], &g_runtime_proc_table[1]);\n    return rc;\n}\n\nint _runtime_publish_process_record(uint32_t user_proc_id, uint32_t pid,\n                                    const char* proc_name) {\n    uint32_t slot = _runtime_claim_process_slot(user_proc_id, pid, proc_name);\n    int rc = (int)slot;\n    rc |= _runtime_mark_process_online(0, slot);\n    rc |= _runtime_require_normal_process(slot);\n    rc |= (int)_runtime_read_timer_ticks(user_proc_id + RUNTIME_MAX_CORES);\n    return rc;\n}\n\nint _runtime_dispatch_event_cycle(int same_core, int fast_mode,\n                                  int destroy_in_callback) {\n    int rc = 0;\n    rc |= _runtime_queue_local_flush(same_core, fast_mode);\n    rc |= _runtime_cancel_wheel_timer(destroy_in_callback);\n    rc |= _runtime_finish_current_event(destroy_in_callback);\n    return rc;\n",
+      "sha256": "128c678d17bf0649191833f3b5dfc2f8cea108eab3ce20fdfdcf60a0355cb89d"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 685,
+      "end_line": 716,
+      "content": "}\n\ntypedef struct {\n    uint32_t magic;\n    uint16_t family;\n    uint16_t flags;\n    uint32_t size;\n    uint32_t mode;\n    uint64_t value;\n    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\n",
+      "sha256": "f7aa80d615ee4d87b6807384219d7061aa45f43ccf035756b0469a58849e5f98"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 709,
+      "end_line": 736,
+      "content": "                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\nint td_runtime_configure_pool(uint32_t lcore_limit, uint32_t configured_lcores) {\n    return _runtime_apply_pool_plan(lcore_limit, configured_lcores);\n}\n\nint td_runtime_publish_process_state(uint32_t user_proc_id, uint32_t pid,\n                                     const char* proc_name) {\n    return _runtime_publish_process_record(user_proc_id, pid, proc_name);\n}\n\nint td_runtime_schedule_event(int same_core, int fast_mode,\n                              int destroy_in_callback) {\n    return _runtime_dispatch_event_cycle(same_core, fast_mode,\n                                         destroy_in_callback);\n}\n\nint td_runtime_handle_signal(int sig, void* ucontext, int hold_sem) {\n    return _runtime_handle_fault_signal(sig, ucontext, hold_sem);\n}\n\nint td_runtime_shutdown_session(const char* path, int project_id,\n",
+      "sha256": "f7f2f74173e23f4c7bfb0f8405589cabf14460c572f8cd47f17a63df6a573e14"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 42,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "2ecc1b7feb1d4583a3294d20ab297f7b97b016d6bf12ae3fbba0ca8ae7056831"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2004,
+      "end_line": 2007,
+      "content": "#define RUNTIME_FRAME_MAGIC 0x493432u\n#define RUNTIME_FRAME_BODY_CAP 256\n#define RUNTIME_MAX_CORES 64u\n#define RUNTIME_LCORES_MAX 128u\n",
+      "sha256": "2792dc8a5b5760fcd97654f467ba298eed46789b9c8bffc8dc816eb8fb60490e"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2010,
+      "end_line": 2012,
+      "content": "#define RUNTIME_FIXPOOL_OPS_MAX 4u\n#define RUNTIME_PCM_PROC_MAX 8u\n#define RUNTIME_SHM_MODE_REG 0100000u\n",
+      "sha256": "441c586165bb17763f26cc2162cafd1007228d054b4bcb83ac5ce9c9df5c250b"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "slot_race",
+    "anchor_functions": [
+      "_runtime_claim_process_slot",
+      "_runtime_publish_process_record",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_publish_process_state"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "4d3a54692831c0a121afd8db936cd2b38b5d78358e0e7e5182206c82504adbdc"
+}

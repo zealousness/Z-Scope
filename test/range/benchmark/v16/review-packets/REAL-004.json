@@ -1,0 +1,66 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-004",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-004",
+    "cwe": "CWE-772",
+    "category": "memory_leak",
+    "title": "Component destroy detaches a node but returns on configuration removal failure before releasing it",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_detach_component_record",
+    "line": 1229,
+    "end_line": 1247,
+    "severity": "critical",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-004",
+    "keywords": [
+      "issue-40",
+      "VM-004",
+      "component destroy",
+      "detach",
+      "config remove",
+      "leak"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1217,
+      "end_line": 1259,
+      "content": "\nint _runtime_apply_component_stage(const char* key, int stage_mode) {\n    ServiceNode* node = _service_alloc_node(key, \"rollback\");\n    if (!node) {\n        return -1;\n    }\n\n    if (stage_mode) {\n        free(node->payload);\n        free(node->payload);\n        SAFE_FREE(node->name);\n        SAFE_FREE(node);\n        return -1;\n    }\n    SAFE_FREE(node->payload);\n    SAFE_FREE(node->name);\n    SAFE_FREE(node);\n    return 0;\n}\n\nint _runtime_detach_component_record(const char* key, int config_remove_rc) {\n    ServiceNode* node = _service_alloc_node(key, \"component\");\n    if (!node) {\n        return -1;\n    }\n\n    LOCK(&g_service_registry.lock);\n    _service_insert_locked(node);\n    g_service_registry.head = node->next;\n    UNLOCK(&g_service_registry.lock);\n\n    if (config_remove_rc != 0) {\n        return -1;\n    }\n    SAFE_FREE(node->payload);\n    SAFE_FREE(node->name);\n    SAFE_FREE(node);\n    return 0;\n}\n\nint _runtime_remove_file_record(const char* name) {\n    ServiceNode* node = _service_alloc_node(name, \"/virtual/fs/node\");\n    if (!node) {\n",
+      "sha256": "3b8c8903ed1a1a535104765c70e374ebb38d85bca8d7477bc561f1664b590361"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "memory_leak",
+    "anchor_functions": [
+      "_runtime_detach_component_record"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "30b82df216c126c1740f3fa2ee98d0d3745ef37c366a40394e08e7daa5dd10ec"
+}

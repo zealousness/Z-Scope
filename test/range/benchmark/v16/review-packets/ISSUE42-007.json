@@ -1,0 +1,107 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE42-007",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE42-007",
+    "cwe": "CWE-120",
+    "category": "stack_overflow",
+    "title": "Thread name composition copies an unbounded external name into the 16-byte pthread name buffer",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_prepare_worker_label",
+    "line": 2364,
+    "end_line": 2375,
+    "severity": "high",
+    "tier": "real_project_issue42",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+    "source_model": "VM-005 THREAD-NAME-BUFFER-OVERFLOW-TRUNCATION",
+    "keywords": [
+      "issue-42",
+      "thread name",
+      "16 bytes",
+      "memcpy",
+      "overflow",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_refresh_cache",
+      "_runtime_refresh_worker_context"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_runtime_refresh_worker_context",
+    "secondary_line": 2882,
+    "secondary_end_line": 2890,
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_apply_shared_memory_event",
+        "line": 697,
+        "end_line": 704
+      },
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_refresh_cache",
+        "line": 706,
+        "end_line": 710
+      }
+    ],
+    "flow": "runtime_worker_cache_flow",
+    "related_functions": [
+      "td_runtime_refresh_cache",
+      "_runtime_refresh_worker_context"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2352,
+      "end_line": 2387,
+      "content": "                                           : g_runtime_pbuf_pool->active_tasks;\n    }\n\n    SAFE_FREE(pool->buffer);\n    SAFE_FREE(pool);\n    return 0;\n}\n\nuint64_t _runtime_read_timer_ticks(uint32_t lcore_id) {\n    RuntimeTimerControl* ctrl = g_runtime_timer_ctrl[lcore_id];\n    if (!ctrl) {\n        return 0;\n    }\n    return ctrl->ticks;\n}\n\nint _runtime_prepare_worker_label(const char* thread_name, uint32_t id) {\n    RuntimeThreadAux aux;\n    memset(&aux, 0, sizeof(aux));\n    aux.start = NULL;\n    aux.arg = NULL;\n\n    char composed[64];\n    snprintf(composed, sizeof(composed), \"runtime-%u-%s\", id,\n             thread_name ? thread_name : \"worker\");\n    memcpy(aux.name, composed, strlen(composed) + 1);\n    return (int)aux.name[0];\n}\n\nint _runtime_query_arena_usage(RuntimeUseInfo* out) {\n    if (!out) {\n        return -1;\n    }\n\n    RuntimeUseInfo tmp;\n    tmp.total_size = 4096;\n",
+      "sha256": "cd9a40ce7112e6c99636913eab07556b5c649ac3756c3127a76b5b4253fe6daa"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2870,
+      "end_line": 2902,
+      "content": "    rc |= (frame.body[_runtime_find_bitmap_delta(frame.body, frame.body_len)] == 0xFFu) ? -1 : 0;\n    uint32_t reader_owner = _runtime_read_lock_owner((uint32_t)frame.header.value);\n    if (reader_owner != (uint32_t)frame.header.value) {\n        rc |= -1;\n    }\n    rc |= _runtime_open_named_segment(stable_name, frame.header.mode);\n    rc |= _runtime_map_linked_segment(\n        stable_name, frame.header.name, (size_t)frame.header.size) ? 0 : -1;\n    rc |= _runtime_query_arena_usage(&use_info);\n\n    if (out && out_len >= sizeof(use_info)) {\n        memcpy(out, &use_info, sizeof(use_info));\n    }\n    return rc;\n}\n\nint _runtime_refresh_worker_context(size_t block_size, const char* worker_name,\n                                    uint32_t worker_id, int active_tasks) {\n    int rc = 0;\n    rc |= _runtime_close_thread_cache(block_size);\n    rc |= _runtime_prepare_worker_label(worker_name, worker_id);\n    rc |= _runtime_release_packet_pool(active_tasks);\n    rc |= _runtime_note_module_ready(active_tasks > 0);\n    return rc;\n}\n\nint _runtime_apply_memory_plan(const char* segment_name, uint32_t mode,\n                               uint64_t file_size, uint64_t map_size) {\n    const char* stable_name = segment_name ? segment_name : \"runtime-zone\";\n    int rc = 0;\n    rc |= _runtime_map_reserved_region(mode, file_size, map_size) ? 0 : -1;\n    rc |= _runtime_create_shared_zone(stable_name, (size_t)map_size) ? 0 : -1;\n    rc |= _runtime_make_shared_key(stable_name, (int)mode);\n",
+      "sha256": "325df0512d2e3d5ee877c0fbca29aae76e8ada4d28e3732c70806099b95aad79"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 685,
+      "end_line": 716,
+      "content": "}\n\ntypedef struct {\n    uint32_t magic;\n    uint16_t family;\n    uint16_t flags;\n    uint32_t size;\n    uint32_t mode;\n    uint64_t value;\n    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\n",
+      "sha256": "f7aa80d615ee4d87b6807384219d7061aa45f43ccf035756b0469a58849e5f98"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 694,
+      "end_line": 722,
+      "content": "    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\nint td_runtime_configure_pool(uint32_t lcore_limit, uint32_t configured_lcores) {\n    return _runtime_apply_pool_plan(lcore_limit, configured_lcores);\n}\n\nint td_runtime_publish_process_state(uint32_t user_proc_id, uint32_t pid,\n                                     const char* proc_name) {\n",
+      "sha256": "76b793d76e971df9fb866bd77d837e93ed64ba0cbe691c323a41504dcc10a8bb"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "stack_overflow",
+    "anchor_functions": [
+      "_runtime_prepare_worker_label",
+      "_runtime_refresh_worker_context",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_refresh_cache"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "6c73eda5b74730afa7d45feee2732e1330bede774eed0a779d4cdd8745f01a1f"
+}

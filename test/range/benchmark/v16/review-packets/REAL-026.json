@@ -1,0 +1,64 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-026",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-026",
+    "cwe": "CWE-562",
+    "category": "stack_escape",
+    "title": "Detached async worker receives the address of a stack-allocated job descriptor",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_submit_background_work",
+    "line": 1506,
+    "end_line": 1517,
+    "severity": "critical",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-ASYNC",
+    "keywords": [
+      "issue-40",
+      "pthread_create",
+      "pthread_detach",
+      "stack job",
+      "stack escape"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1494,
+      "end_line": 1529,
+      "content": "\nint _runtime_release_shared_node(const char* key) {\n    LOCK(&g_service_registry.lock);\n    ServiceNode* node = _service_find_locked(key);\n    UNLOCK(&g_service_registry.lock);\n    if (!node) {\n        return -1;\n    }\n    node->ref_count++;\n    return node->ref_count;\n}\n\nint _runtime_notify_registry_listener(const char* key, plugin_callback_t cb) {\n    LOCK(&g_service_registry.lock);\n    g_service_callback_node = _service_find_locked(key);\n    g_service_callback = cb;\n    if (g_service_callback) {\n        g_service_callback(g_service_callback_node);\n    }\n    UNLOCK(&g_service_registry.lock);\n    return 0;\n}\n\nint _runtime_submit_background_work(const char* path) {\n    ServiceAsyncJob job;\n    memset(&job, 0, sizeof(job));\n    STR_COPY(job.path, path ? path : \"real\");\n    job.node = g_service_callback_node;\n    pthread_t tid;\n    if (pthread_create(&tid, NULL, _service_async_worker, &job) != 0) {\n        return -1;\n    }\n    pthread_detach(tid);\n    return 0;\n}\n\n",
+      "sha256": "45165a2d033c924cb47ddde8989ae71f7923f037c1ed5639937d01da6ffe3937"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "stack_escape",
+    "anchor_functions": [
+      "_runtime_submit_background_work"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "97d19a932c1dd2b9ed8245f8fa0105acc36a362f5df3cdedfc712ae3ccf7359c"
+}

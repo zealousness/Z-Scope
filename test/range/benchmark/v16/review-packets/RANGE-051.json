@@ -1,0 +1,64 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-051",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-051",
+    "cwe": "CWE-78",
+    "category": "command_injection",
+    "title": "Platform task execution forwards caller-controlled task strings directly to the OS command launcher",
+    "file": "src/platform_linux.c",
+    "function": "platform_execute_task",
+    "line": 30,
+    "end_line": 37,
+    "severity": "high",
+    "keywords": [
+      "platform_execute_task",
+      "task",
+      "system(task)",
+      "CreateProcess",
+      "command injection",
+      "platform_impl.h"
+    ],
+    "additional_locations": [
+      {
+        "file": "src/platform_windows.c",
+        "function": "platform_execute_task",
+        "line": 38,
+        "end_line": 55
+      }
+    ],
+    "notes": "The platform abstraction is declared in include/platform_impl.h and is discovered as an external scan root when header_files includes *.h."
+  },
+  "code_windows": [
+    {
+      "path": "src/platform_linux.c",
+      "start_line": 18,
+      "end_line": 46,
+      "content": "}\n\nint platform_get_info(char* buffer, size_t size) {\n    if (!buffer || size == 0) {\n        return -1;\n    }\n    \n    snprintf(buffer, size, \"Linux Platform - %s %s %s\", \n             g_uname.sysname, g_uname.release, g_uname.machine);\n    return 0;\n}\n\nint platform_execute_task(const char* task) {\n    if (!task) {\n        return -1;\n    }\n    \n    printf(\"[LINUX] Executing task: %s\\n\", task);\n    \n    int ret = system(task);\n    \n    if (ret == -1) {\n        printf(\"[LINUX] Task execution failed\\n\");\n        return -1;\n    }\n    \n    printf(\"[LINUX] Task completed with exit code: %d\\n\", ret);\n    return ret;\n}\n",
+      "sha256": "ad4f9025149358f10874f3148e530f28348a53643ead17b4c16a2fff5f705175"
+    },
+    {
+      "path": "src/platform_windows.c",
+      "start_line": 26,
+      "end_line": 67,
+      "content": "}\n\nint platform_get_info(char* buffer, size_t size) {\n    if (!buffer || size == 0) {\n        return -1;\n    }\n    \n    strncpy(buffer, g_os_info, size - 1);\n    buffer[size - 1] = '\\0';\n    return 0;\n}\n\nint platform_execute_task(const char* task) {\n    if (!task) {\n        return -1;\n    }\n    \n    printf(\"[WINDOWS] Executing task: %s\\n\", task);\n    \n    STARTUPINFO si;\n    PROCESS_INFORMATION pi;\n    ZeroMemory(&si, sizeof(si));\n    si.cb = sizeof(si);\n    ZeroMemory(&pi, sizeof(pi));\n    \n    char cmd[MAX_PATH * 2];\n    strncpy(cmd, task, sizeof(cmd) - 1);\n    cmd[sizeof(cmd) - 1] = '\\0';\n    \n    BOOL success = CreateProcess(NULL, cmd, NULL, NULL, FALSE, \n                                0, NULL, NULL, &si, &pi);\n    \n    if (!success) {\n        printf(\"[WINDOWS] Task execution failed, error code: %lu\\n\", GetLastError());\n        return -1;\n    }\n    \n    WaitForSingleObject(pi.hProcess, INFINITE);\n    \n    DWORD exit_code;\n    GetExitCodeProcess(pi.hProcess, &exit_code);\n    \n",
+      "sha256": "0182347d44455ecbce57d48f502114da8087ad0eeaf025427d3b8f1e9366b38d"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "command_injection",
+    "anchor_functions": [
+      "platform_execute_task"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "15060f9552882807340a2d4a7b2c537ab24be6e82796f47c6f94332f2a95993c"
+}

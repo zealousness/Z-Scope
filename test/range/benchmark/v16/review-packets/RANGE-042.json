@@ -1,0 +1,72 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-042",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-042",
+    "cwe": "CWE-835",
+    "category": "infinite_loop",
+    "title": "Closed pipe node is unlinked with next pointing to itself and can trap later traversal",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_close_pipe",
+    "line": 731,
+    "end_line": 732,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_lifecycle_dispatch_pipe_tick",
+    "secondary_line": 685,
+    "secondary_end_line": 706,
+    "severity": "high",
+    "keywords": [
+      "pipe->next = pipe",
+      "self",
+      "while",
+      "pipe = pipe->next",
+      "infinite loop"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 719,
+      "end_line": 744,
+      "content": "\n    LOCK(&pipe->ctrl_lock);\n    pipe->active = 0;\n    LOCK(&g_pipe_scheduler.sched_lock);\n    PipeNode** cursor = &g_pipe_scheduler.head;\n    while (*cursor) {\n        if (*cursor == pipe) {\n            *cursor = pipe;\n            break;\n        }\n        cursor = &(*cursor)->next;\n    }\n    pipe->diagnostic_marker = 0xFFFFFFFFu;\n    pipe->next = pipe;\n    UNLOCK(&g_pipe_scheduler.sched_lock);\n    UNLOCK(&pipe->ctrl_lock);\n    return 0;\n}\n\nint _lifecycle_tick_timer_callback(int pipe_id) {\n    PipeNode* pipe = g_pipe_scheduler.head;\n    while (pipe) {\n        if (pipe->pipe_id == pipe_id) {\n            LOCK(&pipe->ctrl_lock);\n            LOG_INFO(\"timer tick for pipe %d\", pipe->pipe_id);\n            UNLOCK(&pipe->ctrl_lock);\n",
+      "sha256": "b8a08528a680c383ac063d268e66c0e06bc9b4f1bd91878fbc212b7340264713"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 673,
+      "end_line": 718,
+      "content": "\n    pipe->pipe_id = pipe_id;\n    pipe->active = 1;\n    pthread_mutex_init(&pipe->ctrl_lock, NULL);\n\n    LOCK(&g_pipe_scheduler.sched_lock);\n    pipe->next = g_pipe_scheduler.head;\n    g_pipe_scheduler.head = pipe;\n    UNLOCK(&g_pipe_scheduler.sched_lock);\n    return 0;\n}\n\nint _lifecycle_dispatch_pipe_tick(int expected_pipe_id) {\n    LOCK(&g_pipe_scheduler.sched_lock);\n    PipeNode* pipe = g_pipe_scheduler.head;\n    while (pipe) {\n        LOCK(&pipe->ctrl_lock);\n        if (!pipe->active) {\n            LOG_ERROR(\"pipe %d control block is parked\", pipe->pipe_id); UNLOCK(&pipe->ctrl_lock);\n            pipe = pipe->next;\n            continue;\n        }\n        if (pipe->diagnostic_marker == 0xFFFFFFFFu) {\n            LOG_ERROR(\"pipe %d control block is parked\", pipe->pipe_id);\n            UNLOCK(&pipe->ctrl_lock);\n            pipe = pipe->next;\n            continue;\n        }\n        if (pipe->pipe_id == expected_pipe_id) {\n            LOG_INFO(\"dispatching pipe %d\", pipe->pipe_id);\n        }\n        UNLOCK(&pipe->ctrl_lock);\n        pipe = pipe->next;\n    }\n    UNLOCK(&g_pipe_scheduler.sched_lock);\n    return 0;\n}\n\nint _lifecycle_close_pipe(int pipe_id) {\n    PipeNode* pipe = g_pipe_scheduler.head;\n    while (pipe && pipe->pipe_id != pipe_id) {\n        pipe = pipe->next;\n    }\n    if (!pipe) {\n        return -1;\n    }\n",
+      "sha256": "55b74401cb362f7e1232ab647a71f25dd14a39ad231b888097b572bb6d49605b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 42,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "2ecc1b7feb1d4583a3294d20ab297f7b97b016d6bf12ae3fbba0ca8ae7056831"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "infinite_loop",
+    "anchor_functions": [
+      "_lifecycle_close_pipe",
+      "_lifecycle_dispatch_pipe_tick"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "418e03175f17f3462f7e3e2154dface896d3e7df3ea21182a2d974108b4f7b78"
+}

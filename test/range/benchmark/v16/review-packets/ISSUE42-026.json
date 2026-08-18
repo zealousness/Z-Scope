@@ -1,0 +1,129 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE42-026",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE42-026",
+    "cwe": "CWE-362",
+    "category": "key_generation_race",
+    "title": "ftok-style key generation checks path state separately from key creation and registration",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_make_shared_key",
+    "line": 2721,
+    "end_line": 2733,
+    "severity": "medium",
+    "tier": "real_project_issue42",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+    "source_model": "VM-024 Ftok Concurrent Issue Fix",
+    "keywords": [
+      "issue-42",
+      "ftok",
+      "System V",
+      "key collision",
+      "concurrent",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_shutdown_session",
+      "_runtime_shutdown_local_session"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_runtime_shutdown_local_session",
+    "secondary_line": 2958,
+    "secondary_end_line": 2966,
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_apply_shared_memory_event",
+        "line": 697,
+        "end_line": 704
+      },
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_shutdown_session",
+        "line": 736,
+        "end_line": 739
+      }
+    ],
+    "flow": "runtime_session_shutdown_flow",
+    "related_functions": [
+      "td_runtime_shutdown_session",
+      "_runtime_shutdown_local_session"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2709,
+      "end_line": 2745,
+      "content": "        return -1;\n    }\n    return (int)tbl->pid;\n}\n\nint _runtime_mark_process_online(int identity, uint32_t logic_proc_id) {\n    RuntimePcmProc* tbl = &g_runtime_proc_table[logic_proc_id % RUNTIME_PCM_PROC_MAX];\n    if (identity == 1) {\n        tbl->proc_state = TASK_STATUS_NORMAL;\n        return 0;\n    }\n\n    tbl->pid = logic_proc_id + 1000u;\n    return 0;\n}\n\nint _runtime_make_shared_key(const char* path, int project_id) {\n    if (!path) {\n        return -1;\n    }\n\n    if (!_file_exists(path)) {\n        LOG_WARN(\"ftok path does not exist\");\n    }\n    int key = (int)(_hash_string(path) & 0xffffu) | ((project_id & 0xff) << 16);\n    LOCK(&g_runtime_ftok_lock); if (_runtime_find_shared_zone(path) != NULL) { LOG_WARN(\"ftok key collides with registered zone\"); }\n    UNLOCK(&g_runtime_ftok_lock);\n    return key;\n}\n\nstatic int _runtime_delete_timer_slot(uint32_t lcore_id, uint8_t ins_id) {\n    (void)lcore_id;\n    (void)ins_id;\n    LOCK(&g_runtime_wheel_global_lock);\n    LOCK(&g_runtime_wheel_timer.lock);\n    g_runtime_wheel_timer.timer_id = -1;\n    UNLOCK(&g_runtime_wheel_timer.lock);\n",
+      "sha256": "9c79ca6e069bc369da6030333d32c942038bd6923b9f929a503fc77d68fbca83"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2946,
+      "end_line": 2978,
+      "content": "int _runtime_dispatch_event_cycle(int same_core, int fast_mode,\n                                  int destroy_in_callback) {\n    int rc = 0;\n    rc |= _runtime_queue_local_flush(same_core, fast_mode);\n    rc |= _runtime_cancel_wheel_timer(destroy_in_callback);\n    rc |= _runtime_finish_current_event(destroy_in_callback);\n    return rc;\n}\n\nint _runtime_handle_fault_signal(int sig, void* ucontext, int hold_sem) {\n    int rc = 0;\n    rc |= _runtime_capture_signal_stack(sig, ucontext);\n    rc |= _runtime_write_exception_record(sig, hold_sem);\n    return rc;\n}\n\nint _runtime_shutdown_local_session(const char* path, int project_id,\n                                    size_t reserve_size) {\n    const char* stable_path = path ? path : \"runtime-zone\";\n    int rc = 0;\n    rc |= _runtime_make_shared_key(stable_path, project_id);\n    rc |= _runtime_cleanup_tls_reserve(reserve_size, 0);\n    rc |= _runtime_release_hash_node(reserve_size, 1);\n    return rc;\n}\n\n#define RUNTIME_STREAM_MAGIC 0x5354524du\n#define RUNTIME_STREAM_SEGMENT_LIMIT 8u\n#define RUNTIME_STREAM_DIGEST_BYTES 64u\n#define RUNTIME_STREAM_JOURNAL_MAX 4096u\n\ntypedef struct {\n    uint32_t magic;\n",
+      "sha256": "9c0307d428aa9e134f692a5666f431b454f30909a654e6bb262aa16775956815"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 685,
+      "end_line": 716,
+      "content": "}\n\ntypedef struct {\n    uint32_t magic;\n    uint16_t family;\n    uint16_t flags;\n    uint32_t size;\n    uint32_t mode;\n    uint64_t value;\n    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\n",
+      "sha256": "f7aa80d615ee4d87b6807384219d7061aa45f43ccf035756b0469a58849e5f98"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 724,
+      "end_line": 751,
+      "content": "}\n\nint td_runtime_schedule_event(int same_core, int fast_mode,\n                              int destroy_in_callback) {\n    return _runtime_dispatch_event_cycle(same_core, fast_mode,\n                                         destroy_in_callback);\n}\n\nint td_runtime_handle_signal(int sig, void* ucontext, int hold_sem) {\n    return _runtime_handle_fault_signal(sig, ucontext, hold_sem);\n}\n\nint td_runtime_shutdown_session(const char* path, int project_id,\n                                size_t reserve_size) {\n    return _runtime_shutdown_local_session(path, project_id, reserve_size);\n}\n\nint td_runtime_process_stream_batch(int fd, const char* journal_path,\n                                    const unsigned char* wire, size_t wire_len,\n                                    uint32_t queue_id,\n                                    unsigned char* out, size_t out_size) {\n    return _runtime_process_stream_batch(fd, journal_path, wire, wire_len,\n                                         queue_id, out, out_size);\n}\n\nint td_runtime_maintain_lock_cache(const char* cache_name,\n                                   uint32_t worker_id,\n                                   uint32_t flags,\n",
+      "sha256": "bad4feea3e171e226aabf09766219889a0ec0824107cf2f40d1469b8ccf9c8d4"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 39,
+      "end_line": 41,
+      "content": "#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "5851042e63bb78bdc1160069d6474e10596ca676d1f7b9cd9943265940cb82a7"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2010,
+      "end_line": 2012,
+      "content": "#define RUNTIME_FIXPOOL_OPS_MAX 4u\n#define RUNTIME_PCM_PROC_MAX 8u\n#define RUNTIME_SHM_MODE_REG 0100000u\n",
+      "sha256": "441c586165bb17763f26cc2162cafd1007228d054b4bcb83ac5ce9c9df5c250b"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2971,
+      "end_line": 2976,
+      "content": "\n#define RUNTIME_STREAM_MAGIC 0x5354524du\n#define RUNTIME_STREAM_SEGMENT_LIMIT 8u\n#define RUNTIME_STREAM_DIGEST_BYTES 64u\n#define RUNTIME_STREAM_JOURNAL_MAX 4096u\n\n",
+      "sha256": "73c0f4e630d622cb3b540a3d0d197ee839d91b7aefc25c31c82eeb35ae2c6cec"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "key_generation_race",
+    "anchor_functions": [
+      "_runtime_make_shared_key",
+      "_runtime_shutdown_local_session",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_shutdown_session"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "8359e112017beea3e2be7a9894388462c4aea16e5236169b7dd798be8f625a37"
+}
