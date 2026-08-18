@@ -7,7 +7,7 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 
 - 设计版本：`1.0.1`
 - 状态：`implementing`
-- 当前阶段：`P0`至`P4`已完成；`P5 runtime-authority-cutover`为`in_progress`，候选运行时已切换但release gate保持关闭；`E0`仍为`pending`
+- 当前阶段：`P0`至`P5`已完成；`E0`仍为`pending`
 - 当前产品事实：仍以[`docs/architecture.md`](../../architecture.md)为准
 - 基线状态：已拆分为Truth、运行配置、Scorer和产品四个可审计提交，工作树干净
 - P0批准状态：cold fast/balanced基线、三方正式审核、最终证据校验和annotated design tag均已绑定
@@ -15,7 +15,7 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 - P2完成状态：Proof Kernel资格 corpus、完整门禁和DeepSeek `deepseek-v4-pro`最终proof-security审核已通过，零blocking finding；P2完成时运行时固定为shadow，其authority只能在P5候选中测试
 - P3完成状态：SecuritySpec v2资格、只读Review Center和双角色审核已通过，运行时继续保持shadow
 - P4完成状态：SecurityHypothesis v2、系统offer/action选择、独立shadow Ledger/CAS、selected-action Checker和120单元非Range qualification已通过完整门禁；Claude Opus 5产品架构审核与DeepSeek-V4-Pro Max proof-security审核绑定同一候选树并以零blocking finding批准。P4完成时旧稳定终态保持不变，切换只在当前P5候选发生
-- P5进行状态：P4回退wheel已冻结，RuntimeAuthorityManifest v1与新cache epoch已生效；SecuritySpec、Hypothesis Hunter和Proof Engine的authoritative候选仅供本地资格验证，双审核与全部强制门禁通过前不可发布
+- P5完成状态：P4回退wheel已冻结，RuntimeAuthorityManifest v1与新cache epoch已生效；SecuritySpec为authoritative语义输入，Hypothesis Hunter仅注册未确认候选，Proof Engine为唯一终态权威。同一产品候选commit/tree已通过完整本地门禁、cJSON零模型资格与Claude Opus 5/DeepSeek-V4-Pro Max双审核，release latch按资格和审核文件hash放行
 
 ## 权威文件
 
@@ -35,6 +35,9 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 - [P4 proof-security审核记录](acceptance/reviews/p4-proof-security.json)
 - [P5 runtime cutover阶段规格](phases/P5-runtime-cutover.md)
 - [P5双角色审核schema](acceptance/p5-review.schema.json)
+- [P5 qualification manifest](acceptance/p5-qualification-manifest.json)
+- [P5 product architecture审核记录](acceptance/reviews/p5-product-architecture.json)
+- [P5 proof-security审核记录](acceptance/reviews/p5-proof-security.json)
 - [架构决策记录](adr/0001-replace-vulnerability-analyzer-with-hypothesis-hunter.md)
 - [Proof provider量词冻结](adr/0007-freeze-proof-provider-quantifiers.md)
 

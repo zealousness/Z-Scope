@@ -1,0 +1,115 @@
+{
+  "review_schema": "zscope.p5-runtime-cutover-review.v1",
+  "review_scope": "runtime_cutover_proof_security",
+  "role": "proof_security",
+  "reviewer_model": "deepseek-v4-pro",
+  "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only",
+  "reviewed_commit": "1797389af9807c74c1261f1ad85a3a18b17c23e2",
+  "reviewed_tree": "325b3c6a6cf7caf85200088af1a17324adafeb5d",
+  "decision": "approved",
+  "summary": "DeepSeek-V4-Pro Max approved the final P5 proof-security candidate with zero blocking findings. It confirmed PS-P5-001 is closed: every required confirmation or counterproof clause must be registered/executable, selected, checked and accepted as verified_true before terminal closure. It also confirmed the final strict boolean validation rejects numeric or string required values before action-catalog construction, including an otherwise correctly re-sealed forged obligation. The reviewer traced the engine, runner, TerminalAuthority, model adapter, SecuritySpec, Hunter, alert-verify, cache epoch, report reuse, Decision Trace and import boundaries and found no model, legacy, compat or malformed-clause path that can close a candidate without program-recomputed Checker authority.",
+  "blocking_findings": [],
+  "non_blocking_findings": [
+    {
+      "id": "NB-01",
+      "title": "Fast profile conservatively projects reverified proof closure as needs-review",
+      "evidence": "The fast close-without-model helper keeps the public disposition at needs_review even when proof details retain a programmatic confirmed closure.",
+      "recommendation": "Document this conservative policy or project the proof disposition consistently in a future change."
+    },
+    {
+      "id": "NB-02",
+      "title": "Per-action V3 diagnostic overwrites the aggregate proof decision field",
+      "evidence": "The action executor records fact_verified or needs_review in proof_kernel_decision; current root/ref checks make this conservative and prevent terminal upgrade.",
+      "recommendation": "Store per-action diagnostics in a separate field and recompute the root when extending artifact references."
+    },
+    {
+      "id": "NB-03",
+      "title": "Alert verification trusts a self-consistent frozen attached proof bundle",
+      "evidence": "Alert verification replays the attached frozen IR and proof objects but does not re-extract the current alert file to compare its code/backend hashes.",
+      "recommendation": "When indexed source is available, optionally re-extract FunctionIRGraph and require identity with the attached proof IR."
+    },
+    {
+      "id": "NB-04",
+      "title": "Unselected evaluate compatibility entry remains public",
+      "evidence": "ProofKernelEngine.evaluate executes the complete system catalog and has no current live product caller; live callers use evaluate_selected_actions.",
+      "recommendation": "Deprecate the compatibility entry if future consumers do not require it."
+    },
+    {
+      "id": "NB-05",
+      "title": "Non-v3 validation result cacheability check is implicit",
+      "evidence": "Pre-P5 rows remain unreachable because the cache protocol binds the P5 epoch and legacy payloads cannot close a candidate, but the cacheability predicate does not explicitly reject every non-v3 schema.",
+      "recommendation": "Return false explicitly for non-v3 payloads as defense in depth."
+    },
+    {
+      "id": "NB-06",
+      "title": "Localized Hunter coverage reuse is not wired to a persisted structural set",
+      "evidence": "The current planner may re-hunt structurally unchanged units; the blind projection and registration boundary remain isolated from live candidate or verdict state.",
+      "recommendation": "Add only structurally derived persisted coverage keys if future efficiency work requires them."
+    }
+  ],
+  "checks": [
+    {
+      "name": "PS-P5-001 complete required-clause closure",
+      "result": "pass",
+      "evidence": "_authoritative_closure fails closed when any required clause is outside the catalog, unselected, missing a Checker result, or not accepted/verified_true; unknown counterproof can no longer be treated as absence."
+    },
+    {
+      "name": "strict boolean required validation",
+      "result": "pass",
+      "evidence": "_validate_clause requires isinstance(required, bool), and every engine, checker, provider and Hunter offer ingestion validates the obligation before use."
+    },
+    {
+      "name": "symmetric malformed-field and partial-action bypass audit",
+      "result": "pass",
+      "evidence": "No other clause required truthiness consumer exists; optional-only, partial action, unsupported predicate, incomplete coverage and Java paths remain needs_review."
+    },
+    {
+      "name": "TerminalAuthority v3 sole origin",
+      "result": "pass",
+      "evidence": "Confirmed and rejected_with_proof require recomputed Checker refs, non-empty artifact refs, matching proof root, verified integrity and a proof-checker authority identity."
+    },
+    {
+      "name": "bounded model adapter",
+      "result": "pass",
+      "evidence": "The Proof Engine agent exposes only frozen action IDs; facts, predicates, parameters, coverage and terminal disposition are program-owned and legacy Validator v2 inputs are rejected."
+    },
+    {
+      "name": "entry binding and guard semantics",
+      "result": "pass",
+      "evidence": "Entry parameter binding validates count, slot, identity and full signature domain; guard dominance remains a CFG fact and cannot stand in for value-range counterproof."
+    },
+    {
+      "name": "SecuritySpec freshness and qualification",
+      "result": "pass",
+      "evidence": "Only the highest fresh qualification-backed stable revision compiles; stale dependencies, conflicts, unresolved evidence and revision hash drift fail closed."
+    },
+    {
+      "name": "Hunter live isolation and fast/alert policy",
+      "result": "pass",
+      "evidence": "Hunter registration is force-unconfirmed and candidate-registration-only; fast and alert-verify do not invoke Hunter or a model."
+    },
+    {
+      "name": "post-closure and single-terminal invariants",
+      "result": "pass",
+      "evidence": "Programmatic closure stops later model/tool iterations, conflicts are program-resolved, and Decision Trace rejects a second differing terminal event for the cluster."
+    },
+    {
+      "name": "cache, compat and legacy isolation",
+      "result": "pass",
+      "evidence": "The P5 cache epoch and RuntimeAuthorityManifest gate reuse; compat is read-only, removed agents are absent, and legacy proof fields cannot create evidence or terminal state."
+    },
+    {
+      "name": "wheel and recorded gates",
+      "result": "not_verified",
+      "evidence": "The reviewer accepted the recorded candidate wheel SHA-256 bd851f86fb66a4ed6920ec76b321733fc6767eb91e4a8f00c7a6afc13a48de67 and final local result of 1819 passed and 7 skipped without independently rebuilding or rerunning them."
+    }
+  ],
+  "limitations": [
+    "The review was static and read-only; it did not run tests, unpack the wheel or execute a scan.",
+    "The three historical P0 aggregate artifacts are absent and were not replayed.",
+    "Dynamic exploit attempts were not executed; adversarial paths were traced from source and tests.",
+    "Alert verification accepts a self-consistent frozen attached proof bundle without source re-extraction, as recorded in NB-03.",
+    "No Range truth, fixture, expected finding, ground truth or Scorer input was read, and no external-model benchmark was run."
+  ],
+  "attestation": "DeepSeek-V4-Pro Max, running in DSH 0.1.0-rc.6 with reasoning_effort=max and permission_mode=read-only, personally reviewed exact clean commit 1797389af9807c74c1261f1ad85a3a18b17c23e2 and tree 325b3c6a6cf7caf85200088af1a17324adafeb5d. It used no subagents, made no file or Git changes, accessed no credentials, read no Range truth/fixture/Scorer input and ran no external-model benchmark. Decision: approved with zero blocking findings."
+}

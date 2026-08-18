@@ -6,9 +6,11 @@
 
 ## 当前状态
 
-`in_progress`。P2-P4均已完成，P4回退wheel及其SHA-256已冻结；P5 authority
-契约、新cache epoch和cJSON answer-free资格源已进入候选实现。release gate在同树双审核、
-完整资格清单和全部强制门禁通过前固定拒绝发布，测试通过不等于阶段完成。
+`complete`。产品候选`1797389af9807c74c1261f1ad85a3a18b17c23e2`、tree
+`325b3c6a6cf7caf85200088af1a17324adafeb5d`已通过完整本地门禁、cJSON answer-free
+资格、Claude Opus 5 product-architecture审核和DeepSeek-V4-Pro Max proof-security审核；
+两份审核均绑定同一候选树、decision为`approved`且blocking finding为空。release latch只由
+该候选的qualification与双审核SHA-256放行；P4回退wheel继续按已冻结hash保留。
 
 ## 进入条件
 
@@ -38,6 +40,10 @@
   closure；non-executable、未选择或unknown clause一律保持needs-review。
 - full pytest、compileall、mypy、Black、docs和package-data通过。
 - 最终Claude Opus 5 product-architecture与DeepSeek-V4-Pro Max proof-security审核绑定同一clean commit/tree，均approved且blocking finding为空。
+- 完整候选门禁结果为`1819 passed, 7 skipped`，compileall、mypy、Black 25.11、P1-P5
+  package/reachability、P2-P4 qualification、trace/proof/cache tamper和公共入口smoke均通过。
+- cJSON v1.7.19 cold/repeat fast与CLI/Web/MCP smoke均为零模型、零网络；balanced/deep
+  只使用本地counting fake，没有向外部模型发送源码。
 
 ## 停止与回退
 
