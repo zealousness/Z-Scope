@@ -43,8 +43,12 @@
       "additionalProperties": {"$ref": "#/$defs/sha256"},
       "required": [
         "truth_v16",
+        "truth_v16_content",
+        "truth_contract_manifest",
         "truth_manifest",
         "review_bundle",
+        "review_bundle_content",
+        "review_provenance",
         "safe_pair_manifest",
         "defect_taxonomy",
         "benchmark_policy",

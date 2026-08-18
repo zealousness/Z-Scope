@@ -56,14 +56,34 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.review_run_id }}
           digest-mismatch: error
+      - uses: actions/download-artifact@v8
+        with:
+          name: range-v16-review-provenance-${{ inputs.review_source_sha }}
+          path: protected-review-provenance
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.review_run_id }}
+          digest-mismatch: error
       - name: Validate Truth v16, Benchmark v5, pairs, and answer isolation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ inputs.review_run_id }}
         run: |
           python3 -m pip install --require-hashes -r requirements/constraints/py313.txt
           python3 -m pip install --no-deps -e .
+          REVIEW_ARTIFACT_DIGEST="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts" \
+            --jq '.artifacts[] | select(.name == "range-v16-reviewed-${{ inputs.review_source_sha }}") | .digest')"
+          test -n "$REVIEW_ARTIFACT_DIGEST"
+          python3 scripts/verify_e0_review_provenance.py \
+            --provenance protected-review-provenance/review-provenance.json \
+            --workflow-run-id '${{ inputs.review_run_id }}' \
+            --head-sha '${{ inputs.review_source_sha }}' \
+            --artifact-digest "$REVIEW_ARTIFACT_DIGEST"
           python3 scripts/validate_range_v16_truth.py \
             --truth test/range/benchmark/v16/ground_truth.json \
-            --review-root protected-review-evidence \
-            --require-protected-reviews
+            --pair-root test/range/benchmark/v16/pairs \
+            --compile-pairs
           python3 -m pytest -q \
             tests/test_truth_contract_v2.py \
             tests/test_benchmark_v5.py \
@@ -81,6 +101,7 @@ jobs:
             --truth test/range/benchmark/v16/ground_truth.json \
             --truth-manifest test/range/benchmark/v16/truth-manifest.json \
             --review-bundle protected-review-evidence/review-bundle-manifest.json \
+            --review-provenance protected-review-provenance/review-provenance.json \
             --safe-pair-manifest test/range/benchmark/v16/safe-pair-manifest.json \
             --defect-taxonomy zscope/benchmarking/defect-taxonomy.v1.json \
             --benchmark-policy zscope/benchmarking/benchmark_policy.v2.json \

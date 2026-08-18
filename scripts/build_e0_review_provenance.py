@@ -12,7 +12,11 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from e0_review_governance import E0GovernanceError, load_json_strict
+from e0_review_governance import (
+    E0GovernanceError,
+    load_json_strict,
+    validate_review_provenance,
+)
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -75,6 +79,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             "packet_catalog_sha256": catalog_sha,
             "review_bundle_sha256": bundle_sha,
         }
+        validate_review_provenance(
+            payload,
+            expected_workflow_run_id=run_id,
+            expected_head_sha=args.head_sha,
+            expected_artifact_digest=args.artifact_digest,
+        )
     except (E0GovernanceError, OSError, subprocess.SubprocessError) as exc:
         print(f"cannot bind E0 review provenance: {exc}", file=sys.stderr)
         return 2
