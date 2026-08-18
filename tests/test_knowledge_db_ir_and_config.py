@@ -476,28 +476,21 @@ def test_knowledge_db_migrates_complete_taint_identity_and_forces_reindex(
         db.commit()
 
         rows = db.get_taint_bugs("Double Free")
-        assert {
-            (row["source_func"], row["sink_func"])
-            for row in rows
-        } == {
+        assert {(row["source_func"], row["sink_func"]) for row in rows} == {
             ("entry", "sink_b"),
             ("unreachable", "sink_a"),
         }
         assert db.stats()["taint_signatures"] == 2
 
         unique_identities = []
-        for index_row in db._conn.execute(
-            "PRAGMA index_list(taint_signatures)"
-        ).fetchall():
+        for index_row in db._conn.execute("PRAGMA index_list(taint_signatures)").fetchall():
             if not index_row["unique"]:
                 continue
             index_name = str(index_row["name"]).replace('"', '""')
             unique_identities.append(
                 tuple(
                     row["name"]
-                    for row in db._conn.execute(
-                        f'PRAGMA index_info("{index_name}")'
-                    ).fetchall()
+                    for row in db._conn.execute(f'PRAGMA index_info("{index_name}")').fetchall()
                 )
             )
         assert KnowledgeDB.TAINT_SIGNATURE_IDENTITY in unique_identities
@@ -661,12 +654,10 @@ def test_knowledge_db_function_type_context_round_trip_and_optional_unresolved(
         )
         db.commit()
         function_id = next(
-            row["id"] for row in db.get_function_records()
-            if row["name"] == "register_plugin"
+            row["id"] for row in db.get_function_records() if row["name"] == "register_plugin"
         )
         type_info = next(
-            row for row in db.get_all_type_definitions()
-            if row["name"] == "PluginRegistry"
+            row for row in db.get_all_type_definitions() if row["name"] == "PluginRegistry"
         )
         type_index_name = db.type_index_name(type_info)
         db.replace_function_type_refs(
@@ -778,8 +769,7 @@ def test_knowledge_db_include_closures_handle_cycles_diamonds_and_long_chains(
             ("include/cycle-b.h", "include/cycle-a.h", 1, 0),
         ]
         rows.extend(
-            (f"generated/{index}.h", f"generated/{index + 1}.h", 1, 0)
-            for index in range(1100)
+            (f"generated/{index}.h", f"generated/{index + 1}.h", 1, 0) for index in range(1100)
         )
         db.insert_include_edges_batch(iter(rows))
         db.commit()
@@ -1057,11 +1047,20 @@ def test_knowledge_db_batches_tu_replacements_with_one_commit_and_per_tu_savepoi
             "second_old",
         ]
         assert sum(statement.strip().upper() == "COMMIT" for statement in statements) == 1
-        assert sum(statement.upper().startswith("SAVEPOINT REPLACE_TU_FACTS_") for statement in statements) == 2
-        assert sum(
-            statement.upper().startswith("ROLLBACK TO SAVEPOINT REPLACE_TU_FACTS_")
-            for statement in statements
-        ) == 1
+        assert (
+            sum(
+                statement.upper().startswith("SAVEPOINT REPLACE_TU_FACTS_")
+                for statement in statements
+            )
+            == 2
+        )
+        assert (
+            sum(
+                statement.upper().startswith("ROLLBACK TO SAVEPOINT REPLACE_TU_FACTS_")
+                for statement in statements
+            )
+            == 1
+        )
     finally:
         db.close()
 
@@ -1123,16 +1122,11 @@ def test_knowledge_db_purge_large_ir_tu_uses_temp_id_subquery(tmp_path: Path) ->
         db._conn.executemany(
             "INSERT INTO ir_statements "
             "(file_path, line, function, normalized_code) VALUES (?, ?, ?, ?)",
-            [
-                ("src/large.c", line, "large", f"stmt-{line}")
-                for line in range(1, 1201)
-            ],
+            [("src/large.c", line, "large", f"stmt-{line}") for line in range(1, 1201)],
         )
         statement_ids = [
             int(row["id"])
-            for row in db._conn.execute(
-                "SELECT id FROM ir_statements ORDER BY id"
-            ).fetchall()
+            for row in db._conn.execute("SELECT id FROM ir_statements ORDER BY id").fetchall()
         ]
         db._conn.executemany(
             "INSERT INTO ir_cfg_edges (function, from_stmt, to_stmt) VALUES (?, ?, ?)",
@@ -1231,7 +1225,9 @@ def test_knowledge_db_caches_direct_callee_queries_and_invalidates_on_write(tmp_
         db2.close()
 
 
-def test_knowledge_db_caches_indirect_callee_queries_and_invalidates_on_write(tmp_path: Path) -> None:
+def test_knowledge_db_caches_indirect_callee_queries_and_invalidates_on_write(
+    tmp_path: Path,
+) -> None:
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     try:
         db.insert_indirect_call("caller", "target", confidence=0.8, svf_group="entry_cluster_1")
@@ -1251,7 +1247,10 @@ def test_knowledge_db_caches_indirect_callee_queries_and_invalidates_on_write(tm
         db.insert_indirect_call("caller", "later", confidence=0.7, svf_group="entry_cluster_2")
         db.commit()
 
-        assert {row["name"] for row in db.get_indirect_callees("caller", limit=30)} == {"target", "later"}
+        assert {row["name"] for row in db.get_indirect_callees("caller", limit=30)} == {
+            "target",
+            "later",
+        }
     finally:
         db.close()
 
@@ -1309,9 +1308,7 @@ def test_knowledge_db_get_macro_definitions_batch(
         )
         db.commit()
 
-        result = db.get_macro_definitions_batch(
-            ["UNLOCK", "g_lock", "UNLOCK", "missing"]
-        )
+        result = db.get_macro_definitions_batch(["UNLOCK", "g_lock", "UNLOCK", "missing"])
 
         assert result == [
             {
@@ -1464,9 +1461,7 @@ def test_call_edges_persist_and_query_callee_kind(tmp_path: Path) -> None:
             "void (*)(void*)",
         )
         # Existing callers that still provide six-tuples retain a safe unknown kind.
-        db.insert_call_edges_batch(
-            [("entry", "src/demo.c", "legacy", "", 13, "direct")]
-        )
+        db.insert_call_edges_batch([("entry", "src/demo.c", "legacy", "", 13, "direct")])
         db.commit()
 
         rows = db.get_all_callees("entry", caller_file="src/demo.c")
@@ -1634,8 +1629,7 @@ def test_delete_tu_removes_file_owned_facts_and_related_call_edges(tmp_path: Pat
             ("GONE_MACRO", "include/deleted.h", 3, "1"),
         )
         db._conn.execute(
-            "INSERT INTO global_variables (name, type_str, file_path, line) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO global_variables (name, type_str, file_path, line) " "VALUES (?, ?, ?, ?)",
             ("gone_global", "int", "include/deleted.h", 4),
         )
         db.insert_function_symbol_refs_batch(
@@ -1662,7 +1656,9 @@ def test_delete_tu_removes_file_owned_facts_and_related_call_edges(tmp_path: Pat
             ("x", stmt, other_stmt),
         )
         db.upsert_ir_path_slice("CAND_GONE", "gone", source_stmt=stmt, sink_stmt=other_stmt)
-        db.insert_ir_resource_event("CAND_GONE", "x", "release", "free", "include/deleted.h", 5, "gone")
+        db.insert_ir_resource_event(
+            "CAND_GONE", "x", "release", "free", "include/deleted.h", 5, "gone"
+        )
         db.insert_ir_lock_event("CAND_GONE", "m", "lock", "include/deleted.h", 6, "gone")
         db.insert_ir_shared_access("CAND_GONE", "obj", "", "read", "include/deleted.h", 7, "gone")
         db.insert_indirect_call("gone", "target", call_file="include/deleted.h")
@@ -1697,14 +1693,20 @@ def test_delete_tu_removes_file_owned_facts_and_related_call_edges(tmp_path: Pat
             "ir_path_slices",
         ):
             assert db._conn.execute(f"SELECT COUNT(*) AS cnt FROM {table}").fetchone()["cnt"] == 0
-        assert db._conn.execute(
-            "SELECT COUNT(*) AS cnt FROM ir_statements WHERE file_path = ?",
-            ("include/deleted.h",),
-        ).fetchone()["cnt"] == 0
-        assert db._conn.execute(
-            "SELECT COUNT(*) AS cnt FROM ir_statements WHERE file_path = ?",
-            ("src/keep.c",),
-        ).fetchone()["cnt"] == 1
+        assert (
+            db._conn.execute(
+                "SELECT COUNT(*) AS cnt FROM ir_statements WHERE file_path = ?",
+                ("include/deleted.h",),
+            ).fetchone()["cnt"]
+            == 0
+        )
+        assert (
+            db._conn.execute(
+                "SELECT COUNT(*) AS cnt FROM ir_statements WHERE file_path = ?",
+                ("src/keep.c",),
+            ).fetchone()["cnt"]
+            == 1
+        )
         assert db._conn.execute("SELECT COUNT(*) AS cnt FROM include_edges").fetchone()["cnt"] == 1
     finally:
         db.close()
@@ -1857,10 +1859,7 @@ def test_enriched_taint_bugs_preserve_distinct_source_sink_identities(
             limit=10,
         )
 
-        assert {
-            (row["source_func"], row["sink_func"])
-            for row in all_rows
-        } == {
+        assert {(row["source_func"], row["sink_func"]) for row in all_rows} == {
             ("entry", "sink_b"),
             ("unreachable", "sink_a"),
         }
@@ -1955,18 +1954,20 @@ def test_web_validation_feedback_persists_suppression_and_baseline(tmp_path: Pat
     original_service = web_server._report_feedback_service
     web_server._report_feedback_service = ReportFeedbackService(store)
     try:
-        web_server.persist_validation_feedback([
-            {
-                "id": "ISSUE_1",
-                "function": "entry",
-                "location": "src/demo.c:42",
-                "defect_class": "double_free",
-                "validation_status": "rejected",
-                "validation_reasoning": "ownership transferred before this free",
-                "dedup_key": "double_free|entry|src/demo.c:42",
-                "rule": "resource_automaton",
-            }
-        ])
+        web_server.persist_validation_feedback(
+            [
+                {
+                    "id": "ISSUE_1",
+                    "function": "entry",
+                    "location": "src/demo.c:42",
+                    "defect_class": "double_free",
+                    "validation_status": "rejected",
+                    "validation_reasoning": "ownership transferred before this free",
+                    "dedup_key": "double_free|entry|src/demo.c:42",
+                    "rule": "resource_automaton",
+                }
+            ]
+        )
     finally:
         web_server._report_feedback_service = original_service
 

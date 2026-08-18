@@ -1886,7 +1886,9 @@ def _default_output(language: str, mode: str) -> Path:
     return repository_root() / "benchmark-artifacts" / language / mode / stamp
 
 
-def benchmark_plan(language: str, mode: str, runs: int, *, scan_depth: str = "fast") -> Dict[str, Any]:
+def benchmark_plan(
+    language: str, mode: str, runs: int, *, scan_depth: str = "fast"
+) -> Dict[str, Any]:
     spec = SPECS[language]
     isolation = oci_capability(
         runtime=os.environ.get("Z_SCOPE_BENCHMARK_OCI_RUNTIME", ""),
@@ -1991,9 +1993,7 @@ def run_benchmark(
     for index in range(1, run_count + 1):
         run_dir = destination / f"run-{index:02d}"
         run_dir.mkdir()
-        summaries.append(
-            _run_trial(spec, run_dir, index, mode=mode, scan_depth=scan_depth)
-        )
+        summaries.append(_run_trial(spec, run_dir, index, mode=mode, scan_depth=scan_depth))
     aggregate = _aggregate(spec, summaries, mode, scan_depth=scan_depth)
     if mode == "trial":
         aggregate["release_eligible"] = False

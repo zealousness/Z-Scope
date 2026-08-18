@@ -259,14 +259,10 @@ def test_clang_extractor_marks_ph_prototype_as_declaration(tmp_path, monkeypatch
     assert func_rows[0][7] == 1
 
 
-def test_clang_extractor_keeps_header_inline_body_as_implementation(
-    tmp_path, monkeypatch
-) -> None:
+def test_clang_extractor_keeps_header_inline_body_as_implementation(tmp_path, monkeypatch) -> None:
     header = tmp_path / "helpers.h"
     header.write_text(
-        "static inline int helper(void) {\n"
-        "    return 1;\n"
-        "}\n",
+        "static inline int helper(void) {\n" "    return 1;\n" "}\n",
         encoding="utf-8",
     )
     extractor = ClangExtractor(project_root=tmp_path)
@@ -318,9 +314,7 @@ def test_clang_backend_preserves_is_static_in_index_and_method(tmp_path) -> None
         db.close()
 
 
-def test_clang_extractor_rebuilds_direct_function_type_references(
-    tmp_path, monkeypatch
-) -> None:
+def test_clang_extractor_rebuilds_direct_function_type_references(tmp_path, monkeypatch) -> None:
     source = tmp_path / "src" / "plugin.c"
     source.parent.mkdir(parents=True)
     source.write_text(
@@ -444,9 +438,7 @@ def test_direct_type_candidates_exclude_parenthesized_values_and_builtin_typedef
     assert {item["kind"] for item in candidates} == {"local", "cast"}
 
 
-def test_clang_extractor_stores_source_signature_in_function_rows(
-    tmp_path, monkeypatch
-) -> None:
+def test_clang_extractor_stores_source_signature_in_function_rows(tmp_path, monkeypatch) -> None:
     source = tmp_path / "executor.c"
     source.write_text(
         "int _executor_validate_command(const char* command) {\n"
@@ -792,9 +784,9 @@ def test_call_hierarchy_classifies_function_pointer_targets(tmp_path, monkeypatc
     )
 
     rows = []
-    assert extractor._extract_call_edges_from_call_hierarchy(
-        source, "entry", "demo.c", 1, rows
-    ) == 4
+    assert (
+        extractor._extract_call_edges_from_call_hierarchy(source, "entry", "demo.c", 1, rows) == 4
+    )
 
     assert [(row[2], row[5], row[6]) for row in rows] == [
         ("direct_target", "direct", "function"),
@@ -960,10 +952,7 @@ def test_run_batch_extraction_collects_concurrently_and_publishes_in_one_batch(
     sources = [tmp_path / "first.c", tmp_path / "second.c"]
     for source in sources:
         source.write_text("int value(void) { return 1; }\n", encoding="utf-8")
-    prescanned = {
-        str(source.resolve()): (index + 1, True)
-        for index, source in enumerate(sources)
-    }
+    prescanned = {str(source.resolve()): (index + 1, True) for index, source in enumerate(sources)}
     events = []
     active_calls = 0
     max_active_calls = 0
@@ -1048,9 +1037,7 @@ def test_run_batch_extraction_collects_concurrently_and_publishes_in_one_batch(
     assert extractor.get_last_base_stats()["files_extracted"] == 2
 
 
-def test_clang_backend_passes_prescanned_tus_to_batch_extraction(
-    tmp_path, monkeypatch
-) -> None:
+def test_clang_backend_passes_prescanned_tus_to_batch_extraction(tmp_path, monkeypatch) -> None:
     source = tmp_path / "demo.c"
     source.write_text("int demo(void) { return 0; }\n", encoding="utf-8")
 
@@ -1204,9 +1191,7 @@ def test_clang_backend_refreshes_unchanged_files_when_macro_metadata_missing(
     assert backend._status == "ready"
 
 
-def test_clang_backend_deletes_missing_tu_without_starting_clangd(
-    tmp_path, monkeypatch
-) -> None:
+def test_clang_backend_deletes_missing_tu_without_starting_clangd(tmp_path, monkeypatch) -> None:
     deleted = tmp_path / "deleted.c"
 
     class DeleteOnlyDB(_FakeDB):
@@ -1244,9 +1229,7 @@ def test_clang_backend_deletes_missing_tu_without_starting_clangd(
     assert backend._status == "ready"
 
 
-def test_clang_backend_force_refreshes_callers_of_deleted_tu(
-    tmp_path, monkeypatch
-) -> None:
+def test_clang_backend_force_refreshes_callers_of_deleted_tu(tmp_path, monkeypatch) -> None:
     caller = tmp_path / "caller.c"
     deleted = tmp_path / "deleted.c"
     caller.write_text("int caller(void) { return deleted(); }\n", encoding="utf-8")
@@ -1516,9 +1499,7 @@ def test_clang_backend_combines_both_derived_scans_and_recovers_only_failed_inde
                     ClangBackend.FUNCTION_TYPE_REFS_INDEX: 0,
                 },
                 "errors": {
-                    ClangBackend.FUNCTION_TYPE_REFS_INDEX: RuntimeError(
-                        "injected type failure"
-                    )
+                    ClangBackend.FUNCTION_TYPE_REFS_INDEX: RuntimeError("injected type failure")
                 },
             }
 
@@ -1532,12 +1513,13 @@ def test_clang_backend_combines_both_derived_scans_and_recovers_only_failed_inde
         assert combined.combined_calls == 1
         assert combined.symbol_calls == 0
         assert combined.type_calls == 0
-        assert db.get_derived_index_state(
-            ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX
-        )["status"] == "current"
-        assert db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)[
-            "status"
-        ] == "failed"
+        assert (
+            db.get_derived_index_state(ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX)["status"]
+            == "current"
+        )
+        assert (
+            db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)["status"] == "failed"
+        )
 
         recovery = _BackendSchedulingExtractor()
         backend._extractor = recovery
@@ -1546,9 +1528,9 @@ def test_clang_backend_combines_both_derived_scans_and_recovers_only_failed_inde
         assert recovery.base_calls == []
         assert recovery.symbol_calls == 0
         assert recovery.type_calls == 1
-        assert db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)[
-            "status"
-        ] == "current"
+        assert (
+            db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)["status"] == "current"
+        )
     finally:
         db.close()
 

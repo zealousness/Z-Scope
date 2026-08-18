@@ -281,9 +281,10 @@ def _canonical_group_records(
         candidate_issue: Mapping[str, Any] = (
             raw_candidate_issue if isinstance(raw_candidate_issue, Mapping) else raw
         )
-        if str(
-            raw.get("record_role") or candidate_issue.get("record_role") or ""
-        ).strip() == "operational_obligation":
+        if (
+            str(raw.get("record_role") or candidate_issue.get("record_role") or "").strip()
+            == "operational_obligation"
+        ):
             continue
         cluster = _cluster_uid(raw)
         candidate_uid = _candidate_uid(raw)
