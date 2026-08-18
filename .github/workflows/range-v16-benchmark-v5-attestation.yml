@@ -115,6 +115,22 @@ jobs:
             --compile
           diff --recursive --brief --no-dereference reconstructed-pairs \
             test/range/benchmark/v16/pairs
+          mkdir -p reconstructed-truth
+          python3 scripts/generate_range_v16_truth.py build \
+            --truth-v15 test/range/benchmark/ground_truth.json \
+            --normalized-decisions reconstructed-review/normalized-decisions.json \
+            --pair-root reconstructed-pairs \
+            --fixture-root test/range \
+            --taxonomy zscope/benchmarking/defect-taxonomy.v1.json \
+            --output reconstructed-truth/ground_truth.json \
+            --pair-index-output reconstructed-truth/safe-pair-manifest.json \
+            --truth-manifest-output reconstructed-truth/truth-manifest.json
+          cmp reconstructed-truth/ground_truth.json \
+            test/range/benchmark/v16/ground_truth.json
+          cmp reconstructed-truth/safe-pair-manifest.json \
+            test/range/benchmark/v16/safe-pair-manifest.json
+          cmp reconstructed-truth/truth-manifest.json \
+            test/range/benchmark/v16/truth-manifest.json
           python3 scripts/validate_range_v16_truth.py \
             --truth test/range/benchmark/v16/ground_truth.json \
             --pair-root test/range/benchmark/v16/pairs \
