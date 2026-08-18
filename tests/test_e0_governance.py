@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+from scripts import run_e0_reviewers as reviewer_runner
 
 from scripts.e0_review_governance import (
     ATTESTATION_SCHEMA_VERSION,
@@ -55,10 +60,30 @@ def _decision(packet: dict) -> dict:
         "contract_kind": "concrete_trigger",
         "disposition": "keep",
         "confidence": 0.9,
-        "structured_anchors": [],
-        "required_evidence_clauses": [{"clause": "path"}],
+        "structured_anchors": [
+            {
+                "kind": "primary",
+                "file": "src/example.c",
+                "function": "f",
+                "start_line": 1,
+                "end_line": 2,
+            }
+        ],
+        "required_evidence_clauses": [
+            {
+                "clause_id": "path_exists",
+                "predicate": "A path reaches the operation.",
+                "evidence_refs": ["src/example.c:1-2"],
+            }
+        ],
         "evidence_refs": ["src/example.c:1"],
-        "safe_pair_recommendation": {"kind": "fixed"},
+        "safe_pair_recommendation": {
+            "kind": "fixed",
+            "invariant_summary": "The path is guarded.",
+            "vulnerable_summary": "The path is unguarded.",
+            "safe_summary": "The path is guarded before use.",
+            "compile_requirements": ["Compile as C11."],
+        },
         "reason_codes": ["TRIGGER_PRESENT", "SAFE_PAIR_REQUIRED"],
     }
 
@@ -170,3 +195,75 @@ def test_e0_attestation_requires_external_workflow_identity_and_hash() -> None:
             expected_workflow_run_id="123",
             expected_head_sha="a" * 40,
         )
+
+
+def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet_dir = tmp_path / "packets"
+    output_dir = tmp_path / "output"
+    packet_dir.mkdir()
+    (output_dir / "decisions").mkdir(parents=True)
+    (output_dir / "raw").mkdir()
+    packets: list[dict] = []
+    for index in range(136):
+        packet = _packet()
+        truth_id = f"CASE-{index:03d}"
+        packet["packet_uid"] = f"range-v16:{truth_id}"
+        packet["truth_record"]["id"] = truth_id
+        unsigned = dict(packet)
+        unsigned.pop("packet_sha256")
+        packet["packet_sha256"] = sha256_value(unsigned)
+        packets.append(packet)
+        (packet_dir / f"{truth_id}.json").write_text(
+            json.dumps(packet), encoding="utf-8"
+        )
+
+    def raw_for(packet: dict) -> dict:
+        return {
+            "schema_version": "zscope.range-v16-review-raw-envelope.v1",
+            "reviewer_role": "primary_fable",
+            "reviewer_model": "claude-fable-5",
+            "packet_uid": packet["packet_uid"],
+            "packet_sha256": packet["packet_sha256"],
+            "input_delivery": "embedded_prompt",
+            "command_identity": ["claude", "--print"],
+            "exit_code": 0,
+            "stdout": "{}",
+            "stderr_sha256": sha256_value(""),
+        }
+
+    first = packets[0]
+    first_decision = _decision(first)
+    first_decision["packet_uid"] = first["packet_uid"]
+    first_decision["packet_sha256"] = first["packet_sha256"]
+    (output_dir / "decisions" / "CASE-000.json").write_text(
+        json.dumps(first_decision), encoding="utf-8"
+    )
+    (output_dir / "raw" / "CASE-000.json").write_text(
+        json.dumps(raw_for(first)), encoding="utf-8"
+    )
+
+    reviewed: list[str] = []
+
+    def fake_run_model(packet: dict, **_: object) -> tuple[dict, dict]:
+        reviewed.append(packet["packet_uid"])
+        decision = _decision(packet)
+        decision["packet_uid"] = packet["packet_uid"]
+        decision["packet_sha256"] = packet["packet_sha256"]
+        return decision, raw_for(packet)
+
+    monkeypatch.setattr(reviewer_runner, "_run_model", fake_run_model)
+    args = SimpleNamespace(
+        packet_dir=packet_dir,
+        output_dir=output_dir,
+        reviewer="fable",
+        workers=4,
+        resume=True,
+    )
+    assert reviewer_runner.run_primary(args) == 0
+    assert len(reviewed) == 135
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["record_count"] == 136
+    assert len(manifest["records"]) == 136
+    assert manifest["records"][0]["status"] == "reused"

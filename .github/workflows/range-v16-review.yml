@@ -40,7 +40,8 @@ jobs:
           python3 scripts/run_e0_reviewers.py primary \
             --reviewer '${{ matrix.reviewer }}' \
             --packet-dir test/range/benchmark/v16/review-packets \
-            --output-dir 'review-evidence/${{ matrix.reviewer }}'
+            --output-dir 'review-evidence/${{ matrix.reviewer }}' \
+            --workers 4
       - uses: actions/upload-artifact@v7
         with:
           name: range-v16-primary-${{ matrix.reviewer }}-${{ inputs.source_sha }}
