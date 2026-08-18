@@ -1,0 +1,66 @@
+{
+  "schema_version": "zscope.p5-real-project-source.v1",
+  "project": "cJSON",
+  "version": "1.7.19",
+  "upstream": {
+    "repository": "https://github.com/DaveGamble/cJSON",
+    "release": "https://github.com/DaveGamble/cJSON/releases/tag/v1.7.19",
+    "commit": "c859b25da02955fef659d658b8f324b5cde87be3",
+    "commit_url": "https://github.com/DaveGamble/cJSON/commit/c859b25da02955fef659d658b8f324b5cde87be3",
+    "archive_url": "https://github.com/DaveGamble/cJSON/archive/c859b25da02955fef659d658b8f324b5cde87be3.tar.gz",
+    "archive_sha256": "880a86445ad5cf38f877bac31198268d8fac5d2ce996ebf55d3066a4109ddd8d"
+  },
+  "license": {
+    "spdx": "MIT",
+    "path": "source/LICENSE",
+    "sha256": "a36dda207c36db5818729c54e7ad4e8b0c6fba847491ba64f372c1a2037b6d5c"
+  },
+  "source_tree": {
+    "algorithm": "sha256(canonical-json(sorted-files[path,size,sha256]))",
+    "sha256": "ecfd17a39f0ff722189902f8193767c665fc47eac57ffdb1cfa2b14d5d05dc47",
+    "files": [
+      {
+        "path": "source/CMakeLists.txt",
+        "size": 10205,
+        "sha256": "cdcb1302634cb81778130e9c30c2e952f80157bb9fee6b3f8489be8c15de9d34"
+      },
+      {
+        "path": "source/LICENSE",
+        "size": 1084,
+        "sha256": "a36dda207c36db5818729c54e7ad4e8b0c6fba847491ba64f372c1a2037b6d5c"
+      },
+      {
+        "path": "source/cJSON.c",
+        "size": 80399,
+        "sha256": "298581a04a36c0165da4b0aade235c23088cb2faa58651d720ea2f3706ed0b0d"
+      },
+      {
+        "path": "source/cJSON.h",
+        "size": 16394,
+        "sha256": "25b0145150d500498e4d209cec69c18c42cf818bffcc54690be3b895a2a16dee"
+      },
+      {
+        "path": "source/cJSON_Utils.c",
+        "size": 40736,
+        "sha256": "bf3092696763a9a446c39365d7c35f23e5acfdca1bd1da33ef66c1161f9243e9"
+      },
+      {
+        "path": "source/cJSON_Utils.h",
+        "size": 3938,
+        "sha256": "1050a7cce8ffe352c509e0c1faad505b9b8a09cac3a1c45c544447868e05f3b5"
+      }
+    ]
+  },
+  "provenance": {
+    "files_unmodified_from_archive": true,
+    "retrieved_at_utc": "2026-08-18T05:15:54Z",
+    "network_used_for_source_acquisition_only": true
+  },
+  "answer_isolation": {
+    "contains_ground_truth": false,
+    "contains_expected_findings": false,
+    "contains_cve_annotations": false,
+    "contains_scorer_data": false,
+    "runtime_may_read_this_manifest": false
+  }
+}

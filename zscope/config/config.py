@@ -426,15 +426,8 @@ class AnalysisConfig:
     user_config_db: str = (
         ""  # Path to user config workbook or directory, defaults to {snapshot_dir}/
     )
-    enable_global_model: bool = False  # Batch-level global premodel/model_entry replacement.
-    max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
-    max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
     workflow_name: str = "default"
-    # Internal rollout control.  ``shadow`` records evidence-backed semantic
-    # deltas without allowing them to influence coverage-gap planning;
-    # ``active`` applies those deltas to the read-only Security Semantic Map.
-    security_semantic_enrichment_mode: str = "shadow"
     request_deadline_seconds: Optional[float] = 120.0
     validation_deadline_seconds: Optional[float] = 240.0
     entry_deadline_seconds: Optional[float] = 1800.0
@@ -460,11 +453,6 @@ class AnalysisConfig:
         self.budget_exhaustion_policy = _normalize_budget_exhaustion_policy(
             self.budget_exhaustion_policy
         )
-        self.security_semantic_enrichment_mode = (
-            str(self.security_semantic_enrichment_mode or "shadow").strip().lower()
-        )
-        if self.security_semantic_enrichment_mode not in {"shadow", "active"}:
-            raise ValueError("security_semantic_enrichment_mode must be 'shadow' or 'active'")
 
 
 @dataclass

@@ -8,12 +8,12 @@ steps:
     action: classify API, communication, thread, and other user-input entries when requested
   - id: collect_candidates
     scope: entry
-    agent: active_discovery
-    action: register deterministic and active-discovery candidates in the Candidate Ledger
+    agent: hypothesis_hunter
+    action: register deterministic and bounded hypothesis candidates in the Candidate Ledger
   - id: validate_candidates
     scope: entry
-    agent: validator_agent
-    action: validate registered candidates and close their ledger lifecycle
+    agent: proof_engine
+    action: replay proof actions and close registered candidates through TerminalAuthority
   - id: persist_report
     scope: entry
     action: write final JSON/Markdown report and snapshot final_report_file

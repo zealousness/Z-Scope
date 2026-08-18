@@ -508,7 +508,6 @@ def main(
             logger.info("Alert verification mode: validating SARIF alerts")
             from ..alerts.sarif_adapter import SarifAdapter
             from ..alerts.verifier import AlertVerifier
-            from ..framework.llm_client import LLMClient
             from ..config.user_config_store import UserConfigStore
             from ..orchestration.scheduler import ScanScheduler
 
@@ -539,34 +538,6 @@ def main(
                 click.echo("No alerts to verify.")
                 sys.exit(0)
 
-            val_agent_cfg = next(
-                (a for a in zscope_config.project.agents if a.name == "validator_agent"), None
-            )
-            val_llm_ref = (
-                val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
-            )
-            llm_cfg = zscope_config.llms.get(val_llm_ref, zscope_config.llms["default"])
-            token_usage_ledger = ensure_scan_token_usage_ledger(zscope_config)
-
-            llm_client = LLMClient(
-                api_key=llm_cfg.api_key,
-                base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
-                models=llm_cfg.models,
-                timeout=llm_cfg.timeout,
-                max_retries=llm_cfg.max_retries,
-                retry_until_available=getattr(llm_cfg, "retry_until_available", False),
-                max_tokens=llm_cfg.max_tokens,
-                base_url_rate_limit_per_minute=getattr(
-                    llm_cfg, "base_url_rate_limit_per_minute", 0
-                ),
-                base_url_max_concurrent_requests=getattr(
-                    llm_cfg, "base_url_max_concurrent_requests", 0
-                ),
-                global_max_concurrent_requests=zscope_config.concurrency.llm_max_inflight,
-                supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
-                token_usage_ledger=token_usage_ledger,
-                llm_ref=val_llm_ref,
-            )
             db_dir = (
                 Path(zscope_config.analysis.user_config_db)
                 if zscope_config.analysis.user_config_db
@@ -577,7 +548,6 @@ def main(
             verifier = AlertVerifier(
                 config=zscope_config,
                 code_index=code_index,
-                llm_client=llm_client,
                 user_config=ucs,
             )
             alert_workers = max(

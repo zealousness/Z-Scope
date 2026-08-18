@@ -1,8 +1,19 @@
-"""P2 lifecycle constants. Authority is forbidden until the P5 gate closes."""
+"""P5 Proof Engine lifecycle boundary.
 
-PROOF_KERNEL_MODE = "shadow"
+The cutover is intentionally a source-level invariant.  There is no runtime
+configuration flag that can restore the pre-P5 shadow or compatibility
+authority paths.
+"""
+
+PROOF_KERNEL_MODE = "authoritative"
 
 
-def assert_shadow_mode(mode: str) -> None:
+def require_authoritative_mode(mode: str) -> None:
     if mode != PROOF_KERNEL_MODE:
-        raise ValueError("proof_kernel_authority_requires_p5_complete")
+        raise ValueError("proof_kernel_mode_is_not_configurable")
+
+
+# Read-only import compatibility for P2/P3 artifacts.  Calling the old guard
+# with ``shadow`` is deliberately rejected by the P5 runtime.
+def assert_shadow_mode(mode: str) -> None:
+    require_authoritative_mode(mode)

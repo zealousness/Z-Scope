@@ -365,6 +365,112 @@ def test_entry_parameter_binding_requires_frozen_signature_domain() -> None:
     assert result["accepted_fact"] is None
 
 
+def _with_frozen_entry_parameters(proof_ir, parameter_uids):
+    summary = dict(proof_ir["functions"][0])
+    summary.pop("summary_uid")
+    summary.pop("content_sha256")
+    signature = str(summary["signature"])
+    statements = [
+        statement for node in summary["cfg_nodes"] for statement in node["statement_uids"]
+    ]
+    events = list(summary["events"])
+    for slot, parameter_uid in enumerate(parameter_uids):
+        statement_uid = statements[slot]
+        node_uid = next(
+            node["node_uid"]
+            for node in summary["cfg_nodes"]
+            if statement_uid in node["statement_uids"]
+        )
+        ordinal = next(
+            node["statement_uids"].index(statement_uid)
+            for node in summary["cfg_nodes"]
+            if statement_uid in node["statement_uids"]
+        )
+        events.append(
+            {
+                "event_uid": f"EVENT_ENTRY_PARAMETER_{slot}",
+                "node_uid": node_uid,
+                "statement_uid": statement_uid,
+                "kind": "entry_parameter",
+                "subject_uids": [parameter_uid],
+                "attributes": {
+                    "statement_ordinal": ordinal,
+                    "entry_signature_complete": True,
+                    "entry_signature": signature,
+                    "parameter_slot": slot,
+                    "parameter_count": len(parameter_uids),
+                },
+            }
+        )
+    summary["events"] = events
+    sealed_summary = seal_mapping(summary, uid_field="summary_uid", prefix="FUNSUM_")
+    ir_body = dict(proof_ir)
+    ir_body.pop("proof_ir_uid")
+    ir_body.pop("content_sha256")
+    ir_body["functions"] = [sealed_summary]
+    return seal_mapping(ir_body, uid_field="proof_ir_uid", prefix="PROOFIR_")
+
+
+def test_entry_parameter_binding_validates_count_identity_and_slot() -> None:
+    proof_ir, _, _ = _artifacts(
+        "external_entry_parameter_binding",
+        {"parameter_uid": "request", "parameter_slot": "1"},
+        {"external_entry_parameter_bound": True},
+    )
+    proof_ir = _with_frozen_entry_parameters(proof_ir, ("context", "request"))
+    spec = PREDICATE_REGISTRY["external_entry_parameter_binding"]
+    clause = build_proof_clause(
+        role="confirmation",
+        provider_family=spec.provider_family,
+        predicate_id=spec.predicate_id,
+        fact_kind=spec.fact_kind,
+        quantifier=spec.quantifier,
+        expected_value={"external_entry_parameter_bound": True},
+        parameters={"parameter_uid": "request", "parameter_slot": "1"},
+    )
+    obligation = build_proof_obligation(
+        validation_cluster_uid="VAL_ENTRY_BINDING",
+        defect_family="contract",
+        subject_uid="request",
+        decision_region_uid="entry",
+        confirmation_clauses=(clause,),
+        counterproof_clauses=(),
+        dependency_hashes=proof_ir["dependency_hashes"],
+    )
+
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=proof_ir,
+        obligation=obligation,
+    )
+
+    assert evaluation.decision == "confirmed"
+    assert evaluation.check_results[0]["status"] == "accepted"
+    assert evaluation.check_results[0]["accepted_fact"]["value"] == {
+        "external_entry_parameter_bound": True
+    }
+
+
+def test_guard_dominance_has_direct_checker_qualification() -> None:
+    graph = _graph()
+    statements = graph.statement_map
+    guard = next(uid for uid, value in statements.items() if "malloc" in value.text)
+    sink = next(uid for uid, value in statements.items() if "consume" in value.text)
+    proof_ir, obligation, _ = _artifacts(
+        "guard_dominates_sink",
+        {"guard_statement_uid": guard, "sink_statement_uid": sink},
+        {"guard_dominates_sink": True},
+    )
+
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=proof_ir,
+        obligation=obligation,
+    )
+
+    assert evaluation.decision == "confirmed"
+    assert evaluation.check_results[0]["status"] == "accepted"
+    assert evaluation.check_results[0]["reason_codes"] == ["cfg_dominance_recomputed"]
+
+
 def test_legacy_preview_certificate_never_closes_clause() -> None:
     valid, reason = validate_certificate_envelope(
         {"schema_version": "zscope.evidence-certificate.v2", "status": "verified_true"}
@@ -383,8 +489,8 @@ def test_engine_resolves_conflict_programmatically_and_stays_shadow() -> None:
 
     result = ProofKernelEngine().evaluate(proof_ir=proof_ir, obligation=obligation)
 
-    assert result.proof_kernel_mode == "shadow"
-    assert result.shadow_decision == "needs_review"
+    assert result.proof_kernel_mode == "authoritative"
+    assert result.decision == "needs_review"
     assert result.reason_code == "programmatic_proof_conflict"
 
 

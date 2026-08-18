@@ -26,6 +26,7 @@ from ..reporting.views import (
     report_view_summary,
     review_governance_summary,
 )
+from ..reporting.funnel import candidate_funnel
 from ..snapshots.store import SnapshotStore
 
 
@@ -332,11 +333,6 @@ class ReportAssembler:
                 governance.get("displayed_review_count") or 0
             ) + int(governance.get("operational_obligation_count") or 0)
         final_report.metadata["report_view_summary"] = report_view_summary(final_report.to_dict())
-        # Keep the lifecycle funnel in the product artifact as well as the
-        # benchmark score.  The local import avoids making reporting module
-        # import-time initialization depend on the benchmark package.
-        from ..benchmarking.protocol import candidate_funnel
-
         final_report.metadata["candidate_funnel"] = candidate_funnel(final_report.to_dict())
 
     def persist(self, state: Dict[str, Any], *, write_root_reports: bool = True) -> Dict[str, Any]:

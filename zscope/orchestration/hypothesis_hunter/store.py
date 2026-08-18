@@ -1,4 +1,4 @@
-"""Immutable P4 hypothesis artifacts and exact-fingerprint report cache."""
+"""Immutable P5 hypothesis artifacts and exact-fingerprint report cache."""
 
 from __future__ import annotations
 
@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ...core.validation.proof_kernel.canonical import canonical_json, content_sha256
+from .lifecycle import ACTIVE_PRODUCT_EFFECT, HYPOTHESIS_HUNTER_MODE
 
 
 _REF = re.compile(r"^sha256:([0-9a-f]{64})$")
 
 
 class HypothesisArtifactStore:
-    """Separate CAS whose root manifest is permanently marked shadow."""
+    """Separate CAS for offers, selections, proof replay, and registration refs."""
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
@@ -105,20 +106,20 @@ class HypothesisArtifactStore:
         self,
         references: Sequence[str],
         *,
-        shadow_ledger_sha256: str,
+        registered_candidate_uids: Sequence[str],
         coverage_summary: Mapping[str, Any],
     ) -> dict[str, Any]:
         refs = sorted({"sha256:" + self._digest(value) for value in references})
         if any(not self.verify_ref(value) for value in refs):
             raise ValueError("hypothesis_root_manifest_reference_invalid")
-        if re.fullmatch(r"[0-9a-f]{64}", str(shadow_ledger_sha256)) is None:
-            raise ValueError("hypothesis_shadow_ledger_hash_invalid")
+        candidate_uids = sorted({str(value) for value in registered_candidate_uids if str(value)})
         body = {
-            "schema_version": "zscope.hypothesis-hunter-root-manifest.v1",
-            "mode": "shadow",
-            "active_product_effect": "none",
+            "schema_version": "zscope.hypothesis-hunter-root-manifest.v2",
+            "mode": HYPOTHESIS_HUNTER_MODE,
+            "active_product_effect": ACTIVE_PRODUCT_EFFECT,
             "artifact_refs": refs,
-            "shadow_ledger_sha256": str(shadow_ledger_sha256),
+            "registered_candidate_uids": candidate_uids,
+            "candidate_registration_sha256": content_sha256(candidate_uids),
             "coverage_summary": dict(coverage_summary),
         }
         manifest = {**body, "content_sha256": content_sha256(body)}
@@ -169,16 +170,16 @@ class HypothesisArtifactStore:
             return None
 
 
-def load_hypothesis_shadow_identity(root: Path | str, *, consumer: str) -> dict[str, Any]:
-    """Load a frozen P4 manifest without exposing any live decision field."""
+def load_hypothesis_manifest_identity(root: Path | str, *, consumer: str) -> dict[str, Any]:
+    """Load a frozen P5 manifest without granting terminal authority."""
 
     root = Path(root)
     fallback = {
-        "hypothesis_hunter_mode": "shadow",
+        "hypothesis_hunter_mode": HYPOTHESIS_HUNTER_MODE,
         "hypothesis_hunter_root_manifest_sha256": "",
         "hypothesis_hunter_artifact_refs": [],
-        "hypothesis_hunter_shadow_decision": {
-            "active_product_effect": "none",
+        "hypothesis_hunter_decision": {
+            "active_product_effect": ACTIVE_PRODUCT_EFFECT,
             "reason_code": f"{consumer}_hypothesis_manifest_unavailable",
         },
     }
@@ -189,7 +190,8 @@ def load_hypothesis_shadow_identity(root: Path | str, *, consumer: str) -> dict[
             "mode",
             "active_product_effect",
             "artifact_refs",
-            "shadow_ledger_sha256",
+            "registered_candidate_uids",
+            "candidate_registration_sha256",
             "coverage_summary",
             "content_sha256",
         }
@@ -199,21 +201,23 @@ def load_hypothesis_shadow_identity(root: Path | str, *, consumer: str) -> dict[
         refs = raw.get("artifact_refs")
         store = HypothesisArtifactStore(root)
         if (
-            raw.get("schema_version") != "zscope.hypothesis-hunter-root-manifest.v1"
-            or raw.get("mode") != "shadow"
-            or raw.get("active_product_effect") != "none"
+            raw.get("schema_version") != "zscope.hypothesis-hunter-root-manifest.v2"
+            or raw.get("mode") != HYPOTHESIS_HUNTER_MODE
+            or raw.get("active_product_effect") != ACTIVE_PRODUCT_EFFECT
             or content_sha256(body) != raw.get("content_sha256")
-            or re.fullmatch(r"[0-9a-f]{64}", str(raw.get("shadow_ledger_sha256") or "")) is None
+            or not isinstance(raw.get("registered_candidate_uids"), list)
+            or raw.get("candidate_registration_sha256")
+            != content_sha256(raw.get("registered_candidate_uids") or [])
             or not isinstance(refs, list)
             or any(not store.verify_ref(str(value)) for value in refs)
         ):
             raise ValueError("hypothesis_manifest_invalid")
         return {
-            "hypothesis_hunter_mode": "shadow",
+            "hypothesis_hunter_mode": HYPOTHESIS_HUNTER_MODE,
             "hypothesis_hunter_root_manifest_sha256": str(raw["content_sha256"]),
             "hypothesis_hunter_artifact_refs": list(refs),
-            "hypothesis_hunter_shadow_decision": {
-                "active_product_effect": "none",
+            "hypothesis_hunter_decision": {
+                "active_product_effect": ACTIVE_PRODUCT_EFFECT,
                 "reason_code": f"{consumer}_hypothesis_manifest_loaded",
                 "coverage_summary": dict(raw.get("coverage_summary") or {}),
             },

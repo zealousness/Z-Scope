@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed if the P2 Proof Kernel can acquire product authority before P5."""
+"""Fail closed unless the P5 Proof Engine authority is hard-wired."""
 
 from __future__ import annotations
 
@@ -21,8 +21,7 @@ def _python_files(root: Path) -> Iterable[Path]:
 def check(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     manifest_path = root / MANIFEST.relative_to(ROOT)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    p5_complete = (manifest.get("phase_status") or {}).get("P5") == "complete"
+    json.loads(manifest_path.read_text(encoding="utf-8"))
     lifecycle = root / "zscope" / "core" / "validation" / "proof_kernel" / "lifecycle.py"
     tree = ast.parse(lifecycle.read_text(encoding="utf-8"), filename=str(lifecycle))
     mode = ""
@@ -34,8 +33,8 @@ def check(root: Path = ROOT) -> list[str]:
             ):
                 if isinstance(node.value, ast.Constant):
                     mode = str(node.value.value)
-    if not p5_complete and mode != "shadow":
-        errors.append("Proof Kernel mode must remain shadow until P5 is complete")
+    if mode != "authoritative":
+        errors.append("Proof Engine mode must be authoritative during the P5 cutover")
 
     forbidden_import_roots = {"zscope.benchmarking", "zscope.benchmark", "test.range"}
     proof_root = root / PROOF_ROOT.relative_to(ROOT)
@@ -71,7 +70,7 @@ def main() -> int:
         for value in errors:
             print(value)
         return 1
-    print("P2 Proof Kernel lifecycle gate passed: mode=shadow; authority=P5 only")
+    print("P5 Proof Engine lifecycle gate passed: mode=authoritative; no user switch")
     return 0
 
 

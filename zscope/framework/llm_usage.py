@@ -66,12 +66,12 @@ def canonical_usage_stage(value: Any) -> str:
     aliases = {
         "semantic": "semantic_modeling",
         "modeling": "semantic_modeling",
-        "semantic_modeler": "semantic_modeling",
+        "security_spec_miner": "semantic_modeling",
         "discovery": "active_discovery",
         "active_analysis": "active_discovery",
         "mining": "active_discovery",
         "investigation": "active_discovery",
-        "validator": "validation",
+        "proof_engine": "validation",
         "repair": "reserve",
         "v3": "reserve",
     }
@@ -177,20 +177,14 @@ class LLMUsageAttribution:
                 stage = "reserve"
             elif call_kind in _VALIDATOR_V3_CALL_KINDS:
                 stage = "reserve"
-            elif "validator" in normalized_agent:
+            elif "proof_engine" in normalized_agent:
                 stage = "validation"
             elif (
-                "semantic" in normalized_agent
-                or "modeler" in normalized_agent
-                or "reconciler" in normalized_agent
+                "security_spec_miner" in normalized_agent
+                or "history_maintenance_agent" in normalized_agent
             ):
                 stage = "semantic_modeling"
-            elif (
-                "active_discovery" in normalized_agent
-                or "hypothesis_hunter" in normalized_agent
-                or "worker" in normalized_agent
-                or "vulnerability" in normalized_agent
-            ):
+            elif "hypothesis_hunter" in normalized_agent:
                 stage = "active_discovery"
             else:
                 stage = _clean(data.get("call_kind") or "unattributed")

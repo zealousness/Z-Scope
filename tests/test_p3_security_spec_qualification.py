@@ -26,7 +26,7 @@ def test_p3_blind_corpus_qualification_passes_all_thresholds() -> None:
     assert result["positive_case_count"] == 104
     assert result["safe_case_count"] == 39
     assert result["compiled_spec_count"] == 104
-    assert result["compilation_mode"] == "shadow"
+    assert result["compilation_mode"] == "authoritative"
     assert metrics == {
         "case_count": 143,
         "key_contract_recall": 1.0,

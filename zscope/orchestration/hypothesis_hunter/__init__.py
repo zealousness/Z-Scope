@@ -1,4 +1,4 @@
-"""P4 hypothesis-driven hunting in an authority-free shadow boundary."""
+"""P5 hypothesis-driven hunting with candidate-only product effect."""
 
 from .blind import CandidateBlindProjectionError, build_candidate_blind_projection
 from .agent import HypothesisHunterAgent
@@ -24,15 +24,15 @@ from .models import (
 )
 from .planner import AttackSurfacePlanner, PlannedHunt
 from .qualification import load_builtin_qualification
-from .runtime import HypothesisHunterShadowRuntime
-from .store import HypothesisArtifactStore, load_hypothesis_shadow_identity
+from .runtime import HypothesisHunterRuntime
+from .store import HypothesisArtifactStore, load_hypothesis_manifest_identity
 
 __all__ = [
     "ATTACK_SURFACE_AUDIT_UNIT_VERSION",
     "CandidateBlindProjectionError",
     "HypothesisArtifactStore",
     "HypothesisHunterAgent",
-    "HypothesisHunterShadowRuntime",
+    "HypothesisHunterRuntime",
     "HypothesisProofCatalog",
     "HYPOTHESIS_COVERAGE_OBSERVATION_VERSION",
     "HYPOTHESIS_HUNT_REPORT_VERSION",
@@ -53,6 +53,6 @@ __all__ = [
     "validate_hypothesis_offer",
     "validate_localized_coverage_key",
     "validate_security_hypothesis",
-    "load_hypothesis_shadow_identity",
+    "load_hypothesis_manifest_identity",
     "load_builtin_qualification",
 ]

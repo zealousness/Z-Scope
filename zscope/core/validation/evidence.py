@@ -11,9 +11,7 @@ from ..candidates.evidence_models import build_evidence_models
 from ...snapshots.modeling_input import SemanticModelInputError, resolve_function_info
 
 
-VALIDATOR_EVIDENCE_SLICE_VERSION = "zscope.validator-evidence-slice.v2"
 VALIDATOR_EVIDENCE_SLICE_V3 = "zscope.validator-evidence-slice.v3"
-VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v2"
 VALIDATOR_PROTOCOL_V3 = "zscope.validator-protocol.v3"
 VALIDATOR_MISSING_FACT_KINDS = frozenset(
     {
@@ -255,12 +253,12 @@ def build_validation_evidence_pack(
     }
 
 
-def build_validator_evidence_slice_v2(
+def _build_validator_evidence_slice_base(
     issue: Mapping[str, Any],
     evidence_pack: Mapping[str, Any],
     issue_code: str,
 ) -> Dict[str, Any]:
-    """Build one decision-complete, occurrence-compact Validator payload.
+    """Build the common body of one occurrence-compact v3 evidence payload.
 
     A validation cluster may contain hundreds of entry occurrences.  Those
     paths are audit provenance, not independent decision facts, so the model
@@ -339,8 +337,8 @@ def build_validator_evidence_slice_v2(
         location_snippet = _trim_text(str(location_snippet), 1800)
 
     return {
-        "schema_version": VALIDATOR_EVIDENCE_SLICE_VERSION,
-        "protocol_version": VALIDATOR_PROTOCOL_VERSION,
+        "schema_version": VALIDATOR_EVIDENCE_SLICE_V3,
+        "protocol_version": VALIDATOR_PROTOCOL_V3,
         "obligation": {
             "candidate_uid": issue.get("candidate_uid"),
             "validation_cluster_uid": issue.get("validation_cluster_uid"),
@@ -435,17 +433,9 @@ def build_validator_evidence_slice_v3(
     validation_pass: str = "initial",
     evidence_delta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build the readable, reference-addressable Validator v3 projection.
+    """Build the readable, reference-addressable Validator v3 projection."""
 
-    v2 deliberately committed most decision data by UID/hash.  That is useful
-    for audit identity but forces a model to guess what those facts mean.  v3
-    keeps the commitments and adds bounded fact payloads, path edges, semantic
-    claims, and a catalog of the only references a model may cite.
-    """
-
-    result = build_validator_evidence_slice_v2(issue, evidence_pack, issue_code)
-    result["schema_version"] = VALIDATOR_EVIDENCE_SLICE_V3
-    result["protocol_version"] = VALIDATOR_PROTOCOL_V3
+    result = _build_validator_evidence_slice_base(issue, evidence_pack, issue_code)
     result["validation_pass"] = validation_pass
 
     pack = dict(evidence_pack or {})

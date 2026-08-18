@@ -86,7 +86,7 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     assert [item["id"] for item in state["observations"]] == ["OBS_1"]
     assert state["observations"][0]["candidate_schema_version"] == "zscope.candidate.v3.3"
     assert state["observations"][0]["run_issue_uid"].startswith("RUNISSUE_")
-    assert saved["schema_version"] == 2
+    assert saved["schema_version"] == 3
     assert saved["finding_status"] == "confirmed"
     assert saved["completeness"] == "complete"
     assert saved["run_manifest"]["run_id"] == "RUN1"

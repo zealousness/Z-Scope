@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -27,13 +27,6 @@ PROTOCOL_FLOW_RE = re.compile(
     r"apply|refresh|maintenance)",
     re.IGNORECASE,
 )
-RESOURCE_RE = re.compile(
-    r"(?:^|[^A-Za-z0-9])("
-    r"alloc|calloc|malloc|realloc|strdup|free|open|close|fopen|fclose|socket|"
-    r"init|destroy|cleanup|release|acquire|get|put|ref|unref|lock|unlock|map|unmap"
-    r")",
-    re.IGNORECASE,
-)
 CALL_TOKEN_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
 KEYWORD_CALLS = {
     "if",
@@ -52,8 +45,6 @@ class EffectiveBudget:
     """Effective runtime budget after risk adaptation."""
 
     recursion_depth: int
-    premodel_depth: int
-    premodel_callees: int
     graph_depth: int
     graph_functions: int
     hard_caps: Dict[str, int] = field(default_factory=dict)
@@ -63,8 +54,6 @@ class EffectiveBudget:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "recursion_depth": self.recursion_depth,
-            "premodel_depth": self.premodel_depth,
-            "premodel_callees": self.premodel_callees,
             "graph_depth": self.graph_depth,
             "graph_functions": self.graph_functions,
             "hard_caps": dict(self.hard_caps),
@@ -86,13 +75,10 @@ class RiskBudgetPlanner:
 
     def hard_caps(self) -> Dict[str, int]:
         recursion_depth = self._non_negative(self.analysis_config.max_recursion_depth)
-        premodel_depth = self._non_negative(self.analysis_config.max_premodel_depth)
-        premodel_callees = self._non_negative(self.analysis_config.max_premodel_callees)
+        graph_breadth = 20
         return {
             "max_recursion_depth": recursion_depth,
-            "max_premodel_depth": premodel_depth,
-            "max_premodel_callees": premodel_callees,
-            "max_graph_functions": premodel_callees * max(1, recursion_depth),
+            "max_graph_functions": (graph_breadth * recursion_depth if recursion_depth > 0 else 0),
         }
 
     def plan(
@@ -106,9 +92,7 @@ class RiskBudgetPlanner:
         impl = self._mapping(state.get("impl_result"))
         agent_context = self._mapping(state.get("agent_context"))
         code = str(impl.get("code") or agent_context.get("code") or "")
-        callees = self._callee_names(impl.get("callees"))
         call_tokens = self._call_tokens(code)
-        user_config_context = str(agent_context.get("user_config_context") or "")
         candidates = (
             list(rule_candidates or [])
             + list(graph_candidates or [])
@@ -124,22 +108,8 @@ class RiskBudgetPlanner:
             candidates,
             self._historical_issues(state),
         )
-        scores["premodel_depth"], reasons["premodel_depth"] = self._score_premodel_depth(
-            code,
-            callees,
-            call_tokens,
-            user_config_context,
-            candidates,
-        )
-        scores["premodel_callees"], reasons["premodel_callees"] = self._score_premodel_callees(
-            code, callees, call_tokens, user_config_context
-        )
         caps = self.hard_caps()
         recursion_depth = self._depth_budget(scores["recursion_depth"], caps["max_recursion_depth"])
-        premodel_depth = self._depth_budget(scores["premodel_depth"], caps["max_premodel_depth"])
-        premodel_callees = self._breadth_budget(
-            scores["premodel_callees"], caps["max_premodel_callees"]
-        )
         graph_depth = (
             min(caps["max_recursion_depth"], max(1, recursion_depth))
             if caps["max_recursion_depth"] > 0
@@ -148,7 +118,7 @@ class RiskBudgetPlanner:
         graph_functions = (
             min(
                 caps["max_graph_functions"],
-                max(8, premodel_callees * max(1, graph_depth)),
+                max(8, self._breadth_budget(scores["recursion_depth"], 20) * max(1, graph_depth)),
             )
             if caps["max_graph_functions"] > 0
             else 0
@@ -156,8 +126,6 @@ class RiskBudgetPlanner:
 
         return EffectiveBudget(
             recursion_depth=recursion_depth,
-            premodel_depth=premodel_depth,
-            premodel_callees=premodel_callees,
             graph_depth=graph_depth,
             graph_functions=graph_functions,
             hard_caps=caps,
@@ -204,88 +172,6 @@ class RiskBudgetPlanner:
             reasons.append("historical_issue_context")
         return min(score, 100), reasons
 
-    def _score_premodel_depth(
-        self,
-        code: str,
-        callees: Sequence[str],
-        call_tokens: Sequence[str],
-        user_config_context: str,
-        candidates: Sequence[Any],
-    ) -> tuple[int, List[str]]:
-        score = 10
-        reasons = ["baseline_entry_context"]
-        high_value_calls = [
-            name for name in set(callees) | set(call_tokens) if RESOURCE_RE.search(name)
-        ]
-        if RESOURCE_RE.search(code):
-            score += 20
-            reasons.append("resource_lifecycle_operations_in_entry")
-        if len(high_value_calls) >= 2:
-            score += 20
-            reasons.append("multiple_lifecycle_related_callees")
-        elif high_value_calls:
-            score += 10
-            reasons.append("lifecycle_related_callee")
-        if CALLBACK_RE.search(code) or "function pointers" in user_config_context.lower():
-            score += 15
-            reasons.append("callback_or_pointer_target_context")
-        if any(PROTOCOL_FLOW_RE.search(name) for name in set(callees) | set(call_tokens)):
-            score += 15
-            reasons.append("protocol_or_runtime_callee_context")
-        return_call = re.search(r"\breturn\s+(?P<callee>[A-Za-z_]\w+)\s*\(", code)
-        if return_call and PROTOCOL_FLOW_RE.search(return_call.group("callee")):
-            score += 15
-            reasons.append("thin_public_facade_requires_callee_context")
-        lowered_context = user_config_context.lower()
-        if (
-            "paired" in lowered_context
-            or "pairs" in lowered_context
-            or "dispatcher" in lowered_context
-        ):
-            score += 15
-            reasons.append("user_config_protocol_or_pair_context")
-        if any(self._candidate_source(item, "graph") for item in candidates):
-            score += 20
-            reasons.append("graph_candidate_depends_on_callee_semantics")
-        return min(score, 100), reasons
-
-    def _score_premodel_callees(
-        self,
-        code: str,
-        callees: Sequence[str],
-        call_tokens: Sequence[str],
-        user_config_context: str,
-    ) -> tuple[int, List[str]]:
-        score = 10
-        reasons = ["baseline_entry_context"]
-        distinct_calls = set(callees) | set(call_tokens)
-        if len(distinct_calls) >= 16:
-            score += 35
-            reasons.append("very_high_fanout")
-        elif len(distinct_calls) >= 8:
-            score += 20
-            reasons.append("high_fanout")
-        elif len(distinct_calls) >= 4:
-            score += 10
-            reasons.append("moderate_fanout")
-        high_value_calls = [name for name in distinct_calls if RESOURCE_RE.search(name)]
-        if len(high_value_calls) >= 3:
-            score += 25
-            reasons.append("many_high_value_callees")
-        elif high_value_calls:
-            score += 10
-            reasons.append("high_value_callee")
-        if CONTROL_FLOW_RE.search(code):
-            score += 15
-            reasons.append("dispatcher_or_protocol_control_flow")
-        if any(PROTOCOL_FLOW_RE.search(name) for name in distinct_calls):
-            score += 10
-            reasons.append("protocol_or_runtime_callee_context")
-        if "external" in user_config_context.lower():
-            score += 10
-            reasons.append("user_config_external_api_context")
-        return min(score, 100), reasons
-
     @staticmethod
     def _depth_budget(score: int, cap: int) -> int:
         if cap <= 0:
@@ -320,20 +206,6 @@ class RiskBudgetPlanner:
     @staticmethod
     def _mapping(value: Any) -> Mapping[str, Any]:
         return value if isinstance(value, Mapping) else {}
-
-    @staticmethod
-    def _callee_names(raw_callees: Any) -> List[str]:
-        names: List[str] = []
-        if not isinstance(raw_callees, Iterable) or isinstance(raw_callees, (str, bytes)):
-            return names
-        for callee in raw_callees:
-            if isinstance(callee, Mapping):
-                name = callee.get("name")
-            else:
-                name = callee
-            if name:
-                names.append(str(name))
-        return names
 
     @staticmethod
     def _call_tokens(code: str) -> List[str]:

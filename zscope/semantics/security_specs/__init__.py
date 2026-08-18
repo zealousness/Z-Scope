@@ -1,7 +1,7 @@
-"""Finite, reviewable SecuritySpec v2 protocol.
+"""Finite, reviewable, authoritative SecuritySpec v2 protocol.
 
-P3 keeps this subsystem in shadow.  Importing it must never change Candidate
-Ledger outcomes or Proof Kernel authority.
+Specs provide scoped semantic input; the Candidate Ledger and Proof Engine
+remain the only lifecycle and terminal-decision boundaries.
 """
 
 from .compiler import SecuritySpecCompiler
@@ -16,7 +16,7 @@ from .models import (
     validate_security_spec,
 )
 from .qualification import load_builtin_qualification
-from .manifest import load_shadow_manifest_identity
+from .manifest import load_manifest_identity
 from .store import SecuritySpecStore
 
 __all__ = [
@@ -29,7 +29,7 @@ __all__ = [
     "build_review_event",
     "build_security_spec",
     "load_builtin_qualification",
-    "load_shadow_manifest_identity",
+    "load_manifest_identity",
     "validate_qualification",
     "validate_review_event",
     "validate_security_spec",

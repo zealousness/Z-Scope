@@ -4,7 +4,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from zscope.agents.validator_agent.agent import ValidatorAgent
+from zscope.agents.proof_engine.agent import ProofEngineAgent
 from zscope.core.validation.fact_capabilities import (
     ConcurrencyProofProvider,
     EvidenceAction,
@@ -243,9 +243,7 @@ def test_cfg_join_uses_must_intersection_and_does_not_merge_branch_lock() -> Non
     graph = _clang_graph()
 
     locksets = graph.must_hold_locksets()
-    sink_statement = next(
-        event.statement_uid for event in graph.events if event.callee == "sink"
-    )
+    sink_statement = next(event.statement_uid for event in graph.events if event.callee == "sink")
 
     assert locksets["B0"] == frozenset()
     result = ConcurrencyProofProvider().prove(
@@ -262,9 +260,7 @@ def test_cfg_join_uses_must_intersection_and_does_not_merge_branch_lock() -> Non
 
 def test_statement_order_distinguishes_access_before_and_after_lock() -> None:
     graph = _clang_graph()
-    sink_statement = next(
-        event.statement_uid for event in graph.events if event.callee == "sink"
-    )
+    sink_statement = next(event.statement_uid for event in graph.events if event.callee == "sink")
     lock_statement = next(
         event.statement_uid for event in graph.events if event.kind == "lock_acquire"
     )
@@ -519,10 +515,10 @@ class _ActionLLM:
         self.schemas = kwargs["tools_schema"]
         executor = kwargs["tool_executor"]
         assert executor._zscope_start_iteration(1) is False
-        first = executor("execute_validator_evidence_action", {"action_id": "ACTION_1"})
+        first = executor("execute_proof_evidence_action", {"action_id": "ACTION_1"})
         assert first["status"] == "unknown"
         assert executor._zscope_start_iteration(2) is False
-        second = executor("execute_validator_evidence_action", {"action_id": "ACTION_2"})
+        second = executor("execute_proof_evidence_action", {"action_id": "ACTION_2"})
         assert second["status"] == "unknown"
         assert executor._zscope_start_iteration(3) is True
         terminal = {
@@ -567,11 +563,12 @@ def test_v3_action_mode_exposes_no_generic_repository_tool_and_stops_after_two_r
         for index in (1, 2)
     ]
 
-    response = ValidatorAgent(llm, []).investigate(
+    response = ProofEngineAgent(llm, []).investigate(
         {
             "finding_uid": "CAND_1",
             "validation_cluster_uid": "VAL_1",
             "evidence_slice": {
+                "protocol_version": "zscope.validator-protocol.v3",
                 "obligation": {
                     "candidate_uid": "CAND_1",
                     "validation_cluster_uid": "VAL_1",
@@ -592,7 +589,7 @@ def test_v3_action_mode_exposes_no_generic_repository_tool_and_stops_after_two_r
 
     assert response.success is True
     names = {value["function"]["name"] for value in llm.schemas}
-    assert names == {"execute_validator_evidence_action", "emit_validator_result_v3"}
+    assert names == {"execute_proof_evidence_action", "emit_validator_result_v3"}
     assert response.metadata["validator_no_new_evidence_fact_stop"] is True
 
 
@@ -603,7 +600,7 @@ def test_v3_action_terminal_authority_stops_when_no_executable_clause_remains() 
         def run_conversation_with_tools(self, **kwargs):
             executor = kwargs["tool_executor"]
             outcome = executor(
-                "execute_validator_evidence_action",
+                "execute_proof_evidence_action",
                 {"action_id": "ACTION_1"},
             )
             assert outcome["status"] == "verified_true"
@@ -625,11 +622,12 @@ def test_v3_action_terminal_authority_stops_when_no_executable_clause_remains() 
         "fact_kind": "lockset",
         "satisfies_fact_kinds": ["lockset"],
     }
-    response = ValidatorAgent(TerminalAfterActionLLM(), []).investigate(
+    response = ProofEngineAgent(TerminalAfterActionLLM(), []).investigate(
         {
             "finding_uid": "CAND_1",
             "validation_cluster_uid": "VAL_1",
             "evidence_slice": {
+                "protocol_version": "zscope.validator-protocol.v3",
                 "obligation": {
                     "candidate_uid": "CAND_1",
                     "validation_cluster_uid": "VAL_1",

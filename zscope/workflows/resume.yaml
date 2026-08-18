@@ -13,7 +13,7 @@ steps:
   - id: run_pending_entries
     scope: entry
     stop_policy: stop_if_handler_returns_true
-    agent: semantic_modeler
+    agent: security_spec_miner
     action: reuse snapshots where valid and analyze remaining entries through the default workflow
   - id: merge_reused_reports
     scope: batch

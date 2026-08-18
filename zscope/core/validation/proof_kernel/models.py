@@ -420,6 +420,7 @@ def validate_function_summary(raw: Mapping[str, Any]) -> Tuple[bool, str]:
     if not isinstance(events, list):
         return False, "function_events_not_array"
     event_uids: set[str] = set()
+    entry_parameters: list[tuple[int, str, int, str]] = []
     statement_positions = {
         str(statement): index
         for node in nodes
@@ -463,6 +464,40 @@ def validate_function_summary(raw: Mapping[str, Any]) -> Tuple[bool, str]:
             return False, "event_statement_ordinal_invalid"
         if statement_uid and ordinal != statement_positions.get(statement_uid):
             return False, "event_statement_order_mismatch"
+        if event.get("kind") == "entry_parameter":
+            subjects = [str(value) for value in subject_uids if str(value)]
+            if len(subjects) != 1:
+                return False, "entry_parameter_identity_invalid"
+            raw_parameter_slot = attributes.get("parameter_slot")
+            raw_parameter_count = attributes.get("parameter_count")
+            if raw_parameter_slot is None or raw_parameter_count is None:
+                return False, "entry_parameter_slot_or_count_invalid"
+            try:
+                parameter_slot = int(raw_parameter_slot)
+                parameter_count = int(raw_parameter_count)
+            except (TypeError, ValueError):
+                return False, "entry_parameter_slot_or_count_invalid"
+            if (
+                attributes.get("entry_signature_complete") is not True
+                or parameter_slot < 0
+                or parameter_count <= 0
+                or parameter_slot >= parameter_count
+                or str(attributes.get("entry_signature") or "") != str(raw.get("signature") or "")
+            ):
+                return False, "entry_parameter_signature_binding_invalid"
+            entry_parameters.append((parameter_slot, subjects[0], parameter_count, event_uid))
+    if entry_parameters:
+        declared_counts = {value[2] for value in entry_parameters}
+        slots = [value[0] for value in entry_parameters]
+        identities = [value[1] for value in entry_parameters]
+        declared_count = next(iter(declared_counts)) if len(declared_counts) == 1 else -1
+        if (
+            len(declared_counts) != 1
+            or declared_count != len(entry_parameters)
+            or sorted(slots) != list(range(declared_count))
+            or len(set(identities)) != len(identities)
+        ):
+            return False, "entry_parameter_signature_domain_incomplete"
     for key in ("code_sha256", "backend_sha256"):
         if not SHA256_RE.fullmatch(str(raw.get(key) or "")):
             return False, f"{key}_invalid"

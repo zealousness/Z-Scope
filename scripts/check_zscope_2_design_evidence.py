@@ -23,6 +23,7 @@ P1_REVIEW_ROLES = ("product_architecture",)
 P2_REVIEW_ROLES = ("proof_security",)
 P3_REVIEW_ROLES = ("product_architecture", "proof_security")
 P4_REVIEW_ROLES = ("product_architecture", "proof_security")
+P5_REVIEW_ROLES = ("product_architecture", "proof_security")
 DESIGN_STATUSES = (
     "draft",
     "reviewed",
@@ -531,6 +532,62 @@ def validate_p4_review_documents(
     return errors
 
 
+def validate_p5_review_documents(
+    phase_review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+) -> list[str]:
+    """Validate the two independent reviews required to complete P5."""
+
+    errors: list[str] = []
+    artifacts = phase_review.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P5_REVIEW_ROLES):
+        return ["P5 phase review must contain product_architecture and proof_security"]
+    reviewed_commit = str(phase_review.get("reviewed_commit") or "")
+    reviewed_tree = str(phase_review.get("reviewed_tree") or "")
+    if HEX_40.fullmatch(reviewed_commit) is None:
+        errors.append("P5 phase review reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(reviewed_tree) is None:
+        errors.append("P5 phase review reviewed_tree must be a full Git tree")
+    requirements = {
+        "product_architecture": ("runtime_cutover_product_architecture", "claude-opus-5"),
+        "proof_security": ("runtime_cutover_proof_security", "deepseek-v4-pro"),
+    }
+    for role in P5_REVIEW_ROLES:
+        spec = artifacts.get(role)
+        review = reviews.get(role)
+        if not isinstance(spec, dict) or not isinstance(review, dict):
+            errors.append(f"P5 {role}: review specification or document is missing")
+            continue
+        errors.extend(f"P5 {role}: {row}" for row in validate_json_schema(review, review_schema))
+        expected_scope, expected_model = requirements[role]
+        if review.get("review_scope") != expected_scope:
+            errors.append(f"P5 {role}: review scope must be {expected_scope}")
+        if review.get("role") != role:
+            errors.append(f"P5 {role}: review document has the wrong role")
+        if review.get("reviewer_model") != expected_model:
+            errors.append(f"P5 {role}: reviewer model is not the assigned model")
+        if review.get("reviewer_model") != spec.get("reviewer_model"):
+            errors.append(f"P5 {role}: reviewer model differs from the phase assignment")
+        if review.get("harness") != spec.get("harness"):
+            errors.append(f"P5 {role}: harness differs from the phase assignment")
+        if "read-only" not in str(review.get("harness") or ""):
+            errors.append(f"P5 {role}: completion review must be read-only")
+        if role == "proof_security" and "reasoning_effort=max" not in str(
+            review.get("harness") or ""
+        ):
+            errors.append("P5 proof_security: completion review must use maximum reasoning")
+        if review.get("reviewed_commit") != reviewed_commit:
+            errors.append(f"P5 {role}: reviewed commit differs from the phase target")
+        if review.get("reviewed_tree") != reviewed_tree:
+            errors.append(f"P5 {role}: reviewed tree differs from the phase target")
+        if review.get("decision") != "approved":
+            errors.append(f"P5 {role}: completion requires an approved review decision")
+        if review.get("blocking_findings") != []:
+            errors.append(f"P5 {role}: completion requires zero blocking findings")
+    return errors
+
+
 def _validate_approval_tag(
     repo_root: Path, manifest: Mapping[str, Any], report: ValidationReport
 ) -> None:
@@ -713,6 +770,17 @@ def validate_phase_gates(
             errors.append("P4 completion requires product_architecture and proof_security reviews")
         elif not isinstance(p4_review.get("qualification_manifest"), str):
             errors.append("P4 completion requires a qualification manifest binding")
+    if raw_manifest_phases.get("P5") in {"in_progress", "complete"} and any(
+        raw_manifest_phases.get(phase) != "complete" for phase in ("P2", "P3", "P4")
+    ):
+        errors.append("P5 requires P2, P3 and P4 complete")
+    if raw_manifest_phases.get("P5") == "complete":
+        phase_reviews = manifest.get("phase_reviews")
+        p5_review = phase_reviews.get("P5") if isinstance(phase_reviews, dict) else None
+        if not isinstance(p5_review, dict):
+            errors.append("P5 completion requires product_architecture and proof_security reviews")
+        elif not isinstance(p5_review.get("qualification_manifest"), str):
+            errors.append("P5 completion requires a qualification manifest binding")
 
     approval = manifest.get("approval")
     review_roles = manifest.get("review_roles")
@@ -1263,6 +1331,128 @@ def validate_design_evidence(
                             + ", ".join(unexpected)
                         )
 
+    p5_complete = (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P5") == "complete"
+    )
+    if p5_complete:
+        p5_review = phase_reviews.get("P5") if isinstance(phase_reviews, dict) else None
+        if isinstance(p5_review, dict):
+            try:
+                p5_schema_path = resolve_repository_path(
+                    repo_root, str(p5_review.get("schema", "")), relative_root=design_root
+                )
+                p5_qualification_path = resolve_repository_path(
+                    repo_root,
+                    str(p5_review.get("qualification_manifest", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(f"P5 phase review: {exc}")
+                p5_schema_path = None
+                p5_qualification_path = None
+            p5_schema = (
+                _read_governance_json(p5_schema_path, report)
+                if p5_schema_path is not None
+                else None
+            )
+            p5_qualification = (
+                _read_governance_json(p5_qualification_path, report)
+                if p5_qualification_path is not None
+                else None
+            )
+            p5_reviews: dict[str, Any] = {}
+            p5_artifacts = p5_review.get("artifacts")
+            if isinstance(p5_artifacts, dict):
+                for role, spec in p5_artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("P5 phase review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root, str(spec.get("path", "")), relative_root=design_root
+                        )
+                    except ValueError as exc:
+                        report.error(f"P5 {role}: {exc}")
+                        continue
+                    p5_reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(p5_schema, dict):
+                report.errors.extend(validate_p5_review_documents(p5_review, p5_reviews, p5_schema))
+            reviewed_commit = str(p5_review.get("reviewed_commit", ""))
+            reviewed_tree = str(p5_review.get("reviewed_tree", ""))
+            if isinstance(p5_qualification, dict):
+                required_values = {
+                    "status": "passed",
+                    "candidate_commit": reviewed_commit,
+                    "candidate_tree": reviewed_tree,
+                    "security_spec_mode": "authoritative",
+                    "hypothesis_hunter_mode": "active",
+                    "hypothesis_hunter_effect": "candidate_registration_only",
+                    "proof_engine_mode": "authoritative",
+                    "web_reviewer_identity": "unavailable_read_only",
+                    "cache_epoch": "zscope.runtime-authority.p5",
+                    "cjson_version": "1.7.19",
+                    "cjson_upstream_commit": "c859b25da02955fef659d658b8f324b5cde87be3",
+                    "llm_calls": 0,
+                    "network": False,
+                    "external_model_benchmark": False,
+                    "terminal_trace_integrity_rate": 1.0,
+                    "repeat_result_identical": True,
+                    "legacy_runtime_reference_count": 0,
+                    "safe_false_acceptance_count": 0,
+                }
+                for key, expected in required_values.items():
+                    if p5_qualification.get(key) != expected:
+                        report.error(
+                            f"P5 qualification {key} must equal the reviewed candidate value"
+                        )
+                for key in (
+                    "schema_hashes",
+                    "source_hashes",
+                    "artifact_hashes",
+                    "rollback_wheel",
+                    "candidate_wheel",
+                    "replay",
+                    "commands",
+                    "limitations",
+                    "stop_conditions",
+                ):
+                    if not p5_qualification.get(key):
+                        report.error(f"P5 qualification must record non-empty {key}")
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(f"P5 review commit is unavailable in Git: {reviewed_commit}")
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "P5 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
+                    )
+                changed = _git_text(
+                    repo_root, "diff", "--name-only", f"{reviewed_commit}..HEAD", "--"
+                )
+                if changed is not None:
+                    allowed = {
+                        DESIGN_MANIFEST.as_posix(),
+                        (design_root / "README.md").as_posix(),
+                        (design_root / "phases/P5-runtime-cutover.md").as_posix(),
+                        (design_root / "acceptance/evidence-index.json").as_posix(),
+                        (design_root / "acceptance/p5-qualification-manifest.json").as_posix(),
+                        (
+                            design_root / "acceptance/reviews/p5-product-architecture.json"
+                        ).as_posix(),
+                        (design_root / "acceptance/reviews/p5-proof-security.json").as_posix(),
+                        (design_root / "acceptance/runtime-reachability-manifest.json").as_posix(),
+                        "zscope/orchestration/p5-release-status.json",
+                    }
+                    unexpected = sorted(
+                        value for value in changed.splitlines() if value and value not in allowed
+                    )
+                    if unexpected:
+                        report.error(
+                            "P5 reviewed candidate has post-review product/corpus changes: "
+                            + ", ".join(unexpected)
+                        )
+
     if verify_git:
         _validate_approval_tag(repo_root, manifest, report)
 
@@ -1345,6 +1535,25 @@ def validate_design_evidence(
                     # rewriting the historical record.
                     report.checked_files.add(f"git:{commit}:{raw_path}")
                     continue
+                if (
+                    raw_path
+                    == (
+                        DESIGN_RELATIVE_ROOT / "acceptance/runtime-reachability-manifest.json"
+                    ).as_posix()
+                ):
+                    document_hashes = manifest.get("document_hashes")
+                    current_binding = (
+                        document_hashes.get("acceptance/runtime-reachability-manifest.json")
+                        if isinstance(document_hashes, dict)
+                        else None
+                    )
+                    actual = sha256_file(artifact_path) if artifact_path.is_file() else None
+                    if isinstance(current_binding, str) and current_binding == actual:
+                        # This single manifest is intentionally advanced by each
+                        # product phase. Historical evidence keeps its original
+                        # binding while the design manifest binds the current bytes.
+                        report.checked_files.add(str(artifact_path))
+                        continue
                 _verify_file_hash(
                     artifact_path,
                     expected,

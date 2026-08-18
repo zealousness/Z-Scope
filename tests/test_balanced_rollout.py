@@ -449,7 +449,6 @@ def _runtime_config(
         ),
         analysis=SimpleNamespace(
             snapshot_dir=str(tmp_path),
-            security_semantic_enrichment_mode="shadow",
         ),
         project=SimpleNamespace(
             language="c_cpp",
@@ -475,10 +474,12 @@ def test_runtime_telemetry_state_forces_fast_and_preserves_requested_audit(
     assert policy["requested_depth"] == "deep"
     assert policy["effective_depth"] == "fast"
     assert policy["forced_fast"] is True
-    assert policy["active_discovery_mode"] == "disabled"
+    assert policy["security_spec_mode"] == "authoritative"
+    assert policy["hypothesis_hunter_execution"] == "disabled_by_profile"
+    assert policy["proof_engine_mode"] == "authoritative"
 
 
-def test_runtime_semantic_shadow_honors_explicit_opt_in_without_promotion(
+def test_historical_semantic_shadow_stage_cannot_change_p5_authority(
     tmp_path: Path,
 ) -> None:
     state_path = tmp_path / "state.json"
@@ -490,8 +491,9 @@ def test_runtime_semantic_shadow_honors_explicit_opt_in_without_promotion(
     )
 
     assert config.scan.depth == "balanced"
-    assert policy["semantic_enrichment_mode"] == "shadow"
-    assert policy["active_discovery_mode"] == "shadow"
+    assert policy["security_spec_mode"] == "authoritative"
+    assert policy["hypothesis_hunter_execution"] == "enabled"
+    assert policy["proof_engine_mode"] == "authoritative"
     assert policy["shadow_findings_visible_in_default"] is False
 
 
@@ -521,10 +523,10 @@ def test_runtime_percentage_stage_uses_stable_project_enrollment(tmp_path: Path)
 
     assert enrolled.scan.depth == "balanced"
     assert enrolled_policy["enrolled"] is True
-    assert enrolled_policy["active_discovery_mode"] == "active"
+    assert enrolled_policy["hypothesis_hunter_execution"] == "enabled"
     assert held.scan.depth == "fast"
     assert held_policy["enrolled"] is False
-    assert held_policy["active_discovery_mode"] == "disabled"
+    assert held_policy["hypothesis_hunter_execution"] == "disabled_by_profile"
 
 
 def test_invalid_persisted_runtime_state_is_unmanaged_and_preserves_explicit_opt_in(

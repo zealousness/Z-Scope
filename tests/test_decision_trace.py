@@ -20,6 +20,23 @@ from scripts.reverify_v3_trace import reverify_trace_root
 from scripts.p2_proof_corpus import build_corpus
 
 
+def _authority(disposition: str) -> dict:
+    reason = {
+        "confirmed": "CONFIRMED_DETERMINISTIC_PROOF",
+        "rejected_with_proof": "REJECTED_DETERMINISTIC_COUNTERPROOF",
+        "needs_review": "NEEDS_REVIEW_OPEN_CLAUSES",
+    }[disposition]
+    return {
+        "schema_version": "zscope.terminal-authority-decision.v3",
+        "terminal": True,
+        "disposition": disposition,
+        "reason_code": reason,
+        "authority": "zscope.proof-checker",
+        "next_action": "",
+        "conflict_resolution": None,
+    }
+
+
 def _tool_record(ref="TOOLFACT_1"):
     payload = {
         "success": True,
@@ -73,24 +90,25 @@ def test_cluster_trace_is_ordered_and_hash_chained_under_concurrency(tmp_path: P
     assert loaded["trace_root_sha256"] == trace["trace_root_sha256"]
 
 
-def test_terminal_event_freezes_security_spec_shadow_without_second_terminal(
+def test_terminal_event_freezes_authoritative_security_spec_without_second_terminal(
     tmp_path: Path,
 ) -> None:
     store = DecisionTraceStore(tmp_path, scan_uid="SCAN_P3")
     store.update_identity(
         {
-            "security_spec_mode": "shadow",
+            "security_spec_mode": "authoritative",
             "security_spec_artifact_refs": ["sha256:" + "a" * 64],
-            "security_spec_shadow_decision": {
-                "active_product_effect": "none",
+            "security_spec_decision": {
+                "active_product_effect": "semantic_input",
                 "compiled_spec_count": 3,
-                "reason_code": "security_spec_shadow_only",
+                "reason_code": "security_spec_authoritative",
             },
         }
     )
     issue = {
         "validation_cluster_uid": "VAL_P3",
         "candidate_disposition": "needs_review",
+        "terminal_authority_decision": _authority("needs_review"),
     }
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
@@ -98,31 +116,32 @@ def test_terminal_event_freezes_security_spec_shadow_without_second_terminal(
     trace = store.trace("VAL_P3")
     terminal = [value for value in trace["events"] if value["stage"] == "policy"]
     assert len(terminal) == 1
-    assert terminal[0]["details"]["security_spec_mode"] == "shadow"
-    assert terminal[0]["details"]["security_spec_shadow_decision"] == {
-        "active_product_effect": "none",
+    assert terminal[0]["details"]["security_spec_mode"] == "authoritative"
+    assert terminal[0]["details"]["security_spec_decision"] == {
+        "active_product_effect": "semantic_input",
         "compiled_spec_count": 3,
-        "reason_code": "security_spec_shadow_only",
+        "reason_code": "security_spec_authoritative",
     }
 
 
-def test_terminal_event_attaches_p4_shadow_refs_without_second_terminal(
+def test_terminal_event_attaches_active_hunter_refs_without_second_terminal(
     tmp_path: Path,
 ) -> None:
     store = DecisionTraceStore(tmp_path, scan_uid="SCAN_P4")
     store.update_identity(
         {
-            "hypothesis_hunter_mode": "shadow",
+            "hypothesis_hunter_mode": "active",
             "hypothesis_hunter_artifact_refs": ["sha256:" + "b" * 64],
-            "hypothesis_hunter_shadow_decision": {
-                "active_product_effect": "none",
-                "reason_code": "hypothesis_hunter_shadow_only",
+            "hypothesis_hunter_decision": {
+                "active_product_effect": "candidate_registration_only",
+                "reason_code": "hypothesis_hunter_candidate_registration_only",
             },
         }
     )
     issue = {
         "validation_cluster_uid": "VAL_P4",
         "candidate_disposition": "needs_review",
+        "terminal_authority_decision": _authority("needs_review"),
     }
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
@@ -130,11 +149,11 @@ def test_terminal_event_attaches_p4_shadow_refs_without_second_terminal(
     trace = store.trace("VAL_P4")
     terminal = [value for value in trace["events"] if value["stage"] == "policy"]
     assert len(terminal) == 1
-    assert terminal[0]["details"]["hypothesis_hunter_mode"] == "shadow"
+    assert terminal[0]["details"]["hypothesis_hunter_mode"] == "active"
     assert terminal[0]["details"]["hypothesis_hunter_artifact_refs"] == ["sha256:" + "b" * 64]
-    assert terminal[0]["details"]["hypothesis_hunter_shadow_decision"] == {
-        "active_product_effect": "none",
-        "reason_code": "hypothesis_hunter_shadow_only",
+    assert terminal[0]["details"]["hypothesis_hunter_decision"] == {
+        "active_product_effect": "candidate_registration_only",
+        "reason_code": "hypothesis_hunter_candidate_registration_only",
     }
 
 
@@ -256,7 +275,7 @@ def test_interrupted_v3_trace_can_be_reclassified_without_model_or_truth(tmp_pat
     assert result["llm_calls"] == 0
     assert result["truth_inputs"] == 0
     assert result["terminal_trace_count"] == 0
-    assert result["classification_counts"] == {"provider_semantic_mismatch": 1}
+    assert result["classification_counts"] == {"legacy_claim_preview_not_replayed": 1}
 
 
 def test_strict_proof_trace_reverify_recomputes_from_frozen_ir(tmp_path: Path) -> None:
@@ -302,6 +321,7 @@ def test_terminal_and_view_events_preserve_root_alias_trace(tmp_path: Path) -> N
         "validation_status": "validated",
         "proof_coverage": "complete",
         "decision_proof": {"coverage": "complete", "polarity": "positive"},
+        "terminal_authority_decision": _authority("confirmed"),
         "finding_root_uid": "ROOT_1",
     }
     alias = {
@@ -347,6 +367,7 @@ def test_report_projection_attaches_trace_to_every_terminal_finding(tmp_path: Pa
                 if disposition == "confirmed"
                 else "rejected" if disposition == "rejected_with_proof" else "needs_review"
             ),
+            "terminal_authority_decision": _authority(disposition),
         }
         if disposition in {"confirmed", "rejected_with_proof"}:
             issue["proof_coverage"] = "complete"
@@ -517,10 +538,10 @@ def test_terminal_authority_never_accepts_model_rejection_without_counterproof()
         },
     )
     assert unclosed_verified.disposition == "needs_review"
-    assert unclosed_verified.reason_code == "NEEDS_REVIEW_VERIFIED_BUT_PROMOTION_BLOCKED"
+    assert unclosed_verified.reason_code == "NEEDS_REVIEW_OPEN_CLAUSES"
 
 
-def test_proof_conflict_resolver_rejects_invalid_scope_and_targets_valid_conflict() -> None:
+def test_terminal_authority_ignores_legacy_conflict_proofs() -> None:
     evaluator = TerminalAuthorityEvaluator()
     base = {
         "subject_uid": "OBJ_1",
@@ -538,9 +559,9 @@ def test_proof_conflict_resolver_rejects_invalid_scope_and_targets_valid_conflic
         "evidence_conflict": True,
     }
     resolved = evaluator.evaluate(base, has_executable_action=True)
-    assert resolved.terminal is True
-    assert resolved.disposition == "confirmed"
-    assert resolved.conflict_resolution["negative_reason"] == "proof_subject_mismatch"
+    assert resolved.terminal is False
+    assert resolved.disposition == "needs_review"
+    assert resolved.next_action == "continue_validation"
 
     unresolved_issue = dict(base)
     unresolved_issue["negative_decision_proof"] = {
@@ -550,10 +571,10 @@ def test_proof_conflict_resolver_rejects_invalid_scope_and_targets_valid_conflic
     }
     unresolved = evaluator.evaluate(unresolved_issue, has_executable_action=True)
     assert unresolved.terminal is False
-    assert unresolved.next_action == "targeted_conflict_investigation"
+    assert unresolved.next_action == "continue_validation"
     without_action = evaluator.evaluate(unresolved_issue, has_executable_action=False)
     assert without_action.disposition == "needs_review"
-    assert without_action.reason_code == "NEEDS_REVIEW_EVIDENCE_CONFLICT"
+    assert without_action.reason_code == "NEEDS_REVIEW_OPEN_CLAUSES"
 
 
 def test_explain_and_policy_replay_are_offline_and_hash_verified(tmp_path: Path, capsys) -> None:
@@ -565,6 +586,7 @@ def test_explain_and_policy_replay_are_offline_and_hash_verified(tmp_path: Path,
         "validation_status": "validated",
         "proof_coverage": "complete",
         "decision_proof": {"coverage": "complete", "polarity": "positive"},
+        "terminal_authority_decision": _authority("confirmed"),
     }
     store.bind_candidate("VAL_1", candidate_uids=("CAND_1",))
     store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
@@ -601,7 +623,8 @@ def test_explain_and_policy_replay_are_offline_and_hash_verified(tmp_path: Path,
         == 0
     )
     replay = json.loads(capsys.readouterr().out)
-    assert replay["matches_frozen_terminal"] is True
+    assert replay["matches_frozen_terminal"] is False
+    assert replay["policy_issue"] == "proof_kernel_artifacts_unavailable"
 
 
 def test_no_candidate_audit_unit_has_coverage_trace(tmp_path: Path) -> None:
@@ -641,7 +664,7 @@ def test_usage_sidecar_is_hash_bound_and_token_conserved(tmp_path: Path, capsys)
     store.append_event(
         "VAL_1",
         stage="V1",
-        actor="validator_agent",
+        actor="proof_engine",
         reason_code="V1_COMPLETED",
         call_ids=("CALL_1",),
         token_delta=30,
@@ -650,6 +673,7 @@ def test_usage_sidecar_is_hash_bound_and_token_conserved(tmp_path: Path, capsys)
         "candidate_uid": "CAND_1",
         "validation_cluster_uid": "VAL_1",
         "candidate_disposition": "needs_review",
+        "terminal_authority_decision": _authority("needs_review"),
     }
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
     manifest = store.snapshot()
@@ -674,11 +698,11 @@ def test_audit_unit_usage_is_bound_to_coverage_trace(tmp_path: Path) -> None:
     usage_event = {
         "call_id": "CALL_DISCOVERY",
         "total_tokens": 44,
-        "agent": "active_discovery",
+        "agent": "hypothesis_hunter",
         "stage": "active_discovery",
         "audit_unit_uid": "AUDIT_1",
         "attribution": {
-            "agent": "active_discovery",
+            "agent": "hypothesis_hunter",
             "stage": "active_discovery",
             "audit_unit_uid": "AUDIT_1",
         },
@@ -709,12 +733,12 @@ def test_nested_cluster_usage_is_bound_to_decision_trace(tmp_path: Path) -> None
     usage_event = {
         "call_id": "CALL_NESTED_MODEL",
         "total_tokens": 71,
-        "agent": "semantic_modeler",
-        "stage": "semantic_modeling",
+        "agent": "security_spec_miner",
+        "stage": "security_spec_mining",
         "validation_cluster_uid": "VAL_NESTED",
         "attribution": {
-            "agent": "semantic_modeler",
-            "stage": "semantic_modeling",
+            "agent": "security_spec_miner",
+            "stage": "security_spec_mining",
             "validation_cluster_uid": "VAL_NESTED",
             "call_kind": "v3_tool_dependency",
         },

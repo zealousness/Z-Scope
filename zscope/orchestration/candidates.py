@@ -175,13 +175,8 @@ class CandidateRegistrar:
             str(value or "").strip().lower().replace("-", "_") for value in raw_sources if value
         }
         discovered: set[str] = set()
-        if any(
-            "active_discovery" in value
-            or "llm_observation" in value
-            or value == "llm_active_discovery"
-            for value in normalized
-        ):
-            discovered.add("llm_active_discovery")
+        if any("hypothesis_hunter" in value for value in normalized):
+            discovered.add("hypothesis_hunter")
         if any(
             "backend_signal" in value or value.startswith(("svf", "saber", "joern"))
             for value in normalized
@@ -204,7 +199,7 @@ class CandidateRegistrar:
             )
 
         detail_ids = {
-            "llm_active_discovery": str(
+            "hypothesis_hunter": str(
                 issue.get("audit_unit_uid")
                 or issue.get("audit_unit_id")
                 or issue.get("id")
@@ -279,14 +274,6 @@ class CandidateRegistrar:
                 default_disposition="needs_review",
                 decision_fact_cache=self.decision_fact_cache,
             )
-            if force_unconfirmed and str(issue.get("rollout_visibility") or "").lower() == "shadow":
-                # Decision-fact attachment owns its general promotion fields,
-                # but a release rollout shadow is a stronger, independent
-                # visibility gate.  Re-assert it at the registrar boundary so
-                # no producer or fact refresh can promote the hypothesis.
-                issue["candidate_promotion_eligible"] = False
-                issue["candidate_promotion_reason"] = "active_discovery_rollout_shadow"
-                issue["candidate_promotion_terminal_status"] = "shadow_observation"
             evidence = dict(issue.get("evidence_pack") or {})
             evidence.update(
                 {

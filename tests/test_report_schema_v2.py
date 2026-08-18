@@ -11,6 +11,10 @@ from zscope.reporting.schema import (
     report_is_reusable,
     report_reuse_blockers,
 )
+from zscope.orchestration.runtime_authority import (
+    RUNTIME_CACHE_EPOCH,
+    build_runtime_authority_manifest,
+)
 
 
 def test_enabled_discovery_without_llm_is_partial_and_exit_two() -> None:
@@ -311,7 +315,7 @@ def test_report_schema_marks_deferred_candidate_incomplete() -> None:
         entry_function="entry",
     )
 
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert report["finding_status"] == "clean"
     assert report["completeness"] == "degraded"
     assert report["scan_outcome"] == "incomplete"
@@ -539,8 +543,14 @@ def test_shadow_observation_is_a_closed_non_user_visible_terminal() -> None:
 
 
 def test_report_reuse_requires_complete_compatible_manifest_without_pending_work() -> None:
+    authority = build_runtime_authority_manifest(
+        source_tree_hash="a" * 40,
+        config_sha256="b" * 64,
+        backend_sha256="c" * 64,
+        revisions={"proof_checker": "proof-checker.v2"},
+    )
     reusable = {
-        "schema_version": 2,
+        "schema_version": 3,
         "finding_status": "confirmed",
         "completeness": "complete",
         "issues": [
@@ -552,7 +562,12 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
         "candidate_terminal_states": [],
         "run_manifest": {
             "valid": True,
+            "schema_version": "zscope.run-manifest.v2",
             "candidate_schema_version": "zscope.candidate.v3.3",
+            "cache_epoch": RUNTIME_CACHE_EPOCH,
+            "runtime_authority_manifest": authority,
+            "runtime_authority_sha256": authority["content_sha256"],
+            "decision_trace": {"complete": True},
             "config_hash": "CONFIG",
             "model_manifest_hash": "MODEL",
             "source_revision": "REV",

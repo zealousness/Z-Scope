@@ -36,8 +36,8 @@ evidence、predicate 和 slot ID 中选择，且最高状态为 `proposed`。
 
 状态转换固定为 `observation -> proposed -> verified_scoped -> project_active -> stable`；
 异常状态为 `conflicting / rejected / quarantined`。`project_active` 和 `stable` 必须绑定单一
-review 或 qualification authority，不能同时绑定二者。P3 只把 qualification-backed `stable`
-规格编译到 shadow；冲突、过期依赖和不可解析 evidence 一律不编译。SecuritySpec、review event、
+review 或 qualification authority，不能同时绑定二者。P5 live只把qualification-backed `stable`
+规格的最高有效revision编译为authoritative输入；冲突、过期依赖和不可解析evidence一律不编译。SecuritySpec、review event、
 qualification、compiled spec 和 archive 均使用 strict schema、canonical JSON 和 SHA-256 内容寻址。
 
 ## SecuritySpecReviewEvent
@@ -80,9 +80,9 @@ offer/action/fact/evidence ID、coverage status 和 unresolved reason；它不�
 
 系统从已验证的 offer 与选择结果物化 `SecurityHypothesis v2`。未知、重复、跨 obligation 或
 内容不一致的 action ID 使该选择整体失败；缺 location、subject、region、证据或有效 action 的
-输出只形成 `HypothesisCoverageObservation v1`。合格 hypothesis 通过 `CandidateRegistrar` 写入
-独立 shadow Ledger 并在全部发现结束后 freeze。P5 前该 Ledger 不进入 live ValidationRunner、
-Finding-root、报告投影、promotion 或 TerminalAuthority。
+输出只形成`HypothesisCoverageObservation v1`。P5中合格hypothesis通过`CandidateRegistrar`
+写入live Ledger时必须强制未确认；Hunter不能提交candidate状态或terminal disposition，只有后续
+Proof Engine可关闭该candidate。
 
 ## ProgramProofIR与证书
 
@@ -131,6 +131,18 @@ code/IR/backend/dependency hash。
 - `NEEDS_REVIEW_EVIDENCE_CONFLICT`
 - `NEEDS_REVIEW_MODEL_REJECT_NO_PROOF`
 - `NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE`
+
+P5的`TerminalAuthorityDecision v3`还必须绑定重新校验的Checker result refs、proof root和
+`integrity_status=verified`。模型verdict、旧proof字段、legacy certificate、Validator v2或compat
+bridge都不能关闭candidate。完整required executable clause集合中任一缺少Checker结果时只能
+`needs_review`。
+
+## RuntimeAuthorityManifest v1
+
+每次live run绑定source tree、effective config、backend、SecuritySpec/Hunter/Proof root、
+registry/checker/provider revision、Decision Trace schema、`zscope.runtime-authority.p5` cache epoch和
+内容hash。resume/maintain遇到旧epoch、缺manifest、manifest/hash不一致或terminal trace不完整时
+必须重新扫描，不能把历史report或snapshot迁移成新证据。
 
 ## WebUI API
 

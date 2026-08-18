@@ -1,4 +1,5 @@
-from zscope.orchestration.active_discovery import CoverageGapPlanner, resolve_discovery_profile
+from zscope.orchestration.hunting_profile import resolve_hunting_profile
+from zscope.orchestration.hypothesis_hunter.planner import AttackSurfacePlanner
 from zscope.semantics.security_map import (
     FunctionSecurityRecord,
     SecurityEvent,
@@ -64,10 +65,14 @@ def _semantic_map():
 
 def test_security_semantics_tool_is_read_only_bounded_and_queryable(tmp_path) -> None:
     semantic_map = _semantic_map()
-    profile = resolve_discovery_profile(
+    profile = resolve_hunting_profile(
         type("Config", (), {"scan": type("S", (), {"depth": "balanced"})()})()
     )
-    semantic_map = semantic_map.with_audit_units(CoverageGapPlanner(profile).plan(semantic_map))
+    planned = AttackSurfacePlanner(
+        risk_threshold=profile.risk_threshold,
+        max_units=profile.max_units,
+    ).plan(semantic_map)
+    semantic_map = semantic_map.with_audit_units([dict(value.audit_unit) for value in planned])
     db_path = tmp_path / "security_map.db"
     SQLiteSecurityMapStore(db_path).save_map(semantic_map)
     tool = GetSecuritySemanticsTool(db_path)

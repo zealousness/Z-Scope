@@ -13,11 +13,20 @@ from scripts.check_p1_runtime_reachability import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _write_wheel(path: Path, *, include_removed: bool = False) -> None:
+def _write_wheel(
+    path: Path, *, include_removed: bool = False, include_live_compat_import: bool = False
+) -> None:
     with zipfile.ZipFile(path, "w") as archive:
         for name in REQUIRED_WHEEL_ENTRIES:
             archive.writestr(name, "# packaged P1 entry\n")
-        archive.writestr("zscope/runtime.py", "from zscope.compat import read_legacy_report_view\n")
+        archive.writestr(
+            "zscope/runtime.py",
+            (
+                "from zscope.compat import read_legacy_report_view\n"
+                if include_live_compat_import
+                else "RUNTIME_AUTHORITY = 'p5'\n"
+            ),
+        )
         if include_removed:
             archive.writestr("zscope/agents/deep_worker/agent.py", "# removed\n")
 
@@ -38,3 +47,10 @@ def test_wheel_gate_rejects_removed_agent(tmp_path: Path) -> None:
     _write_wheel(wheel, include_removed=True)
 
     assert any("deep_worker" in error for error in wheel_errors(wheel))
+
+
+def test_wheel_gate_rejects_live_compat_import(tmp_path: Path) -> None:
+    wheel = tmp_path / "zscope-p5-compat-bypass.whl"
+    _write_wheel(wheel, include_live_compat_import=True)
+
+    assert any("zscope.compat" in error for error in wheel_errors(wheel))
