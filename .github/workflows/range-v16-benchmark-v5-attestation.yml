@@ -1,0 +1,190 @@
+name: Range v16 and Benchmark v5 Attestation
+
+on:
+  workflow_dispatch:
+    inputs:
+      governance_commit:
+        description: Merged E0 governance commit
+        required: true
+      scorer_commit:
+        description: Merged Benchmark v5 scorer commit
+        required: true
+      truth_commit:
+        description: Merged Truth v16 commit
+        required: true
+      review_run_id:
+        description: Successful protected Range v16 review workflow run ID
+        required: true
+      review_source_sha:
+        description: Frozen commit used to generate the protected review run
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  attest:
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.truth_commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Verify component ancestry and protected review run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+        run: |
+          test "$(git rev-parse HEAD)" = '${{ inputs.truth_commit }}'
+          git merge-base --is-ancestor '${{ inputs.governance_commit }}' HEAD
+          git merge-base --is-ancestor '${{ inputs.scorer_commit }}' HEAD
+          git diff --exit-code '${{ inputs.review_source_sha }}' HEAD -- \
+            test/range/benchmark/v16/review-packet-catalog.json \
+            test/range/benchmark/v16/review-packets
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .event)" = "workflow_dispatch"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .conclusion)" = "success"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .path)" = ".github/workflows/range-v16-review.yml"
+      - uses: actions/download-artifact@v8
+        with:
+          name: range-v16-reviewed-${{ inputs.review_source_sha }}
+          path: protected-review-evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.review_run_id }}
+          digest-mismatch: error
+      - uses: actions/download-artifact@v8
+        with:
+          name: range-v16-pair-author-${{ inputs.review_source_sha }}
+          path: protected-pair-author
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.review_run_id }}
+          digest-mismatch: error
+      - uses: actions/download-artifact@v8
+        with:
+          name: range-v16-review-provenance-${{ inputs.review_source_sha }}
+          path: protected-review-provenance
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.review_run_id }}
+          digest-mismatch: error
+      - name: Validate Truth v16, Benchmark v5, pairs, and answer isolation
+        id: validate_e0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+        run: |
+          python3 -m pip install --require-hashes -r requirements/constraints/py313.txt
+          python3 -m pip install --no-deps -e .
+          REVIEW_ARTIFACT_DIGEST="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts" \
+            --jq '.artifacts[] | select(.name == "range-v16-reviewed-${{ inputs.review_source_sha }}") | .digest')"
+          test -n "$REVIEW_ARTIFACT_DIGEST"
+          PAIR_AUTHOR_ARTIFACT_DIGEST="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts" \
+            --jq '.artifacts[] | select(.name == "range-v16-pair-author-${{ inputs.review_source_sha }}") | .digest')"
+          test -n "$PAIR_AUTHOR_ARTIFACT_DIGEST"
+          REVIEW_WORKFLOW_HEAD_SHA="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" \
+            --jq '.head_sha')"
+          test -n "$REVIEW_WORKFLOW_HEAD_SHA"
+          echo "pair_author_artifact_digest=$PAIR_AUTHOR_ARTIFACT_DIGEST" >> "$GITHUB_OUTPUT"
+          python3 scripts/verify_e0_review_provenance.py \
+            --provenance protected-review-provenance/review-provenance.json \
+            --workflow-run-id '${{ inputs.review_run_id }}' \
+            --workflow-head-sha "$REVIEW_WORKFLOW_HEAD_SHA" \
+            --packet-source-sha '${{ inputs.review_source_sha }}' \
+            --artifact-digest "$REVIEW_ARTIFACT_DIGEST"
+          mkdir -p reconstructed-review
+          python3 scripts/generate_range_v16_truth.py normalize \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --packet-catalog test/range/benchmark/v16/review-packet-catalog.json \
+            --review-root protected-review-evidence \
+            --review-bundle-manifest protected-review-evidence/review-bundle-manifest.json \
+            --review-provenance protected-review-provenance/review-provenance.json \
+            --output reconstructed-review/normalized-decisions.json
+          cmp reconstructed-review/normalized-decisions.json \
+            test/range/benchmark/v16/reviews/normalized-decisions.json
+          cmp protected-pair-author/normalized-decisions.json \
+            test/range/benchmark/v16/reviews/normalized-decisions.json
+          python3 scripts/generate_range_v16_safe_pairs.py materialize \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --normalized-decisions test/range/benchmark/v16/reviews/normalized-decisions.json \
+            --author-dir protected-pair-author/author \
+            --output-dir reconstructed-pairs \
+            --compiler cc \
+            --compile
+          diff --recursive --brief --no-dereference reconstructed-pairs \
+            test/range/benchmark/v16/pairs
+          mkdir -p reconstructed-truth
+          python3 scripts/generate_range_v16_truth.py build \
+            --truth-v15 test/range/benchmark/ground_truth.json \
+            --normalized-decisions reconstructed-review/normalized-decisions.json \
+            --pair-root reconstructed-pairs \
+            --fixture-root test/range \
+            --taxonomy zscope/benchmarking/defect-taxonomy.v1.json \
+            --output reconstructed-truth/ground_truth.json \
+            --pair-index-output reconstructed-truth/safe-pair-manifest.json \
+            --truth-manifest-output reconstructed-truth/truth-manifest.json
+          cmp reconstructed-truth/ground_truth.json \
+            test/range/benchmark/v16/ground_truth.json
+          cmp reconstructed-truth/safe-pair-manifest.json \
+            test/range/benchmark/v16/safe-pair-manifest.json
+          cmp reconstructed-truth/truth-manifest.json \
+            test/range/benchmark/v16/truth-manifest.json
+          python3 scripts/validate_range_v16_truth.py \
+            --truth test/range/benchmark/v16/ground_truth.json \
+            --pair-root test/range/benchmark/v16/pairs \
+            --truth-manifest test/range/benchmark/v16/truth-manifest.json \
+            --normalized-decisions test/range/benchmark/v16/reviews/normalized-decisions.json \
+            --pair-index test/range/benchmark/v16/safe-pair-manifest.json \
+            --taxonomy zscope/benchmarking/defect-taxonomy.v1.json \
+            --fixture-root test/range \
+            --compile-pairs
+          python3 -m pytest -q \
+            tests/test_truth_contract_v2.py \
+            tests/test_benchmark_v5.py \
+            tests/test_benchmark_leakage.py \
+            tests/test_zscope_2_change_scope.py
+      - name: Issue protected E0 attestation
+        env:
+          Z_SCOPE_ATTESTATION_ENVIRONMENT: sealed-benchmark
+        run: |
+          mkdir -p release-evidence
+          python3 scripts/build_e0_attestation.py \
+            --governance-commit '${{ inputs.governance_commit }}' \
+            --scorer-commit '${{ inputs.scorer_commit }}' \
+            --truth-commit '${{ inputs.truth_commit }}' \
+            --truth test/range/benchmark/v16/ground_truth.json \
+            --truth-manifest test/range/benchmark/v16/truth-manifest.json \
+            --source-truth-v15 test/range/benchmark/ground_truth.json \
+            --review-packet-catalog test/range/benchmark/v16/review-packet-catalog.json \
+            --normalized-decisions test/range/benchmark/v16/reviews/normalized-decisions.json \
+            --safe-pair-author-manifest protected-pair-author/author/manifest.json \
+            --safe-pair-author-artifact-digest '${{ steps.validate_e0.outputs.pair_author_artifact_digest }}' \
+            --review-bundle protected-review-evidence/review-bundle-manifest.json \
+            --review-provenance protected-review-provenance/review-provenance.json \
+            --safe-pair-manifest test/range/benchmark/v16/safe-pair-manifest.json \
+            --defect-taxonomy zscope/benchmarking/defect-taxonomy.v1.json \
+            --benchmark-policy zscope/benchmarking/benchmark_policy.v2.json \
+            --scorer-bundle-file zscope/benchmarking/benchmark_v5.py \
+            --scorer-bundle-file zscope/benchmarking/protocol.py \
+            --scorer-bundle-file zscope/benchmarking/truth_contract.py \
+            --opus-review-count "$(python3 -c 'import json; print(json.load(open("protected-review-evidence/opus/manifest.json"))["reviewed_count"])')" \
+            --output release-evidence/e0-attestation.json
+          python3 scripts/verify_e0_attestation.py \
+            --attestation release-evidence/e0-attestation.json \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --head-sha "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: e0-range-v16-benchmark-v5-${{ inputs.truth_commit }}
+          path: release-evidence/e0-attestation.json
+          if-no-files-found: error
+          retention-days: 90

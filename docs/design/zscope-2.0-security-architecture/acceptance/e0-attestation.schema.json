@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/e0-attestation.v1.json",
+  "title": "Z-SCOPE E0 protected workflow attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "issued_at",
+    "workflow",
+    "component_commits",
+    "artifacts",
+    "review_summary",
+    "invariants",
+    "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.e0-attestation.v1"},
+    "issued_at": {"type": "string", "format": "date-time"},
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "run_id", "head_sha", "environment"],
+      "properties": {
+        "path": {"const": ".github/workflows/range-v16-benchmark-v5-attestation.yml"},
+        "run_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "head_sha": {"$ref": "#/$defs/gitsha"},
+        "environment": {"const": "sealed-benchmark"}
+      }
+    },
+    "component_commits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["governance", "scorer", "truth"],
+      "properties": {
+        "governance": {"$ref": "#/$defs/gitsha"},
+        "scorer": {"$ref": "#/$defs/gitsha"},
+        "truth": {"$ref": "#/$defs/gitsha"}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/sha256"},
+      "required": [
+        "truth_v16",
+        "truth_v16_content",
+        "truth_contract_manifest",
+        "truth_manifest",
+        "source_truth_v15",
+        "review_packet_catalog",
+        "review_packet_catalog_content",
+        "normalized_decisions",
+        "normalized_decisions_content",
+        "safe_pair_author_manifest",
+        "safe_pair_author_content",
+        "safe_pair_author_artifact",
+        "review_bundle",
+        "review_bundle_content",
+        "review_provenance",
+        "safe_pair_manifest",
+        "defect_taxonomy",
+        "benchmark_policy",
+        "scorer_bundle"
+      ]
+    },
+    "review_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_count", "dual_review_count", "opus_review_count", "disputed_opus_count"],
+      "properties": {
+        "record_count": {"const": 136},
+        "dual_review_count": {"const": 136},
+        "opus_review_count": {"type": "integer", "minimum": 9},
+        "disputed_opus_count": {"const": 9}
+      }
+    },
+    "invariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "matcher_v2_unchanged",
+        "v15_read_only",
+        "safe_units_cover_confirmable_truth",
+        "scanner_answer_isolated",
+        "raw_reviews_artifact_only",
+        "product_runtime_unchanged"
+      ],
+      "properties": {
+        "matcher_v2_unchanged": {"const": true},
+        "v15_read_only": {"const": true},
+        "safe_units_cover_confirmable_truth": {"const": true},
+        "scanner_answer_isolated": {"const": true},
+        "raw_reviews_artifact_only": {"const": true},
+        "product_runtime_unchanged": {"const": true}
+      }
+    },
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitsha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  }
+}

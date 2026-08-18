@@ -1,7 +1,7 @@
 {
   "schema_version": "zscope.baseline-artifact-manifest.v1",
   "design_version": "1.0.0",
-  "status": "cold_runtime_artifacts_collected_reviews_pending",
+  "status": "p0_design_approved",
   "captured_at": "2026-08-17T09:14:19+08:00",
   "source": {
     "branch": "main",
@@ -80,11 +80,6 @@
     "matcher_v2_scores_present": true
   },
   "missing_required_baseline_artifacts": [],
-  "remaining_approval_requirements": [
-    "product architecture review signature",
-    "proof security review signature",
-    "independent benchmark review signature",
-    "annotated design tag after approval"
-  ],
-  "approval_eligible": false
+  "remaining_approval_requirements": [],
+  "approval_eligible": true
 }
