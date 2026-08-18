@@ -431,6 +431,24 @@ def validate_decision_against_packet(
             raise E0GovernanceError("review decision evidence ref is outside the supplied windows")
 
 
+def _semantic_retry_substantive_projection(decision: Mapping[str, Any]) -> dict[str, Any]:
+    """Freeze every substantive field across a grounding-only retry."""
+
+    projection = dict(decision)
+    projection.pop("structured_anchors", None)
+    projection.pop("evidence_refs", None)
+    clauses: list[Any] = []
+    for clause in decision.get("required_evidence_clauses") or []:
+        if isinstance(clause, Mapping):
+            projected_clause = dict(clause)
+            projected_clause.pop("evidence_refs", None)
+            clauses.append(projected_clause)
+        else:
+            clauses.append(clause)
+    projection["required_evidence_clauses"] = clauses
+    return projection
+
+
 def _claude_arguments(reviewer: str) -> list[str]:
     if reviewer not in {"fable", "opus"}:
         raise E0GovernanceError("Claude reviewer identity is invalid")
@@ -637,22 +655,115 @@ def _run_model(
             assert_no_hidden_reasoning_output(retry.stdout)
             decision = _extract_deepseek_decision(retry.stdout)
             raw["stdout"] = retry.stdout
+        try:
+            validate_review_decision(
+                decision,
+                expected_packet_uid=str(packet["packet_uid"]),
+                expected_packet_sha256=str(packet["packet_sha256"]),
+                expected_role=role,
+            )
+            if decision.get("reviewer_model") != model:
+                raise E0GovernanceError("reviewer model identity mismatch")
+        except E0GovernanceError:
+            if raw_output_path is not None:
+                _json_dump(raw_output_path, raw)
+            raise
+
+        try:
+            validate_decision_against_packet(
+                decision,
+                packet,
+                require_resolvable_evidence=reviewer == "opus",
+            )
+        except E0GovernanceError as exc:
+            if reviewer != "deepseek":
+                if raw_output_path is not None:
+                    _json_dump(raw_output_path, raw)
+                raise
+            original_stdout = str(raw["stdout"])
+            original_projection_sha256 = sha256_value(
+                _semantic_retry_substantive_projection(decision)
+            )
+            (temp_root / "prior-output.txt").write_text(
+                original_stdout,
+                encoding="utf-8",
+            )
+            semantic_prompt = (
+                "Read prior-output.txt, packet.json, and decision-schema.json in the "
+                "isolated current directory. The prior JSON passed the strict decision "
+                "schema but failed deterministic packet grounding. Return one complete "
+                "replacement JSON object. You may change only structured_anchors, "
+                "evidence_refs, and evidence_refs inside required_evidence_clauses. "
+                "Every anchor line span must be contained in a supplied code window for "
+                "the same file, and its function must either appear exactly in that "
+                "window or equal a function-valued truth_record field. Every evidence "
+                "reference must be contained in a supplied code window. Preserve every "
+                "other field exactly, including reviewer identity, disposition, contract "
+                "kind, taxonomy, predicates, summaries, assumptions, safe-pair content, "
+                "and reason codes. Do not add markdown, prose, or external knowledge."
+            )
+            retry = subprocess.run(
+                [
+                    str(dsh_command),
+                    "--profile",
+                    "headless",
+                    "--patch",
+                    str(patch_path),
+                    semantic_prompt,
+                ],
+                cwd=temp_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                check=False,
+                timeout=600,
+            )
+            raw["semantic_retry"] = {
+                "exit_code": retry.returncode,
+                "original_stdout_sha256": sha256_value(original_stdout),
+                "original_stdout_retained": False,
+                "validation_error_sha256": sha256_value(str(exc)),
+                "substantive_projection_sha256": original_projection_sha256,
+                "stderr_sha256": sha256_value(retry.stderr),
+            }
+            if retry.returncode != 0:
+                if raw_output_path is not None:
+                    _json_dump(raw_output_path, raw)
+                raise E0GovernanceError("DeepSeek grounding-only retry failed") from exc
+            raw["stdout"] = retry.stdout
+            try:
+                assert_no_hidden_reasoning_output(retry.stdout)
+                decision = _extract_deepseek_decision(retry.stdout)
+                validate_review_decision(
+                    decision,
+                    expected_packet_uid=str(packet["packet_uid"]),
+                    expected_packet_sha256=str(packet["packet_sha256"]),
+                    expected_role=role,
+                )
+                if decision.get("reviewer_model") != model:
+                    raise E0GovernanceError("reviewer model identity mismatch")
+                if (
+                    sha256_value(_semantic_retry_substantive_projection(decision))
+                    != original_projection_sha256
+                ):
+                    raise E0GovernanceError(
+                        "DeepSeek grounding-only retry changed substantive fields"
+                    )
+                validate_decision_against_packet(
+                    decision,
+                    packet,
+                    require_resolvable_evidence=False,
+                )
+            except (json.JSONDecodeError, E0GovernanceError):
+                if raw_output_path is not None:
+                    _json_dump(raw_output_path, raw)
+                raise
+
         if raw_output_path is not None:
             _json_dump(raw_output_path, raw)
 
-    validate_review_decision(
-        decision,
-        expected_packet_uid=str(packet["packet_uid"]),
-        expected_packet_sha256=str(packet["packet_sha256"]),
-        expected_role=role,
-    )
-    if decision.get("reviewer_model") != model:
-        raise E0GovernanceError("reviewer model identity mismatch")
-    validate_decision_against_packet(
-        decision,
-        packet,
-        require_resolvable_evidence=reviewer == "opus",
-    )
     return dict(decision), raw
 
 
@@ -730,7 +841,10 @@ def _validate_existing_primary(
         "stderr_sha256",
     }
     raw_fields = set(raw)
-    if raw_fields != required_raw_fields and raw_fields != required_raw_fields | {"format_retry"}:
+    optional_raw_fields = {"format_retry", "semantic_retry"}
+    if not required_raw_fields.issubset(raw_fields) or not (
+        raw_fields - required_raw_fields
+    ).issubset(optional_raw_fields):
         raise E0GovernanceError("existing raw review envelope fields are invalid")
     expected_delivery = "embedded_prompt" if reviewer in {"fable", "opus"} else "isolated_files"
     if (
@@ -748,6 +862,13 @@ def _validate_existing_primary(
         raise E0GovernanceError("existing raw review envelope is invalid")
     _validate_command_identity(raw.get("command_identity"), reviewer=reviewer)
     assert_no_hidden_reasoning_output(str(raw["stdout"]))
+    raw_decision = (
+        _extract_deepseek_decision(str(raw["stdout"]))
+        if reviewer == "deepseek"
+        else _extract_claude_decision(str(raw["stdout"]))
+    )
+    if dict(raw_decision) != dict(decision):
+        raise E0GovernanceError("existing raw review output does not match decision")
     retry = raw.get("format_retry")
     if retry is not None:
         if (
@@ -767,6 +888,35 @@ def _validate_existing_primary(
             or not re.fullmatch(r"[0-9a-f]{64}", str(retry["stderr_sha256"]))
         ):
             raise E0GovernanceError("existing format retry envelope is invalid")
+    semantic_retry = raw.get("semantic_retry")
+    if semantic_retry is not None:
+        if (
+            reviewer != "deepseek"
+            or not isinstance(semantic_retry, Mapping)
+            or set(semantic_retry)
+            != {
+                "exit_code",
+                "original_stdout_sha256",
+                "original_stdout_retained",
+                "validation_error_sha256",
+                "substantive_projection_sha256",
+                "stderr_sha256",
+            }
+            or semantic_retry.get("exit_code") != 0
+            or semantic_retry.get("original_stdout_retained") is not False
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", str(semantic_retry.get(field) or ""))
+                for field in (
+                    "original_stdout_sha256",
+                    "validation_error_sha256",
+                    "substantive_projection_sha256",
+                    "stderr_sha256",
+                )
+            )
+            or sha256_value(_semantic_retry_substantive_projection(decision))
+            != semantic_retry.get("substantive_projection_sha256")
+        ):
+            raise E0GovernanceError("existing semantic retry envelope is invalid")
 
 
 def _run_primary_packet(

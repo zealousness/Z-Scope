@@ -362,6 +362,123 @@ def test_review_command_identity_disables_claude_tools_and_binds_deepseek_patch(
         reviewer_runner._validate_command_identity(deepseek, reviewer="deepseek")
 
 
+def test_deepseek_grounding_retry_preserves_substantive_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    original = _decision(packet)
+    original["reviewer_role"] = "primary_deepseek"
+    original["reviewer_model"] = "deepseek-v4-pro:max"
+    original["structured_anchors"].append(
+        {
+            "kind": "secondary",
+            "corrected": True,
+            "file": "src/example.c",
+            "function": "not_in_the_supplied_window",
+            "start_line": 1,
+            "end_line": 1,
+        }
+    )
+    corrected = deepcopy(original)
+    corrected["structured_anchors"][1]["function"] = "f"
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        calls.append(command)
+        decision = original if len(calls) == 1 else corrected
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(decision),
+            stderr="",
+        )
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    raw_path = tmp_path / "raw.json"
+    decision, raw = reviewer_runner._run_model(
+        packet,
+        reviewer="deepseek",
+        raw_output_path=raw_path,
+    )
+
+    assert decision == corrected
+    assert len(calls) == 2
+    assert "failed deterministic packet grounding" in calls[1][-1]
+    retry = raw["semantic_retry"]
+    assert retry["exit_code"] == 0
+    assert retry["original_stdout_retained"] is False
+    assert retry["substantive_projection_sha256"] == sha256_value(
+        reviewer_runner._semantic_retry_substantive_projection(corrected)
+    )
+    assert raw["stdout"] == json.dumps(corrected)
+    assert json.dumps(original) not in json.dumps(raw)
+
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(json.dumps(corrected), encoding="utf-8")
+    reviewer_runner._validate_existing_primary(
+        packet,
+        reviewer="deepseek",
+        decision_path=decision_path,
+        raw_path=raw_path,
+    )
+
+    valid_raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    mismatched = deepcopy(valid_raw)
+    mismatched_stdout = json.loads(mismatched["stdout"])
+    mismatched_stdout["confidence"] = 0.7
+    mismatched["stdout"] = json.dumps(mismatched_stdout)
+    raw_path.write_text(json.dumps(mismatched), encoding="utf-8")
+    with pytest.raises(ValueError, match="raw review output does not match"):
+        reviewer_runner._validate_existing_primary(
+            packet,
+            reviewer="deepseek",
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
+
+    tampered = deepcopy(valid_raw)
+    tampered["semantic_retry"]["substantive_projection_sha256"] = "0" * 64
+    raw_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="semantic retry envelope"):
+        reviewer_runner._validate_existing_primary(
+            packet,
+            reviewer="deepseek",
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
+
+
+def test_deepseek_grounding_retry_rejects_substantive_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    original = _decision(packet)
+    original["reviewer_role"] = "primary_deepseek"
+    original["reviewer_model"] = "deepseek-v4-pro:max"
+    original["structured_anchors"][0]["function"] = "not_in_the_supplied_window"
+    changed = deepcopy(original)
+    changed["structured_anchors"][0]["function"] = "f"
+    changed["confidence"] = 0.8
+    outputs = iter((original, changed))
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        del command
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(next(outputs)),
+            stderr="",
+        )
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    with pytest.raises(ValueError, match="changed substantive fields"):
+        reviewer_runner._run_model(
+            packet,
+            reviewer="deepseek",
+            raw_output_path=tmp_path / "raw.json",
+        )
+
+
 def test_e0_attestation_scorer_bundle_binds_exact_dependency_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -405,6 +522,9 @@ def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
         (packet_dir / f"{truth_id}.json").write_text(json.dumps(packet), encoding="utf-8")
 
     def raw_for(packet: dict) -> dict:
+        decision = _decision(packet)
+        decision["packet_uid"] = packet["packet_uid"]
+        decision["packet_sha256"] = packet["packet_sha256"]
         return {
             "schema_version": "zscope.range-v16-review-raw-envelope.v1",
             "reviewer_role": "primary_fable",
@@ -414,7 +534,7 @@ def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
             "input_delivery": "embedded_prompt",
             "command_identity": ["claude", *reviewer_runner._claude_arguments("fable")],
             "exit_code": 0,
-            "stdout": "{}",
+            "stdout": json.dumps({"structured_output": decision}),
             "stderr_sha256": sha256_value(""),
         }
 
