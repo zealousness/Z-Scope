@@ -60,6 +60,8 @@ def _decision(packet: dict) -> dict:
         "contract_kind": "concrete_trigger",
         "disposition": "keep",
         "confidence": 0.9,
+        "defect_taxonomy_id": "bounds",
+        "cwe_ids": ["CWE-125"],
         "structured_anchors": [
             {
                 "kind": "primary",
@@ -77,6 +79,8 @@ def _decision(packet: dict) -> dict:
             }
         ],
         "evidence_refs": ["src/example.c:1"],
+        "trigger_summary": "An unchecked path reaches the operation.",
+        "threat_assumptions": ["The input is externally controllable."],
         "safe_pair_recommendation": {
             "kind": "fixed",
             "invariant_summary": "The path is guarded.",
