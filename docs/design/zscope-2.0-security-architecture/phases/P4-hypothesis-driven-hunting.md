@@ -1,5 +1,30 @@
 # P4：Hypothesis-driven Hunting
 
+## 当前实施状态
+
+入口契约已冻结，阶段为`in_progress`。P4采用独立shadow Candidate Ledger：复用同一
+`CandidateRegistrar`和显式freeze语义，但不接入live验证队列或报告投影。现有
+`active_discovery`继续承担稳定产品路径，直到P5执行公共cutover。
+
+Hunter只选择系统生成的`HypothesisOffer v2`和其中已经绑定的`EvidenceAction v2`。模型不能生成
+predicate、参数、coverage或终态。缺字段和无信号结果只写入内容寻址的coverage observation。
+
+### 入口冻结矩阵
+
+| 对象或边界 | P4冻结语义 |
+|---|---|
+| `LocalizedCoverageKey v2` | 绑定function、defect family、subject、region和结构fingerprint；不得按family全局抑制 |
+| `AttackSurfaceAuditUnit v2` | 只由攻击面、SecuritySpec unknown/conflict、动态/backend缺口或局部candidate desert触发 |
+| `HypothesisOffer v2` | 程序预绑定Proof IR、obligation、clauses、action、证据和依赖；模型只选择ID |
+| `SecurityHypothesis v2` | 完整且内容hash有效时才可经Registrar进入独立shadow Ledger |
+| `HypothesisCoverageObservation v1` | 不完整、无offer、无信号或协议失败的唯一落点；没有Candidate或终态语义 |
+| P2 selected-action | 仅执行同一offer/obligation内的系统action；未知、重复或跨obligation引用fail closed |
+| authority | 固定`shadow`和`active_product_effect=none`；P5前无用户开关 |
+
+Qualification使用非Range、answer-free且source/expected分离的至少120个单元，覆盖至少三个无关
+项目和四个P2 provider family。safe/near-miss错误注册必须为0，全部注册对象的schema、证据和
+action可解析率必须为100%，并覆盖rename、wrapper、等价重排和fixed pair。
+
 ## 目标
 
 以攻击面和局部coverage gap驱动Hypothesis Hunter，恢复并强化主动挖掘，但不把Agent变成终态权威。

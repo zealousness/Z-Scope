@@ -71,6 +71,19 @@ P3 Web 服务器没有可信 reviewer identity，`REVIEWER_IDENTITY_MODE` 固定
 
 不完整hypothesis只能保存为coverage observation，不能进入Ledger。
 
+P4 首版把模型权限进一步冻结为“选择而非构造”。程序先生成内容寻址的
+`AttackSurfaceAuditUnit v2`、`LocalizedCoverageKey v2` 和 `HypothesisOffer v2`。每个 offer
+已经绑定精确 defect family、subject、decision region、结构化位置、`ProofObligation`、有限
+`EvidenceAction v2`、证据和依赖 hash。Hunter 的严格输出只包含 audit-unit identity、选中的
+offer/action/fact/evidence ID、coverage status 和 unresolved reason；它不能提交自由 predicate、
+参数、coverage 声明、候选状态或终态。
+
+系统从已验证的 offer 与选择结果物化 `SecurityHypothesis v2`。未知、重复、跨 obligation 或
+内容不一致的 action ID 使该选择整体失败；缺 location、subject、region、证据或有效 action 的
+输出只形成 `HypothesisCoverageObservation v1`。合格 hypothesis 通过 `CandidateRegistrar` 写入
+独立 shadow Ledger 并在全部发现结束后 freeze。P5 前该 Ledger 不进入 live ValidationRunner、
+Finding-root、报告投影、promotion 或 TerminalAuthority。
+
 ## ProgramProofIR与证书
 
 `ProofObligation`显式分为 confirmation、counterproof 和 open clauses；open clause 不产生 action 或 terminal contribution。`EvidenceAction`必须绑定固定subject/region、predicate和有限参数 schema。
