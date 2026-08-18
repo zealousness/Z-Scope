@@ -47,6 +47,29 @@ DISPUTED_IDS = {
     "REAL-016",
 }
 
+MATERIAL_DECISION_FIELDS = (
+    "contract_kind",
+    "disposition",
+    "defect_taxonomy_id",
+    "cwe_ids",
+    "structured_anchors",
+    "required_evidence_clauses",
+    "evidence_refs",
+    "trigger_summary",
+    "threat_assumptions",
+    "safe_pair_recommendation",
+    "reason_codes",
+)
+
+
+def decision_disagreement_fields(
+    left: Mapping[str, Any], right: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Return every material adjudication field that requires Opus."""
+
+    return tuple(field for field in MATERIAL_DECISION_FIELDS if left.get(field) != right.get(field))
+
+
 DECISION_FIELDS = {
     "schema_version": DECISION_SCHEMA_VERSION,
     "packet_uid": "copy from packet",
@@ -113,9 +136,7 @@ def _decision_schema_for_model() -> dict[str, Any]:
             "schema_version": {"const": DECISION_SCHEMA_VERSION},
             "packet_uid": {"type": "string"},
             "packet_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "reviewer_role": {
-                "enum": ["primary_fable", "primary_deepseek", "arbiter_opus"]
-            },
+            "reviewer_role": {"enum": ["primary_fable", "primary_deepseek", "arbiter_opus"]},
             "reviewer_model": {"type": "string"},
             "contract_kind": {
                 "enum": [
@@ -509,7 +530,9 @@ def _reviewer_identity(reviewer: str) -> tuple[str, str]:
         return "primary_fable", "claude-fable-5"
     if reviewer == "deepseek":
         return "primary_deepseek", "deepseek-v4-pro:max"
-    raise E0GovernanceError(f"unsupported primary reviewer: {reviewer}")
+    if reviewer == "opus":
+        return "arbiter_opus", "claude-opus-5"
+    raise E0GovernanceError(f"unsupported reviewer: {reviewer}")
 
 
 def _validate_existing_primary(
@@ -545,11 +568,9 @@ def _validate_existing_primary(
         "stderr_sha256",
     }
     raw_fields = set(raw)
-    if raw_fields != required_raw_fields and raw_fields != required_raw_fields | {
-        "format_retry"
-    }:
+    if raw_fields != required_raw_fields and raw_fields != required_raw_fields | {"format_retry"}:
         raise E0GovernanceError("existing raw review envelope fields are invalid")
-    expected_delivery = "embedded_prompt" if reviewer == "fable" else "isolated_files"
+    expected_delivery = "embedded_prompt" if reviewer in {"fable", "opus"} else "isolated_files"
     if (
         raw.get("schema_version") != "zscope.range-v16-review-raw-envelope.v1"
         or raw.get("reviewer_role") != role
@@ -678,53 +699,128 @@ def _load_decision(path: Path) -> Mapping[str, Any]:
     return value
 
 
+def _primary_decisions(
+    packet: Mapping[str, Any],
+    *,
+    truth_id: str,
+    fable_dir: Path,
+    deepseek_dir: Path,
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    for reviewer, root in (("fable", fable_dir), ("deepseek", deepseek_dir)):
+        _validate_existing_primary(
+            packet,
+            reviewer=reviewer,
+            decision_path=root / "decisions" / f"{truth_id}.json",
+            raw_path=root / "raw" / f"{truth_id}.json",
+        )
+    return (
+        _load_decision(fable_dir / "decisions" / f"{truth_id}.json"),
+        _load_decision(deepseek_dir / "decisions" / f"{truth_id}.json"),
+    )
+
+
+def _run_arbitration_packet(
+    packet: Mapping[str, Any],
+    *,
+    truth_id: str,
+    primary_decisions: Sequence[Mapping[str, Any]],
+    output: Path,
+    resume: bool,
+) -> dict[str, Any]:
+    decision_path = output / "decisions" / f"{truth_id}.json"
+    raw_path = output / "raw" / f"{truth_id}.json"
+    if decision_path.exists() or raw_path.exists():
+        if not resume or not decision_path.is_file() or not raw_path.is_file():
+            raise E0GovernanceError(f"incomplete or unexpected Opus review: {truth_id}")
+        _validate_existing_primary(
+            packet,
+            reviewer="opus",
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
+        status = "reused"
+    else:
+        decision, raw = _run_model(
+            packet,
+            reviewer="opus",
+            primary_decisions=primary_decisions,
+            raw_output_path=raw_path,
+        )
+        _json_dump(decision_path, decision)
+        _json_dump(raw_path, raw)
+        status = "reviewed"
+    return {
+        "truth_id": truth_id,
+        "packet_sha256": packet["packet_sha256"],
+        "decision_file_sha256": sha256_file(decision_path),
+        "raw_file_sha256": sha256_file(raw_path),
+        "status": status,
+    }
+
+
 def run_arbitration(args: argparse.Namespace) -> int:
     output = args.output_dir.resolve()
-    if output.exists():
+    if output.exists() and not args.resume:
         raise E0GovernanceError(f"output already exists: {output}")
-    (output / "decisions").mkdir(parents=True)
-    (output / "raw").mkdir()
-    reviewed: set[str] = set()
+    (output / "decisions").mkdir(parents=True, exist_ok=args.resume)
+    (output / "raw").mkdir(exist_ok=args.resume)
+    manifest_path = output / "manifest.json"
+    if manifest_path.exists():
+        raise E0GovernanceError("Opus arbitration is already complete")
     disagreements: set[str] = set()
+    work: list[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]] = []
+    fable_dir = args.fable_dir.resolve(strict=True)
+    deepseek_dir = args.deepseek_dir.resolve(strict=True)
     for path in _packet_files(args.packet_dir.resolve()):
         packet = load_json_strict(path)
         if not isinstance(packet, Mapping):
             raise E0GovernanceError(f"packet must be an object: {path}")
         validate_review_packet(packet)
         truth_id = _packet_id(packet)
-        fable = _load_decision(args.fable_dir / "decisions" / f"{truth_id}.json")
-        deepseek = _load_decision(args.deepseek_dir / "decisions" / f"{truth_id}.json")
-        disagreement = any(
-            fable.get(field) != deepseek.get(field)
-            for field in (
-                "contract_kind",
-                "disposition",
-                "defect_taxonomy_id",
-                "cwe_ids",
-                "structured_anchors",
-                "trigger_summary",
-                "threat_assumptions",
-            )
-        )
-        if disagreement:
-            disagreements.add(truth_id)
-        if truth_id not in DISPUTED_IDS and not disagreement:
-            continue
-        decision, raw = _run_model(
+        fable, deepseek = _primary_decisions(
             packet,
-            reviewer="opus",
-            primary_decisions=(fable, deepseek),
-            raw_output_path=output / "raw" / f"{truth_id}.json",
+            truth_id=truth_id,
+            fable_dir=fable_dir,
+            deepseek_dir=deepseek_dir,
         )
-        _json_dump(output / "decisions" / f"{truth_id}.json", decision)
-        _json_dump(output / "raw" / f"{truth_id}.json", raw)
-        reviewed.add(truth_id)
+        disagreement_fields = decision_disagreement_fields(fable, deepseek)
+        if disagreement_fields:
+            disagreements.add(truth_id)
+        if truth_id not in DISPUTED_IDS and not disagreement_fields:
+            continue
+        work.append((packet, truth_id, (fable, deepseek)))
+    records: list[dict[str, Any]] = []
+    completed_count = 0
+    for offset in range(0, len(work), args.workers):
+        batch = work[offset : offset + args.workers]
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {
+                executor.submit(
+                    _run_arbitration_packet,
+                    packet,
+                    truth_id=truth_id,
+                    primary_decisions=primary_decisions,
+                    output=output,
+                    resume=args.resume,
+                ): truth_id
+                for packet, truth_id, primary_decisions in batch
+            }
+            for future in as_completed(futures):
+                truth_id = futures[future]
+                records.append(future.result())
+                completed_count += 1
+                print(
+                    f"opus: {completed_count}/{len(work)} complete ({truth_id})",
+                    flush=True,
+                )
+    reviewed = {str(record["truth_id"]) for record in records}
     if not DISPUTED_IDS.issubset(reviewed):
         raise E0GovernanceError("Opus did not review all nine mandatory disputed records")
     if not disagreements.issubset(reviewed):
         raise E0GovernanceError("Opus did not arbitrate every primary disagreement")
+    records.sort(key=lambda value: str(value["truth_id"]))
     _json_dump(
-        output / "manifest.json",
+        manifest_path,
         {
             "schema_version": "zscope.range-v16-arbitration-run.v1",
             "reviewer": "opus",
@@ -732,6 +828,7 @@ def run_arbitration(args: argparse.Namespace) -> int:
             "disagreement_count": len(disagreements),
             "mandatory_disputed_ids": sorted(DISPUTED_IDS),
             "reviewed_ids": sorted(reviewed),
+            "records": records,
         },
     )
     return 0
@@ -752,6 +849,8 @@ def _parser() -> argparse.ArgumentParser:
     arbitration.add_argument("--fable-dir", required=True, type=Path)
     arbitration.add_argument("--deepseek-dir", required=True, type=Path)
     arbitration.add_argument("--output-dir", required=True, type=Path)
+    arbitration.add_argument("--workers", type=int, default=1, choices=range(1, 9))
+    arbitration.add_argument("--resume", action="store_true")
     arbitration.set_defaults(handler=run_arbitration)
     return parser
 

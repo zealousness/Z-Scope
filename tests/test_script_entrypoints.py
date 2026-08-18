@@ -24,6 +24,7 @@ import pytest
         "scripts/verify_balanced_default_attestation.py",
         "scripts/build_e0_attestation.py",
         "scripts/build_e0_review_manifest.py",
+        "scripts/build_e0_review_provenance.py",
         "scripts/run_e0_reviewers.py",
         "scripts/verify_e0_attestation.py",
     ),
