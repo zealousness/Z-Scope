@@ -14,7 +14,7 @@
     {"phase": "P2", "status": "complete", "entry_gate": "P1 complete and ADR-0007 contract-freeze proof-security review approved", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
     {"phase": "P3", "status": "complete", "entry_gate": "P2 contracts stable and SecuritySpec DSL/state/reviewer policy frozen", "exit_gate": "spec blind qualification, read-only review center and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P4", "status": "complete", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind qualification, shadow isolation and dual review gates pass", "review_roles": ["product_architecture", "proof_security"]},
-    {"phase": "P5", "status": "in_progress", "entry_gate": "P2-P4 pass and P4 rollback wheel plus replay/authority contracts are frozen", "exit_gate": "all public paths cut over, legacy runtime absent, real-project qualification passes and dual review approves one candidate tree", "review_roles": ["product_architecture", "proof_security"]},
+    {"phase": "P5", "status": "complete", "entry_gate": "P2-P4 pass and P4 rollback wheel plus replay/authority contracts are frozen", "exit_gate": "all public paths cut over, legacy runtime absent, real-project qualification passes and dual review approves one candidate tree", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "E0", "status": "pending", "entry_gate": "P0 design approved", "exit_gate": "truth v16 and benchmark v5 independently attested", "review_roles": ["independent_benchmark"]},
     {"phase": "P6", "status": "pending", "entry_gate": "P1-P5 and E0 complete", "exit_gate": "offline replay and cold pilot invariants pass", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
     {"phase": "P7", "status": "pending", "entry_gate": "P6 complete", "exit_gate": "formal, external, sealed and shadow gates pass", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]}
@@ -1140,6 +1140,133 @@
         ]
       },
       "notes": "DeepSeek-V4-Pro Max approved the exact P4 candidate with zero blocking findings; Hypothesis Hunter, SecuritySpec and Proof Kernel remain shadow until P5."
+    },
+    {
+      "evidence_uid": "P5-RUNTIME-AUTHORITY-CUTOVER-QUALIFICATION",
+      "phase": "P5",
+      "kind": "implementation_validation",
+      "status": "passed",
+      "implementation_commit": "1797389af9807c74c1261f1ad85a3a18b17c23e2",
+      "implementation_tree": "325b3c6a6cf7caf85200088af1a17324adafeb5d",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p5-qualification-manifest.json",
+          "sha256": "168f78950dcfcb40a9e633c59f287a2a3d113b2df7cb03fb7cc1c91d9a99a9ee"
+        },
+        {
+          "path": "tests/fixtures/p5_cjson/source-manifest.json",
+          "sha256": "278730b591b3bb01863b23f06e4e8c58440e5b39bd681cebd42d76b5c0f25c09"
+        },
+        {
+          "path": "scripts/check_p5_runtime_authority_package.py",
+          "sha256": "a3c1ffb3b4394bdbfd511c1490888c55198872db8f22b49196785dca74625636"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": [
+        "claude-code/claude-opus-5",
+        "dsh/deepseek-v4-pro:max"
+      ],
+      "verification": {
+        "environment": {
+          "host": "Windows-10-10.0.26200-SP0 with local WSL Ubuntu 24.04",
+          "python": "3.10.5",
+          "clang": "21.1.8",
+          "black": "25.11.0 under local WSL Python 3.12.3",
+          "network_and_model_use": "zero model and zero network for qualification; local counting fakes only"
+        },
+        "commands": [
+          {"command": "python -m pytest -q (1819 passed, 7 skipped in 195.89 seconds)", "status": "passed"},
+          {"command": "python -m compileall -f -q zscope scripts test tests", "status": "passed"},
+          {"command": "python -m mypy zscope (222 source files)", "status": "passed"},
+          {"command": "Black 25.11.0 --check on 96 changed Python files under local WSL", "status": "passed"},
+          {"command": "P2/P3/P4 qualification and lifecycle gates", "status": "passed"},
+          {"command": "P1-P5 package, release, reachability and isolated installed-wheel gates", "status": "passed"},
+          {"command": "public CLI/Web/MCP and alert-verify zero-model smoke", "status": "passed"},
+          {"command": "git diff --check", "status": "passed"}
+        ],
+        "limitations": [
+          "The three historical P0 benchmark aggregates are absent and were not represented as replayed.",
+          "The P4 rollback wheel and reviewed P5 candidate wheel are ignored local artifacts whose hashes and inventories are recorded rather than committed.",
+          "The Web Review Center remains read-only because a trusted reviewer identity is unavailable.",
+          "No external-model benchmark, remote CI, push, PR or design tag was executed."
+        ]
+      },
+      "notes": "The exact product-only P5 candidate makes qualification-backed SecuritySpec authoritative, limits Hunter to unconfirmed candidate registration, makes complete independently recomputed Checker closure the sole terminal authority, breaks old cache reuse with a new epoch, removes legacy runtimes and passes answer-free cJSON qualification without sending source to an external model."
+    },
+    {
+      "evidence_uid": "P5-FINAL-PRODUCT-ARCHITECTURE-REVIEW",
+      "phase": "P5",
+      "kind": "formal_review",
+      "status": "passed",
+      "implementation_commit": "1797389af9807c74c1261f1ad85a3a18b17c23e2",
+      "implementation_tree": "325b3c6a6cf7caf85200088af1a17324adafeb5d",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p5-review.schema.json",
+          "sha256": "6a303321d9eaf92ac641eab576da25b84a6974178f75f6351bad6f97a3044089"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p5-product-architecture.json",
+          "sha256": "c2139969585ea6c8b08944dc7d9a28b3e61617f4cb59454e98008218f748adf7"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": ["claude-code/claude-opus-5"],
+      "verification": {
+        "environment": {
+          "harness": "Claude Code 2.1.233",
+          "model": "claude-opus-5",
+          "permission_mode": "plan-read-only",
+          "review_target": "1797389af9807c74c1261f1ad85a3a18b17c23e2 / 325b3c6a6cf7caf85200088af1a17324adafeb5d"
+        },
+        "commands": [
+          {"command": "claude --print --model claude-opus-5 --effort high --permission-mode plan < P5 product architecture review prompt", "status": "passed"}
+        ],
+        "limitations": [
+          "The review was read-only and accepted recorded local gates after source and evidence inspection rather than independently rerunning them.",
+          "No benchmark ran and no Range truth, fixture or Scorer input was read."
+        ]
+      },
+      "notes": "Claude Opus 5 approved the exact final P5 candidate with zero blocking findings, including the final strict non-boolean required-clause rejection delta."
+    },
+    {
+      "evidence_uid": "P5-FINAL-PROOF-SECURITY-REVIEW",
+      "phase": "P5",
+      "kind": "formal_review",
+      "status": "passed",
+      "implementation_commit": "1797389af9807c74c1261f1ad85a3a18b17c23e2",
+      "implementation_tree": "325b3c6a6cf7caf85200088af1a17324adafeb5d",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p5-review.schema.json",
+          "sha256": "6a303321d9eaf92ac641eab576da25b84a6974178f75f6351bad6f97a3044089"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p5-proof-security.json",
+          "sha256": "cd22df6d80f09b9611d8ef397307313ff5e447c3d1f443c9039593d740102114"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": ["dsh/deepseek-v4-pro:max"],
+      "verification": {
+        "environment": {
+          "harness": "DSH 0.1.0-rc.6",
+          "model": "deepseek-v4-pro",
+          "reasoning_effort": "max",
+          "permission_mode": "read-only",
+          "review_target": "1797389af9807c74c1261f1ad85a3a18b17c23e2 / 325b3c6a6cf7caf85200088af1a17324adafeb5d"
+        },
+        "commands": [
+          {"command": "dsh --profile headless --patch <deepseek-v4-pro max settings> under DSH_PERMISSION_MODE=read-only < P5 proof-security review prompt", "status": "passed"}
+        ],
+        "limitations": [
+          "The review was static and read-only; it accepted recorded local tests and wheel checks after independently tracing the authority chain.",
+          "Six defense-in-depth observations are non-blocking and remain recorded in the review artifact.",
+          "No external-model benchmark ran and no Range truth, fixture or Scorer input was read."
+        ]
+      },
+      "notes": "DeepSeek-V4-Pro Max approved the exact final P5 candidate with zero blocking findings after the original PS-P5-001 required-counterproof closure bypass and its adjacent type-confusion path were closed."
     }
   ]
 }

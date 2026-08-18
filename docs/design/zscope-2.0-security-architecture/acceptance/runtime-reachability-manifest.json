@@ -2,14 +2,14 @@
   "schema_version": "zscope.runtime-reachability-manifest.v1",
   "design_version": "1.0.1",
   "phase": "P5",
-  "audit_status": "p5_in_progress_soundness_blocker_fixed_release_blocked_pending_fresh_dual_review",
+  "audit_status": "p5_complete_dual_review_approved_release_latch_enabled",
   "p0_complete_commit": "314cddf299387cad7c998cc62990194535d2cb9b",
   "p1_complete_commit": "8d36b3f2f579f5d57d6d0bf1bcdabc2662164d72",
   "p2_complete_commit": "cba2e218cae69340c72f25eefcdbd9b00541565f",
   "p3_complete_commit": "57ac77d2cba03b1169f7fbfe6f565b5575011172",
   "p4_complete_commit": "1dc3e27be52e9eb69bde02a43ea887af83363776",
-  "p5_candidate_commit": "pending",
-  "p5_candidate_tree": "pending",
+  "p5_candidate_commit": "1797389af9807c74c1261f1ad85a3a18b17c23e2",
+  "p5_candidate_tree": "325b3c6a6cf7caf85200088af1a17324adafeb5d",
   "authority_contract": {
     "schema": "zscope.runtime-authority-manifest.v1",
     "cache_epoch": "zscope.runtime-authority.p5",
@@ -18,7 +18,7 @@
     "hypothesis_hunter_effect": "candidate_registration_only",
     "proof_engine_mode": "authoritative",
     "web_reviewer_identity": "unavailable_read_only",
-    "release_status": "in_progress"
+    "release_status": "complete"
   },
   "frozen_replay": {
     "p0_fast_evidence": "docs/design/zscope-2.0-security-architecture/acceptance/p0-fast-regression-repair.json",
@@ -139,7 +139,7 @@
     "alert_verify": "candidate offline proof smoke passed"
   },
   "wheel_inventory": {
-    "candidate_status": "built_all_package_and_isolated_import_gates_passed_release_blocked",
+    "candidate_status": "reviewed_in_progress_candidate_all_package_and_isolated_import_gates_passed",
     "filename": "zscope-1.3.1-py3-none-any.whl",
     "sha256": "bd851f86fb66a4ed6920ec76b321733fc6767eb91e4a8f00c7a6afc13a48de67",
     "size_bytes": 1449525,
@@ -158,11 +158,44 @@
       "global_modeler",
       "validator_agent",
       "security_specs.shadow"
-    ]
+    ],
+    "release_wheel": {
+      "filename": "zscope-1.3.1-py3-none-any.whl",
+      "sha256": "0bedf834f05dc061e6a50bcecbc8a4317bd2875d686ea33b3828acc87833b9b7",
+      "size_bytes": 1449697,
+      "entry_count": 283,
+      "schema_count": 19,
+      "release_status": "complete",
+      "p1_to_p5_package_gates": "passed",
+      "isolated_import_and_package_data_smoke": "passed",
+      "complete_latch_full_suite": "1819 passed, 7 skipped in 190.25 seconds",
+      "complete_latch_quality_gates": "compileall, mypy over 222 files, benchmark hygiene, design evidence and git diff check passed"
+    }
+  },
+  "qualification_and_reviews": {
+    "qualification_manifest": {
+      "path": "docs/design/zscope-2.0-security-architecture/acceptance/p5-qualification-manifest.json",
+      "sha256": "168f78950dcfcb40a9e633c59f287a2a3d113b2df7cb03fb7cc1c91d9a99a9ee",
+      "status": "passed"
+    },
+    "product_architecture": {
+      "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p5-product-architecture.json",
+      "sha256": "c2139969585ea6c8b08944dc7d9a28b3e61617f4cb59454e98008218f748adf7",
+      "reviewer": "claude-code/claude-opus-5",
+      "decision": "approved",
+      "blocking_finding_count": 0
+    },
+    "proof_security": {
+      "path": "docs/design/zscope-2.0-security-architecture/acceptance/reviews/p5-proof-security.json",
+      "sha256": "cd22df6d80f09b9611d8ef397307313ff5e447c3d1f443c9039593d740102114",
+      "reviewer": "dsh/deepseek-v4-pro:max",
+      "decision": "approved",
+      "blocking_finding_count": 0
+    }
   },
   "limitations": [
-    "The replacement candidate commit/tree, complete qualification manifest and fresh dual reviews are not yet recorded after closing PS-P5-001; P5 remains in_progress and the hash-bound candidate wheel is not publishable.",
     "The P4 rollback wheel is an ignored local artifact; its exact hash is recorded but the wheel is not committed.",
+    "The reviewed in-progress candidate wheel is an ignored local artifact; its exact hash, size, inventory and isolated installation result are recorded in the qualification manifest.",
     "No remote CI, push, PR, design tag or external-model benchmark is authorized or performed.",
     "Historical P0 benchmark aggregates remain unavailable locally and are not represented as replayed.",
     "The Web Review Center remains read-only because the current server has no trusted reviewer identity."
@@ -176,7 +209,7 @@
     "post_proof_model_or_tool_call": "not_observed_in_candidate_tests",
     "multiple_terminal_events": "not_observed_in_candidate_tests",
     "wheel_or_import_graph_failure": "not_observed_in_clean_candidate_wheel",
-    "candidate_wheel_release": "blocked_until_p5_complete",
-    "formal_review_blocker": "initial_ps_p5_001_fixed_pending_fresh_dual_review"
+    "candidate_wheel_release": "enabled_only_by_hash_bound_complete_release_latch",
+    "formal_review_blocker": "approved_zero_blocking_findings"
   }
 }
