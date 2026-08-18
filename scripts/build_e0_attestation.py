@@ -29,6 +29,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--truth-commit", required=True)
     parser.add_argument("--truth", required=True, type=Path)
     parser.add_argument("--truth-manifest", required=True, type=Path)
+    parser.add_argument("--source-truth-v15", required=True, type=Path)
+    parser.add_argument("--review-packet-catalog", required=True, type=Path)
+    parser.add_argument("--normalized-decisions", required=True, type=Path)
     parser.add_argument("--review-bundle", required=True, type=Path)
     parser.add_argument("--review-provenance", required=True, type=Path)
     parser.add_argument("--safe-pair-manifest", required=True, type=Path)
@@ -88,6 +91,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     artifact_paths = {
         "truth_v16": args.truth,
         "truth_manifest": args.truth_manifest,
+        "source_truth_v15": args.source_truth_v15,
+        "review_packet_catalog": args.review_packet_catalog,
+        "normalized_decisions": args.normalized_decisions,
         "review_bundle": args.review_bundle,
         "review_provenance": args.review_provenance,
         "safe_pair_manifest": args.safe_pair_manifest,
@@ -101,6 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         truth = _object(args.truth)
         truth_manifest = _object(args.truth_manifest)
+        packet_catalog = _object(args.review_packet_catalog)
+        normalized = _object(args.normalized_decisions)
         review_bundle = _object(args.review_bundle)
         review_provenance = _object(args.review_provenance)
         pair_manifest = _object(args.safe_pair_manifest)
@@ -113,6 +121,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if truth_manifest.get("truth_sha256") != artifacts["truth_v16"]:
             raise E0GovernanceError("truth manifest does not bind Truth v16 bytes")
+        if truth_manifest.get("source_v15_sha256") != artifacts["source_truth_v15"]:
+            raise E0GovernanceError("truth manifest does not bind source Truth v15 bytes")
+        if truth_manifest.get("normalized_decisions_sha256") != artifacts["normalized_decisions"]:
+            raise E0GovernanceError("truth manifest does not bind normalized decisions")
+        if truth_manifest.get("packet_catalog_sha256") != packet_catalog.get("catalog_sha256"):
+            raise E0GovernanceError("truth manifest does not bind the review packet catalog")
+        if normalized.get("source_truth_sha256") != artifacts["source_truth_v15"]:
+            raise E0GovernanceError("normalized decisions source Truth v15 binding mismatch")
+        if normalized.get("packet_catalog_sha256") != packet_catalog.get("catalog_sha256"):
+            raise E0GovernanceError("normalized decisions packet catalog binding mismatch")
         if truth_manifest.get("truth_contract_manifest_sha256") != truth_contract.get(
             "manifest_sha256"
         ):
@@ -154,6 +172,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "truth_v16_content": sha256_value(truth),
                 "truth_contract_manifest": str(truth_contract["manifest_sha256"]),
+                "review_packet_catalog_content": str(packet_catalog["catalog_sha256"]),
+                "normalized_decisions_content": str(normalized["content_sha256"]),
                 "review_bundle_content": review_bundle_content,
             }
         )

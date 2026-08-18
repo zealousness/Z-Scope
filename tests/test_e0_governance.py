@@ -111,6 +111,11 @@ def _attestation() -> dict:
             "truth_v16_content": "2" * 64,
             "truth_contract_manifest": "3" * 64,
             "truth_manifest": "4" * 64,
+            "source_truth_v15": "c" * 64,
+            "review_packet_catalog": "d" * 64,
+            "review_packet_catalog_content": "e" * 64,
+            "normalized_decisions": "f" * 64,
+            "normalized_decisions_content": "0" * 64,
             "review_bundle": "5" * 64,
             "review_bundle_content": "6" * 64,
             "review_provenance": "7" * 64,
@@ -217,6 +222,24 @@ def test_e0_attestation_requires_external_workflow_identity_and_hash() -> None:
     with pytest.raises(E0GovernanceError):
         validate_e0_attestation(
             tampered,
+            expected_workflow_run_id="123",
+            expected_head_sha="a" * 40,
+        )
+    malformed = deepcopy(payload)
+    malformed["workflow"]["trusted"] = True
+    malformed["content_sha256"] = attestation_content_sha256(malformed)
+    with pytest.raises(E0GovernanceError, match="workflow identity"):
+        validate_e0_attestation(
+            malformed,
+            expected_workflow_run_id="123",
+            expected_head_sha="a" * 40,
+        )
+    malformed = deepcopy(payload)
+    malformed["issued_at"] = "not-a-time"
+    malformed["content_sha256"] = attestation_content_sha256(malformed)
+    with pytest.raises(E0GovernanceError, match="issue time"):
+        validate_e0_attestation(
+            malformed,
             expected_workflow_run_id="123",
             expected_head_sha="a" * 40,
         )
