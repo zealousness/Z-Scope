@@ -610,6 +610,8 @@ def _validate_clause(raw: Mapping[str, Any]) -> Tuple[bool, str]:
         return False, "invalid_provider_family"
     if raw.get("quantifier") not in QUANTIFIERS:
         return False, "invalid_quantifier"
+    if not isinstance(raw.get("required"), bool):
+        return False, "proof_clause_required_invalid"
     return True, "ok"
 
 

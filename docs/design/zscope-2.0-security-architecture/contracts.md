@@ -138,7 +138,8 @@ bridge都不能关闭candidate。完整required executable clause集合中任一
 `needs_review`；结果存在也不等于clause已关闭，只有Checker重新计算后
 `status=accepted`且certificate状态为`verified_true`才能关闭对应clause。required clause若不在
 executable registry、未被选择、Checker返回unknown/conflicting/rejected，均必须保持
-`needs_review`，尤其不得把unknown counterproof解释为counterproof不存在。
+`needs_review`，尤其不得把unknown counterproof解释为counterproof不存在。外部读取的clause还必须
+把`required`校验为严格JSON boolean；数字或字符串不得被重解释为optional clause。
 
 ## RuntimeAuthorityManifest v1
 

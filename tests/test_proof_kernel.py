@@ -17,7 +17,7 @@ from zscope.core.validation.proof_kernel import (
     build_proof_obligation,
     program_proof_ir_from_graph,
 )
-from zscope.core.validation.proof_kernel.canonical import seal_mapping
+from zscope.core.validation.proof_kernel.canonical import content_sha256, seal_mapping
 from zscope.core.validation.proof_kernel.models import validate_certificate_envelope
 
 
@@ -573,6 +573,36 @@ def test_authoritative_closure_rejects_required_non_executable_clause() -> None:
 
     assert evaluation.decision == "needs_review"
     assert evaluation.reason_code == "required_clause_not_executable"
+
+
+def test_obligation_rejects_non_boolean_required_flag() -> None:
+    proof_ir, base_obligation, _ = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    malformed = dict(base_obligation["confirmation_clauses"][0])
+    malformed.pop("clause_uid")
+    malformed["required"] = 1
+    malformed = {
+        "clause_uid": "PCLAUSE_" + content_sha256(malformed)[:32],
+        **malformed,
+    }
+    obligation = build_proof_obligation(
+        validation_cluster_uid="VAL_NON_BOOLEAN_REQUIRED",
+        defect_family="neutral_family",
+        subject_uid="SUBJECT_NEUTRAL",
+        decision_region_uid="REGION_NEUTRAL",
+        confirmation_clauses=(malformed,),
+        counterproof_clauses=(),
+        dependency_hashes=proof_ir["dependency_hashes"],
+    )
+
+    with pytest.raises(ValueError, match="proof_clause_required_invalid"):
+        ProofKernelEngine().evaluate(
+            proof_ir=proof_ir,
+            obligation=obligation,
+        )
 
 
 def test_cas_rejects_tampered_object_and_unsafe_reference(tmp_path: Path) -> None:

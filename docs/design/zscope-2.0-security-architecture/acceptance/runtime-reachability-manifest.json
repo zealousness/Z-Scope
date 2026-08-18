@@ -81,6 +81,7 @@
       "evidence": [
         "every required clause must be executable, selected and independently recomputed to accepted verified_true before it is closed",
         "an unknown, conflicting or rejected required counterproof remains open and cannot be interpreted as counterproof absence",
+        "external obligations reject non-boolean required flags before action catalog construction",
         "the model adapter exposes only system-bound EvidenceAction IDs and rejects v2, free parameters, generic tools and model claims",
         "TerminalAuthorityDecision v3 binds checker refs, proof root and verified integrity",
         "model verdicts, legacy certificates, old proof fields and compat cannot close a candidate"
@@ -140,8 +141,8 @@
   "wheel_inventory": {
     "candidate_status": "built_all_package_and_isolated_import_gates_passed_release_blocked",
     "filename": "zscope-1.3.1-py3-none-any.whl",
-    "sha256": "4340fd77b57a8741e2d782dedd8ad0c46875ceba71946f11c87d4e016c5f6b94",
-    "size_bytes": 1449506,
+    "sha256": "bd851f86fb66a4ed6920ec76b321733fc6767eb91e4a8f00c7a6afc13a48de67",
+    "size_bytes": 1449525,
     "entry_count": 283,
     "schema_count": 19,
     "required_data": [
@@ -171,6 +172,7 @@
     "legacy_cache_reuse": "not_observed_in_candidate_tests",
     "required_clause_without_checker_result": "verified_fail_closed_in_engine_and_alert_verify_regressions",
     "required_clause_without_accepted_verified_true": "verified_fail_closed_for_unknown_conflicting_rejected_and_non_executable_clauses",
+    "non_boolean_required_clause": "verified_rejected_before_action_catalog_construction",
     "post_proof_model_or_tool_call": "not_observed_in_candidate_tests",
     "multiple_terminal_events": "not_observed_in_candidate_tests",
     "wheel_or_import_graph_failure": "not_observed_in_clean_candidate_wheel",
