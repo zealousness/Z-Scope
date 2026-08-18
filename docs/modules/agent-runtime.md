@@ -11,6 +11,7 @@ sources:
   - zscope/framework/llm_usage.py
   - zscope/common/validator_protocol.py
   - zscope/agents/active_discovery/AGENT.md
+  - zscope/agents/hypothesis_hunter/AGENT.md
   - zscope/agents/history_maintenance/AGENT.md
   - zscope/skills/evidence_validation/SKILL.md
   - zscope/tools/runtime.py
@@ -20,6 +21,7 @@ tests:
   - tests/test_spec_registry.py
   - tests/test_json_output_agents.py
   - tests/test_history_maintenance_agent.py
+  - tests/test_p4_hypothesis_hunter.py
   - tests/test_tool_policy.py
   - tests/test_tool_registry.py
   - tests/test_llm_client_tokens.py
@@ -42,6 +44,7 @@ tests:
 - Tool registry 暴露 schema，runtime 执行查询，ToolPolicy 根据 Agent 白名单、后端能力和敏感路径规则过滤。
 - Agent 输出回到分析/验证流水线，不能绕过统一 schema 和 issue identity 直接持久化最终报告。
 - `active_discovery` 只对运行时预先界定的 candidate-blind 语义单元提出候选；`history_maintenance_agent` 只执行 `verify_fix` 历史复核。二者都没有 proof、promotion 或稳定终态权限。
+- P4 `hypothesis_hunter`没有repository tool，只进行一次严格terminal调用。输入是递归检查key/scalar后的allowlist投影，模型只能选择系统提供的offer、fact、evidence和EvidenceAction ID；自由predicate、参数、coverage、candidate状态和terminal disposition均由schema拒绝。usage固定归因到`agent=hypothesis_hunter,stage=active_discovery`。
 - P3 `SecuritySpecProposalEngine` 不是自由语义写入器：仅对 unknown audit unit 调用供应的模型适配器，输入只含系统提供的 exact subject/scope/evidence/predicate/slot ID；输出必须是 `origin=llm,status=proposed` 的严格对象。cache key 绑定 unit、registry/compiler/prompt、model profile 与依赖 hashes，模型不能声明 coverage、qualification、review 或 terminal disposition。
 - Validator v3 的 V1/V2 使用无状态、严格 schema 的直接 chat completion；V1 不进入通用工具循环，V2 只携带原候选摘要和新增证据。V3 才能按档位使用有界只读工具轨迹。
 - 每个真实 HTTP attempt 在发出前原子预留估算 prompt 与最大 completion，返回后按 provider usage 结算。usage event 只保存计量和归因，不保存 prompt、源码正文或模型思维正文。

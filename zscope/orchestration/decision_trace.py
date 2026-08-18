@@ -507,6 +507,24 @@ class DecisionTraceStore:
                 "reason_code": "security_spec_shadow_only",
             }
         )
+        hypothesis_hunter_mode = str(
+            issue.get("hypothesis_hunter_mode")
+            or self.identity.get("hypothesis_hunter_mode")
+            or "shadow"
+        )
+        hypothesis_hunter_artifact_refs = _sanitize(
+            issue.get("hypothesis_hunter_artifact_refs")
+            or self.identity.get("hypothesis_hunter_artifact_refs")
+            or []
+        )
+        hypothesis_hunter_shadow_decision = _sanitize(
+            issue.get("hypothesis_hunter_shadow_decision")
+            or self.identity.get("hypothesis_hunter_shadow_decision")
+            or {
+                "active_product_effect": "none",
+                "reason_code": "hypothesis_hunter_shadow_only",
+            }
+        )
         policy_ref = self.put_evidence(
             kind="terminal_policy_input",
             payload={
@@ -532,6 +550,9 @@ class DecisionTraceStore:
                 "security_spec_mode": security_spec_mode,
                 "security_spec_artifact_refs": security_spec_artifact_refs,
                 "security_spec_shadow_decision": security_spec_shadow_decision,
+                "hypothesis_hunter_mode": hypothesis_hunter_mode,
+                "hypothesis_hunter_artifact_refs": hypothesis_hunter_artifact_refs,
+                "hypothesis_hunter_shadow_decision": hypothesis_hunter_shadow_decision,
             },
             producer="terminal_authority_evaluator",
         )
@@ -562,6 +583,9 @@ class DecisionTraceStore:
                 "security_spec_mode": security_spec_mode,
                 "security_spec_artifact_refs": security_spec_artifact_refs,
                 "security_spec_shadow_decision": security_spec_shadow_decision,
+                "hypothesis_hunter_mode": hypothesis_hunter_mode,
+                "hypothesis_hunter_artifact_refs": hypothesis_hunter_artifact_refs,
+                "hypothesis_hunter_shadow_decision": hypothesis_hunter_shadow_decision,
             },
             dedupe_key=f"terminal:{terminal_reason}:{_disposition(issue)}",
         )

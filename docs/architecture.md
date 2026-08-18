@@ -64,6 +64,9 @@ flowchart TB
         Gap["Coverage-gap Planner<br/>candidate-blind units"]
         Discovery["Active Discovery<br/>hypotheses only"]
         Ledger["CandidateLedger<br/>dedup + freeze"]
+        P4Planner["P4 Attack-surface Planner<br/>localized coverage"]
+        Hunter["Hypothesis Hunter<br/>ID selection only"]
+        ShadowLedger["P4 Shadow CandidateLedger<br/>isolated + freeze"]
         FindingRoot["Finding-root v2<br/>sole display projection"]
     end
 
@@ -102,6 +105,8 @@ flowchart TB
     UserCfg --> Candidate
     Candidate --> Ledger
     KDB --> SecurityMap --> Gap --> Discovery --> Ledger
+    SecurityMap --> P4Planner --> Hunter --> ShadowLedger
+    Hunter --> ProofIR
     Ledger --> V0 --> V1 --> V2 --> V3
     V3 --> ClaimVerifier --> Authority
     V0 --> ProofIR
@@ -326,6 +331,7 @@ Z-SCOPE 不再默认逐入口复活旧式全量多 Agent fanout；LLM 职责围�
 |-------|------|----------|----------|
 | Semantic Map enrichment | 仅补全高风险 audit unit 的关键契约 | 零 LLM 骨架、代码/后端事实 | 带可解析 evidence ref 的 semantic delta |
 | `active_discovery` | 对 coverage gap 做候选盲审 | audit unit、地图投影、Skill | hypothesis / observation，不能 confirmed |
+| `hypothesis_hunter` | 在P4 shadow中选择系统offer/fact/evidence/action ID | allowlist投影、预绑定Proof clause/action | `SecurityHypothesis v2`或coverage observation；无live authority |
 | `validator_agent` V1/V2 | 单次结构化判定与新增事实复判 | 有界 evidence slice / evidence delta | verified / rejected / uncertain 模型意见 |
 | `validator_agent` V3 | balanced 调查 high/critical 或外部可达未决项，deep 调查全部无反证且有可执行证明动作的非 shadow 未决项 | 一次连续会话、有限 EvidenceAction、证书、Skill | 带程序验真事实的 investigation synthesis |
 | `history_maintenance_agent` | 仅在增量维护中复核历史缺陷是否仍可见 | 历史 issue、新代码 | advisory still_exists；缺失结论不能自行清除历史 finding |
@@ -366,6 +372,8 @@ Proof Kernel 在 P2 完成后仍固定为不可配置的 `shadow`：V0/RequiredF
 
 P3 Security Spec Kernel 在 `zscope/semantics/security_specs/` 建立独立严格对象、13 类有限 DSL、内容寻址存储、qualification、review hash chain 与 shadow compiler。确定性程序事实优先；模型适配器只在 unknown audit unit 上选择系统提供的 subject/scope/evidence/predicate/slot ID，且最高产生 `proposed`。只有 qualification-backed `stable` 规格可进入 P3 shadow compilation；冲突、过期依赖、未知字段、空 scope 或证据不可解析一律不编译。default、resume、maintain 与 alert-verify 在唯一 terminal trace 上附加同一 spec manifest/ref 和 `active_product_effect=none`，旧 SemanticModeler/SecuritySemanticMap 继续提供产品语义，Candidate Ledger、Proof Kernel authority、Finding-root 与稳定终态均不改变。Web Review Center 因缺少可信 reviewer identity 固定只读，review/apply-import 返回 fail-closed 403；P5 前不存在用户可控 authority 开关。
 
+P4在`zscope/orchestration/hypothesis_hunter/`增加严格攻击面单元、局部coverage key、系统生成offer、一次结构化Hunter选择和独立CAS。Hunter没有repository tool，只能选择投影内的offer、fact、evidence与EvidenceAction ID；key和scalar在序列化前后都执行Unicode归一化泄漏检查。合格选择由P2 Checker从冻结IR重算，只有完整确认proof才经同一`CandidateRegistrar`写入独立shadow Ledger并显式freeze；unknown、反证、无offer或协议失败只形成coverage observation。该Ledger没有DecisionTrace终态、不会进入live validation queue、Finding-root或报告视图。default/resume/maintain共享同一shadow runtime，fast和alert-verify只读加载已有manifest；唯一产品terminal event只附加P4 refs和`active_product_effect=none`。
+
 ### 5.7 持久化与反馈平面
 
 Z-SCOPE 使用五类主要持久化区域：
@@ -376,6 +384,7 @@ Z-SCOPE 使用五类主要持久化区域：
 | `.zscope_snapshots/snapshots.db` | 语义快照索引、final report 索引 | `--resume`、`--maintain` 和函数级缓存 |
 | `.zscope_snapshots/security_map.db` | 程序安全事实、semantic claim、unknown/conflict、audit unit | balanced/deep 的只读 Security Semantic Map sidecar |
 | `.zscope_snapshots/security_specs/` | SecuritySpec revision、qualification/review chain、shadow compilation、CAS root manifest | P3 只读 Review Center与跨 workflow shadow replay |
+| `.zscope_snapshots/hypothesis_hunter/` | P4 audit unit、offer、report、hypothesis/observation、proof结果、独立shadow Ledger与CAS root manifest | P5前仅供shadow对照和离线复验 |
 | `.zscope_snapshots/user_config.xlsx` | 外部函数、配对函数、函数指针、dispatcher、模块生命周期、函数意图 | 人工可审阅的用户领域知识 |
 | `.zscope_snapshots/user_config.state.db` 或 `user_config.db` | 抑制、baseline、配置告警和历史兼容数据 | 误报反馈与旧 SQLite 配置兼容 |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划 | 审计本次 SVF 分析实际纳入了哪些翻译单元；WSL `/mnt/...` 场景可能写入 Linux 原生临时 bitcode 目录 |

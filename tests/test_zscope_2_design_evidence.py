@@ -15,6 +15,7 @@ from scripts.check_zscope_2_design_evidence import (
     validate_p1_review_documents,
     validate_p2_review_documents,
     validate_p3_review_documents,
+    validate_p4_review_documents,
     validate_phase_gates,
 )
 
@@ -337,6 +338,78 @@ def test_p3_completion_requires_two_approved_reviews_on_one_candidate() -> None:
         "reviewed tree differs" in value
         for value in validate_p3_review_documents(phase_review, reviews, schema)
     )
+
+
+def test_p4_completion_requires_two_approved_reviews_on_one_candidate() -> None:
+    schema = load_json(DESIGN_ROOT / "acceptance" / "p4-review.schema.json")
+    phase_review = {
+        "reviewed_commit": "1" * 40,
+        "reviewed_tree": "2" * 40,
+        "artifacts": {
+            "product_architecture": {
+                "reviewer_model": "claude-opus-5",
+                "harness": "claude-code/test; permission_mode=read-only",
+            },
+            "proof_security": {
+                "reviewer_model": "deepseek-v4-pro",
+                "harness": "dsh/test; reasoning_effort=max; permission_mode=read-only",
+            },
+        },
+    }
+
+    def review(role: str, scope: str, model: str, harness: str) -> dict:
+        return {
+            "review_schema": "zscope.p4-hypothesis-hunting-review.v1",
+            "review_scope": scope,
+            "role": role,
+            "reviewer_model": model,
+            "harness": harness,
+            "reviewed_commit": "1" * 40,
+            "reviewed_tree": "2" * 40,
+            "decision": "approved",
+            "summary": "Synthetic P4 review.",
+            "blocking_findings": [],
+            "non_blocking_findings": [],
+            "checks": [{"name": "isolation", "result": "pass", "evidence": "synthetic"}],
+            "limitations": ["synthetic unit-test document"],
+            "attestation": "Read-only synthetic review.",
+        }
+
+    reviews = {
+        "product_architecture": review(
+            "product_architecture",
+            "final_product_architecture",
+            "claude-opus-5",
+            phase_review["artifacts"]["product_architecture"]["harness"],
+        ),
+        "proof_security": review(
+            "proof_security",
+            "final_proof_security",
+            "deepseek-v4-pro",
+            phase_review["artifacts"]["proof_security"]["harness"],
+        ),
+    }
+    assert validate_p4_review_documents(phase_review, reviews, schema) == []
+
+    reviews["proof_security"]["decision"] = "changes_required"
+    assert any(
+        "approved review decision" in value
+        for value in validate_p4_review_documents(phase_review, reviews, schema)
+    )
+
+
+def test_p4_cannot_start_until_p2_and_p3_are_complete() -> None:
+    manifest, evidence, _ = _design_documents()
+    mutated_manifest = copy.deepcopy(manifest)
+    mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["phase_status"]["P3"] = "in_progress"
+    for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P3":
+            phase["status"] = "in_progress"
+
+    errors = validate_phase_gates(mutated_manifest, mutated_evidence)
+
+    assert "P4 requires P2 and P3 complete" in errors
 
 
 def test_proof_security_review_records_max_reasoning_and_read_only_mode() -> None:

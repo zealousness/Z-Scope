@@ -2,7 +2,7 @@
 
 ## 当前实施状态
 
-入口契约已冻结，阶段为`in_progress`。P4采用独立shadow Candidate Ledger：复用同一
+入口契约与产品实现已冻结，阶段仍为`in_progress`，等待完整门禁和双角色最终审核。P4采用独立shadow Candidate Ledger：复用同一
 `CandidateRegistrar`和显式freeze语义，但不接入live验证队列或报告投影。现有
 `active_discovery`继续承担稳定产品路径，直到P5执行公共cutover。
 
@@ -23,7 +23,18 @@ predicate、参数、coverage或终态。缺字段和无信号结果只写入内
 
 Qualification使用非Range、answer-free且source/expected分离的至少120个单元，覆盖至少三个无关
 项目和四个P2 provider family。safe/near-miss错误注册必须为0，全部注册对象的schema、证据和
-action可解析率必须为100%，并覆盖rename、wrapper、等价重排和fixed pair。
+action可解析率必须为100%，并覆盖rename、wrapper、等价重排和fixed pair。当前冻结资格结果为
+120个单元、48个safe case、safe/near-miss错误注册均为0、契约解析率100%，三个项目均产生
+Checker可重放proof；测试通过不等于阶段complete。
+
+### 已实现数据流
+
+`stable candidates + active_discovery → P3 spec shadow → P4 planner/Hunter → P4 selected-action Checker → P4 shadow Ledger freeze → live Ledger freeze/validation`
+
+P4模型只有一次严格terminal调用且没有repository tool。投影在序列化前后递归检查key与scalar；
+offer绑定冻结IR、obligation、clause、action和依赖。Checker未形成完整确认proof时，选择只产生
+coverage observation，不形成shadow candidate。fast不调用Hunter；alert-verify只读加载相同root manifest。
+P4 refs只附加到稳定产品已经存在的唯一terminal event。
 
 ## 目标
 

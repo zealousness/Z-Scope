@@ -187,6 +187,7 @@ class LLMUsageAttribution:
                 stage = "semantic_modeling"
             elif (
                 "active_discovery" in normalized_agent
+                or "hypothesis_hunter" in normalized_agent
                 or "worker" in normalized_agent
                 or "vulnerability" in normalized_agent
             ):

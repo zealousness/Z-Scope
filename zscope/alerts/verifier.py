@@ -29,6 +29,7 @@ from ..core.validation.authority import TerminalAuthorityEvaluator
 from ..core.validation.proof_kernel.lifecycle import PROOF_KERNEL_MODE
 from ..semantics.security_specs.lifecycle import SECURITY_SPEC_MODE
 from ..semantics.security_specs.manifest import load_shadow_manifest_identity
+from ..orchestration.hypothesis_hunter.store import load_hypothesis_shadow_identity
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,8 @@ class AlertVerifier:
         self.decision_trace_store = ensure_decision_trace_store(config)
         self.security_spec_shadow = self._security_spec_shadow_identity()
         self.decision_trace_store.update_identity(self.security_spec_shadow)
+        self.hypothesis_hunter_shadow = self._hypothesis_hunter_shadow_identity()
+        self.decision_trace_store.update_identity(self.hypothesis_hunter_shadow)
         self.terminal_authority = TerminalAuthorityEvaluator()
         self.tools_runtime = ToolsRuntime(
             code_index=code_index,
@@ -68,6 +71,10 @@ class AlertVerifier:
     def _security_spec_shadow_identity(self) -> Dict[str, Any]:
         root = Path(self.config.analysis.snapshot_dir) / "security_specs"
         return load_shadow_manifest_identity(root, consumer="alert_verify")
+
+    def _hypothesis_hunter_shadow_identity(self) -> Dict[str, Any]:
+        root = Path(self.config.analysis.snapshot_dir) / "hypothesis_hunter"
+        return load_hypothesis_shadow_identity(root, consumer="alert_verify")
 
     def _tool_audit_log_path(self) -> Optional[Path]:
         configured = str(getattr(self.config.analysis, "tool_audit_log", "") or "").strip()
@@ -421,6 +428,18 @@ class AlertVerifier:
                 },
             },
         )
+        hypothesis_hunter_shadow = getattr(
+            self,
+            "hypothesis_hunter_shadow",
+            {
+                "hypothesis_hunter_mode": "shadow",
+                "hypothesis_hunter_artifact_refs": [],
+                "hypothesis_hunter_shadow_decision": {
+                    "active_product_effect": "none",
+                    "reason_code": "alert_verify_hypothesis_manifest_unavailable",
+                },
+            },
+        )
         return {
             "alert_id": alert_id,
             "candidate_uid": candidate_uid,
@@ -468,6 +487,13 @@ class AlertVerifier:
             ),
             "security_spec_shadow_decision": dict(
                 security_spec_shadow["security_spec_shadow_decision"]
+            ),
+            "hypothesis_hunter_mode": hypothesis_hunter_shadow["hypothesis_hunter_mode"],
+            "hypothesis_hunter_artifact_refs": list(
+                hypothesis_hunter_shadow["hypothesis_hunter_artifact_refs"]
+            ),
+            "hypothesis_hunter_shadow_decision": dict(
+                hypothesis_hunter_shadow["hypothesis_hunter_shadow_decision"]
             ),
             "terminal_reason_codes": [authority.reason_code],
             "open_clause_ids": ([] if confirmed else ["external_alert_program_evidence"]),
