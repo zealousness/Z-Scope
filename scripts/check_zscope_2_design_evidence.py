@@ -700,22 +700,23 @@ def validate_design_evidence(
                     continue
                 external = raw_path.startswith(EXTERNAL_ARTIFACT_PREFIXES)
                 label = f"{uid} artifact {raw_path}"
+                artifact_commit = str(artifact.get("artifact_commit") or commit)
                 # Phase evidence is immutable evidence about its implementation
                 # commit.  Later governed edits must not invalidate the old
                 # evidence merely because the same path evolved in HEAD.  Older
                 # P0 rows sometimes bound a finalized artifact added after the
                 # implementation commit, so first accept the current bytes and
                 # then fall back to the historical Git blob.
-                if verify_git and not external and HEX_40.fullmatch(commit):
+                if verify_git and not external and HEX_40.fullmatch(artifact_commit):
                     current = sha256_file(artifact_path) if artifact_path.is_file() else None
-                    historical = _git_blob_sha256(repo_root, commit, raw_path)
+                    historical = _git_blob_sha256(repo_root, artifact_commit, raw_path)
                     if current == expected:
                         report.checked_files.add(artifact_path.as_posix())
                     elif historical == expected:
-                        report.checked_files.add(f"{commit}:{raw_path}")
+                        report.checked_files.add(f"{artifact_commit}:{raw_path}")
                     else:
                         report.error(
-                            f"{label}: neither current nor {commit} Git-blob SHA-256 "
+                            f"{label}: neither current nor {artifact_commit} Git-blob SHA-256 "
                             f"matches {expected}; current={current}, historical={historical}"
                         )
                 else:

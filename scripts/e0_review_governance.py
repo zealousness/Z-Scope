@@ -430,14 +430,9 @@ def validate_review_provenance(
         raise E0GovernanceError("review provenance run ID mismatch")
     workflow_head_sha = str(value.get("workflow_head_sha") or "")
     packet_source_sha = str(value.get("packet_source_sha") or "")
-    if not GIT_SHA_RE.fullmatch(workflow_head_sha) or not GIT_SHA_RE.fullmatch(
-        packet_source_sha
-    ):
+    if not GIT_SHA_RE.fullmatch(workflow_head_sha) or not GIT_SHA_RE.fullmatch(packet_source_sha):
         raise E0GovernanceError("review provenance commit identity is invalid")
-    if (
-        expected_workflow_head_sha is not None
-        and workflow_head_sha != expected_workflow_head_sha
-    ):
+    if expected_workflow_head_sha is not None and workflow_head_sha != expected_workflow_head_sha:
         raise E0GovernanceError("review provenance workflow head SHA mismatch")
     if expected_packet_source_sha is not None and packet_source_sha != expected_packet_source_sha:
         raise E0GovernanceError("review provenance packet source SHA mismatch")
