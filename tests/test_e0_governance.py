@@ -286,6 +286,19 @@ def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     assert workflow.count('"0.1.0-rc.6"') == 2
 
 
+def test_review_command_identity_disables_claude_tools_and_binds_deepseek_patch() -> None:
+    fable = ["claude", *reviewer_runner._claude_arguments("fable")]
+    reviewer_runner._validate_command_identity(fable, reviewer="fable")
+    without_tool_isolation = [value for index, value in enumerate(fable) if index not in {12, 13}]
+    with pytest.raises(ValueError, match="Claude command identity"):
+        reviewer_runner._validate_command_identity(without_tool_isolation, reviewer="fable")
+    deepseek = ["dsh", "--profile", "headless", "--patch", f"<ephemeral-patch-sha256:{'a' * 64}>"]
+    reviewer_runner._validate_command_identity(deepseek, reviewer="deepseek")
+    deepseek[-1] = "unbound.patch.yml"
+    with pytest.raises(ValueError, match="DeepSeek command identity"):
+        reviewer_runner._validate_command_identity(deepseek, reviewer="deepseek")
+
+
 def test_e0_attestation_scorer_bundle_binds_exact_dependency_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -336,7 +349,7 @@ def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
             "packet_uid": packet["packet_uid"],
             "packet_sha256": packet["packet_sha256"],
             "input_delivery": "embedded_prompt",
-            "command_identity": ["claude", "--print"],
+            "command_identity": ["claude", *reviewer_runner._claude_arguments("fable")],
             "exit_code": 0,
             "stdout": "{}",
             "stderr_sha256": sha256_value(""),
