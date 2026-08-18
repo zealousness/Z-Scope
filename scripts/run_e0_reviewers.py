@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -192,6 +193,13 @@ def _run_model(
     else:
         raise E0GovernanceError(f"unsupported reviewer: {reviewer}")
 
+    claude_command = shutil.which("claude.cmd" if os.name == "nt" else "claude")
+    dsh_command = shutil.which("dsh.cmd" if os.name == "nt" else "dsh")
+    if reviewer in {"fable", "opus"} and not claude_command:
+        raise E0GovernanceError("Claude Code executable is unavailable")
+    if reviewer == "deepseek" and not dsh_command:
+        raise E0GovernanceError("DeepSeek Harness executable is unavailable")
+
     prompt = _prompt(packet, role=role, model=model, primary_decisions=primary_decisions)
     with tempfile.TemporaryDirectory(prefix="zscope-e0-review-") as raw_temp:
         temp_root = Path(raw_temp)
@@ -202,7 +210,7 @@ def _run_model(
         patch_path: Path | None = None
         if reviewer in {"fable", "opus"}:
             command = [
-                "claude",
+                str(claude_command),
                 "--print",
                 "--model",
                 "claude-fable-5" if reviewer == "fable" else "claude-opus-5",
@@ -226,7 +234,14 @@ def _run_model(
                 "  reasoningEffort: max\n",
                 encoding="utf-8",
             )
-            command = ["dsh", "--profile", "headless", "--patch", str(patch_path), prompt]
+            command = [
+                str(dsh_command),
+                "--profile",
+                "headless",
+                "--patch",
+                str(patch_path),
+                prompt,
+            ]
 
         env = {
             key: value
@@ -282,7 +297,14 @@ def _run_model(
                 + completed.stdout
             )
             retry = subprocess.run(
-                ["dsh", "--profile", "headless", "--patch", str(patch_path), format_prompt],
+                [
+                    str(dsh_command),
+                    "--profile",
+                    "headless",
+                    "--patch",
+                    str(patch_path),
+                    format_prompt,
+                ],
                 cwd=temp_root,
                 env=env,
                 capture_output=True,

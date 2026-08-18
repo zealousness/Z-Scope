@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 
 import pytest
@@ -28,8 +29,10 @@ def _packet() -> dict:
                 "path": "src/example.c",
                 "start_line": 1,
                 "end_line": 2,
-                "content": "void f(void) {}\n",
-                "sha256": "2" * 64,
+                "content": "void f(void) {}\nreturn;\n",
+                "sha256": hashlib.sha256(
+                    b"void f(void) {}\nreturn;\n"
+                ).hexdigest(),
             }
         ],
         "threat_assumptions": ["The public function can receive untrusted input."],
@@ -137,6 +140,16 @@ def test_review_packet_rejects_content_tampering() -> None:
     packet = _packet()
     packet["truth_record"]["category"] = "state_machine"
     with pytest.raises(E0GovernanceError, match="hash mismatch"):
+        validate_review_packet(packet)
+
+
+def test_review_packet_rejects_tampered_code_window_even_after_packet_rehash() -> None:
+    packet = _packet()
+    packet["code_windows"][0]["content"] = "void changed(void) {}\nreturn;\n"
+    unsigned = dict(packet)
+    unsigned.pop("packet_sha256")
+    packet["packet_sha256"] = sha256_value(unsigned)
+    with pytest.raises(E0GovernanceError, match="code window hash"):
         validate_review_packet(packet)
 
 
