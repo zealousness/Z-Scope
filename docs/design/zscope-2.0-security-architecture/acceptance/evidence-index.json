@@ -1,0 +1,51 @@
+{
+  "schema_version": "zscope.design-evidence-index.v1",
+  "design_version": "1.0.0",
+  "design_status": "reviewed",
+  "baseline": {
+    "git_commit": "17a9fc0100ea8a991bc25f3cfa76ca2dbb111ef8",
+    "git_tree": "c6dc2204da666ee3f7085894c5bce824d58c5486",
+    "clean": false,
+    "worktree_patch_sha256": "00b617bf2074410349186ab3f71effe51d0cb84203d586126757b4d9b3920b23"
+  },
+  "phases": [
+    {"phase": "P0", "status": "in_progress", "entry_gate": "design reviewed and existing worktree patch recorded", "exit_gate": "clean baseline, complete manifests, three review roles and design tag", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
+    {"phase": "P1", "status": "pending", "entry_gate": "P0 complete", "exit_gate": "dead runtime removed with frozen replay equivalence", "review_roles": ["product_architecture"]},
+    {"phase": "P2", "status": "pending", "entry_gate": "P1 complete", "exit_gate": "proof soundness and replay gates pass", "review_roles": ["proof_security"]},
+    {"phase": "P3", "status": "pending", "entry_gate": "P2 contracts stable", "exit_gate": "spec blind review, user review and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
+    {"phase": "P4", "status": "pending", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind and non-Range hypothesis gates pass", "review_roles": ["product_architecture", "proof_security"]},
+    {"phase": "P5", "status": "pending", "entry_gate": "P2-P4 pass", "exit_gate": "all public paths cut over and legacy runtime absent", "review_roles": ["product_architecture", "proof_security"]},
+    {"phase": "E0", "status": "pending", "entry_gate": "P0 design approved", "exit_gate": "truth v16 and benchmark v5 independently attested", "review_roles": ["independent_benchmark"]},
+    {"phase": "P6", "status": "pending", "entry_gate": "P1-P5 and E0 complete", "exit_gate": "offline replay and cold pilot invariants pass", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
+    {"phase": "P7", "status": "pending", "entry_gate": "P6 complete", "exit_gate": "formal, external, sealed and shadow gates pass", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]}
+  ],
+  "evidence": [
+    {
+      "evidence_uid": "P0-DESIGN-ARCHIVE-INITIAL",
+      "phase": "P0",
+      "kind": "design_archive",
+      "status": "collected",
+      "implementation_commit": "",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
+          "sha256": "5ce204f6b804ada7309afa24e2bc87cd0c080aafd262f6c808ec490ad6cec82b"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
+          "sha256": "6c02241a88176e2b8fe5960bb95d3fe225161df62b20e6c938db17a515eeca02"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/baseline-artifact-manifest.json",
+          "sha256": "625563db309dc2b1046400764e197764c7a1e333dbc774cc22cd41421b6627cc"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
+          "sha256": "74f62a4e58a900a641a3aa837f5f24b6e05809141108d23ed1bfa476299e2361"
+        }
+      ],
+      "reviewed_by": [],
+      "notes": "Normative documents and initial static audit are present. The implementation_commit and formal reviews remain empty until the design-only commit and clean baseline review are complete."
+    }
+  ]
+}
