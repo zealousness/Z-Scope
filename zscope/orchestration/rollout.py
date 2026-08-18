@@ -1131,9 +1131,7 @@ class BalancedRolloutController:
 
         if os.name == "nt":  # pragma: no cover - platform-selected branch
             msvcrt = importlib.import_module("msvcrt")
-            getattr(msvcrt, "locking")(
-                handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1
-            )
+            getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
             return
 
         fcntl = importlib.import_module("fcntl")
@@ -1146,9 +1144,7 @@ class BalancedRolloutController:
 
         if os.name == "nt":  # pragma: no cover - platform-selected branch
             msvcrt = importlib.import_module("msvcrt")
-            getattr(msvcrt, "locking")(
-                handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
-            )
+            getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
             return
 
         fcntl = importlib.import_module("fcntl")
