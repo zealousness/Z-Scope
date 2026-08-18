@@ -159,6 +159,7 @@ from ...orchestration.rollout import (
     rollout_runtime_policy,
 )
 from ...orchestration.candidates import CandidateLedger, CandidateRegistrar
+from ...orchestration.decision_trace import ensure_decision_trace_store
 from ...orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
     annotate_issue_identity,
@@ -340,13 +341,17 @@ class Analyzer:
             ),
         )
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
+        self.decision_trace_store = ensure_decision_trace_store(config)
         self.candidate_ledger = candidate_ledger or CandidateLedger(
             project_id=str(
                 getattr(config.project, "project_id", "") or config.project.project_root.name
             ),
             project_root=str(config.project.project_root),
             revision=self._git_commit_sha(config.project.project_root),
+            decision_trace_store=self.decision_trace_store,
         )
+        if self.candidate_ledger.decision_trace_store is None:
+            self.candidate_ledger.decision_trace_store = self.decision_trace_store
         self.budget_planner = RiskBudgetPlanner(config.analysis)
         self._skill_selection_cache: Dict[str, SkillSelection] = {}
         self._local_pattern_semantics: Optional[LocalPatternSemantics] = (
@@ -551,11 +556,12 @@ class Analyzer:
             "subagent_reports": [],
             "subagent_report_summary": {},
             "candidate_ledger": self.candidate_ledger,
+            "decision_trace_store": self.decision_trace_store,
             "candidate_ledger_context": [],
             "candidate_ledger_summary": {},
             "candidate_lifecycle_v3": True,
             "canonical_outcome_projection_enabled": True,
-            "finding_root_v1_enabled": True,
+            "finding_root_projection_enabled": True,
             "budget_exhaustion_policy": str(
                 getattr(self.config.analysis, "budget_exhaustion_policy", "observe") or "observe"
             ),
@@ -1091,6 +1097,7 @@ class Analyzer:
                 ),
                 project_root=str(self.config.project.project_root),
                 revision=self._git_commit_sha(self.config.project.project_root),
+                decision_trace_store=self.decision_trace_store,
             )
             state["candidate_ledger"] = ledger
 
@@ -4749,14 +4756,31 @@ class Analyzer:
         """Aggregate single-entry V1→V3 fact and verdict telemetry."""
 
         transitions: Dict[str, int] = {}
+        fact_by_kind: Dict[str, Dict[str, int]] = {}
+        fact_terminal_statuses: Dict[str, int] = {}
         fact_completed = 0
         fact_requested = 0
         for issue in issues:
-            resolution = issue.get("validator_fact_resolution")
-            if isinstance(resolution, dict):
+            raw_resolutions = issue.get("validator_fact_resolutions")
+            resolutions = (
+                [item for item in raw_resolutions if isinstance(item, dict)]
+                if isinstance(raw_resolutions, list)
+                else []
+            )
+            legacy = issue.get("validator_fact_resolution")
+            if not resolutions and isinstance(legacy, dict):
+                resolutions = [legacy]
+            for resolution in resolutions:
                 fact_requested += 1
-                if str(resolution.get("status") or "").startswith("completed"):
+                status = str(
+                    resolution.get("terminal_status") or resolution.get("status") or "unknown"
+                )
+                if status in {"resolved", "completed", "completed_partial", "completed_with_proof"}:
                     fact_completed += 1
+                fact_terminal_statuses[status] = fact_terminal_statuses.get(status, 0) + 1
+                kind = str(resolution.get("fact_kind") or "unknown")
+                by_status = fact_by_kind.setdefault(kind, {})
+                by_status[status] = by_status.get(status, 0) + 1
             history = issue.get("validator_pass_history")
             if not isinstance(history, list):
                 continue
@@ -4776,6 +4800,11 @@ class Analyzer:
             "validator_fact_resolution_success_rate": (
                 round(fact_completed / fact_requested, 4) if fact_requested else None
             ),
+            "validator_fact_resolution_by_kind": {
+                kind: dict(sorted(statuses.items()))
+                for kind, statuses in sorted(fact_by_kind.items())
+            },
+            "validator_fact_terminal_status_counts": dict(sorted(fact_terminal_statuses.items())),
         }
 
     def _make_validation_runner(self) -> ValidationRunner:
@@ -5487,6 +5516,12 @@ class Analyzer:
                     state.get("validator_fact_resolution_success_count", 0) or 0
                 ),
                 "fact_resolution_success_rate": state.get("validator_fact_resolution_success_rate"),
+                "fact_resolution_by_kind": dict(
+                    state.get("validator_fact_resolution_by_kind", {}) or {}
+                ),
+                "fact_terminal_status_counts": dict(
+                    state.get("validator_fact_terminal_status_counts", {}) or {}
+                ),
                 "evidence_recheck_count": int(
                     state.get("validator_evidence_recheck_count", 0) or 0
                 ),

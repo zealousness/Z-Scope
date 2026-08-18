@@ -431,6 +431,35 @@ void tick(void) {
     assert proof.proof_kind == "matching_lock_dominates_unlock"
 
 
+def test_evidence_completion_does_not_pair_lock_and_unlock_across_branches() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_unlock_without_matching_lock",
+        "evidence_pack": {"path": {"complete_in_function": True}},
+    }
+    evidence = {
+        "function_context": {
+            "code": """
+int abort_or_update(int abort_batch) {
+    if (abort_batch) {
+        UNLOCK(&state.lock);
+        return -1;
+    }
+    LOCK(&state.lock);
+    update();
+    UNLOCK(&state.lock);
+    return 0;
+}
+"""
+        }
+    }
+
+    queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
+
+    assert deterministic_decision_proof(issue, outcome="reject") is None
+
+
 def test_evidence_completion_confirms_failure_return_while_lock_is_held() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
@@ -1763,3 +1792,248 @@ def test_completed_local_fact_normalizes_event_alias_in_decision_slice() -> None
 
     assert issue["missing_fact_kinds"] == []
     assert issue["decision_fact_coverage"] == "complete"
+
+
+def test_local_lock_counterproof_requires_one_straight_line_must_path() -> None:
+    issue = {
+        "rule": "clang_cfg_global_state_written_with_and_without_lock",
+        "resource_identity": "cache_state",
+    }
+    proof = EvidenceCompletionQueue._local_lock_dominance_proof(
+        issue,
+        {
+            "function_context": {
+                "code": "\n".join(
+                    [
+                        "LOCK(&cache_lock);",
+                        "cache_state = next_state;",
+                        "UNLOCK(&cache_lock);",
+                    ]
+                )
+            }
+        },
+    )
+
+    assert proof is not None
+    assert proof["outcome"] == "reject"
+    assert proof["completeness"] == "complete"
+    assert proof["subject_identity"] == "cache_state"
+    assert proof["cfg_nodes"]
+
+
+def test_local_lock_counterproof_does_not_splice_different_branches() -> None:
+    issue = {
+        "rule": "clang_cfg_global_state_written_with_and_without_lock",
+        "resource_identity": "cache_state",
+    }
+    proof = EvidenceCompletionQueue._local_lock_dominance_proof(
+        issue,
+        {
+            "function_context": {
+                "code": "\n".join(
+                    [
+                        "if (abort_batch) {",
+                        "    UNLOCK(&cache_lock);",
+                        "    return;",
+                        "}",
+                        "LOCK(&cache_lock);",
+                        "cache_state = next_state;",
+                        "UNLOCK(&cache_lock);",
+                    ]
+                )
+            }
+        },
+    )
+
+    assert proof is None
+
+
+def test_no_match_fact_resolution_has_precise_terminal_reason() -> None:
+    queue = EvidenceCompletionQueue(
+        enable_v11_providers=False,
+        enable_v12_providers=False,
+    )
+    issue = {"validation_cluster_uid": "VAL_NO_MATCH"}
+
+    resolution = queue.resolve_requested_fact(
+        issue,
+        validator_data={
+            "verdict": "uncertain",
+            "missing_fact_request": {
+                "fact_kind": "value_range",
+                "reason": "need the bounded range",
+            },
+        },
+    )
+
+    assert resolution is not None
+    assert resolution.status == "exhausted"  # replay-compatible legacy field
+    assert resolution.terminal_status == "no_match"
+    assert resolution.miss_reason
+    assert issue["evidence_completion_terminal_status"] == "no_match"
+
+
+def test_required_fact_batch_records_plan_closure_and_fact_provenance() -> None:
+    queue = EvidenceCompletionQueue(
+        enable_v11_providers=False,
+        enable_v12_providers=False,
+    )
+    issue = {
+        "validation_cluster_uid": "VAL_PLAN",
+        "function": "publish_state",
+        "file": "src/state.c",
+        "line": 42,
+        "dependency_code_hash": "code-sha",
+        "security_obligation": {
+            "subject_uid": "state.current",
+            "required_fact_kinds": ["lockset", "happens_before"],
+        },
+        "decision_fact_slice": {
+            "fact_uids": [],
+            "dependency_code_hashes": [],
+            "missing_fact_kinds": ["lockset", "happens_before"],
+            "coverage": "partial",
+        },
+        "fact_completion_by_kind": {
+            "lockset": [{"value": "state.lock held"}],
+            "happens_before": [{"value": "unlock synchronizes with reader"}],
+        },
+    }
+
+    batch = queue.resolve_required_facts(issue, validator_data={"verdict": "uncertain"})
+
+    assert batch.has_evidence_delta is True
+    assert issue["required_fact_plan"] == {
+        "schema_version": "zscope.required-fact-plan.v1",
+        "validation_cluster_uid": "VAL_PLAN",
+        "fact_kinds": ["lockset", "happens_before"],
+        "derivation_basis": [
+            "security_obligation.required_fact_kinds",
+            "decision_fact_slice.missing_fact_kinds",
+        ],
+    }
+    closure = issue["evidence_closure_state"]
+    assert closure["complete"] is True
+    assert closure["resolved_fact_kinds"] == ["happens_before", "lockset"]
+    assert closure["missing_fact_kinds"] == []
+    assert len(closure["closure_hash"]) == 64
+    for fact in issue["decision_fact_slice"]["facts"]:
+        assert fact["provider_id"] == "local_deterministic_fact_provider"
+        assert fact["evidence_refs"] == [fact["fact_uid"]]
+        assert fact["satisfies_fact_kinds"] == [fact["fact_kind"]]
+
+
+def test_structured_ir_observation_is_v2_delta_but_not_false_closure() -> None:
+    queue = EvidenceCompletionQueue(
+        enable_v11_providers=False,
+        enable_v12_providers=False,
+    )
+    issue = {
+        "validation_cluster_uid": "VAL_GUARD_OBSERVATION",
+        "function": "copy_payload",
+        "file": "src/copy.c",
+        "line": 20,
+        "security_obligation": {"required_fact_kinds": ["guard_dominance"]},
+        "missing_fact_kinds": ["guard_dominance"],
+        "decision_fact_slice": {
+            "fact_uids": [],
+            "dependency_code_hashes": ["code-sha"],
+            "missing_fact_kinds": ["guard_dominance"],
+            "coverage": "partial",
+        },
+        "evidence_pack": {
+            "ast_cfg": {
+                "condition_guards": [{"condition": "wire_len != 0", "is_conclusive": False}]
+            }
+        },
+    }
+
+    batch = queue.resolve_required_facts(issue, validator_data={"verdict": "uncertain"})
+
+    assert batch.has_evidence_delta is True
+    assert batch.evidence_delta["facts"][0]["provider_id"] == "structured_ir_fact_provider"
+    assert batch.evidence_delta["facts"][0]["satisfies_fact_kinds"] == []
+    assert issue["decision_fact_coverage"] == "partial"
+    assert issue["missing_fact_kinds"] == ["guard_dominance"]
+    assert issue["evidence_closure_state"]["complete"] is False
+
+
+def test_required_fact_plan_invalidates_stale_complete_slice() -> None:
+    queue = EvidenceCompletionQueue(
+        enable_v11_providers=False,
+        enable_v12_providers=False,
+    )
+    issue = {
+        "validation_cluster_uid": "VAL_STALE_COMPLETE",
+        "function": "copy_payload",
+        "file": "src/copy.c",
+        "line": 20,
+        "dependency_code_hash": "code-sha",
+        "security_obligation": {
+            "subject_uid": "wire_len",
+            "required_fact_kinds": ["caller_contract", "guard_dominance"],
+        },
+        # This is the stale pre-plan state seen in the balanced pilot.
+        "decision_fact_slice": {
+            "fact_uids": ["FACT_PREEXISTING"],
+            "dependency_code_hashes": ["code-sha"],
+            "missing_fact_kinds": [],
+            "coverage": "complete",
+            "facts": [],
+        },
+        "decision_fact_coverage": "complete",
+        "candidate_promotion_eligible": True,
+        "fact_completion_by_kind": {
+            "caller_contract": [{"value": "public caller reaches copy_payload"}],
+        },
+        "evidence_pack": {
+            "ast_cfg": {
+                "condition_guards": [{"condition": "wire_len != 0", "is_conclusive": False}]
+            }
+        },
+    }
+
+    batch = queue.resolve_required_facts(issue, validator_data={"verdict": "uncertain"})
+
+    assert batch.has_evidence_delta is True
+    statuses = {value.fact_kind: value.terminal_status for value in batch.resolutions}
+    assert statuses == {"caller_contract": "resolved", "guard_dominance": "unknown"}
+    assert issue["evidence_closure_state"]["resolved_fact_kinds"] == ["caller_contract"]
+    assert issue["evidence_closure_state"]["missing_fact_kinds"] == ["guard_dominance"]
+    assert issue["decision_fact_coverage"] == "partial"
+    assert issue["candidate_promotion_eligible"] is False
+
+
+def test_complete_structured_source_sink_path_closes_requested_fact() -> None:
+    queue = EvidenceCompletionQueue(
+        enable_v11_providers=False,
+        enable_v12_providers=False,
+    )
+    issue = {
+        "validation_cluster_uid": "VAL_PATH_FACT",
+        "function": "copy_payload",
+        "file": "src/copy.c",
+        "line": 20,
+        "source": "wire_len",
+        "sink": "memcpy(dst, src, wire_len)",
+        "security_obligation": {"required_fact_kinds": ["source_sink_reachability"]},
+        "missing_fact_kinds": ["source_sink_reachability"],
+        "decision_fact_slice": {
+            "fact_uids": [],
+            "dependency_code_hashes": ["code-sha"],
+            "missing_fact_kinds": ["source_sink_reachability"],
+            "coverage": "partial",
+        },
+        "evidence_pack": {
+            "source": {"expression": "wire_len"},
+            "sink": {"expression": "memcpy(dst, src, wire_len)"},
+            "path": {"complete_in_function": True, "cfg_nodes": ["10", "20"]},
+        },
+    }
+
+    batch = queue.resolve_required_facts(issue, validator_data={"verdict": "uncertain"})
+
+    assert batch.has_evidence_delta is True
+    assert issue["decision_fact_coverage"] == "complete"
+    assert issue["missing_fact_kinds"] == []
+    assert issue["evidence_closure_state"]["complete"] is True

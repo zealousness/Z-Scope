@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import time
@@ -12,7 +13,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any, Callable, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Mapping, Optional, cast
 
 from ...agents.validator_agent.agent import ValidatorAgent
 from ...common.cancellation import (
@@ -25,6 +26,7 @@ from ...common.issue_identity import canonical_issue_key, deduplicate_issues
 from ...config.function_entry import FunctionEntry
 from ...framework.llm_client import LLMClient
 from ...orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
+from ...orchestration.decision_trace import ensure_decision_trace_store
 from ...orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
     DECISION_CONTEXT_VERSION,
@@ -55,6 +57,18 @@ def _as_dict(value: Any) -> Dict[str, Any]:
 
 from .pipeline import ValidationOutcome, ValidationPipeline
 from .evidence_completion import EvidenceCompletionQueue
+from .fact_capabilities import (
+    EvidenceAction,
+    FactCapabilityRegistry,
+    FunctionIRFactService,
+    verify_certificate_v2,
+)
+from .claim_verifier import (
+    EvidenceClaimRequest,
+    EvidenceClaimVerifier,
+    verify_evidence_certificate,
+)
+from .authority import TerminalAuthorityEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -246,11 +260,188 @@ class ValidationRunner:
             self._validator_result_cache_size
         )
         self._validation_environment_fingerprint = self._build_validation_environment_fingerprint()
+        compile_commands_path = getattr(code_index, "compile_commands_path", None)
+        ir_enabled = self._scan_depth() in {"balanced", "deep"}
+        self._function_ir_facts = FunctionIRFactService(
+            Path(compile_commands_path) if compile_commands_path else None,
+            enabled=ir_enabled,
+        )
+        self._fact_capabilities = FactCapabilityRegistry(self._function_ir_facts)
         self._evidence_completion_queue = EvidenceCompletionQueue(
             enabled=True,
             max_workers=config.concurrency.evidence_completion_workers,
-            enable_v11_providers=True,
-            enable_v12_providers=True,
+            enable_v11_providers=False,
+            enable_v12_providers=False,
+            certified_fact_provider=self._function_ir_facts.resolve_first,
+            require_replayable_certificates=True,
+        )
+        self._decision_trace_store = ensure_decision_trace_store(config)
+        project_root = Path(getattr(getattr(config, "project", None), "project_root", ".") or ".")
+        validation_profile = str(
+            getattr(getattr(getattr(config, "scan", None), "llm_profiles", None), "validation", "")
+            or "default"
+        )
+        validation_client = llm_clients.get(validation_profile) or llm_clients.get("default")
+        model_identity = self._llm_identity(validation_client) if validation_client else {}
+        provider_urls = tuple(
+            str(value) for value in getattr(validation_client, "base_urls", []) or []
+        )
+        self._decision_trace_store.update_identity(
+            {
+                "project_revision": self._project_revision(project_root),
+                "validation_environment_sha256": self._validation_environment_fingerprint,
+                "effective_rules_sha256": self._effective_rules_sha256(),
+                "validator_protocol": VALIDATOR_PROTOCOL_V3,
+                "model_identity_sha256": self._stable_hash(model_identity),
+                "provider_identity_sha256": self._stable_hash(provider_urls),
+                "prompt_contract_sha256": self._validation_environment_fingerprint,
+            }
+        )
+        self._evidence_claim_verifier = EvidenceClaimVerifier(allow_legacy_observation_claims=False)
+        self._terminal_authority = TerminalAuthorityEvaluator()
+
+    @staticmethod
+    def _trace_cluster_uid(issue: Dict[str, Any]) -> str:
+        pack = _as_dict(issue.get("evidence_pack"))
+        return str(issue.get("validation_cluster_uid") or pack.get("validation_cluster_uid") or "")
+
+    def _trace_event(
+        self,
+        issue: Dict[str, Any],
+        *,
+        stage: str,
+        actor: str,
+        reason_code: str,
+        before_state: Optional[Dict[str, Any]] = None,
+        after_state: Optional[Dict[str, Any]] = None,
+        input_refs: tuple[str, ...] = (),
+        output_refs: tuple[str, ...] = (),
+        call_ids: tuple[str, ...] = (),
+        tool_call_ids: tuple[str, ...] = (),
+        token_delta: int = 0,
+        details: Optional[Dict[str, Any]] = None,
+        dedupe_key: str = "",
+    ) -> None:
+        cluster_uid = self._trace_cluster_uid(issue)
+        if not cluster_uid:
+            return
+        try:
+            self._decision_trace_store.append_event(
+                cluster_uid,
+                stage=stage,
+                actor=actor,
+                reason_code=reason_code,
+                before_state=before_state,
+                after_state=after_state or self._trace_state(issue),
+                input_refs=input_refs,
+                output_refs=output_refs,
+                disposition_before=str((before_state or {}).get("candidate_disposition") or ""),
+                disposition_after=str(issue.get("candidate_disposition") or ""),
+                call_ids=call_ids,
+                tool_call_ids=tool_call_ids,
+                token_delta=token_delta,
+                closed_clause_ids=tuple(self._closed_clause_ids(issue)),
+                open_clause_ids=tuple(self._open_clause_ids(issue)),
+                details=details,
+                dedupe_key=dedupe_key,
+            )
+        except Exception as exc:
+            logger.warning("Decision trace append failed for %s: %s", cluster_uid, exc)
+
+    @staticmethod
+    def _trace_state(issue: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            key: deepcopy(issue.get(key))
+            for key in (
+                "candidate_uid",
+                "validation_cluster_uid",
+                "candidate_disposition",
+                "validation_status",
+                "model_verdict",
+                "policy_disposition",
+                "deterministic_prevalidation_decision",
+                "proof_coverage",
+                "evidence_conflict",
+                "decision_fact_coverage",
+                "missing_fact_kinds",
+                "evidence_closure_state",
+                "v3_evidence_closure",
+            )
+            if issue.get(key) not in (None, "", [], {})
+        }
+
+    @staticmethod
+    def _open_clause_ids(issue: Dict[str, Any]) -> List[str]:
+        closure = issue.get("evidence_closure_state")
+        closure = closure if isinstance(closure, dict) else {}
+        values = closure.get("missing_fact_kinds") or issue.get("missing_fact_kinds") or []
+        return (
+            sorted({str(value) for value in values if str(value)})
+            if isinstance(values, list)
+            else []
+        )
+
+    @staticmethod
+    def _closed_clause_ids(issue: Dict[str, Any]) -> List[str]:
+        closure = issue.get("evidence_closure_state")
+        closure = closure if isinstance(closure, dict) else {}
+        values = closure.get("resolved_fact_kinds") or []
+        return (
+            sorted({str(value) for value in values if str(value)})
+            if isinstance(values, list)
+            else []
+        )
+
+    def _cluster_usage_events(self, issue: Dict[str, Any]) -> List[Dict[str, Any]]:
+        ledger = getattr(self.config, "scan_token_usage_ledger", None)
+        getter = getattr(ledger, "events_for_cluster", None)
+        if not callable(getter):
+            return []
+        return list(getter(self._trace_cluster_uid(issue)))
+
+    def _record_model_trace(
+        self,
+        issue: Dict[str, Any],
+        *,
+        stage: str,
+        structured_input: Dict[str, Any],
+        structured_output: Dict[str, Any],
+        usage_start: int,
+        reason_code: str,
+        tool_call_ids: tuple[str, ...] = (),
+        evidence_refs: tuple[str, ...] = (),
+    ) -> None:
+        events = self._cluster_usage_events(issue)[usage_start:]
+        call_ids = tuple(
+            str(value.get("call_id") or "") for value in events if value.get("call_id")
+        )
+        token_delta = sum(int(value.get("total_tokens") or 0) for value in events)
+        ref = self._decision_trace_store.put_model_event(
+            call_identity=f"{self._trace_cluster_uid(issue)}:{stage}:{usage_start}",
+            stage=stage,
+            validation_cluster_uid=self._trace_cluster_uid(issue),
+            structured_input=structured_input,
+            structured_output=structured_output,
+            call_ids=call_ids,
+            tool_call_ids=tool_call_ids,
+            prompt_revision=VALIDATOR_PROTOCOL_V3,
+            prompt_hash=self._validation_environment_fingerprint,
+        )
+        self._trace_event(
+            issue,
+            stage=stage,
+            actor="validator_agent",
+            reason_code=reason_code,
+            output_refs=(ref, *evidence_refs),
+            call_ids=call_ids,
+            tool_call_ids=tool_call_ids,
+            token_delta=token_delta,
+            details={
+                "verdict": validation_verdict(structured_output),
+                "pass": structured_output.get("pass"),
+                "stop_reason": structured_output.get("stop_reason"),
+            },
+            dedupe_key=f"model:{stage}:{':'.join(call_ids) or usage_start}",
         )
 
     def run(self, state: Dict[str, Any]) -> None:
@@ -568,21 +759,24 @@ class ValidationRunner:
             severity = str(issue.get("impact_level") or issue.get("severity") or "").lower()
             externally_reachable = self._externally_reachable(item)
             valid_obligation = self._has_valid_security_obligation(issue)
-            closable_gap = self._has_readonly_closable_gap(issue)
+            closable_gap = self._has_readonly_closable_gap(issue, item.evidence_pack)
             shadow_only = self._is_shadow_only_candidate(issue)
             selected = False
             reason = "not_selected"
             if shadow_only:
                 reason = "shadow_only"
+            elif not valid_obligation:
+                reason = "missing_security_obligation"
+            elif not closable_gap:
+                reason = "no_readonly_closable_gap"
+            elif bool(issue.get("proof_conflict_requires_v3")):
+                selected = True
+                reason = "unresolved_valid_proof_conflict"
             elif depth == "deep":
                 selected = True
                 reason = "deep_all_unclosed_without_counterproof"
             elif not (self._v3_is_high_or_critical(item) or externally_reachable):
                 reason = "balanced_risk_and_reachability_gate"
-            elif not valid_obligation:
-                reason = "missing_security_obligation"
-            elif not closable_gap:
-                reason = "no_readonly_closable_gap"
             else:
                 selected = True
                 reason = "balanced_high_critical_or_external"
@@ -595,6 +789,7 @@ class ValidationRunner:
                 "externally_reachable": externally_reachable,
                 "valid_security_obligation": valid_obligation,
                 "readonly_closable_gap": closable_gap,
+                "risk_basis": self._v3_risk_basis(item),
                 "required_fact_kinds": list(
                     EvidenceCompletionQueue.required_resolution_fact_kinds(
                         issue,
@@ -602,6 +797,20 @@ class ValidationRunner:
                     )
                 ),
             }
+            if not selected:
+                not_eligible_code = (
+                    "V3_NOT_ELIGIBLE_NO_EXECUTABLE_GAP"
+                    if reason in {"missing_security_obligation", "no_readonly_closable_gap"}
+                    else "V3_NOT_ELIGIBLE_RISK"
+                )
+                self._trace_event(
+                    issue,
+                    stage="V3",
+                    actor="v3_eligibility_policy",
+                    reason_code=not_eligible_code,
+                    details=deepcopy(issue["validator_v3_eligibility"]),
+                    dedupe_key=f"v3-ineligible:{reason}:{self._trace_cluster_uid(issue)}",
+                )
             if not selected:
                 continue
             eligible.append(item)
@@ -614,6 +823,35 @@ class ValidationRunner:
             )
             for item in prepared
         ]
+
+    @staticmethod
+    def _v3_risk_basis(item: _PreparedValidation) -> Dict[str, Any]:
+        """Explain eligibility using only candidate and project-graph facts."""
+
+        issue = item.raw_issue
+        entry = item.evidence_pack.get("entry_context")
+        entry = entry if isinstance(entry, dict) else {}
+        severity_field = "impact_level" if issue.get("impact_level") else "severity"
+        explicit_field = "risk_score" if issue.get("risk_score") is not None else "priority_score"
+        external_sources = [
+            name
+            for name, value in (
+                ("candidate.externally_reachable", issue.get("externally_reachable")),
+                ("candidate.reachable_from_entry", issue.get("reachable_from_entry")),
+                ("entry.entry_is_external_root", entry.get("entry_is_external_root")),
+                ("entry.reachable_from_entry", entry.get("reachable_from_entry")),
+            )
+            if bool(value)
+        ]
+        return {
+            "severity": str(issue.get(severity_field) or "unknown").lower(),
+            "severity_source": f"candidate.{severity_field}",
+            "explicit_risk_score": issue.get(explicit_field) or 0,
+            "explicit_risk_source": f"candidate.{explicit_field}",
+            "computed_risk_score": ValidationRunner._v3_risk_score(item),
+            "external_reachability_sources": external_sources,
+            "truth_fields_consulted": False,
+        }
 
     def _scan_depth(self) -> str:
         scan = getattr(self.config, "scan", None)
@@ -667,18 +905,32 @@ class ValidationRunner:
             )
         )
 
+    def _has_readonly_closable_gap(
+        self,
+        issue: Dict[str, Any],
+        evidence_pack: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
+        fact_kinds = self._remaining_fact_kinds(issue)
+        if not fact_kinds:
+            issue["fact_capabilities"] = []
+            issue["validator_evidence_actions"] = []
+            return False
+        capabilities = self._fact_capabilities.inspect(issue, evidence_pack, fact_kinds)
+        actions = self._fact_capabilities.executable_actions(issue, evidence_pack, fact_kinds)
+        issue["fact_capabilities"] = [value.to_dict() for value in capabilities]
+        issue["validator_evidence_actions"] = [value.to_dict() for value in actions]
+        return bool(actions)
+
     @staticmethod
-    def _has_readonly_closable_gap(issue: Dict[str, Any]) -> bool:
-        # A complete obligation may still need an auditable second decision
-        # because V1 was uncertain or its verified score did not promote.  In
-        # that case repository code/semantic tools can add decision evidence.
-        if issue.get("candidate_promotion_eligible") is True:
-            return True
-        return bool(
-            EvidenceCompletionQueue.required_resolution_fact_kinds(
-                issue,
-                {"verdict": "uncertain"},
-            )
+    def _remaining_fact_kinds(issue: Mapping[str, Any]) -> tuple[str, ...]:
+        closure = issue.get("evidence_closure_state")
+        if isinstance(closure, Mapping):
+            missing = closure.get("missing_fact_kinds")
+            if isinstance(missing, list):
+                return tuple(sorted({str(value) for value in missing if str(value)}))
+        return EvidenceCompletionQueue.required_resolution_fact_kinds(
+            issue,
+            {"verdict": "uncertain"},
         )
 
     @staticmethod
@@ -709,6 +961,83 @@ class ValidationRunner:
             if outcome.report_bucket:
                 state[outcome.report_bucket].append(raw_issue)
             self._update_candidate_ledger(state, raw_issue)
+
+    def _run_fact_first_prevalidation(
+        self,
+        issue: Dict[str, Any],
+        evidence_pack: Mapping[str, Any],
+    ) -> tuple[Any, Optional[ValidationOutcome]]:
+        """Resolve the immutable obligation before the first model call."""
+
+        if not self._has_valid_security_obligation(issue):
+            issue["fact_first_resolution"] = {
+                "status": "not_applicable",
+                "reason": "missing_security_obligation",
+            }
+            return None, None
+        try:
+            batch = self._evidence_completion_queue.resolve_required_facts(
+                issue,
+                validator_data={"verdict": "uncertain"},
+                validation_evidence=evidence_pack,
+            )
+        except Exception as exc:
+            issue["fact_first_resolution"] = {
+                "status": "provider_error",
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+            }
+            return None, None
+        issue["fact_first_resolution"] = {
+            "status": str(issue.get("evidence_completion_status") or "not_applicable"),
+            "evidence_delta_hash": batch.evidence_delta_hash,
+            "proof_added": batch.proof_added,
+            "fact_kinds": [value.fact_kind for value in batch.resolutions],
+            "resolutions": [
+                {
+                    "fact_kind": value.fact_kind,
+                    "status": value.terminal_status,
+                    "provider_ids": list(value.provider_ids),
+                    "miss_reason": value.miss_reason,
+                }
+                for value in batch.resolutions
+            ],
+        }
+        issue["fact_first_attempted_fact_kinds"] = sorted(
+            {value.fact_kind for value in batch.resolutions if value.fact_kind}
+        )
+        if batch.evidence_delta:
+            issue["fact_first_evidence_delta"] = deepcopy(batch.evidence_delta)
+        for resolution in batch.resolutions:
+            code = {
+                "resolved": "FACT_VERIFIED_TRUE",
+                "conflicting": "FACT_CONFLICTING",
+                "timeout": "PROVIDER_TIMEOUT",
+                "provider_error": "PROVIDER_ERROR",
+                "no_match": "PROVIDER_NO_MATCH",
+            }.get(resolution.terminal_status, "FACT_UNKNOWN")
+            self._trace_event(
+                issue,
+                stage="provider",
+                actor="fact_first_evidence_completion",
+                reason_code=code,
+                details={
+                    "fact_kind": resolution.fact_kind,
+                    "status": resolution.terminal_status,
+                    "provider_ids": list(resolution.provider_ids),
+                    "miss_reason": resolution.miss_reason,
+                },
+                dedupe_key=(
+                    f"fact-first:{resolution.fact_kind}:{resolution.terminal_status}:"
+                    f"{batch.evidence_delta_hash or 'no-delta'}"
+                ),
+            )
+        if not batch.proof_added:
+            return batch, None
+        outcome = self.validation_pipeline.apply_deterministic_prevalidation(
+            issue,
+            self.validation_pipeline.score_components(issue, {}),
+        )
+        return batch, outcome
 
     def _prepare_issue_for_validation(
         self,
@@ -741,16 +1070,135 @@ class ValidationRunner:
 
         issue_code = self._issue_code(issue_func, state)
         evidence_pack = self._build_evidence_pack(raw_issue, state, issue_code)
+        evidence_ref = self._decision_trace_store.put_evidence(
+            kind="validator_evidence_pack",
+            payload=evidence_pack,
+            producer="validation_runner",
+            dependency_hashes=tuple(
+                str(value)
+                for value in _as_dict(raw_issue.get("decision_fact_slice")).get(
+                    "dependency_code_hashes", []
+                )
+                if str(value)
+            ),
+        )
         if self._deterministic_prevalidation_enabled():
-            self._evidence_completion_queue.complete_prevalidation(
-                raw_issue,
-                validation_evidence=evidence_pack,
-            )
+            # V0 consumes producer-owned deterministic proofs already attached
+            # to the candidate. Legacy local completion heuristics are not
+            # allowed to manufacture a complete proof in certificate mode;
+            # FunctionIR fact-first runs below for unresolved obligations.
             deterministic_outcome = self.validation_pipeline.apply_deterministic_prevalidation(
                 raw_issue,
                 self.validation_pipeline.score_components(raw_issue, {}),
             )
             if deterministic_outcome is not None:
+                conflict = bool(raw_issue.get("evidence_conflict"))
+                if conflict:
+                    authority = self._terminal_authority.evaluate(
+                        raw_issue,
+                        has_executable_action=True,
+                    )
+                    raw_issue["proof_conflict_resolution"] = deepcopy(
+                        authority.conflict_resolution or {}
+                    )
+                    self._trace_event(
+                        raw_issue,
+                        stage="V0",
+                        actor="deterministic_prevalidation",
+                        reason_code="PROOF_CONFLICT",
+                        output_refs=(evidence_ref,),
+                        details={"action": deterministic_outcome.verdict},
+                        dedupe_key=f"v0-conflict:{self._trace_cluster_uid(raw_issue)}",
+                    )
+                    resolution = authority.conflict_resolution or {}
+                    if not bool(resolution.get("valid_positive")) or not bool(
+                        resolution.get("valid_negative")
+                    ):
+                        self._trace_event(
+                            raw_issue,
+                            stage="V0",
+                            actor="proof_conflict_resolver",
+                            reason_code="PROOF_INVALID_SCOPE_OR_DEPENDENCY",
+                            output_refs=(evidence_ref,),
+                            details=deepcopy(resolution),
+                            dedupe_key=(
+                                f"v0-invalid-conflict-proof:"
+                                f"{self._trace_cluster_uid(raw_issue)}"
+                            ),
+                        )
+                    if authority.terminal and authority.disposition in {
+                        "confirmed",
+                        "rejected_with_proof",
+                    }:
+                        winner = str(resolution.get("winner") or "")
+                        proof_key = (
+                            "positive_decision_proof"
+                            if winner == "positive"
+                            else "negative_decision_proof"
+                        )
+                        raw_issue["decision_proof"] = deepcopy(raw_issue.get(proof_key) or {})
+                        raw_issue["proof_coverage"] = "complete"
+                        raw_issue["evidence_conflict"] = False
+                        raw_issue["candidate_disposition"] = authority.disposition
+                        raw_issue["validation_status"] = (
+                            "validated" if authority.disposition == "confirmed" else "rejected"
+                        )
+                        raw_issue["terminal_authority_decision"] = authority.to_dict()
+                        raw_issue["terminal_authority"] = authority.authority
+                        raw_issue["terminal_reason_codes"] = [authority.reason_code]
+                        resolved_outcome = ValidationOutcome(
+                            report_bucket=(
+                                "issues" if authority.disposition == "confirmed" else None
+                            ),
+                            memory_status=(
+                                "validated" if authority.disposition == "confirmed" else "rejected"
+                            ),
+                            verdict=(
+                                "verified" if authority.disposition == "confirmed" else "rejected"
+                            ),
+                            final_score=deterministic_outcome.final_score,
+                        )
+                        if resolved_outcome.report_bucket:
+                            state[resolved_outcome.report_bucket].append(raw_issue)
+                        self.remember_validation_result(
+                            raw_issue, resolved_outcome.memory_status or "rejected"
+                        )
+                        self._update_candidate_ledger(state, raw_issue)
+                        return None
+                    # Both proofs remain valid under incompatible assumptions
+                    # or paths.  Do not ask V1/V2 to vote; retain both and send
+                    # exactly one cluster to targeted V3 when the selected
+                    # scan depth supports it.
+                    raw_issue["candidate_disposition"] = "needs_review"
+                    raw_issue["validation_status"] = "needs_review"
+                    raw_issue["proof_conflict_requires_v3"] = True
+                else:
+                    reason_code = (
+                        "POSITIVE_PROOF_COMPLETE"
+                        if deterministic_outcome.memory_status == "validated"
+                        else (
+                            "NEGATIVE_PROOF_COMPLETE"
+                            if deterministic_outcome.memory_status == "rejected"
+                            else "V0_UNRESOLVED"
+                        )
+                    )
+                    self._trace_event(
+                        raw_issue,
+                        stage="V0",
+                        actor="deterministic_prevalidation",
+                        reason_code=reason_code,
+                        output_refs=(evidence_ref,),
+                        details={"verdict": deterministic_outcome.verdict},
+                        dedupe_key=f"v0:{reason_code}:{self._trace_cluster_uid(raw_issue)}",
+                    )
+                if conflict:
+                    return _PreparedValidation(
+                        index=index,
+                        raw_issue=raw_issue,
+                        issue_func=issue_func,
+                        issue_code=issue_code,
+                        evidence_pack=evidence_pack,
+                    )
                 self._record_deterministic_prevalidation_outcome(
                     state,
                     raw_issue,
@@ -765,6 +1213,30 @@ class ValidationRunner:
                     )
                 self._update_candidate_ledger(state, raw_issue)
                 return None
+        self._trace_event(
+            raw_issue,
+            stage="V0",
+            actor="deterministic_prevalidation",
+            reason_code="V0_UNRESOLVED",
+            output_refs=(evidence_ref,),
+            dedupe_key=f"v0-unresolved:{self._trace_cluster_uid(raw_issue)}",
+        )
+        _batch, fact_first_outcome = self._run_fact_first_prevalidation(
+            raw_issue,
+            evidence_pack,
+        )
+        if fact_first_outcome is not None:
+            self._record_deterministic_prevalidation_outcome(
+                state,
+                raw_issue,
+                fact_first_outcome,
+            )
+            if fact_first_outcome.report_bucket:
+                state[fact_first_outcome.report_bucket].append(raw_issue)
+            if fact_first_outcome.memory_status:
+                self.remember_validation_result(raw_issue, fact_first_outcome.memory_status)
+            self._update_candidate_ledger(state, raw_issue)
+            return None
         return _PreparedValidation(
             index=index,
             raw_issue=raw_issue,
@@ -836,11 +1308,57 @@ class ValidationRunner:
         cache_key = ""
         cache_owner = False
         try:
+            if bool(item.raw_issue.get("proof_conflict_requires_v3")):
+                token_metadata = self._empty_token_metadata()
+                prior = self._terminal_uncertain_v3_result(
+                    item,
+                    {},
+                    validation_pass="initial",
+                    stop_reason="investigation_exhausted",
+                    reasoning=(
+                        "Two complete deterministic proofs remain valid under incompatible "
+                        "paths or assumptions; only targeted conflict evidence may resolve them."
+                    ),
+                )
+                if not item.allow_v3:
+                    return _ValidationWorkerResult(
+                        index=item.index,
+                        raw_issue=item.raw_issue,
+                        issue_func=item.issue_func,
+                        success=True,
+                        val_data=prior,
+                        metadata=token_metadata,
+                        evidence_pack=item.evidence_pack,
+                    )
+                validator_agent = validator_agent or self._build_validator_agent()
+                val_data = self._run_v3_targeted_investigation(
+                    item,
+                    validator_agent,
+                    prior,
+                    token_metadata,
+                )
+                return _ValidationWorkerResult(
+                    index=item.index,
+                    raw_issue=item.raw_issue,
+                    issue_func=item.issue_func,
+                    success=True,
+                    val_data=val_data,
+                    metadata=token_metadata,
+                    evidence_pack=item.evidence_pack,
+                )
             cache_key = self._validator_cache_key(item)
             cached = self._validator_cache_get(cache_key)
             if cached is not None:
                 metadata = self._empty_token_metadata()
                 metadata["validator_cache_hit"] = 1
+                self._trace_event(
+                    item.raw_issue,
+                    stage="V1",
+                    actor="validation_result_cache",
+                    reason_code="V1_COMPLETED",
+                    details={"cache_hit": True, "verdict": validation_verdict(cached)},
+                    dedupe_key=f"v1-cache:{cache_key}",
+                )
                 return _ValidationWorkerResult(
                     index=item.index,
                     raw_issue=item.raw_issue,
@@ -860,6 +1378,18 @@ class ValidationRunner:
                         metadata = self._empty_token_metadata()
                         metadata["validator_cache_hit"] = 1
                         metadata["validator_inflight_coalesced"] = 1
+                        self._trace_event(
+                            item.raw_issue,
+                            stage="V1",
+                            actor="validation_result_cache",
+                            reason_code="V1_COMPLETED",
+                            details={
+                                "cache_hit": True,
+                                "inflight_coalesced": True,
+                                "verdict": validation_verdict(cached),
+                            },
+                            dedupe_key=f"v1-inflight-cache:{cache_key}",
+                        )
                         return _ValidationWorkerResult(
                             index=item.index,
                             raw_issue=item.raw_issue,
@@ -871,13 +1401,26 @@ class ValidationRunner:
                     cache_owner = self._validator_result_cache.reserve(cache_key)
             validator_agent = validator_agent or self._build_validator_agent()
             token_metadata = self._empty_token_metadata()
-            val_resp = validator_agent.run(
-                self._validator_input(item.raw_issue, item.issue_code, item.evidence_pack)
+            validator_input = self._validator_input(
+                item.raw_issue, item.issue_code, item.evidence_pack
             )
+            usage_start = len(self._cluster_usage_events(item.raw_issue))
+            val_resp = validator_agent.run(validator_input)
             self._merge_response_metadata(token_metadata, getattr(val_resp, "metadata", {}) or {})
 
             if not val_resp.success:
                 if not item.allow_v3 or not self._recoverable_v1_failure(val_resp):
+                    self._record_model_trace(
+                        item.raw_issue,
+                        stage="V1",
+                        structured_input=validator_input,
+                        structured_output={
+                            "protocol_failure": True,
+                            "error_type": type(val_resp.error).__name__,
+                        },
+                        usage_start=usage_start,
+                        reason_code="V1_COMPLETED",
+                    )
                     return _ValidationWorkerResult(
                         index=item.index,
                         raw_issue=item.raw_issue,
@@ -909,6 +1452,14 @@ class ValidationRunner:
                     val_resp.data,
                     token_metadata,
                 )
+            self._record_model_trace(
+                item.raw_issue,
+                stage="V1",
+                structured_input=validator_input,
+                structured_output=val_data,
+                usage_start=usage_start,
+                reason_code="V1_COMPLETED",
+            )
             val_data = self._run_v3_evidence_recheck(
                 item,
                 validator_agent,
@@ -1319,6 +1870,36 @@ class ValidationRunner:
                         verdict=verdict,
                         score_data=score_data,
                     )
+        authority = self._terminal_authority.evaluate(
+            raw_issue,
+            model_result=val_data,
+            has_executable_action=False,
+            protocol_or_engine_failure=False,
+        )
+        raw_issue["terminal_authority_decision"] = authority.to_dict()
+        raw_issue["terminal_authority"] = authority.authority
+        raw_issue["terminal_reason_codes"] = [authority.reason_code]
+        if authority.disposition == "needs_review" and outcome.memory_status != "needs_review":
+            raw_issue["candidate_disposition"] = "needs_review"
+            raw_issue["validation_status"] = "needs_review"
+            raw_issue["finding_kind"] = "needs_review"
+            outcome = ValidationOutcome(
+                report_bucket="observations",
+                memory_status="needs_review",
+                verdict="needs_review",
+                final_score=outcome.final_score,
+            )
+        elif authority.disposition == "confirmed" and outcome.memory_status == "validated":
+            raw_issue["candidate_disposition"] = "confirmed"
+        elif authority.disposition == "rejected_with_proof":
+            raw_issue["candidate_disposition"] = "rejected_with_proof"
+            raw_issue["validation_status"] = "rejected"
+            outcome = ValidationOutcome(
+                report_bucket=None,
+                memory_status="rejected",
+                verdict="rejected",
+                final_score=outcome.final_score,
+            )
         raw_issue["policy_disposition"] = str(
             raw_issue.get("candidate_disposition") or outcome.memory_status or "needs_review"
         )
@@ -1504,11 +2085,47 @@ class ValidationRunner:
                 "stop_reason": str(val_data.get("stop_reason") or ""),
             }
         )
+        raw_request = val_data.get("missing_fact_request")
+        requested_kind = (
+            str(raw_request.get("fact_kind") or "").strip().lower()
+            if isinstance(raw_request, Mapping)
+            else ""
+        )
+        fact_first_attempted = {
+            str(value)
+            for value in item.raw_issue.get("fact_first_attempted_fact_kinds") or []
+            if str(value)
+        }
+        if not requested_kind or requested_kind in fact_first_attempted:
+            item.raw_issue["validator_fact_resolution"] = {
+                "fact_kinds": [requested_kind] if requested_kind else [],
+                "statuses": ["already_attempted"] if requested_kind else [],
+                "status": "no_new_parameterized_request",
+                "evidence_delta_hash": "",
+                "proof_added": False,
+            }
+            item.raw_issue["validator_v2_stop_reason"] = "no_evidence_gain"
+            self._trace_event(
+                item.raw_issue,
+                stage="V2",
+                actor="validation_runner",
+                reason_code="V2_SKIPPED_NO_DELTA",
+                details={
+                    "requested_fact_kind": requested_kind,
+                    "fact_first_attempted": sorted(fact_first_attempted),
+                },
+                dedupe_key=(
+                    f"v2-skipped-fact-first:{requested_kind or 'no-request'}:"
+                    f"{self._trace_cluster_uid(item.raw_issue)}"
+                ),
+            )
+            return val_data
         try:
             batch = self._evidence_completion_queue.resolve_required_facts(
                 item.raw_issue,
                 validator_data=val_data,
                 validation_evidence=item.evidence_pack,
+                fact_kinds_override=(requested_kind,),
             )
         except Exception as exc:
             logger.warning(
@@ -1528,7 +2145,7 @@ class ValidationRunner:
                 reasoning="The required deterministic fact providers failed.",
             )
 
-        statuses = [value.status for value in batch.resolutions]
+        statuses = [value.terminal_status for value in batch.resolutions]
         item.raw_issue["validator_fact_resolution"] = {
             "fact_kinds": [value.fact_kind for value in batch.resolutions],
             "statuses": statuses,
@@ -1539,11 +2156,70 @@ class ValidationRunner:
         token_metadata["validator_fact_resolution_count"] = int(
             token_metadata.get("validator_fact_resolution_count", 0) or 0
         ) + len(batch.resolutions)
+        resolution_ref = self._decision_trace_store.put_evidence(
+            kind="fact_resolution_batch",
+            payload={
+                "resolutions": [
+                    {
+                        "fact_kind": value.fact_kind,
+                        "status": value.status,
+                        "terminal_status": value.terminal_status,
+                        "miss_reason": value.miss_reason,
+                    }
+                    for value in batch.resolutions
+                ],
+                "evidence_delta": batch.evidence_delta,
+                "evidence_delta_hash": batch.evidence_delta_hash,
+                "proof_added": batch.proof_added,
+            },
+            producer="evidence_completion_queue",
+        )
+        for value in batch.resolutions:
+            status = str(value.terminal_status or value.status or "").lower()
+            reason_code = {
+                "resolved": "FACT_VERIFIED_TRUE",
+                "no_match": "PROVIDER_NO_MATCH",
+                "unsupported": "FACT_UNKNOWN",
+                "timeout": "PROVIDER_TIMEOUT",
+                "provider_error": "PROVIDER_ERROR",
+                "conflicting": "FACT_CONFLICTING",
+                "duplicate_request": "FACT_UNKNOWN",
+            }.get(status, "FACT_UNKNOWN")
+            self._trace_event(
+                item.raw_issue,
+                stage="provider",
+                actor="evidence_completion_queue",
+                reason_code=reason_code,
+                output_refs=(resolution_ref,),
+                details={
+                    "fact_kind": value.fact_kind,
+                    "status": value.status,
+                    "terminal_status": value.terminal_status,
+                    "miss_reason": value.miss_reason,
+                },
+                dedupe_key=(
+                    f"provider:{value.fact_kind}:{status}:"
+                    f"{batch.evidence_delta_hash or 'no-delta'}"
+                ),
+            )
         if batch.proof_added:
             token_metadata["validator_fact_resolution_proof_count"] = (
                 int(token_metadata.get("validator_fact_resolution_proof_count", 0) or 0) + 1
             )
             item.raw_issue["validator_v2_stop_reason"] = "decision_complete"
+            proof_disposition = str(item.raw_issue.get("candidate_disposition") or "")
+            self._trace_event(
+                item.raw_issue,
+                stage="provider",
+                actor="terminal_authority_evaluator",
+                reason_code=(
+                    "NEGATIVE_PROOF_COMPLETE"
+                    if proof_disposition == "rejected_with_proof"
+                    else "POSITIVE_PROOF_COMPLETE"
+                ),
+                output_refs=(resolution_ref,),
+                dedupe_key=f"fact-proof:{batch.evidence_delta_hash}",
+            )
             return self._terminal_from_prior_for_v3(
                 item,
                 val_data,
@@ -1569,16 +2245,21 @@ class ValidationRunner:
                 )
             )
             item.raw_issue["validator_v2_stop_reason"] = stop_reason
-            return self._terminal_from_prior_for_v3(
-                item,
-                val_data,
-                stop_reason=stop_reason,
-                reasoning={
-                    "fact_timeout": "A required deterministic fact provider timed out.",
-                    "unsupported_fact": "A required deterministic fact provider is unavailable.",
-                    "duplicate_fact_request": "The required fact set was already attempted.",
-                }.get(stop_reason, "Fact resolution produced no new decision evidence."),
+            self._trace_event(
+                item.raw_issue,
+                stage="V2",
+                actor="validation_runner",
+                reason_code="V2_SKIPPED_NO_DELTA",
+                input_refs=(resolution_ref,),
+                details={"stop_reason": stop_reason, "statuses": statuses},
+                dedupe_key=f"v2-skipped:{stop_reason}:{self._trace_cluster_uid(item.raw_issue)}",
             )
+            # Fact-first already attempted the immutable plan.  A repeated
+            # no-delta batch after V1 is not a new model result and must not
+            # overwrite a valid V1 verdict.  It only decides whether V2 is
+            # skipped; TerminalAuthority and V3 eligibility consume the
+            # unchanged result plus the explicit closure state.
+            return val_data
 
         previous_hashes = item.raw_issue.setdefault("validator_evidence_delta_hashes", [])
         if not isinstance(previous_hashes, list):
@@ -1594,37 +2275,55 @@ class ValidationRunner:
             )
         previous_hashes.append(batch.evidence_delta_hash)
 
-        response = validator_agent.run(
-            self._validator_input(
-                item.raw_issue,
-                item.issue_code,
-                item.evidence_pack,
-                validation_pass="evidence_recheck",
-                evidence_delta=batch.evidence_delta,
-            )
+        validator_input = self._validator_input(
+            item.raw_issue,
+            item.issue_code,
+            item.evidence_pack,
+            validation_pass="evidence_recheck",
+            evidence_delta=batch.evidence_delta,
         )
+        usage_start = len(self._cluster_usage_events(item.raw_issue))
+        response = validator_agent.run(validator_input)
         self._merge_response_metadata(token_metadata, getattr(response, "metadata", {}) or {})
         if not response.success or not isinstance(response.data, dict):
             item.raw_issue["validator_v2_stop_reason"] = "no_evidence_gain"
             if response.error:
                 item.raw_issue["validator_v2_error"] = str(response.error)[:500]
-            return self._terminal_from_prior_for_v3(
+            terminal = self._terminal_from_prior_for_v3(
                 item,
                 val_data,
                 validation_pass="evidence_recheck",
                 stop_reason="no_evidence_gain",
                 reasoning="The V2 evidence recheck failed without a valid decision.",
             )
+            self._record_model_trace(
+                item.raw_issue,
+                stage="V2",
+                structured_input=validator_input,
+                structured_output=terminal,
+                usage_start=usage_start,
+                reason_code="V2_COMPLETED",
+            )
+            return terminal
         revised = dict(response.data)
         if str(revised.get("schema_version") or "") != "zscope.validator-result.v3":
             item.raw_issue["validator_v2_stop_reason"] = "malformed_output"
-            return self._terminal_from_prior_for_v3(
+            terminal = self._terminal_from_prior_for_v3(
                 item,
                 val_data,
                 validation_pass="evidence_recheck",
                 stop_reason="malformed_output",
                 reasoning="The V2 evidence recheck returned a non-v3 result.",
             )
+            self._record_model_trace(
+                item.raw_issue,
+                stage="V2",
+                structured_input=validator_input,
+                structured_output=terminal,
+                usage_start=usage_start,
+                reason_code="V2_COMPLETED",
+            )
+            return terminal
         item.raw_issue.setdefault("validator_pass_history", []).append(
             {
                 "pass": "evidence_recheck",
@@ -1636,6 +2335,14 @@ class ValidationRunner:
         )
         token_metadata["validator_evidence_recheck_count"] = (
             int(token_metadata.get("validator_evidence_recheck_count", 0) or 0) + 1
+        )
+        self._record_model_trace(
+            item.raw_issue,
+            stage="V2",
+            structured_input=validator_input,
+            structured_output=revised,
+            usage_start=usage_start,
+            reason_code="V2_COMPLETED",
         )
         return revised
 
@@ -1683,7 +2390,42 @@ class ValidationRunner:
         investigate = getattr(validator_agent, "investigate", None)
         if not callable(investigate):
             return val_data
+        remaining_fact_kinds = self._remaining_fact_kinds(item.raw_issue)
+        actions = self._fact_capabilities.executable_actions(
+            item.raw_issue,
+            item.evidence_pack,
+            remaining_fact_kinds,
+        )
+        if not remaining_fact_kinds or not actions:
+            eligibility = item.raw_issue.get("validator_v3_eligibility")
+            eligibility = dict(eligibility) if isinstance(eligibility, Mapping) else {}
+            eligibility.update(
+                {
+                    "eligible": False,
+                    "reason": "no_readonly_closable_gap",
+                    "required_fact_kinds": list(remaining_fact_kinds),
+                    "evidence_action_count": len(actions),
+                }
+            )
+            item.raw_issue["validator_v3_eligibility"] = eligibility
+            self._trace_event(
+                item.raw_issue,
+                stage="V3",
+                actor="fact_capability_registry",
+                reason_code="V3_NOT_ELIGIBLE_NO_EXECUTABLE_GAP",
+                details=deepcopy(eligibility),
+                dedupe_key=f"v3-no-action:{self._trace_cluster_uid(item.raw_issue)}",
+            )
+            return val_data
         item.raw_issue["validator_v3_entered"] = True
+        self._trace_event(
+            item.raw_issue,
+            stage="V3",
+            actor="validation_runner",
+            reason_code="V3_ENTERED",
+            details=deepcopy(item.raw_issue.get("validator_v3_eligibility") or {}),
+            dedupe_key=f"v3-entered:{self._trace_cluster_uid(item.raw_issue)}",
+        )
         # Rebuild the pass projection so V3 sees any V2 fact delta/proofs but
         # not the model's hidden reasoning history.
         investigation_input = self._validator_input(
@@ -1696,10 +2438,183 @@ class ValidationRunner:
                 "fact_resolution": item.raw_issue.get("validator_fact_resolution") or {},
             },
         )
-        response = investigate(
-            investigation_input,
-            max_iterations=item.v3_max_iterations or 50,
+        usage_start = len(self._cluster_usage_events(item.raw_issue))
+        fact_uids_before_v3 = {
+            str(value.get("fact_uid") or "")
+            for value in item.raw_issue.get("v3_investigation_facts") or []
+            if isinstance(value, Mapping) and str(value.get("fact_uid") or "")
+        }
+        investigate_parameters = inspect.signature(investigate).parameters.values()
+        supports_claim_verifier = any(
+            parameter.name == "claim_verifier" for parameter in investigate_parameters
         )
+        investigate_kwargs: Dict[str, Any] = {
+            "max_iterations": item.v3_max_iterations or 50,
+        }
+        supports_evidence_actions = {
+            parameter.name for parameter in inspect.signature(investigate).parameters.values()
+        }.issuperset({"evidence_actions", "evidence_action_executor"})
+        action_by_id = {value.action_id: value for value in actions}
+        if supports_evidence_actions:
+
+            def execute_evidence_action(action_id: str) -> Dict[str, Any]:
+                action = action_by_id.get(str(action_id or ""))
+                if action is None:
+                    return {
+                        "status": "unknown",
+                        "reason_code": "unknown_evidence_action",
+                        "verified_fact": None,
+                    }
+                remaining_before = set(self._remaining_fact_kinds(item.raw_issue))
+                if action.fact_kind not in remaining_before:
+                    authority = self._terminal_authority.evaluate(
+                        item.raw_issue,
+                        model_result=val_data,
+                        has_executable_action=bool(
+                            self._fact_capabilities.executable_actions(
+                                item.raw_issue,
+                                item.evidence_pack,
+                                remaining_before,
+                            )
+                        ),
+                    )
+                    return {
+                        "status": "unknown",
+                        "reason_code": "evidence_action_clause_already_closed",
+                        "verified_fact": None,
+                        "newly_accepted": False,
+                        "terminal_authority": authority.to_dict(),
+                    }
+                before_state = self._trace_state(item.raw_issue)
+                result = self._function_ir_facts.execute(
+                    action,
+                    item.raw_issue,
+                    item.evidence_pack,
+                )
+                certificate_ref = self._decision_trace_store.put_evidence(
+                    kind="evidence_certificate_v2",
+                    payload=result.certificate,
+                    producer=action.verifier_id,
+                    dependency_hashes=tuple(
+                        str(value)
+                        for value in (
+                            result.certificate.get("code_snapshot_sha256"),
+                            result.certificate.get("backend_sha256"),
+                            result.certificate.get("function_ir_sha256"),
+                        )
+                        if str(value or "")
+                    ),
+                )
+                fact = result.fact
+                added = 0
+                if isinstance(fact, dict):
+                    added = self._apply_v3_investigation_facts(
+                        item.raw_issue,
+                        {"evidence_refs": [str(fact.get("fact_uid") or "")]},
+                        {"validator_investigation_facts": [fact]},
+                    )
+                authority = self._terminal_authority.evaluate(
+                    item.raw_issue,
+                    model_result=val_data,
+                    has_executable_action=bool(
+                        self._fact_capabilities.executable_actions(
+                            item.raw_issue,
+                            item.evidence_pack,
+                            self._remaining_fact_kinds(item.raw_issue),
+                        )
+                    ),
+                )
+                self._trace_event(
+                    item.raw_issue,
+                    stage="verifier",
+                    actor=action.verifier_id,
+                    reason_code={
+                        "verified_true": "FACT_VERIFIED_TRUE",
+                        "verified_false": "FACT_VERIFIED_FALSE",
+                        "conflicting": "FACT_CONFLICTING",
+                    }.get(result.status, "FACT_UNKNOWN"),
+                    before_state=before_state,
+                    output_refs=(certificate_ref,),
+                    details={
+                        "action_id": action.action_id,
+                        "fact_kind": action.fact_kind,
+                        "status": result.status,
+                        "reason_code": result.reason_code,
+                        "newly_accepted": bool(added),
+                        "terminal_authority": authority.to_dict(),
+                    },
+                    dedupe_key=f"evidence-action:{action.action_id}",
+                )
+                payload = result.to_dict()
+                payload["certificate_ref"] = certificate_ref
+                payload["newly_accepted"] = bool(added)
+                payload["terminal_authority"] = authority.to_dict()
+                return payload
+
+            investigate_kwargs["evidence_actions"] = [value.to_dict() for value in actions]
+            investigate_kwargs["evidence_action_executor"] = execute_evidence_action
+        if supports_claim_verifier:
+
+            def verify_and_accept_claim(
+                claim: Dict[str, Any],
+                catalog: Mapping[str, Mapping[str, Any]],
+            ) -> Dict[str, Any]:
+                verification = self._verify_v3_claim(item.raw_issue, claim, catalog)
+                fact = verification.get("verified_fact")
+                if (
+                    str(verification.get("status") or "") == "verified_true"
+                    and isinstance(fact, dict)
+                    and str(fact.get("fact_uid") or "")
+                ):
+                    before_state = self._trace_state(item.raw_issue)
+                    added = self._apply_v3_investigation_facts(
+                        item.raw_issue,
+                        {"evidence_refs": [str(fact["fact_uid"])]},
+                        {
+                            "validator_investigation_facts": [fact],
+                            "validator_tool_fact_catalog": dict(catalog),
+                        },
+                    )
+                    authority = self._terminal_authority.evaluate(
+                        item.raw_issue,
+                        model_result=val_data,
+                        has_executable_action=True,
+                    )
+                    verification = dict(verification)
+                    verification["accepted_into_decision_slice"] = bool(
+                        str(fact["fact_uid"])
+                        in {
+                            str(value)
+                            for value in (item.raw_issue.get("decision_fact_slice") or {}).get(
+                                "fact_uids", []
+                            )
+                            if str(value)
+                        }
+                    )
+                    verification["newly_accepted"] = bool(added)
+                    verification["evidence_closure_state"] = deepcopy(
+                        item.raw_issue.get("evidence_closure_state") or {}
+                    )
+                    verification["terminal_authority"] = authority.to_dict()
+                    self._trace_event(
+                        item.raw_issue,
+                        stage="policy",
+                        actor="terminal_authority_evaluator",
+                        reason_code="FACT_VERIFIED_TRUE",
+                        before_state=before_state,
+                        details={
+                            "claim_uid": str(verification.get("claim_uid") or ""),
+                            "fact_uid": str(fact["fact_uid"]),
+                            "fact_kind": str(fact.get("fact_kind") or ""),
+                            "newly_accepted": bool(added),
+                            "terminal_authority": authority.to_dict(),
+                        },
+                        dedupe_key=f"accepted-v3-fact:{fact['fact_uid']}",
+                    )
+                return verification
+
+            investigate_kwargs["claim_verifier"] = verify_and_accept_claim
+        response = investigate(investigation_input, **investigate_kwargs)
         self._merge_response_metadata(
             token_metadata,
             getattr(response, "metadata", {}) or {},
@@ -1708,27 +2623,105 @@ class ValidationRunner:
             item.raw_issue["validator_v3_stop_reason"] = "investigation_exhausted"
             if response.error:
                 item.raw_issue["validator_v3_error"] = str(response.error)[:500]
-            return self._terminal_uncertain_v3_result(
+            terminal = self._terminal_uncertain_v3_result(
                 item,
                 val_data,
                 validation_pass="investigation_synthesis",
                 stop_reason="investigation_exhausted",
                 reasoning="Targeted V3 investigation failed without a valid decision.",
             )
+            self._record_model_trace(
+                item.raw_issue,
+                stage="V3",
+                structured_input=investigation_input,
+                structured_output=terminal,
+                usage_start=usage_start,
+                reason_code="V3_STOP_NO_REMAINING_ACTION",
+            )
+            return terminal
         revised = dict(response.data)
         if str(revised.get("schema_version") or "") != "zscope.validator-result.v3":
             item.raw_issue["validator_v3_stop_reason"] = "malformed_output"
-            return self._terminal_uncertain_v3_result(
+            terminal = self._terminal_uncertain_v3_result(
                 item,
                 val_data,
                 validation_pass="investigation_synthesis",
                 stop_reason="malformed_output",
                 reasoning="Targeted V3 investigation returned a non-v3 result.",
             )
+            self._record_model_trace(
+                item.raw_issue,
+                stage="V3",
+                structured_input=investigation_input,
+                structured_output=terminal,
+                usage_start=usage_start,
+                reason_code="V3_STOP_NO_REMAINING_ACTION",
+            )
+            return terminal
+        response_metadata = getattr(response, "metadata", {}) or {}
+        tool_catalog = response_metadata.get("validator_tool_fact_catalog", {}) or {}
+        tool_evidence_refs: List[str] = []
+        if isinstance(tool_catalog, Mapping):
+            for tool_fact_uid, raw_tool_fact in sorted(tool_catalog.items()):
+                if not isinstance(raw_tool_fact, Mapping):
+                    continue
+                tool_evidence_refs.append(
+                    self._decision_trace_store.put_evidence(
+                        kind="v3_readonly_tool_result",
+                        payload={
+                            "tool_fact_uid": str(tool_fact_uid),
+                            **deepcopy(dict(raw_tool_fact)),
+                        },
+                        producer="validator_agent_readonly_tool",
+                    )
+                )
         self._apply_v3_investigation_facts(
             item.raw_issue,
             revised,
-            getattr(response, "metadata", {}) or {},
+            response_metadata,
+        )
+        fact_uids_after_v3 = {
+            str(value.get("fact_uid") or "")
+            for value in item.raw_issue.get("v3_investigation_facts") or []
+            if isinstance(value, Mapping) and str(value.get("fact_uid") or "")
+        }
+        accepted_fact_count = len(fact_uids_after_v3 - fact_uids_before_v3)
+        if accepted_fact_count:
+            usage_ledger = getattr(self.config, "scan_token_usage_ledger", None)
+            attribute_facts = getattr(usage_ledger, "attribute_accepted_facts", None)
+            if callable(attribute_facts):
+                attribute_facts(
+                    validation_cluster_uid=str(item.raw_issue.get("validation_cluster_uid") or ""),
+                    new_fact_count=accepted_fact_count,
+                )
+        revised = self._reconcile_v3_missing_fact(
+            item,
+            validator_agent,
+            revised,
+            token_metadata,
+        )
+        self._record_model_trace(
+            item.raw_issue,
+            stage="V3",
+            structured_input=investigation_input,
+            structured_output=revised,
+            usage_start=usage_start,
+            reason_code=(
+                "V3_STOP_MAX_ITERATIONS"
+                if int((getattr(response, "metadata", {}) or {}).get("iterations", 0) or 0)
+                >= (item.v3_max_iterations or 50)
+                else (
+                    "V3_STOP_NO_PROGRESS"
+                    if bool(
+                        (getattr(response, "metadata", {}) or {}).get(
+                            "validator_no_new_evidence_fact_stop"
+                        )
+                    )
+                    else "V3_STOP_NO_REMAINING_ACTION"
+                )
+            ),
+            tool_call_ids=tuple(str(value) for value in (tool_catalog) if str(value)),
+            evidence_refs=tuple(tool_evidence_refs),
         )
         item.raw_issue.setdefault("validator_pass_history", []).append(
             {
@@ -1742,7 +2735,7 @@ class ValidationRunner:
                 "tool_call_count": int(
                     (getattr(response, "metadata", {}) or {}).get("tool_call_count", 0) or 0
                 ),
-                "new_fact_count": len(item.raw_issue.get("v3_investigation_facts") or []),
+                "new_fact_count": accepted_fact_count,
             }
         )
         token_metadata["validator_targeted_investigation_count"] = (
@@ -1750,12 +2743,303 @@ class ValidationRunner:
         )
         return revised
 
+    def _verify_v3_claim(
+        self,
+        issue: Dict[str, Any],
+        raw_claim: Dict[str, Any],
+        tool_catalog: Mapping[str, Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        """Recompute one model-proposed predicate over frozen tool payloads."""
+
+        submission_ref = self._decision_trace_store.put_evidence(
+            kind="model_evidence_claim_submission",
+            payload=deepcopy(raw_claim),
+            producer="validator_agent",
+        )
+        try:
+            raw_fact_kind = str(raw_claim.get("fact_kind") or "").strip().lower()
+            allowed_fact_kinds = set(
+                self._evidence_completion_queue.required_resolution_fact_kinds(issue, {})
+            )
+            if allowed_fact_kinds and raw_fact_kind not in allowed_fact_kinds:
+                raise ValueError(
+                    "evidence claim fact_kind is outside the current obligation: "
+                    f"{raw_fact_kind or '<empty>'}"
+                )
+            claim = EvidenceClaimRequest.from_mapping(
+                raw_claim,
+                default_obligation_uid=str(
+                    issue.get("obligation_uid") or issue.get("candidate_uid") or ""
+                ),
+                default_subject_uid=str(
+                    issue.get("subject_uid")
+                    or issue.get("resource_identity")
+                    or issue.get("resource_signature")
+                    or ""
+                ),
+                default_decision_region_uid=str(issue.get("decision_region_uid") or ""),
+            )
+        except (TypeError, ValueError) as exc:
+            claim_hash = self._stable_hash(raw_claim)
+            claim_uid = "CLAIM_INVALID_" + claim_hash[:24]
+            certificate = {
+                "schema_version": "zscope.evidence-certificate.v1",
+                "verifier_id": self._evidence_claim_verifier.verifier_id,
+                "verifier_version": self._evidence_claim_verifier.verifier_version,
+                "claim_uid": claim_uid,
+                "status": "unknown",
+                "reason": "claim_protocol_invalid",
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:500],
+            }
+            certificate["certificate_sha256"] = hashlib.sha256(
+                json.dumps(
+                    certificate,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            certificate_ref = self._decision_trace_store.put_evidence(
+                kind="evidence_verification_certificate",
+                payload=certificate,
+                producer=self._evidence_claim_verifier.verifier_id,
+            )
+            self._trace_event(
+                issue,
+                stage="verifier",
+                actor=self._evidence_claim_verifier.verifier_id,
+                reason_code="FACT_UNKNOWN",
+                input_refs=(submission_ref,),
+                output_refs=(certificate_ref,),
+                details={
+                    "claim_uid": claim_uid,
+                    "fact_kind": str(raw_claim.get("fact_kind") or ""),
+                    "predicate": str(raw_claim.get("predicate") or ""),
+                    "verification_status": "unknown",
+                    "verification_reason": "claim_protocol_invalid",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:500],
+                },
+                dedupe_key=f"invalid-claim:{claim_hash}",
+            )
+            return {
+                "schema_version": "zscope.evidence-claim-verification.v1",
+                "claim_uid": claim_uid,
+                "status": "unknown",
+                "reason_code": "claim_protocol_invalid",
+                "fact_kind": str(raw_claim.get("fact_kind") or ""),
+                "predicate": str(raw_claim.get("predicate") or ""),
+                "polarity": str(raw_claim.get("polarity") or ""),
+                "certificate": certificate,
+                "verified_fact": None,
+                "error": str(exc)[:500],
+            }
+        verification = self._evidence_claim_verifier.verify(
+            claim,
+            issue=issue,
+            tool_catalog=tool_catalog,
+        )
+        tool_refs: List[str] = []
+        for cited_ref in claim.cited_evidence_refs:
+            record = tool_catalog.get(cited_ref)
+            if not isinstance(record, Mapping):
+                continue
+            raw_location = record.get("location")
+            locations = (dict(raw_location),) if isinstance(raw_location, Mapping) else ()
+            tool_refs.append(
+                self._decision_trace_store.put_evidence(
+                    kind="validator_readonly_tool_result",
+                    payload=dict(record),
+                    producer=str(record.get("tool_name") or "validator_readonly_tool"),
+                    dependency_hashes=(str(record.get("dependency_code_hash") or ""),),
+                    locations=locations,
+                )
+            )
+        claim_ref = self._decision_trace_store.put_evidence(
+            kind="model_evidence_claim",
+            payload=claim.to_dict(),
+            producer="validator_agent",
+        )
+        certificate_ref = self._decision_trace_store.put_evidence(
+            kind="evidence_verification_certificate",
+            payload=verification.to_dict(),
+            producer=self._evidence_claim_verifier.verifier_id,
+            dependency_hashes=tuple(
+                str(value)
+                for value in verification.certificate.get("dependency_hashes") or []
+                if str(value)
+            ),
+            locations=tuple(
+                value
+                for value in verification.certificate.get("locations") or []
+                if isinstance(value, dict)
+            ),
+        )
+        reason_code = {
+            "verified_true": "FACT_VERIFIED_TRUE",
+            "verified_false": "FACT_VERIFIED_FALSE",
+            "conflicting": "FACT_CONFLICTING",
+            "unknown": "FACT_UNKNOWN",
+        }[verification.status]
+        self._trace_event(
+            issue,
+            stage="verifier",
+            actor=self._evidence_claim_verifier.verifier_id,
+            reason_code=reason_code,
+            input_refs=(submission_ref, claim_ref, *tool_refs),
+            output_refs=(certificate_ref,),
+            details={
+                "claim_uid": claim.claim_uid,
+                "fact_kind": claim.fact_kind,
+                "predicate": claim.predicate,
+                "polarity": claim.polarity,
+                "verification_status": verification.status,
+                "verification_reason": verification.reason_code,
+            },
+            dedupe_key=f"claim:{claim.claim_uid}:{verification.status}",
+        )
+        return verification.to_dict()
+
+    def _reconcile_v3_missing_fact(
+        self,
+        item: _PreparedValidation,
+        validator_agent: Any,
+        val_data: Dict[str, Any],
+        token_metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Close a new V3 fact request once, never with contradictory state."""
+
+        raw_request = val_data.get("missing_fact_request")
+        if not isinstance(raw_request, dict):
+            return val_data
+        fact_kind = str(raw_request.get("fact_kind") or "").strip().lower()
+        if not fact_kind:
+            return val_data
+        missing = set(normalize_missing_fact_kinds(item.raw_issue.get("missing_fact_kinds") or []))
+        missing.add(fact_kind)
+        item.raw_issue["missing_fact_kinds"] = sorted(missing)
+        fact_slice = item.raw_issue.get("decision_fact_slice")
+        fact_slice = dict(fact_slice) if isinstance(fact_slice, dict) else {}
+        fact_slice["missing_fact_kinds"] = sorted(missing)
+        fact_slice["coverage"] = "partial"
+        item.raw_issue["decision_fact_slice"] = fact_slice
+        item.raw_issue["decision_fact_coverage"] = "partial"
+        item.raw_issue["candidate_promotion_eligible"] = False
+        item.raw_issue["candidate_promotion_reason"] = "v3_requested_additional_fact"
+        item.raw_issue["v3_evidence_closure"] = {
+            "complete": False,
+            "reason": "v3_terminal_requested_additional_fact",
+            "resolved_fact_kinds": list(
+                (item.raw_issue.get("v3_evidence_closure") or {}).get("resolved_fact_kinds", [])
+            ),
+            "remaining_fact_kinds": sorted(missing),
+        }
+        try:
+            batch = self._evidence_completion_queue.resolve_required_facts(
+                item.raw_issue,
+                validator_data=val_data,
+                validation_evidence=item.evidence_pack,
+            )
+        except Exception as exc:
+            item.raw_issue["validator_v3_post_resolution"] = {
+                "status": "provider_error",
+                "fact_kind": fact_kind,
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+            }
+            return self._terminal_uncertain_v3_result(
+                item,
+                val_data,
+                validation_pass="investigation_synthesis",
+                stop_reason="unsupported_fact",
+                reasoning="The V3 terminal fact request could not be resolved deterministically.",
+            )
+        item.raw_issue["validator_v3_post_resolution"] = {
+            "status": str(item.raw_issue.get("evidence_completion_status") or "no_match"),
+            "fact_kind": fact_kind,
+            "evidence_delta_hash": batch.evidence_delta_hash,
+            "proof_added": batch.proof_added,
+            "resolution_statuses": [
+                {
+                    "fact_kind": value.fact_kind,
+                    "status": value.terminal_status,
+                    "miss_reason": value.miss_reason,
+                }
+                for value in batch.resolutions
+            ],
+        }
+        closure = item.raw_issue.get("evidence_closure_state")
+        if isinstance(closure, dict):
+            fact_slice = item.raw_issue.get("decision_fact_slice")
+            fact_slice = fact_slice if isinstance(fact_slice, dict) else {}
+            item.raw_issue["v3_evidence_closure"] = {
+                "complete": bool(closure.get("complete")),
+                "reason": (
+                    "post_v3_deterministic_fact_closure"
+                    if closure.get("complete")
+                    else "post_v3_fact_request_still_open"
+                ),
+                "resolved_fact_kinds": list(closure.get("resolved_fact_kinds") or []),
+                "remaining_fact_kinds": list(closure.get("missing_fact_kinds") or []),
+                "conflicting_fact_kinds": list(closure.get("conflicting_fact_kinds") or []),
+                "fact_uids": list(fact_slice.get("fact_uids") or []),
+                "closure_hash": str(closure.get("closure_hash") or ""),
+            }
+        if batch.proof_added:
+            return self._terminal_from_prior_for_v3(
+                item,
+                val_data,
+                validation_pass="investigation_synthesis",
+                stop_reason="decision_complete",
+                reasoning=(
+                    "The final V3 fact request produced a complete deterministic proof; "
+                    "the policy layer owns the disposition."
+                ),
+            )
+        if not batch.has_evidence_delta:
+            return self._terminal_uncertain_v3_result(
+                item,
+                val_data,
+                validation_pass="investigation_synthesis",
+                stop_reason="no_evidence_gain",
+                reasoning="The final V3 fact request produced no new deterministic evidence.",
+            )
+        response = validator_agent.run(
+            self._validator_input(
+                item.raw_issue,
+                item.issue_code,
+                item.evidence_pack,
+                validation_pass="investigation_synthesis",
+                evidence_delta=batch.evidence_delta,
+            )
+        )
+        self._merge_response_metadata(token_metadata, getattr(response, "metadata", {}) or {})
+        if not response.success or not isinstance(response.data, dict):
+            return self._terminal_uncertain_v3_result(
+                item,
+                val_data,
+                validation_pass="investigation_synthesis",
+                stop_reason="no_evidence_gain",
+                reasoning="The final V3 evidence synthesis did not return a valid decision.",
+            )
+        revised = dict(response.data)
+        if str(revised.get("schema_version") or "") != "zscope.validator-result.v3":
+            return self._terminal_uncertain_v3_result(
+                item,
+                val_data,
+                validation_pass="investigation_synthesis",
+                stop_reason="malformed_output",
+                reasoning="The final V3 evidence synthesis returned a non-v3 result.",
+            )
+        return revised
+
     def _model_result_requires_review(
         self,
         item: _PreparedValidation,
         val_data: Dict[str, Any],
     ) -> bool:
-        """Ask the real policy whether this model result already has authority."""
+        """Use the same terminal authority that owns the final disposition."""
 
         probe = deepcopy(item.raw_issue)
         score_data = self.validation_pipeline.score_components(probe, val_data)
@@ -1765,20 +3049,40 @@ class ValidationRunner:
             verdict=validation_verdict(val_data),
             score_data=score_data,
         )
-        return outcome.memory_status in {"needs_review", "engine_failed"}
+        authority = self._terminal_authority.evaluate(
+            probe,
+            model_result=val_data,
+            # This method is called only after the caller established that V3
+            # has an executable, read-only evidence gap.
+            has_executable_action=True,
+            protocol_or_engine_failure=outcome.memory_status == "engine_failed",
+        )
+        if not authority.terminal:
+            return True
+        return authority.disposition == "needs_review" or outcome.memory_status in {
+            "needs_review",
+            "engine_failed",
+        }
 
     @staticmethod
     def _apply_v3_investigation_facts(
         issue: Dict[str, Any],
         val_data: Dict[str, Any],
         metadata: Dict[str, Any],
-    ) -> None:
-        """Bind cited, tool-backed V3 claims into the promotion evidence slice."""
+    ) -> int:
+        """Bind every program-verified V3 claim into the decision fact slice.
+
+        A model terminal must still cite a verified FACT before a ``verified``
+        verdict can be promoted. Citation is not what makes the fact
+        authoritative: the independent verifier certificate is. Persisting a
+        verified fact immediately lets later V3 turns consume the new closure
+        state and makes ``new_fact_count`` describe system-accepted evidence.
+        """
 
         raw_facts = metadata.get("validator_investigation_facts")
         facts = [dict(value) for value in raw_facts or [] if isinstance(value, dict)]
         raw_tool_catalog = metadata.get("validator_tool_fact_catalog")
-        tool_catalog = (
+        incoming_tool_catalog = (
             {
                 str(uid): dict(record)
                 for uid, record in raw_tool_catalog.items()
@@ -1787,12 +3091,24 @@ class ValidationRunner:
             if isinstance(raw_tool_catalog, dict)
             else {}
         )
+        existing_tool_catalog = issue.get("v3_tool_fact_catalog")
+        tool_catalog = (
+            {
+                str(uid): dict(record)
+                for uid, record in existing_tool_catalog.items()
+                if str(uid) and isinstance(record, dict)
+            }
+            if isinstance(existing_tool_catalog, dict)
+            else {}
+        )
+        tool_catalog.update(incoming_tool_catalog)
         cited = {
             str(value)
             for value in val_data.get("evidence_refs") or []
             if isinstance(value, str) and value
         }
-        accepted = []
+        verified_facts = []
+        cited_verified_facts = []
         for fact in facts:
             fact_uid = str(fact.get("fact_uid") or "")
             backing_refs = fact.get("evidence_refs")
@@ -1802,6 +3118,35 @@ class ValidationRunner:
                 else []
             )
             locations = fact.get("locations")
+            certificate = fact.get("verification_certificate")
+            certificate_valid = False
+            certificate_v2_valid = False
+            if isinstance(certificate, dict):
+                certificate_valid, _ = verify_evidence_certificate(certificate)
+                certificate_v2_valid = verify_certificate_v2(certificate)
+            tool_payloads_valid = True
+            for ref in backing_refs:
+                record = tool_catalog.get(ref)
+                if not isinstance(record, dict):
+                    tool_payloads_valid = False
+                    break
+                payload = record.get("result_payload")
+                expected_hash = str(record.get("result_hash") or "")
+                if not isinstance(payload, dict) or not expected_hash:
+                    tool_payloads_valid = False
+                    break
+                actual_hash = hashlib.sha256(
+                    json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                if actual_hash != expected_hash:
+                    tool_payloads_valid = False
+                    break
             has_locations = bool(
                 isinstance(locations, list)
                 and locations
@@ -1812,42 +3157,92 @@ class ValidationRunner:
                     if isinstance(value, dict)
                 )
             )
-            if (
-                fact_uid in cited
-                and str(fact.get("producer_engine") or "") == "validator_readonly_tool_session"
+            legacy_valid = (
+                issue.get("allow_legacy_v3_claim_replay") is True
+                and str(fact.get("producer_engine") or "")
+                == "zscope.structured-tool-claim-verifier"
+                and str(fact.get("verification_status") or "") == "verified_true"
+                and certificate_valid
+                and isinstance(certificate, dict)
+                and str(certificate.get("status") or "") == "verified_true"
+                and str(certificate.get("fact_kind") or "") == str(fact.get("fact_kind") or "")
                 and str(fact.get("dependency_code_hash") or "")
                 and backing_refs
                 and all(ref in tool_catalog for ref in backing_refs)
+                and tool_payloads_valid
                 and has_locations
-            ):
-                accepted.append(fact)
-        issue["v3_investigation_fact_count"] = len(facts)
-        issue["v3_investigation_cited_fact_count"] = len(accepted)
+            )
+            certificate_action_valid = (
+                certificate_v2_valid
+                and isinstance(certificate, dict)
+                and str(certificate.get("status") or "") == "verified_true"
+                and certificate.get("quantifier_coverage_complete") is True
+                and str(certificate.get("fact_kind") or "") == str(fact.get("fact_kind") or "")
+                and str(certificate.get("provider_id") or "")
+                == str(fact.get("provider_id") or fact.get("producer_engine") or "")
+                and str(fact.get("dependency_code_hash") or "")
+                and has_locations
+            )
+            if legacy_valid or certificate_action_valid:
+                verified_facts.append(fact)
+                if fact_uid in cited:
+                    cited_verified_facts.append(fact)
         issue["v3_tool_fact_catalog"] = tool_catalog
-        if not accepted:
-            issue["v3_evidence_closure"] = {
-                "complete": False,
-                "reason": "no_cited_tool_backed_fact",
-                "resolved_fact_kinds": [],
-            }
-            return
-
         existing = issue.setdefault("v3_investigation_facts", [])
         if not isinstance(existing, list):
             existing = []
             issue["v3_investigation_facts"] = existing
         known = {str(value.get("fact_uid") or "") for value in existing if isinstance(value, dict)}
-        for fact in accepted:
+        added = 0
+        for fact in verified_facts:
             uid = str(fact.get("fact_uid") or "")
             if uid and uid not in known:
                 existing.append(fact)
                 known.add(uid)
+                added += 1
+                proof = fact.get("deterministic_proof")
+                if isinstance(proof, Mapping):
+                    existing_proofs = issue.setdefault("deterministic_proofs", [])
+                    if not isinstance(existing_proofs, list):
+                        existing_proofs = []
+                        issue["deterministic_proofs"] = existing_proofs
+                    proof_identity = (
+                        str(proof.get("outcome") or ""),
+                        str(proof.get("proof_kind") or ""),
+                        str(proof.get("certificate_sha256") or ""),
+                    )
+                    known_proofs = {
+                        (
+                            str(value.get("outcome") or ""),
+                            str(value.get("proof_kind") or ""),
+                            str(value.get("certificate_sha256") or ""),
+                        )
+                        for value in existing_proofs
+                        if isinstance(value, Mapping)
+                    }
+                    if proof_identity not in known_proofs:
+                        existing_proofs.append(dict(proof))
+        all_verified_facts = [dict(value) for value in existing if isinstance(value, dict)]
+        issue["v3_investigation_fact_count"] = len(all_verified_facts)
+        issue["v3_investigation_cited_fact_count"] = len(cited_verified_facts)
+        if not all_verified_facts:
+            issue["v3_evidence_closure"] = {
+                "complete": False,
+                "reason": "no_program_verified_fact",
+                "resolved_fact_kinds": [],
+            }
+            return 0
 
         fact_slice = issue.get("decision_fact_slice")
         fact_slice = dict(fact_slice) if isinstance(fact_slice, dict) else {}
         raw_missing = issue.get("missing_fact_kinds") or fact_slice.get("missing_fact_kinds") or []
         missing = set(normalize_missing_fact_kinds(raw_missing))
-        resolved = {str(fact.get("fact_kind") or "") for fact in accepted if fact.get("fact_kind")}
+        resolved = {
+            str(value)
+            for fact in all_verified_facts
+            for value in fact.get("satisfies_fact_kinds") or []
+            if str(value)
+        }
         remaining = sorted(missing - resolved)
         fact_uids = {str(value) for value in fact_slice.get("fact_uids") or [] if str(value)}
         fact_payloads = [
@@ -1857,18 +3252,20 @@ class ValidationRunner:
             str(value.get("fact_uid") or value.get("uid") or value.get("id") or "")
             for value in fact_payloads
         }
-        for fact in accepted:
+        for fact in all_verified_facts:
             uid = str(fact.get("fact_uid") or "")
             if uid and uid not in known_payloads:
                 fact_payloads.append(dict(fact))
                 known_payloads.add(uid)
-        fact_uids.update(str(fact.get("fact_uid")) for fact in accepted if fact.get("fact_uid"))
+        fact_uids.update(
+            str(fact.get("fact_uid")) for fact in all_verified_facts if fact.get("fact_uid")
+        )
         code_hashes = {
             str(value) for value in fact_slice.get("dependency_code_hashes") or [] if str(value)
         }
         code_hashes.update(
             str(fact.get("dependency_code_hash"))
-            for fact in accepted
+            for fact in all_verified_facts
             if fact.get("dependency_code_hash")
         )
         fact_slice.update(
@@ -1883,19 +3280,75 @@ class ValidationRunner:
         issue["decision_fact_slice"] = fact_slice
         issue["missing_fact_kinds"] = remaining
         issue["decision_fact_coverage"] = fact_slice["coverage"]
-        complete = bool(not remaining and code_hashes and accepted)
+        existing_closure = issue.get("evidence_closure_state")
+        existing_closure = dict(existing_closure) if isinstance(existing_closure, Mapping) else {}
+        security_obligation = issue.get("security_obligation")
+        security_obligation = (
+            dict(security_obligation) if isinstance(security_obligation, Mapping) else {}
+        )
+        required = set(
+            normalize_missing_fact_kinds(
+                existing_closure.get("required_fact_kinds")
+                or issue.get("obligation_required_fact_kinds")
+                or security_obligation.get("required_fact_kinds")
+                or sorted(missing | resolved)
+            )
+        )
+        resolved.update(
+            normalize_missing_fact_kinds(existing_closure.get("resolved_fact_kinds") or [])
+        )
+        conflicting = set(
+            normalize_missing_fact_kinds(existing_closure.get("conflicting_fact_kinds") or [])
+        )
+        remaining = sorted(required - resolved)
+        complete = bool(required and not remaining and not conflicting and code_hashes)
+        fact_slice["missing_fact_kinds"] = remaining
+        fact_slice["coverage"] = "complete" if complete else "partial"
+        issue["decision_fact_slice"] = fact_slice
+        issue["missing_fact_kinds"] = remaining
+        issue["decision_fact_coverage"] = fact_slice["coverage"]
+        closure_payload = {
+            "required": sorted(required),
+            "resolved": sorted(resolved),
+            "missing": remaining,
+            "conflicting": sorted(conflicting),
+            "decision_fact_coverage": "complete" if complete else "partial",
+        }
+        closure_hash = hashlib.sha256(
+            json.dumps(
+                closure_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        issue["evidence_closure_state"] = {
+            "schema_version": "zscope.evidence-closure-state.v1",
+            "required_fact_kinds": sorted(required),
+            "resolved_fact_kinds": sorted(resolved),
+            "missing_fact_kinds": remaining,
+            "conflicting_fact_kinds": sorted(conflicting),
+            "complete": complete,
+            "closure_hash": closure_hash,
+        }
         issue["v3_evidence_closure"] = {
             "complete": complete,
             "reason": "required_facts_closed" if complete else "required_facts_still_missing",
             "resolved_fact_kinds": sorted(resolved),
             "remaining_fact_kinds": remaining,
             "fact_uids": sorted(
-                str(fact.get("fact_uid")) for fact in accepted if fact.get("fact_uid")
+                str(fact.get("fact_uid")) for fact in all_verified_facts if fact.get("fact_uid")
             ),
         }
         if complete:
             issue["candidate_promotion_eligible"] = True
             issue["candidate_promotion_reason"] = "v3_tool_evidence_complete"
+        else:
+            issue["candidate_promotion_eligible"] = False
+            issue["candidate_promotion_reason"] = (
+                "v3_tool_evidence_conflicting" if conflicting else "v3_tool_evidence_incomplete"
+            )
+        return added
 
     def _validator_evidence_slice_enabled(self) -> bool:
         return True
@@ -2178,6 +3631,16 @@ class ValidationRunner:
             error,
         )
         outcome = self.validation_pipeline.apply_validation_failure(raw_issue, error)
+        raw_issue["terminal_authority"] = "validation_engine"
+        raw_issue["terminal_reason_codes"] = ["NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE"]
+        self._trace_event(
+            raw_issue,
+            stage="policy",
+            actor="validation_engine",
+            reason_code="NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",
+            details={"error": f"{type(error).__name__}: {error}"[:500]},
+            dedupe_key=f"engine-failure:{self._trace_cluster_uid(raw_issue)}",
+        )
         if outcome.report_bucket:
             state[outcome.report_bucket].append(raw_issue)
 

@@ -344,12 +344,20 @@ def build_validator_evidence_slice_v2(
         "obligation": {
             "candidate_uid": issue.get("candidate_uid"),
             "validation_cluster_uid": issue.get("validation_cluster_uid"),
-            "obligation_uid": issue.get("obligation_uid"),
-            "defect_family": issue.get("defect_class") or issue.get("category"),
-            "obligation_shape": issue.get("obligation_shape"),
-            "subject_uid": issue.get("resource_identity") or security_obligation.get("subject_uid"),
+            "obligation_uid": issue.get("obligation_uid")
+            or security_obligation.get("obligation_uid"),
+            "defect_family": issue.get("defect_class")
+            or issue.get("category")
+            or security_obligation.get("defect_family"),
+            "obligation_shape": issue.get("obligation_shape")
+            or security_obligation.get("obligation_shape"),
+            "subject_uid": issue.get("subject_uid")
+            or issue.get("resource_identity")
+            or security_obligation.get("subject_uid"),
             "source_uid": issue.get("source_identity") or security_obligation.get("source_uid"),
             "sink_uid": issue.get("sink_identity") or security_obligation.get("sink_uid"),
+            "decision_region_uid": issue.get("decision_region_uid")
+            or security_obligation.get("decision_region_uid"),
             "function": issue.get("function") or finding.get("function"),
             "location": issue.get("location") or finding.get("location"),
             "category": issue.get("category") or finding.get("category"),

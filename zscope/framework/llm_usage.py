@@ -13,7 +13,9 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Union
 
@@ -30,6 +32,33 @@ TOKEN_USAGE_STAGES = (
 _VALIDATOR_V3_CALL_KINDS = frozenset(
     {"length_retry", "json_repair", "investigation_synthesis", "targeted_investigation"}
 )
+
+_INHERITED_USAGE_ATTRIBUTION: ContextVar[Mapping[str, Any]] = ContextVar(
+    "zscope_inherited_llm_usage_attribution",
+    default={},
+)
+
+
+def current_llm_usage_attribution() -> Dict[str, Any]:
+    """Return the current synchronous/nested LLM attribution scope.
+
+    Context variables are thread/task local, so one Validator worker cannot
+    leak its cluster identity into another concurrent worker.  Explicit call
+    attribution remains authoritative over inherited values.
+    """
+
+    return dict(_INHERITED_USAGE_ATTRIBUTION.get() or {})
+
+
+@contextmanager
+def llm_usage_attribution_scope(**values: Any) -> Any:
+    inherited = current_llm_usage_attribution()
+    inherited.update({str(key): value for key, value in values.items() if value not in (None, "")})
+    token = _INHERITED_USAGE_ATTRIBUTION.set(inherited)
+    try:
+        yield
+    finally:
+        _INHERITED_USAGE_ATTRIBUTION.reset(token)
 
 
 def canonical_usage_stage(value: Any) -> str:
@@ -534,6 +563,83 @@ class ScanTokenUsageLedger:
         return "".join(
             json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in rows
         )
+
+    def events_for_cluster(self, validation_cluster_uid: str) -> list[Dict[str, Any]]:
+        """Return audit-safe physical call events for one validation cluster."""
+
+        cluster_uid = _clean(validation_cluster_uid)
+        if not cluster_uid:
+            return []
+        with self._lock:
+            return [
+                event.to_dict()
+                for event in self._events
+                if event.attribution.validation_cluster_uid == cluster_uid
+            ]
+
+    def attribute_accepted_facts(
+        self,
+        *,
+        validation_cluster_uid: str,
+        new_fact_count: int,
+    ) -> bool:
+        """Attach accepted V3 facts to the physical call that finalized them.
+
+        Tool-produced facts are validated only after the terminal Validator
+        result is parsed.  At that point the last V3 call is the first call for
+        which ``new_fact_count`` is authoritative.  Updating under the ledger
+        lock keeps the raw JSONL sidecar and every aggregate dimension in
+        conservation without relying on a model self-report.
+        """
+
+        cluster_uid = _clean(validation_cluster_uid)
+        count = _token_count(new_fact_count)
+        if not cluster_uid or count <= 0:
+            return False
+        with self._lock:
+            target_index = -1
+            for index in range(len(self._events) - 1, -1, -1):
+                event = self._events[index]
+                if event.attribution.validation_cluster_uid != cluster_uid:
+                    continue
+                if event.attribution.call_kind not in {
+                    "targeted_investigation",
+                    "investigation_synthesis",
+                }:
+                    continue
+                target_index = index
+                break
+            if target_index < 0:
+                return False
+            current = self._events[target_index]
+            if current.new_fact_count == count:
+                return True
+            self._events[target_index] = replace(current, new_fact_count=count)
+            self._aggregator = LLMUsageEventAggregator()
+            for event in self._events:
+                self._aggregator.record(event)
+            if self._event_sink_path is not None:
+                try:
+                    self._event_sink_path.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = self._event_sink_path.with_name(
+                        self._event_sink_path.name + ".rewrite.tmp"
+                    )
+                    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                        for event in self._events:
+                            handle.write(
+                                json.dumps(
+                                    event.to_dict(),
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                )
+                            )
+                            handle.write("\n")
+                    temporary.replace(self._event_sink_path)
+                    self._persisted_event_count = len(self._events)
+                except OSError as exc:
+                    self._event_sink_error = f"{type(exc).__name__}: {exc}"
+                    return False
+            return True
 
     def export_events_jsonl(
         self,

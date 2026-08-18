@@ -6,13 +6,18 @@ if TYPE_CHECKING:
     from ..retrieval.code_index import CodeIndex
 
 
-class QueryPointerAliasTool(BaseTool):
-    """Tool to retrieve SVF-resolved indirect callees."""
+class QueryIndirectCalleesTool(BaseTool):
+    """Retrieve SVF-resolved indirect callees; this is not alias proof."""
 
-    def __init__(self, code_index: "CodeIndex"):
+    def __init__(self, code_index: "CodeIndex", *, compatibility_name: bool = False):
         super().__init__(
-            name="query_pointer_alias",
-            description="Query SVF Andersen-resolved indirect call targets for a function.",
+            name="query_pointer_alias" if compatibility_name else "query_indirect_callees",
+            description=(
+                "Compatibility alias for query_indirect_callees; returns only SVF-resolved "
+                "indirect call targets and never proves object identity or ownership."
+                if compatibility_name
+                else "Query SVF-resolved indirect call targets for a function."
+            ),
         )
         self.code_index = code_index
 
@@ -24,7 +29,14 @@ class QueryPointerAliasTool(BaseTool):
             targets = backend.get_indirect_callees(func_name, limit=limit)
         else:
             targets = []
-        return {"success": True, "data": {"function": func_name, "indirect_callees": targets, "count": len(targets)}}
+        return {
+            "success": True,
+            "data": {
+                "function": func_name,
+                "indirect_callees": targets,
+                "count": len(targets),
+            },
+        }
 
     def get_schema(self) -> Dict[str, Any]:
         return {
@@ -42,3 +54,10 @@ class QueryPointerAliasTool(BaseTool):
                 },
             },
         }
+
+
+class QueryPointerAliasTool(QueryIndirectCalleesTool):
+    """Deprecated compatibility name for :class:`QueryIndirectCalleesTool`."""
+
+    def __init__(self, code_index: "CodeIndex"):
+        super().__init__(code_index, compatibility_name=True)

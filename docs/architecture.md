@@ -73,12 +73,15 @@ flowchart TB
         V1["V1 one structured decision"]
         V2["V2 fact delta recheck"]
         V3["V3 bounded investigation"]
+        ClaimVerifier["EvidenceClaimVerifier<br/>recompute structured claim"]
+        Authority["TerminalAuthorityEvaluator<br/>single stop authority"]
     end
     ReviewMemory["ReviewMemory<br/>baseline + suppression + validator memory"]
     Tools["ToolsRuntime<br/>ToolPolicy + agent tools"]
     Snapshot["SnapshotStore<br/>snapshots + reports"]
     UserCfg["UserConfigStore<br/>user_config.xlsx + feedback state"]
     Report["ReportAssembler<br/>views / semantic dedup / SARIF / metadata"]
+    DecisionTrace["IssueDecisionTrace<br/>hash chain + content-addressed evidence"]
 
     Ingress --> Config --> Workflow
     Workflow --> DiffImpact --> Candidate
@@ -97,6 +100,10 @@ flowchart TB
     KDB --> SecurityMap --> Gap --> Discovery --> Ledger
     Ledger --> SemanticDedup
     Ledger --> V0 --> V1 --> V2 --> V3
+    V3 --> ClaimVerifier --> Authority
+    V0 --> Authority
+    V1 --> Authority
+    V2 --> Authority
     TokenUsage --> SecurityMap
     TokenUsage --> Discovery
     TokenUsage --> V1
@@ -110,11 +117,19 @@ flowchart TB
     Snapshot --> Tools
     UserCfg --> Tools
     V3 --> Report
+    Ledger --> DecisionTrace
+    V0 --> DecisionTrace
+    V1 --> DecisionTrace
+    V2 --> DecisionTrace
+    V3 --> DecisionTrace
+    ClaimVerifier --> DecisionTrace
+    Authority --> DecisionTrace
+    Report --> DecisionTrace
     Report --> Snapshot
     Report --> UserCfg
 ```
 
-总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面保留确定性快车道，并在 balanced/deep 中用独立安全语义地图和 candidate-blind coverage gap 扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof 或分层 Validator 改变终态，模型 hypothesis 不能直接确认漏洞。反馈平面通过 SnapshotStore、Security Map sidecar、UserConfigStore 与 ReviewMemory 保留中间产物、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 仅向 V3 调查和受控发现开放白名单内的只读查询。
+总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面保留确定性快车道，并在 balanced/deep 中用独立安全语义地图和 candidate-blind coverage gap 扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof，或经过程序验真的完整 evidence closure 改变终态；模型只能提交 Claim，不能直接创造事实或确认漏洞。反馈平面通过 SnapshotStore、Security Map sidecar、UserConfigStore、ReviewMemory 与 IssueDecisionTrace 保留中间产物、因果事件、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 仅向 V3 调查和受控发现开放白名单内的只读查询。
 
 跨语言规则治理在既有候选生命周期上增加严格预检：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；包内目录、YAML pack、指定 provider、Skill 契约和 disabled IDs 组合为不可变 `EffectiveRuleSet`。重复 ID/alias、未知字段、语言错配、缺失 Skill 或能力错配在任何外部工具/LLM 启动前失败。`zscope.candidate.v3.3` 仍是内部候选协议，规则 provenance 以兼容字段追加，不改变稳定候选身份算法。
 
@@ -154,10 +169,10 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 
 1. `discover_entries`：当 `--discover-entries` 或 `project.entry_discovery.enabled` 启用时，发现公共 API、通信/IPC、线程入口和用户输入点，并把候选入口列表写入项目根目录 `entry_functions_list.json`。
 2. `collect_candidates`：各入口收集规则、图与 backend signal，登记到共享 Candidate Ledger；发现层不得因 token 预算静默丢候选。
-3. `semantic_and_gap_discovery`：fast 跳过；balanced/deep 先构建零 LLM Security Semantic Map 骨架，只对高风险 audit unit 做证据化 semantic delta，再运行 candidate-blind 主动发现并登记 hypothesis。
+3. `semantic_and_gap_discovery`：fast 跳过；balanced/deep 先构建零 LLM Security Semantic Map 骨架，只对高风险 audit unit 做证据化 semantic delta，再运行 candidate-blind 主动发现并登记 hypothesis。coverage 使用 family + audit-unit + 函数集合 + subject/decision-region/source-sink 的哈希化局部身份；同 family 的另一函数已有候选不能抑制当前 candidate desert。
 4. `freeze_ledger`：全部入口与主动发现结束后冻结全局 Ledger，按同一安全义务跨入口合并。
 5. `validate_findings`：V0 proof → V1 结构化单次判定 → 按 obligation 定向补齐全部必需事实 → 有事实增量才执行一次 V2 → balanced 调查 high/critical 或外部可达的未闭合 cluster，deep 调查全部无完整反证的非 shadow 未闭合 cluster。
-6. `persist_report`：无论完整或部分完成都保存报告、地图、usage 与未覆盖区域；已启用阶段不完整时标记 partial。
+6. `persist_report`：无论完整或部分完成都保存报告、地图、usage、未覆盖区域，以及按 cluster 的 hash-chain decision trace；已启用阶段不完整时标记 partial。
 
 当 `${snapshot_dir}/balanced_rollout_state.json` 存在时，配置生效边界在创建 usage 账本之前执行统一灰度策略。状态必须是由受保护控制面使用专用环境密钥生成的 HMAC-SHA256 信封，并通过 schema/policy/language/release identity、单调 sequence、签发时间、有效期和内部状态校验，才有权改变省略档位：telemetry/回退状态强制 fast，validator opt-in 不启用语义/发现，semantic shadow 运行候选盲发现但将其闭合为不进入用户视图的 `shadow_observation`，10/50/100 依据稳定 project-id bucket 做确定性 enrollment。CLI、Web、MCP 和报告均回显 requested/effective depth、rollout stage、bucket、认证状态与语义/发现可见性；无密钥、裸文件、篡改、过期或 identity 不匹配均视为 unmanaged，不能把省略档位切为 balanced，但不会阻断用户显式 `--scan-depth balanced|deep`。没有安装状态文件的开发/既有部署保持原配置行为。
 
@@ -303,7 +318,7 @@ Z-SCOPE 不再默认逐入口复活旧式全量多 Agent fanout；LLM 职责围�
 | Semantic Map enrichment | 仅补全高风险 audit unit 的关键契约 | 零 LLM 骨架、代码/后端事实 | 带可解析 evidence ref 的 semantic delta |
 | Active discovery worker | 对 coverage gap 做候选盲审 | audit unit、地图投影、Skill | hypothesis / observation，不能 confirmed |
 | `validator_agent` V1/V2 | 单次结构化判定与新增事实复判 | 有界 evidence slice / evidence delta | verified / rejected / uncertain 模型意见 |
-| `validator_agent` V3 | balanced 调查 high/critical 或外部可达未决项，deep 调查全部无反证的非 shadow 未决项 | 一次连续会话、只读工具、证据、Skill | 带可解析新增事实的 investigation synthesis |
+| `validator_agent` V3 | balanced 调查 high/critical 或外部可达未决项，deep 调查全部无反证且有可执行证明动作的非 shadow 未决项 | 一次连续会话、有限 EvidenceAction、证书、Skill | 带程序验真事实的 investigation synthesis |
 | `issue_reconciler_agent` | 增量维护中判断历史缺陷仍存在还是已修复 | 历史 issue、新代码 | still_exists / fixed |
 
 Skill 是漏洞领域契约，用于约束分析目标和证据要求，不是检测规则。每个 `SKILL.md` 通过 frontmatter `languages` 声明适用于 `c_cpp`、`java` 或两者。`scan.task` 会被解析为 active skills，例如 `bounds_and_integer`、`resource_lifecycle`、`temporal_memory`、`shared_state_race` 等；空字符串启用当前语言全部适用 Skill，非空文本只表达审计重点。规则 descriptor 必须引用一个存在且支持相同语言的 Skill。
@@ -312,9 +327,9 @@ LLMClient 是所有 Agent 的 OpenAI-compatible 调用门面。它支持多 endp
 
 ToolsRuntime 定义最多 12 个内置代码查询工具：
 
-`get_function_impl`、`get_function_snapshot`、`list_known_functions`、`get_file_snippet`、`get_callers`、`get_type_info`、`get_call_graph`、`get_data_flow`、`find_function_pointers`、`query_pointer_alias`、`verify_taint_reachability`、`get_deep_call_context`。
+`get_function_impl`、`get_function_snapshot`、`list_known_functions`、`get_file_snippet`、`get_callers`、`get_type_info`、`get_call_graph`、`get_data_flow`、`find_function_pointers`、`query_indirect_callees`（旧名 `query_pointer_alias`）、`verify_taint_reachability`、`get_deep_call_context`。
 
-Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根据后端能力提供基础及高级查询，再由对应 `AGENT.md` 与 `ToolPolicy` 过滤。V1/V2 不开放工具；V3 仅开放符号、caller/callee、路径、事实与 snapshot/semantic-map 的只读子集，active discovery 只接收预先构造的 candidate-blind 投影。MCP 侧复用 ToolsRuntime schema，但还会额外提供 `query_knowledge`、`discover_entries` 和 namespaced aliases，因此 MCP 工具集合与单个 Agent 的可见工具集合并不完全相同。
+Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根据后端能力提供基础及高级查询，再由对应 `AGENT.md` 与 `ToolPolicy` 过滤。V1/V2 不开放工具；live V3 也不再把普通仓库查询直接暴露为证明能力，而只暴露 `FactCapabilityRegistry` 为当前开放 clause 生成的有限 `EvidenceAction`。普通工具仍可服务其他 Agent 与历史回放，但 call graph 只证明调用关系、indirect-callee 查询只证明可能目标、SVF bug-signature 查询只证明该专用后端信号，三者不能替代 CFG/HB/ownership 证书。active discovery 只接收预先构造的 candidate-blind 投影。MCP 侧复用 ToolsRuntime schema，但还会额外提供 `query_knowledge`、`discover_entries` 和 namespaced aliases，因此 MCP 工具集合与单个 Agent 的可见工具集合并不完全相同。
 
 工具层还做了三类重要防护：
 
@@ -334,7 +349,7 @@ Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根�
 
 这层的设计目标是让所有候选都先保持“待验证证据”的形态，再由统一的验证门禁决定是否进入 `issues[]`、`metadata.audit_observations[]` 或被 suppression/baseline 拦截。高置信规则也不再绕过验证流水线；它们只能在证据完整、无反证且满足评分门槛时被自动接受。
 
-验证阶段使用 bounded `ValidatorEvidenceSlice v3`：每个 cluster 只传 canonical occurrence、可读事实 payload、proof、必要路径/claim 与代码窗口，输入上限 12K tokens。状态机固定为：V0 完整正/反 proof；V1 单次无工具结构化判定；从 security obligation 派生全部必需 fact kind 并只调用对应本地 provider；有 delta hash 变化才执行一次无历史 V2。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3。balanced 不再使用 top-K，调查 high/critical 或外部可达且有可闭合证据缺口的 cluster；deep 调查全部无完整反证的非 shadow cluster。V3 单会话最多 50 次模型迭代，无独立工具次数上限，但仅能使用只读白名单；重复查询立即拒绝，连续两个模型轮次没有新增事实即提前结束。`model_verdict` 与最终 `policy_disposition` 分离；没有 proof 的模型 rejected 只能进入 needs-review，V3 verified 也必须具有可解析引用、已闭合阻断事实、无冲突且通过现有 promotion policy 才能进入默认视图。
+验证阶段使用 bounded `ValidatorEvidenceSlice v3`：每个 cluster 只传 canonical occurrence、可读事实 payload、proof、必要路径/claim 与代码窗口，输入上限 12K tokens。状态机固定为：V0 完整正/反 proof；`RequiredFactPlan` 先从 security obligation、slice 与 promotion 缺口派生本地 fact kind，`FunctionIRGraph v1` 与四组专用 provider 批量生成 `EvidenceCertificate v2`，随后 TerminalAuthority 先行；仍未终止才运行 V1 单次无工具结构化判定。V1 只能提出一个新的合法请求，有真实 delta hash 变化才执行一次无历史 V2。只有证书完整、代码/backend/IR hash 可重放且量词 coverage 完整的 fact 才闭合 obligation；alias、动态边或外部契约不完整时返回 unknown。未闭合的 uncertain、无 proof rejected、证据不足 verified 和可恢复格式失败可进入 V3。balanced 不再使用 top-K，调查 high/critical 或外部可达且 registry 具有可执行 action 的 cluster；deep 调查全部无完整反证、非 shadow 且有 action 的 cluster。V3 单会话最多 50 次模型迭代，无独立 action 次数上限；模型只能选择固定 action ID，不能构造参数、fact 或 evidence ref。重复 action 立即拒绝，连续两个模型轮次没有系统接纳事实即提前结束；证书一旦形成完整正/反 proof，程序在当前工具轮直接终止而不再调用模型。`new_fact_count` 来自系统实际写入 decision slice 的事实。`model_verdict` 与最终 `policy_disposition` 分离；没有 proof 的模型 rejected 只能进入 needs-review，V3 verified 也必须具有已闭合阻断事实、无冲突且通过现有 promotion policy 才能进入默认视图。
 
 ### 5.7 持久化与反馈平面
 

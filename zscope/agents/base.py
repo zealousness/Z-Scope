@@ -137,15 +137,18 @@ class ToolCallingAgent(BaseAgent):
         *,
         max_iterations: int = 50,
         trace_label: str = "",
+        base_tools_schema: Optional[List[Dict[str, Any]]] = None,
         additional_tools_schema: Optional[List[Dict[str, Any]]] = None,
         terminal_tool_name: Optional[str] = None,
         terminal_tool_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_validator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_required: bool = False,
         tool_executor: Optional[Callable[[str, Any], Dict[str, Any]]] = None,
+        max_identical_tool_calls: int = 2,
+        replay_identical_tool_result: bool = True,
         preserve_reasoning_metadata: bool = False,
     ) -> Dict[str, Any]:
-        tools_schema = list(self.tools_schema)
+        tools_schema = list(self.tools_schema if base_tools_schema is None else base_tools_schema)
         if additional_tools_schema:
             tools_schema.extend(additional_tools_schema)
         call_kwargs: Dict[str, Any] = {
@@ -155,6 +158,8 @@ class ToolCallingAgent(BaseAgent):
             "max_iterations": max_iterations,
             "trace_agent": self.name,
             "trace_label": trace_label,
+            "max_identical_tool_calls": max_identical_tool_calls,
+            "replay_identical_tool_result": replay_identical_tool_result,
         }
         if preserve_reasoning_metadata:
             call_kwargs["preserve_reasoning_metadata"] = True
