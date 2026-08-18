@@ -65,6 +65,7 @@ def _decision(packet: dict) -> dict:
         "structured_anchors": [
             {
                 "kind": "primary",
+                "corrected": False,
                 "file": "src/example.c",
                 "function": "f",
                 "start_line": 1,

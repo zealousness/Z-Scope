@@ -50,9 +50,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "file", "function", "start_line", "end_line"],
+        "required": ["kind", "corrected", "file", "function", "start_line", "end_line"],
         "properties": {
-          "kind": {"enum": ["primary", "secondary", "additional", "corrected"]},
+          "kind": {"enum": ["primary", "secondary", "additional"]},
+          "corrected": {"type": "boolean"},
           "file": {"type": "string", "minLength": 1},
           "function": {"type": "string", "minLength": 1},
           "start_line": {"type": "integer", "minimum": 1},

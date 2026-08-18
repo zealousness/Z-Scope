@@ -296,14 +296,17 @@ def validate_review_decision(
     for anchor in anchors:
         if not isinstance(anchor, Mapping) or set(anchor) != {
             "kind",
+            "corrected",
             "file",
             "function",
             "start_line",
             "end_line",
         }:
             raise E0GovernanceError("review decision structured anchor fields are invalid")
-        if anchor.get("kind") not in {"primary", "secondary", "additional", "corrected"}:
+        if anchor.get("kind") not in {"primary", "secondary", "additional"}:
             raise E0GovernanceError("review decision structured anchor kind is invalid")
+        if not isinstance(anchor.get("corrected"), bool):
+            raise E0GovernanceError("review decision anchor correction flag is invalid")
         if not isinstance(anchor.get("file"), str) or not anchor["file"]:
             raise E0GovernanceError("review decision structured anchor file is invalid")
         path = PurePosixPath(str(anchor["file"]))
