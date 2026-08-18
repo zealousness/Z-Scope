@@ -10,6 +10,7 @@ import pytest
 
 from scripts import run_e0_reviewers as reviewer_runner
 from scripts import build_e0_attestation as attestation_builder
+from scripts.check_benchmark_hygiene import _allowed as benchmark_asset_allowed
 
 from scripts.e0_review_governance import (
     ATTESTATION_SCHEMA_VERSION,
@@ -124,6 +125,35 @@ def test_primary_review_still_rejects_noncanonical_supplied_evidence() -> None:
             packet,
             require_resolvable_evidence=False,
         )
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "test/range/benchmark/v16/ground_truth.json",
+        "test/range/benchmark/v16/reviews/normalized-decisions.json",
+        "test/range/benchmark/v16/review-packets/RANGE-001.json",
+        "test/range/benchmark/v16/pairs/RANGE-001/manifest.json",
+        "test/range/benchmark/v16/pairs/RANGE-001/vulnerable/case.c",
+        "test/range/benchmark/v16/pairs/RANGE-001/fixed_or_near_miss/case.c",
+    ),
+)
+def test_benchmark_hygiene_allows_only_canonical_v16_assets(path: str) -> None:
+    assert benchmark_asset_allowed(Path(path))
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "test/range/benchmark/v16/reviews/raw/RANGE-001.json",
+        "test/range/benchmark/v16/review-packets/nested/RANGE-001.json",
+        "test/range/benchmark/v16/pairs/RANGE-001/vulnerable/debug.log",
+        "test/range/benchmark/v16/pairs/RANGE-001/extra.c",
+        "test/range/benchmark/v16/reviewer-output.json",
+    ),
+)
+def test_benchmark_hygiene_rejects_unbound_v16_assets(path: str) -> None:
+    assert not benchmark_asset_allowed(Path(path))
 
 
 def _attestation() -> dict:
