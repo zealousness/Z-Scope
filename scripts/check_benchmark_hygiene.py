@@ -32,6 +32,22 @@ DEPRECATED_TEXT = (
     "--build-cpg",
 )
 PERSONAL_PATH = re.compile(r"(?:/home/(?:zeal|jager)/|/mnt/c/Users/|[A-Za-z]:\\Users\\)")
+_RANGE_V16_PACKET_RE = re.compile(
+    r"^test/range/benchmark/v16/review-packets/[A-Za-z0-9][A-Za-z0-9_.-]*\.json$"
+)
+_RANGE_V16_PAIR_RE = re.compile(
+    r"^test/range/benchmark/v16/pairs/[A-Za-z0-9][A-Za-z0-9_.-]*/"
+    r"(?:manifest\.json|vulnerable/case\.c|fixed_or_near_miss/case\.c)$"
+)
+_RANGE_V16_EXACT = {
+    "test/range/benchmark/v16/ground_truth.json",
+    "test/range/benchmark/v16/review-packet-catalog.json",
+    "test/range/benchmark/v16/reviews/normalized-decisions.json",
+    "test/range/benchmark/v16/safe-pair-manifest.json",
+    "test/range/benchmark/v16/safe-pair-v1.schema.json",
+    "test/range/benchmark/v16/truth-manifest.json",
+    "test/range/benchmark/v16/truth-v16.schema.json",
+}
 
 
 def _tracked_test_files() -> List[Path]:
@@ -45,6 +61,12 @@ def _tracked_test_files() -> List[Path]:
 
 def _allowed(relative: Path) -> bool:
     value = relative.as_posix()
+    if (
+        value in _RANGE_V16_EXACT
+        or _RANGE_V16_PACKET_RE.fullmatch(value)
+        or _RANGE_V16_PAIR_RE.fullmatch(value)
+    ):
+        return True
     if value.startswith("test/range/src/") or value.startswith("test/range/include/"):
         return True
     if value.startswith("test/range/internal/"):
@@ -107,9 +129,15 @@ def _java_entry_errors() -> List[str]:
         leaked = forbidden.intersection(row) if isinstance(row, dict) else forbidden
         if leaked:
             errors.append(f"Java entries[{index}] contains answer metadata: {sorted(leaked)}")
-    runtime_names = [row.get("function_name") for row in rows if isinstance(row, dict)]
+    runtime_names = [
+        str(row["function_name"])
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("function_name"), str)
+    ]
     mapping_names = [
-        row.get("function_name") for row in mapping.get("entries", []) if isinstance(row, dict)
+        str(row["function_name"])
+        for row in mapping.get("entries", [])
+        if isinstance(row, dict) and isinstance(row.get("function_name"), str)
     ]
     if len(runtime_names) != len(set(runtime_names)):
         errors.append("Java runtime entry function names are not unique")
@@ -193,9 +221,13 @@ def check_hygiene() -> List[str]:
             destination = base / language
             manifest = copy_scan_input(spec.fixture_root, destination, language)
             for row in manifest["files"]:
-                path = str(row["path"])
-                if "ground_truth" in path.lower() or path.startswith("benchmark/"):
-                    errors.append(f"truth/maintenance leak in {language} scan input: {path}")
+                manifest_path = str(row["path"])
+                if "ground_truth" in manifest_path.lower() or manifest_path.startswith(
+                    "benchmark/"
+                ):
+                    errors.append(
+                        f"truth/maintenance leak in {language} scan input: {manifest_path}"
+                    )
     return errors
 
 
