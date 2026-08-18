@@ -69,6 +69,8 @@ jobs:
           name: range-v16-primary-deepseek-${{ inputs.source_sha }}
           path: review-evidence/deepseek
       - name: Run mandatory and disagreement arbitration
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
         run: |
           umask 077
           python3 scripts/run_e0_reviewers.py arbitrate \
@@ -105,6 +107,8 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Normalize adjudication and author safe pairs
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
         run: |
           umask 077
           mkdir -p pair-author-evidence
