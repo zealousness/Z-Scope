@@ -616,10 +616,18 @@ def test_validation_runner_v2_recheck_sees_all_required_typed_fact_deltas_once()
     v1_fact_kinds = {
         fact["fact_kind"] for fact in agent.inputs[0]["evidence_slice"]["decision_facts"]["facts"]
     }
-    assert "source_sink_reachability" in v1_fact_kinds
+    # The proof kernel remains shadow-only until P2 qualification: its
+    # fact-first projection is auditable, but it must not rewrite the stable
+    # V1 decision slice.
+    assert "source_sink_reachability" not in v1_fact_kinds
+    shadow_fact_kinds = {
+        fact["fact_kind"]
+        for fact in issue["proof_kernel_fact_first"]["decision_fact_slice"]["facts"]
+    }
+    assert "source_sink_reachability" in shadow_fact_kinds
     assert issue["validator_fact_resolution"]["status"] == "completed_partial"
     assert issue["validator_pass_history"][-1]["pass"] == "evidence_recheck"
-    assert issue["evidence_completion_attempt_count"] == 2
+    assert issue["evidence_completion_attempt_count"] == 1
 
 
 def test_validation_runner_does_not_recheck_without_evidence_delta() -> None:
@@ -1295,7 +1303,8 @@ def test_v3_legacy_claim_is_not_accepted_by_live_strict_verifier() -> None:
     _runner(ClaimingValidator(), scan=SimpleNamespace(depth="balanced")).run(_state(issue))
 
     assert issue["candidate_disposition"] == "needs_review"
-    assert "value_range" not in issue["evidence_closure_state"]["resolved_fact_kinds"]
+    shadow_closure = issue["proof_kernel_fact_first"]["evidence_closure_state"]
+    assert "value_range" not in shadow_closure["resolved_fact_kinds"]
     assert issue["validator_pass_history"][-1]["new_fact_count"] == 0
 
 
@@ -1410,6 +1419,65 @@ def test_validation_runner_always_skips_validator_for_prevalidation_proof() -> N
     assert state["deterministic_prevalidation_confirmed_count"] == 1
     assert issue["attribution"]["decided_by"] == "deterministic_proof"
     assert issue["attribution"]["decision_level"] == "V0"
+
+
+def test_validation_runner_restores_bounded_completion_before_v1() -> None:
+    agent = FakeValidatorAgent([])
+    runner = _runner(agent)
+    issue = _issue(
+        evidence_completion_proofs=[
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "generic_cfg_obligation_provider",
+                "fact_ids": ["cfg:entry", "cfg:sink"],
+                "code_hash": "anonymous-body-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ]
+    )
+    state = _state(issue)
+
+    runner.run(state)
+
+    assert agent.inputs == []
+    assert state["issues"] == [issue]
+    assert issue["prevalidation_fact_completion"] == "completed_with_proof"
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["attribution"]["decided_by"] == "deterministic_proof"
+
+
+def test_shadow_proof_kernel_cannot_downgrade_stable_verified_policy() -> None:
+    agent = FakeValidatorAgent(
+        [AgentResponse(success=True, data=_validator_v3_result(verdict="verified"))]
+    )
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        decision_context_version="zscope.decision-context.v3.3",
+        decision_fact_slice={
+            "fact_uids": ["FACT_BASE"],
+            "dependency_code_hashes": ["anonymous-code-v1"],
+            "coverage": "partial",
+            "missing_fact_kinds": ["caller_contract"],
+        },
+        decision_fact_coverage="partial",
+        source_identity="public_argument",
+        sink_identity="free",
+    )
+    state = _state(issue)
+
+    _runner(agent, scan=SimpleNamespace(depth="fast")).run(state)
+
+    assert state["issues"] == [issue]
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["terminal_authority"] == "validation_pipeline_compat"
+    assert issue["proof_kernel_mode"] == "shadow"
+    assert (
+        issue["proof_kernel_shadow_terminal_authority_decision"]["disposition"]
+        == "needs_review"
+    )
 
 
 def test_stable_validator_evidence_slice_disables_open_ended_tools() -> None:

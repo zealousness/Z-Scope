@@ -760,7 +760,7 @@ def test_rule_driven_does_not_promote_uncertified_fact_or_enter_v3(tmp_path: Pat
     assert validator.passes == ["initial"]
     assert validator.investigations == 0
     issue = issues[0]
-    assert issue["validator_fact_resolution"]["status"] == "no_new_parameterized_request"
+    assert issue["validator_fact_resolution"]["status"] == "exhausted"
     assert issue["validator_result_pass"] == "initial"
     assert issue["validator_invocation_count"] == 1
     assert issue["attribution"]["discovered_by"] == ["backend_signal"]
