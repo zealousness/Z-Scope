@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import yaml
 
 from zscope.benchmarking.protocol import (
+    MATCHER_VERSION,
     aggregate_usage_ledger,
     candidate_funnel,
     score_report_views,
@@ -40,6 +41,13 @@ from zscope.framework.llm_usage import (
     USAGE_ATTRIBUTION_SCHEMA_VERSION,
     USAGE_EVENT_SCHEMA_VERSION,
     canonical_usage_stage,
+)
+from zscope.orchestration.decision_trace import (
+    DECISION_TRACE_MANIFEST_VERSION,
+    load_decision_trace,
+    verify_coverage_trace,
+    verify_evidence_object,
+    verify_model_event,
 )
 
 
@@ -538,8 +546,15 @@ def _run_structural_smoke(spec: BenchmarkSpec, scan_root: Path, run_dir: Path) -
     return result
 
 
-def _range_gates_for_depth(scan_depth: str) -> Dict[str, Tuple[str, float]]:
+def _range_gates_for_depth(
+    scan_depth: str,
+    *,
+    required_confirmed_tp: Optional[float] = None,
+) -> Dict[str, Tuple[str, float]]:
     gates = dict(C_GATES)
+    if required_confirmed_tp is not None:
+        gates["median_confirmed_tp"] = (">=", float(required_confirmed_tp))
+        gates["median_confirmed_recall"] = (">=", 0.85)
     expectations = DEFAULT_BENCHMARK_POLICY.range_depth_token_expectations[scan_depth]
     gates["median_tokens"] = ("<=", float(expectations["median_tokens"]))
     gates["per_run_tokens"] = ("<=", float(expectations["per_run_tokens"]))
@@ -846,6 +861,15 @@ def _run_release_eligible(
     return mode == "formal" and score.get("queue_empty") is True and not gate_failures
 
 
+def _truth_matcher_gate_failures(mode: str, score: Mapping[str, Any]) -> List[str]:
+    if mode != "formal":
+        return []
+    matcher_version = str(_as_dict(score.get("scoring_contract")).get("matcher_version") or "")
+    if matcher_version == MATCHER_VERSION:
+        return []
+    return [f"formal scorer requires {MATCHER_VERSION}; observed {matcher_version or 'missing'}"]
+
+
 def _locate_report(scan_root: Path) -> Path:
     root = scan_root.resolve()
     for name in ("zscope_batch_report.json", "report.json"):
@@ -863,6 +887,10 @@ def _locate_report(scan_root: Path) -> Path:
 
 
 _USAGE_EVENTS_ARCHIVE_NAME = "llm_usage_events.jsonl"
+_DECISION_TRACE_MANIFEST_ARCHIVE_NAME = "decision_trace_manifest.json"
+_DECISION_TRACE_DIRECTORY_NAMES = frozenset(
+    {"decision_traces", "coverage_traces", "evidence_objects", "model_events"}
+)
 _USAGE_EVENT_FORBIDDEN_KEYS = frozenset(
     {
         "assistant_response",
@@ -1222,6 +1250,267 @@ def _archive_usage_events(
     return artifact
 
 
+def _canonical_object_sha256(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _safe_trace_source_path(root: Path, relative: str, *, context: str) -> Path:
+    raw = str(relative or "").strip()
+    if not raw or "\\" in raw:
+        raise BenchmarkError(f"{context} has an invalid relative path")
+    path = Path(raw)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise BenchmarkError(f"{context} has a non-canonical relative path")
+    if path.parts[0] not in _DECISION_TRACE_DIRECTORY_NAMES:
+        raise BenchmarkError(f"{context} is outside the decision-trace artifact set")
+    resolved_root = root.resolve()
+    resolved = (root / path).resolve()
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError as exc:
+        raise BenchmarkError(f"{context} escapes the decision-trace root") from exc
+    current = resolved
+    while current != resolved_root:
+        if current.is_symlink():
+            raise BenchmarkError(f"{context} traverses a symbolic link")
+        current = current.parent
+    if not resolved.is_file():
+        raise BenchmarkError(f"{context} is missing")
+    return resolved
+
+
+def _decision_trace_manifest_source(report: Mapping[str, Any], scan_root: Path) -> Optional[Path]:
+    summaries = [
+        _as_dict(_as_dict(report.get("run_manifest")).get("decision_trace")),
+        _as_dict(_as_dict(report.get("metadata")).get("decision_trace")),
+    ]
+    raw_path = next(
+        (str(value.get("manifest_path") or "").strip() for value in summaries if value),
+        "",
+    )
+    if not raw_path:
+        if any(summaries):
+            raise BenchmarkError("decision-trace summary has no manifest_path")
+        return None
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = scan_root / path
+    resolved_root = scan_root.resolve()
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError as exc:
+        raise BenchmarkError("decision-trace manifest escapes the answer-free workspace") from exc
+    current = resolved
+    while current != resolved_root:
+        if current.is_symlink():
+            raise BenchmarkError("decision-trace manifest traverses a symbolic link")
+        current = current.parent
+    if not resolved.is_file():
+        raise BenchmarkError("decision-trace manifest is missing")
+    return resolved
+
+
+def _archive_decision_trace_artifacts(
+    report: Dict[str, Any],
+    *,
+    scan_root: Path,
+    run_dir: Path,
+    usage_artifact: Optional[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Archive and rebind the complete answer-free trace sidecar."""
+
+    source_manifest = _decision_trace_manifest_source(report, scan_root)
+    if source_manifest is None:
+        return None
+    trace_root = source_manifest.parent
+    try:
+        manifest = _load_json_object(source_manifest)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise BenchmarkError(f"cannot read decision-trace manifest: {exc}") from exc
+    if manifest.get("schema_version") != DECISION_TRACE_MANIFEST_VERSION:
+        raise BenchmarkError("decision-trace manifest has an unsupported schema")
+    supplied_manifest_sha = str(manifest.get("manifest_sha256") or "")
+    manifest_body = dict(manifest)
+    manifest_body.pop("manifest_sha256", None)
+    if supplied_manifest_sha != _canonical_object_sha256(manifest_body):
+        raise BenchmarkError("decision-trace manifest hash mismatch")
+
+    copied_paths: set[str] = set()
+
+    def copy_verified(relative: str, *, kind: str) -> None:
+        source = _safe_trace_source_path(trace_root, relative, context=f"{kind} artifact")
+        if relative in copied_paths:
+            raise BenchmarkError(f"duplicate decision-trace artifact path: {relative}")
+        if kind == "trace":
+            load_decision_trace(source)
+        elif kind == "coverage":
+            value = _load_json_object(source)
+            valid, reason = verify_coverage_trace(value)
+            if not valid:
+                raise BenchmarkError(f"invalid coverage trace {relative}: {reason}")
+        elif kind == "evidence":
+            valid, reason = verify_evidence_object(source)
+            if not valid:
+                raise BenchmarkError(f"invalid evidence object {relative}: {reason}")
+        elif kind == "model":
+            valid, reason = verify_model_event(source)
+            if not valid:
+                raise BenchmarkError(f"invalid model event {relative}: {reason}")
+        destination = run_dir / Path(relative)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied_paths.add(relative)
+
+    traces = _as_dict(manifest.get("traces"))
+    coverage = _as_dict(manifest.get("coverage_traces"))
+    if int(manifest.get("trace_count") or 0) != len(traces):
+        raise BenchmarkError("decision-trace manifest trace_count does not conserve")
+    if int(manifest.get("coverage_trace_count") or 0) != len(coverage):
+        raise BenchmarkError("decision-trace manifest coverage_trace_count does not conserve")
+    archived_traces: Dict[str, Dict[str, Any]] = {}
+    for cluster_uid, record in sorted(traces.items()):
+        relative = str(_as_dict(record).get("path") or "")
+        copy_verified(relative, kind="trace")
+        archived = load_decision_trace(run_dir / relative)
+        if str(archived.get("validation_cluster_uid") or "") != str(cluster_uid):
+            raise BenchmarkError("decision-trace cluster identity does not match the manifest")
+        if str(archived.get("document_sha256") or "") != str(
+            _as_dict(record).get("document_sha256") or ""
+        ):
+            raise BenchmarkError("decision-trace document hash does not match the manifest")
+        if not str(archived.get("terminal_event_uid") or "") or not str(
+            archived.get("terminal_disposition") or ""
+        ):
+            raise BenchmarkError("decision trace has no unique terminal event/disposition")
+        archived_traces[str(cluster_uid)] = archived
+    for unit_uid, record in sorted(coverage.items()):
+        relative = str(_as_dict(record).get("path") or "")
+        copy_verified(relative, kind="coverage")
+        archived = _load_json_object(run_dir / relative)
+        if str(archived.get("audit_unit_uid") or "") != str(unit_uid):
+            raise BenchmarkError("coverage-trace unit identity does not match the manifest")
+        if str(archived.get("document_sha256") or "") != str(
+            _as_dict(record).get("document_sha256") or ""
+        ):
+            raise BenchmarkError("coverage-trace document hash does not match the manifest")
+
+    evidence_hashes = manifest.get("evidence_object_sha256") or []
+    model_hashes = manifest.get("model_event_sha256") or []
+    if not isinstance(evidence_hashes, list) or not isinstance(model_hashes, list):
+        raise BenchmarkError("decision-trace content-addressed hash lists are invalid")
+    if int(manifest.get("evidence_object_count") or 0) != len(evidence_hashes):
+        raise BenchmarkError("decision-trace evidence_object_count does not conserve")
+    if int(manifest.get("model_event_count") or 0) != len(model_hashes):
+        raise BenchmarkError("decision-trace model_event_count does not conserve")
+    for digest in evidence_hashes:
+        value = str(digest or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise BenchmarkError("decision-trace evidence digest is invalid")
+        copy_verified(f"evidence_objects/{value}.json", kind="evidence")
+    for digest in model_hashes:
+        value = str(digest or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise BenchmarkError("decision-trace model-event digest is invalid")
+        copy_verified(f"model_events/{value}.json", kind="model")
+
+    report_clusters: set[str] = set()
+    for collection_name in ("issues", "issues_with_needs_review", "candidate_terminal_states"):
+        collection = report.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        for index, raw_item in enumerate(collection):
+            if not isinstance(raw_item, Mapping):
+                continue
+            cluster_uid = str(raw_item.get("validation_cluster_uid") or "")
+            if not cluster_uid:
+                # Operational engine records are coverage obligations, not validation clusters.
+                continue
+            report_clusters.add(cluster_uid)
+            trace = archived_traces.get(cluster_uid)
+            if trace is None:
+                raise BenchmarkError(
+                    f"{collection_name}[{index}] references an unarchived validation cluster"
+                )
+            record = _as_dict(traces.get(cluster_uid))
+            if str(raw_item.get("decision_trace_ref") or "") != str(record.get("path") or ""):
+                raise BenchmarkError(
+                    f"{collection_name}[{index}] decision_trace_ref does not match the manifest"
+                )
+            if str(raw_item.get("decision_trace_sha256") or "") != str(
+                trace.get("document_sha256") or ""
+            ):
+                raise BenchmarkError(
+                    f"{collection_name}[{index}] decision_trace_sha256 does not match the trace"
+                )
+            if str(raw_item.get("terminal_event_uid") or "") != str(
+                trace.get("terminal_event_uid") or ""
+            ):
+                raise BenchmarkError(
+                    f"{collection_name}[{index}] terminal event does not match the trace"
+                )
+            if not str(raw_item.get("terminal_authority") or ""):
+                raise BenchmarkError(f"{collection_name}[{index}] has no terminal authority")
+    if set(archived_traces) != report_clusters:
+        missing = sorted(set(archived_traces) - report_clusters)
+        raise BenchmarkError(
+            "decision-trace manifest contains clusters absent from the terminal report: "
+            + ", ".join(missing[:5])
+        )
+
+    usage = manifest.get("llm_usage_events")
+    if isinstance(usage, dict) and usage.get("available"):
+        if usage_artifact is None:
+            raise BenchmarkError("decision trace references usage but no usage archive exists")
+        if int(usage.get("event_count") or 0) != int(usage_artifact.get("call_count") or 0):
+            raise BenchmarkError("decision-trace and usage archive call counts differ")
+        usage["path"] = _USAGE_EVENTS_ARCHIVE_NAME
+        usage["file_sha256"] = str(usage_artifact.get("sha256") or "")
+
+    manifest_body = dict(manifest)
+    manifest_body.pop("manifest_sha256", None)
+    manifest["manifest_sha256"] = _canonical_object_sha256(manifest_body)
+    destination_manifest = run_dir / _DECISION_TRACE_MANIFEST_ARCHIVE_NAME
+    _json_dump(destination_manifest, manifest)
+    artifact = {
+        "schema_version": "zscope.decision-trace-artifact.v1",
+        "path": destination_manifest.name,
+        "sha256": _sha256_file(destination_manifest),
+        "manifest_sha256": manifest["manifest_sha256"],
+        "trace_count": len(traces),
+        "coverage_trace_count": len(coverage),
+        "evidence_object_count": len(evidence_hashes),
+        "model_event_count": len(model_hashes),
+        "complete": bool(manifest.get("complete")),
+        "answer_free": True,
+    }
+    summary = {
+        "schema_version": DECISION_TRACE_MANIFEST_VERSION,
+        "manifest_path": destination_manifest.name,
+        "manifest_sha256": manifest["manifest_sha256"],
+        "trace_count": len(traces),
+        "coverage_trace_count": len(coverage),
+        "evidence_object_count": len(evidence_hashes),
+        "model_event_count": len(model_hashes),
+        "complete": bool(manifest.get("complete")),
+        "errors": list(manifest.get("errors") or []),
+    }
+    for owner_name in ("metadata", "run_manifest"):
+        owner = report.setdefault(owner_name, {})
+        if isinstance(owner, dict):
+            owner["decision_trace"] = dict(summary)
+            owner["decision_trace_artifact"] = dict(artifact)
+    return artifact
+
+
 def _source_line_metrics(scan_root: Path, language: str) -> Dict[str, Any]:
     extensions = (
         {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
@@ -1470,10 +1759,16 @@ def _run_trial_in_workspace(
     archived_manifest = archived_report.setdefault("run_manifest", {})
     if isinstance(archived_manifest, dict):
         archived_manifest.update(source_metrics)
-    _archive_usage_events(
+    usage_artifact = _archive_usage_events(
         archived_report,
         scan_root=execution_root,
         run_dir=run_dir,
+    )
+    decision_trace_artifact = _archive_decision_trace_artifacts(
+        archived_report,
+        scan_root=execution_root,
+        run_dir=run_dir,
+        usage_artifact=usage_artifact,
     )
     _json_dump(report_path, archived_report)
     replay_bundle_path = run_dir / "validator-replay-bundle.json"
@@ -1538,6 +1833,7 @@ def _run_trial_in_workspace(
     score["performance_telemetry"] = telemetry
     _json_dump(score_path, score)
     gate_failures = _gate_c(score, scan_depth=scan_depth) if spec.language == "c_cpp" else []
+    gate_failures.extend(_truth_matcher_gate_failures(mode, score))
     sealed_failures = _gate_c_sealed(score) if spec.language == "c_cpp" else []
     report = _load_json_object(report_path)
     report_ablation = _as_dict(_as_dict(report.get("metadata")).get("benchmark_ablation"))
@@ -1554,6 +1850,8 @@ def _run_trial_in_workspace(
     usage_artifact_path = run_dir / _USAGE_EVENTS_ARCHIVE_NAME
     if usage_artifact_path.is_file():
         artifact_names.append(_USAGE_EVENTS_ARCHIVE_NAME)
+    if decision_trace_artifact is not None:
+        artifact_names.append(_DECISION_TRACE_MANIFEST_ARCHIVE_NAME)
     artifact_hashes = {
         name: _sha256_file(run_dir / name) for name in artifact_names if (run_dir / name).is_file()
     }
@@ -1574,6 +1872,7 @@ def _run_trial_in_workspace(
             "source_truth_isolated": True,
             "input_manifest_present": True,
             "validator_replay_bundle_present": True,
+            "decision_trace_artifact_present": decision_trace_artifact is not None,
         },
         "phase_seconds": {key: round(value, 4) for key, value in phase_seconds.items()},
         "metrics": score,
@@ -1586,6 +1885,7 @@ def _run_trial_in_workspace(
             "path": replay_bundle_path.name,
             "answer_material_present": False,
         },
+        "decision_trace_artifact": decision_trace_artifact,
         "artifact_hashes": {
             "schema_version": "zscope.formal-run-artifact-hashes.v1",
             "files": artifact_hashes,
@@ -1645,7 +1945,73 @@ def _run_trial(
             scan_depth=scan_depth,
         )
     finally:
+        if not (run_dir / "summary.json").is_file():
+            _archive_interrupted_diagnostics(workspace, run_dir)
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _archive_interrupted_diagnostics(workspace: Path, run_dir: Path) -> Optional[Dict[str, Any]]:
+    """Preserve answer-free trace telemetry before a failed trial workspace is removed.
+
+    A normal completed run goes through the stricter report-bound archival path.
+    This fallback is deliberately non-release and copies only trace/usage
+    artifacts, never source files, configuration, truth, or model reasoning.
+    """
+
+    trace_root = workspace / "scan-input" / ".zscope_snapshots"
+    if not trace_root.is_dir():
+        return None
+    target = run_dir / "interrupted-diagnostics"
+    allowed_directories = (
+        "decision_traces",
+        "coverage_traces",
+        "evidence_objects",
+        "model_events",
+    )
+    candidates: List[Path] = []
+    manifest = trace_root / _DECISION_TRACE_MANIFEST_ARCHIVE_NAME
+    if manifest.is_file() and not manifest.is_symlink():
+        candidates.append(manifest)
+    candidates.extend(
+        path
+        for path in sorted(trace_root.glob("llm_usage_events_*.jsonl"))
+        if path.is_file() and not path.is_symlink()
+    )
+    for directory_name in allowed_directories:
+        directory = trace_root / directory_name
+        if not directory.is_dir() or directory.is_symlink():
+            continue
+        candidates.extend(
+            path
+            for path in sorted(directory.rglob("*.json"))
+            if path.is_file() and not path.is_symlink()
+        )
+    if not candidates:
+        return None
+    target.mkdir(parents=True, exist_ok=False)
+    files: List[Dict[str, Any]] = []
+    for source in candidates:
+        relative = source.relative_to(trace_root)
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        files.append(
+            {
+                "path": relative.as_posix(),
+                "sha256": _sha256_file(destination),
+                "size": destination.stat().st_size,
+            }
+        )
+    payload = {
+        "schema_version": "zscope.interrupted-benchmark-diagnostics.v1",
+        "release_eligible": False,
+        "reason": "benchmark_trial_interrupted_or_failed",
+        "answer_material_present": False,
+        "file_count": len(files),
+        "files": files,
+    }
+    _json_dump(run_dir / "interrupted-diagnostics.json", payload)
+    return payload
 
 
 def _git_identity() -> Tuple[str, str]:
@@ -1703,8 +2069,35 @@ def _aggregate(
         for summary in summaries
     )
     aggregate_gate_metrics = _aggregate_range_gate_metrics(summaries)
-    depth_gates = _range_gates_for_depth(scan_depth)
+    truth_contracts = [
+        _as_dict(_as_dict(summary.get("metrics")).get("truth_contract"))
+        for summary in summaries
+        if "truth_contract" in _as_dict(summary.get("metrics"))
+    ]
+    required_tp_values = {
+        float(str(contract.get("required_confirmed_tp")))
+        for contract in truth_contracts
+        if contract.get("formal_eligible") is True
+        and isinstance(contract.get("required_confirmed_tp"), (int, float))
+    }
+    required_tp = next(iter(required_tp_values)) if len(required_tp_values) == 1 else None
+    depth_gates = _range_gates_for_depth(
+        scan_depth,
+        required_confirmed_tp=required_tp,
+    )
     aggregate_gate_failures = _gate_metrics(aggregate_gate_metrics, depth_gates)
+    if (
+        formal
+        and truth_contracts
+        and (
+            len(truth_contracts) != len(summaries)
+            or any(contract.get("formal_eligible") is not True for contract in truth_contracts)
+            or len(required_tp_values) != 1
+        )
+    ):
+        aggregate_gate_failures.append(
+            "formal Range requires one consistent independently attested truth contract"
+        )
     arm_a_binding = _aggregate_arm_a_binding(summaries)
     if arm_a_binding.get("passed") is not True:
         aggregate_gate_failures.append("frozen Validator Arm-A baseline is missing or inconsistent")
@@ -1835,6 +2228,9 @@ def _aggregate_range_gate_metrics(
     result = {
         "median_confirmed_tp": (
             float(statistics.median(tp_values)) if len(tp_values) == expected else 0.0
+        ),
+        "median_confirmed_recall": (
+            float(statistics.median(recall_values)) if len(recall_values) == expected else 0.0
         ),
         "median_tokens": (
             float(statistics.median(token_values)) if len(token_values) == expected else 0.0
