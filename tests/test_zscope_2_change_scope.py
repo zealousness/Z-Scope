@@ -10,6 +10,12 @@ def test_change_scope_classifies_governed_paths_without_overlap() -> None:
     assert classify_path("zscope/core/validation/runner.py") == "product"
     assert classify_path("zscope/benchmarking/protocol.py") == "scorer"
     assert classify_path("test/range/benchmark/ground_truth.json") == "truth_fixture"
+    assert classify_path("test/range/benchmark/v16/ground_truth.json") == "truth_fixture"
+    assert classify_path("test/range/benchmark/v16/pairs/CASE-001/manifest.json") == (
+        "truth_fixture"
+    )
+    assert classify_path("scripts/generate_range_v16_review_packets.py") == "truth_fixture"
+    assert classify_path("scripts/validate_range_v16_truth.py") == "truth_fixture"
     assert classify_path("test/range/src/lifecycle.c") == "truth_fixture"
     assert classify_path("tests/test_validation_runner.py") is None
 

@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from scripts.e0_review_governance import sha256_file, sha256_value
+from scripts.generate_range_v16_safe_pairs import (
+    AUTHOR_MODEL,
+    AUTHOR_SCHEMA_VERSION,
+    _author_schema,
+    _source_identifiers,
+    materialize_pairs,
+    validate_author_run,
+    validate_author_record,
+)
+from tests.test_range_v16_truth import _normalized
+
+
+def _dump(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def _confirmable_normalized() -> dict:
+    value = _normalized()
+    record = value["records"][0]
+    record["final_decision"]["contract_kind"] = "concrete_trigger"
+    record["final_decision"]["disposition"] = "keep"
+    record["final_decision_sha256"] = sha256_value(record["final_decision"])
+    unsigned_record = dict(record)
+    unsigned_record.pop("normalized_record_sha256")
+    record["normalized_record_sha256"] = sha256_value(unsigned_record)
+    unsigned = dict(value)
+    unsigned.pop("content_sha256")
+    value["content_sha256"] = sha256_value(unsigned)
+    return value
+
+
+def _packet(record: dict) -> dict:
+    truth_id = record["truth_id"]
+    return {
+        "packet_uid": f"range-v16:{truth_id}",
+        "packet_sha256": record["packet_sha256"],
+        "truth_record": {"id": truth_id, "function": "project_specific_function"},
+    }
+
+
+def _author(record: dict) -> dict:
+    return {
+        "schema_version": AUTHOR_SCHEMA_VERSION,
+        "truth_id": record["truth_id"],
+        "packet_sha256": record["packet_sha256"],
+        "final_decision_sha256": record["final_decision_sha256"],
+        "author_role": "safe_pair_author",
+        "author_model": AUTHOR_MODEL,
+        "kind": "fixed",
+        "invariant_summary": "A length must be checked before an indexed read.",
+        "vulnerable_source": (
+            "int read_item(const int *p, int n) { (void)n; return p[1]; }\n"
+            "int main(void) { int a[1] = {0}; return read_item(a, 1); }\n"
+        ),
+        "fixed_or_near_miss_source": (
+            "int read_item(const int *p, int n) { return n > 1 ? p[1] : 0; }\n"
+            "int main(void) { int a[1] = {0}; return read_item(a, 1); }\n"
+        ),
+    }
+
+
+def _raw_author(record: dict, author: dict) -> dict:
+    return {
+        "schema_version": "zscope.range-v16-safe-pair-author-raw.v1",
+        "truth_id": record["truth_id"],
+        "packet_sha256": record["packet_sha256"],
+        "final_decision_sha256": record["final_decision_sha256"],
+        "author_model": AUTHOR_MODEL,
+        "command_identity": [
+            "claude",
+            "--print",
+            "--model",
+            AUTHOR_MODEL,
+            "--effort",
+            "max",
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(_author_schema(), separators=(",", ":")),
+            "--permission-mode",
+            "plan",
+            "--tools",
+            "",
+            "--no-session-persistence",
+            "--disable-slash-commands",
+        ],
+        "exit_code": 0,
+        "stdout": json.dumps({"structured_output": author}),
+        "stderr_sha256": sha256_value(""),
+    }
+
+
+def test_safe_pair_author_rejects_project_specific_identifiers() -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    author = _author(record)
+    validate_author_record(
+        author,
+        truth_id=record["truth_id"],
+        packet_sha256=record["packet_sha256"],
+        final_decision_sha256=record["final_decision_sha256"],
+        forbidden_identifiers={"project_specific_function", record["truth_id"]},
+    )
+    author["vulnerable_source"] += "int project_specific_function(void) { return 0; }\n"
+    with pytest.raises(ValueError, match="not anonymous"):
+        validate_author_record(
+            author,
+            truth_id=record["truth_id"],
+            packet_sha256=record["packet_sha256"],
+            final_decision_sha256=record["final_decision_sha256"],
+            forbidden_identifiers={"project_specific_function", record["truth_id"]},
+        )
+
+    missing_main = _author(record)
+    missing_main["fixed_or_near_miss_source"] = "int read_item(int n) { return n; }\n"
+    with pytest.raises(ValueError, match="exactly one C11 main"):
+        validate_author_record(
+            missing_main,
+            truth_id=record["truth_id"],
+            packet_sha256=record["packet_sha256"],
+            final_decision_sha256=record["final_decision_sha256"],
+            forbidden_identifiers=set(),
+        )
+
+
+def test_safe_pair_anonymity_includes_packet_functions_and_macros() -> None:
+    identifiers = _source_identifiers(
+        {
+            "truth_record": {"id": "CASE-1", "function": "project_entry"},
+            "code_windows": [
+                {
+                    "content": (
+                        "#define PROJECT_PRIVATE_LIMIT 16\n"
+                        "static int project_helper(int value) { return value; }\n"
+                        "int project_entry(void) { return project_helper(PROJECT_PRIVATE_LIMIT); }"
+                    )
+                }
+            ],
+        },
+        "CASE-1",
+    )
+    assert {
+        "CASE-1",
+        "project_entry",
+        "project_helper",
+        "PROJECT_PRIVATE_LIMIT",
+    }.issubset(identifiers)
+
+
+def test_materialize_pair_writes_only_bound_source_and_manifest(tmp_path: Path) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    normalized_path = tmp_path / "normalized.json"
+    packet_dir = tmp_path / "packets"
+    author_dir = tmp_path / "author"
+    output_dir = tmp_path / "pairs"
+    _dump(normalized_path, normalized)
+    _dump(packet_dir / f"{record['truth_id']}.json", _packet(record))
+    author = _author(record)
+    author_path = author_dir / "authors" / f"{record['truth_id']}.json"
+    raw_path = author_dir / "raw" / f"{record['truth_id']}.json"
+    _dump(author_path, author)
+    _dump(raw_path, _raw_author(record, author))
+    author_records = [
+        {
+            "truth_id": record["truth_id"],
+            "packet_sha256": record["packet_sha256"],
+            "final_decision_sha256": record["final_decision_sha256"],
+            "author_sha256": sha256_file(author_path),
+            "raw_sha256": sha256_file(raw_path),
+            "status": "authored",
+        }
+    ]
+    _dump(
+        author_dir / "manifest.json",
+        {
+            "schema_version": "zscope.range-v16-safe-pair-author-run.v1",
+            "author_model": AUTHOR_MODEL,
+            "record_count": 1,
+            "normalized_decisions_sha256": sha256_file(normalized_path),
+            "records": author_records,
+            "content_sha256": sha256_value(author_records),
+        },
+    )
+    args = SimpleNamespace(
+        output_dir=output_dir,
+        normalized_decisions=normalized_path,
+        author_dir=author_dir,
+        packet_dir=packet_dir,
+        compiler="cc",
+        compile=False,
+    )
+    assert materialize_pairs(args) == 0
+    pair_root = output_dir / record["truth_id"]
+    manifest = json.loads((pair_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["review_decision_sha256"] == record["final_decision_sha256"]
+    assert (pair_root / "vulnerable" / "case.c").is_file()
+    assert (pair_root / "fixed_or_near_miss" / "case.c").is_file()
+
+    raw_path.write_text('{"tampered": true}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="artifact hash mismatch"):
+        validate_author_run(
+            author_root=author_dir,
+            normalized_path=normalized_path,
+            expected_records={record["truth_id"]: record},
+        )
+
+
+def test_safe_pair_run_rejects_untrusted_raw_command_envelope(tmp_path: Path) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    normalized_path = tmp_path / "normalized.json"
+    author_dir = tmp_path / "author"
+    _dump(normalized_path, normalized)
+    author = _author(record)
+    author_path = author_dir / "authors" / f"{record['truth_id']}.json"
+    raw_path = author_dir / "raw" / f"{record['truth_id']}.json"
+    _dump(author_path, author)
+    raw = _raw_author(record, author)
+    raw["command_identity"][3] = "claude-opus-untrusted"
+    _dump(raw_path, raw)
+    author_records = [
+        {
+            "truth_id": record["truth_id"],
+            "packet_sha256": record["packet_sha256"],
+            "final_decision_sha256": record["final_decision_sha256"],
+            "author_sha256": sha256_file(author_path),
+            "raw_sha256": sha256_file(raw_path),
+            "status": "authored",
+        }
+    ]
+    _dump(
+        author_dir / "manifest.json",
+        {
+            "schema_version": "zscope.range-v16-safe-pair-author-run.v1",
+            "author_model": AUTHOR_MODEL,
+            "record_count": 1,
+            "normalized_decisions_sha256": sha256_file(normalized_path),
+            "records": author_records,
+            "content_sha256": sha256_value(author_records),
+        },
+    )
+    with pytest.raises(ValueError, match="raw author envelope"):
+        validate_author_run(
+            author_root=author_dir,
+            normalized_path=normalized_path,
+            expected_records={record["truth_id"]: record},
+        )
+
+
+def test_safe_pair_run_rejects_hidden_reasoning_body(tmp_path: Path) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    normalized_path = tmp_path / "normalized.json"
+    author_dir = tmp_path / "author"
+    _dump(normalized_path, normalized)
+    author = _author(record)
+    author_path = author_dir / "authors" / f"{record['truth_id']}.json"
+    raw_path = author_dir / "raw" / f"{record['truth_id']}.json"
+    _dump(author_path, author)
+    raw = _raw_author(record, author)
+    raw["stdout"] = json.dumps(
+        {"structured_output": author, "reasoning_content": "must not be retained"}
+    )
+    _dump(raw_path, raw)
+    records = [
+        {
+            "truth_id": record["truth_id"],
+            "packet_sha256": record["packet_sha256"],
+            "final_decision_sha256": record["final_decision_sha256"],
+            "author_sha256": sha256_file(author_path),
+            "raw_sha256": sha256_file(raw_path),
+            "status": "authored",
+        }
+    ]
+    _dump(
+        author_dir / "manifest.json",
+        {
+            "schema_version": "zscope.range-v16-safe-pair-author-run.v1",
+            "author_model": AUTHOR_MODEL,
+            "record_count": 1,
+            "normalized_decisions_sha256": sha256_file(normalized_path),
+            "records": records,
+            "content_sha256": sha256_value(records),
+        },
+    )
+    with pytest.raises(ValueError, match="hidden reasoning"):
+        validate_author_run(
+            author_root=author_dir,
+            normalized_path=normalized_path,
+            expected_records={record["truth_id"]: record},
+        )

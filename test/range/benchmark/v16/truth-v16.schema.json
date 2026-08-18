@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/range/truth-v16.schema.json",
+  "title": "Z-Scope Range Truth v16",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "benchmark",
+    "version",
+    "notes",
+    "truth_contract",
+    "total_vulnerabilities",
+    "vulnerabilities"
+  ],
+  "properties": {
+    "benchmark": {"type": "string", "minLength": 1},
+    "version": {"const": 16},
+    "notes": {"type": "string", "minLength": 1},
+    "truth_contract": {"$ref": "#/$defs/manifest"},
+    "total_vulnerabilities": {"const": 136},
+    "vulnerabilities": {
+      "type": "array",
+      "minItems": 136,
+      "maxItems": 136,
+      "items": {"$ref": "#/$defs/truthRecord"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "canonicalPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?/)(?!.*\\\\).+$"
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "manifest_sha256",
+        "review_bundle_sha256",
+        "taxonomy_sha256",
+        "independent_review_complete",
+        "review_protocol",
+        "safe_unit_count"
+      ],
+      "properties": {
+        "schema_version": {"const": "zscope.range-truth-contract.v2"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "review_bundle_sha256": {"$ref": "#/$defs/sha256"},
+        "taxonomy_sha256": {"$ref": "#/$defs/sha256"},
+        "independent_review_complete": {"const": true},
+        "review_protocol": {"type": "string", "minLength": 1},
+        "safe_unit_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "file", "function", "start_line", "end_line"],
+      "properties": {
+        "kind": {"enum": ["primary", "secondary", "additional"]},
+        "file": {"$ref": "#/$defs/canonicalPath"},
+        "function": {"type": "string", "minLength": 1},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1}
+      }
+    },
+    "clause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clause_id", "predicate", "evidence_refs"],
+      "properties": {
+        "clause_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$"},
+        "predicate": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "reviewArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fable_sha256", "deepseek_sha256", "normalized_sha256"],
+      "properties": {
+        "fable_sha256": {"$ref": "#/$defs/sha256"},
+        "deepseek_sha256": {"$ref": "#/$defs/sha256"},
+        "normalized_sha256": {"$ref": "#/$defs/sha256"},
+        "opus_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "safePair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pair_uid",
+        "manifest_sha256",
+        "vulnerable_sha256",
+        "fixed_or_near_miss_sha256"
+      ],
+      "properties": {
+        "pair_uid": {"type": "string", "pattern": "^range-v16-pair:.+$"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "vulnerable_sha256": {"$ref": "#/$defs/sha256"},
+        "fixed_or_near_miss_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "verificationContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "adjudication_status",
+        "defect_taxonomy_id",
+        "structured_anchors",
+        "trigger",
+        "threat_assumptions",
+        "required_evidence_clauses",
+        "review_artifacts",
+        "safe_pair",
+        "fixture_sha256"
+      ],
+      "properties": {
+        "schema_version": {"const": "zscope.range-truth-record.v2"},
+        "kind": {
+          "enum": ["concrete_trigger", "public_api_contract", "pattern_model", "retired"]
+        },
+        "adjudication_status": {"enum": ["accepted", "corrected", "retired"]},
+        "defect_taxonomy_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{1,127}$"
+        },
+        "structured_anchors": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/anchor"}
+        },
+        "trigger": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["summary", "evidence_refs"],
+          "properties": {
+            "summary": {"type": "string", "minLength": 1},
+            "evidence_refs": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "threat_assumptions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "required_evidence_clauses": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/clause"}
+        },
+        "review_artifacts": {"$ref": "#/$defs/reviewArtifacts"},
+        "safe_pair": {"type": "object"},
+        "fixture_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {"enum": ["concrete_trigger", "public_api_contract"]}
+            }
+          },
+          "then": {
+            "properties": {
+              "safe_pair": {"$ref": "#/$defs/safePair"},
+              "trigger": {
+                "properties": {"evidence_refs": {"minItems": 1}}
+              }
+            }
+          },
+          "else": {"properties": {"safe_pair": {"maxProperties": 0}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "retired"}}},
+          "then": {"properties": {"adjudication_status": {"const": "retired"}}},
+          "else": {
+            "properties": {
+              "adjudication_status": {"enum": ["accepted", "corrected"]}
+            }
+          }
+        }
+      ]
+    },
+    "truthRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_v15_id",
+        "stable_uid",
+        "category",
+        "cwe",
+        "cwe_ids",
+        "file",
+        "function",
+        "line",
+        "end_line",
+        "severity",
+        "title",
+        "keywords",
+        "verification_contract"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "source_v15_id": {"type": "string", "minLength": 1},
+        "stable_uid": {"type": "string", "pattern": "^range-truth:.+$"},
+        "category": {"type": "string", "minLength": 1},
+        "cwe": {"type": "string", "minLength": 1},
+        "cwe_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^CWE-[0-9]+$"}
+        },
+        "file": {"$ref": "#/$defs/canonicalPath"},
+        "function": {"type": "string", "minLength": 1},
+        "line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "severity": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "keywords": {"type": "array"},
+        "additional_locations": {"type": "array"},
+        "flow": {"type": "array"},
+        "notes": {"type": "string"},
+        "related_functions": {"type": "array"},
+        "scope": {},
+        "secondary_end_line": {"type": "integer", "minimum": 1},
+        "secondary_file": {"$ref": "#/$defs/canonicalPath"},
+        "secondary_function": {"type": "string", "minLength": 1},
+        "secondary_line": {"type": "integer", "minimum": 1},
+        "source_issue": {},
+        "source_model": {},
+        "subtype": {},
+        "tier": {},
+        "weight": {},
+        "verification_contract": {"$ref": "#/$defs/verificationContract"}
+      }
+    }
+  }
+}
