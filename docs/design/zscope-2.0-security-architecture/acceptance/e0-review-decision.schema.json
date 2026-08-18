@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/e0-review-decision.v1.json",
+  "title": "Z-SCOPE E0 independent truth review decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "packet_uid",
+    "packet_sha256",
+    "reviewer_role",
+    "reviewer_model",
+    "contract_kind",
+    "disposition",
+    "confidence",
+    "defect_taxonomy_id",
+    "cwe_ids",
+    "structured_anchors",
+    "required_evidence_clauses",
+    "evidence_refs",
+    "trigger_summary",
+    "threat_assumptions",
+    "safe_pair_recommendation",
+    "reason_codes"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.range-v16-review-decision.v1"},
+    "packet_uid": {"type": "string", "minLength": 1},
+    "packet_sha256": {"$ref": "#/$defs/sha256"},
+    "reviewer_role": {"enum": ["primary_fable", "primary_deepseek", "arbiter_opus"]},
+    "reviewer_model": {"type": "string", "minLength": 1},
+    "contract_kind": {
+      "enum": ["concrete_trigger", "public_api_contract", "pattern_model", "retired"]
+    },
+    "disposition": {"enum": ["keep", "correct", "retire", "unresolved"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "defect_taxonomy_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,127}$"
+    },
+    "cwe_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^CWE-[0-9]+$"}
+    },
+    "structured_anchors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "corrected", "file", "function", "start_line", "end_line"],
+        "properties": {
+          "kind": {"enum": ["primary", "secondary", "additional"]},
+          "corrected": {"type": "boolean"},
+          "file": {"type": "string", "minLength": 1},
+          "function": {"type": "string", "minLength": 1},
+          "start_line": {"type": "integer", "minimum": 1},
+          "end_line": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "required_evidence_clauses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["clause_id", "predicate", "evidence_refs"],
+        "properties": {
+          "clause_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$"},
+          "predicate": {"type": "string", "minLength": 1},
+          "evidence_refs": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "trigger_summary": {"type": "string", "minLength": 1},
+    "threat_assumptions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "safe_pair_recommendation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "invariant_summary",
+        "vulnerable_summary",
+        "safe_summary",
+        "compile_requirements"
+      ],
+      "properties": {
+        "kind": {"enum": ["fixed", "near_miss"]},
+        "invariant_summary": {"type": "string", "minLength": 1},
+        "vulnerable_summary": {"type": "string", "minLength": 1},
+        "safe_summary": {"type": "string", "minLength": 1},
+        "compile_requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "TRIGGER_PRESENT",
+          "PUBLIC_CONTRACT_SUPPORTED",
+          "TRIGGER_INCOMPLETE",
+          "THREAT_ASSUMPTION_UNSUPPORTED",
+          "ANCHOR_CORRECTION_REQUIRED",
+          "CATEGORY_CORRECTION_REQUIRED",
+          "DUPLICATE_TRUTH",
+          "CODE_COUNTEREVIDENCE",
+          "SAFE_PAIR_REQUIRED",
+          "INSUFFICIENT_EVIDENCE"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
