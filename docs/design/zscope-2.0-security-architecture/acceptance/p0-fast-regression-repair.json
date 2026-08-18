@@ -1,0 +1,89 @@
+{
+  "schema_version": "zscope.p0-fast-regression-repair.v1",
+  "captured_at": "2026-08-17T11:24:47+08:00",
+  "status": "cold_trial_collected_not_release_eligible",
+  "implementation": {
+    "git_commit": "abffcc65213a79e5e622b5de94184eb728380f2c",
+    "git_tree": "941cfd17cf5eb4f4342429e184672daf86afab22",
+    "change_summary": "Restore bounded V0 and stable validation dispositions while the Z-Scope 2.0 fact-first and terminal-authority path remains shadow-only."
+  },
+  "execution": {
+    "language": "c_cpp",
+    "mode": "trial",
+    "scan_depth": "fast",
+    "cold_runs": 1,
+    "entry_workers": 8,
+    "validator_workers": 8,
+    "model": "glm-5.1",
+    "input_manifest_sha256": "8450b82dab10f022ad1da3f63e5077205a29b79caf4f9a95ef20e348a7c2e9e8",
+    "answer_material_present_during_scan": false,
+    "scan_wall_seconds": 1591.53,
+    "end_to_end_wall_seconds": 1670.294231,
+    "llm_calls": 186,
+    "prompt_tokens": 835240,
+    "completion_tokens": 758111,
+    "total_tokens": 1593351,
+    "provider_usage_coverage": 1.0,
+    "token_conservation_rate": 1.0,
+    "queue_drained_rate": 1.0,
+    "protocol_anomaly_count": 0
+  },
+  "quality": {
+    "matcher_version": "zscope.truth-matcher.v2",
+    "ground_truth_count": 136,
+    "default": {
+      "report_issue_count": 68,
+      "true_positives": 61,
+      "raw_false_positives": 7,
+      "precision": 0.8971,
+      "recall": 0.4485,
+      "f1": 0.598,
+      "false_discovery_rate": 0.1029
+    },
+    "with_needs_review": {
+      "report_issue_count": 244,
+      "true_positives": 125,
+      "raw_false_positives": 119,
+      "root_effective_false_positives": 77,
+      "precision": 0.5123,
+      "recall": 0.9191,
+      "f1": 0.6579,
+      "false_discovery_rate": 0.4877
+    },
+    "default_tp_attribution": {
+      "deterministic_proof": 55,
+      "validator_llm": 6
+    }
+  },
+  "comparison": {
+    "regressed_p0_fast_tp": 13,
+    "repaired_fast_tp": 61,
+    "regained_tp": 48,
+    "lost_tp_relative_to_regressed_run": 0,
+    "historical_fast_rescored_matcher_v2_tp": 65,
+    "historical_fast_deterministic_tp": 55,
+    "repaired_fast_deterministic_tp": 55,
+    "historical_fast_validator_llm_tp": 10,
+    "repaired_fast_validator_llm_tp": 6,
+    "historical_fast_with_review_tp": 124,
+    "repaired_fast_with_review_tp": 125,
+    "remaining_reference_only_tp_count": 4,
+    "remaining_reference_only_terminal_reason": "All four candidates remain in with-needs-review after successful V1 responses returned uncertain with an open caller_contract, value_range, or lockset fact. No candidate, scorer, projection, transport, truncation, or protocol loss was observed.",
+    "conclusion": "The recent deterministic-disposition regression is repaired. The four-TP difference from the older single cold reference is V1 outcome variance over still-open facts and requires paired multi-run measurement rather than weakening promotion policy."
+  },
+  "artifacts": {
+    "aggregate.json": "58c4b816cb10cb6644ea1d8bc07307c0bf32160c209795f082d8a89c9c7da54f",
+    "report.json": "d860fa04ad2d589e1c428699f3640b853f1e1262c4b74b739e46e0d38e2d55cf",
+    "score.json": "204d58bf03bcd234ae9fcf7467ab9739ce739313c00bea11222540eb9377d97d",
+    "summary.json": "db7736f0095225bdb5df094fd533d55e68d0879c8989e0584caeb6a5c29a37f8",
+    "llm_usage_events.jsonl": "ac49cbe171f30e78b5b2b6a4e8e8806fb5424d130988ebe4c4b59d6412452211",
+    "decision_trace_manifest.json": "09d02672670b5aa9448e919f45fdd58c2269303d604bc7f398513e5744fc94f8",
+    "validator-replay-bundle.json": "e32ec64f957690cff3ea6dfa74fc389ec148da722cad4269aad1913f19124ec4",
+    "historical_fast_matcher_v2_rescore.json": "e5504875061e4c53ba794f53524e9843bfc5655ada2cfba3cea9d2d5b905f411"
+  },
+  "limitations": [
+    "This is one cold trial and does not establish a stability distribution.",
+    "Range is an in-distribution development benchmark and does not establish production generalization.",
+    "The trial is not formal or release eligible and does not satisfy independent rule qualification, sealed, external, or shadow gates."
+  ]
+}
