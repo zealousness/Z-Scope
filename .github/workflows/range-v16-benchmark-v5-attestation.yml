@@ -44,7 +44,9 @@ jobs:
           test "$(git rev-parse HEAD)" = '${{ inputs.truth_commit }}'
           git merge-base --is-ancestor '${{ inputs.governance_commit }}' HEAD
           git merge-base --is-ancestor '${{ inputs.scorer_commit }}' HEAD
-          git merge-base --is-ancestor '${{ inputs.review_source_sha }}' HEAD
+          git diff --exit-code '${{ inputs.review_source_sha }}' HEAD -- \
+            test/range/benchmark/v16/review-packet-catalog.json \
+            test/range/benchmark/v16/review-packets
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .event)" = "workflow_dispatch"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .conclusion)" = "success"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .path)" = ".github/workflows/range-v16-review.yml"
@@ -88,11 +90,16 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts" \
             --jq '.artifacts[] | select(.name == "range-v16-pair-author-${{ inputs.review_source_sha }}") | .digest')"
           test -n "$PAIR_AUTHOR_ARTIFACT_DIGEST"
+          REVIEW_WORKFLOW_HEAD_SHA="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" \
+            --jq '.head_sha')"
+          test -n "$REVIEW_WORKFLOW_HEAD_SHA"
           echo "pair_author_artifact_digest=$PAIR_AUTHOR_ARTIFACT_DIGEST" >> "$GITHUB_OUTPUT"
           python3 scripts/verify_e0_review_provenance.py \
             --provenance protected-review-provenance/review-provenance.json \
             --workflow-run-id '${{ inputs.review_run_id }}' \
-            --head-sha '${{ inputs.review_source_sha }}' \
+            --workflow-head-sha "$REVIEW_WORKFLOW_HEAD_SHA" \
+            --packet-source-sha '${{ inputs.review_source_sha }}' \
             --artifact-digest "$REVIEW_ARTIFACT_DIGEST"
           mkdir -p reconstructed-review
           python3 scripts/generate_range_v16_truth.py normalize \

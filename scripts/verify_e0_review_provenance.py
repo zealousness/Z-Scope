@@ -19,7 +19,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provenance", required=True, type=Path)
     parser.add_argument("--workflow-run-id", required=True)
-    parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--workflow-head-sha", required=True)
+    parser.add_argument("--packet-source-sha", required=True)
     parser.add_argument("--artifact-digest", required=True)
     args = parser.parse_args(argv)
     try:
@@ -29,7 +30,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_review_provenance(
             value,
             expected_workflow_run_id=args.workflow_run_id,
-            expected_head_sha=args.head_sha,
+            expected_workflow_head_sha=args.workflow_head_sha,
+            expected_packet_source_sha=args.packet_source_sha,
             expected_artifact_digest=args.artifact_digest,
         )
     except (E0GovernanceError, OSError) as exc:

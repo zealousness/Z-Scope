@@ -403,14 +403,16 @@ def validate_review_provenance(
     value: Mapping[str, Any],
     *,
     expected_workflow_run_id: str | None = None,
-    expected_head_sha: str | None = None,
+    expected_workflow_head_sha: str | None = None,
+    expected_packet_source_sha: str | None = None,
     expected_artifact_digest: str | None = None,
 ) -> None:
     expected = {
         "schema_version",
         "workflow_path",
         "workflow_run_id",
-        "head_sha",
+        "workflow_head_sha",
+        "packet_source_sha",
         "environment",
         "artifact_name",
         "artifact_digest",
@@ -426,14 +428,22 @@ def validate_review_provenance(
         raise E0GovernanceError("review provenance run ID is invalid")
     if expected_workflow_run_id is not None and str(run_id) != str(expected_workflow_run_id):
         raise E0GovernanceError("review provenance run ID mismatch")
-    head_sha = str(value.get("head_sha") or "")
-    if not GIT_SHA_RE.fullmatch(head_sha):
-        raise E0GovernanceError("review provenance head SHA is invalid")
-    if expected_head_sha is not None and head_sha != expected_head_sha:
-        raise E0GovernanceError("review provenance head SHA mismatch")
+    workflow_head_sha = str(value.get("workflow_head_sha") or "")
+    packet_source_sha = str(value.get("packet_source_sha") or "")
+    if not GIT_SHA_RE.fullmatch(workflow_head_sha) or not GIT_SHA_RE.fullmatch(
+        packet_source_sha
+    ):
+        raise E0GovernanceError("review provenance commit identity is invalid")
+    if (
+        expected_workflow_head_sha is not None
+        and workflow_head_sha != expected_workflow_head_sha
+    ):
+        raise E0GovernanceError("review provenance workflow head SHA mismatch")
+    if expected_packet_source_sha is not None and packet_source_sha != expected_packet_source_sha:
+        raise E0GovernanceError("review provenance packet source SHA mismatch")
     if value.get("environment") != "sealed-benchmark":
         raise E0GovernanceError("review provenance environment is untrusted")
-    if value.get("artifact_name") != f"range-v16-reviewed-{head_sha}":
+    if value.get("artifact_name") != f"range-v16-reviewed-{packet_source_sha}":
         raise E0GovernanceError("review provenance artifact name is invalid")
     digest = str(value.get("artifact_digest") or "")
     if not ARTIFACT_DIGEST_RE.fullmatch(digest):

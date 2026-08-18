@@ -24,11 +24,38 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Verify frozen review harnesses
+        env:
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
+          test "$GITHUB_REF" = 'refs/heads/main'
+          python3 - <<'PY'
+          import os, subprocess
+          base = os.environ["GITHUB_SHA"]
+          source = os.environ["PACKET_SOURCE_SHA"]
+          rows = subprocess.run(
+              ["git", "diff", "--name-status", base, source],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.splitlines()
+          allowed_catalog = "test/range/benchmark/v16/review-packet-catalog.json"
+          allowed_prefix = "test/range/benchmark/v16/review-packets/"
+          invalid = []
+          for row in rows:
+              status, path = row.split("\t", 1)
+              if status not in {"A", "M"} or not (
+                  path == allowed_catalog
+                  or (path.startswith(allowed_prefix) and path.endswith(".json"))
+              ):
+                  invalid.append(row)
+          if invalid:
+              raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
+          PY
           test "$(claude --version | awk '{print $1}')" = "2.1.233"
           test "$(dsh --version)" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
@@ -57,9 +84,38 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
+      - name: Verify packet-only source commit
+        env:
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          test "$GITHUB_REF" = 'refs/heads/main'
+          python3 - <<'PY'
+          import os, subprocess
+          base = os.environ["GITHUB_SHA"]
+          source = os.environ["PACKET_SOURCE_SHA"]
+          rows = subprocess.run(
+              ["git", "diff", "--name-status", base, source],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.splitlines()
+          allowed_catalog = "test/range/benchmark/v16/review-packet-catalog.json"
+          allowed_prefix = "test/range/benchmark/v16/review-packets/"
+          invalid = []
+          for row in rows:
+              status, path = row.split("\t", 1)
+              if status not in {"A", "M"} or not (
+                  path == allowed_catalog
+                  or (path.startswith(allowed_prefix) and path.endswith(".json"))
+              ):
+                  invalid.append(row)
+          if invalid:
+              raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
+          PY
       - uses: actions/download-artifact@v8
         with:
           name: range-v16-primary-fable-${{ inputs.source_sha }}
@@ -98,7 +154,8 @@ jobs:
             --review-bundle-manifest review-evidence/review-bundle-manifest.json \
             --artifact-name 'range-v16-reviewed-${{ inputs.source_sha }}' \
             --artifact-digest '${{ steps.upload-reviewed.outputs.artifact-digest }}' \
-            --head-sha '${{ inputs.source_sha }}' \
+            --workflow-head-sha "$GITHUB_SHA" \
+            --packet-source-sha '${{ inputs.source_sha }}' \
             --output review-provenance/review-provenance.json
       - uses: actions/upload-artifact@v7
         with:

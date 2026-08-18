@@ -20,6 +20,7 @@ from scripts.e0_review_governance import (
     validate_e0_attestation,
     validate_review_decision,
     validate_review_packet,
+    validate_review_provenance,
 )
 
 
@@ -245,6 +246,34 @@ def test_e0_attestation_requires_external_workflow_identity_and_hash() -> None:
             malformed,
             expected_workflow_run_id="123",
             expected_head_sha="a" * 40,
+        )
+
+
+def test_review_provenance_separates_workflow_and_packet_commits() -> None:
+    provenance = {
+        "schema_version": "zscope.range-v16-review-provenance.v1",
+        "workflow_path": ".github/workflows/range-v16-review.yml",
+        "workflow_run_id": 123,
+        "workflow_head_sha": "a" * 40,
+        "packet_source_sha": "b" * 40,
+        "environment": "sealed-benchmark",
+        "artifact_name": f"range-v16-reviewed-{'b' * 40}",
+        "artifact_digest": f"sha256:{'c' * 64}",
+        "packet_catalog_sha256": "d" * 64,
+        "review_bundle_sha256": "e" * 64,
+    }
+    validate_review_provenance(
+        provenance,
+        expected_workflow_run_id="123",
+        expected_workflow_head_sha="a" * 40,
+        expected_packet_source_sha="b" * 40,
+        expected_artifact_digest=f"sha256:{'c' * 64}",
+    )
+    provenance["workflow_head_sha"] = provenance["packet_source_sha"]
+    with pytest.raises(E0GovernanceError, match="workflow head SHA"):
+        validate_review_provenance(
+            provenance,
+            expected_workflow_head_sha="a" * 40,
         )
 
 

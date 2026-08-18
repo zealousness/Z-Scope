@@ -8,7 +8,8 @@
     "schema_version",
     "workflow_path",
     "workflow_run_id",
-    "head_sha",
+    "workflow_head_sha",
+    "packet_source_sha",
     "environment",
     "artifact_name",
     "artifact_digest",
@@ -26,7 +27,11 @@
       "type": "integer",
       "minimum": 1
     },
-    "head_sha": {
+    "workflow_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "packet_source_sha": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
     },

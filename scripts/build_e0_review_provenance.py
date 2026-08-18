@@ -36,7 +36,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--review-bundle-manifest", required=True, type=Path)
     parser.add_argument("--artifact-name", required=True)
     parser.add_argument("--artifact-digest", required=True)
-    parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--workflow-head-sha", required=True)
+    parser.add_argument("--packet-source-sha", required=True)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     run_id = str(os.environ.get("GITHUB_RUN_ID") or "")
@@ -44,8 +45,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not run_id.isdigit() or int(run_id) < 1 or environment != "sealed-benchmark":
         print("E0 review provenance requires the sealed protected workflow", file=sys.stderr)
         return 2
-    if not _SHA_RE.fullmatch(args.head_sha):
-        print("E0 review provenance head SHA is invalid", file=sys.stderr)
+    if not _SHA_RE.fullmatch(args.workflow_head_sha) or not _SHA_RE.fullmatch(
+        args.packet_source_sha
+    ):
+        print("E0 review provenance commit identity is invalid", file=sys.stderr)
         return 2
     if not _DIGEST_RE.fullmatch(args.artifact_digest):
         print("E0 review artifact digest is invalid", file=sys.stderr)
@@ -58,8 +61,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             text=True,
             encoding="utf-8",
         ).stdout.strip()
-        if actual_head != args.head_sha:
-            raise E0GovernanceError("review provenance does not bind checked-out HEAD")
+        if actual_head != args.packet_source_sha:
+            raise E0GovernanceError("review provenance does not bind packet source HEAD")
+        if str(os.environ.get("GITHUB_SHA") or "") != args.workflow_head_sha:
+            raise E0GovernanceError("review provenance does not bind workflow HEAD")
+        if str(os.environ.get("GITHUB_REF") or "") != "refs/heads/main":
+            raise E0GovernanceError("E0 protected review must dispatch from main")
         catalog = _object(args.packet_catalog)
         bundle = _object(args.review_bundle_manifest)
         catalog_sha = str(catalog.get("catalog_sha256") or "")
@@ -72,7 +79,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "schema_version": "zscope.range-v16-review-provenance.v1",
             "workflow_path": ".github/workflows/range-v16-review.yml",
             "workflow_run_id": int(run_id),
-            "head_sha": args.head_sha,
+            "workflow_head_sha": args.workflow_head_sha,
+            "packet_source_sha": args.packet_source_sha,
             "environment": environment,
             "artifact_name": args.artifact_name,
             "artifact_digest": args.artifact_digest,
@@ -82,7 +90,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_review_provenance(
             payload,
             expected_workflow_run_id=run_id,
-            expected_head_sha=args.head_sha,
+            expected_workflow_head_sha=args.workflow_head_sha,
+            expected_packet_source_sha=args.packet_source_sha,
             expected_artifact_digest=args.artifact_digest,
         )
     except (E0GovernanceError, OSError, subprocess.SubprocessError) as exc:
