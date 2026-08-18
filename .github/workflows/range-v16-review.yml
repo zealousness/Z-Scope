@@ -48,7 +48,6 @@ jobs:
           path: review-evidence/${{ matrix.reviewer }}
           if-no-files-found: error
           retention-days: 90
-
   arbitrate:
     needs: primary
     runs-on: [self-hosted, linux, x64, zscope-sealed]
@@ -103,5 +102,27 @@ jobs:
         with:
           name: range-v16-review-provenance-${{ inputs.source_sha }}
           path: review-provenance/review-provenance.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Normalize adjudication and author safe pairs
+        run: |
+          umask 077
+          mkdir -p pair-author-evidence
+          python3 scripts/generate_range_v16_truth.py normalize \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --packet-catalog test/range/benchmark/v16/review-packet-catalog.json \
+            --review-root review-evidence \
+            --review-bundle-manifest review-evidence/review-bundle-manifest.json \
+            --review-provenance review-provenance/review-provenance.json \
+            --output pair-author-evidence/normalized-decisions.json
+          python3 scripts/generate_range_v16_safe_pairs.py author \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --normalized-decisions pair-author-evidence/normalized-decisions.json \
+            --output-dir pair-author-evidence/author \
+            --workers 4
+      - uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-pair-author-${{ inputs.source_sha }}
+          path: pair-author-evidence
           if-no-files-found: error
           retention-days: 90
