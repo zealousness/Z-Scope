@@ -304,6 +304,7 @@ def validate_pair_index(value: Mapping[str, Any], *, pair_root: Path) -> set[str
         raise E0GovernanceError("safe-pair index content hash mismatch")
     seen_truth: set[str] = set()
     seen_pair: set[str] = set()
+    seen_pair_sources: set[tuple[str, str]] = set()
     pair_root = pair_root.resolve(strict=True)
     for record in records:
         expected = {
@@ -334,6 +335,13 @@ def validate_pair_index(value: Mapping[str, Any], *, pair_root: Path) -> set[str
         if not isinstance(manifest, Mapping):
             raise E0GovernanceError("indexed safe-pair manifest must be an object")
         bound = validate_pair_manifest(manifest, pair_root=pair_dir)
+        source_identity = (
+            str(bound["vulnerable"]["sha256"]),
+            str(bound["fixed_or_near_miss"]["sha256"]),
+        )
+        if source_identity in seen_pair_sources:
+            raise E0GovernanceError("safe-pair index reuses one vulnerable/safe source pair")
+        seen_pair_sources.add(source_identity)
         expected_values = {
             "pair_uid": manifest["pair_uid"],
             "manifest_sha256": sha256_file(manifest_path),
@@ -764,6 +772,7 @@ def validate_truth_v16(truth: Mapping[str, Any], *, pair_root: Path) -> dict[str
 
     seen: set[str] = set()
     pair_uids: set[str] = set()
+    pair_source_identities: set[tuple[str, str]] = set()
     fixture_hashes: set[str] = set()
     counts = {kind: 0 for kind in sorted(CONTRACT_KINDS)}
     canonical_records: list[dict[str, Any]] = []
@@ -815,6 +824,15 @@ def validate_truth_v16(truth: Mapping[str, Any], *, pair_root: Path) -> dict[str
             if not isinstance(pair_manifest, Mapping):
                 raise E0GovernanceError(f"Truth v16 {truth_id} pair manifest must be an object")
             bound = validate_pair_manifest(pair_manifest, pair_root=pair_dir)
+            source_identity = (
+                str(bound["vulnerable"]["sha256"]),
+                str(bound["fixed_or_near_miss"]["sha256"]),
+            )
+            if source_identity in pair_source_identities:
+                raise E0GovernanceError(
+                    "Truth v16 confirmable records must have independent safe-pair sources"
+                )
+            pair_source_identities.add(source_identity)
             if (
                 pair_manifest.get("truth_id") != truth_id
                 or pair_manifest.get("pair_uid") != pair_uid
