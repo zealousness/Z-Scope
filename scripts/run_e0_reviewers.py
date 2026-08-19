@@ -471,6 +471,46 @@ def _claude_arguments(reviewer: str) -> list[str]:
     ]
 
 
+def _deepseek_patch_text() -> str:
+    """Return the sealed DSH overlay, including its auditable provider route."""
+    return (
+        "- id: agent-default-model\n"
+        "  config:\n"
+        "    provider: openai\n"
+        "    model: deepseek-v4-pro\n"
+        "    reasoningEffort: max\n"
+        "- id: system-prompt\n"
+        "  config:\n"
+        "    persona: >-\n"
+        "      You are an isolated benchmark contract reviewer. Only use the\n"
+        "      read-only packet.json and decision-schema.json in the current\n"
+        "      directory. Never use external knowledge or any other tool. Return\n"
+        "      exactly the requested JSON object with no markdown or prose wrapper.\n"
+        "- id: tool-web\n"
+        "  disabled: true\n"
+        "- id: tool-fs-search\n"
+        "  disabled: true\n"
+        "- id: tool-pwsh\n"
+        "  disabled: true\n"
+        "- id: tool-jobs\n"
+        "  disabled: true\n"
+        "- id: tool-subagent\n"
+        "  disabled: true\n"
+        "- id: tool-subagent-fork\n"
+        "  disabled: true\n"
+        "- id: tool-workflow\n"
+        "  disabled: true\n"
+        "- id: tool-ralph\n"
+        "  disabled: true\n"
+        "- id: tool-str-replace-editor\n"
+        "  disabled: true\n"
+        "- id: tool-todo\n"
+        "  disabled: true\n"
+        "- id: tool-goal\n"
+        "  disabled: true\n"
+    )
+
+
 def _run_model(
     packet: Mapping[str, Any],
     *,
@@ -509,40 +549,7 @@ def _run_model(
         else:
             patch_path = temp_root / "deepseek-max.patch.yml"
             patch_path.write_text(
-                "- id: agent-default-model\n"
-                "  config:\n"
-                "    provider: deepseek-official\n"
-                "    model: deepseek-v4-pro\n"
-                "    reasoningEffort: max\n"
-                "- id: system-prompt\n"
-                "  config:\n"
-                "    persona: >-\n"
-                "      You are an isolated benchmark contract reviewer. Only use the\n"
-                "      read-only packet.json and decision-schema.json in the current\n"
-                "      directory. Never use external knowledge or any other tool. Return\n"
-                "      exactly the requested JSON object with no markdown or prose wrapper.\n"
-                "- id: tool-web\n"
-                "  disabled: true\n"
-                "- id: tool-fs-search\n"
-                "  disabled: true\n"
-                "- id: tool-pwsh\n"
-                "  disabled: true\n"
-                "- id: tool-jobs\n"
-                "  disabled: true\n"
-                "- id: tool-subagent\n"
-                "  disabled: true\n"
-                "- id: tool-subagent-fork\n"
-                "  disabled: true\n"
-                "- id: tool-workflow\n"
-                "  disabled: true\n"
-                "- id: tool-ralph\n"
-                "  disabled: true\n"
-                "- id: tool-str-replace-editor\n"
-                "  disabled: true\n"
-                "- id: tool-todo\n"
-                "  disabled: true\n"
-                "- id: tool-goal\n"
-                "  disabled: true\n",
+                _deepseek_patch_text(),
                 encoding="utf-8",
             )
             command = [
