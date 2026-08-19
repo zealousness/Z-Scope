@@ -317,6 +317,31 @@ def _extract_claude_decision(stdout: str) -> Mapping[str, Any]:
     raise E0GovernanceError("Claude did not return a structured review decision")
 
 
+def _normalize_deepseek_json_artifact(stdout: str) -> str:
+    """Accept direct JSON or one exact JSON fence, never prose extraction."""
+
+    stripped = stdout.strip()
+    try:
+        json.loads(stripped)
+        return stripped
+    except json.JSONDecodeError:
+        pass
+
+    match = re.fullmatch(
+        r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n```",
+        stripped,
+        flags=re.DOTALL,
+    )
+    if match is None or "```" in match.group("body"):
+        raise E0GovernanceError("reviewer output is not a JSON artifact")
+    body = match.group("body").strip()
+    try:
+        json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise E0GovernanceError("reviewer output is not a JSON artifact") from exc
+    return body
+
+
 def _extract_deepseek_decision(stdout: str) -> Mapping[str, Any]:
     value = json.loads(stdout.strip())
     if not isinstance(value, Mapping):
@@ -346,6 +371,16 @@ def assert_no_hidden_reasoning_output(stdout: str) -> None:
                 visit(nested, path=f"{path}[{index}]")
 
     visit(value, path="$")
+
+
+def _validated_decision_from_stdout(stdout: str, *, reviewer: str) -> Mapping[str, Any]:
+    artifact = _normalize_deepseek_json_artifact(stdout) if reviewer == "deepseek" else stdout
+    assert_no_hidden_reasoning_output(artifact)
+    return (
+        _extract_deepseek_decision(artifact)
+        if reviewer == "deepseek"
+        else _extract_claude_decision(artifact)
+    )
 
 
 def validate_decision_against_packet(
@@ -616,12 +651,7 @@ def _run_model(
                 f"stderr_sha256={raw['stderr_sha256']}"
             )
         try:
-            assert_no_hidden_reasoning_output(completed.stdout)
-            decision = (
-                _extract_deepseek_decision(completed.stdout)
-                if reviewer == "deepseek"
-                else _extract_claude_decision(completed.stdout)
-            )
+            decision = _validated_decision_from_stdout(completed.stdout, reviewer=reviewer)
         except (json.JSONDecodeError, E0GovernanceError) as exc:
             if reviewer != "deepseek":
                 raise
@@ -659,8 +689,7 @@ def _run_model(
             }
             if retry.returncode != 0:
                 raise E0GovernanceError("DeepSeek format-only retry failed") from exc
-            assert_no_hidden_reasoning_output(retry.stdout)
-            decision = _extract_deepseek_decision(retry.stdout)
+            decision = _validated_decision_from_stdout(retry.stdout, reviewer="deepseek")
             raw["stdout"] = retry.stdout
         try:
             validate_review_decision(
@@ -741,8 +770,10 @@ def _run_model(
                 raise E0GovernanceError("DeepSeek grounding-only retry failed") from exc
             raw["stdout"] = retry.stdout
             try:
-                assert_no_hidden_reasoning_output(retry.stdout)
-                decision = _extract_deepseek_decision(retry.stdout)
+                decision = _validated_decision_from_stdout(
+                    retry.stdout,
+                    reviewer="deepseek",
+                )
                 validate_review_decision(
                     decision,
                     expected_packet_uid=str(packet["packet_uid"]),
@@ -868,11 +899,9 @@ def _validate_existing_primary(
     ):
         raise E0GovernanceError("existing raw review envelope is invalid")
     _validate_command_identity(raw.get("command_identity"), reviewer=reviewer)
-    assert_no_hidden_reasoning_output(str(raw["stdout"]))
-    raw_decision = (
-        _extract_deepseek_decision(str(raw["stdout"]))
-        if reviewer == "deepseek"
-        else _extract_claude_decision(str(raw["stdout"]))
+    raw_decision = _validated_decision_from_stdout(
+        str(raw["stdout"]),
+        reviewer=reviewer,
     )
     if dict(raw_decision) != dict(decision):
         raise E0GovernanceError("existing raw review output does not match decision")

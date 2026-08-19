@@ -362,12 +362,77 @@ def test_review_command_identity_disables_claude_tools_and_binds_deepseek_patch(
         reviewer_runner._validate_command_identity(deepseek, reviewer="deepseek")
 
 
+def test_deepseek_accepts_only_direct_json_or_one_exact_json_fence() -> None:
+    direct = json.dumps({"status": "ok"})
+    assert reviewer_runner._normalize_deepseek_json_artifact(direct) == direct
+
+    fenced = '```json\n{"status":"ok"}\n```'
+    assert reviewer_runner._normalize_deepseek_json_artifact(fenced) == '{"status":"ok"}'
+    unlabeled = '```\n{"status":"ok"}\n```'
+    assert reviewer_runner._normalize_deepseek_json_artifact(unlabeled) == '{"status":"ok"}'
+
+    rejected = [
+        'Result:\n```json\n{"status":"ok"}\n```',
+        '```json\n{"status":"ok"}\n```\nDone.',
+        '```JSON\n{"status":"ok"}\n```',
+        '```json\n{"status":"ok"}\n```\n```json\n{}\n```',
+        "```json\nnot json\n```",
+    ]
+    for value in rejected:
+        with pytest.raises(ValueError, match="not a JSON artifact"):
+            reviewer_runner._normalize_deepseek_json_artifact(value)
+
+
+def test_deepseek_fenced_json_still_rejects_hidden_reasoning() -> None:
+    fenced = '```json\n{"hidden_reasoning":"do not retain"}\n```'
+    with pytest.raises(ValueError, match="hidden reasoning"):
+        reviewer_runner._validated_decision_from_stdout(fenced, reviewer="deepseek")
+
+
 def test_deepseek_review_patch_uses_openai_provider_and_pins_model() -> None:
     patch = reviewer_runner._deepseek_patch_text()
     assert "    provider: openai\n" in patch
     assert "    model: deepseek-v4-pro\n" in patch
     assert "    reasoningEffort: max\n" in patch
     assert "deepseek-official" not in patch
+
+
+def test_deepseek_format_retry_accepts_exact_fence_and_preserves_raw_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    expected = _decision(packet)
+    expected["reviewer_role"] = "primary_deepseek"
+    expected["reviewer_model"] = "deepseek-v4-pro:max"
+    fenced = f"```json\n{json.dumps(expected)}\n```"
+    outputs = iter((f"Decision follows:\n{fenced}", fenced))
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    raw_path = tmp_path / "raw.json"
+    decision, raw = reviewer_runner._run_model(
+        packet,
+        reviewer="deepseek",
+        raw_output_path=raw_path,
+    )
+
+    assert decision == expected
+    assert len(calls) == 2
+    assert raw["stdout"] == fenced
+    assert raw["format_retry"]["original_stdout_retained"] is False
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    reviewer_runner._validate_existing_primary(
+        packet,
+        reviewer="deepseek",
+        decision_path=decision_path,
+        raw_path=raw_path,
+    )
 
 
 def test_deepseek_grounding_retry_preserves_substantive_decision(
