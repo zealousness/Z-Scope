@@ -95,6 +95,8 @@ formal 与 sealed 还必须在 rootless Podman/Docker 容器中执行 scanner。
 
 受保护的 formal 环境必须配置 `Z_SCOPE_BENCHMARK_OCI_IMAGE`（`repository@sha256:<64-hex>`）、`Z_SCOPE_BENCHMARK_OCI_NETWORK` 和 `Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER`。该 internal network 在启动 scanner 前只能包含一个带 policy digest 的模型 endpoint proxy；缺少变量、rootless 证明、镜像 digest 或实际 inspect 证据都会直接阻断 formal 运行。
 
+Podman 4.x 的 `network inspect` 可能不返回容器成员。此时 runner 必须额外使用带精确 network filter 的 `podman ps --all --format json` 重建成员快照，并验证每个返回容器都显式绑定目标网络；若两个来源都提供成员，则集合必须一致。成员快照进入 evidence hash，缺失 ID、网络归属、唯一 proxy 或执行阶段 scanner/proxy 二元成员关系时继续 fail closed。
+
 计时口径显式拆分：`scan_wall_seconds` 来自扫描报告的 `summary.batch_wall_seconds`，用于跨轮比较和 rollout 的 p95 回退判断；`end_to_end_wall_seconds` 是 runner 从输入准备到评分完成的总耗时。兼容字段 `wall_seconds` 等于 `scan_wall_seconds`。artifact 另记录验证队列 wall time、session/API call 数和实际 Validator/LLM 并发配置。
 
 质量也必须按两种视图读取：`confirmed_recall`/`confirmed_precision` 只统计已确认 finding，`with_review_recall`/`with_review_precision` 将 needs-review 纳入人工复核队列。旧顶层 `recall` 仅是 confirmed 视图的兼容字段，不能称为“总召回”；两种视图的完整计数保存在 `quality_views`。Range 没有 true negatives，`FP/(TP+FP)` 必须称 actionable FDR，不能称经典 FPR。

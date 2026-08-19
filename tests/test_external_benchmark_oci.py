@@ -53,10 +53,15 @@ class ExternalFakeOciRuntime:
         if command[1:3] == ["image", "inspect"]:
             digest = self.image.rsplit("@", 1)[1]
             return self._result(command, [{"Id": digest, "RepoDigests": ["repo@" + digest]}])
-        if command[1:3] == ["network", "inspect"]:
-            peers: dict[str, Any] = {"proxy123": {"Name": "model-proxy"}}
+        if command[1:3] == ["ps", "--all"]:
+            assert command[3:5] == ["--filter", f"network={self.policy.network_name}"]
+            rows: list[dict[str, Any]] = [
+                {"Id": "proxy123", "Networks": [self.policy.network_name]}
+            ]
             if self.scanner_name:
-                peers["scanner123"] = {"Name": self.scanner_name}
+                rows.append({"Id": "scanner123", "Networks": [self.policy.network_name]})
+            return self._result(command, rows)
+        if command[1:3] == ["network", "inspect"]:
             return self._result(
                 command,
                 [
@@ -67,7 +72,6 @@ class ExternalFakeOciRuntime:
                             "io.zscope.network-policy": "model-endpoint-only",
                             "io.zscope.network-policy-sha256": self.policy.policy_sha256,
                         },
-                        "Containers": peers,
                     }
                 ],
             )
