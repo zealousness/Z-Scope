@@ -362,6 +362,14 @@ def test_review_command_identity_disables_claude_tools_and_binds_deepseek_patch(
         reviewer_runner._validate_command_identity(deepseek, reviewer="deepseek")
 
 
+def test_deepseek_review_patch_uses_openai_provider_and_pins_model() -> None:
+    patch = reviewer_runner._deepseek_patch_text()
+    assert "    provider: openai\n" in patch
+    assert "    model: deepseek-v4-pro\n" in patch
+    assert "    reasoningEffort: max\n" in patch
+    assert "deepseek-official" not in patch
+
+
 def test_deepseek_grounding_retry_preserves_substantive_decision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
