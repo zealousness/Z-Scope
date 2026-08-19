@@ -231,9 +231,7 @@ def prepare_canary(
             fact = result.fact
             if isinstance(fact, Mapping):
                 closed.update(
-                    str(value)
-                    for value in fact.get("satisfies_fact_kinds") or []
-                    if str(value)
+                    str(value) for value in fact.get("satisfies_fact_kinds") or [] if str(value)
                 )
             action_results.append(
                 {
@@ -241,9 +239,7 @@ def prepare_canary(
                     "fact_kind": action.fact_kind,
                     "status": result.status,
                     "reason_code": result.reason_code,
-                    "certificate_sha256": str(
-                        result.certificate.get("certificate_sha256") or ""
-                    ),
+                    "certificate_sha256": str(result.certificate.get("certificate_sha256") or ""),
                     "certificate_coverage": str(result.certificate.get("coverage") or ""),
                     "closed_clause": action.fact_kind in closed,
                 }
@@ -264,12 +260,10 @@ def prepare_canary(
     rows, excluded = _select_currently_eligible(historical_rows, limit=limit)
     closed_rows = sum(bool(value["closed_fact_kinds"]) for value in rows)
     empty_required = sum(
-        value.get("current_v3_exclusion_reason") == "empty_required_facts"
-        for value in excluded
+        value.get("current_v3_exclusion_reason") == "empty_required_facts" for value in excluded
     )
     no_action = sum(
-        value.get("current_v3_exclusion_reason") == "no_executable_action"
-        for value in excluded
+        value.get("current_v3_exclusion_reason") == "no_executable_action" for value in excluded
     )
     expected_sessions = min(limit, len(historical_rows) - len(excluded))
     body: Dict[str, Any] = {
@@ -286,9 +280,7 @@ def prepare_canary(
         "historical_clusters_excluded_empty_required_facts": empty_required,
         "historical_clusters_excluded_no_executable_action": no_action,
         "ready_for_model_canary": bool(
-            expected_sessions >= 3
-            and len(rows) == expected_sessions
-            and closed_rows >= 3
+            expected_sessions >= 3 and len(rows) == expected_sessions and closed_rows >= 3
         ),
         "model_calls": 0,
         "truth_inputs": 0,

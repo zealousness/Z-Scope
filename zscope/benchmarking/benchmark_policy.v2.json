@@ -1,0 +1,40 @@
+{
+  "schema_version": "zscope.benchmark-policy.v2",
+  "policy_id": "zscope-security-architecture-v2-evaluation-v1",
+  "benchmark_schema_version": "zscope.benchmark.v5",
+  "formal_schema_version": "zscope.formal-benchmark.v4",
+  "minimum_formal_trials": 5,
+  "quality_gates": {
+    "confirmed_recall": {"operator": ">=", "threshold": 0.85},
+    "actionable_precision_delta_pp": {"operator": ">=", "threshold": -1.0},
+    "true_positive_jaccard": {"operator": ">=", "threshold": 0.9},
+    "recall_range_pp": {"operator": "<=", "threshold": 2.0},
+    "safe_entry_alert_rate": {"operator": "<=", "threshold": 0.1},
+    "proof_false_acceptance_count": {"operator": "<=", "threshold": 0.0},
+    "provider_usage_coverage": {"operator": ">=", "threshold": 1.0},
+    "trace_completeness": {"operator": ">=", "threshold": 1.0},
+    "token_conservation_rate": {"operator": ">=", "threshold": 1.0}
+  },
+  "cost_contract": {
+    "runtime_token_limit": false,
+    "metrics": [
+      "total_tokens",
+      "tokens_per_kloc",
+      "tokens_per_confirmed_tp",
+      "marginal_tokens_per_added_confirmed_tp",
+      "wall_time_seconds"
+    ],
+    "selection_rule": "When quality differs by less than one percentage point, prefer the lowest median tokens per confirmed TP."
+  },
+  "requirements": {
+    "require_truth_contract_v2": true,
+    "require_matcher_v2": true,
+    "require_e0_attestation": true,
+    "require_safe_pairs": true,
+    "require_component_metrics": true,
+    "require_provider_usage_for_formal": true,
+    "require_trace_completeness_for_formal": true,
+    "require_token_conservation_for_formal": true,
+    "require_answer_isolation": true
+  }
+}

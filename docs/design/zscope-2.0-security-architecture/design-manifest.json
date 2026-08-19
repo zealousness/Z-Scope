@@ -39,7 +39,7 @@
     "phases/P5-runtime-cutover.md": "ec36ad15fda5495a8e7217ec83fd26a07855073a2795c5246c9f2cea6d72b583",
     "phases/P6-pilot-validation.md": "0cfcddd02820343931e8a988a753939c325861c17abdfcc36dec93b4da7fd93d",
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
-    "acceptance/evidence-index.schema.json": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4",
+    "acceptance/evidence-index.schema.json": "3a48044dc7f68832fcb33431f8ee7c0e5c163d79bbaf34c994e0db37f3c428f3",
     "acceptance/runtime-reachability-manifest.json": "f8ac37ede0af7ef15aeb4a5aae30005ad83f51e9bc0cc6525530ed2a69761409",
     "acceptance/p2-qualification-manifest.json": "7e0b606f4943a4d1fbc8bda8df87cbd4b6f9758810ecfae1eb840bfd6fd6f904",
     "acceptance/p3-qualification-manifest.json": "cdfe7dae89e1d0f952fc01399e3ecfb9e81a5010ad56ba7d515da3c1a93daeb9",

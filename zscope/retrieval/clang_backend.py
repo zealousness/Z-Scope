@@ -150,9 +150,7 @@ class ClangBackend(CodeBackend):
                 )
                 if hash_workers == 1:
                     hashes = map(ClangExtractor._compute_file_hash, resolved_files)
-                    file_hashes = {
-                        str(path): value for path, value in zip(resolved_files, hashes)
-                    }
+                    file_hashes = {str(path): value for path, value in zip(resolved_files, hashes)}
                 else:
                     with ThreadPoolExecutor(
                         max_workers=hash_workers,
@@ -168,9 +166,7 @@ class ClangBackend(CodeBackend):
                                 ),
                             )
                         }
-            deferred_tu_commits = bool(
-                getattr(db, "SUPPORTS_DEFERRED_TU_COMMITS", False)
-            )
+            deferred_tu_commits = bool(getattr(db, "SUPPORTS_DEFERRED_TU_COMMITS", False))
             force_refresh_paths: set[str] = set()
             deleted_paths: List[Path] = []
             changed_count = 0
@@ -293,9 +289,8 @@ class ClangBackend(CodeBackend):
                 if deleted_paths and hasattr(extractor, "notify_files_deleted"):
                     extractor.notify_files_deleted(deleted_paths)
                 supports_deferred_index_barrier = isinstance(extractor, ClangExtractor)
-                if (
-                    not supports_deferred_index_barrier
-                    and not extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
+                if not supports_deferred_index_barrier and not extractor.wait_for_indexing(
+                    timeout=120, idle_threshold=3.0
                 ):
                     logger.error("clangd indexing did not become ready before the hard timeout")
                     self._status = "error"
@@ -308,13 +303,9 @@ class ClangBackend(CodeBackend):
                     return True
                 if extractor is None:
                     return False
-                index_ready = bool(
-                    extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
-                )
+                index_ready = bool(extractor.wait_for_indexing(timeout=120, idle_threshold=3.0))
                 if not index_ready:
-                    logger.error(
-                        "clangd indexing did not become ready before the hard timeout"
-                    )
+                    logger.error("clangd indexing did not become ready before the hard timeout")
                 return index_ready
 
             if changed_count:
@@ -459,9 +450,7 @@ class ClangBackend(CodeBackend):
                                 )
                     except Exception as exc:
                         derived_failed = True
-                        for index_name, target_version, _method in (
-                            started_specs or derived_work
-                        ):
+                        for index_name, target_version, _method in started_specs or derived_work:
                             self._record_derived_failure(
                                 db,
                                 extractor,
@@ -479,9 +468,7 @@ class ClangBackend(CodeBackend):
                                     raise RuntimeError(
                                         "clangd extractor unavailable for derived rebuild"
                                     )
-                                row_count = int(
-                                    rebuild_method(extractor, db, use_staging=True)
-                                )
+                                row_count = int(rebuild_method(extractor, db, use_staging=True))
                                 stats_getter = getattr(
                                     extractor,
                                     "get_last_derived_stats",
@@ -699,7 +686,7 @@ class ClangBackend(CodeBackend):
                 p_str = str(parent.absolute())
 
                 # Case-insensitive ONLY on Windows
-                if os.name == 'nt':
+                if os.name == "nt":
                     c_str = c_str.lower()
                     p_str = p_str.lower()
 
@@ -735,7 +722,9 @@ class ClangBackend(CodeBackend):
 
         raw_bases = self._include_paths if self._include_paths else [self._source_path]
         bases_to_search: List[Path] = []
-        for base in sorted({Path(value).resolve() for value in raw_bases}, key=lambda p: len(p.parts)):
+        for base in sorted(
+            {Path(value).resolve() for value in raw_bases}, key=lambda p: len(p.parts)
+        ):
             covered = False
             for parent in bases_to_search:
                 try:
@@ -885,8 +874,10 @@ class ClangBackend(CodeBackend):
             "FROM call_edges WHERE callee_name = ? AND call_type = 'indirect' LIMIT 20",
             (func_name,),
         ).fetchall()
-        return [{"caller": r["caller_name"], "file": r["caller_file"],
-                 "line": r["call_line"]} for r in rows]
+        return [
+            {"caller": r["caller_name"], "file": r["caller_file"], "line": r["call_line"]}
+            for r in rows
+        ]
 
     def get_header_declared_functions(
         self, header_files: Optional[List[str]] = None

@@ -66,8 +66,18 @@ from .gap_analysis import (
 from .truth_contract import (
     TRUTH_CONTRACT_KINDS,
     TRUTH_CONTRACT_SCHEMA_VERSION,
+    TRUTH_CONTRACT_V2_SCHEMA_VERSION,
     summarize_truth_contract,
     truth_records_for_contract,
+)
+from .benchmark_v5 import (
+    BENCHMARK_V5_SCHEMA_VERSION,
+    FORMAL_BENCHMARK_V4_SCHEMA_VERSION,
+    BenchmarkV5Error,
+    aggregate_benchmark_v5,
+    load_benchmark_v5_policy,
+    load_defect_taxonomy,
+    score_benchmark_v5,
 )
 from .postscore_trace import (
     POSTSCORE_TRACE_SCHEMA_VERSION,
@@ -100,6 +110,14 @@ __all__ = [
     "analyze_range_gaps",
     "TRUTH_CONTRACT_KINDS",
     "TRUTH_CONTRACT_SCHEMA_VERSION",
+    "TRUTH_CONTRACT_V2_SCHEMA_VERSION",
+    "BENCHMARK_V5_SCHEMA_VERSION",
+    "FORMAL_BENCHMARK_V4_SCHEMA_VERSION",
+    "BenchmarkV5Error",
+    "aggregate_benchmark_v5",
+    "load_benchmark_v5_policy",
+    "load_defect_taxonomy",
+    "score_benchmark_v5",
     "summarize_truth_contract",
     "truth_records_for_contract",
     "POSTSCORE_TRACE_SCHEMA_VERSION",

@@ -37,8 +37,7 @@ def test_canary_excludes_historical_v3_clusters_without_executable_gap() -> None
 
     assert [row["validation_cluster_uid"] for row in selected] == ["eligible-a"]
     assert {
-        row["validation_cluster_uid"]: row["current_v3_exclusion_reason"]
-        for row in excluded
+        row["validation_cluster_uid"]: row["current_v3_exclusion_reason"] for row in excluded
     } == {
         "empty": "empty_required_facts",
         "unsupported": "no_executable_action",

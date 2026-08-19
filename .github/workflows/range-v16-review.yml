@@ -1,0 +1,192 @@
+name: Range v16 Independent Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Commit containing the frozen 136 minimal review packets
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  primary:
+    strategy:
+      fail-fast: true
+      matrix:
+        reviewer: [fable, deepseek]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Verify frozen review harnesses
+        env:
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          test "$GITHUB_REF" = 'refs/heads/main'
+          python3 - <<'PY'
+          import os, subprocess
+          base = os.environ["GITHUB_SHA"]
+          source = os.environ["PACKET_SOURCE_SHA"]
+          rows = subprocess.run(
+              ["git", "diff", "--name-status", base, source],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.splitlines()
+          allowed_catalog = "test/range/benchmark/v16/review-packet-catalog.json"
+          allowed_prefix = "test/range/benchmark/v16/review-packets/"
+          invalid = []
+          for row in rows:
+              status, path = row.split("\t", 1)
+              if status not in {"A", "M"} or not (
+                  path == allowed_catalog
+                  or (path.startswith(allowed_prefix) and path.endswith(".json"))
+              ):
+                  invalid.append(row)
+          if invalid:
+              raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
+          PY
+          test "$(claude --version | awk '{print $1}')" = "2.1.233"
+          test "$(dsh --version)" = "0.1.0-rc.6"
+          test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
+      - name: Run independent primary reviewer
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          umask 077
+          python3 scripts/run_e0_reviewers.py primary \
+            --reviewer '${{ matrix.reviewer }}' \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --output-dir 'review-evidence/${{ matrix.reviewer }}' \
+            --workers 4
+      - uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-primary-${{ matrix.reviewer }}-${{ inputs.source_sha }}
+          path: review-evidence/${{ matrix.reviewer }}
+          if-no-files-found: error
+          retention-days: 90
+  arbitrate:
+    needs: primary
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Verify packet-only source commit
+        env:
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          test "$GITHUB_REF" = 'refs/heads/main'
+          python3 - <<'PY'
+          import os, subprocess
+          base = os.environ["GITHUB_SHA"]
+          source = os.environ["PACKET_SOURCE_SHA"]
+          rows = subprocess.run(
+              ["git", "diff", "--name-status", base, source],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.splitlines()
+          allowed_catalog = "test/range/benchmark/v16/review-packet-catalog.json"
+          allowed_prefix = "test/range/benchmark/v16/review-packets/"
+          invalid = []
+          for row in rows:
+              status, path = row.split("\t", 1)
+              if status not in {"A", "M"} or not (
+                  path == allowed_catalog
+                  or (path.startswith(allowed_prefix) and path.endswith(".json"))
+              ):
+                  invalid.append(row)
+          if invalid:
+              raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
+          PY
+          test "$(claude --version | awk '{print $1}')" = "2.1.233"
+          test "$(dsh --version)" = "0.1.0-rc.6"
+          test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
+      - uses: actions/download-artifact@v8
+        with:
+          name: range-v16-primary-fable-${{ inputs.source_sha }}
+          path: review-evidence/fable
+      - uses: actions/download-artifact@v8
+        with:
+          name: range-v16-primary-deepseek-${{ inputs.source_sha }}
+          path: review-evidence/deepseek
+      - name: Run mandatory and disagreement arbitration
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          umask 077
+          python3 scripts/run_e0_reviewers.py arbitrate \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --fable-dir review-evidence/fable \
+            --deepseek-dir review-evidence/deepseek \
+            --output-dir review-evidence/opus \
+            --workers 4
+          python3 scripts/build_e0_review_manifest.py \
+            --review-root review-evidence \
+            --output review-evidence/review-bundle-manifest.json
+      - id: upload-reviewed
+        uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-reviewed-${{ inputs.source_sha }}
+          path: review-evidence
+          if-no-files-found: error
+          retention-days: 90
+      - name: Bind protected review provenance
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          python3 scripts/build_e0_review_provenance.py \
+            --packet-catalog test/range/benchmark/v16/review-packet-catalog.json \
+            --review-bundle-manifest review-evidence/review-bundle-manifest.json \
+            --artifact-name 'range-v16-reviewed-${{ inputs.source_sha }}' \
+            --artifact-digest '${{ steps.upload-reviewed.outputs.artifact-digest }}' \
+            --workflow-head-sha "$GITHUB_SHA" \
+            --packet-source-sha '${{ inputs.source_sha }}' \
+            --output review-provenance/review-provenance.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-review-provenance-${{ inputs.source_sha }}
+          path: review-provenance/review-provenance.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Normalize adjudication and author safe pairs
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          umask 077
+          mkdir -p pair-author-evidence
+          python3 scripts/generate_range_v16_truth.py normalize \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --packet-catalog test/range/benchmark/v16/review-packet-catalog.json \
+            --review-root review-evidence \
+            --review-bundle-manifest review-evidence/review-bundle-manifest.json \
+            --review-provenance review-provenance/review-provenance.json \
+            --output pair-author-evidence/normalized-decisions.json
+          python3 scripts/generate_range_v16_safe_pairs.py author \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --normalized-decisions pair-author-evidence/normalized-decisions.json \
+            --output-dir pair-author-evidence/author \
+            --workers 4
+      - uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-pair-author-${{ inputs.source_sha }}
+          path: pair-author-evidence
+          if-no-files-found: error
+          retention-days: 90
