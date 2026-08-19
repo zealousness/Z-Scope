@@ -1,0 +1,68 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-048",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-048",
+    "cwe": "CWE-362",
+    "category": "race",
+    "title": "Shared counter locking is compiled out on non-64-bit builds while the resource remains shared",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_update_counter_slot",
+    "line": 960,
+    "end_line": 972,
+    "severity": "medium",
+    "keywords": [
+      "COUNTER_SLOT_LOCK",
+      "__x86_64__",
+      "do { } while",
+      "g_lifecycle_counter_slot",
+      "race"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 948,
+      "end_line": 984,
+      "content": "    while (node && visited < limit) {\n        LOG_INFO(\"route key %d state %d\", node->key, node->route_state);\n        node = node->duplicate_next;\n        visited++;\n    }\n    return visited;\n}\n\nstatic uint32_t g_lifecycle_counter_slot = 0;\nstatic pthread_mutex_t g_lifecycle_counter_lock = PTHREAD_MUTEX_INITIALIZER;\n\n#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__)\n#define COUNTER_SLOT_LOCK() LOCK(&g_lifecycle_counter_lock)\n#define COUNTER_SLOT_UNLOCK() UNLOCK(&g_lifecycle_counter_lock)\n#else\n#define COUNTER_SLOT_LOCK() do { } while (0)\n#define COUNTER_SLOT_UNLOCK() do { } while (0)\n#endif\n\nuint32_t _lifecycle_update_counter_slot(uint32_t delta) {\n    COUNTER_SLOT_LOCK();\n    uint32_t old_value = g_lifecycle_counter_slot;\n    g_lifecycle_counter_slot = old_value + delta;\n    COUNTER_SLOT_UNLOCK();\n    return g_lifecycle_counter_slot;\n}\n\ntypedef struct ServiceChild {\n    char* name;\n    int fd;\n    struct ServiceChild* next;\n} ServiceChild;\n\ntypedef struct ServiceNode {\n    char key[64];\n    char* name;\n    char* payload;\n",
+      "sha256": "a5af983462a054e4ff63322057d01431ce8258aa80f14541daade41c2ad67a9f"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 40,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "b1be7073f47fea7ca3788e83a07b1770e4b896f8473310bb03d7d798708caf3e"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 959,
+      "end_line": 965,
+      "content": "#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__)\n#define COUNTER_SLOT_LOCK() LOCK(&g_lifecycle_counter_lock)\n#define COUNTER_SLOT_UNLOCK() UNLOCK(&g_lifecycle_counter_lock)\n#else\n#define COUNTER_SLOT_LOCK() do { } while (0)\n#define COUNTER_SLOT_UNLOCK() do { } while (0)\n#endif\n",
+      "sha256": "1b38bd189622fa30ab1e6a2a6e733bfc6e6ecc93a8359c0bcb3a10d709f84dc3"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "race",
+    "anchor_functions": [
+      "_lifecycle_update_counter_slot"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "abbc2cacafaa6cce9b067f8c0f87e2b70d22edb6c952c232f7a8b610eade4b2a"
+}

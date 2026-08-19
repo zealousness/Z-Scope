@@ -1,0 +1,67 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-007",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-007",
+    "cwe": "CWE-772",
+    "category": "memory_leak",
+    "title": "Reader-channel cleanup ignores the stored role and invokes the creator-only release path",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_release_reader_channel",
+    "line": 1280,
+    "end_line": 1294,
+    "severity": "critical",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-007",
+    "keywords": [
+      "issue-40",
+      "VM-007",
+      "reader channel",
+      "role",
+      "hardcoded",
+      "release path",
+      "leak"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1268,
+      "end_line": 1306,
+      "content": "    ServiceNode* node = _service_alloc_node(key, \"dfi\");\n    if (!node) {\n        return -1;\n    }\n    node->children = _service_alloc_child(\"session\", 1);\n\n    LOCK(&g_service_registry.lock);\n    _service_insert_locked(node);\n    UNLOCK(&g_service_registry.lock);\n\n    if (activation_rc != 0) {\n        LOCK(&g_service_registry.lock);\n        g_service_registry.head = node->next;\n        UNLOCK(&g_service_registry.lock);\n        SAFE_FREE(node);\n        return -1;\n    }\n    return 0;\n}\n\nint _runtime_release_reader_channel(const char* key, int role) {\n    ServiceNode* node = _service_alloc_node(key, \"reader\");\n    if (!node) {\n        return -1;\n    }\n    node->role = role;\n    if (node->role == 1) {\n        _service_release_by_role(node, 0);\n        SAFE_FREE(node);\n        return 0;\n    }\n    _service_release_by_role(node, 0);\n    SAFE_FREE(node);\n    return 0;\n}\n\nint _runtime_flush_log_buffer(const char* message, int emit_error) {\n    char* log_copy = _str_dup(message ? message : \"log\");\n    if (!log_copy) {\n",
+      "sha256": "dbf48baf6f1f8deeaa345d0c3c4a26d062ed5d0cf8e7deb2dec4ae68b98cefe1"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "memory_leak",
+    "anchor_functions": [
+      "_runtime_release_reader_channel"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "b7c7a6c0a2bdf3a0c2a6f0671696d7fe2a2b5361183b151f2594c1ee8a074ca7"
+}

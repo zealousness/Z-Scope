@@ -1,0 +1,80 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE41-002",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE41-002",
+    "cwe": "CWE-120/CWE-129",
+    "category": "bounds",
+    "title": "C/S protocol receive path trusts the message length after checking only the magic field",
+    "file": "src/lifecycle.c",
+    "function": "_peer_decode_header_window",
+    "line": 1699,
+    "end_line": 1717,
+    "severity": "critical",
+    "tier": "real_project_issue41",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+    "source_model": "VM-002 MPCW-HeaderValidation",
+    "keywords": [
+      "issue-41",
+      "message header",
+      "magic",
+      "length",
+      "buffer overflow",
+      "receive frame",
+      "_peer_receive_frame"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_peer_receive_frame",
+    "secondary_line": 1868,
+    "secondary_end_line": 1898,
+    "flow": "distributed_cs_message_flow"
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1687,
+      "end_line": 1729,
+      "content": "int _peer_prepare_label_cache(unsigned int element_count) {\n    size_t label_len = (size_t)element_count * PEER_ELEMENT_INFO_SIZE;\n    if (label_len > PEER_LABEL_CACHE_LIMIT) {\n        return -1;\n    }\n\n    char* label_cache = (char*)_safe_calloc(label_len + 1, 1);\n    if (!label_cache) {\n        return -1;\n    }\n    snprintf(label_cache, label_len + 1, \"collection-elements=%u\", element_count);\n    SAFE_FREE(label_cache);\n    return (element_count <= PEER_SPEC_MAX_ELEMENTS) ? 0 : -1;\n}\n\nint _peer_decode_header_window(const unsigned char* wire, size_t wire_len,\n                                         unsigned char* out, size_t out_len) {\n    if (!wire || !out || wire_len < sizeof(PeerSessionHeader)) {\n        return -1;\n    }\n\n    PeerSessionHeader header;\n    memcpy(&header, wire, sizeof(header));\n    if (header.magic != PEER_SESSION_MAGIC) {\n        return -1;\n    }\n\n    size_t body_len = (size_t)header.length - sizeof(PeerSessionHeader);\n    if (out_len > 0) {\n        out[0] = '\\0';\n    }\n    memcpy(out, wire + sizeof(PeerSessionHeader), body_len);\n    return (int)body_len;\n}\n\nint _peer_receive_session_frame(int fd, unsigned char* dst, size_t want) {\n    size_t received = 0;\n    while (received < want) {\n        int rc;\n        do {\n            rc = _net_recv_data(fd, dst + received, want - received);\n        } while (rc == -1 && (errno == EAGAIN || errno == EINTR));\n\n",
+      "sha256": "a7743dc3217fc8c8497c1e52c17af4c15b6ef08e1da3369ea38b60ac7f1591a0"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1856,
+      "end_line": 1910,
+      "content": "        return -1;\n    }\n    return (int)sent;\n}\n\nint _peer_export_descriptor_token(int listen_fd, int work_fd) {\n    for (int i = 0; i < 2; i++) {\n        int raw_work_fd = work_fd + i;\n        if (_peer_validate_encoded_fd(raw_work_fd) < 0) {\n            return -1;\n        }\n    }\n    return _peer_validate_encoded_fd(listen_fd);\n}\n\nstatic int _peer_receive_frame(int work_fd, PeerSessionFrame* frame) {\n    if (!frame) {\n        return -1;\n    }\n\n    memset(frame, 0, sizeof(*frame));\n    unsigned char wire[sizeof(PeerSessionHeader) + 64];\n    int got = _net_recv_data(work_fd, wire, sizeof(wire));\n    if (got <= 0) {\n        PeerSessionHeader fallback = {\n            .magic = PEER_SESSION_MAGIC,\n            .length = (uint16_t)(sizeof(PeerSessionHeader) + 4),\n            .protocol = PEER_PROTOCOL_RPC,\n            .type = 1,\n            .version = 1,\n            .flags = 0,\n            .request_id = 1\n        };\n        memcpy(wire, &fallback, sizeof(fallback));\n        memcpy(wire + sizeof(fallback), \"PING\", 4);\n        got = (int)(sizeof(fallback) + 4);\n    }\n\n    frame->wire_len = (size_t)got;\n    if (_peer_decode_header_window(\n            wire, frame->wire_len, frame->body, sizeof(frame->body)) < 0) {\n        return -1;\n    }\n    memcpy(&frame->header, wire, sizeof(frame->header));\n    return 0;\n}\n\nstatic PeerSessionTask* _peer_create_task_from_frame(int listen_fd,\n                                                         int work_fd,\n                                                         int peer_protocol,\n                                                         const PeerSessionFrame* frame) {\n    PeerSessionTask* task = (PeerSessionTask*)_safe_calloc(1, sizeof(PeerSessionTask));\n    if (!task || !frame) {\n        SAFE_FREE(task);\n        return NULL;\n",
+      "sha256": "06e80db3429e9700a722d5e92a5ac54056e3e81520f96c158b8a85582f25a682"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1027,
+      "end_line": 1036,
+      "content": "\n#define PEER_SESSION_MAGIC 0x5a53u\n#define PEER_SESSION_HEADER_LEN 12\n#define PEER_SESSION_BODY_CAP 1024\n#define PEER_LABEL_CACHE_LIMIT (16u * 1024u)\n#define PEER_SPEC_MAX_ELEMENTS 500u\n#define PEER_ELEMENT_INFO_SIZE 48u\n#define PEER_PROTOCOL_MESH 1\n#define PEER_PROTOCOL_RPC 2\n#define PEER_AUTH_STRICT 2\n",
+      "sha256": "30a1d2c2deb49304044c340f541ef865d72dc04ca4116ebf3ac3e588eef75ed2"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "bounds",
+    "anchor_functions": [
+      "_peer_decode_header_window",
+      "_peer_receive_frame"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "fefce0c988f96fabcfd50e00284c84a85934a9387438610a2978508977362fa8"
+}

@@ -1,0 +1,52 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-011",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-011",
+    "cwe": "CWE-367",
+    "category": "toctou",
+    "title": "File permission check is separated from fopen use",
+    "file": "src/parser.c",
+    "function": "_validate_task",
+    "line": 356,
+    "end_line": 361,
+    "severity": "medium",
+    "keywords": [
+      "_check_file_permission",
+      "fopen",
+      "TOCTOU",
+      "path"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/parser.c",
+      "start_line": 344,
+      "end_line": 368,
+      "content": "        }\n    } else if (task->type == TASK_TYPE_FILE_PROCESS) {\n        if (!task->payload.text.content) {\n            return -1;\n        }\n        \n        char* path = task->payload.text.content;\n        if (strstr(path, \"..\") != NULL) {\n            LOG_WARN(\"Path traversal attempt detected\");\n            return -1;\n        }\n        \n        if (_check_file_permission(path, R_OK) != 0) {\n            LOG_ERROR(\"File permission check failed\");\n            return -1;\n        }\n        \n        FILE* fp = fopen(path, \"r\");\n        if (fp) {\n            fclose(fp);\n        }\n    }\n    \n    return 0;\n}\n",
+      "sha256": "09e1681b738d157b7941913d3f9d6be357ebb1f72730e4765bc295fca964a676"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 39,
+      "end_line": 42,
+      "content": "#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "c6a11b38b9a23d8381ee7ea804419961974366d08abd8362417decb69e0e74c8"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "toctou",
+    "anchor_functions": [
+      "_validate_task"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "ccdb2822175ab468f5d816ba08805d5291fc752ec15ee342eed0424471885192"
+}

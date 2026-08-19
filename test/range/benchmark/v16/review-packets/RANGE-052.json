@@ -1,0 +1,83 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-052",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-052",
+    "cwe": "CWE-362",
+    "category": "race",
+    "title": "Dispatcher readiness flag is read without synchronization while cleanup tears down shared queue state",
+    "file": "src/main.c",
+    "function": "td_submit_task",
+    "line": 216,
+    "end_line": 233,
+    "secondary_file": "src/main.c",
+    "secondary_function": "td_cleanup",
+    "secondary_line": 627,
+    "secondary_end_line": 642,
+    "severity": "high",
+    "keywords": [
+      "g_ready",
+      "td_submit_task",
+      "td_cleanup",
+      "queue mutex",
+      "data race",
+      "cleanup",
+      "use-after-free"
+    ],
+    "notes": "A concurrent submitter can observe stale readiness and continue into queue locking while cleanup has already started destroying dispatcher resources."
+  },
+  "code_windows": [
+    {
+      "path": "src/main.c",
+      "start_line": 204,
+      "end_line": 245,
+      "content": "    signal(SIGTERM, _signal_handler);\n    \n    LOG_INFO(\"Task dispatcher initialized with %d threads\", \n             g_dispatcher.config.thread_count);\n    \n    return 0;\n}\n\nint td_submit_task(const void* task_data, size_t data_len) {\n    if (!task_data || data_len == 0) {\n        return -1;\n    }\n    \n    if (!g_ready) {\n        LOG_ERROR(\"Dispatcher not ready\");\n        return -1;\n    }\n    \n    Task* task = _parse_task_buffer(task_data, data_len);\n    if (!task) {\n        LOG_ERROR(\"Failed to parse task\");\n        return -1;\n    }\n    \n    if (_validate_task(task) != 0) {\n        LOG_ERROR(\"Task validation failed\");\n        _free_task(task);\n        return -1;\n    }\n    \n    LOCK(&g_dispatcher.queue.mutex);\n    \n    while (g_dispatcher.queue.count >= g_dispatcher.queue.capacity) {\n        pthread_cond_wait(&g_dispatcher.queue.cond, &g_dispatcher.queue.mutex);\n    }\n    \n    LOCK(&g_dispatcher.state_mutex);\n    task->id = g_dispatcher.next_task_id++;\n    g_dispatcher.total_tasks++;\n    UNLOCK(&g_dispatcher.state_mutex);\n    \n    g_dispatcher.queue.tasks[g_dispatcher.queue.tail] = task;\n",
+      "sha256": "f4bfdda956fd5338741a59c83a66f1f2ac2669dfddc37de27a48fc4b8b629882"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 615,
+      "end_line": 654,
+      "content": "}\n\nint td_unregister_plugin(const char* plugin_name) {\n    if (!plugin_name) {\n        return -1;\n    }\n    \n    return _plugin_unregister(&g_dispatcher.registry, plugin_name);\n}\n\nint td_cleanup(void) {\n    g_running = 0;\n    g_dispatcher.running = 0;\n    g_ready = 0;\n    g_receiver_running = 0;\n\n    if (g_receiver_server_fd >= 0) {\n        _net_close_connection(g_receiver_server_fd);\n        g_receiver_server_fd = -1;\n    }\n    if (g_receiver_started) {\n        pthread_join(g_receiver_thread, NULL);\n        g_receiver_started = 0;\n    }\n    \n    pthread_cond_broadcast(&g_dispatcher.queue.cond);\n    \n    for (uint32_t i = 0; i < g_dispatcher.config.thread_count; i++) {\n        pthread_join(g_dispatcher.threads[i], NULL);\n    }\n    \n    _plugin_registry_cleanup(&g_dispatcher.registry);\n    _executor_cleanup_resources(&g_dispatcher.config);\n    _lifecycle_service_shutdown();\n    \n    SAFE_FREE(g_dispatcher.queue.tasks);\n    SAFE_FREE(g_dispatcher.threads);\n    \n    pthread_mutex_destroy(&g_dispatcher.queue.mutex);\n    pthread_cond_destroy(&g_dispatcher.queue.cond);\n",
+      "sha256": "a9efb6b6f7bd1ba44f3fa8f4cd2b225a004862725b2cbf4dd1da07b596f8dc0c"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 42,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "2ecc1b7feb1d4583a3294d20ab297f7b97b016d6bf12ae3fbba0ca8ae7056831"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "race",
+    "anchor_functions": [
+      "td_cleanup",
+      "td_submit_task"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "e96b96d3f05ba8190c089cd564c676387261f8178a70e6ed48384dde6d67ee4e"
+}

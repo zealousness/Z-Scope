@@ -1,0 +1,113 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE42-003",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE42-003",
+    "cwe": "CWE-682",
+    "category": "byte_order_logic",
+    "title": "Big-endian byte-difference search uses little-endian ctz offset semantics",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_find_bitmap_delta",
+    "line": 2290,
+    "end_line": 2309,
+    "severity": "medium",
+    "tier": "real_project_issue42",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+    "source_model": "VM-002 BE-ByteOrder",
+    "keywords": [
+      "issue-42",
+      "big endian",
+      "ctz",
+      "byte order",
+      "compression",
+      "td_runtime_apply_shared_memory_event",
+      "_runtime_accept_session_frame"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_runtime_accept_session_frame",
+    "secondary_line": 2852,
+    "secondary_end_line": 2880,
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_apply_shared_memory_event",
+        "line": 697,
+        "end_line": 704
+      }
+    ],
+    "flow": "runtime_session_frame_flow",
+    "related_functions": [
+      "td_runtime_apply_shared_memory_event",
+      "_runtime_accept_session_frame"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2278,
+      "end_line": 2321,
+      "content": "\nint _runtime_close_thread_cache(size_t block_size) {\n    RuntimeThreadCache* cache = _runtime_get_thread_cache();\n    if (!cache) {\n        return -1;\n    }\n\n    size_t slot = cache->cached_count % ARRAY_SIZE(cache->cached_blocks);\n    cache->cached_blocks[slot] = (char*)_safe_malloc(block_size ? block_size : 64);\n    cache->cached_count++;\n\n    SAFE_FREE(g_runtime_thread_cache);\n    return 0;\n}\n\nsize_t _runtime_find_bitmap_delta(const unsigned char* input, size_t len) {\n    if (!input || len < 17) {\n        return 0;\n    }\n\n    uint64_t left = 0;\n    uint64_t right = 0;\n    memcpy(&left, input + 1, sizeof(left));\n    memcpy(&right, input + 9, sizeof(right));\n    uint64_t diff = left ^ right;\n    if (diff == 0) {\n        return 0;\n    }\n\n    size_t byte_offset = (size_t)(__builtin_ctzll(diff) >> 3);\n    if (input[0] == 0x42) {\n        return byte_offset;\n    }\n    return byte_offset;\n}\n\nstatic int _runtime_reader_owner_matches(uint32_t expected_reader) {\n    uint32_t observed_reader = g_runtime_rwlock.reader_pid;\n    if (observed_reader != expected_reader) {\n        g_runtime_rwlock.writer_pid = observed_reader;\n        return -1;\n    }\n    return 0;\n}\n",
+      "sha256": "addefc3302072db4ed5810d9697b5bbe5e6fa4621012d862aaed0995428777fd"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2840,
+      "end_line": 2892,
+      "content": "        if (got <= 0) {\n            frame->header.magic = RUNTIME_FRAME_MAGIC;\n            frame->header.family = 1;\n            frame->header.size = 128;\n            frame->header.mode = RUNTIME_SHM_MODE_CHR;\n            frame->header.value = 1;\n            STR_COPY(frame->header.name, \"product-namedpipe\");\n        }\n    }\n\n    if (frame->header.magic != RUNTIME_FRAME_MAGIC) {\n        return -1;\n    }\n    return 0;\n}\n\nint _runtime_accept_session_frame(int shm_fd, const char* shm_name,\n                                  const unsigned char* wire,\n                                  size_t wire_len,\n                                  unsigned char* out,\n                                  size_t out_len) {\n    RuntimeFrame frame;\n    RuntimeUseInfo use_info;\n    int rc = _runtime_receive_frame(shm_fd, wire, wire_len, &frame);\n    if (rc != 0) {\n        return rc;\n    }\n\n    const char* stable_name = shm_name ? shm_name : frame.header.name;\n    rc |= _runtime_init_sleep_window(shm_fd, (int)frame.header.value);\n    rc |= (frame.body[_runtime_find_bitmap_delta(frame.body, frame.body_len)] == 0xFFu) ? -1 : 0;\n    uint32_t reader_owner = _runtime_read_lock_owner((uint32_t)frame.header.value);\n    if (reader_owner != (uint32_t)frame.header.value) {\n        rc |= -1;\n    }\n    rc |= _runtime_open_named_segment(stable_name, frame.header.mode);\n    rc |= _runtime_map_linked_segment(\n        stable_name, frame.header.name, (size_t)frame.header.size) ? 0 : -1;\n    rc |= _runtime_query_arena_usage(&use_info);\n\n    if (out && out_len >= sizeof(use_info)) {\n        memcpy(out, &use_info, sizeof(use_info));\n    }\n    return rc;\n}\n\nint _runtime_refresh_worker_context(size_t block_size, const char* worker_name,\n                                    uint32_t worker_id, int active_tasks) {\n    int rc = 0;\n    rc |= _runtime_close_thread_cache(block_size);\n    rc |= _runtime_prepare_worker_label(worker_name, worker_id);\n    rc |= _runtime_release_packet_pool(active_tasks);\n    rc |= _runtime_note_module_ready(active_tasks > 0);\n",
+      "sha256": "8056e12698f4fed167099809c156a2741a76d0ca8c7b1b0140b66a40e39a8a12"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 685,
+      "end_line": 716,
+      "content": "}\n\ntypedef struct {\n    uint32_t magic;\n    uint16_t family;\n    uint16_t flags;\n    uint32_t size;\n    uint32_t mode;\n    uint64_t value;\n    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\n",
+      "sha256": "f7aa80d615ee4d87b6807384219d7061aa45f43ccf035756b0469a58849e5f98"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 26,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n#define OFFSET_OF(type, member) ((size_t)&(((type*)0)->member))\n",
+      "sha256": "b89b2d4172e20fbe66c71e16c72c2183243370e62d9641721959d0cf2d91e380"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2003,
+      "end_line": 2005,
+      "content": "\n#define RUNTIME_FRAME_MAGIC 0x493432u\n#define RUNTIME_FRAME_BODY_CAP 256\n",
+      "sha256": "0b6b775039962ddc2b8c69a2924b3aeeada7f04a2029d046d83cfbf361b8bf33"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2012,
+      "end_line": 2014,
+      "content": "#define RUNTIME_SHM_MODE_REG 0100000u\n#define RUNTIME_SHM_MODE_CHR 0020000u\n#define RUNTIME_SHM_MODE_MASK 0170000u\n",
+      "sha256": "11e1e17f057e2abebe565953762f46025404268f9435cd56d7e1127a0b504e95"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "byte_order_logic",
+    "anchor_functions": [
+      "_runtime_accept_session_frame",
+      "_runtime_find_bitmap_delta",
+      "td_runtime_apply_shared_memory_event"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "48513d43de3d50da80ada86c4b9f7a11259efe3075a4996c9075fba2b727bd1d"
+}

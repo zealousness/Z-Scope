@@ -1,0 +1,108 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE42-002",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE42-002",
+    "cwe": "CWE-772",
+    "category": "thread_cache_leak",
+    "title": "Thread-local cache destroy releases only the TLS wrapper and leaks cached blocks",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_close_thread_cache",
+    "line": 2276,
+    "end_line": 2288,
+    "severity": "high",
+    "tier": "real_project_issue42",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+    "source_model": "VM-001 TC-Leak Thread Cache Memory Leak",
+    "keywords": [
+      "issue-42",
+      "thread cache",
+      "TLS",
+      "destroy",
+      "memory leak",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_refresh_cache",
+      "_runtime_refresh_worker_context"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_runtime_refresh_worker_context",
+    "secondary_line": 2882,
+    "secondary_end_line": 2890,
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_apply_shared_memory_event",
+        "line": 697,
+        "end_line": 704
+      },
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_refresh_cache",
+        "line": 706,
+        "end_line": 710
+      }
+    ],
+    "flow": "runtime_worker_cache_flow",
+    "related_functions": [
+      "td_runtime_refresh_cache",
+      "_runtime_refresh_worker_context"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2264,
+      "end_line": 2300,
+      "content": "\nstatic void _runtime_schedule_sleep_window(int start_sec, int packet_count) {\n    (void)start_sec;\n    g_runtime_sleep.init_sleep_packets += (uint64_t)packet_count;\n    if (packet_count >= 8) {\n        g_runtime_sleep.init_sleep_done = 1;\n    }\n}\n\nint _runtime_init_sleep_window(int fd, int start_sec) {\n    int busy_cnt = _runtime_poll_control_packet(fd);\n    _runtime_schedule_sleep_window(start_sec, busy_cnt);\n    return g_runtime_sleep.init_sleep_done;\n}\n\nint _runtime_close_thread_cache(size_t block_size) {\n    RuntimeThreadCache* cache = _runtime_get_thread_cache();\n    if (!cache) {\n        return -1;\n    }\n\n    size_t slot = cache->cached_count % ARRAY_SIZE(cache->cached_blocks);\n    cache->cached_blocks[slot] = (char*)_safe_malloc(block_size ? block_size : 64);\n    cache->cached_count++;\n\n    SAFE_FREE(g_runtime_thread_cache);\n    return 0;\n}\n\nsize_t _runtime_find_bitmap_delta(const unsigned char* input, size_t len) {\n    if (!input || len < 17) {\n        return 0;\n    }\n\n    uint64_t left = 0;\n    uint64_t right = 0;\n    memcpy(&left, input + 1, sizeof(left));\n",
+      "sha256": "d37b3edbe311a5306efc094ad47ff3ac5d9fcdf43c04db5aef4bc89d9c4cf8e7"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2870,
+      "end_line": 2902,
+      "content": "    rc |= (frame.body[_runtime_find_bitmap_delta(frame.body, frame.body_len)] == 0xFFu) ? -1 : 0;\n    uint32_t reader_owner = _runtime_read_lock_owner((uint32_t)frame.header.value);\n    if (reader_owner != (uint32_t)frame.header.value) {\n        rc |= -1;\n    }\n    rc |= _runtime_open_named_segment(stable_name, frame.header.mode);\n    rc |= _runtime_map_linked_segment(\n        stable_name, frame.header.name, (size_t)frame.header.size) ? 0 : -1;\n    rc |= _runtime_query_arena_usage(&use_info);\n\n    if (out && out_len >= sizeof(use_info)) {\n        memcpy(out, &use_info, sizeof(use_info));\n    }\n    return rc;\n}\n\nint _runtime_refresh_worker_context(size_t block_size, const char* worker_name,\n                                    uint32_t worker_id, int active_tasks) {\n    int rc = 0;\n    rc |= _runtime_close_thread_cache(block_size);\n    rc |= _runtime_prepare_worker_label(worker_name, worker_id);\n    rc |= _runtime_release_packet_pool(active_tasks);\n    rc |= _runtime_note_module_ready(active_tasks > 0);\n    return rc;\n}\n\nint _runtime_apply_memory_plan(const char* segment_name, uint32_t mode,\n                               uint64_t file_size, uint64_t map_size) {\n    const char* stable_name = segment_name ? segment_name : \"runtime-zone\";\n    int rc = 0;\n    rc |= _runtime_map_reserved_region(mode, file_size, map_size) ? 0 : -1;\n    rc |= _runtime_create_shared_zone(stable_name, (size_t)map_size) ? 0 : -1;\n    rc |= _runtime_make_shared_key(stable_name, (int)mode);\n",
+      "sha256": "325df0512d2e3d5ee877c0fbca29aae76e8ada4d28e3732c70806099b95aad79"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 685,
+      "end_line": 716,
+      "content": "}\n\ntypedef struct {\n    uint32_t magic;\n    uint16_t family;\n    uint16_t flags;\n    uint32_t size;\n    uint32_t mode;\n    uint64_t value;\n    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\n",
+      "sha256": "f7aa80d615ee4d87b6807384219d7061aa45f43ccf035756b0469a58849e5f98"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 694,
+      "end_line": 722,
+      "content": "    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\nint td_runtime_configure_pool(uint32_t lcore_limit, uint32_t configured_lcores) {\n    return _runtime_apply_pool_plan(lcore_limit, configured_lcores);\n}\n\nint td_runtime_publish_process_state(uint32_t user_proc_id, uint32_t pid,\n                                     const char* proc_name) {\n",
+      "sha256": "76b793d76e971df9fb866bd77d837e93ed64ba0cbe691c323a41504dcc10a8bb"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 26,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n#define OFFSET_OF(type, member) ((size_t)&(((type*)0)->member))\n",
+      "sha256": "b89b2d4172e20fbe66c71e16c72c2183243370e62d9641721959d0cf2d91e380"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "thread_cache_leak",
+    "anchor_functions": [
+      "_runtime_close_thread_cache",
+      "_runtime_refresh_worker_context",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_refresh_cache"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "df6cbcb3587e8290079f53fc545f3eebb09cf32f834ff66f3f131f2f34543972"
+}

@@ -1,0 +1,61 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-026",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-026",
+    "cwe": "CWE-362",
+    "category": "double_checked_locking",
+    "title": "Global config pointer is checked outside the mutex before lazy initialization",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_get_config_length",
+    "line": 277,
+    "end_line": 285,
+    "severity": "medium",
+    "keywords": [
+      "g_active_config",
+      "double checked",
+      "LOCK",
+      "lazy",
+      "race"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 265,
+      "end_line": 297,
+      "content": "    char* next = _str_dup(text ? text : \"default\");\n    if (!next) {\n        return -1;\n    }\n\n    char* old = g_active_config;\n    g_active_config = next;\n    SAFE_FREE(old);\n    UNLOCK(&g_config_lock);\n    return 0;\n}\n\nsize_t _lifecycle_get_config_length(void) {\n    if (!g_active_config) {\n        LOCK(&g_config_lock);\n        if (!g_active_config) {\n            g_active_config = _str_dup(\"default\");\n        }\n        UNLOCK(&g_config_lock);\n    }\n    return strlen(g_active_config);\n}\n\nint _lifecycle_wait_for_work(void) {\n    LOCK(&g_lifecycle.lock);\n    if (g_lifecycle.pending_jobs == 0) {\n        pthread_cond_wait(&g_lifecycle.cond, &g_lifecycle.lock);\n    }\n\n    g_lifecycle.pending_jobs--;\n    UNLOCK(&g_lifecycle.lock);\n    return 0;\n}\n",
+      "sha256": "42961feb285705d16f2caed33f49330df15f02153c317f4890be24da5597605a"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "double_checked_locking",
+    "anchor_functions": [
+      "_lifecycle_get_config_length"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "b71ece85f2cafc340426f3b7f2fa3ddd247581ba13497e2edf67de186df12279"
+}

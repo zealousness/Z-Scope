@@ -1,0 +1,53 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-028",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-028",
+    "cwe": "CWE-401",
+    "category": "realloc_misuse",
+    "title": "Metrics buffer overwrites the only pointer with realloc result and can leak the old allocation",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_resize_metrics",
+    "line": 299,
+    "end_line": 306,
+    "severity": "high",
+    "keywords": [
+      "_safe_realloc",
+      "g_metrics",
+      "old pointer",
+      "leak",
+      "count * sizeof"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 287,
+      "end_line": 318,
+      "content": "\nint _lifecycle_wait_for_work(void) {\n    LOCK(&g_lifecycle.lock);\n    if (g_lifecycle.pending_jobs == 0) {\n        pthread_cond_wait(&g_lifecycle.cond, &g_lifecycle.lock);\n    }\n\n    g_lifecycle.pending_jobs--;\n    UNLOCK(&g_lifecycle.lock);\n    return 0;\n}\n\nint _lifecycle_resize_metrics(size_t count) {\n    g_metrics = (size_t*)_safe_realloc(g_metrics, count * sizeof(size_t));\n    if (!g_metrics) {\n        return -1;\n    }\n\n    for (size_t i = 0; i < count; i++) {\n        g_metrics[i] = i;\n    }\n    return 0;\n}\n\nint _lifecycle_recv_packet(int fd, char* dst, size_t dst_size) {\n    if (!dst || dst_size == 0) {\n        return -1;\n    }\n\n    char temp[512];\n    int received = _net_recv_data(fd, temp, sizeof(temp));\n    size_t copy_len = (size_t)received;\n",
+      "sha256": "2d12428027d975ad771be44c8914ddd943ee55bb59251af164b1738f87d2e872"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "realloc_misuse",
+    "anchor_functions": [
+      "_lifecycle_resize_metrics"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "c03e561977fa06c11fba8ebd38d602c4017881513a9c8c773e782a78d6a46175"
+}

@@ -1,0 +1,73 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-020",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-020",
+    "cwe": "CWE-416",
+    "category": "use_after_free",
+    "title": "Cache lookup returns borrowed value after releasing the lock while remove can free it",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_get_value",
+    "line": 140,
+    "end_line": 144,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_lifecycle_remove_entry",
+    "secondary_line": 152,
+    "secondary_end_line": 159,
+    "severity": "high",
+    "keywords": [
+      "borrowed",
+      "value",
+      "UNLOCK",
+      "remove",
+      "use-after-free"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 128,
+      "end_line": 156,
+      "content": "        return -1;\n    }\n    entry->state = TASK_STATUS_RUNNING;\n    UNLOCK(&g_lifecycle.lock);\n    return 0;\n}\n\nconst char* _lifecycle_get_value(const char* key) {\n    if (!key) {\n        return NULL;\n    }\n\n    LOCK(&g_lifecycle.lock);\n    LifecycleEntry* entry = _find_entry_locked(key);\n    const char* value = entry ? entry->value : NULL;\n    UNLOCK(&g_lifecycle.lock);\n    return value;\n}\n\nint _lifecycle_remove_entry(const char* key) {\n    if (!key) {\n        return -1;\n    }\n\n    LOCK(&g_lifecycle.lock);\n    LifecycleEntry** cursor = &g_lifecycle.entries;\n    while (*cursor) {\n        LifecycleEntry* entry = *cursor;\n        if (strcmp(entry->key, key) == 0) {\n",
+      "sha256": "e6cb99de416ac408a8e5fd35f7ad864d9bef6a01e7a824192af8b90d7776e266"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 140,
+      "end_line": 171,
+      "content": "    LOCK(&g_lifecycle.lock);\n    LifecycleEntry* entry = _find_entry_locked(key);\n    const char* value = entry ? entry->value : NULL;\n    UNLOCK(&g_lifecycle.lock);\n    return value;\n}\n\nint _lifecycle_remove_entry(const char* key) {\n    if (!key) {\n        return -1;\n    }\n\n    LOCK(&g_lifecycle.lock);\n    LifecycleEntry** cursor = &g_lifecycle.entries;\n    while (*cursor) {\n        LifecycleEntry* entry = *cursor;\n        if (strcmp(entry->key, key) == 0) {\n            *cursor = entry->next;\n            SAFE_FREE(entry->value);\n            SAFE_FREE(entry);\n            UNLOCK(&g_lifecycle.lock);\n            return 0;\n        }\n        cursor = &entry->next;\n    }\n    UNLOCK(&g_lifecycle.lock);\n    return -1;\n}\n\nint _lifecycle_ref_get(const char* key) {\n    if (!key) {\n        return -1;\n",
+      "sha256": "cc1828c9bbeb3ae998e6bd038885a2279a50c2c435e008b291d0e99fe80d8755"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "use_after_free",
+    "anchor_functions": [
+      "_lifecycle_get_value",
+      "_lifecycle_remove_entry"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "80e13700a92cd1e1e3fa893c5f98d20a62fe3acbb9ac8aa842886132862b34af"
+}

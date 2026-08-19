@@ -1,0 +1,66 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-012",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-012",
+    "cwe": "CWE-78",
+    "category": "command_injection",
+    "title": "User command and TASK_ENV are concatenated and passed to system",
+    "file": "src/executor.c",
+    "function": "_executor_execute_command",
+    "line": 87,
+    "end_line": 87,
+    "secondary_file": "src/executor.c",
+    "secondary_function": "_executor_build_command_args",
+    "secondary_line": 220,
+    "secondary_end_line": 236,
+    "severity": "critical",
+    "keywords": [
+      "system",
+      "TASK_ENV",
+      "strcat",
+      "shell",
+      "command injection"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/executor.c",
+      "start_line": 75,
+      "end_line": 99,
+      "content": "    if (_executor_validate_command(command) != 0) {\n        LOG_ERROR(\"Command validation failed\");\n        return -1;\n    }\n    \n    _executor_log_message(command);\n    \n    char* full_command = _executor_build_command_args(command);\n    if (!full_command) {\n        return -1;\n    }\n    \n    int result = system(full_command);\n    \n    free(full_command);\n    \n    return result;\n}\n\nint _executor_process_file(const char* filepath) {\n    if (!filepath) {\n        return -1;\n    }\n    \n    _executor_log_message(filepath);\n",
+      "sha256": "87260dabceb0f2c6207bb1615efecaadc431b36455f2a2fc43658e79f1e8820b"
+    },
+    {
+      "path": "src/executor.c",
+      "start_line": 208,
+      "end_line": 248,
+      "content": "        LOG_WARN(\"Dangerous command detected\");\n        return -1;\n    }\n    \n    return 0;\n}\n\nchar* _executor_build_command_args(const char* cmd) {\n    if (!cmd) {\n        return NULL;\n    }\n    \n    size_t len = strlen(cmd);\n    const char* env_value = getenv(\"TASK_ENV\");\n    size_t env_len = env_value ? strlen(env_value) : 0;\n    if (len > SIZE_MAX - 2 || env_len > SIZE_MAX - len - 2) {\n        return NULL;\n    }\n\n    char* full_cmd = (char*)_safe_malloc(len + env_len + 2);\n    if (!full_cmd) {\n        return NULL;\n    }\n    \n    strcpy(full_cmd, cmd);\n    \n    if (env_value) {\n        strcat(full_cmd, \" \");\n        strcat(full_cmd, env_value);\n    }\n    \n    return full_cmd;\n}\n\nint _executor_fork_and_exec(const char* program, char** args) {\n    if (!program || !args) {\n        return -1;\n    }\n    \n    pid_t pid = fork();\n    if (pid < 0) {\n",
+      "sha256": "8685a45f1eefa572ee42ae74ad870cd462635eac3526861d9217ee4cb1518af4"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 39,
+      "end_line": 42,
+      "content": "#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "c6a11b38b9a23d8381ee7ea804419961974366d08abd8362417decb69e0e74c8"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "command_injection",
+    "anchor_functions": [
+      "_executor_build_command_args",
+      "_executor_execute_command"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "6bdb8b3718df309432acd851bcb59d767a8f81e25330e216b09decd04162787f"
+}

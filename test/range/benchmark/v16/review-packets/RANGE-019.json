@@ -1,0 +1,61 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-019",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-019",
+    "cwe": "CWE-362",
+    "category": "object_publication",
+    "title": "Cache entry is published to the global list before value initialization completes",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_add_entry",
+    "line": 121,
+    "end_line": 130,
+    "severity": "high",
+    "keywords": [
+      "g_lifecycle.entries",
+      "entry->value",
+      "published",
+      "half-initialized",
+      "object publication"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 109,
+      "end_line": 142,
+      "content": "    if (!key || !value) {\n        return -1;\n    }\n\n    LifecycleEntry* entry = (LifecycleEntry*)_safe_calloc(1, sizeof(LifecycleEntry));\n    if (!entry) {\n        return -1;\n    }\n\n    STR_COPY(entry->key, key);\n    entry->ref_count = 1;\n\n    LOCK(&g_lifecycle.lock);\n    entry->next = g_lifecycle.entries;\n    g_lifecycle.entries = entry;\n\n    entry->value = _str_dup(value);\n    if (!entry->value) {\n        UNLOCK(&g_lifecycle.lock);\n        return -1;\n    }\n    entry->state = TASK_STATUS_RUNNING;\n    UNLOCK(&g_lifecycle.lock);\n    return 0;\n}\n\nconst char* _lifecycle_get_value(const char* key) {\n    if (!key) {\n        return NULL;\n    }\n\n    LOCK(&g_lifecycle.lock);\n    LifecycleEntry* entry = _find_entry_locked(key);\n    const char* value = entry ? entry->value : NULL;\n",
+      "sha256": "ec2e10b39a6c4faea8a5d057c398fd25f59d3ddb7ab136fbb04f3d19e7b8deda"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "object_publication",
+    "anchor_functions": [
+      "_lifecycle_add_entry"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "5db2ce4b0f7e0c0e77b14d72d1b029be0f23f0fd7a362d3978cd69f7667498e7"
+}

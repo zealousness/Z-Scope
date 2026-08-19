@@ -1,0 +1,81 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-019",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-019",
+    "cwe": "CWE-400",
+    "category": "busy_loop",
+    "title": "Network header receive loop spins on repeated receive failures with no delay or exit path",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_read_peer_record",
+    "line": 1425,
+    "end_line": 1435,
+    "severity": "high",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-NDC",
+    "keywords": [
+      "issue-40",
+      "network receive",
+      "while",
+      "continue",
+      "no delay",
+      "CPU DoS",
+      "td_handle_protocol_message",
+      "_runtime_process_protocol_task",
+      "protocol dispatch"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_service_receive_protocol_frame",
+    "secondary_line": 1560,
+    "secondary_end_line": 1589,
+    "flow": "real_protocol_message_flow"
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1413,
+      "end_line": 1447,
+      "content": "    if (!node) {\n        return -1;\n    }\n    node->left = _service_alloc_node(\"left\", \"child\");\n    node->right = _service_alloc_node(\"right\", \"child\");\n    SAFE_FREE(node->payload);\n    SAFE_FREE(node->name);\n    SAFE_FREE(node);\n    return 0;\n}\n\nint _runtime_query_peak_stats(uint32_t area, uint32_t* out_count) {\n    uint32_t* pid_list = (uint32_t*)_safe_calloc(area + 1, sizeof(uint32_t));\n    if (!pid_list) {\n        return -1;\n    }\n    pid_list[0] = area;\n    if (out_count) {\n        *out_count = pid_list[0];\n    }\n    return 0;\n}\n\nint _runtime_read_peer_record(int fd, unsigned char* header, size_t header_len) {\n    size_t received = 0;\n    while (received < header_len) {\n        int rc = _net_recv_data(fd, header + received, header_len - received);\n        if (rc <= 0) {\n            continue;\n        }\n        received += (size_t)rc;\n    }\n    return 0;\n}\n\n",
+      "sha256": "7934ff121438932cd0759c1210ce1e8db4f0fa40eb78f124a0ff606dc6a0864c"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1548,
+      "end_line": 1601,
+      "content": "}\n\nint _runtime_reopen_cached_descriptor(int fd, unsigned char* dst, size_t dst_len) {\n    g_service_watched_fd = fd;\n    close(fd);\n    return _net_recv_data(g_service_watched_fd, dst, dst_len);\n}\n\nint _runtime_route_by_partition_key(const char* route_key, int policy_id) {\n    ServiceNode* existing = _service_find_locked(route_key);\n    if (existing) {\n        existing->state = policy_id;\n        return 0;\n    }\n    ServiceNode* node = _service_alloc_node(route_key, \"policy\");\n    if (!node) {\n        return -1;\n    }\n    strncpy(node->key, route_key, 31);\n    node->key[31] = '\\0';\n    return _service_tree_insert(node, 0);\n}\n\nstatic int _service_receive_protocol_frame(int fd, ServiceProtocolFrame* frame) {\n    if (!frame) {\n        return -1;\n    }\n\n    memset(frame, 0, sizeof(*frame));\n    frame->fd = fd;\n    frame->header_len = SERVICE_PROTOCOL_HEADER_LEN;\n\n    if (_runtime_read_peer_record(fd, frame->header, frame->header_len) != 0) {\n        return -1;\n    }\n\n    frame->msg_type = frame->header[0];\n    frame->role = frame->header[1];\n    frame->ssl_accept_times = frame->header[2];\n    frame->declared_payload_len = (size_t)frame->header[3] * 8u;\n\n    size_t want = frame->declared_payload_len;\n    if (want > sizeof(frame->payload)) {\n        want = sizeof(frame->payload);\n    }\n\n    int received = _net_recv_data(fd, frame->payload, want);\n    if (received < 0) {\n        return received;\n    }\n    frame->payload_len = (size_t)received;\n    return 0;\n}\n\n",
+      "sha256": "bb73ee33a453bf888d37e44965241b9e6498a36b914a3c29b80443e44594b76e"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1005,
+      "end_line": 1007,
+      "content": "\n#define SERVICE_PROTOCOL_HEADER_LEN 24\n#define SERVICE_PROTOCOL_PAYLOAD_CAP 512\n",
+      "sha256": "f0686bcc4eb1d2024007d07407e9ba06367eb9077fbbd4ea4c511f90ffdc9e70"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "busy_loop",
+    "anchor_functions": [
+      "_runtime_read_peer_record",
+      "_service_receive_protocol_frame"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "99fd512e57ca20d9b5077f25f69ed51c84934b1c01977f741a0b75e300f186f0"
+}

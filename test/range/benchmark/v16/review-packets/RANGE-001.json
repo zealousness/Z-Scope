@@ -1,0 +1,68 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-001",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-001",
+    "cwe": "CWE-125",
+    "category": "bounds",
+    "title": "Task parser trusts payload_length and can read beyond supplied buffer",
+    "file": "src/parser.c",
+    "function": "_parse_task_buffer",
+    "line": 53,
+    "end_line": 95,
+    "severity": "high",
+    "keywords": [
+      "payload_length",
+      "memcpy",
+      "len",
+      "out-of-bounds",
+      "task buffer"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/parser.c",
+      "start_line": 41,
+      "end_line": 107,
+      "content": "    Task* task = (Task*)_safe_calloc(1, sizeof(Task));\n    if (!task) {\n        return NULL;\n    }\n    \n    task->type = (task_type_t)header->task_type;\n    task->flags.is_urgent = (header->flags & 0x01) != 0;\n    task->flags.is_async = (header->flags & 0x02) != 0;\n    task->flags.requires_auth = (header->flags & 0x04) != 0;\n    task->created_at = _get_timestamp_ms();\n    \n    const char* payload_data = (const char*)data + sizeof(TaskHeader);\n    size_t payload_len = header->payload_length;\n    \n    if (task->type == TASK_TYPE_CMD_EXECUTE) {\n        char command[4096];\n        memcpy(command, payload_data, MIN(payload_len, sizeof(command) - 1));\n        command[MIN(payload_len, sizeof(command) - 1)] = '\\0';\n        \n        task->payload.command.command = _str_dup(command);\n        if (!task->payload.command.command) {\n            free(task);\n            return NULL;\n        }\n        \n        char* args[32];\n        int arg_count = _parse_arguments(command, args, 32);\n        \n        task->payload.command.args = (char**)_safe_calloc(arg_count + 1, sizeof(char*));\n        if (task->payload.command.args) {\n            for (int i = 0; i < arg_count; i++) {\n                task->payload.command.args[i] = _str_dup(args[i]);\n                if (!task->payload.command.args[i]) {\n                    for (int j = 0; j < i; j++) {\n                        SAFE_FREE(task->payload.command.args[j]);\n                    }\n                    SAFE_FREE(task->payload.command.args);\n                    SAFE_FREE(task->payload.command.command);\n                    SAFE_FREE(task);\n                    return NULL;\n                }\n            }\n            task->payload.command.arg_count = arg_count;\n        }\n    } else if (task->type == TASK_TYPE_FILE_PROCESS) {\n        char filepath[MAX_PATH_LEN];\n        memcpy(filepath, payload_data, MIN(payload_len, sizeof(filepath) - 1));\n        filepath[MIN(payload_len, sizeof(filepath) - 1)] = '\\0';\n        \n        task->payload.text.content = _str_dup(filepath);\n        task->payload.text.length = strlen(filepath);\n    } else {\n        void* binary_data = _safe_malloc(payload_len);\n        if (binary_data) {\n            memcpy(binary_data, payload_data, payload_len);\n            task->payload.binary.data = binary_data;\n            task->payload.binary.size = payload_len;\n        }\n    }\n    \n    return task;\n}\n\nint _parse_config_string(const char* config_str, TaskConfig* config) {\n    if (!config_str || !config) {\n        return -1;\n    }\n",
+      "sha256": "f5cf415c9910d44bcca9e59371003ad6ecb92127ea25cb7eef394a1c24438433"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 14,
+      "end_line": 16,
+      "content": "#define MAX_COMMAND_LEN      4096\n#define MAX_PATH_LEN         256\n\n",
+      "sha256": "6d9d3ec6ab8dedd5f305a7c8ad04992c6e6d31db1d7991713b6ed5589eb7dfc8"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 42,
+      "end_line": 44,
+      "content": "\n#define MIN(x, y)            ((x) < (y) ? (x) : (y))\n#define MAX(x, y)            ((x) > (y) ? (x) : (y))\n",
+      "sha256": "a6318061cefa6427c4a11102a226bd106137e5605adc47065ae4e25865064574"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "bounds",
+    "anchor_functions": [
+      "_parse_task_buffer"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "c33296b67a6250efc6d0c43b06ba626348361ad3a5f641ac800137f4ce3441bd"
+}

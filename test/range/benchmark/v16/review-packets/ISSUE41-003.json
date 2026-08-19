@@ -1,0 +1,86 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE41-003",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE41-003",
+    "cwe": "CWE-835",
+    "category": "busy_loop",
+    "title": "Receive retry loop repeats EAGAIN and EINTR forever without timeout or retry budget",
+    "file": "src/lifecycle.c",
+    "function": "_peer_receive_session_frame",
+    "line": 1719,
+    "end_line": 1733,
+    "severity": "critical",
+    "tier": "real_project_issue41",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+    "source_model": "VM-003 RRT-TimeoutMitigation",
+    "keywords": [
+      "issue-41",
+      "EAGAIN",
+      "EINTR",
+      "retry",
+      "timeout",
+      "busy loop",
+      "_peer_process_session_message"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_peer_process_session_message",
+    "secondary_line": 1964,
+    "secondary_end_line": 1983,
+    "flow": "distributed_cs_message_flow"
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1707,
+      "end_line": 1745,
+      "content": "\n    PeerSessionHeader header;\n    memcpy(&header, wire, sizeof(header));\n    if (header.magic != PEER_SESSION_MAGIC) {\n        return -1;\n    }\n\n    size_t body_len = (size_t)header.length - sizeof(PeerSessionHeader);\n    if (out_len > 0) {\n        out[0] = '\\0';\n    }\n    memcpy(out, wire + sizeof(PeerSessionHeader), body_len);\n    return (int)body_len;\n}\n\nint _peer_receive_session_frame(int fd, unsigned char* dst, size_t want) {\n    size_t received = 0;\n    while (received < want) {\n        int rc;\n        do {\n            rc = _net_recv_data(fd, dst + received, want - received);\n        } while (rc == -1 && (errno == EAGAIN || errno == EINTR));\n\n        if (rc <= 0) {\n            continue;\n        }\n        received += (size_t)rc;\n    }\n    return 0;\n}\n\nint _peer_bridge_descriptor(int reliable_fd) {\n    if (!_peer_is_inter_fd(reliable_fd)) {\n        return -1;\n    }\n\n    g_peer_descriptor_slots[reliable_fd].fd = reliable_fd;\n    g_peer_descriptor_slots[reliable_fd].route_generation = ++g_peer_route_generation;\n    g_peer_descriptor_slots[reliable_fd].bridged = 1;\n",
+      "sha256": "c14b3d0a62d962fde376f9b28bfa86f4f44ecbd7e9af16de7cc2fdf9a96bf6cc"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1952,
+      "end_line": 1995,
+      "content": "            if (_peer_bridge_descriptor(task->encoded_fd) != 0) {\n                return -1;\n            }\n            _peer_export_descriptor_token(task->listen_fd, task->work_fd);\n            if (out && out_len > 0) {\n                out[0] = task->body[0];\n            }\n            return _peer_publish_shared_session(task->task_id, 1);\n        default:\n            _peer_prepare_retry_context(1);\n            return _peer_send_control_reply(task->work_fd, task->body,\n                                                task->body_len);\n    }\n}\n\nint _peer_process_session_message(int listen_fd, int work_fd, int peer_protocol,\n                                unsigned char* out, size_t out_len) {\n    unsigned char scratch[128];\n    PeerSessionFrame frame;\n    unsigned char* response = out ? out : scratch;\n    size_t response_len = out ? out_len : sizeof(scratch);\n\n    if (_peer_receive_frame(work_fd, &frame) != 0) {\n        return -1;\n    }\n    _peer_receive_session_frame(work_fd, response, frame.header.length);\n\n    PeerSessionTask* task = _peer_create_task_from_frame(\n        listen_fd, work_fd, peer_protocol, &frame);\n    if (!task) {\n        return -1;\n    }\n    _peer_enqueue_task(task);\n    return _peer_dispatch_task(task, response, response_len);\n}\n\n#if defined(SERVICE_STRICT_LOCKING)\n#define SERVICE_COUNTER_LOCK() LOCK(&g_service_aux_lock)\n#define SERVICE_COUNTER_UNLOCK() UNLOCK(&g_service_aux_lock)\n#else\n#define SERVICE_COUNTER_LOCK() do { } while (0)\n#define SERVICE_COUNTER_UNLOCK() do { } while (0)\n#endif\n\n",
+      "sha256": "0570dced90a765464772c315f971dd8831b893ea882826314e7746f4118af942"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1027,
+      "end_line": 1029,
+      "content": "\n#define PEER_SESSION_MAGIC 0x5a53u\n#define PEER_SESSION_HEADER_LEN 12\n",
+      "sha256": "f75407b6bef56d6aaade01f4890c264ba93c1f1b159826ad72526f59c2f21d66"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1988,
+      "end_line": 1994,
+      "content": "#if defined(SERVICE_STRICT_LOCKING)\n#define SERVICE_COUNTER_LOCK() LOCK(&g_service_aux_lock)\n#define SERVICE_COUNTER_UNLOCK() UNLOCK(&g_service_aux_lock)\n#else\n#define SERVICE_COUNTER_LOCK() do { } while (0)\n#define SERVICE_COUNTER_UNLOCK() do { } while (0)\n#endif\n",
+      "sha256": "fd22491e1a26d22f48bca565eef5c386b07e9935454b289a56096bb655c3bd8c"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "busy_loop",
+    "anchor_functions": [
+      "_peer_process_session_message",
+      "_peer_receive_session_frame"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "05b161e7d23859ddd6eda54961a05c51afc5823e3ca22dc509c993d97a4912c6"
+}

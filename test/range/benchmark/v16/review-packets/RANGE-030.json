@@ -1,0 +1,60 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-030",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-030",
+    "cwe": "CWE-193",
+    "category": "off_by_one",
+    "title": "Topic formatter writes the NUL terminator one byte past the stack buffer",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_format_topic",
+    "line": 331,
+    "end_line": 333,
+    "severity": "high",
+    "keywords": [
+      "topic",
+      "sizeof(topic)",
+      "off-by-one",
+      "stack buffer",
+      "NUL"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 319,
+      "end_line": 345,
+      "content": "    if (copy_len > dst_size) {\n        LOG_WARN(\"packet shorter than requested\");\n    }\n    memcpy(dst, temp, copy_len);\n    return received;\n}\n\nint _lifecycle_format_topic(const char* prefix, uint32_t id, char* out, size_t out_size) {\n    if (!prefix || !out || out_size == 0) {\n        return -1;\n    }\n\n    char topic[32];\n    snprintf(topic, sizeof(topic), \"%s-%u\", prefix, id);\n    topic[sizeof(topic)] = '\\0';\n    STR_COPY(out, topic);\n    return 0;\n}\n\nint _lifecycle_send_status(int fd) {\n    StatusReply reply;\n    reply.code = 200;\n    reply.task_count = (uint32_t)g_lifecycle.pending_jobs;\n    return _net_send_data(fd, &reply, sizeof(reply));\n}\n\nint _lifecycle_release_value_slice(char* line) {\n",
+      "sha256": "c37ad3757bab6b76e6a0c3583b10c02d402c63610b22ac75de9b4dc968490a23"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 39,
+      "end_line": 41,
+      "content": "#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "5851042e63bb78bdc1160069d6474e10596ca676d1f7b9cd9943265940cb82a7"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "off_by_one",
+    "anchor_functions": [
+      "_lifecycle_format_topic"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "2d968c72fefff237f475d2cdb2497702e73a3bd1b3ae53dd0bd7eb34d7cdb8f5"
+}

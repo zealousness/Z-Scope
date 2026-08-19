@@ -1,0 +1,48 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-017",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-017",
+    "cwe": "CWE-190",
+    "category": "integer_overflow",
+    "title": "Task serialization adds header size to untrusted payload length without overflow check",
+    "file": "src/parser.c",
+    "function": "_serialize_task",
+    "line": 223,
+    "end_line": 240,
+    "severity": "high",
+    "keywords": [
+      "total_len",
+      "sizeof(TaskHeader)",
+      "payload_len",
+      "memcpy",
+      "integer overflow",
+      "uint32_t"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/parser.c",
+      "start_line": 211,
+      "end_line": 252,
+      "content": "    \n    if (task->type == TASK_TYPE_CMD_EXECUTE && task->payload.command.command) {\n        payload_len = strlen(task->payload.command.command) + 1;\n        payload_data = task->payload.command.command;\n    } else if (task->type == TASK_TYPE_FILE_PROCESS && task->payload.text.content) {\n        payload_len = task->payload.text.length;\n        payload_data = task->payload.text.content;\n    } else if (task->payload.binary.data) {\n        payload_len = task->payload.binary.size;\n        payload_data = task->payload.binary.data;\n    }\n    \n    size_t total_len = sizeof(TaskHeader) + payload_len;\n    *buffer = _safe_malloc(total_len);\n    if (!*buffer) {\n        return -1;\n    }\n    \n    TaskHeader* header = (TaskHeader*)*buffer;\n    memcpy(header->magic, \"TASK\", 4);\n    header->version = 1;\n    header->task_type = task->type;\n    header->flags = (task->flags.is_urgent ? 0x01 : 0) |\n                    (task->flags.is_async ? 0x02 : 0) |\n                    (task->flags.requires_auth ? 0x04 : 0);\n    header->payload_length = (uint32_t)payload_len;\n    header->checksum = 0;\n    \n    if (payload_data && payload_len > 0) {\n        memcpy((char*)*buffer + sizeof(TaskHeader), payload_data, payload_len);\n    }\n    \n    *len = total_len;\n    return 0;\n}\n\nint _validate_task_config(const TaskConfig* cfg) {\n    if (!cfg) {\n        return -1;\n    }\n    \n    if (cfg->queue_size == 0 || cfg->queue_size > 65536) {\n",
+      "sha256": "37c1988f3d5ab053449f17f83f5399cc7f351c8a91fab4256bae29ca6004fdbc"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "integer_overflow",
+    "anchor_functions": [
+      "_serialize_task"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "2251a805bf9642da67f307cb95d93a184f7795b48deecb8fbcc50866f3444d09"
+}

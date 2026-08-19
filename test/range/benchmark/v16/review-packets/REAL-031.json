@@ -1,0 +1,72 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-031",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-031",
+    "cwe": "CWE-362",
+    "category": "race",
+    "title": "Conditionally guarded shared counter update compiles to a no-op lock outside strict builds",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_update_metric_counter",
+    "line": 1993,
+    "end_line": 1999,
+    "severity": "high",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-MACRO",
+    "keywords": [
+      "issue-40",
+      "conditional lock",
+      "no-op lock",
+      "shared counter",
+      "race"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1981,
+      "end_line": 2011,
+      "content": "    if (!task) {\n        return -1;\n    }\n    _peer_enqueue_task(task);\n    return _peer_dispatch_task(task, response, response_len);\n}\n\n#if defined(SERVICE_STRICT_LOCKING)\n#define SERVICE_COUNTER_LOCK() LOCK(&g_service_aux_lock)\n#define SERVICE_COUNTER_UNLOCK() UNLOCK(&g_service_aux_lock)\n#else\n#define SERVICE_COUNTER_LOCK() do { } while (0)\n#define SERVICE_COUNTER_UNLOCK() do { } while (0)\n#endif\n\nuint32_t _runtime_update_metric_counter(uint32_t delta) {\n    SERVICE_COUNTER_LOCK();\n    uint32_t old_value = g_service_counter;\n    g_service_counter = old_value + delta;\n    SERVICE_COUNTER_UNLOCK();\n    return g_service_counter;\n}\n\n#define RUNTIME_FRAME_MAGIC 0x493432u\n#define RUNTIME_FRAME_BODY_CAP 256\n#define RUNTIME_MAX_CORES 64u\n#define RUNTIME_LCORES_MAX 128u\n#define RUNTIME_THREAD_NAME_SIZE 16u\n#define RUNTIME_AVAILABLE_LIST_LIMIT 64u\n#define RUNTIME_FIXPOOL_OPS_MAX 4u\n#define RUNTIME_PCM_PROC_MAX 8u\n",
+      "sha256": "7e04096b31b1401f63efdcb945f7e4fb7dcb0d01d433cab3ede1a466327ca176"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1988,
+      "end_line": 1994,
+      "content": "#if defined(SERVICE_STRICT_LOCKING)\n#define SERVICE_COUNTER_LOCK() LOCK(&g_service_aux_lock)\n#define SERVICE_COUNTER_UNLOCK() UNLOCK(&g_service_aux_lock)\n#else\n#define SERVICE_COUNTER_LOCK() do { } while (0)\n#define SERVICE_COUNTER_UNLOCK() do { } while (0)\n#endif\n",
+      "sha256": "fd22491e1a26d22f48bca565eef5c386b07e9935454b289a56096bb655c3bd8c"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2003,
+      "end_line": 2012,
+      "content": "\n#define RUNTIME_FRAME_MAGIC 0x493432u\n#define RUNTIME_FRAME_BODY_CAP 256\n#define RUNTIME_MAX_CORES 64u\n#define RUNTIME_LCORES_MAX 128u\n#define RUNTIME_THREAD_NAME_SIZE 16u\n#define RUNTIME_AVAILABLE_LIST_LIMIT 64u\n#define RUNTIME_FIXPOOL_OPS_MAX 4u\n#define RUNTIME_PCM_PROC_MAX 8u\n#define RUNTIME_SHM_MODE_REG 0100000u\n",
+      "sha256": "c571ac561ffee3ee23ef716c1ffa9eb1158d9fa08daa437c16ae748dfc4b9987"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "race",
+    "anchor_functions": [
+      "_runtime_update_metric_counter"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "11b7392d15b24d0ac65ad96e179b313aa96ec8ce29bbf022ecd2fd3b20219189"
+}

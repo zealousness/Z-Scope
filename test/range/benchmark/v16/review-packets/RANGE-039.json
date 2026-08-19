@@ -1,0 +1,73 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-039",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-039",
+    "cwe": "CWE-401",
+    "category": "memory_leak",
+    "title": "DETACH control messages unlink a global session without releasing the session allocation",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_mesh_control_message",
+    "line": 566,
+    "end_line": 568,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_control_session_detach_local",
+    "secondary_line": 526,
+    "secondary_end_line": 541,
+    "severity": "high",
+    "keywords": [
+      "DETACH",
+      "_control_session_detach_local",
+      "UNLOCK",
+      "owner",
+      "leak"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 554,
+      "end_line": 580,
+      "content": "    if (!msg) {\n        return -1;\n    }\n\n    if (strncmp(msg, \"ADD:\", 4) == 0) {\n        char key[64];\n        const char* owner = NULL;\n        if (_parse_key_and_owner(msg + 4, key, sizeof(key), &owner) != 0) {\n            return -1;\n        }\n        if (g_mesh_control_hooks.pfnAddSession) {\n            return g_mesh_control_hooks.pfnAddSession(key, owner, transport_id);\n        }\n    } else if (strncmp(msg, \"DETACH:\", 7) == 0) {\n        return _control_session_detach_local(msg + 7);\n    } else if (strncmp(msg, \"EXPIRE:\", 7) == 0) {\n        if (g_mesh_control_hooks.pfnExpireSession != NULL) {\n            return g_mesh_control_hooks.pfnExpireSession(msg + 7);\n        }\n    }\n    return 0;\n}\n\nint _lifecycle_mesh_disconnect(const char* key) {\n    if (!key) {\n        return -1;\n    }\n",
+      "sha256": "4b1fbbfd327290ef5ec6548891d4a6fea09681d98e131d2460ffe3081e198fc7"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 514,
+      "end_line": 553,
+      "content": "            UNLOCK(&g_control_lock);\n            pthread_mutex_destroy(&session->guard);\n            SAFE_FREE(session->owner);\n            SAFE_FREE(session);\n            return 0;\n        }\n        cursor = &session->next;\n    }\n    UNLOCK(&g_control_lock);\n    return -1;\n}\n\nstatic int _control_session_detach_local(const char* key) {\n    if (!key) {\n        return -1;\n    }\n\n    LOCK(&g_control_lock);\n    ControlSession** cursor = &g_control_sessions;\n    while (*cursor) {\n        ControlSession* session = *cursor;\n        if (strcmp(session->key, key) == 0) {\n            *cursor = session->next;\n            UNLOCK(&g_control_lock);\n            return 0;\n        }\n        cursor = &session->next;\n    }\n    UNLOCK(&g_control_lock);\n    return -1;\n}\n\nint _lifecycle_mesh_authorize_init(void) {\n    memset(&g_mesh_control_hooks, 0, sizeof(g_mesh_control_hooks));\n    g_mesh_control_hooks.pfnAddSession = _control_session_add_to_global;\n    g_mesh_control_hooks.pfnExpireSession = _control_session_drop_from_global;\n    return 0;\n}\n\nint _lifecycle_mesh_control_message(const char* msg, int transport_id) {\n",
+      "sha256": "18c863bb5d3b43bef76c7136761018a30df1de3d8b7652d49cd2c9feda9c9449"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "memory_leak",
+    "anchor_functions": [
+      "_control_session_detach_local",
+      "_lifecycle_mesh_control_message"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "74acfa8f0465bdad1141ffa9e5044679092f7f5a451549ff173a42ba2e21cc56"
+}

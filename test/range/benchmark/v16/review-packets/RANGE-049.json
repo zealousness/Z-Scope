@@ -1,0 +1,78 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-049",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-049",
+    "cwe": "CWE-401",
+    "category": "memory_leak",
+    "title": "Plugin registration overwrites an occupied slot without releasing the previous plugin state",
+    "file": "src/plugin.c",
+    "function": "_plugin_register",
+    "line": 45,
+    "end_line": 58,
+    "severity": "medium",
+    "keywords": [
+      "plugin register",
+      "existing name",
+      "hash slot",
+      "overwrite",
+      "cleanup",
+      "context",
+      "memory leak"
+    ],
+    "notes": "Public td_register_plugin documents replacement of an existing name, but the implementation writes the target slot directly and increments count without invoking the old cleanup path or releasing stored context."
+  },
+  "code_windows": [
+    {
+      "path": "src/plugin.c",
+      "start_line": 33,
+      "end_line": 70,
+      "content": "                     task_handler_t handler, void* context) {\n    if (!registry || !name || !handler) {\n        return -1;\n    }\n    \n    if (strlen(name) >= MAX_PLUGIN_NAME) {\n        LOG_ERROR(\"Plugin name too long\");\n        return -1;\n    }\n    \n    LOCK(&registry->mutex);\n    \n    size_t slot = _hash_string(name) % registry->capacity;\n    Plugin* plugin = &registry->plugins[slot];\n    \n    STR_COPY(plugin->name, name);\n    plugin->handle = (plugin_handle_t)_hash_string(name);\n    plugin->handler = handler;\n    plugin->context = context;\n    plugin->priority = 0;\n    \n    if (plugin->init) {\n        _plugin_call_init(plugin);\n    }\n    \n    registry->count++;\n    \n    UNLOCK(&registry->mutex);\n    \n    LOG_INFO(\"Plugin registered: %s\", name);\n    return 0;\n}\n\nPlugin* _plugin_lookup(PluginRegistry* registry, const char* name) {\n    if (!registry || !name) {\n        return NULL;\n    }\n    \n",
+      "sha256": "30ff8d33c888fbd7efcac407e2adc2f8734968264fcbe57d22cc5eff271e639d"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 8,
+      "end_line": 10,
+      "content": "#define MAX_TASK_SIZE        (1024 * 1024)\n#define MAX_PLUGIN_NAME      64\n#define MAX_CONFIG_SIZE      (64 * 1024)\n",
+      "sha256": "5b6d19782cba99d4ba15be89d12691b4ac75e1242b3e1da1c51c00432854ba70"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 42,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "2ecc1b7feb1d4583a3294d20ab297f7b97b016d6bf12ae3fbba0ca8ae7056831"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 46,
+      "end_line": 48,
+      "content": "\n#define STR_COPY(dst, src)   _str_copy_wrapper(dst, src, sizeof(dst))\n#define STR_LEN(s)           ((s) ? strlen(s) : 0)\n",
+      "sha256": "2c1606086f85d050d5159ec3a9ce65deb52e4d9c190771ebf224a1af53709e4a"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "memory_leak",
+    "anchor_functions": [
+      "_plugin_register"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "1865b88f51d820b82a032db89b9218da9e000a0b3adb401c34c991b96d7eb67e"
+}

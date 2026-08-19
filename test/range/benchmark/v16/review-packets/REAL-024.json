@@ -1,0 +1,66 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:REAL-024",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "REAL-024",
+    "cwe": "CWE-362",
+    "category": "refcount_race",
+    "title": "Reference count is incremented after the lookup lock has been dropped",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_release_shared_node",
+    "line": 1484,
+    "end_line": 1493,
+    "severity": "critical",
+    "tier": "real_project_issue40",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+    "source_model": "VM-REF",
+    "keywords": [
+      "issue-40",
+      "refcount",
+      "unlock",
+      "increment",
+      "race",
+      "use-after-free"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 1472,
+      "end_line": 1505,
+      "content": "int _runtime_switch_io_mode(int fd) {\n    int previous = g_service_registry.state;\n    g_service_registry.state = fd;\n    if (fcntl(fd, F_GETFD) < 0) {\n        return -1;\n    }\n    previous = g_service_registry.state;\n    return previous;\n}\n\nint _runtime_link_allocated_node(const char* key) {\n    LOCK(&g_service_aux_lock);\n    ServiceNode* node = _service_alloc_node(key, \"unlock\");\n    if (!node) {\n        return -1;\n    }\n    UNLOCK(&g_service_aux_lock);\n    SAFE_FREE(node->payload);\n    SAFE_FREE(node->name);\n    SAFE_FREE(node);\n    return 0;\n}\n\nint _runtime_release_shared_node(const char* key) {\n    LOCK(&g_service_registry.lock);\n    ServiceNode* node = _service_find_locked(key);\n    UNLOCK(&g_service_registry.lock);\n    if (!node) {\n        return -1;\n    }\n    node->ref_count++;\n    return node->ref_count;\n}\n\n",
+      "sha256": "b23acaf6a904d6709bc4cfef9446b3e9054fd298c7eaa2394a5e3af58a981ee6"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 23,
+      "end_line": 25,
+      "content": "\n#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n",
+      "sha256": "02d10a6a2d2727e9bf23e7ffe46ae4e2aef7cd413a990dc0f27aff2ef2cb1bd0"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "refcount_race",
+    "anchor_functions": [
+      "_runtime_release_shared_node"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "0cc9a42d75c8bb1818d80f472c2359cde4f453346422810e5fda16bb169f390d"
+}

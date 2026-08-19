@@ -1,0 +1,122 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE42-014",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE42-014",
+    "cwe": "CWE-129",
+    "category": "bounds",
+    "title": "FixPool availability counter iterates local_cache by LCORES_MAX instead of the actual cache array size",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_count_pool_cache",
+    "line": 2473,
+    "end_line": 2486,
+    "severity": "high",
+    "tier": "real_project_issue42",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+    "source_model": "VM-012 FixPool cache iteration OOB",
+    "keywords": [
+      "issue-42",
+      "fixpool count",
+      "local_cache",
+      "LCORES_MAX",
+      "out-of-bounds",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_configure_pool",
+      "_runtime_apply_pool_plan"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_runtime_apply_pool_plan",
+    "secondary_line": 2923,
+    "secondary_end_line": 2930,
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_apply_shared_memory_event",
+        "line": 697,
+        "end_line": 704
+      },
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_configure_pool",
+        "line": 717,
+        "end_line": 719
+      }
+    ],
+    "flow": "runtime_pool_plan_flow",
+    "related_functions": [
+      "td_runtime_configure_pool",
+      "_runtime_apply_pool_plan"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2461,
+      "end_line": 2498,
+      "content": "\n    if (g_runtime_fixpool_ops[ops->type] != NULL) {\n        LOCK(&g_runtime_fixpool_lock);\n        RuntimeFixpoolOps* old_ops = g_runtime_fixpool_ops[ops->type];\n        old_ops->enqueue = ops->enqueue;\n        old_ops->dequeue = ops->dequeue;\n        UNLOCK(&g_runtime_fixpool_lock);\n        return 0;\n    }\n\n    LOCK(&g_runtime_fixpool_lock);\n    g_runtime_fixpool_ops[ops->type] = ops;\n    UNLOCK(&g_runtime_fixpool_lock);\n    return 0;\n}\n\nuint32_t _runtime_count_pool_cache(const RuntimeFixpool* mp,\n                                          uint32_t lcore_limit) {\n    if (!mp) {\n        return 0;\n    }\n\n    uint32_t count = mp->num;\n    if (mp->cache_size != 0) {\n        for (uint32_t lcore_id = 0; lcore_id < lcore_limit; lcore_id++) {\n            count += (uint32_t)mp->local_cache[lcore_id].cache_len;\n        }\n    }\n    return count;\n}\n\nuint32_t _runtime_walk_arena_groups(uint32_t max_partition) {\n    RuntimeArenaGroup* arena_grp = NULL;\n    uint32_t total = 0;\n\n    for (uint32_t i = 0; i <= max_partition; i++) {\n        uint32_t group_idx = (i / 4u) % ARRAY_SIZE(g_runtime_arena_groups);\n        uint32_t pt_no_idx = i % 4u;\n",
+      "sha256": "6613aa5a94ec232c9daeca76dab5e81ae455b17960d3fd52b2d9cf46e7b6e207"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2911,
+      "end_line": 2942,
+      "content": "        .enqueue = _runtime_noop_op,\n        .dequeue = _runtime_noop_op,\n        .init = _runtime_noop_op,\n        .parse = _runtime_noop_op\n    };\n    RuntimeFixpool pool;\n    memset(&pool, 0, sizeof(pool));\n    pool.num = 4;\n    pool.cache_size = 1;\n\n    int rc = 0;\n    rc |= _runtime_register_pool_ops(&ops);\n    rc |= (int)_runtime_count_pool_cache(&pool, lcore_limit);\n    return rc;\n}\n\nint _runtime_apply_pool_plan(uint32_t lcore_limit, uint32_t configured_lcores) {\n    int rc = _runtime_apply_pool_ops(lcore_limit, configured_lcores);\n    rc |= _runtime_rebuild_available_list(configured_lcores);\n    rc |= (int)_runtime_walk_arena_groups(lcore_limit);\n    rc |= _runtime_enqueue_rcu_batch(1, (int)configured_lcores);\n    rc |= _runtime_schedule_rcu_release(0, &g_runtime_proc_table[0], &g_runtime_proc_table[1]);\n    return rc;\n}\n\nint _runtime_publish_process_record(uint32_t user_proc_id, uint32_t pid,\n                                    const char* proc_name) {\n    uint32_t slot = _runtime_claim_process_slot(user_proc_id, pid, proc_name);\n    int rc = (int)slot;\n    rc |= _runtime_mark_process_online(0, slot);\n    rc |= _runtime_require_normal_process(slot);\n    rc |= (int)_runtime_read_timer_ticks(user_proc_id + RUNTIME_MAX_CORES);\n",
+      "sha256": "874cff6a92527b439a24de5bfab5a96fa338ad1d0713d1cdf99a1e8b699e5ee7"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 685,
+      "end_line": 716,
+      "content": "}\n\ntypedef struct {\n    uint32_t magic;\n    uint16_t family;\n    uint16_t flags;\n    uint32_t size;\n    uint32_t mode;\n    uint64_t value;\n    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\n",
+      "sha256": "f7aa80d615ee4d87b6807384219d7061aa45f43ccf035756b0469a58849e5f98"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 705,
+      "end_line": 731,
+      "content": "\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\nint td_runtime_configure_pool(uint32_t lcore_limit, uint32_t configured_lcores) {\n    return _runtime_apply_pool_plan(lcore_limit, configured_lcores);\n}\n\nint td_runtime_publish_process_state(uint32_t user_proc_id, uint32_t pid,\n                                     const char* proc_name) {\n    return _runtime_publish_process_record(user_proc_id, pid, proc_name);\n}\n\nint td_runtime_schedule_event(int same_core, int fast_mode,\n                              int destroy_in_callback) {\n    return _runtime_dispatch_event_cycle(same_core, fast_mode,\n                                         destroy_in_callback);\n}\n\n",
+      "sha256": "97882d902f9441218e4614448b254db783e16145ce850f038006d98aca7e699e"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 24,
+      "end_line": 26,
+      "content": "#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n#define OFFSET_OF(type, member) ((size_t)&(((type*)0)->member))\n",
+      "sha256": "53cb9c365adb05ee6322f8f185eab788762f4cb164ed1db53513034445d30d5e"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2005,
+      "end_line": 2007,
+      "content": "#define RUNTIME_FRAME_BODY_CAP 256\n#define RUNTIME_MAX_CORES 64u\n#define RUNTIME_LCORES_MAX 128u\n",
+      "sha256": "8315dc65cee06cae274d03371e8039f32f97d789315cacdfca0a56b684f39548"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Attacker controllability requires a structured source or public caller contract; a dangerous sink alone is insufficient."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "bounds",
+    "anchor_functions": [
+      "_runtime_apply_pool_plan",
+      "_runtime_count_pool_cache",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_configure_pool"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "d1900e03dfa08599be149e954afca1add4a1a64dad7d822c4584b38953805c6e"
+}

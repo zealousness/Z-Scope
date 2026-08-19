@@ -1,0 +1,73 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-044",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-044",
+    "cwe": "CWE-833",
+    "category": "deadlock",
+    "title": "Timer callback can wait on a pipe control lock held by close while close waits on the scheduler lock",
+    "file": "src/lifecycle.c",
+    "function": "_lifecycle_tick_timer_callback",
+    "line": 738,
+    "end_line": 746,
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_lifecycle_close_pipe",
+    "secondary_line": 721,
+    "secondary_end_line": 723,
+    "severity": "medium",
+    "keywords": [
+      "timer",
+      "ctrl_lock",
+      "g_pipe_scheduler.sched_lock",
+      "wait",
+      "deadlock"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 726,
+      "end_line": 758,
+      "content": "            *cursor = pipe;\n            break;\n        }\n        cursor = &(*cursor)->next;\n    }\n    pipe->diagnostic_marker = 0xFFFFFFFFu;\n    pipe->next = pipe;\n    UNLOCK(&g_pipe_scheduler.sched_lock);\n    UNLOCK(&pipe->ctrl_lock);\n    return 0;\n}\n\nint _lifecycle_tick_timer_callback(int pipe_id) {\n    PipeNode* pipe = g_pipe_scheduler.head;\n    while (pipe) {\n        if (pipe->pipe_id == pipe_id) {\n            LOCK(&pipe->ctrl_lock);\n            LOG_INFO(\"timer tick for pipe %d\", pipe->pipe_id);\n            UNLOCK(&pipe->ctrl_lock);\n            return 0;\n        }\n        pipe = pipe->next;\n    }\n    return -1;\n}\n\ntypedef struct ProcNode {\n    int pid;\n    char* proc_name;\n    struct ProcNode* next;\n} ProcNode;\n\ntypedef struct OSNode {\n",
+      "sha256": "bc5d5d80eb882eec0019f745ea47a7c19f3a111b798d9c6395ef6e59f9f6df9b"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 709,
+      "end_line": 735,
+      "content": "}\n\nint _lifecycle_close_pipe(int pipe_id) {\n    PipeNode* pipe = g_pipe_scheduler.head;\n    while (pipe && pipe->pipe_id != pipe_id) {\n        pipe = pipe->next;\n    }\n    if (!pipe) {\n        return -1;\n    }\n\n    LOCK(&pipe->ctrl_lock);\n    pipe->active = 0;\n    LOCK(&g_pipe_scheduler.sched_lock);\n    PipeNode** cursor = &g_pipe_scheduler.head;\n    while (*cursor) {\n        if (*cursor == pipe) {\n            *cursor = pipe;\n            break;\n        }\n        cursor = &(*cursor)->next;\n    }\n    pipe->diagnostic_marker = 0xFFFFFFFFu;\n    pipe->next = pipe;\n    UNLOCK(&g_pipe_scheduler.sched_lock);\n    UNLOCK(&pipe->ctrl_lock);\n    return 0;\n",
+      "sha256": "4a6ba36feacf186b65ea8139748c72f86226e581058873496aa12c5087c0d97c"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 40,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "b1be7073f47fea7ca3788e83a07b1770e4b896f8473310bb03d7d798708caf3e"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "deadlock",
+    "anchor_functions": [
+      "_lifecycle_close_pipe",
+      "_lifecycle_tick_timer_callback"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "a9751cfd8191000cf9f83abcbb5be40199db55c658b3896e7d2a27c6175e90f5"
+}

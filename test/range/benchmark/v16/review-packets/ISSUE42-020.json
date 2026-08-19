@@ -1,0 +1,129 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:ISSUE42-020",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "ISSUE42-020",
+    "cwe": "CWE-366",
+    "category": "lost_wakeup",
+    "title": "Trigger-mode flushJob same-core wake path queues the event but does not trigger local work scheduling",
+    "file": "src/lifecycle.c",
+    "function": "_runtime_queue_local_flush",
+    "line": 2583,
+    "end_line": 2602,
+    "severity": "medium",
+    "tier": "real_project_issue42",
+    "weight": 3,
+    "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+    "source_model": "VM-018 flushJob same-core wakeup",
+    "keywords": [
+      "issue-42",
+      "flushJob",
+      "same core",
+      "trigger mode",
+      "lost wakeup",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_schedule_event",
+      "_runtime_dispatch_event_cycle"
+    ],
+    "secondary_file": "src/lifecycle.c",
+    "secondary_function": "_runtime_dispatch_event_cycle",
+    "secondary_line": 2942,
+    "secondary_end_line": 2949,
+    "additional_locations": [
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_apply_shared_memory_event",
+        "line": 697,
+        "end_line": 704
+      },
+      {
+        "file": "src/main.c",
+        "function": "td_runtime_schedule_event",
+        "line": 726,
+        "end_line": 730
+      }
+    ],
+    "flow": "runtime_event_cycle_flow",
+    "related_functions": [
+      "td_runtime_schedule_event",
+      "_runtime_dispatch_event_cycle"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2571,
+      "end_line": 2614,
+      "content": "    }\n\n    trace_num = g_runtime_callstack_info->stack_size;\n    if (trace_num == 0 || trace_num > ARRAY_SIZE(call_chain)) {\n        trace_num = (uint32_t)ARRAY_SIZE(call_chain);\n    }\n    LOG_ERROR(\"capturing callstack from signal context\");\n    for (uint32_t i = 0; i < trace_num; i++) {\n        call_chain[i] = (uintptr_t)ucontext + i;\n        g_runtime_callstack_info->call_stack_addr[i] = call_chain[i];\n    }\n    g_runtime_callstack_info->call_stack_rel_size = trace_num;\n    __atomic_store_n(&g_runtime_callstack_info->bt_recorded, 1, __ATOMIC_SEQ_CST);\n    return 0;\n}\n\nint _runtime_queue_local_flush(int same_core, int fast_mode) {\n    RuntimeEvent ev;\n    memset(&ev, 0, sizeof(ev));\n    g_runtime_event_base.fast_mode = fast_mode;\n\n    if (same_core) {\n        if (g_runtime_event_base.fast_mode) {\n            g_runtime_event_base.fast_flag = 1;\n            return 0;\n        }\n        LOCK(&g_runtime_event_base.lock);\n        ev.res_events |= 1;\n        ev.wake_cnt++;\n        ev.next = g_runtime_event_base.level_trigger_list;\n        g_runtime_event_base.level_trigger_list = &ev;\n        UNLOCK(&g_runtime_event_base.lock);\n        return 0;\n    }\n    return -1;\n}\n\nstatic RuntimeMemzone* _runtime_find_shared_zone(const char* name) {\n    for (RuntimeMemzone* zone = g_runtime_memzones; zone; zone = zone->next) {\n        if (strcmp(zone->name, name) == 0) {\n            return zone;\n        }\n    }\n    return NULL;\n",
+      "sha256": "7e8b3a5d5bd599acffdd3908ab9399e348016bac0f45ba086ac43d3e2ab429ae"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2930,
+      "end_line": 2961,
+      "content": "    rc |= (int)_runtime_walk_arena_groups(lcore_limit);\n    rc |= _runtime_enqueue_rcu_batch(1, (int)configured_lcores);\n    rc |= _runtime_schedule_rcu_release(0, &g_runtime_proc_table[0], &g_runtime_proc_table[1]);\n    return rc;\n}\n\nint _runtime_publish_process_record(uint32_t user_proc_id, uint32_t pid,\n                                    const char* proc_name) {\n    uint32_t slot = _runtime_claim_process_slot(user_proc_id, pid, proc_name);\n    int rc = (int)slot;\n    rc |= _runtime_mark_process_online(0, slot);\n    rc |= _runtime_require_normal_process(slot);\n    rc |= (int)_runtime_read_timer_ticks(user_proc_id + RUNTIME_MAX_CORES);\n    return rc;\n}\n\nint _runtime_dispatch_event_cycle(int same_core, int fast_mode,\n                                  int destroy_in_callback) {\n    int rc = 0;\n    rc |= _runtime_queue_local_flush(same_core, fast_mode);\n    rc |= _runtime_cancel_wheel_timer(destroy_in_callback);\n    rc |= _runtime_finish_current_event(destroy_in_callback);\n    return rc;\n}\n\nint _runtime_handle_fault_signal(int sig, void* ucontext, int hold_sem) {\n    int rc = 0;\n    rc |= _runtime_capture_signal_stack(sig, ucontext);\n    rc |= _runtime_write_exception_record(sig, hold_sem);\n    return rc;\n}\n\n",
+      "sha256": "abbafa5688a2db029a98a0e070279473fdaeaee7538654b2cf32b4251c22fb30"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 685,
+      "end_line": 716,
+      "content": "}\n\ntypedef struct {\n    uint32_t magic;\n    uint16_t family;\n    uint16_t flags;\n    uint32_t size;\n    uint32_t mode;\n    uint64_t value;\n    char name[64];\n} TdRuntimeMessageHeader;\n\nint td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,\n                                         const unsigned char* wire,\n                                         size_t wire_len,\n                                         unsigned char* out,\n                                         size_t out_size) {\n    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,\n                                         out, out_size);\n}\n\nint td_runtime_refresh_cache(size_t block_size, const char* worker_name,\n                             uint32_t worker_id, int active_tasks) {\n    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,\n                                           active_tasks);\n}\n\nint td_runtime_configure_memory(const char* segment_name, uint32_t mode,\n                                uint64_t file_size, uint64_t map_size) {\n    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\n",
+      "sha256": "f7aa80d615ee4d87b6807384219d7061aa45f43ccf035756b0469a58849e5f98"
+    },
+    {
+      "path": "src/main.c",
+      "start_line": 714,
+      "end_line": 742,
+      "content": "    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);\n}\n\nint td_runtime_configure_pool(uint32_t lcore_limit, uint32_t configured_lcores) {\n    return _runtime_apply_pool_plan(lcore_limit, configured_lcores);\n}\n\nint td_runtime_publish_process_state(uint32_t user_proc_id, uint32_t pid,\n                                     const char* proc_name) {\n    return _runtime_publish_process_record(user_proc_id, pid, proc_name);\n}\n\nint td_runtime_schedule_event(int same_core, int fast_mode,\n                              int destroy_in_callback) {\n    return _runtime_dispatch_event_cycle(same_core, fast_mode,\n                                         destroy_in_callback);\n}\n\nint td_runtime_handle_signal(int sig, void* ucontext, int hold_sem) {\n    return _runtime_handle_fault_signal(sig, ucontext, hold_sem);\n}\n\nint td_runtime_shutdown_session(const char* path, int project_id,\n                                size_t reserve_size) {\n    return _runtime_shutdown_local_session(path, project_id, reserve_size);\n}\n\nint td_runtime_process_stream_batch(int fd, const char* journal_path,\n                                    const unsigned char* wire, size_t wire_len,\n",
+      "sha256": "b9297ef2779b21b923003fff45eb5c123b8a7eac2708b995183668f8db126824"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 24,
+      "end_line": 26,
+      "content": "#define SAFE_FREE(ptr)       do { if (ptr) { free(ptr); (ptr) = NULL; } } while(0)\n#define ARRAY_SIZE(arr)      (sizeof(arr) / sizeof((arr)[0]))\n#define OFFSET_OF(type, member) ((size_t)&(((type*)0)->member))\n",
+      "sha256": "53cb9c365adb05ee6322f8f185eab788762f4cb164ed1db53513034445d30d5e"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 32,
+      "end_line": 35,
+      "content": "\n#define LOCK(mutex)           _lock_wrapper(mutex, __FILE__, __LINE__)\n#define UNLOCK(mutex)         _unlock_wrapper(mutex, __FILE__, __LINE__)\n#define LOCK_READ(rwlock)     _lock_read_wrapper(rwlock, __FILE__, __LINE__)\n",
+      "sha256": "eb587816537e835062c6c1f27651ee5776820775466ad90d31ce5e24430e583b"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 40,
+      "end_line": 42,
+      "content": "#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_ERROR(fmt, ...)   _log_wrapper(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n\n",
+      "sha256": "300b64a85c4571a691ff4d6cfaaec76e272d9de028fbab683ef813c4b5bf33fe"
+    },
+    {
+      "path": "src/lifecycle.c",
+      "start_line": 2005,
+      "end_line": 2007,
+      "content": "#define RUNTIME_FRAME_BODY_CAP 256\n#define RUNTIME_MAX_CORES 64u\n#define RUNTIME_LCORES_MAX 128u\n",
+      "sha256": "8315dc65cee06cae274d03371e8039f32f97d789315cacdfca0a56b684f39548"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Concurrency is in scope only when thread, callback, shared-state, or synchronization evidence establishes the relevant execution relation."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "lost_wakeup",
+    "anchor_functions": [
+      "_runtime_dispatch_event_cycle",
+      "_runtime_queue_local_flush",
+      "td_runtime_apply_shared_memory_event",
+      "td_runtime_schedule_event"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "e8adfc2b0a2ba4e2a2adf7e48e19041b8a72eb10e37b2ef4ce6c1ca7c1ff742b"
+}

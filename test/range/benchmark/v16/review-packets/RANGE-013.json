@@ -1,0 +1,54 @@
+{
+  "schema_version": "zscope.range-v16-review-packet.v1",
+  "packet_uid": "range-v16:RANGE-013",
+  "source_truth_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
+  "truth_record": {
+    "id": "RANGE-013",
+    "cwe": "CWE-401",
+    "category": "memory_leak",
+    "title": "Thread id array allocated during initialization is never released",
+    "file": "src/main.c",
+    "function": "td_init",
+    "line": 187,
+    "end_line": 195,
+    "severity": "medium",
+    "keywords": [
+      "thread_ids",
+      "_safe_calloc",
+      "pthread_create",
+      "memory leak",
+      "never freed"
+    ]
+  },
+  "code_windows": [
+    {
+      "path": "src/main.c",
+      "start_line": 175,
+      "end_line": 207,
+      "content": "        } else {\n            g_receiver_running = 0;\n            _net_close_connection(g_receiver_server_fd);\n            g_receiver_server_fd = -1;\n        }\n    }\n    \n    g_dispatcher.threads = (pthread_t*)_safe_calloc(\n        g_dispatcher.config.thread_count, sizeof(pthread_t));\n    if (!g_dispatcher.threads) {\n        return -1;\n    }\n    \n    int* thread_ids = (int*)_safe_calloc(\n        g_dispatcher.config.thread_count, sizeof(int));\n    if (!thread_ids) {\n        return -1;\n    }\n    \n    for (uint32_t i = 0; i < g_dispatcher.config.thread_count; i++) {\n        thread_ids[i] = (int)i;\n        pthread_create(&g_dispatcher.threads[i], NULL, _worker_thread, &thread_ids[i]);\n    }\n    \n    g_dispatcher.running = 1;\n    g_dispatcher.next_task_id = 1;\n    g_ready = 1;\n    \n    signal(SIGINT, _signal_handler);\n    signal(SIGTERM, _signal_handler);\n    \n    LOG_INFO(\"Task dispatcher initialized with %d threads\", \n             g_dispatcher.config.thread_count);\n",
+      "sha256": "65141e95c383ad40969df7fd750c2b49d2531413b57734add41e5fcff1b8aef2"
+    },
+    {
+      "path": "include/common.h",
+      "start_line": 38,
+      "end_line": 40,
+      "content": "#define LOG_DEBUG(fmt, ...)   _log_wrapper(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_INFO(fmt, ...)    _log_wrapper(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n#define LOG_WARN(fmt, ...)    _log_wrapper(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)\n",
+      "sha256": "b1be7073f47fea7ca3788e83a07b1770e4b896f8473310bb03d7d798708caf3e"
+    }
+  ],
+  "threat_assumptions": [
+    "Only behavior supported by the supplied code and contract evidence may be treated as concrete.",
+    "External API semantics, attacker control, deployment concurrency, and callback behavior require explicit evidence and must not be assumed from the truth title.",
+    "Resource conclusions require object identity, reachable exits, and explicit release or ownership-transfer evidence."
+  ],
+  "safe_pair_candidate": {
+    "required_if_confirmable": true,
+    "strategy": "Create a standalone vulnerable/fixed-or-near-miss pair preserving the same structured anchor and changing only the claimed safety invariant.",
+    "defect_family": "memory_leak",
+    "anchor_functions": [
+      "td_init"
+    ],
+    "compile_contract": "Both variants must compile independently under the Range C toolchain."
+  },
+  "packet_sha256": "88c4928b7bd3781ae110dde11a4da44e4ebdf71c9b40f938d4fc93902c13cb0e"
+}
