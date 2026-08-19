@@ -860,6 +860,115 @@ def validate_phase_gates(
     return errors
 
 
+def validate_p6_entry_preflight(preflight: Mapping[str, Any]) -> list[str]:
+    """Validate the fail-closed P6 capability snapshot without granting entry."""
+
+    errors: list[str] = []
+    expected_fields = {
+        "schema_version",
+        "captured_at",
+        "candidate_commit",
+        "candidate_tree",
+        "phase_status",
+        "entry_readiness",
+        "entry_gates",
+        "rootless_oci",
+        "cold_cache",
+        "provider_usage",
+        "governance",
+        "limitations",
+        "stop_conditions",
+        "content_sha256",
+    }
+    if set(preflight) != expected_fields:
+        return ["P6 entry preflight fields do not match the v1 contract"]
+    if preflight.get("schema_version") != "zscope.p6-entry-preflight.v1":
+        errors.append("P6 entry preflight schema_version is invalid")
+    for key in ("candidate_commit", "candidate_tree"):
+        if HEX_40.fullmatch(str(preflight.get(key) or "")) is None:
+            errors.append(f"P6 entry preflight {key} must be a full Git identity")
+    if preflight.get("phase_status") != "pending":
+        errors.append("P6 entry preflight must preserve the pending phase state")
+    if preflight.get("entry_readiness") != "blocked":
+        errors.append("P6 entry preflight must remain blocked until E0 completes")
+    expected_gates = {
+        "p1_p5_complete": "passed",
+        "e0_complete": "blocked",
+        "rootless_oci": "passed",
+        "cold_cache": "passed",
+        "provider_usage": "passed",
+    }
+    if preflight.get("entry_gates") != expected_gates:
+        errors.append("P6 entry preflight gate summary is inconsistent")
+
+    oci = preflight.get("rootless_oci")
+    required_oci_true = {
+        "rootless",
+        "network_attachment_verified",
+        "network_contract_verified",
+        "network_peers_verified",
+        "proxy_verified",
+        "read_only_rootfs",
+        "cap_drop_verified",
+        "no_new_privileges",
+        "inspect_verified",
+        "release_capable",
+    }
+    if not isinstance(oci, Mapping) or any(oci.get(key) is not True for key in required_oci_true):
+        errors.append("P6 rootless OCI evidence is incomplete")
+    elif (
+        oci.get("truth_mounted") is not False
+        or oci.get("repository_mounted") is not False
+        or oci.get("unexpected_mount_count") != 0
+        or oci.get("network_peer_count") != 2
+    ):
+        errors.append("P6 rootless OCI isolation is not fail-closed")
+
+    cold_cache = preflight.get("cold_cache")
+    if not isinstance(cold_cache, Mapping) or any(
+        cold_cache.get(key) is not True for key in ("required_phase_present", "execution_verified")
+    ):
+        errors.append("P6 cold-cache execution evidence is incomplete")
+
+    usage = preflight.get("provider_usage")
+    if not isinstance(usage, Mapping) or (
+        usage.get("successful_calls") != 1
+        or usage.get("provider_reported_calls") != 1
+        or usage.get("estimated_calls") != 0
+        or usage.get("provider_usage_coverage") != 1.0
+        or usage.get("token_conservation_passed") is not True
+        or usage.get("source_code_sent") is not False
+        or usage.get("benchmark_data_sent") is not False
+        or usage.get("truth_inputs") != 0
+    ):
+        errors.append("P6 provider usage preflight is incomplete or answer-bearing")
+    elif usage.get("total_tokens") != usage.get("prompt_tokens", 0) + usage.get(
+        "completion_tokens", 0
+    ):
+        errors.append("P6 provider usage token accounting is not conserved")
+
+    governance = preflight.get("governance")
+    if not isinstance(governance, Mapping) or (
+        governance.get("external_model_benchmark") is not False
+        or governance.get("github_actions_manually_dispatched") is not False
+        or governance.get("review_status") != "not_reviewed"
+        or governance.get("e0_attestation_present") is not False
+    ):
+        errors.append("P6 entry governance must preserve the protected E0 blocker")
+    unsigned = dict(preflight)
+    supplied_hash = str(unsigned.pop("content_sha256", ""))
+    canonical = json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if supplied_hash != hashlib.sha256(canonical).hexdigest():
+        errors.append("P6 entry preflight content hash mismatch")
+    return errors
+
+
 def validate_design_evidence(
     repo_root: Path,
     *,
@@ -922,6 +1031,23 @@ def validate_design_evidence(
     if evidence_index.get("design_status") != manifest.get("status"):
         report.error("design status differs between manifest and evidence index")
     report.errors.extend(validate_phase_gates(manifest, evidence_index))
+
+    p6_preflight_path = resolve_repository_path(
+        repo_root,
+        "acceptance/p6-entry-preflight.json",
+        relative_root=design_root,
+    )
+    p6_preflight = _read_governance_json(p6_preflight_path, report)
+    if isinstance(p6_preflight, dict):
+        report.errors.extend(validate_p6_entry_preflight(p6_preflight))
+        if verify_git:
+            candidate_commit = str(p6_preflight.get("candidate_commit") or "")
+            candidate_tree = str(p6_preflight.get("candidate_tree") or "")
+            actual_tree = _git_tree(repo_root, candidate_commit)
+            if actual_tree is None:
+                report.error("P6 entry preflight candidate commit is unavailable in Git")
+            elif actual_tree != candidate_tree:
+                report.error("P6 entry preflight candidate tree mismatch")
 
     formal = manifest.get("formal_reviews")
     require_formal_approval = manifest.get("status") in ACTIVE_AFTER_REVIEW or (

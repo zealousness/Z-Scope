@@ -1275,6 +1275,46 @@
         ]
       },
       "notes": "DeepSeek-V4-Pro Max approved the exact final P5 candidate with zero blocking findings after the original PS-P5-001 required-counterproof closure bypass and its adjacent type-confusion path were closed."
+    },
+    {
+      "evidence_uid": "P6-ENTRY-CAPABILITY-PREFLIGHT",
+      "phase": "P6",
+      "kind": "entry_preflight",
+      "status": "collected",
+      "implementation_commit": "be155e7e32c9bd50ddce865c83a361456271f4e5",
+      "implementation_tree": "f421c8bdaa7adfbb29c19111836b7044fd99c00b",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p6-entry-preflight.json",
+          "sha256": "2052ff51f955265ef4373581217e8c37254bb729edce18ef2af565cf1898a0ad"
+        }
+      ],
+      "review_status": "pending",
+      "reviewed_by": [],
+      "verification": {
+        "environment": {
+          "host": "Windows with WSL2 Linux 6.6.87.2 and rootless Podman 4.9.3",
+          "python": "Windows 3.10.5 and WSL 3.12.3",
+          "provider": "GLM 5.1 through the recorded OpenAI-compatible endpoint",
+          "network_and_model_use": "one final neutral provider usage probe; zero source, truth, fixture, report, score, or benchmark data",
+          "github_actions": "not manually dispatched or rerun because account quota was exhausted"
+        },
+        "commands": [
+          {"command": "rootless OCI preflight and cold-cache neutral marker phase", "status": "passed"},
+          {"command": "neutral provider-reported usage preflight", "status": "passed"},
+          {"command": "python -m pytest -q (1891 passed, 8 skipped)", "status": "passed"},
+          {"command": "python -m compileall -f -q zscope scripts test tests", "status": "passed"},
+          {"command": "Black 25.11.0 --check on changed Python files", "status": "passed"},
+          {"command": "python scripts/check_zscope_2_design_evidence.py", "status": "passed"}
+        ],
+        "limitations": [
+          "E0 remains pending; no protected review provenance or Benchmark v5 attestation is claimed.",
+          "Two preceding low-output-budget neutral diagnostics returned complete provider usage but empty visible content and were not used as the passing result; the final neutral call ended with finish_reason=stop.",
+          "The OCI phase wrote only a cold-cache marker and was not a product scan or benchmark.",
+          "The three historical P0 aggregates remain unavailable locally and were not replayed."
+        ]
+      },
+      "notes": "All locally executable P6 capability preflights passed, but the protected E0 dependency remains unsatisfied; P6 stays pending and no cold pilot was started."
     }
   ]
 }

@@ -10,6 +10,13 @@
 - Truth v16/Benchmark v5独立轨完成门禁。
 - OCI、provider usage和cold cache能力通过preflight。
 
+## 当前进入准备
+
+[`p6-entry-preflight.json`](../acceptance/p6-entry-preflight.json)绑定到clean main树，记录了
+rootless Podman实际inspect、精确内部网络、只读根文件系统、capability drop、独立cold cache
+marker以及不含源码和Benchmark数据的provider usage探针。上述三项本地能力均已通过，但E0仍缺少
+受保护工作流provenance和attestation；因此P6继续为`pending`，不得执行cold fast、balanced或deep。
+
 ## 执行顺序
 
 1. 冻结trace的policy replay和certificate reverify，不调用模型。

@@ -17,6 +17,7 @@ from scripts.check_zscope_2_design_evidence import (
     validate_p2_review_documents,
     validate_p3_review_documents,
     validate_p4_review_documents,
+    validate_p6_entry_preflight,
     validate_phase_gates,
 )
 
@@ -281,6 +282,31 @@ def test_p7_cannot_start_before_p6_completion() -> None:
     errors = validate_phase_gates(mutated_manifest, mutated_evidence)
 
     assert "P7 requires P6 complete" in errors
+
+
+def test_p6_entry_preflight_rejects_answer_bearing_or_incomplete_usage() -> None:
+    preflight = load_json(DESIGN_ROOT / "acceptance" / "p6-entry-preflight.json")
+    mutated = copy.deepcopy(preflight)
+    mutated["provider_usage"]["source_code_sent"] = True
+
+    errors = validate_p6_entry_preflight(mutated)
+
+    assert "P6 provider usage preflight is incomplete or answer-bearing" in errors
+    assert "P6 entry preflight content hash mismatch" in errors
+
+
+def test_p6_entry_preflight_cannot_claim_e0_or_phase_entry() -> None:
+    preflight = load_json(DESIGN_ROOT / "acceptance" / "p6-entry-preflight.json")
+    mutated = copy.deepcopy(preflight)
+    mutated["phase_status"] = "in_progress"
+    mutated["entry_readiness"] = "passed"
+    mutated["governance"]["e0_attestation_present"] = True
+
+    errors = validate_p6_entry_preflight(mutated)
+
+    assert "P6 entry preflight must preserve the pending phase state" in errors
+    assert "P6 entry preflight must remain blocked until E0 completes" in errors
+    assert "P6 entry governance must preserve the protected E0 blocker" in errors
 
 
 def test_p2_final_review_rejects_entry_scope_or_blockers() -> None:

@@ -16,6 +16,7 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 - P3完成状态：SecuritySpec v2资格、只读Review Center和双角色审核已通过，运行时继续保持shadow
 - P4完成状态：SecurityHypothesis v2、系统offer/action选择、独立shadow Ledger/CAS、selected-action Checker和120单元非Range qualification已通过完整门禁；Claude Opus 5产品架构审核与DeepSeek-V4-Pro Max proof-security审核绑定同一候选树并以零blocking finding批准。P4完成时旧稳定终态保持不变，切换只在当前P5候选发生
 - P5完成状态：P4回退wheel已冻结，RuntimeAuthorityManifest v1与新cache epoch已生效；SecuritySpec为authoritative语义输入，Hypothesis Hunter仅注册未确认候选，Proof Engine为唯一终态权威。同一产品候选commit/tree已通过完整本地门禁、cJSON零模型资格与Claude Opus 5/DeepSeek-V4-Pro Max双审核，release latch按资格和审核文件hash放行
+- P6进入准备：rootless OCI、独立cold cache和provider-reported usage本地preflight已通过并绑定hash；E0受保护工作流provenance/attestation仍缺失，因此P6保持`pending`且未执行cold pilot
 
 ## 权威文件
 
@@ -38,6 +39,7 @@ Hypothesis-driven Hunting、内部Proof Engine、旧运行时清理以及Benchma
 - [P5 qualification manifest](acceptance/p5-qualification-manifest.json)
 - [P5 product architecture审核记录](acceptance/reviews/p5-product-architecture.json)
 - [P5 proof-security审核记录](acceptance/reviews/p5-proof-security.json)
+- [P6进入preflight证据](acceptance/p6-entry-preflight.json)
 - [架构决策记录](adr/0001-replace-vulnerability-analyzer-with-hypothesis-hunter.md)
 - [Proof provider量词冻结](adr/0007-freeze-proof-provider-quantifiers.md)
 
