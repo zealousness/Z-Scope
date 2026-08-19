@@ -255,6 +255,34 @@ def test_p2_completion_requires_review_and_qualification_binding() -> None:
     assert "P2 completion requires a proof_security phase review" in errors
 
 
+def test_p6_cannot_start_before_e0_and_all_product_phases_complete() -> None:
+    manifest, evidence, _ = _design_documents()
+    mutated_manifest = copy.deepcopy(manifest)
+    mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["phase_status"]["P6"] = "in_progress"
+    for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P6":
+            phase["status"] = "in_progress"
+
+    errors = validate_phase_gates(mutated_manifest, mutated_evidence)
+
+    assert "P6 requires P1-P5 and E0 complete" in errors
+
+
+def test_p7_cannot_start_before_p6_completion() -> None:
+    manifest, evidence, _ = _design_documents()
+    mutated_manifest = copy.deepcopy(manifest)
+    mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["phase_status"]["P7"] = "in_progress"
+    for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P7":
+            phase["status"] = "in_progress"
+
+    errors = validate_phase_gates(mutated_manifest, mutated_evidence)
+
+    assert "P7 requires P6 complete" in errors
+
+
 def test_p2_final_review_rejects_entry_scope_or_blockers() -> None:
     schema = load_json(DESIGN_ROOT / "acceptance" / "p2-review.schema.json")
     phase_review = {
