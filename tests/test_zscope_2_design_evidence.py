@@ -6,6 +6,7 @@ import pytest
 from scripts.check_zscope_2_design_evidence import (
     DESIGN_MANIFEST,
     DuplicateJsonKeyError,
+    _phase_completion_boundary,
     load_json,
     main,
     resolve_repository_path,
@@ -50,6 +51,20 @@ def test_current_design_evidence_is_consistent_without_ignored_artifacts() -> No
         assert all(
             "external hash-bound artifact is unavailable locally" in row for row in report.warnings
         )
+
+
+def test_p5_review_window_ends_at_the_phase_completion_commit() -> None:
+    manifest, _, _ = _design_documents()
+    reviewed_commit = manifest["phase_reviews"]["P5"]["reviewed_commit"]
+
+    completion_commit = _phase_completion_boundary(
+        ROOT,
+        reviewed_commit=reviewed_commit,
+        phase="P5",
+    )
+
+    assert completion_commit is not None
+    assert completion_commit != "HEAD"
 
 
 def test_strict_external_artifact_check_fails_when_archives_are_not_copied() -> None:
