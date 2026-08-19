@@ -1,0 +1,93 @@
+{
+  "schema_version": "zscope.p6-entry-preflight.v1",
+  "captured_at": "2026-08-19T11:54:05+08:00",
+  "candidate_commit": "be155e7e32c9bd50ddce865c83a361456271f4e5",
+  "candidate_tree": "f421c8bdaa7adfbb29c19111836b7044fd99c00b",
+  "phase_status": "pending",
+  "entry_readiness": "blocked",
+  "entry_gates": {
+    "p1_p5_complete": "passed",
+    "e0_complete": "blocked",
+    "rootless_oci": "passed",
+    "cold_cache": "passed",
+    "provider_usage": "passed"
+  },
+  "rootless_oci": {
+    "implementation_commit": "c656f972da2b8fad6d78badecdff8e85fcdbc862",
+    "implementation_tree": "b82cf7d13583baa87d955d8cc2dd97a723ce1e04",
+    "runtime": "podman 4.9.3",
+    "host": "Linux 6.6.87.2-microsoft-standard-WSL2 x86_64",
+    "rootless": true,
+    "image": "python@sha256:8fef26df932191825664e4957ff488c96dfe64918327634a357a55facbc994d3",
+    "image_id": "9351a9a0a697a69e156f8bd067dd5ef3f9fa9b110abbdbbda1f343c622c7adc0",
+    "runtime_info_sha256": "6792737b7ce0dc7a69f1792e3ef3728232fda6e8d57121edae322bbed1a43ca9",
+    "image_inspect_sha256": "d2b71945327cbc55e178e59d811c5b8a9ac8e79357b12270413b034b7032ea9e",
+    "container_inspect_sha256": "930d6505ee7b4b5d1f15f5a423eef604510a161fc5ec36de0dcb69a45bc3d9bc",
+    "proxy_inspect_sha256": "2b5827431d99c0582af99072beaa3ec9117ba94045fa268c098f062964fc958d",
+    "network_inspect_sha256": "d9eab740be9fa53002dc6697eec3062553e102317b999ba3f031f7f9155a45e1",
+    "network_membership_sha256": "dbc94746923ebba45c464ac1160f7c5c344fd5e33af5bd49dda8b293a06afc39",
+    "network_policy_sha256": "c03fa36c5c0dff37962eda8e5eb0fca07f3465dee259dd41b2aabb1ab5475ec5",
+    "runtime_network_mode": "bridge",
+    "declared_network": "zscope-p6-preflight-model-only",
+    "network_peer_count": 2,
+    "network_attachment_verified": true,
+    "network_contract_verified": true,
+    "network_peers_verified": true,
+    "proxy_verified": true,
+    "read_only_rootfs": true,
+    "cap_drop_verified": true,
+    "no_new_privileges": true,
+    "truth_mounted": false,
+    "repository_mounted": false,
+    "unexpected_mount_count": 0,
+    "inspect_verified": true,
+    "release_capable": true
+  },
+  "cold_cache": {
+    "phase": "cold-cache",
+    "isolated_cache_root": "/home/zeal/e0-work/p6-cold-cache-preflight-35c64b0-d/cache",
+    "marker_sha256": "01cb04c5d518fc46ab61c18eda14bf6abbada4c4a49bf2baef5095cde0b049a9",
+    "required_phase_present": true,
+    "execution_verified": true
+  },
+  "provider_usage": {
+    "captured_at": "2026-08-19T11:54:05+08:00",
+    "implementation_commit": "fd83b3f09b6f14685c8b94968cf561c118f43b11",
+    "implementation_tree": "f421c8bdaa7adfbb29c19111836b7044fd99c00b",
+    "provider_origin": "https://open.bigmodel.cn",
+    "model": "glm-5.1",
+    "neutral_prompt_sha256": "2427fbfd33af0a004100a497aa10e9ae81866f89a63e67b3cacd078b371e671e",
+    "response_sha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3",
+    "finish_reason": "stop",
+    "successful_calls": 1,
+    "provider_reported_calls": 1,
+    "estimated_calls": 0,
+    "provider_usage_coverage": 1.0,
+    "prompt_tokens": 36,
+    "completion_tokens": 23,
+    "total_tokens": 59,
+    "token_conservation_passed": true,
+    "source_code_sent": false,
+    "benchmark_data_sent": false,
+    "truth_inputs": 0
+  },
+  "governance": {
+    "external_model_benchmark": false,
+    "github_actions_manually_dispatched": false,
+    "review_status": "not_reviewed",
+    "e0_attestation_present": false
+  },
+  "limitations": [
+    "E0 remains pending because no successful protected range-v16 review provenance and Benchmark v5 attestation exist.",
+    "The OCI phase was a neutral marker probe, not a product scan or benchmark result.",
+    "The provider request contained no source, truth, fixture, report, score, or benchmark data and proves usage capability only.",
+    "GitHub Actions were not manually dispatched or rerun because the account quota was exhausted.",
+    "The three historical P0 aggregate artifacts remain unavailable locally and were not replayed."
+  ],
+  "stop_conditions": [
+    "Do not change P6 to in_progress until E0 is complete with protected workflow provenance.",
+    "Do not run cold fast, balanced, or deep pilot scans before every P6 entry gate passes.",
+    "Do not represent local reviewer preparation as the protected E0 attestation."
+  ],
+  "content_sha256": "30c0a6da7b3e5ef7a84a7825c6a187eac82dea44b56c008b7ddd60f14c213184"
+}
