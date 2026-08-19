@@ -36,7 +36,6 @@ from .diff_impact import DiffImpactPlanner
 from .specs import SpecRegistry, WorkflowStep
 from .workflow_executor import WorkflowExecutor, WorkflowStepHandler
 from ..rules.extensions import preflight_rules
-from ..benchmarking.discovery_ablation import DiscoveryAblationRuntimeOverride
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +80,7 @@ class ScanSessionRunner:
         emit: Optional[Callable[[str], None]] = None,
         exit_policy: str = "review",
         task_id: str = "",
-        benchmark_ablation_override: Optional[DiscoveryAblationRuntimeOverride] = None,
+        benchmark_ablation_override: Optional[Any] = None,
     ) -> None:
         if benchmark_ablation_override is not None:
             benchmark_ablation_override.require_in_process_supported()

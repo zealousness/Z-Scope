@@ -20,17 +20,27 @@
 6. 实现规范JSON与严格XLSX导入导出。
 7. shadow运行并与旧SemanticModeler对照。
 
+## 当前实施状态
+
+- P2证书与trace契约已完成并保持shadow，P3从P2-complete commit进入。
+- 严格SecuritySpec、review event、qualification、compiled spec和archive schema已冻结；有限DSL
+  registry只允许13个声明式predicate，不接受查询代码或自由参数。
+- 当前Web无可信reviewer identity，因此Review Center固定只读。review和apply-import必须
+  fail-closed；只有独立qualification可以在P3产生`stable`规格。
+- Security Spec编译模式固定为shadow，旧SemanticModeler在P5之前继续承担当前产品输入。
+
 ## 验收
 
 - active/stable规格100%具有说明、scope、证据和影响预览。
 - stable规格100%绑定批准或qualification。
 - 过期XLSX、hash冲突和未知字段严格失败。
 - scope缩小和revoke产生精确失效。
-- 100个盲审单元关键契约召回不低于85%，unsupported不高于5%。
+- 至少120个盲审单元关键契约召回不低于85%，positive unsupported不高于5%，safe/near-miss active acceptance为0。
 - evidence refs 100%可解析。
 - 未修改项目第二次扫描语义LLM调用下降至少80%。
 - shadow不改变finding终态或视图。
 - 至少覆盖三个非Range项目/API风格。
+- default、resume、maintain、alert-verify、P1稳定回放与P2 proof replay的终态、双视图、workflow progress和proof shadow decision不变。
 
 ## 停止与回退
 

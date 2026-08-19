@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from zscope.orchestration.candidates import CandidateLedger
-from zscope.orchestration.subagents import SubAgentTicket
+import pytest
+
+from zscope.orchestration.candidates import CandidateLedger, CandidateTicket
 from zscope.reporting.report import ReportGenerator
 from zscope.reporting.assembler import ReportAssembler
 
@@ -17,6 +18,24 @@ class FakeSnapshotStore:
         }
 
 
+def _snapshot(*, confirmed=(), review=(), nonterminal: int = 0):
+    outcomes = []
+    for index, (disposition, issue) in enumerate(
+        [("confirmed", item) for item in confirmed] + [("needs_review", item) for item in review]
+    ):
+        outcomes.append(
+            {
+                "validation_cluster_uid": f"VAL_TEST_{index}",
+                "terminal_disposition": disposition,
+                "issue": dict(issue),
+            }
+        )
+    return {
+        "outcomes": outcomes,
+        "summary": {"nonterminal_validation_count": nonterminal},
+    }
+
+
 def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     snapshot_store = FakeSnapshotStore()
     resolved = []
@@ -24,14 +43,10 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     def resolve_issues(items):
         resolved.append(len(items))
 
-    def dedupe(items):
-        return items[:1]
-
     assembler = ReportAssembler(
         ReportGenerator(tmp_path),
         snapshot_store,
         resolve_issue_locations=resolve_issues,
-        deduplicate_observations=dedupe,
         metadata_factory=lambda state: {"run_id": state["run_id"], "version": "test"},
     )
     state = {
@@ -58,6 +73,10 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
         "notes": [],
         "any_failure": False,
     }
+    state["candidate_lifecycle_snapshot"] = _snapshot(
+        confirmed=state["issues"],
+        review=state["observations"][:1],
+    )
 
     report = assembler.build(state)
     saved = assembler.persist(state)
@@ -67,7 +86,7 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     assert [item["id"] for item in state["observations"]] == ["OBS_1"]
     assert state["observations"][0]["candidate_schema_version"] == "zscope.candidate.v3.3"
     assert state["observations"][0]["run_issue_uid"].startswith("RUNISSUE_")
-    assert saved["schema_version"] == 2
+    assert saved["schema_version"] == 3
     assert saved["finding_status"] == "confirmed"
     assert saved["completeness"] == "complete"
     assert saved["run_manifest"]["run_id"] == "RUN1"
@@ -79,7 +98,7 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     assert (tmp_path / "report.json").exists()
     assert (tmp_path / "report.md").exists()
     assert snapshot_store.saved["index_name"] == "entry@src/demo.c:1-20"
-    assert resolved == [1, 2]
+    assert resolved == [1, 1]
 
 
 def test_report_assembler_can_skip_root_report_files(tmp_path: Path) -> None:
@@ -88,7 +107,6 @@ def test_report_assembler_can_skip_root_report_files(tmp_path: Path) -> None:
         ReportGenerator(tmp_path),
         snapshot_store,
         resolve_issue_locations=lambda items: None,
-        deduplicate_observations=lambda items: items,
         metadata_factory=lambda state: {"run_id": state["run_id"]},
     )
     state = {
@@ -101,6 +119,7 @@ def test_report_assembler_can_skip_root_report_files(tmp_path: Path) -> None:
         "observations": [],
         "notes": [],
         "any_failure": False,
+        "candidate_lifecycle_snapshot": _snapshot(),
     }
 
     assembler.build(state)
@@ -117,7 +136,6 @@ def test_report_assembler_preserves_returned_report_metadata(tmp_path: Path) -> 
         ReportGenerator(tmp_path),
         None,
         resolve_issue_locations=lambda items: None,
-        deduplicate_observations=lambda items: items,
         metadata_factory=lambda state: {"run_id": state["run_id"]},
     )
 
@@ -131,6 +149,27 @@ def test_report_assembler_preserves_returned_report_metadata(tmp_path: Path) -> 
     assert report["metadata"] == {"existing": True, "run_id": "NEW"}
 
 
+def test_live_report_assembly_rejects_noncanonical_issue_lists(tmp_path: Path) -> None:
+    assembler = ReportAssembler(
+        ReportGenerator(tmp_path),
+        None,
+        resolve_issue_locations=lambda items: None,
+        metadata_factory=lambda state: {"run_id": state["run_id"]},
+    )
+    state = {
+        "run_id": "LEGACY",
+        "entry_func": "entry",
+        "issues": [{"id": "RAW_ONLY"}],
+        "verified_hist_issues": [],
+        "observations": [],
+        "notes": [],
+        "any_failure": False,
+    }
+
+    with pytest.raises(RuntimeError, match="zscope.compat"):
+        assembler.build(state)
+
+
 def test_report_assembler_includes_needs_review_observation_with_recovered_location_in_review_view(
     tmp_path: Path,
 ) -> None:
@@ -138,7 +177,6 @@ def test_report_assembler_includes_needs_review_observation_with_recovered_locat
         ReportGenerator(tmp_path),
         None,
         resolve_issue_locations=lambda items: None,
-        deduplicate_observations=lambda items: items,
         metadata_factory=lambda state: {"run_id": state["run_id"], "version": "test"},
     )
     state = {
@@ -168,6 +206,7 @@ def test_report_assembler_includes_needs_review_observation_with_recovered_locat
         "notes": [],
         "any_failure": False,
     }
+    state["candidate_lifecycle_snapshot"] = _snapshot(review=state["observations"])
 
     report = assembler.build(state)
 
@@ -187,7 +226,7 @@ def test_report_assembler_terminalizes_and_routes_pending_ledger_candidates(
         revision="rev",
     )
     ledger.add(
-        SubAgentTicket(
+        CandidateTicket(
             id="CANDIDATE_1",
             skill="bounds_and_integer",
             task="Length can exceed the destination buffer.",
@@ -220,7 +259,6 @@ def test_report_assembler_terminalizes_and_routes_pending_ledger_candidates(
         ReportGenerator(tmp_path),
         None,
         resolve_issue_locations=lambda items: None,
-        deduplicate_observations=lambda items: items,
         metadata_factory=lambda state: {"run_id": state["run_id"]},
     )
     state = {
@@ -252,7 +290,7 @@ def test_report_assembler_terminalizes_and_routes_pending_ledger_candidates(
 def test_report_assembler_does_not_read_mutable_shared_ledger(tmp_path: Path) -> None:
     ledger = CandidateLedger(project_id="demo", revision="rev")
     ledger.add(
-        SubAgentTicket(
+        CandidateTicket(
             id="LEAD",
             skill="bounds",
             task="investigate",
@@ -270,7 +308,6 @@ def test_report_assembler_does_not_read_mutable_shared_ledger(tmp_path: Path) ->
         ReportGenerator(tmp_path),
         None,
         resolve_issue_locations=lambda items: None,
-        deduplicate_observations=lambda items: items,
         metadata_factory=lambda state: {"run_id": state["run_id"]},
     )
     state = {
@@ -282,6 +319,7 @@ def test_report_assembler_does_not_read_mutable_shared_ledger(tmp_path: Path) ->
         "notes": [],
         "any_failure": False,
         "candidate_ledger": ledger,
+        "candidate_lifecycle_snapshot": _snapshot(),
     }
 
     assembler.build(state)
@@ -295,7 +333,6 @@ def test_report_assembler_marks_undrained_validation_queue_incomplete(
         ReportGenerator(tmp_path),
         None,
         resolve_issue_locations=lambda items: None,
-        deduplicate_observations=lambda items: items,
         metadata_factory=lambda state: {"run_id": state["run_id"]},
     )
     state = {
@@ -309,6 +346,7 @@ def test_report_assembler_marks_undrained_validation_queue_incomplete(
         "any_failure": False,
         "validation_queue_drained": False,
         "budget_exhaustion_policy": "observe",
+        "candidate_lifecycle_snapshot": _snapshot(),
     }
 
     assembler.build(state)

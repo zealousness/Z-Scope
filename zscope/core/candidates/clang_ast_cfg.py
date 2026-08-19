@@ -39,7 +39,7 @@ from .cpp_domains import (
 
 if TYPE_CHECKING:
     from ...semantics.models import LocalPatternSemantics
-    from ...orchestration.subagents import SubAgentTicket
+    from ...orchestration.candidates import CandidateTicket
 
 
 class ClangAstCfgCandidateGenerator(
@@ -182,7 +182,7 @@ class ClangAstCfgCandidateGenerator(
         file_path: str,
         *,
         allowed_skills: Optional[Iterable[str]] = None,
-    ) -> List["SubAgentTicket"]:
+    ) -> List["CandidateTicket"]:
         return [
             self.issue_to_ticket(issue)
             for issue in self.generate_issues(
@@ -193,8 +193,8 @@ class ClangAstCfgCandidateGenerator(
             )
         ]
 
-    def issue_to_ticket(self, issue: Dict[str, Any]) -> "SubAgentTicket":
-        from ...orchestration.subagents import SubAgentTicket
+    def issue_to_ticket(self, issue: Dict[str, Any]) -> "CandidateTicket":
+        from ...orchestration.candidates import CandidateTicket
 
         defect_class = str(issue.get("defect_class") or issue.get("subcategory") or "unknown")
         evidence = dict(issue.get("evidence_pack") or {})
@@ -206,7 +206,7 @@ class ClangAstCfgCandidateGenerator(
             rule_id,
             defect_class=defect_class,
         )
-        return SubAgentTicket(
+        return CandidateTicket(
             id=str(issue.get("candidate_id") or issue.get("id")),
             skill=str(
                 issue.get("skill")

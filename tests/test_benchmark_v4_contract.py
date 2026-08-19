@@ -85,19 +85,19 @@ def test_source_and_decision_attribution_are_independent_and_overlap() -> None:
     issues = [
         {
             "attribution": {
-                "schema_version": "zscope.finding-attribution.v1",
-                "discovered_by": ["deterministic_rule", "llm_active_discovery"],
+                "schema_version": "zscope.finding-attribution.v2",
+                "discovered_by": ["deterministic_rule", "hypothesis_hunter"],
                 "discovery_details": [],
-                "decided_by": "validator_llm",
+                "decided_by": "proof_engine",
                 "decision_level": "V1",
             }
         },
         {
             "attribution": {
-                "schema_version": "zscope.finding-attribution.v1",
-                "discovered_by": ["llm_active_discovery"],
+                "schema_version": "zscope.finding-attribution.v2",
+                "discovered_by": ["hypothesis_hunter"],
                 "discovery_details": [],
-                "decided_by": "validator_llm",
+                "decided_by": "proof_engine",
                 "decision_level": "V2",
             },
         },
@@ -111,14 +111,14 @@ def test_source_and_decision_attribution_are_independent_and_overlap() -> None:
 
     assert result["explicit_count"] == 2
     assert result["by_discovery"]["deterministic_rule"]["true_positives"] == 1
-    assert result["by_discovery"]["llm_active_discovery"]["true_positives"] == 1
-    assert result["by_discovery"]["llm_active_discovery"]["raw_false_positives"] == 1
-    assert result["exclusive_by_discovery"]["llm_active_discovery"] == {
+    assert result["by_discovery"]["hypothesis_hunter"]["true_positives"] == 1
+    assert result["by_discovery"]["hypothesis_hunter"]["raw_false_positives"] == 1
+    assert result["exclusive_by_discovery"]["hypothesis_hunter"] == {
         "issues": 1,
         "true_positives": 0,
         "raw_false_positives": 1,
     }
-    assert result["by_decision"]["validator_llm"]["issues"] == 2
+    assert result["by_decision"]["proof_engine"]["issues"] == 2
     assert result["by_decision_level"]["V1"]["true_positives"] == 1
     assert result["by_decision_level"]["V2"]["raw_false_positives"] == 1
 
@@ -137,7 +137,7 @@ def test_source_and_decision_attribution_are_independent_and_overlap() -> None:
 
 @pytest.mark.parametrize(
     "schema_version",
-    [None, "zscope.finding-attribution.v0", "zscope.finding-attribution.v2"],
+    [None, "zscope.finding-attribution.v0", "zscope.finding-attribution.v1"],
 )
 def test_explicit_attribution_requires_exact_schema_version(schema_version) -> None:
     attribution = {
@@ -162,7 +162,7 @@ def test_explicit_attribution_requires_exact_schema_version(schema_version) -> N
         for item in finding_attribution({"attribution": attribution})["errors"]
         if item.startswith("schema_version must be")
     ]
-    assert "zscope.finding-attribution.v1" in error
+    assert "zscope.finding-attribution.v2" in error
 
 
 def test_explicit_attribution_rejects_non_array_discovery_sources() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
@@ -21,6 +22,16 @@ from ..reporting.views import (
     report_view_summary,
 )
 from ..rules.query import query_effective_rules, validate_rule_filters
+from ..semantics.security_specs.archive import (
+    archive_from_json_bytes,
+    archive_from_xlsx,
+    archive_to_json_bytes,
+    archive_to_xlsx,
+    build_archive,
+)
+from ..semantics.security_specs.compiler import SecuritySpecCompiler
+from ..semantics.security_specs.lifecycle import REVIEWER_IDENTITY_MODE, SECURITY_SPEC_MODE
+from ..semantics.security_specs.store import SecuritySpecStore
 
 
 ALLOWED_VALIDATION_STATUSES = {
@@ -140,6 +151,141 @@ def empty_report() -> Dict[str, Any]:
         "issues": [],
         "issues_by_severity": {"critical": [], "high": [], "medium": [], "low": []},
     }
+
+
+class SecuritySpecReviewService:
+    """Read-only P3 Security Spec review and strict dry-run import service."""
+
+    def __init__(self, root: Optional[Path] = None) -> None:
+        self.root = Path(root) if root else None
+        self.store = SecuritySpecStore(self.root) if self.root else None
+
+    def _archive(self) -> Dict[str, Any]:
+        if self.store is None:
+            return build_archive(specs=[])
+        return build_archive(
+            specs=self.store.list_specs(latest_only=False),
+            reviews=self.store.list_review_events(),
+            qualifications=self.store.list_artifacts("qualification"),
+        )
+
+    def list_payload(self, query: str = "") -> Dict[str, Any]:
+        parsed = parse_qs(query)
+        requested_status = str((parsed.get("status") or [""])[0])
+        specs = self.store.list_specs(status=requested_status) if self.store else []
+        return {
+            "schema_version": "zscope.security-spec-review-center.v2",
+            "security_spec_mode": SECURITY_SPEC_MODE,
+            "reviewer_identity_mode": REVIEWER_IDENTITY_MODE,
+            "read_only": True,
+            "specs": specs,
+            "summary": {
+                "spec_count": len(specs),
+                "by_status": {
+                    status: sum(1 for value in specs if value.get("status") == status)
+                    for status in sorted({str(value.get("status")) for value in specs})
+                },
+            },
+        }
+
+    def detail_payload(self, spec_uid: str) -> tuple[int, Dict[str, Any]]:
+        spec = self.store.get_spec(spec_uid) if self.store else None
+        if spec is None:
+            return 404, {"success": False, "error": "security_spec_not_found"}
+        qualifications = self.store.list_artifacts("qualification") if self.store else []
+        qualification_hashes = [str(value["content_sha256"]) for value in qualifications]
+        compilation = SecuritySpecCompiler().compile(
+            [spec],
+            qualification_hashes=qualification_hashes,
+            resolvable_evidence_refs=spec["evidence_refs"],
+            current_dependency_hashes=spec["dependency_hashes"],
+        )
+        events = [
+            value
+            for value in (self.store.list_review_events() if self.store else [])
+            if value.get("spec_uid") == spec_uid
+        ]
+        return 200, {
+            "schema_version": "zscope.security-spec-detail.v2",
+            "read_only": True,
+            "spec": spec,
+            "review_events": events,
+            "compilation_preview": compilation,
+            "impact_preview": list(spec.get("impact_preview") or []),
+        }
+
+    def export_bytes(self, export_format: str) -> tuple[bytes, str, str]:
+        archive = self._archive()
+        if export_format == "json":
+            return archive_to_json_bytes(archive), "application/json", "security-specs.json"
+        if export_format != "xlsx":
+            raise ValueError("security_spec_export_format_must_be_json_or_xlsx")
+        with tempfile.TemporaryDirectory(prefix="zscope-security-spec-export-") as temporary:
+            path = Path(temporary) / "security-specs.xlsx"
+            archive_to_xlsx(path, archive)
+            return (
+                path.read_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "security-specs.xlsx",
+            )
+
+    def dry_run_import(self, data: bytes, import_format: str) -> Dict[str, Any]:
+        current_archive = self._archive()
+        current = current_archive["store_revision"]
+        if import_format == "json":
+            archive = archive_from_json_bytes(data, expected_store_revision=current)
+        elif import_format == "xlsx":
+            with tempfile.TemporaryDirectory(prefix="zscope-security-spec-import-") as temporary:
+                path = Path(temporary) / "security-specs.xlsx"
+                path.write_bytes(data)
+                archive = archive_from_xlsx(path, expected_store_revision=current)
+        else:
+            raise ValueError("security_spec_import_format_must_be_json_or_xlsx")
+        current_specs = {
+            (str(value["spec_uid"]), int(value["revision"])): str(value["content_sha256"])
+            for value in current_archive["specs"]
+        }
+        proposed_specs = {
+            (str(value["spec_uid"]), int(value["revision"])): str(value["content_sha256"])
+            for value in archive["specs"]
+        }
+        added = sorted(
+            f"{uid}@{revision}" for uid, revision in proposed_specs.keys() - current_specs.keys()
+        )
+        removed = sorted(
+            f"{uid}@{revision}" for uid, revision in current_specs.keys() - proposed_specs.keys()
+        )
+        changed = sorted(
+            f"{uid}@{revision}"
+            for uid, revision in proposed_specs.keys() & current_specs.keys()
+            if proposed_specs[(uid, revision)] != current_specs[(uid, revision)]
+        )
+        return {
+            "success": True,
+            "dry_run": True,
+            "applied": False,
+            "read_only": True,
+            "store_revision": current,
+            "bundle_sha256": archive["bundle_sha256"],
+            "summary": {
+                "spec_count": len(archive["specs"]),
+                "review_count": len(archive["reviews"]),
+                "qualification_count": len(archive["qualifications"]),
+            },
+            "impact_preview": {
+                "added_spec_revisions": added,
+                "removed_spec_revisions": removed,
+                "changed_spec_revisions": changed,
+            },
+        }
+
+    @staticmethod
+    def write_rejected_payload() -> tuple[int, Dict[str, Any]]:
+        return 403, {
+            "success": False,
+            "error": "reviewer_identity_unavailable",
+            "read_only": True,
+        }
 
 
 class ConfigService:

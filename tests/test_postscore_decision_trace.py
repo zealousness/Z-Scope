@@ -14,6 +14,15 @@ def test_postscore_trace_joins_review_tp_and_fn_without_mutating_product_trace(
         "candidate_uid": "CAND_REVIEW",
         "validation_cluster_uid": "VAL_REVIEW",
         "candidate_disposition": "needs_review",
+        "terminal_authority_decision": {
+            "schema_version": "zscope.terminal-authority-decision.v3",
+            "terminal": True,
+            "disposition": "needs_review",
+            "reason_code": "NEEDS_REVIEW_OPEN_CLAUSES",
+            "authority": "zscope.proof-checker",
+            "next_action": "",
+            "conflict_resolution": None,
+        },
         "missing_fact_kinds": ["lockset"],
         "location": {"file": "src/demo.c", "function": "unsafe_lock", "line": 10},
     }
@@ -102,6 +111,15 @@ def test_postscore_fp_is_diagnostic_and_does_not_assert_product_error(tmp_path: 
         "candidate_disposition": "confirmed",
         "proof_coverage": "complete",
         "decision_proof": {"coverage": "complete", "polarity": "positive"},
+        "terminal_authority_decision": {
+            "schema_version": "zscope.terminal-authority-decision.v3",
+            "terminal": True,
+            "disposition": "confirmed",
+            "reason_code": "CONFIRMED_DETERMINISTIC_PROOF",
+            "authority": "zscope.proof-checker",
+            "next_action": "",
+            "conflict_resolution": None,
+        },
     }
     store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
     report = {

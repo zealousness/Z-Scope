@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
+
+from zscope.orchestration.candidates import CandidateLedger
 from zscope.orchestration.parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
 from zscope.reporting.views import build_report_views, findings_for_view
 
@@ -301,7 +304,7 @@ def test_needs_review_numeric_category_variant_attaches_by_root() -> None:
     )
 
 
-def test_parallel_combined_report_exposes_needs_review_view() -> None:
+def test_parallel_combined_report_rejects_noncanonical_report_only_input() -> None:
     analyzer = object.__new__(ParallelAnalyzer)
     analyzer.max_workers = 12
     results = {
@@ -330,178 +333,41 @@ def test_parallel_combined_report_exposes_needs_review_view() -> None:
         )
     }
 
+    with pytest.raises(RuntimeError, match="requires a Candidate Ledger"):
+        analyzer.generate_combined_report(results)
+
+
+def test_parallel_combined_report_does_not_fall_back_when_frozen_outcomes_are_empty() -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.max_workers = 12
+    analyzer._candidate_ledger = CandidateLedger()
+    results = {
+        "entry": ParallelAnalysisResult(
+            function_name="entry",
+            verdict="issues_found",
+            issues=[
+                {
+                    "id": "RAW_ISSUE",
+                    "function": "entry",
+                    "location": "src/demo.c:10",
+                    "category": "bounds",
+                    "description": "must not bypass the Candidate Ledger",
+                }
+            ],
+        )
+    }
+
     report = analyzer.generate_combined_report(results)
 
-    assert report["summary"]["total_issues"] == 1
-    assert report["summary"]["total_issues_with_needs_review"] == 2
-    assert report["metadata"]["audit_observation_count"] == 1
+    assert report["summary"]["total_issues"] == 0
+    assert report["summary"]["total_issues_with_needs_review"] == 0
+    assert report["metadata"]["audit_observation_count"] == 0
     assert report["metadata"]["candidate_funnel"]["schema_version"] == (
         "zscope.candidate-funnel.v1"
     )
-    assert len(findings_for_view(report, "default")) == 1
-    assert len(findings_for_view(report, "with_needs_review")) == 2
-
-
-def test_parallel_combined_report_records_llm_dedup_suggestion(monkeypatch) -> None:
-    analyzer = object.__new__(ParallelAnalyzer)
-    analyzer.max_workers = 12
-    analyzer._semantic_dedup_llm_cache = {}
-    analyzer.base_config = SimpleNamespace(
-        reporting=SimpleNamespace(
-            semantic_dedup=SimpleNamespace(
-                enabled=True,
-                llm_enabled=True,
-                llm_confidence_threshold=0.85,
-                max_cluster_size=8,
-            )
-        )
-    )
-    calls = []
-
-    class FakeReconciler:
-        def run(self, payload):
-            calls.append(payload)
-            primary_uid = payload["issues"][0]["id"]
-            duplicate_uid = payload["issues"][1]["id"]
-            return SimpleNamespace(
-                success=True,
-                data={
-                    "duplicate_groups": [
-                        {
-                            "primary_issue_id": primary_uid,
-                            "duplicate_issue_ids": [duplicate_uid],
-                            "root_cause_key": "same_bounds_guard",
-                            "confidence": 0.95,
-                            "reasoning": "Both findings describe the same missing bounds guard.",
-                        }
-                    ],
-                    "must_keep_distinct_issue_ids": [],
-                },
-            )
-
-    monkeypatch.setattr(
-        analyzer,
-        "_make_issue_reconciler_agent",
-        lambda: FakeReconciler(),
-    )
-
-    results = {
-        "entry_a": ParallelAnalysisResult(
-            function_name="entry_a",
-            verdict="issues_found",
-            issues=[
-                {
-                    "id": "ISSUE_A",
-                    "function": "parse_packet",
-                    "location": "src/demo.c:10",
-                    "category": "bounds",
-                    "description": "array access lacks a guard on the first branch.",
-                    "validation_status": "validated",
-                }
-            ],
-        ),
-        "entry_b": ParallelAnalysisResult(
-            function_name="entry_b",
-            verdict="issues_found",
-            issues=[
-                {
-                    "id": "ISSUE_B",
-                    "function": "parse_packet",
-                    "location": "src/demo.c:42",
-                    "category": "bounds",
-                    "description": "array access lacks a guard on the second branch.",
-                    "validation_status": "validated",
-                }
-            ],
-        ),
-    }
-
-    report = analyzer.generate_combined_report(results)
-
-    semantic_summary = report["summary"]["semantic_dedup"]
-    assert len(calls) == 1
-    assert report["summary"]["total_issues"] == 2
-    assert report["issues"][0]["id"] == "ISSUE_A"
-    assert "duplicate_count" not in report["issues"][0]
-    assert report["issues"][0]["dedup_cluster_suggestions"][0]["role"] == "primary"
-    assert semantic_summary["llm_enabled"] is True
-    assert semantic_summary["after_programmatic_issue_count"] == 2
-    assert semantic_summary["llm_clusters_called"] == 1
-    assert semantic_summary["llm_merge_count"] == 0
-    assert semantic_summary["llm_suggestion_count"] == 1
-    assert semantic_summary["output_issue_count"] == 2
-    assert report["metadata"]["semantic_dedup_summary"] == semantic_summary
-
-
-def test_parallel_combined_report_skips_llm_semantic_dedup_when_interrupted(monkeypatch) -> None:
-    analyzer = object.__new__(ParallelAnalyzer)
-    analyzer.max_workers = 12
-    analyzer._interrupted = True
-    analyzer._semantic_dedup_llm_cache = {}
-    analyzer.base_config = SimpleNamespace(
-        reporting=SimpleNamespace(
-            semantic_dedup=SimpleNamespace(
-                enabled=True,
-                llm_enabled=True,
-                llm_confidence_threshold=0.85,
-                max_cluster_size=8,
-            )
-        )
-    )
-    calls = []
-
-    class FakeReconciler:
-        def run(self, payload):
-            calls.append(payload)
-            return SimpleNamespace(success=True, data={})
-
-    monkeypatch.setattr(
-        analyzer,
-        "_make_issue_reconciler_agent",
-        lambda: FakeReconciler(),
-    )
-
-    results = {
-        "entry_a": ParallelAnalysisResult(
-            function_name="entry_a",
-            verdict="issues_found",
-            issues=[
-                {
-                    "id": "ISSUE_A",
-                    "function": "parse_packet",
-                    "location": "src/demo.c:10",
-                    "category": "bounds",
-                    "description": "array access lacks a guard on the first branch.",
-                    "validation_status": "validated",
-                }
-            ],
-        ),
-        "entry_b": ParallelAnalysisResult(
-            function_name="entry_b",
-            verdict="issues_found",
-            issues=[
-                {
-                    "id": "ISSUE_B",
-                    "function": "parse_packet",
-                    "location": "src/demo.c:42",
-                    "category": "bounds",
-                    "description": "array access lacks a guard on the second branch.",
-                    "validation_status": "validated",
-                }
-            ],
-        ),
-    }
-
-    report = analyzer.generate_combined_report(results)
-
-    semantic_summary = report["summary"]["semantic_dedup"]
-    assert calls == []
-    assert report["summary"]["interrupted"] is True
-    assert report["summary"]["total_issues"] == 2
-    assert semantic_summary["llm_configured"] is True
-    assert semantic_summary["llm_enabled"] is False
-    assert semantic_summary["llm_disabled_reason"] == "interrupted_fast_shutdown"
-    assert semantic_summary["output_issue_count"] == 2
+    assert findings_for_view(report, "default") == []
+    assert findings_for_view(report, "with_needs_review") == []
+    assert report["run_manifest"]["report_invariant_status"]["canonical_projection"] is True
 
 
 def test_review_view_coalesces_88_equivalent_entry_occurrences() -> None:

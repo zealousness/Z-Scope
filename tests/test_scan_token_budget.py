@@ -154,7 +154,7 @@ def test_usage_ledger_attributes_only_system_accepted_v3_facts(tmp_path) -> None
     assert persisted["total_tokens"] == 100
 
 
-def test_nested_llm_call_inherits_validation_cluster_without_overriding_agent() -> None:
+def test_nested_llm_call_inherits_validation_cluster_for_proof_engine() -> None:
     ledger = ScanTokenUsageLedger(depth="balanced")
     client = LLMClient(
         api_key="test",
@@ -175,14 +175,14 @@ def test_nested_llm_call_inherits_validation_cluster_without_overriding_agent() 
             response_format=None,
             max_completion_tokens=50,
             model="unit-model",
-            trace_agent="semantic_modeler",
+            trace_agent="proof_engine",
             trace_label="function=callee",
             usage_attribution=None,
         )
 
     assert reservation is not None
-    assert reservation.attribution.agent == "semantic_modeler"
-    assert reservation.attribution.stage == "semantic_modeling"
+    assert reservation.attribution.agent == "proof_engine"
+    assert reservation.attribution.stage == "validation"
     assert reservation.attribution.validation_cluster_uid == "VAL_NESTED"
     assert reservation.attribution.candidate_uid == "CAND_NESTED"
     assert reservation.attribution.call_kind == "v3_tool_dependency"

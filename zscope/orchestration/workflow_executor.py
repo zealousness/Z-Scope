@@ -42,7 +42,7 @@ def validate_workflow_steps(
             continue
         if step.scope not in scopes:
             continue
-        if step.required and handler_key(step) not in handlers:
+        if handler_key(step) not in handlers:
             missing.append(f"{step.id}->{handler_key(step)}")
 
     if invalid_scope:
@@ -93,7 +93,8 @@ class WorkflowExecutor:
         return workflow_steps_for_scope(steps, self.scope)
 
     def execute(self, state: Dict[str, Any], steps: Sequence[WorkflowStep]) -> None:
-        for step in self.steps_for_scope(steps):
+        scoped_steps = self.steps_for_scope(steps)
+        for index, step in enumerate(scoped_steps):
             if self.cancellation_token is not None:
                 self.cancellation_token.raise_if_cancelled()
             self._begin_step(step)
@@ -103,6 +104,9 @@ class WorkflowExecutor:
                     self.cancellation_token.raise_if_cancelled()
                 self._finish_step(step, "completed")
                 if self._should_stop(step, should_stop):
+                    reason = f"stopped_after:{step.id}"
+                    for skipped in scoped_steps[index + 1 :]:
+                        self._record_skipped(skipped, reason)
                     return
             except Exception as exc:
                 self._finish_step(step, "failed", str(exc))
@@ -155,6 +159,24 @@ class WorkflowExecutor:
                 break
         logger.info("[workflow:%s] step %s %s", self.scope, step.id, status)
         self.current_step = None
+
+    def _record_skipped(self, step: WorkflowStep, reason: str) -> None:
+        timestamp = datetime.datetime.now().isoformat()
+        self.progress.append(
+            {
+                "index": len(self.progress) + 1,
+                "id": step.id,
+                "scope": step.scope,
+                "handler": handler_key(step),
+                "agent": step.agent,
+                "action": step.action,
+                "status": "skipped",
+                "skip_reason": reason,
+                "started_at": timestamp,
+                "finished_at": timestamp,
+            }
+        )
+        logger.info("[workflow:%s] step %s skipped (%s)", self.scope, step.id, reason)
 
     @staticmethod
     def _should_stop(step: WorkflowStep, handler_requested_stop: bool) -> bool:

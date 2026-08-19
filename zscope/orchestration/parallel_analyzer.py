@@ -14,7 +14,7 @@ import time
 import uuid
 from copy import copy, deepcopy
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set
 from dataclasses import dataclass, field, replace
 
 from ..config.config import ZScopeConfig, minimum_optional_positive_seconds
@@ -25,40 +25,36 @@ from ..core.candidates.decision_facts import DecisionFactGraphCache
 from ..core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from ..core.analysis.analyzer import Analyzer
 from ..core.validation.runner import ValidationResultCache
+from ..core.validation.fact_capabilities import FunctionIRFactService
 from ..framework.llm_client import LLMClient
 from ..framework.llm_usage import (
     ensure_scan_token_usage_ledger,
     scan_token_usage_snapshot,
 )
-from ..semantics.inference import LocalPatternSemanticBuilder
 from ..semantics.models import LocalPatternSemantics
 from ..semantics.security_map import SQLiteSecurityMapStore, ZeroLLMSecurityMapBuilder
+from ..semantics.security_specs.runtime import SecuritySpecRuntime
+from ..semantics.security_specs.compiler import SecuritySpecCompiler
+from ..semantics.security_specs.store import SecuritySpecStore
+from ..semantics.security_specs.qualification import load_builtin_qualification
 from ..snapshots.store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
-from ..orchestration.active_discovery import (
-    ActiveDiscoveryAgent,
-    ActiveDiscoveryCoordinator,
-    SemanticEnrichmentAgent,
-    SemanticMapEnricher,
-    candidate_coverage_keys,
-    historical_variant_keys,
-    make_agent_report_runner,
-    make_semantic_enrichment_runner,
-    resolve_discovery_profile,
-)
+from ..orchestration.hunting_profile import resolve_hunting_profile
+from ..orchestration.runtime_authority import build_runtime_authority_manifest
 from ..orchestration.candidates import CandidateLedger, CandidateRegistrar
+from ..orchestration.hypothesis_hunter import (
+    HypothesisArtifactStore,
+    HypothesisHunterAgent,
+    HypothesisHunterRuntime,
+    HypothesisProofCatalog,
+)
 from ..orchestration.decision_trace import DecisionTraceStore, ensure_decision_trace_store
 from ..orchestration.candidate_envelope import annotate_issue_identity
-from ..orchestration.global_modeler import GlobalModeler
-from ..orchestration.rollout import (
-    rollout_active_discovery_mode,
-    rollout_runtime_policy,
-)
+from ..orchestration.rollout import rollout_runtime_policy
 from ..orchestration.scheduler import ENTRY_ROLE, ScanScheduler
 from ..common.issue_identity import (
     canonical_issue_key,
     deduplicate_semantic_issues_programmatic,
-    deduplicate_issues,
     flatten_issue_text,
     issue_call_path_signature,
     issue_resource_signature,
@@ -80,17 +76,13 @@ from ..common.cancellation import (
 )
 from ..reporting.views import (
     build_report_views,
-    coalesce_review_observations,
     report_view_summary,
 )
+from ..reporting.funnel import candidate_funnel
 from ..reporting.schema import apply_report_schema_v2, coalesce_terminal_candidates
 from ..reporting.assembler import ReportAssembler
 from ..rules.extensions import preflight_rules
 from ..rules.catalog import serialize_effective_rules
-from ..benchmarking.discovery_ablation import (
-    DiscoveryAblationError,
-    DiscoveryAblationRuntimeOverride,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +144,7 @@ class ParallelAnalyzer:
         force_ignore_history: bool = False,
         maintain_mode: bool = False,
         cancellation_token: Optional[CancellationToken] = None,
-        benchmark_ablation_override: Optional[DiscoveryAblationRuntimeOverride] = None,
+        benchmark_ablation_override: Optional[Any] = None,
     ):
         preflight_rules(config)
         self.base_config = config
@@ -165,7 +157,7 @@ class ParallelAnalyzer:
             benchmark_ablation_override.validate_runtime_config(config)
             benchmark_ablation_override.require_cold_runtime_attested()
             if not force_ignore_history or maintain_mode:
-                raise DiscoveryAblationError(
+                raise ValueError(
                     "isolated-cold ablation requires ignored history and forbids maintain mode"
                 )
         self._shared_llm_clients = self._build_shared_llm_clients(config)
@@ -223,12 +215,11 @@ class ParallelAnalyzer:
         self._global_validation_state: Dict[str, Any] = {}
         self._global_validation_duration_seconds = 0.0
         self._project_fact_pass_state: Dict[str, Any] = {}
-        self._active_discovery_state: Dict[str, Any] = {
+        self._security_runtime_state: Dict[str, Any] = {
             "enabled": False,
-            "profile": resolve_discovery_profile(config).name,
+            "profile": resolve_hunting_profile(config).name,
             "status": "not_run",
         }
-        self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
         self.deferred_entry_candidates: List[Dict[str, Any]] = []
         self.run_id = uuid.uuid4().hex
 
@@ -285,9 +276,13 @@ class ParallelAnalyzer:
         self._global_validation_state = {}
         self._global_validation_duration_seconds = 0.0
         self._project_fact_pass_state = {}
-        self._active_discovery_state = {
+        self._shared_local_pattern_semantics = None
+        self._shared_semantic_overlay = None
+        self._security_semantic_map: Any = None
+        self._security_spec_runtime_result: Dict[str, Any] = {}
+        self._security_runtime_state = {
             "enabled": False,
-            "profile": resolve_discovery_profile(self.base_config).name,
+            "profile": resolve_hunting_profile(self.base_config).name,
             "status": "not_run",
         }
         self._cancellation_token.raise_if_cancelled()
@@ -302,21 +297,16 @@ class ParallelAnalyzer:
             f"Starting parallel analysis of {total} function entries with {self.max_workers} workers"
         )
         try:
-            if total and not self.maintain_mode:
+            if total:
                 semantics_started = time.time()
-                logger.info("[entry-worker] shared-semantics start entries=%d", total)
-                self._prepare_shared_semantics()
+                profile = resolve_hunting_profile(self.base_config)
+                logger.info("[security-spec] authoritative compile start entries=%d", total)
+                self._prepare_authoritative_security_runtime(entries, profile)
                 logger.info(
-                    "[entry-worker] shared-semantics end entries=%d duration=%.2fs",
+                    "[security-spec] authoritative compile end entries=%d duration=%.2fs",
                     total,
                     time.time() - semantics_started,
                 )
-                if self.base_config.analysis.enable_global_model:
-                    self._global_modeling_succeeded = self._run_global_modeling(entries)
-                    if not self._global_modeling_succeeded:
-                        raise RuntimeError(
-                            "Global semantic modeling did not complete; entry analysis was not started."
-                        )
                 self._run_project_deterministic_fact_pass(entries)
         except Exception:
             scheduler.shutdown(wait=True, cancel_futures=True)
@@ -404,42 +394,52 @@ class ParallelAnalyzer:
                 scheduler.shutdown(wait=False, cancel_futures=True)
                 return results
 
-            discovery_profile = resolve_discovery_profile(self.base_config)
-            discovery_mode = rollout_active_discovery_mode(self.base_config)
+            discovery_profile = resolve_hunting_profile(self.base_config)
             ablation_override = self._benchmark_ablation_override
-            ablation_disables_map = bool(
-                ablation_override is not None and not ablation_override.semantic_map_enabled
-            )
-            if (
-                discovery_profile.name == "fast"
-                or (discovery_mode == "disabled" and ablation_override is None)
-                or ablation_disables_map
-            ):
-                # Fast is a true zero-work path: no semantic-map traversal,
-                # sidecar writes, or discovery-model invocation.
-                self._active_discovery_state = {
-                    "enabled": False,
-                    "profile": discovery_profile.name,
-                    "status": (
-                        "disabled_by_profile"
-                        if discovery_profile.name == "fast"
-                        else (
-                            "disabled_by_ablation"
-                            if ablation_disables_map
-                            else "disabled_by_rollout"
-                        )
-                    ),
-                    "visibility_mode": discovery_mode,
-                    "rollout": rollout_runtime_policy(self.base_config),
-                    "llm_semantic_model_calls": 0,
-                    "llm_discovery_call_count": 0,
-                }
+            hunter_enabled = discovery_profile.name != "fast"
+            if ablation_override is not None:
+                hunter_enabled = bool(ablation_override.active_discovery_enabled)
+            if not hunter_enabled:
+                self._security_runtime_state.update(
+                    {
+                        "enabled": False,
+                        "profile": discovery_profile.name,
+                        "status": (
+                            "disabled_by_profile"
+                            if discovery_profile.name == "fast"
+                            else "disabled_by_ablation"
+                        ),
+                        "llm_semantic_model_calls": 0,
+                        "llm_discovery_call_count": 0,
+                    }
+                )
                 if ablation_override is not None:
-                    self._active_discovery_state["benchmark_ablation"] = (
+                    self._security_runtime_state["benchmark_ablation"] = (
                         ablation_override.report_metadata()
                     )
+                self._security_runtime_state["hypothesis_hunter_runtime"] = {
+                    "schema_version": "zscope.hypothesis-hunter-runtime-result.v1",
+                    "mode": "active",
+                    "active_product_effect": "candidate_registration_only",
+                    "status": "disabled_by_profile",
+                    "root_manifest_sha256": "",
+                    "artifact_refs": [],
+                    "coverage_summary": {},
+                    "reason_code": "fast_profile_forbids_hunter",
+                }
+                self._decision_trace_store.update_identity(
+                    {
+                        "hypothesis_hunter_mode": "active",
+                        "hypothesis_hunter_artifact_refs": [],
+                        "hypothesis_hunter_decision": {
+                            "active_product_effect": "candidate_registration_only",
+                            "reason_code": "fast_profile_forbids_hunter",
+                            "coverage_summary": {},
+                        },
+                    }
+                )
             else:
-                self._run_active_discovery(entries, discovery_profile)
+                self._run_authoritative_hunter(discovery_profile)
 
             if self._uses_scan_validation_queue():
                 self._run_scan_validation_queue()
@@ -667,7 +667,7 @@ class ParallelAnalyzer:
             )
             setattr(runner, "_assign_v3_investigation_budget", lambda prepared: prepared)
             return
-        raise DiscoveryAblationError(
+        raise ValueError(
             f"unsupported live ablation Validator arm: {override.validator_selected_arm}"
         )
 
@@ -749,73 +749,6 @@ class ParallelAnalyzer:
             "scan_budget_overrun_seconds": round(overrun, 3),
             "budget_exhaustion_policy": str(policy or "observe"),
         }
-
-    def _run_global_modeling(self, entries: List[FunctionEntry]) -> bool:
-        started = time.time()
-        logger.info("[global-model] start entries=%d", len(entries))
-        try:
-            helper = Analyzer(
-                self.base_config,
-                code_index=self.code_index,
-                snapshot_store=self.snapshot_store,
-                user_config=self.user_config,
-                force_ignore_history=self.force_ignore_history,
-                maintain_mode=self.maintain_mode,
-                candidate_ledger=self._candidate_ledger,
-                shared_local_pattern_semantics=self._get_shared_local_pattern_semantics(),
-                shared_semantic_overlay=self._get_shared_semantic_overlay(),
-                llm_clients=self._shared_llm_clients,
-                validation_result_cache=self._validation_result_cache,
-                cancellation_token=self._cancellation_token,
-                scheduler=self._scheduler,
-                decision_fact_cache=self._decision_fact_cache,
-                write_root_reports=False,
-            )
-            modeler = GlobalModeler.from_analyzer_helpers(
-                self.base_config,
-                self.code_index,
-                self.snapshot_store,
-                self.user_config,
-                llm_clients=self._shared_llm_clients,
-                tools_factory=helper._get_tools,
-                tool_policy_factory=helper._tool_policy_for_agent,
-                attach_contract=helper._attach_agent_contract,
-                scheduler=self._scheduler,
-            )
-            with bind_cancellation_token(self._cancellation_token):
-                self._cancellation_token.raise_if_cancelled()
-                stats = modeler.run(entries)
-            self._last_global_model_stats = stats.to_dict()
-            logger.info(
-                "[global-model] end entries=%d reachable=%d modeled=%d cache_hits=%d "
-                "deterministic=%d llm=%d failed=%d unresolved_entries=%d "
-                "reconciled=%d reconcile_failed=%d duration=%.2fs",
-                len(entries),
-                stats.reachable_functions,
-                stats.modeled_functions,
-                stats.cache_hit_functions,
-                stats.deterministic_snapshot_count,
-                stats.llm_snapshot_count,
-                stats.failed_functions,
-                stats.unresolved_entry_functions,
-                stats.reconciled_functions,
-                stats.reconciliation_failures,
-                time.time() - started,
-            )
-            if not stats.stage_complete:
-                logger.error(
-                    "[global-model] stage gate rejected entry fan-out "
-                    "failed=%d unresolved_entries=%d reconcile_failed=%d",
-                    stats.failed_functions,
-                    stats.unresolved_entry_functions,
-                    stats.reconciliation_failures,
-                )
-                return False
-            return True
-        except Exception as exc:
-            self._last_global_model_stats = {"error": str(exc)}
-            logger.exception("[global-model] failed before entry fan-out.")
-            return False
 
     def _run_project_deterministic_fact_pass(
         self,
@@ -1044,225 +977,302 @@ class ParallelAnalyzer:
             state["duration_seconds"],
         )
 
-    def _run_active_discovery(self, entries: List[FunctionEntry], profile: Any) -> None:
-        """Build the zero-LLM map and route bounded hypotheses into the ledger.
+    def _prepare_authoritative_security_runtime(
+        self, entries: List[FunctionEntry], profile: Any
+    ) -> None:
+        """Build scan facts, compile SecuritySpecs, and expose only compiled semantics."""
 
-        This stage is best-effort by design.  A map/backend/model failure is
-        reported as explicit coverage telemetry and never prevents already
-        discovered obligations from reaching the shared Validator queue.
-        """
-
+        self._cancellation_token.raise_if_cancelled()
         started = time.monotonic()
         snapshot_dir = Path(self.base_config.analysis.snapshot_dir)
-        sidecar_path = snapshot_dir / "security_map.db"
-        export_path = snapshot_dir / "security_semantic_map.json"
-        state: Dict[str, Any] = {
-            "enabled": True,
-            "profile": str(profile.name),
-            "status": "running",
-            "sidecar_path": str(sidecar_path),
-            "json_export_path": str(export_path),
+        max_functions = int(
+            getattr(
+                self.base_config.analysis,
+                "security_map_max_functions",
+                15_000 if profile.name == "deep" else 5_000,
+            )
+            or (15_000 if profile.name == "deep" else 5_000)
+        )
+
+        # Workbook and built-in rows are observation inputs only.  They cannot
+        # reach a candidate generator until strict mining, qualification, and
+        # compilation have all succeeded.
+        observation_overlay = SemanticOverlayCompiler(self.user_config).compile()
+        observation_map = ZeroLLMSecurityMapBuilder(
+            self.code_index,
+            project_id=str(
+                getattr(self.base_config.project, "project_id", "")
+                or self.base_config.project.project_root.name
+            ),
+            revision=str(self._candidate_ledger.revision or ""),
+            profile=str(profile.name),
+            semantic_overlay=observation_overlay,
+            project_root=self.base_config.project.project_root,
+            max_functions=max_functions,
+        ).build(entries)
+
+        spec_store = SecuritySpecStore(snapshot_dir / "security_specs")
+        builtin_qualification = load_builtin_qualification()
+        persisted_qualifications = spec_store.list_artifacts("qualification")
+        qualifications = [
+            builtin_qualification,
+            *(
+                value
+                for value in persisted_qualifications
+                if value.get("content_sha256") != builtin_qualification.get("content_sha256")
+            ),
+        ]
+        evidence_refs = {
+            str(value)
+            for claim in getattr(observation_map, "claims", ()) or ()
+            for value in getattr(claim, "evidence_refs", ()) or ()
+        }
+        dependency_hashes = {
+            str(value)
+            for record in getattr(observation_map, "functions", ()) or ()
+            for value in (
+                getattr(record, "code_hash", ""),
+                hashlib.sha256(
+                    json.dumps(
+                        getattr(record, "backend_coverage", {}) or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            )
+            if str(value)
+        }
+        spec_runtime = SecuritySpecRuntime(spec_store).run(
+            observation_map,
+            qualification_hashes=[
+                str(value.get("content_sha256") or "") for value in qualifications
+            ],
+            qualifications=qualifications,
+            resolvable_evidence_refs=evidence_refs,
+            current_dependency_hashes=dependency_hashes,
+            additional_specs=spec_store.list_specs(),
+        )
+        compiled_overlay = SecuritySpecCompiler.semantic_overlay(spec_runtime["compilation"])
+        semantic_map = ZeroLLMSecurityMapBuilder(
+            self.code_index,
+            project_id=str(
+                getattr(self.base_config.project, "project_id", "")
+                or self.base_config.project.project_root.name
+            ),
+            revision=str(self._candidate_ledger.revision or ""),
+            profile=str(profile.name),
+            semantic_overlay=compiled_overlay,
+            project_root=self.base_config.project.project_root,
+            max_functions=max_functions,
+        ).build(entries)
+
+        semantic_store = SQLiteSecurityMapStore(snapshot_dir / "security_map.db")
+        semantic_store.save_map(semantic_map)
+        semantic_store.export_json(semantic_map, snapshot_dir / "security_semantic_map.json")
+        self._security_semantic_map = semantic_map
+        self._security_spec_runtime_result = spec_runtime
+        self._shared_semantic_overlay = compiled_overlay
+        self._shared_local_pattern_semantics = self._compiled_local_pattern_semantics(
+            compiled_overlay
+        )
+        self._security_runtime_state = {
+            "enabled": profile.name != "fast",
+            "profile": profile.name,
+            "status": "security_spec_compiled",
+            "duration_seconds": round(time.monotonic() - started, 4),
             "llm_semantic_model_calls": 0,
             "llm_discovery_call_count": 0,
+            "security_spec_runtime": spec_runtime,
         }
-        self._active_discovery_state = state
+        self._decision_trace_store.update_identity(
+            {
+                "security_spec_mode": "authoritative",
+                "security_spec_root_manifest_sha256": str(
+                    spec_runtime.get("root_manifest_sha256") or ""
+                ),
+                "security_spec_artifact_refs": list(spec_runtime.get("artifact_refs") or []),
+                "security_spec_decision": {
+                    "active_product_effect": "semantic_input",
+                    "compiled_spec_count": int(spec_runtime.get("compiled_spec_count", 0) or 0),
+                    "reason_code": "security_spec_authoritative",
+                },
+            }
+        )
+
+    @staticmethod
+    def _compiled_local_pattern_semantics(
+        overlay: Mapping[str, Any],
+    ) -> LocalPatternSemantics:
+        semantics = LocalPatternSemantics()
+        for value in overlay.get("resource_models") or []:
+            if not isinstance(value, Mapping):
+                continue
+            name = str(value.get("name") or "")
+            kind = str(value.get("kind") or "")
+            category = {
+                "resource_acquire": "allocator",
+                "resource_release": "deallocator",
+                "resource_transfer": "reallocator",
+            }.get(kind)
+            if name and category:
+                semantics.add_api(category, name, "security_spec_compiler")
+        for value in overlay.get("lock_models") or []:
+            if not isinstance(value, Mapping):
+                continue
+            name = str(value.get("name") or "")
+            kind = str(value.get("kind") or "")
+            if name and kind in {"lock", "unlock"}:
+                semantics.add_api(kind, name, "security_spec_compiler")
+        return semantics
+
+    def _run_authoritative_hunter(self, profile: Any) -> None:
+        """Register bounded Hunter hypotheses into the live, unfrozen ledger."""
+
+        semantic_map = getattr(self, "_security_semantic_map", None)
+        spec_runtime = dict(getattr(self, "_security_spec_runtime_result", {}) or {})
+        if semantic_map is None or not spec_runtime:
+            raise RuntimeError("authoritative_security_spec_runtime_missing")
+        state = self._security_runtime_state
+        state.update({"enabled": True, "status": "hunter_running"})
+        registrar = CandidateRegistrar(
+            self._candidate_ledger,
+            project_id=str(
+                getattr(self.base_config.project, "project_id", "")
+                or self.base_config.project.project_root.name
+            ),
+            project_root=str(self.base_config.project.project_root),
+            revision=str(self._candidate_ledger.revision or ""),
+            run_id=self.run_id,
+            decision_fact_cache=self._decision_fact_cache,
+        )
         try:
-            ablation_override = self._benchmark_ablation_override
-            discovery_enabled = bool(
-                ablation_override is None or ablation_override.active_discovery_enabled
-            )
-            semantic_enrichment_enabled = bool(
-                ablation_override is None or ablation_override.semantic_enrichment_enabled
-            )
-            if ablation_override is not None:
-                state["benchmark_ablation"] = ablation_override.report_metadata()
-            self._cancellation_token.raise_if_cancelled()
-            max_functions_default = 15_000 if profile.name == "deep" else 5_000
-            max_functions = int(
-                getattr(
-                    self.base_config.analysis,
-                    "security_map_max_functions",
-                    max_functions_default,
-                )
-                or max_functions_default
-            )
-            semantic_map = ZeroLLMSecurityMapBuilder(
-                self.code_index,
-                project_id=str(
-                    getattr(self.base_config.project, "project_id", "")
-                    or self.base_config.project.project_root.name
-                ),
-                revision=str(self._candidate_ledger.revision or ""),
-                profile=str(profile.name),
-                semantic_overlay=self._get_shared_semantic_overlay(),
-                project_root=self.base_config.project.project_root,
-                max_functions=max_functions,
-            ).build(entries)
-            self._cancellation_token.raise_if_cancelled()
-            store = SQLiteSecurityMapStore(sidecar_path)
-            registrar = CandidateRegistrar(
-                self._candidate_ledger,
-                project_id=str(
-                    getattr(self.base_config.project, "project_id", "")
-                    or self.base_config.project.project_root.name
-                ),
-                project_root=str(self.base_config.project.project_root),
-                revision=str(self._candidate_ledger.revision or ""),
-                run_id=self.run_id,
-                decision_fact_cache=self._decision_fact_cache,
-            )
-            discovery_llm_client = (
-                self._scan_role_llm_client("analysis") if discovery_enabled else None
-            )
-            modeling_llm_client = (
-                self._scan_role_llm_client("modeling") if semantic_enrichment_enabled else None
-            )
-            report_runner = None
-            semantic_enricher = None
-            if discovery_llm_client is not None:
-                agent_runner = make_agent_report_runner(ActiveDiscoveryAgent(discovery_llm_client))
-
-                def report_runner(projection: Any, active_profile: Any) -> Any:
-                    self._cancellation_token.raise_if_cancelled()
-                    return agent_runner(projection, active_profile)
-
-            if modeling_llm_client is not None:
-                enrichment_runner = make_semantic_enrichment_runner(
-                    SemanticEnrichmentAgent(modeling_llm_client)
-                )
-
-                def semantic_delta_runner(projection: Any, active_profile: Any) -> Any:
-                    self._cancellation_token.raise_if_cancelled()
-                    return enrichment_runner(projection, active_profile)
-
-                semantic_enricher = SemanticMapEnricher(
-                    profile=profile,
-                    store=store,
-                    model_identity=str(
-                        (getattr(modeling_llm_client, "models", None) or ["unknown"])[0]
-                    ),
-                    user_semantics_fingerprint=str(
-                        semantic_map.fingerprints.get("semantic_overlay") or ""
-                    ),
-                    report_runner=semantic_delta_runner,
-                    mode=str(
-                        "active"
-                        if ablation_override is not None
-                        else getattr(
-                            self.base_config.analysis,
-                            "security_semantic_enrichment_mode",
-                            "shadow",
-                        )
-                        or "shadow"
-                    ),
-                )
-
-            coordinator = ActiveDiscoveryCoordinator(
-                profile=profile,
-                store=store,
-                registrar=registrar,
-                report_runner=report_runner,
-                semantic_enricher=semantic_enricher,
-                discovery_enabled=discovery_enabled,
-                visibility_mode=(
-                    "active"
-                    if ablation_override is not None
-                    else rollout_active_discovery_mode(self.base_config)
-                ),
-                rollout_stage=str(
-                    (
-                        f"benchmark_ablation_{ablation_override.arm_id.lower()}"
-                        if ablation_override is not None
-                        else rollout_runtime_policy(self.base_config).get("stage") or "unmanaged"
-                    )
-                ),
-            )
-            planned_map, discovery_state = coordinator.run(
+            self._run_hypothesis_hunter(
                 semantic_map,
-                covered_keys=candidate_coverage_keys(self._candidate_ledger),
-                known_variant_keys=self._historical_variant_keys_for_map(semantic_map),
-                export_path=export_path,
+                profile=profile,
+                security_spec_runtime=spec_runtime,
+                candidate_registrar=registrar,
+                state=state,
+                analysis_llm_client=self._scan_role_llm_client("analysis"),
             )
-            state.update(discovery_state)
-            planned_units = list(planned_map.audit_units)
-            missing_modeling = (
-                semantic_enrichment_enabled and modeling_llm_client is None and bool(planned_units)
+            result = state.get("hypothesis_hunter_runtime") or {}
+            state.update(
+                {
+                    "status": "complete",
+                    "hypothesis_count": int(result.get("hypothesis_count", 0) or 0),
+                    "new_validation_group_count": int(
+                        result.get("registered_candidate_count", 0) or 0
+                    ),
+                    "llm_discovery_call_count": int(result.get("llm_call_count", 0) or 0),
+                }
             )
-            missing_discovery = (
-                discovery_enabled
-                and discovery_llm_client is None
-                and int(state.get("completed_report_count", 0) or 0) < len(planned_units)
+        except Exception as exc:
+            state["status"] = "failed_closed"
+            state.setdefault("failures", []).append({"reason": f"{type(exc).__name__}: {exc}"})
+            state["hypothesis_hunter_runtime"] = {
+                "schema_version": "zscope.hypothesis-hunter-runtime-result.v1",
+                "mode": "active",
+                "active_product_effect": "candidate_registration_only",
+                "status": "failed_closed",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+            self._decision_trace_store.update_identity(
+                {
+                    "hypothesis_hunter_mode": "active",
+                    "hypothesis_hunter_artifact_refs": [],
+                    "hypothesis_hunter_decision": {
+                        "active_product_effect": "candidate_registration_only",
+                        "reason_code": "hypothesis_hunter_failed_closed",
+                        "coverage_summary": {},
+                    },
+                }
             )
-            if missing_modeling or missing_discovery:
-                state["status"] = "planned_no_llm_client"
-                missing_roles = [
-                    role
-                    for role, missing in (
-                        ("modeling", missing_modeling),
-                        ("analysis", missing_discovery),
-                    )
-                    if missing
-                ]
-                state.setdefault("failures", []).append(
+            logger.exception("[hypothesis-hunter] active stage failed closed")
+
+    def _run_hypothesis_hunter(
+        self,
+        semantic_map: Any,
+        *,
+        profile: Any,
+        security_spec_runtime: Mapping[str, Any],
+        candidate_registrar: CandidateRegistrar,
+        state: Dict[str, Any],
+        analysis_llm_client: Any,
+    ) -> None:
+        """Run P4 after P3 and before the live Candidate Ledger is frozen."""
+
+        snapshot_dir = Path(self.base_config.analysis.snapshot_dir)
+        compile_commands = getattr(self.code_index, "compile_commands_path", None)
+        fact_service = FunctionIRFactService(
+            Path(compile_commands) if compile_commands else None,
+            enabled=str(getattr(self.base_config.project, "language", "")) == "c_cpp",
+        )
+
+        def graph_provider(record: Any, event: Any) -> Any:
+            raw_path = Path(str(record.file_path))
+            file_path = (
+                raw_path
+                if raw_path.is_absolute()
+                else Path(self.base_config.project.project_root) / raw_path
+            )
+            issue = {
+                "function": str(record.function_name),
+                "function_signature": str(record.function_name),
+                "file": str(file_path),
+                "line": int(event.line or record.start_line or 0),
+                "source": {
+                    "line": int(event.line or 0),
+                    "expression": str(event.expression or ""),
+                },
+                "sink": {
+                    "line": int(event.line or 0),
+                    "expression": str(event.expression or ""),
+                },
+            }
+            return fact_service.graph(issue, {})
+
+        catalog = HypothesisProofCatalog(graph_provider)
+        report_runner = None
+        if analysis_llm_client is not None:
+            agent = HypothesisHunterAgent(analysis_llm_client)
+
+            def report_runner(projection: Any, unit: Any, offers: Any) -> Any:
+                self._cancellation_token.raise_if_cancelled()
+                return agent.run(
                     {
-                        "reason": (
-                            "No LLM client was configured for required scan role(s): "
-                            + ", ".join(missing_roles)
-                        )
+                        "projection": projection,
+                        "audit_unit": unit,
+                        "offers": list(offers),
                     }
                 )
-                state["uncovered_unit_ids"] = list(
-                    dict.fromkeys(
-                        [
-                            *list(state.get("uncovered_unit_ids") or []),
-                            *(unit.unit_id for unit in planned_units),
-                        ]
-                    )
-                )
-        except CancellationError:
-            state["status"] = "interrupted"
-            state["failures"] = [{"reason": "active discovery cancelled"}]
-        except Exception as exc:
-            state["status"] = "failed"
-            state["failures"] = [{"reason": f"{type(exc).__name__}: {exc}"}]
-            logger.exception("[active-discovery] stage failed")
-        finally:
-            state["duration_seconds"] = round(time.monotonic() - started, 4)
-            self._active_discovery_state = state
-            logger.info(
-                "[active-discovery] end profile=%s status=%s units=%d hypotheses=%d "
-                "new_groups=%d duration=%.2fs",
-                state.get("profile"),
-                state.get("status"),
-                int(state.get("planned_unit_count", 0) or 0),
-                int(state.get("hypothesis_count", 0) or 0),
-                int(state.get("new_validation_group_count", 0) or 0),
-                state["duration_seconds"],
-            )
 
-    def _historical_variant_keys_for_map(self, semantic_map: Any) -> Set[str]:
-        """Read prior confirmed reports for the functions in this map."""
-
-        if self.force_ignore_history:
-            return set()
-        issues: List[Dict[str, Any]] = []
-        seen_index_names: Set[str] = set()
-        for record in getattr(semantic_map, "functions", ()) or ():
-            index_name = str(getattr(record, "index_name", "") or "")
-            if not index_name or index_name in seen_index_names:
-                continue
-            seen_index_names.add(index_name)
-            try:
-                report = self.snapshot_store.load_final_report(index_name)
-            except Exception:
-                logger.exception(
-                    "[active-discovery] failed to load historical variant report index=%s",
-                    index_name,
-                )
-                continue
-            if isinstance(report, dict) and isinstance(report.get("issues"), list):
-                issues.extend(item for item in report["issues"] if isinstance(item, dict))
-        return historical_variant_keys(issues)
+        result = HypothesisHunterRuntime(
+            HypothesisArtifactStore(snapshot_dir / "hypothesis_hunter"),
+            risk_threshold=int(profile.risk_threshold),
+            max_units=profile.max_units,
+            model_profile=str(profile.name),
+        ).run(
+            semantic_map,
+            candidate_registrar=candidate_registrar,
+            security_spec_runtime=security_spec_runtime,
+            proof_bundle_provider=catalog.bundles,
+            report_runner=report_runner,
+        )
+        state["hypothesis_hunter_runtime"] = result
+        self._decision_trace_store.update_identity(
+            {
+                "hypothesis_hunter_mode": "active",
+                "hypothesis_hunter_root_manifest_sha256": str(
+                    result.get("root_manifest_sha256") or ""
+                ),
+                "hypothesis_hunter_artifact_refs": list(result.get("artifact_refs") or []),
+                "hypothesis_hunter_decision": {
+                    "active_product_effect": "candidate_registration_only",
+                    "reason_code": "hypothesis_hunter_candidate_registration_only",
+                    "coverage_summary": dict(result.get("coverage_summary") or {}),
+                },
+            }
+        )
 
     def _scan_role_llm_client(self, role: str) -> Optional[LLMClient]:
         """Resolve the public role mapping before any legacy Agent config."""
@@ -1270,16 +1280,16 @@ class ParallelAnalyzer:
         profiles = getattr(getattr(self.base_config, "scan", None), "llm_profiles", None)
         configured_ref = str(getattr(profiles, role, "") or "")
         if not configured_ref:
-            legacy_names = (
-                ("active_discovery", "vulnerability_analyzer")
+            runtime_names = (
+                ("hypothesis_hunter",)
                 if role == "analysis"
-                else ("semantic_modeler",)
+                else (("security_spec_miner",) if role == "modeling" else ("proof_engine",))
             )
             configured_ref = next(
                 (
                     str(getattr(item, "llm_ref", "") or "")
                     for item in self.base_config.project.agents
-                    if str(getattr(item, "name", "") or "") in legacy_names
+                    if str(getattr(item, "name", "") or "") in runtime_names
                     and bool(getattr(item, "enabled", True))
                     and str(getattr(item, "llm_ref", "") or "")
                 ),
@@ -1290,10 +1300,6 @@ class ParallelAnalyzer:
             configured_ref,
             self._shared_llm_clients.get("default"),
         )
-
-    # Compatibility for integrations that called the former private helper.
-    def _active_discovery_llm_client(self) -> Optional[LLMClient]:
-        return self._scan_role_llm_client("analysis")
 
     @staticmethod
     def _build_shared_llm_clients(config: ZScopeConfig) -> Dict[str, LLMClient]:
@@ -1579,12 +1585,8 @@ class ParallelAnalyzer:
                 force_ignore_history=self.force_ignore_history,
                 maintain_mode=self.maintain_mode,
                 candidate_ledger=self._candidate_ledger,
-                shared_local_pattern_semantics=(
-                    None if self.maintain_mode else self._get_shared_local_pattern_semantics()
-                ),
-                shared_semantic_overlay=(
-                    None if self.maintain_mode else self._get_shared_semantic_overlay()
-                ),
+                shared_local_pattern_semantics=self._get_shared_local_pattern_semantics(),
+                shared_semantic_overlay=self._get_shared_semantic_overlay(),
                 llm_clients=self._shared_llm_clients,
                 validation_result_cache=self._validation_result_cache,
                 cancellation_token=entry_token,
@@ -1788,30 +1790,14 @@ class ParallelAnalyzer:
             if callable(close_client):
                 close_client()
 
-    def _prepare_shared_semantics(self) -> None:
-        """Warm shared project semantics before entry-level analyzers fan out."""
-        self._get_shared_local_pattern_semantics()
-        self._get_shared_semantic_overlay()
-
     def _get_shared_local_pattern_semantics(self) -> LocalPatternSemantics:
         if self._shared_local_pattern_semantics is None:
-            with self._shared_semantics_lock:
-                if self._shared_local_pattern_semantics is None:
-                    self._shared_local_pattern_semantics = LocalPatternSemanticBuilder(
-                        self.code_index,
-                        self.user_config,
-                        self.snapshot_store,
-                        (Path(path) for path in self.base_config.project.exclude_paths),
-                    ).build()
+            raise RuntimeError("authoritative_security_spec_semantics_not_prepared")
         return self._shared_local_pattern_semantics
 
     def _get_shared_semantic_overlay(self) -> Dict[str, Any]:
         if self._shared_semantic_overlay is None:
-            with self._shared_semantics_lock:
-                if self._shared_semantic_overlay is None:
-                    self._shared_semantic_overlay = SemanticOverlayCompiler(
-                        self.user_config
-                    ).compile()
+            raise RuntimeError("authoritative_security_spec_overlay_not_prepared")
         return self._shared_semantic_overlay
 
     def _create_config_for_entry(self, entry: FunctionEntry) -> ZScopeConfig:
@@ -1821,7 +1807,7 @@ class ParallelAnalyzer:
         for agent_cfg in self.base_config.project.agents:
             agent_copy = copy(agent_cfg)
             entry_custom_prompt = agent_cfg.entry_custom_prompt
-            if entry.custom_prompt and agent_cfg.name == "vulnerability_analyzer":
+            if entry.custom_prompt and agent_cfg.name == "hypothesis_hunter":
                 entry_custom_prompt = entry.custom_prompt
             agent_copy.entry_custom_prompt = entry_custom_prompt
             agents.append(agent_copy)
@@ -1835,8 +1821,7 @@ class ParallelAnalyzer:
 
         config = copy(self.base_config)
         config.project = project
-        # Keep entry-specific focus separate from the configured task so skill
-        # routing remains driven by the global vulnerability scope.
+        # Keep entry-specific focus separate from the configured scan task.
         return config
 
     def generate_combined_report(
@@ -1983,22 +1968,21 @@ class ParallelAnalyzer:
         # The scan-level ledger is the final lifecycle authority. Entry reports
         # can be assembled while a shared validation is still in flight, so
         # replace their v3 terminal projection with one final atomic snapshot.
-        ledger_snapshot: Dict[str, Any] = {}
         snapshot = getattr(
             getattr(self, "_candidate_ledger", None),
             "freeze",
             None,
         )
-        if callable(snapshot):
-            ledger_snapshot = snapshot()
-        final_records = [
-            item for item in ledger_snapshot.get("records", []) if isinstance(item, dict)
-        ]
-        final_by_cluster = {
-            str(item.get("validation_cluster_uid") or ""): item
-            for item in final_records
-            if item.get("validation_cluster_uid")
-        }
+        if not callable(snapshot):
+            raise RuntimeError(
+                "live batch report assembly requires a Candidate Ledger; "
+                "read historical non-canonical reports through zscope.compat"
+            )
+        ledger_snapshot = snapshot()
+        if not isinstance(ledger_snapshot, dict) or not isinstance(
+            ledger_snapshot.get("outcomes"), list
+        ):
+            raise RuntimeError("Candidate Ledger did not produce frozen outcomes")
         first_metadata = next(
             (
                 result.metadata
@@ -2041,100 +2025,33 @@ class ParallelAnalyzer:
         canonical_outcomes = (
             ReportAssembler._canonical_outcome_items(canonical_projection_state) or []
         )
-        # A missing/empty ledger snapshot is not a canonical outcome set. This
-        # still protects report-only helpers while the stable scan path always
-        # uses canonical projection.
-        canonical_projection = bool(canonical_outcomes)
-        if canonical_projection:
-            # A scan-level outcome is authoritative.  Per-entry reports may
-            # have been assembled before another entry completed the shared
-            # validation future, so they are provenance only at this point.
-            all_issues = [
-                item
-                for item in canonical_outcomes
-                if str(item.get("candidate_disposition") or "").lower() == "confirmed"
-            ]
-            all_observations = [
-                item
-                for item in canonical_outcomes
-                if str(item.get("candidate_disposition") or "").lower() == "needs_review"
-            ]
-            all_terminal_states = [
-                {
-                    key: value
-                    for key, value in item.items()
-                    if key != "issue" and value not in (None, "", [], {})
-                }
-                for item in canonical_outcomes
-            ]
-        elif final_by_cluster:
-            all_observations = [
-                item
-                for item in all_observations
-                if (
-                    not item.get("validation_cluster_uid")
-                    or str(
-                        final_by_cluster.get(
-                            str(item.get("validation_cluster_uid") or ""),
-                            {},
-                        ).get("candidate_disposition")
-                        or ""
-                    ).lower()
-                    == "needs_review"
-                )
-            ]
-            all_terminal_states = [
-                item for item in all_terminal_states if not item.get("validation_cluster_uid")
-            ]
-            all_terminal_states.extend(final_records)
-            all_observations.extend(
-                ReportAssembler._unresolved_candidate_observations(
-                    {"candidate_lifecycle_snapshot": ledger_snapshot},
-                    list(all_issues) + list(all_observations),
-                )
-            )
-
-        # Deduplicate confirmed issues with the same final-report semantics used
-        # by single-entry reports. Observations stay programmatic to avoid an
-        # extra batch LLM pass over needs_review-only material.
-        interrupted = bool(getattr(self, "_interrupted", False))
-        if canonical_projection:
-            unique_issues = list(all_issues)
-            semantic_dedup_summary = {
-                "input_count": len(all_issues),
-                "after_programmatic_count": len(all_issues),
-                "final_count": len(all_issues),
-                "llm_enabled": False,
-                "canonical_projection": True,
-            }
-        else:
-            unique_issues, semantic_dedup_summary = self._deduplicate_report_issues(
-                all_issues,
-                allow_llm=not interrupted,
-            )
-        review_observations = (
-            list(all_observations)
-            if canonical_projection
-            else coalesce_review_observations(all_observations)
-        )
-        review_fingerprints = {
-            str(item.get("validation_cluster_uid") or "") or str(item.get("candidate_uid") or "")
-            for item in review_observations
-        }
-        non_review_observations = [
+        canonical_projection = True
+        # A scan-level outcome is authoritative.  Per-entry reports may have
+        # been assembled before another entry completed the shared validation
+        # future, so they are provenance only at this point.  An empty outcome
+        # set is still canonical and must never fall back to raw entry issues.
+        all_issues = [
             item
-            for item in all_observations
-            if not (
-                str(item.get("validation_cluster_uid") or "")
-                or str(item.get("candidate_uid") or "")
-            )
-            in review_fingerprints
+            for item in canonical_outcomes
+            if str(item.get("candidate_disposition") or "").lower() == "confirmed"
         ]
-        unique_observations = (
-            review_observations
-            if canonical_projection
-            else self._deduplicate_issues(non_review_observations) + review_observations
-        )
+        all_observations = [
+            item
+            for item in canonical_outcomes
+            if str(item.get("candidate_disposition") or "").lower() == "needs_review"
+        ]
+        all_terminal_states = [
+            {
+                key: value
+                for key, value in item.items()
+                if key != "issue" and value not in (None, "", [], {})
+            }
+            for item in canonical_outcomes
+        ]
+
+        interrupted = bool(getattr(self, "_interrupted", False))
+        unique_issues = list(all_issues)
+        unique_observations = list(all_observations)
         unique_terminal_states = [
             dict(item)
             for item in coalesce_terminal_candidates(all_terminal_states)
@@ -2167,12 +2084,12 @@ class ParallelAnalyzer:
         global_validation_duration = float(
             getattr(self, "_global_validation_duration_seconds", 0.0) or 0.0
         )
-        active_discovery_state = dict(getattr(self, "_active_discovery_state", {}) or {})
-        active_discovery_duration = float(
-            active_discovery_state.get("duration_seconds", 0.0) or 0.0
+        security_runtime_state = dict(getattr(self, "_security_runtime_state", {}) or {})
+        security_runtime_duration = float(
+            security_runtime_state.get("duration_seconds", 0.0) or 0.0
         )
         total_duration += global_validation_duration
-        total_duration += active_discovery_duration
+        total_duration += security_runtime_duration
         batch_wall_seconds = round(float(getattr(self, "_last_batch_wall_seconds", 0.0) or 0.0), 2)
         effective_speedup = (total_duration / batch_wall_seconds) if batch_wall_seconds > 0 else 0.0
         worker_utilization = (
@@ -2181,7 +2098,6 @@ class ParallelAnalyzer:
             else 0.0
         )
         validation_performance_summary = self._validation_performance_summary(results)
-        va_candidate_coverage_summary = self._va_candidate_coverage_summary(results)
         entry_budget_summary = self._entry_budget_summary(results)
         llm_iteration_budget_summary = self._llm_iteration_budget_summary(results)
         scan_budget_summary = dict(getattr(self, "_last_scan_budget_metadata", {}) or {})
@@ -2201,16 +2117,16 @@ class ParallelAnalyzer:
             global_validation_state.get("total_cumulative_total_tokens", 0) or 0
         )
         retained_prompt_tokens += int(
-            active_discovery_state.get("cumulative_prompt_tokens", 0) or 0
+            security_runtime_state.get("cumulative_prompt_tokens", 0) or 0
         )
         retained_completion_tokens += int(
-            active_discovery_state.get("cumulative_completion_tokens", 0) or 0
+            security_runtime_state.get("cumulative_completion_tokens", 0) or 0
         )
-        retained_total_tokens += int(active_discovery_state.get("cumulative_total_tokens", 0) or 0)
+        retained_total_tokens += int(security_runtime_state.get("cumulative_total_tokens", 0) or 0)
         total_context_tokens = sum(r.context_tokens for r in results.values()) + int(
             global_validation_state.get("total_context_tokens", 0) or 0
         )
-        total_context_tokens += int(active_discovery_state.get("context_tokens", 0) or 0)
+        total_context_tokens += int(security_runtime_state.get("context_tokens", 0) or 0)
         response_prompt_tokens = int(llm_usage_summary.get("prompt_tokens") or 0)
         response_completion_tokens = int(llm_usage_summary.get("completion_tokens") or 0)
         response_total_tokens = int(llm_usage_summary.get("total_tokens") or 0)
@@ -2248,25 +2164,36 @@ class ParallelAnalyzer:
                     "failures": list(project_fact_state.get("failures") or []),
                 }
             }
-        if active_discovery_state:
-            engine_capabilities["__active_discovery__"] = {
-                "security_semantic_map": {
-                    "status": str(active_discovery_state.get("status") or "not_run"),
-                    "active": bool(active_discovery_state.get("enabled", False)),
-                    "profile": str(active_discovery_state.get("profile") or "fast"),
-                    "planned_unit_count": int(
-                        active_discovery_state.get("planned_unit_count", 0) or 0
-                    ),
-                    "completed_report_count": int(
-                        active_discovery_state.get("completed_report_count", 0) or 0
-                    ),
-                    "hypothesis_count": int(active_discovery_state.get("hypothesis_count", 0) or 0),
-                    "new_validation_group_count": int(
-                        active_discovery_state.get("new_validation_group_count", 0) or 0
-                    ),
-                    "failures": list(active_discovery_state.get("failures") or []),
+        if security_runtime_state:
+            spec_runtime = security_runtime_state.get("security_spec_runtime")
+            if isinstance(spec_runtime, dict):
+                engine_capabilities["__security_spec_runtime__"] = {
+                    "security_spec": {
+                        "status": str(spec_runtime.get("status") or "complete"),
+                        "mode": str(spec_runtime.get("security_spec_mode") or "authoritative"),
+                        "active_product_effect": str(
+                            spec_runtime.get("active_product_effect") or "semantic_input"
+                        ),
+                        "mined_spec_count": int(spec_runtime.get("mined_spec_count", 0) or 0),
+                        "compiled_spec_count": int(spec_runtime.get("compiled_spec_count", 0) or 0),
+                        "root_manifest_sha256": str(spec_runtime.get("root_manifest_sha256") or ""),
+                        "artifact_refs": list(spec_runtime.get("artifact_refs") or []),
+                    }
                 }
-            }
+            hypothesis_runtime = security_runtime_state.get("hypothesis_hunter_runtime")
+            if isinstance(hypothesis_runtime, dict):
+                engine_capabilities["__hypothesis_hunter_runtime__"] = {
+                    "hypothesis_hunter": {
+                        "status": str(hypothesis_runtime.get("status") or "complete"),
+                        "mode": "active",
+                        "active_product_effect": "candidate_registration_only",
+                        "root_manifest_sha256": str(
+                            hypothesis_runtime.get("root_manifest_sha256") or ""
+                        ),
+                        "artifact_refs": list(hypothesis_runtime.get("artifact_refs") or []),
+                        "coverage_summary": dict(hypothesis_runtime.get("coverage_summary") or {}),
+                    }
+                }
         error_result_count = sum(
             1
             for result in results.values()
@@ -2332,6 +2259,87 @@ class ParallelAnalyzer:
                 global_validation_state.get("validator_verdict_transitions") or {}
             ),
         }
+        source_revision = next(
+            (
+                str(result.metadata.get("commit_sha") or "")
+                for result in results.values()
+                if isinstance(result.metadata, dict) and result.metadata.get("commit_sha")
+            ),
+            "",
+        )
+        source_tree_hash = (
+            next(
+                (
+                    str(result.metadata.get("source_tree_hash") or "")
+                    for result in results.values()
+                    if isinstance(result.metadata, dict) and result.metadata.get("source_tree_hash")
+                ),
+                "",
+            )
+            or source_revision
+        )
+        if not source_tree_hash:
+            source_tree_hash = hashlib.sha256(project_root.encode("utf-8")).hexdigest()
+        config_hash = next(
+            (
+                str(result.metadata.get("config_hash") or "")
+                for result in results.values()
+                if isinstance(result.metadata, dict) and result.metadata.get("config_hash")
+            ),
+            "",
+        )
+        if not config_hash:
+            config_hash = hashlib.sha256(
+                json.dumps(
+                    dict(vars(base_config)) if base_config is not None else {},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+        spec_runtime = security_runtime_state.get("security_spec_runtime")
+        spec_runtime = spec_runtime if isinstance(spec_runtime, dict) else {}
+        hunter_runtime = security_runtime_state.get("hypothesis_hunter_runtime")
+        hunter_runtime = hunter_runtime if isinstance(hunter_runtime, dict) else {}
+        proof_identity = [
+            {
+                "cluster": str(value.get("validation_cluster_uid") or ""),
+                "refs": list(value.get("proof_kernel_artifact_refs") or []),
+                "terminal": value.get("terminal_authority_decision") or {},
+            }
+            for value in unique_terminal_states
+            if isinstance(value, dict)
+        ]
+        runtime_authority_manifest = build_runtime_authority_manifest(
+            source_tree_hash=source_tree_hash,
+            config_sha256=config_hash,
+            backend_sha256=hashlib.sha256(
+                json.dumps(
+                    engine_capabilities,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest(),
+            security_spec_root_sha256=str(spec_runtime.get("root_manifest_sha256") or ""),
+            hypothesis_hunter_root_sha256=str(hunter_runtime.get("root_manifest_sha256") or ""),
+            proof_root_sha256=hashlib.sha256(
+                json.dumps(
+                    proof_identity,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest(),
+            revisions={
+                "security_spec_compiler": SecuritySpecCompiler.compiler_version,
+                "hypothesis_hunter": "hypothesis-hunter.v2",
+                "proof_registry": "proof-kernel.v2",
+                "proof_checker": "proof-checker.v2",
+                "proof_provider": "proof-provider.v2",
+                "terminal_authority": "terminal-authority.v3",
+            },
+        )
         combined_report = {
             "rule_catalog": (
                 serialize_effective_rules(effective_rules) if effective_rules is not None else {}
@@ -2374,13 +2382,11 @@ class ParallelAnalyzer:
                 "validation_performance": validation_performance_summary,
                 "global_validation_queue": dict(global_validation_report),
                 "project_deterministic_fact_pass": project_fact_state,
-                "active_discovery": active_discovery_state,
+                "security_runtime": security_runtime_state,
                 "benchmark_ablation": benchmark_ablation_metadata,
-                "va_candidate_coverage": va_candidate_coverage_summary,
                 "entry_budget": entry_budget_summary,
                 "llm_iteration_budget": llm_iteration_budget_summary,
                 "scan_budget": scan_budget_summary,
-                "semantic_dedup": semantic_dedup_summary,
                 "interrupted": interrupted,
             },
             "function_results": function_summaries,
@@ -2395,22 +2401,10 @@ class ParallelAnalyzer:
                 "repo": project_root,
                 "project_id": project_id,
                 "source_root": source_root,
-                "commit_sha": next(
-                    (
-                        str(result.metadata.get("commit_sha") or "")
-                        for result in results.values()
-                        if isinstance(result.metadata, dict) and result.metadata.get("commit_sha")
-                    ),
-                    "",
-                ),
-                "config_hash": next(
-                    (
-                        str(result.metadata.get("config_hash") or "")
-                        for result in results.values()
-                        if isinstance(result.metadata, dict) and result.metadata.get("config_hash")
-                    ),
-                    "",
-                ),
+                "commit_sha": source_revision,
+                "source_tree_hash": source_tree_hash,
+                "config_hash": config_hash,
+                "runtime_authority_manifest": runtime_authority_manifest,
                 "effective_rules_sha256": str(
                     getattr(
                         getattr(base_config, "rule_catalog_provenance", None),
@@ -2463,14 +2457,12 @@ class ParallelAnalyzer:
                 "validation_performance": validation_performance_summary,
                 "global_validation_queue": dict(global_validation_report),
                 "project_deterministic_fact_pass": project_fact_state,
-                "active_discovery": active_discovery_state,
+                "security_runtime": security_runtime_state,
                 "benchmark_ablation": benchmark_ablation_metadata,
-                "va_candidate_coverage_summary": va_candidate_coverage_summary,
                 "entry_budget": entry_budget_summary,
                 "llm_iteration_budget": llm_iteration_budget_summary,
                 "scan_budget": scan_budget_summary,
                 "engine_capabilities": engine_capabilities,
-                "semantic_dedup_summary": semantic_dedup_summary,
                 "interrupted": interrupted,
             },
         }
@@ -2481,6 +2473,7 @@ class ParallelAnalyzer:
                 "any_failure": error_result_count > 0,
                 "candidate_terminal_states": unique_terminal_states,
                 "engine_capabilities": engine_capabilities,
+                "security_runtime": security_runtime_state,
                 "canonical_outcome_projection": canonical_projection,
                 "candidate_ledger_summary": ledger_snapshot.get("summary", {}),
                 "llm_usage": scan_token_usage,
@@ -2537,8 +2530,6 @@ class ParallelAnalyzer:
             combined_report["answer_material_present"] = False
             combined_report["release_eligible"] = False
             combined_report["formal_eligible"] = False
-        from ..benchmarking.protocol import candidate_funnel
-
         combined_report["metadata"]["candidate_funnel"] = candidate_funnel(combined_report)
 
         if output_path:
@@ -2816,23 +2807,6 @@ class ParallelAnalyzer:
             "failed_or_disconnected_request_usage": "unknown",
             "per_client": per_client,
         }
-
-    @staticmethod
-    def _va_candidate_coverage_summary(
-        results: Dict[str, ParallelAnalysisResult],
-    ) -> Dict[str, int]:
-        summary: Dict[str, int] = {}
-        for result in results.values():
-            metadata = result.metadata if isinstance(result.metadata, dict) else {}
-            coverage = metadata.get("va_candidate_coverage_summary")
-            if not isinstance(coverage, dict):
-                continue
-            for key, value in coverage.items():
-                try:
-                    summary[key] = summary.get(key, 0) + int(value or 0)
-                except (TypeError, ValueError):
-                    continue
-        return summary
 
     @classmethod
     def _annotate_diff_relevance(
@@ -3262,463 +3236,6 @@ class ParallelAnalyzer:
 
         logger.info(f"Markdown report saved to: {output_path}")
         return content
-
-    def _deduplicate_issues(self, issues: List[Dict]) -> List[Dict]:
-        """Remove duplicate issues based on canonical sink/root-cause evidence."""
-        semantic_cfg = getattr(
-            getattr(getattr(self, "base_config", None), "reporting", None), "semantic_dedup", None
-        )
-        if semantic_cfg is not None and getattr(semantic_cfg, "enabled", True):
-            deduped, _summary = deduplicate_semantic_issues_programmatic(issues)
-            return deduped
-        return deduplicate_issues(issues)
-
-    def _deduplicate_report_issues(
-        self,
-        issues: List[Dict[str, Any]],
-        *,
-        allow_llm: bool = True,
-    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """Apply batch final-report semantic dedup, including LLM dedup when enabled."""
-        semantic_cfg = getattr(
-            getattr(getattr(self, "base_config", None), "reporting", None), "semantic_dedup", None
-        )
-        if semantic_cfg is None or not getattr(semantic_cfg, "enabled", True):
-            deduped = deduplicate_issues(issues)
-            return deduped, {
-                "enabled": False,
-                "input_issue_count": len(issues),
-                "output_issue_count": len(deduped),
-            }
-
-        deduped, summary = deduplicate_semantic_issues_programmatic(issues)
-        llm_configured = bool(getattr(semantic_cfg, "llm_enabled", False))
-        llm_enabled = bool(llm_configured and allow_llm)
-        summary.update(
-            {
-                "enabled": True,
-                "llm_enabled": llm_enabled,
-                "llm_configured": llm_configured,
-                "input_issue_count": len(issues),
-                "after_programmatic_issue_count": len(deduped),
-            }
-        )
-        if llm_configured and not allow_llm:
-            summary["llm_disabled_reason"] = "interrupted_fast_shutdown"
-        if llm_enabled:
-            deduped, llm_summary = self._deduplicate_report_clusters_with_llm(
-                deduped,
-                semantic_cfg=semantic_cfg,
-            )
-            summary.update(llm_summary)
-        summary["output_issue_count"] = len(deduped)
-        return deduped, summary
-
-    def _deduplicate_report_clusters_with_llm(
-        self,
-        issues: List[Dict[str, Any]],
-        *,
-        semantic_cfg: Any,
-    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        max_cluster_size = max(2, int(getattr(semantic_cfg, "max_cluster_size", 8) or 8))
-        threshold = float(getattr(semantic_cfg, "llm_confidence_threshold", 0.85) or 0.85)
-        clusters: Dict[str, List[Dict[str, Any]]] = {}
-        for issue in issues:
-            for key in semantic_related_cluster_keys(issue):
-                clusters.setdefault(key, []).append(issue)
-
-        candidate_clusters: List[List[Dict[str, Any]]] = []
-        seen_cluster_sets: Set[tuple[int, ...]] = set()
-        prefilter_skipped = 0
-        for group in clusters.values():
-            for candidate_group in self._split_semantic_dedup_cluster(group, max_cluster_size):
-                if len(candidate_group) < 2:
-                    continue
-                if not self._semantic_dedup_cluster_needs_llm(candidate_group):
-                    prefilter_skipped += 1
-                    continue
-                cluster_ids = tuple(sorted(id(issue) for issue in candidate_group))
-                if cluster_ids in seen_cluster_sets:
-                    continue
-                seen_cluster_sets.add(cluster_ids)
-                candidate_clusters.append(candidate_group)
-
-        summary: Dict[str, Any] = {
-            "llm_candidate_cluster_count": len(candidate_clusters),
-            "llm_clusters_called": 0,
-            "llm_cache_hits": 0,
-            "llm_merge_count": 0,
-            "llm_suggestion_count": 0,
-            "llm_rejected_merge_count": 0,
-            "llm_failed_cluster_count": 0,
-            "llm_prefilter_skipped_count": prefilter_skipped,
-        }
-        if not candidate_clusters:
-            return issues, summary
-
-        recon_agent = self._make_issue_reconciler_agent()
-        if recon_agent is None:
-            summary["llm_disabled_reason"] = "no_issue_reconciler_llm_client"
-            return issues, summary
-
-        self._assign_semantic_dedup_ids(issues)
-        by_issue_id: Dict[str, Dict[str, Any]] = {}
-        issue_order: List[str] = []
-        issue_indices = {id(issue): index for index, issue in enumerate(issues)}
-        for index, issue in enumerate(issues):
-            issue_id = self._semantic_dedup_issue_id(issue, index)
-            by_issue_id[issue_id] = issue
-            issue_order.append(issue_id)
-
-        cache = getattr(self, "_semantic_dedup_llm_cache", None)
-        if cache is None:
-            cache = {}
-            self._semantic_dedup_llm_cache = cache
-
-        removed: Set[str] = set()
-        for cluster in candidate_clusters:
-            active_cluster = [
-                issue
-                for issue in cluster
-                if self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
-                not in removed
-            ]
-            if len(active_cluster) < 2:
-                continue
-            cluster_payload = self._semantic_dedup_cluster_payload(active_cluster, issue_indices)
-            cluster_fingerprint = self._semantic_dedup_cluster_fingerprint(cluster_payload)
-            decision = cache.get(cluster_fingerprint)
-            if decision is not None:
-                summary["llm_cache_hits"] += 1
-            else:
-                response = recon_agent.run(cluster_payload)
-                summary["llm_clusters_called"] += 1
-                if not response.success or not isinstance(response.data, dict):
-                    summary["llm_failed_cluster_count"] += 1
-                    continue
-                decision = response.data
-                cache[cluster_fingerprint] = decision
-
-            suggested, rejected = self._apply_llm_dedup_decision(
-                decision,
-                by_issue_id,
-                removed,
-                threshold=threshold,
-            )
-            summary["llm_suggestion_count"] += suggested
-            summary["llm_rejected_merge_count"] += rejected
-
-        result = [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed]
-        for issue in issues:
-            issue.pop("_semantic_dedup_uid", None)
-        return result, summary
-
-    @staticmethod
-    def _semantic_dedup_cluster_needs_llm(group: List[Dict[str, Any]]) -> bool:
-        for left_index, left in enumerate(group):
-            for right in group[left_index + 1 :]:
-                if not ParallelAnalyzer._semantic_dedup_pair_needs_llm(left, right):
-                    continue
-                return True
-        return False
-
-    @staticmethod
-    def _semantic_dedup_pair_needs_llm(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
-        left_file, _ = parse_issue_location(str(left.get("location") or left.get("file") or ""))
-        right_file, _ = parse_issue_location(str(right.get("location") or right.get("file") or ""))
-        same_file = bool(
-            left_file
-            and right_file
-            and normalize_issue_key_part(left_file) == normalize_issue_key_part(right_file)
-        )
-        left_funcs = {
-            normalize_issue_key_part(str(value or ""))
-            for value in (
-                left.get("function"),
-                left.get("sink_function"),
-                left.get("entry_function"),
-            )
-            if value
-        }
-        right_funcs = {
-            normalize_issue_key_part(str(value or ""))
-            for value in (
-                right.get("function"),
-                right.get("sink_function"),
-                right.get("entry_function"),
-            )
-            if value
-        }
-        same_function = bool(left_funcs & right_funcs)
-        same_family = semantic_category_family(
-            normalize_issue_category(
-                str(
-                    left.get("category")
-                    or left.get("defect_class")
-                    or left.get("subcategory")
-                    or ""
-                )
-            )
-        ) == semantic_category_family(
-            normalize_issue_category(
-                str(
-                    right.get("category")
-                    or right.get("defect_class")
-                    or right.get("subcategory")
-                    or ""
-                )
-            )
-        )
-        shared_resource_or_sink = bool(
-            issue_resource_signature(left)
-            and issue_resource_signature(left) == issue_resource_signature(right)
-        ) or bool(
-            issue_sink_signature(left) and issue_sink_signature(left) == issue_sink_signature(right)
-        )
-        return bool(same_family and ((same_file and same_function) or shared_resource_or_sink))
-
-    @staticmethod
-    def _split_semantic_dedup_cluster(
-        group: List[Dict[str, Any]],
-        max_cluster_size: int,
-    ) -> List[List[Dict[str, Any]]]:
-        if len(group) <= max_cluster_size:
-            return [group]
-
-        buckets: Dict[str, List[Dict[str, Any]]] = {}
-        for issue in group:
-            bucket_key = (
-                issue_resource_signature(issue)
-                or issue_sink_signature(issue)
-                or semantic_root_cause_key(issue)
-                or str(issue.get("function") or issue.get("func_name") or "")
-                or "fallback"
-            )
-            buckets.setdefault(bucket_key, []).append(issue)
-
-        split: List[List[Dict[str, Any]]] = []
-        for bucket in buckets.values():
-            for start in range(0, len(bucket), max_cluster_size):
-                chunk = bucket[start : start + max_cluster_size]
-                if len(chunk) > 1:
-                    split.append(chunk)
-        return split
-
-    def _make_issue_reconciler_agent(self) -> Any:
-        config = getattr(self, "base_config", None)
-        agents = (
-            getattr(getattr(config, "project", None), "agents", []) if config is not None else []
-        )
-        recon_agent_cfg = next(
-            (agent for agent in agents if getattr(agent, "name", "") == "issue_reconciler_agent"),
-            None,
-        )
-        recon_llm_ref = getattr(recon_agent_cfg, "llm_ref", "") if recon_agent_cfg else ""
-        recon_llm_ref = recon_llm_ref or "default"
-        clients = getattr(self, "_shared_llm_clients", {}) or {}
-        recon_client = clients.get(recon_llm_ref) or clients.get("default")
-        if recon_client is None:
-            logger.warning(
-                "Batch semantic LLM dedup requested but no issue_reconciler_agent LLM client is configured."
-            )
-            return None
-
-        from ..agents.issue_reconciler.agent import IssueReconcilerAgent
-
-        return IssueReconcilerAgent(recon_client)
-
-    @staticmethod
-    def _semantic_dedup_issue_id(issue: Dict[str, Any], index: int) -> str:
-        return str(
-            issue.get("_semantic_dedup_uid")
-            or issue.get("run_issue_uid")
-            or issue.get("occurrence_uid")
-            or issue.get("candidate_uid")
-            or issue.get("candidate_id")
-            or issue.get("dedup_key")
-            or f"semantic_issue_{index}"
-        )
-
-    @staticmethod
-    def _assign_semantic_dedup_ids(issues: List[Dict[str, Any]]) -> None:
-        bases = []
-        for index, issue in enumerate(issues):
-            internal = (
-                issue.get("run_issue_uid")
-                or issue.get("occurrence_uid")
-                or issue.get("candidate_uid")
-                or issue.get("candidate_id")
-                or issue.get("dedup_key")
-            )
-            if not internal:
-                payload = {
-                    "canonical": canonical_issue_key(issue),
-                    "evidence_hash": issue.get("evidence_hash"),
-                    "index": index,
-                }
-                internal = (
-                    "SEM_"
-                    + hashlib.sha256(
-                        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-                    ).hexdigest()[:24]
-                )
-            bases.append(str(internal))
-        counts = {base: bases.count(base) for base in set(bases)}
-        for index, (issue, base) in enumerate(zip(issues, bases)):
-            if counts[base] == 1:
-                issue["_semantic_dedup_uid"] = base
-                continue
-            issue["_semantic_dedup_uid"] = str(
-                issue.get("run_issue_uid") or issue.get("occurrence_uid") or f"{base}::{index}"
-            )
-
-    def _semantic_dedup_cluster_payload(
-        self,
-        cluster: List[Dict[str, Any]],
-        issue_indices: Dict[int, int],
-    ) -> Dict[str, Any]:
-        compact_issues = []
-        files = set()
-        functions = set()
-        resources = set()
-        families = set()
-        for issue in cluster:
-            issue_id = self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
-            compact = self._compact_issue_for_semantic_dedup(issue, issue_id)
-            compact_issues.append(compact)
-            if compact.get("file"):
-                files.add(compact["file"])
-            if compact.get("function"):
-                functions.add(compact["function"])
-            if compact.get("resource_signature"):
-                resources.add(compact["resource_signature"])
-            if compact.get("category_family"):
-                families.add(compact["category_family"])
-        cluster_id = self._semantic_dedup_cluster_fingerprint(
-            {"issues": compact_issues, "mode": "deduplicate_cluster"}
-        )
-        return {
-            "mode": "deduplicate_cluster",
-            "cluster_id": cluster_id,
-            "issues": compact_issues,
-            "deterministic_hints": {
-                "category_families": sorted(families),
-                "same_file": len(files) <= 1,
-                "same_function": len(functions) <= 1,
-                "resource_signatures": sorted(resources),
-            },
-        }
-
-    @staticmethod
-    def _compact_issue_for_semantic_dedup(issue: Dict[str, Any], issue_id: str) -> Dict[str, Any]:
-        location = str(issue.get("location") or issue.get("file") or "")
-        file_path, _line = parse_issue_location(location)
-        category = str(issue.get("category") or issue.get("subcategory") or "")
-        return {
-            "id": issue_id,
-            "category": category,
-            "category_family": semantic_category_family(category),
-            "function": issue.get("function") or issue.get("func_name"),
-            "file": file_path,
-            "location": location,
-            "root_cause": issue.get("root_cause"),
-            "description": issue.get("description"),
-            "positive_evidence": issue.get("positive_evidence"),
-            "candidate_source": issue.get("candidate_source") or issue.get("finding_kind"),
-            "resource_signature": issue_resource_signature(issue),
-            "root_cause_key": semantic_root_cause_key(issue),
-            "source": issue.get("source"),
-            "sink": issue.get("sink") or issue.get("sink_function"),
-            "call_path": issue.get("call_path"),
-            "call_path_signature": issue_call_path_signature(issue),
-            "sink_signature": issue_sink_signature(issue),
-        }
-
-    @staticmethod
-    def _semantic_dedup_cluster_fingerprint(payload: Dict[str, Any]) -> str:
-        stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-        return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
-
-    @staticmethod
-    def _apply_llm_dedup_decision(
-        decision: Dict[str, Any],
-        by_issue_id: Dict[str, Dict[str, Any]],
-        removed: Set[str],
-        *,
-        threshold: float,
-    ) -> tuple[int, int]:
-        applied = 0
-        rejected = 0
-        keep_distinct = {
-            str(issue_id)
-            for issue_id in decision.get("must_keep_distinct_issue_ids", [])
-            if issue_id
-        }
-        groups = decision.get("duplicate_groups")
-        if not isinstance(groups, list):
-            return 0, 0
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            primary_id = str(group.get("primary_issue_id") or "")
-            primary = by_issue_id.get(primary_id)
-            if primary is None or primary_id in removed:
-                rejected += 1
-                continue
-            try:
-                confidence = float(group.get("confidence", 0) or 0)
-            except (TypeError, ValueError):
-                confidence = 0.0
-            for duplicate_id in group.get("duplicate_issue_ids", []) or []:
-                duplicate_id = str(duplicate_id or "")
-                duplicate = by_issue_id.get(duplicate_id)
-                if (
-                    not duplicate_id
-                    or duplicate is None
-                    or duplicate_id == primary_id
-                    or duplicate_id in removed
-                    or duplicate_id in keep_distinct
-                    or primary_id in keep_distinct
-                ):
-                    rejected += 1
-                    continue
-                structurally_equivalent = issues_may_share_root_cause(
-                    primary,
-                    duplicate,
-                    confidence=confidence,
-                    threshold=threshold,
-                    allow_cross_function_root=True,
-                )
-                primary_cluster = str(primary.get("validation_cluster_uid") or "")
-                duplicate_cluster = str(duplicate.get("validation_cluster_uid") or "")
-                structurally_blocked = bool(
-                    primary_cluster and duplicate_cluster and primary_cluster != duplicate_cluster
-                )
-                if not structurally_equivalent and not structurally_blocked:
-                    rejected += 1
-                    continue
-                root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(
-                    primary
-                )
-                suggestion = {
-                    "method": "issue_reconciler_agent_suggestion",
-                    "root_cause_key": root_key,
-                    "confidence": confidence,
-                    "reasoning": group.get("reasoning"),
-                    # A model may describe a possible relationship, but a
-                    # distinct structured decision identity is an explicit
-                    # no-merge boundary.  Preserve the suggestion for audit
-                    # without allowing it to remove either finding.
-                    "structural_merge_blocked": structurally_blocked,
-                }
-                primary.setdefault("dedup_cluster_suggestions", []).append(
-                    {**suggestion, "role": "primary", "peer_issue_uid": duplicate_id}
-                )
-                duplicate.setdefault("dedup_cluster_suggestions", []).append(
-                    {**suggestion, "role": "possible_alias", "peer_issue_uid": primary_id}
-                )
-                applied += 1
-        return applied, rejected
 
     @staticmethod
     def _issue_rank(issue: Dict[str, Any]) -> tuple[int, int, int, int, float, int]:

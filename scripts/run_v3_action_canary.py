@@ -34,7 +34,7 @@ from scripts.prepare_v3_action_canary import (
     _sha,
     _v3_records,
 )
-from zscope.agents.validator_agent.agent import ValidatorAgent
+from zscope.agents.proof_engine.agent import ProofEngineAgent
 from zscope.config.config import ConfigLoader
 from zscope.core.validation.fact_capabilities import (
     EvidenceAction,
@@ -327,13 +327,13 @@ def run_canary(
                 "evidence_slice": evidence_slice,
             }
             with llm_usage_attribution_scope(
-                agent="validator_agent",
+                agent="proof_engine",
                 stage="validation",
                 call_kind="targeted_investigation",
                 candidate_uid=candidate_uid,
                 validation_cluster_uid=cluster_uid,
             ):
-                response = ValidatorAgent(client, []).investigate(
+                response = ProofEngineAgent(client, []).investigate(
                     input_data,
                     max_iterations=50,
                     evidence_actions=[value.to_dict() for value in action_values],
