@@ -655,42 +655,72 @@ def _run_model(
         except (json.JSONDecodeError, E0GovernanceError) as exc:
             if reviewer != "deepseek":
                 raise
-            (temp_root / "prior-output.txt").write_text(completed.stdout, encoding="utf-8")
-            format_prompt = (
+            format_prompts = (
                 "Read prior-output.txt and decision-schema.json in the isolated current "
                 "directory. Reformat the prior answer as exactly one JSON object matching "
-                "the schema without changing its substantive decision. Set "
+                "the schema without changing its substantive decision. Your entire final "
+                "response must be that object: the first non-whitespace character must be "
+                "{ and the last must be }. Do not add prose, Markdown, or backticks. Set "
                 "reviewer_role=primary_deepseek and "
-                "reviewer_model=deepseek-v4-pro:max."
+                "reviewer_model=deepseek-v4-pro:max.",
+                "The previous formatting attempt still violated the output protocol. Read "
+                "prior-output.txt and decision-schema.json in the isolated current "
+                "directory and return the same substantive decision as one schema-matching "
+                "JSON object. Emit no explanation and no Markdown. The first non-whitespace "
+                "character of your entire response must be { and the last must be }. Set "
+                "reviewer_role=primary_deepseek and "
+                "reviewer_model=deepseek-v4-pro:max.",
             )
-            retry = subprocess.run(
-                [
-                    str(dsh_command),
-                    "--profile",
-                    "headless",
-                    "--patch",
-                    str(patch_path),
-                    format_prompt,
-                ],
-                cwd=temp_root,
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="strict",
-                check=False,
-                timeout=300,
-            )
-            raw["format_retry"] = {
-                "exit_code": retry.returncode,
-                "original_stdout_sha256": sha256_value(completed.stdout),
-                "original_stdout_retained": False,
-                "stderr_sha256": sha256_value(retry.stderr),
-            }
-            if retry.returncode != 0:
-                raise E0GovernanceError("DeepSeek format-only retry failed") from exc
-            decision = _validated_decision_from_stdout(retry.stdout, reviewer="deepseek")
-            raw["stdout"] = retry.stdout
+            prior_stdout = completed.stdout
+            for attempt_index, format_prompt in enumerate(format_prompts):
+                (temp_root / "prior-output.txt").write_text(
+                    prior_stdout,
+                    encoding="utf-8",
+                )
+                retry = subprocess.run(
+                    [
+                        str(dsh_command),
+                        "--profile",
+                        "headless",
+                        "--patch",
+                        str(patch_path),
+                        format_prompt,
+                    ],
+                    cwd=temp_root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="strict",
+                    check=False,
+                    timeout=300,
+                )
+                retry_key = "format_retry" if attempt_index == 0 else "format_retry_second"
+                raw[retry_key] = {
+                    "exit_code": retry.returncode,
+                    "original_stdout_sha256": sha256_value(prior_stdout),
+                    "original_stdout_retained": False,
+                    "stderr_sha256": sha256_value(retry.stderr),
+                }
+                raw["stdout"] = retry.stdout
+                if retry.returncode != 0:
+                    if raw_output_path is not None:
+                        _json_dump(raw_output_path, raw)
+                    raise E0GovernanceError("DeepSeek format-only retry failed") from exc
+                try:
+                    decision = _validated_decision_from_stdout(
+                        retry.stdout,
+                        reviewer="deepseek",
+                    )
+                    break
+                except (json.JSONDecodeError, E0GovernanceError) as retry_exc:
+                    if attempt_index == len(format_prompts) - 1:
+                        if raw_output_path is not None:
+                            _json_dump(raw_output_path, raw)
+                        raise E0GovernanceError(
+                            "DeepSeek format retries did not produce a JSON artifact"
+                        ) from retry_exc
+                    prior_stdout = retry.stdout
         try:
             validate_review_decision(
                 decision,
@@ -879,7 +909,7 @@ def _validate_existing_primary(
         "stderr_sha256",
     }
     raw_fields = set(raw)
-    optional_raw_fields = {"format_retry", "semantic_retry"}
+    optional_raw_fields = {"format_retry", "format_retry_second", "semantic_retry"}
     if not required_raw_fields.issubset(raw_fields) or not (
         raw_fields - required_raw_fields
     ).issubset(optional_raw_fields):
@@ -905,8 +935,12 @@ def _validate_existing_primary(
     )
     if dict(raw_decision) != dict(decision):
         raise E0GovernanceError("existing raw review output does not match decision")
-    retry = raw.get("format_retry")
-    if retry is not None:
+    if raw.get("format_retry_second") is not None and raw.get("format_retry") is None:
+        raise E0GovernanceError("existing second format retry lacks the first retry")
+    for retry_name in ("format_retry", "format_retry_second"):
+        retry = raw.get(retry_name)
+        if retry is None:
+            continue
         if (
             reviewer != "deepseek"
             or not isinstance(retry, Mapping)
