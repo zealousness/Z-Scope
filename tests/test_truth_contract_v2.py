@@ -37,7 +37,7 @@ def _record(truth_id: str, kind: str, line: int) -> dict:
         ],
         "review_artifacts": {
             "fable_sha256": "1" * 64,
-            "deepseek_sha256": "2" * 64,
+            "glm_sha256": "2" * 64,
             "normalized_sha256": "3" * 64,
         },
         "safe_pair": (
@@ -86,7 +86,7 @@ def truth_v16() -> dict:
             "review_bundle_sha256": "8" * 64,
             "taxonomy_sha256": "9" * 64,
             "independent_review_complete": True,
-            "review_protocol": "fable+deepseek; opus disagreements and mandatory disputed set",
+            "review_protocol": "fable+glm; opus disagreements and mandatory disputed set",
             "safe_unit_count": 2,
         },
         "vulnerabilities": records,

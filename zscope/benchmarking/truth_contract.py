@@ -317,7 +317,7 @@ def _summarize_truth_contract_v2(
             if len(refs) != len(set(refs)):
                 raise ValueError(f"truth {truth_id} evidence clause refs are duplicate")
         reviews = contract.get("review_artifacts")
-        required_reviews = {"fable_sha256", "deepseek_sha256", "normalized_sha256"}
+        required_reviews = {"fable_sha256", "glm_sha256", "normalized_sha256"}
         if not isinstance(reviews, Mapping) or not required_reviews.issubset(reviews):
             raise ValueError(f"truth {truth_id} dual review artifacts are missing")
         if set(reviews) - (required_reviews | {"opus_sha256"}):
