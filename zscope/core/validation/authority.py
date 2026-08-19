@@ -1,13 +1,13 @@
 """Single terminal authority for validation-cluster dispositions.
 
-This module does not trust a model verdict as proof.  It normalizes the
-existing deterministic proof, evidence-closure, and promotion decisions into
-one explicit stop/continue decision that can be replayed from frozen facts.
+This module does not trust a model verdict or a legacy proof field.  It accepts
+only a strict decision emitted after the Proof Checker replays frozen facts.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import re
 from typing import Any, Dict, Mapping, Optional
 
 
@@ -19,87 +19,21 @@ class TerminalAuthorityDecision:
     authority: str
     next_action: str = ""
     conflict_resolution: Optional[Dict[str, Any]] = None
+    checker_result_refs: tuple[str, ...] = ()
+    proof_root_sha256: str = ""
+    integrity_status: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-
-class ProofConflictResolver:
-    """Reject stale or scope-incompatible proofs; never let an LLM arbitrate."""
-
-    def resolve(self, issue: Mapping[str, Any]) -> Dict[str, Any]:
-        positive = self._proof(issue, "positive")
-        negative = self._proof(issue, "negative")
-        if positive is None or negative is None:
-            return {"status": "not_applicable", "valid_positive": False, "valid_negative": False}
-        positive_valid, positive_reason = self._valid_for_issue(positive, issue)
-        negative_valid, negative_reason = self._valid_for_issue(negative, issue)
-        status = "unresolved"
-        winner = ""
-        if positive_valid and not negative_valid:
-            status, winner = "resolved", "positive"
-        elif negative_valid and not positive_valid:
-            status, winner = "resolved", "negative"
-        elif not positive_valid and not negative_valid:
-            status = "invalid_both"
-        return {
-            "status": status,
-            "winner": winner,
-            "valid_positive": positive_valid,
-            "valid_negative": negative_valid,
-            "positive_reason": positive_reason,
-            "negative_reason": negative_reason,
-            "subject_uid": str(issue.get("subject_uid") or issue.get("resource_identity") or ""),
-            "decision_region_uid": str(issue.get("decision_region_uid") or ""),
-        }
-
-    @staticmethod
-    def _proof(issue: Mapping[str, Any], polarity: str) -> Optional[Mapping[str, Any]]:
-        keys = (
-            ("positive_decision_proof", "confirmation_proof")
-            if polarity == "positive"
-            else ("negative_decision_proof", "rejection_proof", "counterproof")
-        )
-        for key in keys:
-            value = issue.get(key)
-            if isinstance(value, Mapping):
-                return value
-        proof = issue.get("decision_proof")
-        if isinstance(proof, Mapping):
-            proof_polarity = str(proof.get("polarity") or proof.get("decision") or "").lower()
-            if polarity == "positive" and proof_polarity in {"positive", "confirm", "confirmed"}:
-                return proof
-            if polarity == "negative" and proof_polarity in {"negative", "reject", "rejected"}:
-                return proof
-        return None
-
-    @staticmethod
-    def _valid_for_issue(proof: Mapping[str, Any], issue: Mapping[str, Any]) -> tuple[bool, str]:
-        coverage = str(proof.get("coverage") or proof.get("proof_coverage") or "").lower()
-        if coverage != "complete":
-            return False, "proof_incomplete"
-        if proof.get("dependency_valid") is False or proof.get("scope_valid") is False:
-            return False, "proof_scope_or_dependency_invalid"
-        issue_subject = str(issue.get("subject_uid") or issue.get("resource_identity") or "")
-        proof_subject = str(proof.get("subject_uid") or proof.get("resource_identity") or "")
-        if issue_subject and proof_subject and issue_subject != proof_subject:
-            return False, "proof_subject_mismatch"
-        issue_region = str(issue.get("decision_region_uid") or "")
-        proof_region = str(proof.get("decision_region_uid") or "")
-        if issue_region and proof_region and issue_region != proof_region:
-            return False, "proof_region_mismatch"
-        issue_hash = str(issue.get("dependency_code_hash") or issue.get("code_snapshot_hash") or "")
-        proof_hash = str(proof.get("dependency_code_hash") or proof.get("code_snapshot_hash") or "")
-        if issue_hash and proof_hash and issue_hash != proof_hash:
-            return False, "proof_dependency_hash_mismatch"
-        return True, "valid"
+        return {"schema_version": "zscope.terminal-authority-decision.v3", **asdict(self)}
 
 
 class TerminalAuthorityEvaluator:
-    """Return the first terminal authority or an explicit next action."""
+    """Return the Proof Engine terminal or an explicit next action.
 
-    def __init__(self, conflict_resolver: Optional[ProofConflictResolver] = None) -> None:
-        self.conflict_resolver = conflict_resolver or ProofConflictResolver()
+    Pre-P5 issue flags, model verdicts and legacy certificate previews are not
+    proof.  Live callers must attach a programmatically constructed
+    ``proof_kernel_terminal_authority_decision``.
+    """
 
     def evaluate(
         self,
@@ -109,100 +43,70 @@ class TerminalAuthorityEvaluator:
         has_executable_action: bool = False,
         protocol_or_engine_failure: bool = False,
     ) -> TerminalAuthorityDecision:
-        conflict = bool(issue.get("evidence_conflict")) or self._has_both_proofs(issue)
-        if conflict:
-            resolution = self.conflict_resolver.resolve(issue)
-            winner = str(resolution.get("winner") or "")
-            if winner == "positive":
+        engine_decision = issue.get("proof_kernel_terminal_authority_decision")
+        if isinstance(engine_decision, Mapping):
+            schema_version = str(engine_decision.get("schema_version") or "")
+            authority = str(engine_decision.get("authority") or "")
+            disposition = str(engine_decision.get("disposition") or "")
+            reason = str(engine_decision.get("reason_code") or "")
+            terminal = engine_decision.get("terminal") is True
+            checker_refs = tuple(
+                str(value)
+                for value in engine_decision.get("checker_result_refs") or []
+                if str(value)
+            )
+            proof_root = str(engine_decision.get("proof_root_sha256") or "")
+            integrity_status = str(engine_decision.get("integrity_status") or "")
+            allowed = {
+                "confirmed": "CONFIRMED_DETERMINISTIC_PROOF",
+                "rejected_with_proof": "REJECTED_DETERMINISTIC_COUNTERPROOF",
+                "needs_review": None,
+            }
+            reason_allowed = (
+                reason == allowed.get(disposition)
+                if allowed.get(disposition) is not None
+                else reason
+                in {
+                    "NEEDS_REVIEW_OPEN_CLAUSES",
+                    "NEEDS_REVIEW_EVIDENCE_CONFLICT",
+                    "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",
+                }
+            )
+            proof_integrity_valid = bool(
+                disposition == "needs_review"
+                or (
+                    integrity_status == "verified"
+                    and checker_refs
+                    and all(re.fullmatch(r"sha256:[0-9a-f]{64}", ref) for ref in checker_refs)
+                    and re.fullmatch(r"[0-9a-f]{64}", proof_root)
+                )
+            )
+            if (
+                terminal
+                and schema_version == "zscope.terminal-authority-decision.v3"
+                and authority in {"zscope.proof-checker", "zscope.proof-checker-conflict-resolver"}
+                and disposition in allowed
+                and reason_allowed
+                and proof_integrity_valid
+            ):
+                conflict = engine_decision.get("conflict_resolution")
                 return TerminalAuthorityDecision(
                     True,
-                    "confirmed",
-                    "CONFIRMED_DETERMINISTIC_PROOF",
-                    "proof_conflict_resolver",
-                    conflict_resolution=resolution,
+                    disposition,
+                    reason,
+                    authority,
+                    conflict_resolution=(dict(conflict) if isinstance(conflict, Mapping) else None),
+                    checker_result_refs=checker_refs,
+                    proof_root_sha256=proof_root,
+                    integrity_status=integrity_status,
                 )
-            if winner == "negative":
-                return TerminalAuthorityDecision(
-                    True,
-                    "rejected_with_proof",
-                    "REJECTED_DETERMINISTIC_COUNTERPROOF",
-                    "proof_conflict_resolver",
-                    conflict_resolution=resolution,
-                )
-            if has_executable_action:
-                return TerminalAuthorityDecision(
-                    False,
-                    "needs_review",
-                    "PROOF_CONFLICT",
-                    "proof_conflict_resolver",
-                    next_action="targeted_conflict_investigation",
-                    conflict_resolution=resolution,
-                )
-            return TerminalAuthorityDecision(
-                True,
-                "needs_review",
-                "NEEDS_REVIEW_EVIDENCE_CONFLICT",
-                "proof_conflict_resolver",
-                conflict_resolution=resolution,
-            )
-
-        proof = issue.get("decision_proof")
-        proof = proof if isinstance(proof, Mapping) else {}
-        proof_complete = (
-            str(
-                issue.get("proof_coverage")
-                or proof.get("coverage")
-                or proof.get("proof_coverage")
-                or ""
-            ).lower()
-            == "complete"
-        )
-        disposition = str(issue.get("candidate_disposition") or "").lower()
-        if proof_complete and disposition == "confirmed":
-            return TerminalAuthorityDecision(
-                True,
-                "confirmed",
-                "CONFIRMED_DETERMINISTIC_PROOF",
-                "deterministic_proof",
-            )
-        if proof_complete and disposition == "rejected_with_proof":
-            return TerminalAuthorityDecision(
-                True,
-                "rejected_with_proof",
-                "REJECTED_DETERMINISTIC_COUNTERPROOF",
-                "deterministic_counterproof",
-            )
 
         result = model_result if isinstance(model_result, Mapping) else {}
         verdict = str(result.get("verdict") or issue.get("model_verdict") or "").lower()
-        # Read-only compatibility for archived/third-party v2 adapters.  New
-        # product calls always carry ValidatorResult v3 and therefore cannot
-        # use this bridge to bypass evidence closure.
-        if result and str(result.get("schema_version") or "") != "zscope.validator-result.v3":
-            if disposition == "confirmed" and verdict in {"verified", "confirmed"}:
-                return TerminalAuthorityDecision(
-                    True,
-                    "confirmed",
-                    "CONFIRMED_VERIFIED_CLOSURE",
-                    "legacy_validator_policy_compat",
-                )
-        closure = issue.get("v3_evidence_closure") or issue.get("evidence_closure_state")
-        closure = closure if isinstance(closure, Mapping) else {}
-        closure_complete = bool(closure.get("complete"))
-        open_clauses = closure.get("remaining_fact_kinds") or issue.get("missing_fact_kinds") or []
-        conflicting = closure.get("conflicting_fact_kinds") or []
-        promotion = disposition == "confirmed" and not open_clauses and not conflicting
-        if verdict == "verified" and closure_complete and promotion:
-            return TerminalAuthorityDecision(
-                True,
-                "confirmed",
-                "CONFIRMED_VERIFIED_CLOSURE",
-                "verified_evidence_closure",
-            )
         if has_executable_action:
             return TerminalAuthorityDecision(
                 False,
-                disposition or "needs_review",
+                "needs_review",
                 "V0_UNRESOLVED",
                 "terminal_authority_evaluator",
                 next_action="continue_validation",
@@ -212,7 +116,7 @@ class TerminalAuthorityEvaluator:
         elif verdict == "rejected":
             reason = "NEEDS_REVIEW_MODEL_REJECT_NO_PROOF"
         elif verdict == "verified":
-            reason = "NEEDS_REVIEW_VERIFIED_BUT_PROMOTION_BLOCKED"
+            reason = "NEEDS_REVIEW_OPEN_CLAUSES"
         else:
             reason = "NEEDS_REVIEW_OPEN_CLAUSES"
         return TerminalAuthorityDecision(
@@ -224,14 +128,3 @@ class TerminalAuthorityEvaluator:
 
     def replay(self, issue: Mapping[str, Any], model_result: Mapping[str, Any]) -> Dict[str, Any]:
         return self.evaluate(issue, model_result=model_result).to_dict()
-
-    @staticmethod
-    def _has_both_proofs(issue: Mapping[str, Any]) -> bool:
-        return bool(
-            (issue.get("positive_decision_proof") or issue.get("confirmation_proof"))
-            and (
-                issue.get("negative_decision_proof")
-                or issue.get("rejection_proof")
-                or issue.get("counterproof")
-            )
-        )

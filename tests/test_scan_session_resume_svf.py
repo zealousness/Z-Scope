@@ -505,7 +505,9 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
     assert state["skipped_entries"] == []
 
 
-def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) -> None:
+def test_resume_refuses_pre_p5_duplicate_function_reports_by_entry_path(
+    tmp_path: Path,
+) -> None:
     cfg = _config(tmp_path)
     store = SnapshotStore.from_config(cfg)
     reports = {
@@ -572,11 +574,9 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
     state["results"] = {}
     runner._handle_merge_skipped_reports(state, None)  # type: ignore[arg-type]
 
-    expected_keys = {ParallelAnalyzer._entry_result_key(entry) for entry in entries}
-    assert state["entries"] == []
-    assert set(state["results"]) == expected_keys
-    assert state["results"]["default:handle_request@src/a.c"].issues == [{"source": "a"}]
-    assert state["results"]["default:handle_request@src/b.c"].issues == [{"source": "b"}]
+    assert state["entries"] == entries
+    assert state["skipped_entries"] == []
+    assert state["results"] == {}
 
 
 def test_resume_does_not_skip_when_symbol_context_changed(tmp_path: Path) -> None:

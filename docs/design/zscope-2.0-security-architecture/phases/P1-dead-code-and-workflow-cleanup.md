@@ -1,5 +1,9 @@
 # P1：死代码与Workflow清理
 
+## 实施状态
+
+`complete`。零模型冻结replay、通用实现、公共入口smoke、wheel/import graph和本地质量门已通过；`claude-opus-5`对clean候选commit `9b7dc480533de051ec1ea533efae25cf3e58d1e2` / tree `99b386fe89d9fe5ff30cdcd0f1aaed763c02ed57`完成只读product architecture审核，decision为`approved`且blocking findings为空。本阶段未创建新的设计批准tag。
+
 ## 目标
 
 删除2.0不再支持的不可达执行路径，同时保持冻结候选、终态和视图不变。
@@ -36,6 +40,7 @@
 - 所有公共入口仍产生与P0等价的冻结结果。
 - 旧配置不被静默忽略。
 - full pytest、compileall、mypy和Black gate通过。
+- P1 product architecture审核绑定同一clean候选commit/tree，decision为`approved`且blocking findings为空。
 
 ## 停止与回退
 

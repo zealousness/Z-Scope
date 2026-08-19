@@ -11,7 +11,7 @@
 | LLM报告语义去重 | 与Finding-root v2重复且不可作为身份权威 | 删除LLM判重，只保留Finding-root v2 |
 | IssueReconciler判重职责 | 一个Agent承担历史维护与报告判重两种职责 | 删除判重职责，历史维护职责重命名并保留 |
 
-## 等价替换后删除
+## 等价替换后删除（P5候选已执行）
 
 | 能力 | 替代条件 | 删除门禁 |
 |---|---|---|
@@ -19,6 +19,9 @@
 | on-demand旧semantic snapshot LLM补全 | 有限SecuritySpec提议和reverify | 所有live调用点迁移 |
 | Validator v2/generic forced-final | Proof Engine和严格v3契约 | 默认、maintain、alert-verify均使用统一终态 |
 | 旧Agent usage维度 | hypothesis_hunter/security_spec_miner/proof_engine | 历史artifact映射测试通过 |
+
+上述四项在P5候选wheel与live import graph中均不可达；旧字段只由compat显式迁移，用户保存并由
+严格loader重新加载后才能用于新扫描。P5双审核与全部强制门禁通过前，候选wheel仍不可发布。
 
 ## 保留
 

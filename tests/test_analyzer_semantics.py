@@ -94,7 +94,7 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
     reached = analyzer._record_llm_iteration_budget(
         state,
         response,
-        agent_name="vulnerability_analyzer",
+        agent_name="active_discovery",
         outcome="incomplete",
     )
 
@@ -103,7 +103,7 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
     assert state["budget_observations"] == [
         {
             "kind": "llm_iteration_budget",
-            "agent": "vulnerability_analyzer",
+            "agent": "active_discovery",
             "configured_iterations": 50,
             "observed_iterations": 50,
             "budget_reached": True,
@@ -111,70 +111,6 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
             "hard_failure": False,
         }
     ]
-
-
-def test_candidate_first_skips_entry_scoped_investigator_planning() -> None:
-    analyzer = object.__new__(Analyzer)
-    recorded = []
-    analyzer._record_engine_capability = lambda *args, **kwargs: recorded.append((args, kwargs))
-    state = {"notes": []}
-
-    analyzer._step_focused_subagent_planning(state)
-
-    assert "stable candidate-first" in state["notes"][0]
-    assert recorded == [
-        (
-            ("focused_investigators",),
-            {
-                "status": "complete",
-                "active": False,
-                "reason": "stable_candidate_first_lifecycle",
-            },
-        )
-    ]
-
-
-def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> None:
-    batch = SimpleNamespace(
-        local_candidates=[],
-        graph_candidates=[],
-        backend_candidates=[],
-        merged_candidates=[],
-        summary_increment=lambda: {},
-    )
-    analyzer = object.__new__(Analyzer)
-    analyzer.config = SimpleNamespace(
-        project=SimpleNamespace(
-            agents=[
-                SimpleNamespace(
-                    enabled=True,
-                    name="vulnerability_analyzer",
-                    task="Audit memory and concurrency defects",
-                    skills=[],
-                )
-            ]
-        ),
-    )
-    analyzer.candidate_pipeline = SimpleNamespace(
-        collect_signal_candidates=lambda state: batch,
-        accumulate_summary=lambda state, candidate_batch: None,
-        persist=lambda candidate_batch: None,
-    )
-    observed_configs = []
-    analyzer._candidate_first_skill_selection = lambda cfg: (
-        observed_configs.append(cfg) or SkillSelection(skills=[], restricted=False)
-    )
-    analyzer._attach_agent_contract = lambda *args, **kwargs: None
-    analyzer._compact_candidate_signal_items = lambda *args, **kwargs: []
-    analyzer._register_candidate_issues = lambda *args, **kwargs: None
-    analyzer._deduplicate_against_history = lambda candidates, state: candidates
-    analyzer._record_engine_capability = lambda *args, **kwargs: None
-    state = {"agent_context": {}, "pending_new_issues": [], "notes": []}
-
-    analyzer._step_vulnerability_mining(state)
-
-    assert observed_configs == [analyzer.config.project.agents[0]]
-    assert state["pending_new_issues"] == []
 
 
 def test_candidate_first_skill_selection_keeps_every_deterministic_skill() -> None:
@@ -189,16 +125,11 @@ def test_candidate_first_skill_selection_keeps_every_deterministic_skill() -> No
     }
     analyzer.config = SimpleNamespace(project=SimpleNamespace(language="c_cpp"))
     analyzer.spec_registry = SimpleNamespace(
-        skills_for_agent=lambda name, extra: [
-            skills["bounds_and_integer"],
-            skills["resource_lifecycle"],
-            skills["shared_state_race"],
-        ],
         skills=skills,
         get_skill=skills.get,
     )
 
-    selection = analyzer._candidate_first_skill_selection(SimpleNamespace(skills=[]))
+    selection = analyzer._candidate_first_skill_selection([])
 
     assert selection.skills == [
         "bounds_and_integer",
@@ -802,114 +733,6 @@ def test_lifted_internal_sink_dedup_merges_entry_paths() -> None:
     ]
     assert deduped[0]["duplicate_sources"][0]["entry_function"] == "api_b"
     assert "api_b reaches shared_helper" in deduped[0]["positive_evidence"]
-
-
-def test_premodel_callee_retrieval_failure_is_non_fatal() -> None:
-    class FailingIndex:
-        def get_callees(self, name: str, limit: int = 30):
-            raise RuntimeError("bad parameter or other API misuse")
-
-    analyzer = object.__new__(Analyzer)
-    analyzer.code_index = FailingIndex()
-
-    assert analyzer._premodel_callees(
-        "entry",
-        object(),
-        max_depth=1,
-        max_callees=5,
-    ) == (0, 0, 0)
-
-
-def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None:
-    class FanoutIndex:
-        def __init__(self):
-            self.impl_context_flags: list[bool] = []
-            self.callee_calls: list[str] = []
-
-        def get_callees(self, name: str, limit: int = 30):
-            self.callee_calls.append(name)
-            graph = {
-                "entry": ["a0", "a1", "a2", "a3"],
-                "a0": ["b0", "b1", "b2"],
-                "a1": ["b3", "b4", "b5"],
-            }
-            return [{"name": child} for child in graph.get(name, [])]
-
-        def get_function_impl(
-            self,
-            name: str,
-            warn_missing: bool = False,
-            include_context: bool = True,
-        ):
-            del warn_missing
-            self.impl_context_flags.append(include_context)
-            simple_name = name.split("@", 1)[0]
-            return {
-                "func_name": simple_name,
-                "file": "src/demo.c",
-                "index_name": f"{simple_name}@src/demo.c:1-4",
-                "start_line": 1,
-                "end_line": 4,
-                "signature": f"int {simple_name}(void)",
-                "is_static": False,
-                "is_macro": False,
-                "code": f"1 | int {simple_name}(void) {{\n2 |     return 0;\n3 | }}\n",
-                "callees": [],
-            }
-
-        def find_function_infos(self, name: str, file_path: str = ""):
-            del file_path
-            simple_name = name.split("@", 1)[0]
-            return [
-                {
-                    "function_name": simple_name,
-                    "file_path": "src/demo.c",
-                    "index_name": f"{simple_name}@src/demo.c:1-4",
-                    "start_line": 1,
-                    "end_line": 4,
-                    "signature": f"int {simple_name}(void)",
-                    "is_static": False,
-                    "callees": [],
-                    "referenced_globals": [],
-                    "referenced_macros": [],
-                    "referenced_types": [],
-                }
-            ]
-
-    class SnapshotStore:
-        def load_snapshot(self, func: str):
-            return {"func_name": func}
-
-        def needs_refresh(self, index_name, code, symbol_context):
-            del index_name, code, symbol_context
-            return False, None
-
-    analyzer = object.__new__(Analyzer)
-    analyzer.code_index = FanoutIndex()
-    analyzer.snapshot_store = SnapshotStore()
-    analyzer.config = SimpleNamespace(analysis=SimpleNamespace(max_function_lines=500))
-    analyzer._get_tools = lambda *args, **kwargs: []
-    analyzer._tool_policy_for_agent = lambda *args, **kwargs: None
-
-    modeled, skipped, tokens = analyzer._premodel_callees(
-        "entry",
-        object(),
-        max_depth=2,
-        max_callees=2,
-    )
-
-    assert (modeled, skipped, tokens) == (0, 4, 0)
-    assert analyzer.code_index.callee_calls == ["entry", "a0", "a1", "b0", "b1"]
-    assert analyzer.code_index.impl_context_flags == [
-        False,
-        False,
-        False,
-        False,
-        True,
-        True,
-        True,
-        True,
-    ]
 
 
 def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:

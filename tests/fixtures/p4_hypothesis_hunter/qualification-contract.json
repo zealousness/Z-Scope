@@ -1,0 +1,41 @@
+{
+  "schema_version": "zscope.p4-hypothesis-qualification-contract.v1",
+  "answer_free": true,
+  "network": false,
+  "external_model_calls": 0,
+  "minimum_case_count": 120,
+  "minimum_project_count": 3,
+  "required_provider_families": [
+    "concurrency",
+    "resource",
+    "path_guard",
+    "contract_type"
+  ],
+  "required_variants": [
+    "positive",
+    "safe",
+    "near_miss",
+    "rename",
+    "wrapper_extract",
+    "wrapper_inline",
+    "equivalent_branch_reorder",
+    "fixed_pair"
+  ],
+  "acceptance": {
+    "safe_false_registration_count": 0,
+    "registered_schema_resolution_rate": 1.0,
+    "registered_evidence_resolution_rate": 1.0,
+    "registered_action_resolution_rate": 1.0,
+    "candidate_blind_leak_count": 0,
+    "live_product_effect": "none",
+    "proof_replay_required": true,
+    "metamorphic_normalized_behavior_required": true
+  },
+  "isolation": {
+    "source_and_expected_separate": true,
+    "product_runtime_reads_expected": false,
+    "range_fixture_used": false,
+    "range_truth_used": false,
+    "scorer_used": false
+  }
+}

@@ -10,12 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, cast
 
 from ..core.validation.authority import TerminalAuthorityEvaluator
-from ..core.validation.claim_verifier import (
-    EvidenceClaimRequest,
-    EvidenceClaimVerifier,
-    verify_evidence_certificate,
-)
 from ..core.validation.fact_capabilities import verify_certificate_v2
+from ..core.validation.proof_kernel.checker import ProofChecker
 from ..orchestration.decision_trace import (
     DecisionTraceError,
     load_decision_trace,
@@ -278,11 +274,41 @@ def _policy_input(trace: Mapping[str, Any], snapshot_root: Path) -> Dict[str, An
     for key in ("decision_proof", "evidence_closure_state", "v3_evidence_closure"):
         if isinstance(payload.get(key), Mapping):
             issue[key] = dict(payload[key])
+    proof_decision = payload.get("proof_kernel_terminal_authority_decision")
+    if isinstance(proof_decision, Mapping):
+        issue["proof_kernel_terminal_authority_decision"] = dict(proof_decision)
+    issue["proof_kernel_artifact_refs"] = list(payload.get("proof_kernel_artifact_refs") or [])
+    issue["proof_kernel_checker_results"] = list(payload.get("proof_kernel_checker_results") or [])
+    issue["proof_kernel_checker_result_refs"] = list(
+        payload.get("proof_kernel_checker_result_refs") or []
+    )
+    issue["proof_kernel_root_manifest_sha256"] = str(
+        payload.get("proof_kernel_root_manifest_sha256") or ""
+    )
     return issue
 
 
 def _policy_replay(trace: Mapping[str, Any], snapshot_root: Path) -> Dict[str, Any]:
     issue = _policy_input(trace, snapshot_root)
+    if not (
+        issue.get("proof_kernel_artifact_refs")
+        and issue.get("proof_kernel_checker_results")
+        and issue.get("proof_kernel_checker_result_refs")
+        and issue.get("proof_kernel_root_manifest_sha256")
+        and isinstance(issue.get("proof_kernel_terminal_authority_decision"), Mapping)
+    ):
+        return {
+            "schema_version": "zscope.terminal-authority-decision.v3",
+            "terminal": True,
+            "disposition": "needs_review",
+            "reason_code": "NEEDS_REVIEW_OPEN_CLAUSES",
+            "authority": "terminal_authority_evaluator",
+            "next_action": "",
+            "conflict_resolution": None,
+            "matches_frozen_terminal": False,
+            "expected_terminal_disposition": str(trace.get("terminal_disposition") or ""),
+            "policy_issue": "proof_kernel_artifacts_unavailable",
+        }
     replay = TerminalAuthorityEvaluator().replay(issue, {})
     expected = str(trace.get("terminal_disposition") or "")
     replay["matches_frozen_terminal"] = str(replay.get("disposition") or "") == expected
@@ -332,7 +358,6 @@ def _reverify(
         }
         policy_issue = {}
     results: list[Dict[str, Any]] = []
-    verifier = EvidenceClaimVerifier(allow_legacy_observation_claims=False)
     for event in trace.get("events") or []:
         if not isinstance(event, Mapping) or event.get("stage") != "verifier":
             continue
@@ -341,95 +366,83 @@ def _reverify(
             _load_evidence(snapshot_root, str(ref)) for ref in event.get("output_refs") or []
         ]
         action_certificate = next(
+            (value for value in outputs if value.get("kind") == "evidence_certificate"),
+            None,
+        ) or next(
             (value for value in outputs if value.get("kind") == "evidence_certificate_v2"),
             None,
         )
         if isinstance(action_certificate, Mapping):
             payload = action_certificate.get("payload")
             payload = payload if isinstance(payload, Mapping) else {}
+            if payload.get("protocol_revision") == 2:
+                artifacts = {
+                    str(value.get("kind") or ""): value.get("payload")
+                    for value in outputs
+                    if isinstance(value, Mapping) and isinstance(value.get("payload"), Mapping)
+                }
+                proof_ir = artifacts.get("program_proof_ir")
+                obligation = artifacts.get("proof_obligation")
+                action = artifacts.get("action")
+                frozen_check = artifacts.get("proof_check_result")
+                strict_certificate = artifacts.get("evidence_certificate") or payload
+                if not all(
+                    isinstance(value, Mapping)
+                    for value in (proof_ir, obligation, action, strict_certificate, frozen_check)
+                ):
+                    raise DecisionTraceError(
+                        "strict proof certificate has no complete frozen replay artifact set"
+                    )
+                recomputed = ProofChecker().check(
+                    proof_ir=cast(Mapping[str, Any], proof_ir),
+                    obligation=cast(Mapping[str, Any], obligation),
+                    action=cast(Mapping[str, Any], action),
+                    certificate=cast(Mapping[str, Any], strict_certificate),
+                )
+                matches = recomputed == frozen_check
+                accepted = recomputed.get("status") == "accepted"
+                results.append(
+                    {
+                        "claim_uid": "",
+                        "fact_kind": str(payload.get("fact_kind") or ""),
+                        "status": str(payload.get("status") or "unknown"),
+                        "classification": (
+                            "valid_certificate" if accepted and matches else "proof_replay_mismatch"
+                        ),
+                        "matches_frozen_status": matches,
+                        "certificate_valid": accepted,
+                        "certificate_reason": (
+                            "ok" if accepted and matches else "checker_replay_mismatch"
+                        ),
+                    }
+                )
+                continue
             valid = verify_certificate_v2(payload)
             results.append(
                 {
                     "claim_uid": "",
                     "fact_kind": str(payload.get("fact_kind") or ""),
                     "status": str(payload.get("status") or "unknown"),
-                    "classification": (
-                        "valid_certificate"
-                        if valid and payload.get("quantifier_coverage_complete") is True
-                        else "coverage_incomplete"
+                    "classification": ("legacy_preview" if valid else "certificate_invalid"),
+                    "matches_frozen_status": False,
+                    "certificate_valid": False,
+                    "certificate_reason": (
+                        "legacy_preview_not_replay_authoritative"
+                        if valid
+                        else "certificate_v2_invalid"
                     ),
-                    "matches_frozen_status": valid,
-                    "certificate_valid": valid,
-                    "certificate_reason": "ok" if valid else "certificate_v2_invalid",
                 }
             )
             continue
-        claim_record = next(
-            (value for value in inputs if value.get("kind") == "model_evidence_claim"), None
-        )
-        if claim_record is None:
-            raise DecisionTraceError("verifier event has no retained claim")
-        claim = EvidenceClaimRequest.from_mapping(cast(Mapping[str, Any], claim_record["payload"]))
-        if allow_incomplete_trace and not policy_issue:
-            policy_issue = {
-                "obligation_uid": claim.obligation_uid,
-                "subject_uid": claim.subject_uid,
-                "decision_region_uid": claim.decision_region_uid,
-                "missing_fact_kinds": [claim.fact_kind],
-                "security_obligation": {
-                    "obligation_uid": claim.obligation_uid,
-                    "subject_uid": claim.subject_uid,
-                    "decision_region_uid": claim.decision_region_uid,
-                    "required_fact_kinds": [claim.fact_kind],
-                },
-            }
-        catalog: Dict[str, Mapping[str, Any]] = {}
-        for value in inputs:
-            if value.get("kind") != "validator_readonly_tool_result":
-                continue
-            payload = value.get("payload")
-            if isinstance(payload, Mapping) and payload.get("evidence_ref"):
-                catalog[str(payload["evidence_ref"])] = payload
-        verification = verifier.verify(claim, issue=policy_issue, tool_catalog=catalog)
-        frozen = next(
-            (
-                value
-                for value in outputs
-                if value.get("kind") == "evidence_verification_certificate"
-            ),
-            None,
-        )
-        frozen_payload = (
-            dict(frozen.get("payload") or {})
-            if isinstance(frozen, Mapping) and isinstance(frozen.get("payload"), Mapping)
-            else {}
-        )
-        certificate = (
-            frozen_payload.get("certificate") if isinstance(frozen_payload, Mapping) else {}
-        )
-        certificate_ok, certificate_reason = (
-            verify_evidence_certificate(certificate)
-            if isinstance(certificate, Mapping)
-            else (False, "missing certificate")
-        )
         results.append(
             {
-                "claim_uid": claim.claim_uid,
-                "fact_kind": claim.fact_kind,
-                "status": verification.status,
-                "classification": (
-                    "provider_semantic_mismatch"
-                    if verification.reason_code == "tool_not_authoritative_for_predicate"
-                    else (
-                        "coverage_incomplete"
-                        if verification.status == "unknown"
-                        else "valid_certificate"
-                    )
-                ),
-                "matches_frozen_status": verification.status
-                == str(frozen_payload.get("status") or ""),
-                "certificate_valid": certificate_ok,
-                "certificate_reason": certificate_reason,
+                "claim_uid": "",
+                "fact_kind": "",
+                "status": "unknown",
+                "classification": "legacy_claim_preview_not_replayed",
+                "matches_frozen_status": False,
+                "certificate_valid": False,
+                "certificate_reason": "p5_checker_artifacts_unavailable",
             }
         )
     return {

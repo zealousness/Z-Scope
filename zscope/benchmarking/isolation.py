@@ -65,6 +65,16 @@ def _json_object(raw: str, *, context: str) -> Dict[str, Any]:
     return value
 
 
+def _json_array(raw: str, *, context: str) -> list[Dict[str, Any]]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BenchmarkIsolationError(f"{context} did not return JSON") from exc
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise BenchmarkIsolationError(f"{context} did not return a JSON object array")
+    return [dict(item) for item in value]
+
+
 def _nested(mapping: Mapping[str, Any], *path: str) -> Any:
     value: Any = mapping
     for key in path:
@@ -480,6 +490,72 @@ class RootlessOciExecutor:
             )
         return _json_object(str(result.stdout or ""), context=context)
 
+    def _network_membership(
+        self,
+        network_inspect: Mapping[str, Any],
+        *,
+        context: str,
+    ) -> tuple[Dict[str, Dict[str, Any]], str]:
+        inspect_peers = _network_peers(network_inspect)
+        if self.runtime_family != "podman":
+            snapshot: Dict[str, Any] = {
+                "source": "network-inspect",
+                "network": self.network_policy.network_name,
+                "peer_ids": sorted(inspect_peers),
+            }
+            return inspect_peers, _canonical_sha256(snapshot)
+
+        argv = [
+            self.runtime_path,
+            "ps",
+            "--all",
+            "--filter",
+            f"network={self.network_policy.network_name}",
+            "--format",
+            "json",
+        ]
+        result = self._invoke(argv)
+        if result.returncode != 0:
+            detail = str(result.stderr or result.stdout or "").strip()
+            raise BenchmarkIsolationError(
+                f"{context} failed ({result.returncode})" + (f": {detail}" if detail else "")
+            )
+        rows = _json_array(str(result.stdout or ""), context=context)
+        peers: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            identity = str(row.get("Id") or row.get("ID") or row.get("id") or "")
+            raw_networks = row.get("Networks") or row.get("networks")
+            if isinstance(raw_networks, str):
+                networks = {value.strip() for value in raw_networks.split(",") if value.strip()}
+            elif isinstance(raw_networks, list):
+                networks = {str(value) for value in raw_networks if str(value)}
+            else:
+                networks = set()
+            if not identity or self.network_policy.network_name not in networks:
+                raise BenchmarkIsolationError(
+                    f"{context} returned an unbound or unidentified container"
+                )
+            if identity in peers:
+                raise BenchmarkIsolationError(f"{context} returned duplicate container IDs")
+            peers[identity] = row
+
+        if inspect_peers and (
+            len(inspect_peers) != len(peers)
+            or any(
+                not any(_identity_matches(inspect_id, peer_id) for peer_id in peers)
+                for inspect_id in inspect_peers
+            )
+        ):
+            raise BenchmarkIsolationError(
+                f"{context} disagrees with the runtime network inspection"
+            )
+        snapshot = {
+            "source": "podman-ps-network-filter",
+            "network": self.network_policy.network_name,
+            "containers": rows,
+        }
+        return peers, _canonical_sha256(snapshot)
+
     def preflight(self) -> Dict[str, Any]:
         if self._preflight is not None:
             return dict(self._preflight)
@@ -545,7 +621,9 @@ class RootlessOciExecutor:
             raise BenchmarkIsolationError("model endpoint proxy policy digest does not match")
         if self.network_policy.endpoint_host not in aliases:
             raise BenchmarkIsolationError("model endpoint hostname is not a proxy network alias")
-        peers = _network_peers(network)
+        peers, network_membership_sha256 = self._network_membership(
+            network, context="OCI network membership inspect"
+        )
         if len(peers) != 1 or not any(_identity_matches(proxy_id, peer) for peer in peers):
             raise BenchmarkIsolationError(
                 "endpoint-only network must contain exactly the declared proxy before execution"
@@ -556,6 +634,7 @@ class RootlessOciExecutor:
             "image_inspect_sha256": _canonical_sha256(image_inspect),
             "image_id": image_id,
             "network_inspect_sha256": _canonical_sha256(network),
+            "network_membership_sha256": network_membership_sha256,
             "proxy_inspect_sha256": _canonical_sha256(proxy),
             "rootless_verified": True,
             "image_digest_verified": True,
@@ -630,7 +709,9 @@ class RootlessOciExecutor:
         actual_sources = {
             (str(row["source"]), str(row["destination"]), bool(row["read_only"])) for row in mounts
         }
-        peers = _network_peers(network)
+        peers, network_membership_sha256 = self._network_membership(
+            network, context=f"{phase} network membership inspect"
+        )
         proxy_id = str(_as_mapping(self._preflight).get("proxy_container_id") or "")
         proxy_current_id = str(proxy.get("Id") or proxy.get("ID") or "")
         proxy_labels = _labels(_nested(proxy, "Config", "Labels"))
@@ -733,6 +814,7 @@ class RootlessOciExecutor:
             "container_inspect_sha256": _canonical_sha256(inspect),
             "proxy_inspect_sha256": _canonical_sha256(proxy),
             "network_inspect_sha256": _canonical_sha256(network),
+            "network_membership_sha256": network_membership_sha256,
             "inspect_verified": inspect_verified,
         }
 

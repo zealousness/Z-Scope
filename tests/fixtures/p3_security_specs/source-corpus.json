@@ -1,0 +1,36 @@
+{
+  "schema_version": "zscope.p3-security-spec-source-corpus.v1",
+  "projects": [
+    {"project_id": "procedural_runtime", "language": "c_cpp", "style": "procedural"},
+    {"project_id": "raii_library", "language": "c_cpp", "style": "raii"},
+    {"project_id": "callback_service", "language": "java", "style": "callback"}
+  ],
+  "variations": [
+    {"variation_id": "v00", "transformation": "base", "binding_complete": true},
+    {"variation_id": "v01", "transformation": "rename", "binding_complete": true},
+    {"variation_id": "v02", "transformation": "wrapper_extract", "binding_complete": true},
+    {"variation_id": "v03", "transformation": "wrapper_inline", "binding_complete": true},
+    {"variation_id": "v04", "transformation": "macro_equivalent", "binding_complete": true},
+    {"variation_id": "v05", "transformation": "branch_reorder", "binding_complete": true},
+    {"variation_id": "v06", "transformation": "dependency_change", "binding_complete": true},
+    {"variation_id": "v07", "transformation": "scope_narrow", "binding_complete": true},
+    {"variation_id": "v08", "transformation": "scope_revoke", "binding_complete": false},
+    {"variation_id": "v09", "transformation": "fixed_pair", "binding_complete": false},
+    {"variation_id": "v10", "transformation": "near_miss", "binding_complete": false}
+  ],
+  "predicate_templates": [
+    {"predicate": "source", "parameters": {"source_slot": "parameter:0", "label": "untrusted"}},
+    {"predicate": "sink", "parameters": {"sink_slot": "parameter:1", "label": "command"}},
+    {"predicate": "propagate", "parameters": {"from_slots": ["parameter:0", "parameter:1"], "to_slot": "return", "label": "network"}},
+    {"predicate": "sanitize", "parameters": {"from_slots": ["parameter:0"], "to_slot": "return", "label": "path"}},
+    {"predicate": "acquire", "parameters": {"resource_slot": "return", "resource_kind": "handle"}},
+    {"predicate": "release", "parameters": {"resource_slot": "parameter:0", "resource_kind": "file"}},
+    {"predicate": "transfer", "parameters": {"resource_slot": "return", "from_owner": "callee", "to_owner": "caller"}},
+    {"predicate": "lock", "parameters": {"lock_slot": "receiver", "mode": "exclusive"}},
+    {"predicate": "unlock", "parameters": {"lock_slot": "receiver", "mode": "exclusive"}},
+    {"predicate": "state_transition", "parameters": {"state_slot": "field:state", "from_value": "idle", "to_value": "active"}},
+    {"predicate": "sentinel", "parameters": {"value_slot": "return", "sentinel_value": -1, "meaning": "failure"}},
+    {"predicate": "callback_retains", "parameters": {"callback_slot": "parameter:0", "retained_slots": ["receiver", "parameter:1"], "lifetime": "async"}},
+    {"predicate": "caller_contract", "parameters": {"target_slots": ["parameter:0"], "requirement": "non_null"}}
+  ]
+}

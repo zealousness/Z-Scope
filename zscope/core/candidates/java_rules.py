@@ -19,7 +19,7 @@ from .cpp_domains import (
 )
 
 if TYPE_CHECKING:
-    from ...orchestration.subagents import SubAgentTicket
+    from ...orchestration.candidates import CandidateTicket
 
 
 @dataclass(frozen=True)
@@ -949,8 +949,8 @@ class JavaRuleCandidateGenerator:
             deduped.setdefault(str(issue.get("dedup_key") or issue["id"]), issue)
         return list(deduped.values())
 
-    def issue_to_ticket(self, issue: Dict[str, Any]) -> "SubAgentTicket":
-        from ...orchestration.subagents import SubAgentTicket
+    def issue_to_ticket(self, issue: Dict[str, Any]) -> "CandidateTicket":
+        from ...orchestration.candidates import CandidateTicket
 
         defect_class = str(issue.get("defect_class") or "unknown")
         evidence = dict(issue.get("evidence_pack") or {})
@@ -961,7 +961,7 @@ class JavaRuleCandidateGenerator:
             defect_class=defect_class,
             language="java",
         )
-        return SubAgentTicket(
+        return CandidateTicket(
             id=str(issue.get("candidate_id") or issue.get("id")),
             skill=str(
                 issue.get("skill")

@@ -47,7 +47,7 @@ def _config(
         project=ProjectConfig(
             project_root=tmp_path,
             source_root=tmp_path,
-            agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
+            agents=[AgentConfig(name="proof_engine", task="validate")],
         ),
         concurrency=ConcurrencyConfig(entry_workers=1),
     )
@@ -84,6 +84,13 @@ def _install_slow_analyzer(monkeypatch, observed_remaining):
     monkeypatch.setattr(parallel_module, "Analyzer", SlowAnalyzer)
 
 
+def _prepare_empty_security_runtime(parallel: ParallelAnalyzer) -> None:
+    from zscope.semantics.models import LocalPatternSemantics
+
+    parallel._shared_local_pattern_semantics = LocalPatternSemantics()
+    parallel._shared_semantic_overlay = {}
+
+
 def test_entry_budget_is_observe_only_and_reported(monkeypatch, tmp_path) -> None:
     parallel = ParallelAnalyzer(
         _config(
@@ -96,6 +103,7 @@ def test_entry_budget_is_observe_only_and_reported(monkeypatch, tmp_path) -> Non
     )
     observed_remaining = []
     _install_slow_analyzer(monkeypatch, observed_remaining)
+    _prepare_empty_security_runtime(parallel)
 
     result = parallel._analyze_single_entry(FunctionEntry("slow_entry"))
 
@@ -130,6 +138,7 @@ def test_legacy_hard_policy_is_normalized_to_observe(monkeypatch, tmp_path) -> N
     )
     observed_remaining = []
     _install_slow_analyzer(monkeypatch, observed_remaining)
+    _prepare_empty_security_runtime(parallel)
 
     result = parallel._analyze_single_entry(FunctionEntry("slow_entry"))
 

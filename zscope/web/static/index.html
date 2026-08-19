@@ -654,6 +654,7 @@
             <div class="tabs tabs-boxed bg-slate-100">
                 <a class="tab tab-sm" :class="activeTab==='findings' && 'tab-active'" @click="activeTab='findings'">审计发现</a>
                 <a class="tab tab-sm" :class="activeTab==='rules' && 'tab-active'" @click="activeTab='rules';loadRules()">规则目录</a>
+                <a class="tab tab-sm" :class="activeTab==='specs' && 'tab-active'" @click="activeTab='specs';loadSecuritySpecs()">Security Specs</a>
                 <a class="tab tab-sm" :class="activeTab==='project' && 'tab-active'" @click="activeTab='project';loadStructuredConfig()">项目配置</a>
                 <a class="tab tab-sm" :class="activeTab==='config' && 'tab-active'" @click="activeTab='config';configSubTab='workbook';loadWorkbookConfig()">用户配置</a>
                 <a class="tab tab-sm" :class="activeTab==='warnings' && 'tab-active'" @click="openDashboard()">看板</a>
@@ -1519,6 +1520,63 @@
         </div>
     </div><!-- end dashboard tab -->
 
+    <div x-show="activeTab==='specs'" class="space-y-4">
+        <section class="card bg-white border border-slate-200 shadow-sm">
+            <div class="card-body p-5 gap-4">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h2 class="card-title text-base">Security Spec Review Center</h2>
+                            <span class="badge badge-warning">只读</span>
+                            <span class="badge badge-outline" x-text="securitySpecPayload.security_spec_mode || 'shadow'"></span>
+                        </div>
+                        <p class="text-xs subtle-text mt-1">当前部署没有可信 reviewer identity；审阅和 apply-import 已 fail-closed。</p>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <select class="select select-bordered select-sm" x-model="securitySpecStatus" @change="loadSecuritySpecs()">
+                            <option value="">全部状态</option>
+                            <option>observation</option><option>proposed</option><option>verified_scoped</option>
+                            <option>project_active</option><option>stable</option><option>conflicting</option>
+                            <option>rejected</option><option>quarantined</option>
+                        </select>
+                        <a class="btn btn-outline btn-sm" href="/api/security-specs/export?format=json">导出 JSON</a>
+                        <a class="btn btn-outline btn-sm" href="/api/security-specs/export?format=xlsx">导出 XLSX</a>
+                        <button class="btn btn-ghost btn-sm" @click="$refs.securitySpecImport.click()">校验导入</button>
+                        <input x-ref="securitySpecImport" type="file" class="hidden" accept=".json,.xlsx" @change="dryRunSecuritySpecImport($event)">
+                    </div>
+                </div>
+                <div x-show="securitySpecError" class="alert alert-error py-2 text-sm" x-text="securitySpecError"></div>
+                <div class="grid grid-cols-1 lg:grid-cols-[minmax(18rem,0.8fr)_minmax(0,1.6fr)] gap-4">
+                    <div class="border border-slate-200 rounded-lg overflow-auto max-h-[62vh]">
+                        <template x-if="!(securitySpecPayload.specs || []).length">
+                            <div class="p-5 text-sm subtle-text">当前没有 Security Spec artifact。</div>
+                        </template>
+                        <template x-for="spec in (securitySpecPayload.specs || [])" :key="spec.spec_uid + ':' + spec.revision">
+                            <button class="w-full text-left p-3 border-b border-slate-100 hover:bg-slate-50"
+                                    :class="selectedSecuritySpec?.spec?.spec_uid === spec.spec_uid && 'bg-blue-50'"
+                                    @click="loadSecuritySpecDetail(spec.spec_uid)">
+                                <div class="flex justify-between gap-2"><span class="font-semibold code-font text-xs" x-text="spec.spec_uid"></span><span class="badge badge-sm" x-text="spec.status"></span></div>
+                                <div class="text-xs mt-1" x-text="spec.predicate + ' · ' + spec.scope.kind + ':' + spec.scope.target"></div>
+                                <div class="text-[11px] subtle-text mt-1" x-text="spec.explanation"></div>
+                            </button>
+                        </template>
+                    </div>
+                    <div class="border border-slate-200 rounded-lg p-4 overflow-auto max-h-[62vh]">
+                        <template x-if="!selectedSecuritySpec"><div class="text-sm subtle-text">选择规格查看 scope、证据、冲突、qualification、编译和影响预览。</div></template>
+                        <template x-if="selectedSecuritySpec">
+                            <div class="space-y-4">
+                                <div><h3 class="font-semibold">Scope 与 Subject</h3><pre class="text-xs code-font bg-slate-50 p-3 rounded mt-2 whitespace-pre-wrap" x-text="JSON.stringify({subject:selectedSecuritySpec.spec.subject,scope:selectedSecuritySpec.spec.scope}, null, 2)"></pre></div>
+                                <div><h3 class="font-semibold">Evidence / Dependencies</h3><pre class="text-xs code-font bg-slate-50 p-3 rounded mt-2 whitespace-pre-wrap" x-text="JSON.stringify({evidence_refs:selectedSecuritySpec.spec.evidence_refs,dependency_hashes:selectedSecuritySpec.spec.dependency_hashes,qualification_ref:selectedSecuritySpec.spec.qualification_ref}, null, 2)"></pre></div>
+                                <div><h3 class="font-semibold">编译预览</h3><pre class="text-xs code-font bg-slate-50 p-3 rounded mt-2 whitespace-pre-wrap" x-text="JSON.stringify(selectedSecuritySpec.compilation_preview, null, 2)"></pre></div>
+                                <div><h3 class="font-semibold">影响预览</h3><div class="flex flex-wrap gap-2 mt-2"><template x-for="item in selectedSecuritySpec.impact_preview" :key="item"><span class="badge badge-outline" x-text="item"></span></template></div></div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div><!-- end Security Spec tab -->
+
     </main>
 
     <script>
@@ -1605,6 +1663,10 @@
                 rulesError: '',
                 ruleFilters: { language: '', engine: '', skill: '', status: '', q: '' },
                 ruleRequestSeq: 0,
+                securitySpecPayload: { specs: [], summary: {} },
+                selectedSecuritySpec: null,
+                securitySpecStatus: '',
+                securitySpecError: '',
                 configSubTab: 'workbook',
                 cpgStatus: 'unknown',
                 cpgError: '',
@@ -4097,6 +4159,38 @@
                     fetch('/api/user_config/function_intents',{method:'POST',headers:{'Content-Type':'application/json'},
                         body:JSON.stringify(p)
                     }).then(r=>r.json()).then(()=>{this.intentForm={func_name:'',file_path:'',concurrency_group:'',concurrent_str:'',caller_constraints:'',notes:''};this.loadAllConfigs();});
+                },
+                loadSecuritySpecs() {
+                    const query = this.securitySpecStatus ? `?status=${encodeURIComponent(this.securitySpecStatus)}` : '';
+                    this.securitySpecError = '';
+                    fetch('/api/security-specs' + query).then(r => r.json()).then(data => {
+                        this.securitySpecPayload = data;
+                    }).catch(error => { this.securitySpecError = String(error); });
+                },
+                loadSecuritySpecDetail(specUid) {
+                    this.securitySpecError = '';
+                    fetch(`/api/security-specs/${encodeURIComponent(specUid)}`).then(async response => {
+                        const data = await response.json();
+                        if (!response.ok) throw new Error(data.error || '加载规格失败');
+                        return data;
+                    }).then(data => { this.selectedSecuritySpec = data; })
+                      .catch(error => { this.securitySpecError = String(error); });
+                },
+                dryRunSecuritySpecImport(event) {
+                    const file = event.target.files && event.target.files[0];
+                    if (!file) return;
+                    const format = file.name.toLowerCase().endsWith('.xlsx') ? 'xlsx' : 'json';
+                    file.arrayBuffer().then(buffer => fetch(`/api/security-specs/import?format=${format}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/json'},
+                        body: buffer,
+                    })).then(async response => {
+                        const data = await response.json();
+                        if (!response.ok) throw new Error(data.error || '导入校验失败');
+                        return data;
+                    }).then(data => this.showToast(`只读校验通过：${data.summary.spec_count} specs，未写入`, 'success'))
+                      .catch(error => { this.securitySpecError = String(error); this.showToast(this.securitySpecError, 'error'); })
+                      .finally(() => { event.target.value = ''; });
                 }
             }
         }

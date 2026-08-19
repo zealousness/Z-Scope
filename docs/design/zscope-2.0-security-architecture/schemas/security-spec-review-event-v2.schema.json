@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.local/schemas/security-spec-review-event-v2.schema.json",
+  "title": "SecuritySpecReviewEvent v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "protocol_revision", "event_uid", "spec_uid", "spec_revision", "reviewer_identity", "reviewed_at", "reason", "action", "before_spec_sha256", "after_spec_sha256", "scope_override", "dependency_impact", "previous_event_sha256", "content_sha256"],
+  "properties": {
+    "schema_version": {"const": "zscope.security-spec-review-event.v2"},
+    "protocol_revision": {"const": 2},
+    "event_uid": {"type": "string", "pattern": "^SPECREV_[0-9a-f]{32}$"},
+    "spec_uid": {"type": "string", "pattern": "^SPEC_[0-9a-f]{32}$"},
+    "spec_revision": {"type": "integer", "minimum": 1},
+    "reviewer_identity": {"type": "string", "minLength": 1},
+    "reviewed_at": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "action": {"enum": ["approve-scoped", "narrow", "reject", "defer", "reverify", "revoke"]},
+    "before_spec_sha256": {"$ref": "#/$defs/sha256"},
+    "after_spec_sha256": {"$ref": "#/$defs/sha256"},
+    "scope_override": {"type": "object"},
+    "dependency_impact": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "previous_event_sha256": {"$ref": "#/$defs/sha256"},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

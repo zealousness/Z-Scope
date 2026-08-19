@@ -11,7 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 
 DESIGN_RELATIVE_ROOT = PurePosixPath("docs/design/zscope-2.0-security-architecture")
@@ -19,6 +19,11 @@ DESIGN_MANIFEST = DESIGN_RELATIVE_ROOT / "design-manifest.json"
 EXTERNAL_ARTIFACT_PREFIXES = ("benchmark-artifacts/",)
 PHASES = ("P0", "P1", "P2", "P3", "P4", "P5", "E0", "P6", "P7")
 P0_REVIEW_ROLES = ("product_architecture", "proof_security", "independent_benchmark")
+P1_REVIEW_ROLES = ("product_architecture",)
+P2_REVIEW_ROLES = ("proof_security",)
+P3_REVIEW_ROLES = ("product_architecture", "proof_security")
+P4_REVIEW_ROLES = ("product_architecture", "proof_security")
+P5_REVIEW_ROLES = ("product_architecture", "proof_security")
 DESIGN_STATUSES = (
     "draft",
     "reviewed",
@@ -327,6 +332,262 @@ def validate_formal_review_documents(
     return errors
 
 
+def validate_p1_review_documents(
+    phase_review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+) -> list[str]:
+    """Validate the product-architecture review required to complete P1."""
+
+    errors: list[str] = []
+    artifacts = phase_review.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P1_REVIEW_ROLES):
+        return ["P1 phase review must contain product_architecture exactly once"]
+    reviewed_commit = phase_review.get("reviewed_commit")
+    reviewed_tree = phase_review.get("reviewed_tree")
+    if HEX_40.fullmatch(str(reviewed_commit)) is None:
+        errors.append("P1 phase review reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(str(reviewed_tree)) is None:
+        errors.append("P1 phase review reviewed_tree must be a full Git tree")
+
+    role = P1_REVIEW_ROLES[0]
+    spec = artifacts.get(role)
+    review = reviews.get(role)
+    if not isinstance(spec, dict) or not isinstance(review, dict):
+        return errors + ["P1 product_architecture review specification or document is missing"]
+    errors.extend(f"P1 {role}: {row}" for row in validate_json_schema(review, review_schema))
+    if review.get("role") != role:
+        errors.append(f"P1 {role}: review document names role {review.get('role')!r}")
+    if review.get("reviewer_model") != spec.get("reviewer_model"):
+        errors.append(f"P1 {role}: reviewer model differs from the phase assignment")
+    if review.get("harness") != spec.get("harness"):
+        errors.append(f"P1 {role}: harness differs from the phase assignment")
+    if review.get("reviewed_commit") != reviewed_commit:
+        errors.append(f"P1 {role}: reviewed commit differs from the phase review target")
+    if review.get("reviewed_tree") != reviewed_tree:
+        errors.append(f"P1 {role}: reviewed tree differs from the phase review target")
+    if review.get("decision") != "approved":
+        errors.append(f"P1 {role}: completion requires an approved review decision")
+    if review.get("blocking_findings") != []:
+        errors.append(f"P1 {role}: completion requires zero blocking findings")
+    return errors
+
+
+def validate_p2_review_documents(
+    phase_review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+) -> list[str]:
+    """Validate the sole final-soundness proof-security review for P2."""
+
+    errors: list[str] = []
+    artifacts = phase_review.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P2_REVIEW_ROLES):
+        return ["P2 phase review must contain proof_security exactly once"]
+    reviewed_commit = str(phase_review.get("reviewed_commit") or "")
+    reviewed_tree = str(phase_review.get("reviewed_tree") or "")
+    if HEX_40.fullmatch(reviewed_commit) is None:
+        errors.append("P2 phase review reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(reviewed_tree) is None:
+        errors.append("P2 phase review reviewed_tree must be a full Git tree")
+    spec = artifacts.get("proof_security")
+    review = reviews.get("proof_security")
+    if not isinstance(spec, dict) or not isinstance(review, dict):
+        return errors + ["P2 proof_security review specification or document is missing"]
+    errors.extend(
+        f"P2 proof_security: {row}" for row in validate_json_schema(review, review_schema)
+    )
+    if review.get("review_scope") != "final_soundness":
+        errors.append("P2 proof_security: completion requires final_soundness review scope")
+    if review.get("role") != "proof_security":
+        errors.append("P2 proof_security: review document has the wrong role")
+    if review.get("reviewer_model") != spec.get("reviewer_model"):
+        errors.append("P2 proof_security: reviewer model differs from the phase assignment")
+    if review.get("harness") != spec.get("harness"):
+        errors.append("P2 proof_security: harness differs from the phase assignment")
+    if "reasoning_effort=max" not in str(review.get("harness") or ""):
+        errors.append("P2 proof_security: completion review must use maximum reasoning")
+    if "permission_mode=read-only" not in str(review.get("harness") or ""):
+        errors.append("P2 proof_security: completion review must be read-only")
+    if review.get("reviewed_commit") != reviewed_commit:
+        errors.append("P2 proof_security: reviewed commit differs from the phase target")
+    if review.get("reviewed_tree") != reviewed_tree:
+        errors.append("P2 proof_security: reviewed tree differs from the phase target")
+    if review.get("decision") != "approved":
+        errors.append("P2 proof_security: completion requires an approved review decision")
+    if review.get("blocking_findings") != []:
+        errors.append("P2 proof_security: completion requires zero blocking findings")
+    return errors
+
+
+def validate_p3_review_documents(
+    phase_review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+) -> list[str]:
+    """Validate the two independent reviews required to complete P3."""
+
+    errors: list[str] = []
+    artifacts = phase_review.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P3_REVIEW_ROLES):
+        return ["P3 phase review must contain product_architecture and proof_security"]
+    reviewed_commit = str(phase_review.get("reviewed_commit") or "")
+    reviewed_tree = str(phase_review.get("reviewed_tree") or "")
+    if HEX_40.fullmatch(reviewed_commit) is None:
+        errors.append("P3 phase review reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(reviewed_tree) is None:
+        errors.append("P3 phase review reviewed_tree must be a full Git tree")
+    requirements = {
+        "product_architecture": ("final_product_architecture", "claude-opus-5"),
+        "proof_security": ("final_proof_security", "deepseek-v4-pro"),
+    }
+    for role in P3_REVIEW_ROLES:
+        spec = artifacts.get(role)
+        review = reviews.get(role)
+        if not isinstance(spec, dict) or not isinstance(review, dict):
+            errors.append(f"P3 {role}: review specification or document is missing")
+            continue
+        errors.extend(f"P3 {role}: {row}" for row in validate_json_schema(review, review_schema))
+        expected_scope, expected_model = requirements[role]
+        if review.get("review_scope") != expected_scope:
+            errors.append(f"P3 {role}: review scope must be {expected_scope}")
+        if review.get("role") != role:
+            errors.append(f"P3 {role}: review document has the wrong role")
+        if review.get("reviewer_model") != expected_model:
+            errors.append(f"P3 {role}: reviewer model is not the assigned model")
+        if review.get("reviewer_model") != spec.get("reviewer_model"):
+            errors.append(f"P3 {role}: reviewer model differs from the phase assignment")
+        if review.get("harness") != spec.get("harness"):
+            errors.append(f"P3 {role}: harness differs from the phase assignment")
+        if "read-only" not in str(review.get("harness") or ""):
+            errors.append(f"P3 {role}: completion review must be read-only")
+        if role == "proof_security" and "reasoning_effort=max" not in str(
+            review.get("harness") or ""
+        ):
+            errors.append("P3 proof_security: completion review must use maximum reasoning")
+        if review.get("reviewed_commit") != reviewed_commit:
+            errors.append(f"P3 {role}: reviewed commit differs from the phase target")
+        if review.get("reviewed_tree") != reviewed_tree:
+            errors.append(f"P3 {role}: reviewed tree differs from the phase target")
+        if review.get("decision") != "approved":
+            errors.append(f"P3 {role}: completion requires an approved review decision")
+        if review.get("blocking_findings") != []:
+            errors.append(f"P3 {role}: completion requires zero blocking findings")
+    return errors
+
+
+def validate_p4_review_documents(
+    phase_review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+) -> list[str]:
+    """Validate the two independent reviews required to complete P4."""
+
+    errors: list[str] = []
+    artifacts = phase_review.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P4_REVIEW_ROLES):
+        return ["P4 phase review must contain product_architecture and proof_security"]
+    reviewed_commit = str(phase_review.get("reviewed_commit") or "")
+    reviewed_tree = str(phase_review.get("reviewed_tree") or "")
+    if HEX_40.fullmatch(reviewed_commit) is None:
+        errors.append("P4 phase review reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(reviewed_tree) is None:
+        errors.append("P4 phase review reviewed_tree must be a full Git tree")
+    requirements = {
+        "product_architecture": ("final_product_architecture", "claude-opus-5"),
+        "proof_security": ("final_proof_security", "deepseek-v4-pro"),
+    }
+    for role in P4_REVIEW_ROLES:
+        spec = artifacts.get(role)
+        review = reviews.get(role)
+        if not isinstance(spec, dict) or not isinstance(review, dict):
+            errors.append(f"P4 {role}: review specification or document is missing")
+            continue
+        errors.extend(f"P4 {role}: {row}" for row in validate_json_schema(review, review_schema))
+        expected_scope, expected_model = requirements[role]
+        if review.get("review_scope") != expected_scope:
+            errors.append(f"P4 {role}: review scope must be {expected_scope}")
+        if review.get("role") != role:
+            errors.append(f"P4 {role}: review document has the wrong role")
+        if review.get("reviewer_model") != expected_model:
+            errors.append(f"P4 {role}: reviewer model is not the assigned model")
+        if review.get("reviewer_model") != spec.get("reviewer_model"):
+            errors.append(f"P4 {role}: reviewer model differs from the phase assignment")
+        if review.get("harness") != spec.get("harness"):
+            errors.append(f"P4 {role}: harness differs from the phase assignment")
+        if "read-only" not in str(review.get("harness") or ""):
+            errors.append(f"P4 {role}: completion review must be read-only")
+        if role == "proof_security" and "reasoning_effort=max" not in str(
+            review.get("harness") or ""
+        ):
+            errors.append("P4 proof_security: completion review must use maximum reasoning")
+        if review.get("reviewed_commit") != reviewed_commit:
+            errors.append(f"P4 {role}: reviewed commit differs from the phase target")
+        if review.get("reviewed_tree") != reviewed_tree:
+            errors.append(f"P4 {role}: reviewed tree differs from the phase target")
+        if review.get("decision") != "approved":
+            errors.append(f"P4 {role}: completion requires an approved review decision")
+        if review.get("blocking_findings") != []:
+            errors.append(f"P4 {role}: completion requires zero blocking findings")
+    return errors
+
+
+def validate_p5_review_documents(
+    phase_review: Mapping[str, Any],
+    reviews: Mapping[str, Any],
+    review_schema: Mapping[str, Any],
+) -> list[str]:
+    """Validate the two independent reviews required to complete P5."""
+
+    errors: list[str] = []
+    artifacts = phase_review.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(P5_REVIEW_ROLES):
+        return ["P5 phase review must contain product_architecture and proof_security"]
+    reviewed_commit = str(phase_review.get("reviewed_commit") or "")
+    reviewed_tree = str(phase_review.get("reviewed_tree") or "")
+    if HEX_40.fullmatch(reviewed_commit) is None:
+        errors.append("P5 phase review reviewed_commit must be a full Git commit")
+    if HEX_40.fullmatch(reviewed_tree) is None:
+        errors.append("P5 phase review reviewed_tree must be a full Git tree")
+    requirements = {
+        "product_architecture": ("runtime_cutover_product_architecture", "claude-opus-5"),
+        "proof_security": ("runtime_cutover_proof_security", "deepseek-v4-pro"),
+    }
+    for role in P5_REVIEW_ROLES:
+        spec = artifacts.get(role)
+        review = reviews.get(role)
+        if not isinstance(spec, dict) or not isinstance(review, dict):
+            errors.append(f"P5 {role}: review specification or document is missing")
+            continue
+        errors.extend(f"P5 {role}: {row}" for row in validate_json_schema(review, review_schema))
+        expected_scope, expected_model = requirements[role]
+        if review.get("review_scope") != expected_scope:
+            errors.append(f"P5 {role}: review scope must be {expected_scope}")
+        if review.get("role") != role:
+            errors.append(f"P5 {role}: review document has the wrong role")
+        if review.get("reviewer_model") != expected_model:
+            errors.append(f"P5 {role}: reviewer model is not the assigned model")
+        if review.get("reviewer_model") != spec.get("reviewer_model"):
+            errors.append(f"P5 {role}: reviewer model differs from the phase assignment")
+        if review.get("harness") != spec.get("harness"):
+            errors.append(f"P5 {role}: harness differs from the phase assignment")
+        if "read-only" not in str(review.get("harness") or ""):
+            errors.append(f"P5 {role}: completion review must be read-only")
+        if role == "proof_security" and "reasoning_effort=max" not in str(
+            review.get("harness") or ""
+        ):
+            errors.append("P5 proof_security: completion review must use maximum reasoning")
+        if review.get("reviewed_commit") != reviewed_commit:
+            errors.append(f"P5 {role}: reviewed commit differs from the phase target")
+        if review.get("reviewed_tree") != reviewed_tree:
+            errors.append(f"P5 {role}: reviewed tree differs from the phase target")
+        if review.get("decision") != "approved":
+            errors.append(f"P5 {role}: completion requires an approved review decision")
+        if review.get("blocking_findings") != []:
+            errors.append(f"P5 {role}: completion requires zero blocking findings")
+    return errors
+
+
 def _validate_approval_tag(
     repo_root: Path, manifest: Mapping[str, Any], report: ValidationReport
 ) -> None:
@@ -472,6 +733,54 @@ def validate_phase_gates(
         errors.append(f"phases started before P0 completion: {', '.join(later_started)}")
     if later_started and design_status not in ACTIVE_AFTER_REVIEW:
         errors.append("post-P0 work requires an approved or later design status")
+
+    post_p1_started = [
+        phase
+        for phase in PHASES
+        if phase not in {"P0", "P1"} and raw_manifest_phases.get(phase) != "pending"
+    ]
+    if post_p1_started and raw_manifest_phases.get("P1") != "complete":
+        errors.append(f"phases started before P1 completion: {', '.join(post_p1_started)}")
+    if raw_manifest_phases.get("P1") == "complete":
+        phase_reviews = manifest.get("phase_reviews")
+        if not isinstance(phase_reviews, dict) or not isinstance(phase_reviews.get("P1"), dict):
+            errors.append("P1 completion requires a product_architecture phase review")
+    if raw_manifest_phases.get("P2") == "complete":
+        phase_reviews = manifest.get("phase_reviews")
+        p2_review = phase_reviews.get("P2") if isinstance(phase_reviews, dict) else None
+        if not isinstance(p2_review, dict):
+            errors.append("P2 completion requires a proof_security phase review")
+        elif not isinstance(p2_review.get("qualification_manifest"), str):
+            errors.append("P2 completion requires a qualification manifest binding")
+    if raw_manifest_phases.get("P3") == "complete":
+        phase_reviews = manifest.get("phase_reviews")
+        p3_review = phase_reviews.get("P3") if isinstance(phase_reviews, dict) else None
+        if not isinstance(p3_review, dict):
+            errors.append("P3 completion requires product_architecture and proof_security reviews")
+        elif not isinstance(p3_review.get("qualification_manifest"), str):
+            errors.append("P3 completion requires a qualification manifest binding")
+    if raw_manifest_phases.get("P4") in {"in_progress", "complete"} and (
+        raw_manifest_phases.get("P2") != "complete" or raw_manifest_phases.get("P3") != "complete"
+    ):
+        errors.append("P4 requires P2 and P3 complete")
+    if raw_manifest_phases.get("P4") == "complete":
+        phase_reviews = manifest.get("phase_reviews")
+        p4_review = phase_reviews.get("P4") if isinstance(phase_reviews, dict) else None
+        if not isinstance(p4_review, dict):
+            errors.append("P4 completion requires product_architecture and proof_security reviews")
+        elif not isinstance(p4_review.get("qualification_manifest"), str):
+            errors.append("P4 completion requires a qualification manifest binding")
+    if raw_manifest_phases.get("P5") in {"in_progress", "complete"} and any(
+        raw_manifest_phases.get(phase) != "complete" for phase in ("P2", "P3", "P4")
+    ):
+        errors.append("P5 requires P2, P3 and P4 complete")
+    if raw_manifest_phases.get("P5") == "complete":
+        phase_reviews = manifest.get("phase_reviews")
+        p5_review = phase_reviews.get("P5") if isinstance(phase_reviews, dict) else None
+        if not isinstance(p5_review, dict):
+            errors.append("P5 completion requires product_architecture and proof_security reviews")
+        elif not isinstance(p5_review.get("qualification_manifest"), str):
+            errors.append("P5 completion requires a qualification manifest binding")
 
     approval = manifest.get("approval")
     review_roles = manifest.get("review_roles")
@@ -629,6 +938,534 @@ def validate_design_evidence(
     elif require_formal_approval:
         report.error("P0/design approval requires formal_reviews")
 
+    p1_complete = (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P1") == "complete"
+    )
+    phase_reviews = manifest.get("phase_reviews")
+    if p1_complete:
+        p1_review = phase_reviews.get("P1") if isinstance(phase_reviews, dict) else None
+        if isinstance(p1_review, dict):
+            try:
+                p1_schema_path = resolve_repository_path(
+                    repo_root,
+                    str(p1_review.get("schema", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(f"P1 phase review: {exc}")
+                p1_schema_path = None
+            p1_schema = (
+                _read_governance_json(p1_schema_path, report)
+                if p1_schema_path is not None
+                else None
+            )
+            p1_reviews: dict[str, Any] = {}
+            p1_artifacts = p1_review.get("artifacts")
+            if isinstance(p1_artifacts, dict):
+                for role, spec in p1_artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("P1 phase review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root,
+                            str(spec.get("path", "")),
+                            relative_root=design_root,
+                        )
+                    except ValueError as exc:
+                        report.error(f"P1 {role}: {exc}")
+                        continue
+                    p1_reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(p1_schema, dict):
+                report.errors.extend(validate_p1_review_documents(p1_review, p1_reviews, p1_schema))
+            reviewed_commit = str(p1_review.get("reviewed_commit", ""))
+            reviewed_tree = str(p1_review.get("reviewed_tree", ""))
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(f"P1 review commit is unavailable in Git: {reviewed_commit}")
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "P1 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
+                    )
+
+    p2_complete = (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P2") == "complete"
+    )
+    if p2_complete:
+        p2_review = phase_reviews.get("P2") if isinstance(phase_reviews, dict) else None
+        if isinstance(p2_review, dict):
+            try:
+                p2_schema_path = resolve_repository_path(
+                    repo_root, str(p2_review.get("schema", "")), relative_root=design_root
+                )
+                qualification_path = resolve_repository_path(
+                    repo_root,
+                    str(p2_review.get("qualification_manifest", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(f"P2 phase review: {exc}")
+                p2_schema_path = None
+                qualification_path = None
+            p2_schema = (
+                _read_governance_json(p2_schema_path, report)
+                if p2_schema_path is not None
+                else None
+            )
+            qualification = (
+                _read_governance_json(qualification_path, report)
+                if qualification_path is not None
+                else None
+            )
+            p2_reviews: dict[str, Any] = {}
+            p2_artifacts = p2_review.get("artifacts")
+            if isinstance(p2_artifacts, dict):
+                for role, spec in p2_artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("P2 phase review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root, str(spec.get("path", "")), relative_root=design_root
+                        )
+                    except ValueError as exc:
+                        report.error(f"P2 {role}: {exc}")
+                        continue
+                    p2_reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(p2_schema, dict):
+                report.errors.extend(validate_p2_review_documents(p2_review, p2_reviews, p2_schema))
+            reviewed_commit = str(p2_review.get("reviewed_commit", ""))
+            reviewed_tree = str(p2_review.get("reviewed_tree", ""))
+            if isinstance(qualification, dict):
+                required_values = {
+                    "status": "passed",
+                    "candidate_commit": reviewed_commit,
+                    "candidate_tree": reviewed_tree,
+                    "proof_kernel_mode": "shadow",
+                    "safe_false_acceptance_count": 0,
+                    "llm_calls": 0,
+                    "network": False,
+                }
+                for key, expected in required_values.items():
+                    if qualification.get(key) != expected:
+                        report.error(
+                            f"P2 qualification {key} must equal the reviewed candidate value"
+                        )
+                if qualification.get("case_count") != 120:
+                    report.error("P2 qualification must bind exactly 120 corpus cases")
+                if qualification.get("safe_case_count") != 80:
+                    report.error("P2 qualification must bind exactly 80 safe cases")
+                if qualification.get("clang_version") != "21.1.8":
+                    report.error("P2 qualification must record Clang 21.1.8")
+                for key in ("schema_hashes", "artifact_hashes", "commands", "limitations"):
+                    if not qualification.get(key):
+                        report.error(f"P2 qualification must record non-empty {key}")
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(f"P2 review commit is unavailable in Git: {reviewed_commit}")
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "P2 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
+                    )
+
+    p3_complete = (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P3") == "complete"
+    )
+    if p3_complete:
+        p3_review = phase_reviews.get("P3") if isinstance(phase_reviews, dict) else None
+        if isinstance(p3_review, dict):
+            try:
+                p3_schema_path = resolve_repository_path(
+                    repo_root, str(p3_review.get("schema", "")), relative_root=design_root
+                )
+                p3_qualification_path = resolve_repository_path(
+                    repo_root,
+                    str(p3_review.get("qualification_manifest", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(f"P3 phase review: {exc}")
+                p3_schema_path = None
+                p3_qualification_path = None
+            p3_schema = (
+                _read_governance_json(p3_schema_path, report)
+                if p3_schema_path is not None
+                else None
+            )
+            p3_qualification = (
+                _read_governance_json(p3_qualification_path, report)
+                if p3_qualification_path is not None
+                else None
+            )
+            p3_reviews: dict[str, Any] = {}
+            p3_artifacts = p3_review.get("artifacts")
+            if isinstance(p3_artifacts, dict):
+                for role, spec in p3_artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("P3 phase review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root, str(spec.get("path", "")), relative_root=design_root
+                        )
+                    except ValueError as exc:
+                        report.error(f"P3 {role}: {exc}")
+                        continue
+                    p3_reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(p3_schema, dict):
+                report.errors.extend(validate_p3_review_documents(p3_review, p3_reviews, p3_schema))
+            reviewed_commit = str(p3_review.get("reviewed_commit", ""))
+            reviewed_tree = str(p3_review.get("reviewed_tree", ""))
+            if isinstance(p3_qualification, dict):
+                required_values = {
+                    "status": "passed",
+                    "candidate_commit": reviewed_commit,
+                    "candidate_tree": reviewed_tree,
+                    "security_spec_mode": "shadow",
+                    "reviewer_identity_mode": "unavailable_read_only",
+                    "safe_false_activation_count": 0,
+                    "anonymous_write_success_count": 0,
+                    "network": False,
+                    "external_model_benchmark": False,
+                }
+                for key, expected in required_values.items():
+                    if p3_qualification.get(key) != expected:
+                        report.error(
+                            f"P3 qualification {key} must equal the reviewed candidate value"
+                        )
+                numeric_thresholds: dict[str, tuple[Optional[float], Optional[float]]] = {
+                    "case_count": (120, None),
+                    "key_contract_recall": (0.85, None),
+                    "positive_unsupported_rate": (None, 0.05),
+                    "evidence_resolution_rate": (1.0, 1.0),
+                    "second_scan_llm_reduction": (0.8, None),
+                }
+                for key, (minimum, maximum) in numeric_thresholds.items():
+                    raw_actual = p3_qualification.get(key)
+                    if not isinstance(raw_actual, (int, float)) or isinstance(raw_actual, bool):
+                        report.error(f"P3 qualification {key} must be numeric")
+                        continue
+                    actual = float(raw_actual)
+                    if minimum is not None and actual < minimum:
+                        report.error(f"P3 qualification {key} is below its threshold")
+                    if maximum is not None and actual > maximum:
+                        report.error(f"P3 qualification {key} is above its threshold")
+                for key in (
+                    "schema_hashes",
+                    "corpus_hashes",
+                    "artifact_hashes",
+                    "commands",
+                    "limitations",
+                    "wheel",
+                ):
+                    if not p3_qualification.get(key):
+                        report.error(f"P3 qualification must record non-empty {key}")
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(f"P3 review commit is unavailable in Git: {reviewed_commit}")
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "P3 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
+                    )
+                p4_status = (
+                    manifest.get("phase_status", {}).get("P4")
+                    if isinstance(manifest.get("phase_status"), dict)
+                    else None
+                )
+                changed = (
+                    _git_text(repo_root, "diff", "--name-only", f"{reviewed_commit}..HEAD", "--")
+                    if p4_status == "pending"
+                    else None
+                )
+                if changed is not None:
+                    allowed = {
+                        DESIGN_MANIFEST.as_posix(),
+                        (design_root / "acceptance/evidence-index.json").as_posix(),
+                        (design_root / "acceptance/p3-qualification-manifest.json").as_posix(),
+                        (
+                            design_root / "acceptance/reviews/p3-product-architecture.json"
+                        ).as_posix(),
+                        (design_root / "acceptance/reviews/p3-proof-security.json").as_posix(),
+                        (design_root / "acceptance/runtime-reachability-manifest.json").as_posix(),
+                    }
+                    unexpected = sorted(
+                        value for value in changed.splitlines() if value and value not in allowed
+                    )
+                    if unexpected:
+                        report.error(
+                            "P3 reviewed candidate has post-review product/corpus changes: "
+                            + ", ".join(unexpected)
+                        )
+
+    p4_complete = (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P4") == "complete"
+    )
+    if p4_complete:
+        p4_review = phase_reviews.get("P4") if isinstance(phase_reviews, dict) else None
+        if isinstance(p4_review, dict):
+            try:
+                p4_schema_path = resolve_repository_path(
+                    repo_root, str(p4_review.get("schema", "")), relative_root=design_root
+                )
+                p4_qualification_path = resolve_repository_path(
+                    repo_root,
+                    str(p4_review.get("qualification_manifest", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(f"P4 phase review: {exc}")
+                p4_schema_path = None
+                p4_qualification_path = None
+            p4_schema = (
+                _read_governance_json(p4_schema_path, report)
+                if p4_schema_path is not None
+                else None
+            )
+            p4_qualification = (
+                _read_governance_json(p4_qualification_path, report)
+                if p4_qualification_path is not None
+                else None
+            )
+            p4_reviews: dict[str, Any] = {}
+            p4_artifacts = p4_review.get("artifacts")
+            if isinstance(p4_artifacts, dict):
+                for role, spec in p4_artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("P4 phase review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root, str(spec.get("path", "")), relative_root=design_root
+                        )
+                    except ValueError as exc:
+                        report.error(f"P4 {role}: {exc}")
+                        continue
+                    p4_reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(p4_schema, dict):
+                report.errors.extend(validate_p4_review_documents(p4_review, p4_reviews, p4_schema))
+            reviewed_commit = str(p4_review.get("reviewed_commit", ""))
+            reviewed_tree = str(p4_review.get("reviewed_tree", ""))
+            if isinstance(p4_qualification, dict):
+                required_values = {
+                    "status": "passed",
+                    "candidate_commit": reviewed_commit,
+                    "candidate_tree": reviewed_tree,
+                    "hypothesis_hunter_mode": "shadow",
+                    "active_product_effect": "none",
+                    "safe_false_registration_count": 0,
+                    "near_miss_false_registration_count": 0,
+                    "schema_resolution_rate": 1.0,
+                    "evidence_resolution_rate": 1.0,
+                    "action_resolution_rate": 1.0,
+                    "network": False,
+                    "external_model_benchmark": False,
+                }
+                for key, expected in required_values.items():
+                    if p4_qualification.get(key) != expected:
+                        report.error(
+                            f"P4 qualification {key} must equal the reviewed candidate value"
+                        )
+                numeric_minimums = {
+                    "case_count": 120,
+                    "safe_and_near_miss_case_count": 80,
+                    "project_count": 3,
+                    "project_with_replayable_proof_count": 3,
+                }
+                for key, minimum in numeric_minimums.items():
+                    raw_actual = p4_qualification.get(key)
+                    if (
+                        not isinstance(raw_actual, int)
+                        or isinstance(raw_actual, bool)
+                        or raw_actual < minimum
+                    ):
+                        report.error(f"P4 qualification {key} is below its threshold")
+                if p4_qualification.get("metamorphic_consistency") is not True:
+                    report.error("P4 qualification metamorphic consistency must pass")
+                for key in (
+                    "schema_hashes",
+                    "corpus_hashes",
+                    "artifact_hashes",
+                    "commands",
+                    "limitations",
+                    "wheel",
+                ):
+                    if not p4_qualification.get(key):
+                        report.error(f"P4 qualification must record non-empty {key}")
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(f"P4 review commit is unavailable in Git: {reviewed_commit}")
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "P4 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
+                    )
+                p5_status = (
+                    manifest.get("phase_status", {}).get("P5")
+                    if isinstance(manifest.get("phase_status"), dict)
+                    else None
+                )
+                changed = (
+                    _git_text(
+                        repo_root,
+                        "diff",
+                        "--name-only",
+                        f"{reviewed_commit}..HEAD",
+                        "--",
+                    )
+                    if p5_status == "pending"
+                    else None
+                )
+                if changed is not None:
+                    allowed = {
+                        DESIGN_MANIFEST.as_posix(),
+                        (design_root / "README.md").as_posix(),
+                        (design_root / "phases/P4-hypothesis-driven-hunting.md").as_posix(),
+                        (design_root / "acceptance/evidence-index.json").as_posix(),
+                        (design_root / "acceptance/p4-qualification-manifest.json").as_posix(),
+                        (
+                            design_root / "acceptance/reviews/p4-product-architecture.json"
+                        ).as_posix(),
+                        (design_root / "acceptance/reviews/p4-proof-security.json").as_posix(),
+                        (design_root / "acceptance/runtime-reachability-manifest.json").as_posix(),
+                    }
+                    unexpected = sorted(
+                        value for value in changed.splitlines() if value and value not in allowed
+                    )
+                    if unexpected:
+                        report.error(
+                            "P4 reviewed candidate has post-review product/corpus changes: "
+                            + ", ".join(unexpected)
+                        )
+
+    p5_complete = (
+        isinstance(manifest.get("phase_status"), dict)
+        and manifest["phase_status"].get("P5") == "complete"
+    )
+    if p5_complete:
+        p5_review = phase_reviews.get("P5") if isinstance(phase_reviews, dict) else None
+        if isinstance(p5_review, dict):
+            try:
+                p5_schema_path = resolve_repository_path(
+                    repo_root, str(p5_review.get("schema", "")), relative_root=design_root
+                )
+                p5_qualification_path = resolve_repository_path(
+                    repo_root,
+                    str(p5_review.get("qualification_manifest", "")),
+                    relative_root=design_root,
+                )
+            except ValueError as exc:
+                report.error(f"P5 phase review: {exc}")
+                p5_schema_path = None
+                p5_qualification_path = None
+            p5_schema = (
+                _read_governance_json(p5_schema_path, report)
+                if p5_schema_path is not None
+                else None
+            )
+            p5_qualification = (
+                _read_governance_json(p5_qualification_path, report)
+                if p5_qualification_path is not None
+                else None
+            )
+            p5_reviews: dict[str, Any] = {}
+            p5_artifacts = p5_review.get("artifacts")
+            if isinstance(p5_artifacts, dict):
+                for role, spec in p5_artifacts.items():
+                    if not isinstance(role, str) or not isinstance(spec, dict):
+                        report.error("P5 phase review artifact entries must be objects")
+                        continue
+                    try:
+                        review_path = resolve_repository_path(
+                            repo_root, str(spec.get("path", "")), relative_root=design_root
+                        )
+                    except ValueError as exc:
+                        report.error(f"P5 {role}: {exc}")
+                        continue
+                    p5_reviews[role] = _read_governance_json(review_path, report)
+            if isinstance(p5_schema, dict):
+                report.errors.extend(validate_p5_review_documents(p5_review, p5_reviews, p5_schema))
+            reviewed_commit = str(p5_review.get("reviewed_commit", ""))
+            reviewed_tree = str(p5_review.get("reviewed_tree", ""))
+            if isinstance(p5_qualification, dict):
+                required_values = {
+                    "status": "passed",
+                    "candidate_commit": reviewed_commit,
+                    "candidate_tree": reviewed_tree,
+                    "security_spec_mode": "authoritative",
+                    "hypothesis_hunter_mode": "active",
+                    "hypothesis_hunter_effect": "candidate_registration_only",
+                    "proof_engine_mode": "authoritative",
+                    "web_reviewer_identity": "unavailable_read_only",
+                    "cache_epoch": "zscope.runtime-authority.p5",
+                    "cjson_version": "1.7.19",
+                    "cjson_upstream_commit": "c859b25da02955fef659d658b8f324b5cde87be3",
+                    "llm_calls": 0,
+                    "network": False,
+                    "external_model_benchmark": False,
+                    "terminal_trace_integrity_rate": 1.0,
+                    "repeat_result_identical": True,
+                    "legacy_runtime_reference_count": 0,
+                    "safe_false_acceptance_count": 0,
+                }
+                for key, expected in required_values.items():
+                    if p5_qualification.get(key) != expected:
+                        report.error(
+                            f"P5 qualification {key} must equal the reviewed candidate value"
+                        )
+                for key in (
+                    "schema_hashes",
+                    "source_hashes",
+                    "artifact_hashes",
+                    "rollback_wheel",
+                    "candidate_wheel",
+                    "replay",
+                    "commands",
+                    "limitations",
+                    "stop_conditions",
+                ):
+                    if not p5_qualification.get(key):
+                        report.error(f"P5 qualification must record non-empty {key}")
+            if verify_git and HEX_40.fullmatch(reviewed_commit) and HEX_40.fullmatch(reviewed_tree):
+                actual_tree = _git_tree(repo_root, reviewed_commit)
+                if actual_tree is None:
+                    report.error(f"P5 review commit is unavailable in Git: {reviewed_commit}")
+                elif actual_tree != reviewed_tree:
+                    report.error(
+                        "P5 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
+                    )
+                changed = _git_text(
+                    repo_root, "diff", "--name-only", f"{reviewed_commit}..HEAD", "--"
+                )
+                if changed is not None:
+                    allowed = {
+                        DESIGN_MANIFEST.as_posix(),
+                        (design_root / "README.md").as_posix(),
+                        (design_root / "phases/P5-runtime-cutover.md").as_posix(),
+                        (design_root / "acceptance/evidence-index.json").as_posix(),
+                        (design_root / "acceptance/p5-qualification-manifest.json").as_posix(),
+                        (
+                            design_root / "acceptance/reviews/p5-product-architecture.json"
+                        ).as_posix(),
+                        (design_root / "acceptance/reviews/p5-proof-security.json").as_posix(),
+                        (design_root / "acceptance/runtime-reachability-manifest.json").as_posix(),
+                        "zscope/orchestration/p5-release-status.json",
+                    }
+                    unexpected = sorted(
+                        value for value in changed.splitlines() if value and value not in allowed
+                    )
+                    if unexpected:
+                        report.error(
+                            "P5 reviewed candidate has post-review product/corpus changes: "
+                            + ", ".join(unexpected)
+                        )
+
     if verify_git:
         _validate_approval_tag(repo_root, manifest, report)
 
@@ -714,6 +1551,29 @@ def validate_design_evidence(
                         report.checked_files.add(artifact_path.as_posix())
                     elif historical == expected:
                         report.checked_files.add(f"{artifact_commit}:{raw_path}")
+                    elif raw_path == (
+                        DESIGN_RELATIVE_ROOT
+                        / "acceptance/runtime-reachability-manifest.json"
+                    ).as_posix():
+                        document_hashes = manifest.get("document_hashes")
+                        current_binding = (
+                            document_hashes.get(
+                                "acceptance/runtime-reachability-manifest.json"
+                            )
+                            if isinstance(document_hashes, dict)
+                            else None
+                        )
+                        if isinstance(current_binding, str) and current_binding == current:
+                            # This manifest advances with each product phase. Historical
+                            # rows retain their original binding while the design manifest
+                            # binds the current, independently verified bytes.
+                            report.checked_files.add(artifact_path.as_posix())
+                        else:
+                            report.error(
+                                f"{label}: neither current nor {artifact_commit} Git-blob "
+                                f"SHA-256 matches {expected}; current={current}, "
+                                f"historical={historical}"
+                            )
                     else:
                         report.error(
                             f"{label}: neither current nor {artifact_commit} Git-blob SHA-256 "

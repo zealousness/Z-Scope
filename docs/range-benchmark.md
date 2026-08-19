@@ -95,6 +95,8 @@ formal 与 sealed 还必须在 rootless Podman/Docker 容器中执行 scanner。
 
 受保护的 formal 环境必须配置 `Z_SCOPE_BENCHMARK_OCI_IMAGE`（`repository@sha256:<64-hex>`）、`Z_SCOPE_BENCHMARK_OCI_NETWORK` 和 `Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER`。该 internal network 在启动 scanner 前只能包含一个带 policy digest 的模型 endpoint proxy；缺少变量、rootless 证明、镜像 digest 或实际 inspect 证据都会直接阻断 formal 运行。
 
+Podman 4.x 的 `network inspect` 可能不返回容器成员。此时 runner 必须额外使用带精确 network filter 的 `podman ps --all --format json` 重建成员快照，并验证每个返回容器都显式绑定目标网络；若两个来源都提供成员，则集合必须一致。成员快照进入 evidence hash，缺失 ID、网络归属、唯一 proxy 或执行阶段 scanner/proxy 二元成员关系时继续 fail closed。
+
 计时口径显式拆分：`scan_wall_seconds` 来自扫描报告的 `summary.batch_wall_seconds`，用于跨轮比较和 rollout 的 p95 回退判断；`end_to_end_wall_seconds` 是 runner 从输入准备到评分完成的总耗时。兼容字段 `wall_seconds` 等于 `scan_wall_seconds`。artifact 另记录验证队列 wall time、session/API call 数和实际 Validator/LLM 并发配置。
 
 质量也必须按两种视图读取：`confirmed_recall`/`confirmed_precision` 只统计已确认 finding，`with_review_recall`/`with_review_precision` 将 needs-review 纳入人工复核队列。旧顶层 `recall` 仅是 confirmed 视图的兼容字段，不能称为“总召回”；两种视图的完整计数保存在 `quality_views`。Range 没有 true negatives，`FP/(TP+FP)` 必须称 actionable FDR，不能称经典 FPR。
@@ -124,6 +126,8 @@ preflight 通过后使用 `scripts/run_v3_action_canary.py`，并通过 `--expec
 `scripts/analyze_range_gaps.py` 在 report/score/truth 全部冻结后生成 `zscope.range-gap-analysis.v1`，把每个 default FN 唯一归入反证错误、V3 资格、fact exhaustion、V3 事实消费、模型拒绝、错误 obligation/anchor、无候选或 truth 争议，并绑定 report、score、truth、usage sidecar 与 replay bundle SHA。该后置账本用于区分产品提升、Scorer 变化与 truth 治理变化，不进入扫描上下文。
 
 v16 不能由扫描实现方自行签发。当前争议项只登记在 `docs/benchmark-maintenance/range/range_v15_truth_review_queue.json`，状态固定为 pending/non-formal；独立测试团队必须按双人审查、第三人仲裁把每项归为 `concrete_trigger/public_api_contract/pattern_model/retired`，绑定审查证据与 attestation 后，才能生成 formal-eligible v16。禁止为通过门禁而在同一产品变更中修改 fixture、truth 和检测逻辑。
+
+受保护 reviewer 输出必须逐对象绑定 packet、raw envelope 和最终 decision。DeepSeek 只有在完整 JSON 已通过严格 schema/身份校验、但 anchor 或 evidence 未落在 packet 提供的窗口时，才允许一次同 packet 的 grounding-only 纠正；纠正只能调整 anchors 和 evidence refs，其他实质字段由投影哈希冻结。纠正输出仍不合法、改变 disposition/taxonomy/predicate/safe-pair 等实质字段，或 raw stdout 与 decision 不一致时，整次审核 fail closed。
 
 五轮输出冻结后由 `scripts/score_validator_replay_experiment.py` 独立评分。调用方必须传入 bundle、catalog、truth 和 Arm A–E 各 1–5 轮的外部预期 SHA，并显式签署 `--cold-trials-attested`；scorer 会先校验完 25 份 answer-free ledger，才打开 truth。结果严格绑定输入文件/内容/run/scorer/policy 哈希，计算每轮 TP、recall、actionable FDR 和 token，以及每 arm 的中位数、最大值、Jaccard、recall 极差、provider usage、队列、协议和守恒门禁。Arm E 即使以 17M cap 执行，也没有 12M `per_run_tokens` 发布门禁豁免。
 

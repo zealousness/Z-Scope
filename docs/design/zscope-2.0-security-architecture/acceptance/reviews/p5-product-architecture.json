@@ -1,0 +1,58 @@
+{
+  "review_schema": "zscope.p5-runtime-cutover-review.v1",
+  "review_scope": "runtime_cutover_product_architecture",
+  "role": "product_architecture",
+  "reviewer_model": "claude-opus-5",
+  "harness": "claude-code/2.1.233; permission_mode=plan-read-only",
+  "reviewed_commit": "1797389af9807c74c1261f1ad85a3a18b17c23e2",
+  "reviewed_tree": "325b3c6a6cf7caf85200088af1a17324adafeb5d",
+  "decision": "approved",
+  "summary": "Claude Opus 5 approved the final P5 product architecture with zero blocking findings. The reviewer first approved the complete cutover at parent candidate 94fb200b1c4bbe5109278a96e7f180bcddcd7a22, then inspected the exact six-file final delta and confirmed it is additive and fail-closed: external ProofClause.required now rejects non-boolean values before action-catalog construction, the forged re-sealed obligation regression exercises that boundary, the Proof Kernel package description matches authoritative P5 mode, and the contract, reachability, wheel and design hashes are consistent. The delta does not weaken RuntimeAuthorityManifest/cache epoch isolation, authoritative SecuritySpec compilation, Hunter candidate-registration-only isolation, complete Checker closure as sole TerminalAuthority, frozen-Ledger Finding-root projection, legacy runtime removal, release fail-closed, replay isolation or cJSON qualification.",
+  "blocking_findings": [],
+  "non_blocking_findings": [],
+  "checks": [
+    {
+      "name": "candidate identity and final delta scope",
+      "result": "pass",
+      "evidence": "Git identified commit 1797389af9807c74c1261f1ad85a3a18b17c23e2 with tree 325b3c6a6cf7caf85200088af1a17324adafeb5d; the delta from the previously approved parent touches exactly six contract, proof-schema, test and evidence files."
+    },
+    {
+      "name": "strict required-clause input contract",
+      "result": "pass",
+      "evidence": "Proof Kernel _validate_clause rejects every required value that is not a Python bool with proof_clause_required_invalid before validate_obligation can admit the clause to the action catalog."
+    },
+    {
+      "name": "forged sealed-obligation regression",
+      "result": "pass",
+      "evidence": "test_obligation_rejects_non_boolean_required_flag replaces required with integer 1, recomputes the clause and obligation seals, and asserts ProofKernelEngine rejects the otherwise internally consistent object."
+    },
+    {
+      "name": "authoritative Proof Kernel documentation",
+      "result": "pass",
+      "evidence": "The package description now states that complete Checker closure is the sole live terminal authority under P5 rather than retaining the obsolete P2 shadow description."
+    },
+    {
+      "name": "contract and reachability evidence consistency",
+      "result": "pass",
+      "evidence": "contracts.md records strict JSON boolean semantics; the reachability manifest records the new fail-closed property and candidate wheel SHA-256 bd851f86fb66a4ed6920ec76b321733fc6767eb91e4a8f00c7a6afc13a48de67; design-manifest hashes match the changed documents."
+    },
+    {
+      "name": "preservation of approved runtime authority chain",
+      "result": "pass",
+      "evidence": "No final-delta change reaches the engine closure algorithm, TerminalAuthority, RuntimeAuthorityManifest, SecuritySpec, Hunter, Ledger/Finding-root, report reuse, legacy removal or release gate implementation approved on the parent candidate."
+    },
+    {
+      "name": "recorded local gates",
+      "result": "not_verified",
+      "evidence": "The read-only reviewer accepted the recorded exact-candidate results: 1819 passed and 7 skipped, compileall, mypy over 222 files, Black 25.11 over 96 changed Python files, P2/P3/P4 qualification, package/reachability/lifecycle/tamper gates and isolated wheel smoke."
+    }
+  ],
+  "limitations": [
+    "The review was read-only and did not independently run tests, rebuild the wheel or execute a benchmark.",
+    "The three historical P0 aggregate artifacts are absent and were not represented as replayed.",
+    "The wheel hash was cross-checked against the recorded candidate evidence rather than independently rebuilt by the reviewer.",
+    "The product-architecture role does not replace the independent proof-security review.",
+    "No Range truth, fixture, ground truth or Scorer input was read."
+  ],
+  "attestation": "Claude Opus 5 reviewed the exact clean candidate 1797389af9807c74c1261f1ad85a3a18b17c23e2 / 325b3c6a6cf7caf85200088af1a17324adafeb5d in Claude Code 2.1.233 plan-read-only mode. It inspected the previously approved full authority chain and the final six-file delta without modifying files, changing Git state, reading credentials or Range truth/fixture/Scorer inputs, or running a benchmark. Decision: approved with zero blocking findings."
+}

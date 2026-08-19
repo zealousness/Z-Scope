@@ -26,11 +26,6 @@ from zscope.benchmarking.discovery_ablation import (
 )
 from zscope.benchmarking.validator_replay import load_validator_arm_catalog, validator_arm
 from zscope.benchmarking.protocol import _build_release_evidence, _release_trial_errors
-from zscope.orchestration.active_discovery import (
-    ActiveDiscoveryCoordinator,
-    CoverageGapPlanner,
-    DISCOVERY_PROFILES,
-)
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 
 
@@ -539,45 +534,3 @@ def test_package_module_cli_fails_closed_for_formal_oci_mode(tmp_path: Path) -> 
     assert completed.returncode == 2
     assert "RootlessOciExecutor" in completed.stderr
     assert not (tmp_path / "report.json").exists()
-
-
-def test_semantic_only_coordinator_never_loads_cached_discovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    unit = SimpleNamespace(unit_id="AU-1")
-    semantic_map = SimpleNamespace(
-        map_fingerprint="m" * 64,
-        coverage={},
-        functions={},
-        claims=(),
-        unknowns=(),
-        with_audit_units=lambda units: semantic_map,
-    )
-
-    class Store:
-        def save_map(self, value: Any) -> None:
-            assert value is semantic_map
-
-    class Registrar:
-        pass
-
-    monkeypatch.setattr(CoverageGapPlanner, "plan", lambda *_args, **_kwargs: [unit])
-    coordinator = ActiveDiscoveryCoordinator(
-        profile=DISCOVERY_PROFILES["balanced"],
-        store=Store(),  # type: ignore[arg-type]
-        registrar=Registrar(),  # type: ignore[arg-type]
-        report_runner=lambda *_args: pytest.fail("discovery runner must not execute"),
-        discovery_enabled=False,
-    )
-    monkeypatch.setattr(
-        coordinator,
-        "_load_cached",
-        lambda *_args: pytest.fail("cached discovery must not load"),
-    )
-
-    _planned, state = coordinator.run(semantic_map)
-
-    assert state["status"] == "semantic_only"
-    assert state["discovery_enabled"] is False
-    assert state["attempted_unit_count"] == 0
-    assert state["cached_report_count"] == 0

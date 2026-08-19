@@ -45,13 +45,13 @@ def test_java_range_benchmark_config_uses_unified_java_auto_detection(monkeypatc
     assert Path(config.analysis.snapshot_dir) == (BENCHMARK_ROOT / ".zscope_snapshots").resolve()
     agents = {agent.name: agent for agent in config.project.agents}
     assert {
-        "semantic_modeler",
-        "vulnerability_analyzer",
-        "validator_agent",
-        "issue_reconciler_agent",
+        "security_spec_miner",
+        "hypothesis_hunter",
+        "proof_engine",
+        "history_maintenance_agent",
     } <= set(agents)
-    assert agents["vulnerability_analyzer"].enabled is True
-    assert agents["vulnerability_analyzer"].task == ""
+    assert agents["hypothesis_hunter"].enabled is True
+    assert agents["hypothesis_hunter"].task == ""
 
 
 def test_java_range_benchmark_manifest_is_consistent() -> None:

@@ -1,0 +1,46 @@
+{
+  "schema_version": "zscope.p3-security-spec-corpus-manifest.v1",
+  "case_expansion": {
+    "predicate_count": 13,
+    "variation_count_per_predicate": 11,
+    "case_count": 143,
+    "positive_case_count": 104,
+    "safe_near_miss_case_count": 39,
+    "source_project_count": 3
+  },
+  "coverage": {
+    "predicates": [
+      "source", "sink", "propagate", "sanitize", "acquire", "release", "transfer",
+      "lock", "unlock", "state_transition", "sentinel", "callback_retains",
+      "caller_contract"
+    ],
+    "transformations": [
+      "base", "rename", "wrapper_extract", "wrapper_inline", "macro_equivalent",
+      "branch_reorder", "dependency_change", "scope_narrow", "scope_revoke",
+      "fixed_pair", "near_miss"
+    ],
+    "project_styles": ["procedural", "raii", "callback"]
+  },
+  "answer_isolation": {
+    "source_path": "tests/fixtures/p3_security_specs/source-corpus.json",
+    "expected_contracts_path": "tests/fixtures/p3_security_specs/expected-contracts.json",
+    "product_reads_expected_contracts": false,
+    "network": false,
+    "external_model_calls": 0,
+    "counting_fake_client_only": true
+  },
+  "semantic_hashes": {
+    "source_corpus_sha256": "159252eda4ce8e2fafc03bb7bbf813eadcba4f24250a3c51158cfa5c9ac4a52f",
+    "expected_contracts_sha256": "51678447e2ea3917c72fadca3f5c34755212e69ba4995f4cc9da1e360c6d2db3",
+    "corpus_bundle_sha256": "1dd7dfca2a7c2c971bd5d2d11c81817834486952e1f08244ccee8ad4c100aa83",
+    "qualification_content_sha256": "7b1096a49c69e68305534f761f731fd77f0d48ccd7745ac1fdb4b47cbc7638e6"
+  },
+  "file_hashes": {
+    "tests/fixtures/p3_security_specs/source-corpus.json": "6f7c1ef0c6cd39b96f11a481b0292e1a9ffcaaadd01c491b5ca469a60117d950",
+    "tests/fixtures/p3_security_specs/expected-contracts.json": "8a5c0cec749743019817ea5a7a364107961fc96f64fb6dd3e8c13f64e2a3a2e3",
+    "zscope/semantics/security_specs/qualification/p3-security-spec-qualification.json": "e7ace75c3fee12d914fe432ae6f8bb2756a7707a508df1510ea0dd04bc933861",
+    "scripts/qualify_p3_security_specs.py": "12cacaf0f58a03f1ca04dd623fbe8d64f7bfc967095f4ea25d502750cb56cdc4",
+    "zscope/semantics/security_specs/registry.py": "68b884ffa0a9f42dc6a662457f78a0928f471ce52a862c0d474488783f2026ad",
+    "zscope/semantics/security_specs/compiler.py": "0c48949d6d27ac049eb557ee68fb8e42cf43a4c45a7e55600f07b453d3713844"
+  }
+}

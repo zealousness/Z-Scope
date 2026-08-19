@@ -21,6 +21,7 @@ _user_config_service = web_services.UserConfigService()
 _cpg_service = web_services.CpgService()
 _source_snippet_service = web_services.SourceSnippetService()
 _report_feedback_service = web_services.ReportFeedbackService()
+_security_spec_service = web_services.SecuritySpecReviewService()
 _scan_request_service = None
 
 
@@ -80,6 +81,14 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(_rule_service.payload(parsed.query))
             except Exception as exc:
                 self._send_json({"error": str(exc), "rules": []}, status=400)
+        elif parsed.path == "/api/security-specs":
+            self._send_json(_security_spec_service.list_payload(parsed.query))
+        elif parsed.path == "/api/security-specs/export":
+            self._handle_security_spec_export(parsed)
+        elif parsed.path.startswith("/api/security-specs/"):
+            spec_uid = parsed.path.removeprefix("/api/security-specs/").strip("/")
+            status, payload = _security_spec_service.detail_payload(spec_uid)
+            self._send_json(payload, status=status)
         elif parsed.path == "/api/cpg_status":
             self._handle_cpg_status()
         elif parsed.path == "/api/source_snippet":
@@ -98,6 +107,28 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length)
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/security-specs/import":
+            query = parse_qs(parsed.query)
+            if str((query.get("apply") or [""])[0]).lower() in {"1", "true", "yes"}:
+                status, payload = _security_spec_service.write_rejected_payload()
+                self._send_json(payload, status=status)
+                return
+            import_format = str((query.get("format") or [""])[0]).lower()
+            if not import_format:
+                content_type = str(self.headers.get("Content-Type") or "").lower()
+                import_format = "xlsx" if "spreadsheet" in content_type else "json"
+            try:
+                payload = _security_spec_service.dry_run_import(post_data, import_format)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"success": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(payload)
+            return
+        if parsed.path.startswith("/api/security-specs/") and parsed.path.endswith("/reviews"):
+            status, payload = _security_spec_service.write_rejected_payload()
+            self._send_json(payload, status=status)
+            return
         if self.path == "/api/user_config/workbook/import":
             self._handle_user_config_workbook_import(post_data)
             return
@@ -213,6 +244,20 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         self._send_json(payload, status=status)
         return
 
+    def _handle_security_spec_export(self, parsed):
+        export_format = str((parse_qs(parsed.query).get("format") or ["json"])[0]).lower()
+        try:
+            data, content_type, filename = _security_spec_service.export_bytes(export_format)
+        except (OSError, ValueError) as exc:
+            self._send_json({"success": False, "error": str(exc)}, status=400)
+            return
+        self.send_response(200)
+        self.send_header("Content-type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     # ── User config CRUD handlers ──
 
     def _handle_user_config_workbook_get(self):
@@ -309,7 +354,7 @@ def run_server(
     host="0.0.0.0",
     port=PORT,
 ):
-    global _config_service, _rule_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service, _scan_request_service
+    global _config_service, _rule_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service, _security_spec_service, _scan_request_service
     config_file_path = (
         Path(config_path).resolve() if config_path else Path(CONFIG_FILENAME).resolve()
     )
@@ -327,6 +372,10 @@ def run_server(
         user_config_store,
         snapshot_store,
         report_filename=REPORT_FILENAME,
+    )
+    snapshot_root = getattr(snapshot_store, "snapshot_dir", None)
+    _security_spec_service = web_services.SecuritySpecReviewService(
+        Path(snapshot_root) / "security_specs" if snapshot_root else None
     )
     _scan_request_service = ScanRequestService(
         config_file_path,

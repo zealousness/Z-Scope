@@ -26,12 +26,11 @@ from ..reporting.views import (
     report_view_summary,
     review_governance_summary,
 )
+from ..reporting.funnel import candidate_funnel
 from ..snapshots.store import SnapshotStore
 
 
 IssueResolver = Callable[[List[Dict[str, Any]]], None]
-ObservationDeduper = Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]
-ReportIssueDeduper = Callable[[List[Dict[str, Any]], Dict[str, Any]], List[Dict[str, Any]]]
 MetadataFactory = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
@@ -48,15 +47,11 @@ class ReportAssembler:
         snapshot_store: Optional[SnapshotStore],
         *,
         resolve_issue_locations: IssueResolver,
-        deduplicate_observations: ObservationDeduper,
-        deduplicate_report_issues: Optional[ReportIssueDeduper] = None,
         metadata_factory: MetadataFactory,
     ) -> None:
         self.report_generator = report_generator
         self.snapshot_store = snapshot_store
         self.resolve_issue_locations = resolve_issue_locations
-        self.deduplicate_observations = deduplicate_observations
-        self.deduplicate_report_issues = deduplicate_report_issues
         self.metadata_factory = metadata_factory
 
     def build(self, state: Dict[str, Any]) -> FinalReport:
@@ -98,41 +93,34 @@ class ReportAssembler:
             entry_function=identity_kwargs["entry_function"],
             run_id=identity_kwargs["run_id"],
         )
-        canonical_outcomes = (
-            self._canonical_outcome_items(state)
-            if bool(state.get("canonical_outcome_projection_enabled", True))
-            else None
-        )
-        if canonical_outcomes is not None:
-            # A frozen group outcome, not an entry-local report, is the sole
-            # authority for final security dispositions.  Keep raw projections
-            # for diagnostics, but never let them add or override findings.
-            state["raw_observations"] = list(observations)
-            all_issues = [
-                item
-                for item in canonical_outcomes
-                if str(item.get("candidate_disposition") or "").lower() == "confirmed"
-            ]
-            observations = [
-                item
-                for item in canonical_outcomes
-                if str(item.get("candidate_disposition") or "").lower() == "needs_review"
-            ]
-            state["_canonical_report_issues"] = list(all_issues)
-            state["_canonical_review_observations"] = list(observations)
-            lifecycle = state.get("candidate_lifecycle_snapshot")
-            lifecycle_summary = lifecycle.get("summary") if isinstance(lifecycle, dict) else {}
-            if int((lifecycle_summary or {}).get("nonterminal_validation_count") or 0):
-                state["completeness"] = "degraded"
-                state["notes"].append(
-                    "Validation lifecycle did not close; nonterminal groups were excluded from security findings."
-                )
-        else:
-            observations.extend(
-                self._unresolved_candidate_observations(
-                    state,
-                    list(all_issues) + observations,
-                )
+        canonical_outcomes = self._canonical_outcome_items(state)
+        if canonical_outcomes is None:
+            raise RuntimeError(
+                "live report assembly requires frozen Candidate Ledger outcomes; "
+                "read historical non-canonical reports through zscope.compat"
+            )
+        # A frozen group outcome, not an entry-local report, is the sole
+        # authority for final security dispositions. Keep raw projections for
+        # diagnostics, but never let them add or override findings.
+        state["raw_observations"] = list(observations)
+        all_issues = [
+            item
+            for item in canonical_outcomes
+            if str(item.get("candidate_disposition") or "").lower() == "confirmed"
+        ]
+        observations = [
+            item
+            for item in canonical_outcomes
+            if str(item.get("candidate_disposition") or "").lower() == "needs_review"
+        ]
+        state["_canonical_report_issues"] = list(all_issues)
+        state["_canonical_review_observations"] = list(observations)
+        lifecycle = state.get("candidate_lifecycle_snapshot")
+        lifecycle_summary = lifecycle.get("summary") if isinstance(lifecycle, dict) else {}
+        if int((lifecycle_summary or {}).get("nonterminal_validation_count") or 0):
+            state["completeness"] = "degraded"
+            state["notes"].append(
+                "Validation lifecycle did not close; nonterminal groups were excluded from security findings."
             )
         state["observations"] = observations
         annotate_issue_collection(
@@ -145,24 +133,9 @@ class ReportAssembler:
             run_id=identity_kwargs["run_id"],
         )
         self.resolve_issue_locations(all_issues)
-        if canonical_outcomes is None and self.deduplicate_report_issues:
-            all_issues = self.deduplicate_report_issues(all_issues, state)
-            state["_deduped_report_issues"] = all_issues
-        elif canonical_outcomes is not None:
-            # Each item is already the immutable projection of one validation
-            # group.  Report-time semantic de-duplication is not allowed to
-            # erase a distinct decision context.
-            state["semantic_dedup_summary"] = {
-                "enabled": False,
-                "canonical_projection": True,
-                "input_issue_count": len(all_issues),
-                "output_issue_count": len(all_issues),
-            }
         self.resolve_issue_locations(observations)
         for observation in observations:
             preserve_issue_location(observation)
-        if observations and canonical_outcomes is None:
-            state["observations"] = self.deduplicate_observations(observations)
         if state.get("observations"):
             state["notes"].append(
                 f"Kept {len(state.get('observations', []))} non-reportable candidate(s) "
@@ -231,7 +204,7 @@ class ReportAssembler:
             all_issues,
             state.get("observations", []),
             terminal_states,
-            canonical_outcomes is not None,
+            True,
         )
         if "validation_queue_drained" in state and not bool(state.get("validation_queue_drained")):
             invariant_status["valid"] = False
@@ -317,21 +290,14 @@ class ReportAssembler:
         if not final_report.report_views:
             canonical_issues = state.get("_canonical_report_issues")
             canonical_observations = state.get("_canonical_review_observations")
+            if not isinstance(canonical_issues, list) or not isinstance(
+                canonical_observations, list
+            ):
+                raise RuntimeError("canonical Candidate Ledger projections are unavailable")
             final_report.report_views = build_report_views(
-                (
-                    canonical_issues
-                    if isinstance(canonical_issues, list)
-                    else state.get("_deduped_report_issues")
-                    or (state.get("issues", []) + state.get("verified_hist_issues", []))
-                ),
-                (
-                    canonical_observations
-                    if isinstance(canonical_observations, list)
-                    else state.get("observations", [])
-                ),
-                canonical_projection=(
-                    isinstance(canonical_issues, list) and isinstance(canonical_observations, list)
-                ),
+                canonical_issues,
+                canonical_observations,
+                canonical_projection=True,
             )
         with_review = final_report.report_views.get("with_needs_review", {})
         governance = (
@@ -367,11 +333,6 @@ class ReportAssembler:
                 governance.get("displayed_review_count") or 0
             ) + int(governance.get("operational_obligation_count") or 0)
         final_report.metadata["report_view_summary"] = report_view_summary(final_report.to_dict())
-        # Keep the lifecycle funnel in the product artifact as well as the
-        # benchmark score.  The local import avoids making reporting module
-        # import-time initialization depend on the benchmark package.
-        from ..benchmarking.protocol import candidate_funnel
-
         final_report.metadata["candidate_funnel"] = candidate_funnel(final_report.to_dict())
 
     def persist(self, state: Dict[str, Any], *, write_root_reports: bool = True) -> Dict[str, Any]:
