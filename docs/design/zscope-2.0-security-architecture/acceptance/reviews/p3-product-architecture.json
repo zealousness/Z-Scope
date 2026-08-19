@@ -1,0 +1,97 @@
+{
+  "review_schema": "zscope.p3-security-spec-review.v1",
+  "review_scope": "final_product_architecture",
+  "role": "product_architecture",
+  "reviewer_model": "claude-opus-5",
+  "harness": "claude-code/2.1.233; permission_mode=plan-read-only",
+  "reviewed_commit": "e69bce195d948e2d0832919eb105d82ba1d49ed4",
+  "reviewed_tree": "edbd217754849a91e1990cafad7371532c23d695",
+  "decision": "approved",
+  "summary": "P3 Security Spec Mining shadow implementation is coherent, correctly bounded, and safe to mark complete. The 13-predicate finite DSL registry is exact and immutable. Deterministic-first mining and the ProposalEngine prevent model-supplied facts, subjects, scopes, evidence, parameters, or activation authority. Only qualification-backed stable specs compile in shadow; conflict, stale-dependency, empty-scope, unknown-field, unresolved-evidence, and broken-hash cases fail closed. CAS/SQLite storage is atomic and narrowly scoped. The shadow manifest is frozen and reused read-only by default/resume/maintain/alert-verify, with active_product_effect hardcoded to none. Candidate Ledger, Proof Kernel, Finding-root, and TerminalAuthority are untouched by the security spec subsystem; legacy SemanticModeler remains the live product input. The Web Review Center is read-only without trusted reviewer identity, and import is strict all-or-nothing dry-run. Qualification meets all P3 thresholds and the reviewed candidate matches the qualification manifest exactly.",
+  "blocking_findings": [],
+  "non_blocking_findings": [
+    {
+      "id": "NB-01",
+      "title": "Compiler accepts multiple stable revisions of the same spec_uid without deduplication",
+      "evidence": "zscope/semantics/security_specs/compiler.py compile() iterates all input specs; _specs_conflict() returns false for the same spec_uid. A direct caller passing revision 1 and revision 2 of the same spec_uid produces two compiled entries. The normal shadow path indexes by uid/revision/hash and the store enforces contiguous revisions, so duplicate UIDs cannot enter through the current mining path.",
+      "recommendation": "Before P5 authority cutover, deduplicate same-spec_uid compiler inputs by retaining only the highest revision. Safe to defer to P4/P5."
+    },
+    {
+      "id": "NB-02",
+      "title": "Qualification corpus uses three synthetic project styles; real-project diversity validation is deferred to P5",
+      "evidence": "The qualification manifest covers callback_service, procedural_runtime, and raii_library with a counting fake client and no network. It exercises schema and registry behavior but is not a scan of production codebases.",
+      "recommendation": "The P5 deployment gate should include at least one real-project qualification sweep before authority cutover. The synthetic qualification is sufficient for P3 shadow approval."
+    }
+  ],
+  "checks": [
+    {
+      "name": "finite DSL and parameter registry",
+      "result": "pass",
+      "evidence": "zscope/semantics/security_specs/registry.py defines exactly the 13 operations frozen by contracts.md; exact parameter-key, slot syntax and finite enum checks reject query code and free predicates."
+    },
+    {
+      "name": "strict immutable contracts and state machine",
+      "result": "pass",
+      "evidence": "canonical.py recomputes content seals; models.py validates exact fields and allowed transitions; store.py enforces contiguous revisions and transition legality before insertion."
+    },
+    {
+      "name": "deterministic-first bounded model proposals",
+      "result": "pass",
+      "evidence": "miner.py keeps free LLM claims as observations, constructs system-provided SPECPROP IDs and rejects unknown selections; models.py prevents LLM-origin specs from activating."
+    },
+    {
+      "name": "qualification-backed stable-only compiler",
+      "result": "pass",
+      "evidence": "compiler.py excludes non-stable, unqualified, unresolved-evidence, stale-dependency and conflicting specs, recording explicit exclusion reasons."
+    },
+    {
+      "name": "atomic CAS and precise invalidation",
+      "result": "pass",
+      "evidence": "store.py uses temporary file, fsync and atomic replace with collision detection; scope/dependency/caller reverse indexes drive affected_spec_uids and invalidation_impact."
+    },
+    {
+      "name": "frozen shadow workflow reuse",
+      "result": "pass",
+      "evidence": "manifest.py verifies the frozen root identity and all artifact refs; parallel_analyzer fast/replay and alert_verifier use the read-only loader. Stable replay records no outcome, view, progress, terminal-count or proof-decision drift."
+    },
+    {
+      "name": "authority boundaries remain unchanged",
+      "result": "pass",
+      "evidence": "SecuritySpec has no imports into Candidate Ledger or Proof/terminal authority packages; lifecycle.py fixes mode to shadow and shadow.py reports active_product_effect=none while legacy semantic modeling remains active."
+    },
+    {
+      "name": "one terminal event per cluster",
+      "result": "pass",
+      "evidence": "decision_trace.py attaches SecuritySpec identity to the existing terminal event and preserves terminal deduplication; qualification replay confirms terminal_event_count_changed=false."
+    },
+    {
+      "name": "read-only Web Review Center",
+      "result": "pass",
+      "evidence": "web/server.py and web/services.py return 403 reviewer_identity_unavailable for review/apply-import; dry-run import reports applied=false and has no store mutation path."
+    },
+    {
+      "name": "strict archive import and isolated exports",
+      "result": "pass",
+      "evidence": "archive.py rejects duplicate keys/UIDs, stale store revisions, invalid bundle hashes, unknown sheets/columns and broken review chains; SecuritySpec export paths do not call the loose user workbook mutation service."
+    },
+    {
+      "name": "package and forbidden dependency gates",
+      "result": "pass",
+      "evidence": "The wheel includes five SecuritySpec schemas and the qualification artifact; package/lifecycle gates report no Benchmark, truth, Scorer, Candidate, validation or reporting authority dependency."
+    },
+    {
+      "name": "design and qualification evidence",
+      "result": "pass",
+      "evidence": "All design-manifest document hashes matched during the review. Qualification records 143 cases, recall 1.0, unsupported 0.0, safe false activation 0, evidence resolution 1.0 and second-scan reduction 1.0."
+    }
+  ],
+  "limitations": [
+    "The review was read-only; no files were written and no external benchmark ran.",
+    "Range truth, fixture, and scorer content was not read.",
+    "Full test results of 1941 passed and 7 skipped were accepted from hash-bound local evidence; targeted read-only checks were independently executed for critical behavioral properties.",
+    "The local ignored wheel was accepted through its recorded hash, size and inventory rather than independently retained as review output.",
+    "The three historical P0 benchmark aggregates are absent from this worktree and were not represented as replayed.",
+    "Native Windows Black limitations and the successful WSL Black result were accepted from the qualification evidence."
+  ],
+  "attestation": "Claude Opus 5 reviewed the exact product candidate e69bce195d948e2d0832919eb105d82ba1d49ed4 / edbd217754849a91e1990cafad7371532c23d695 against the P2-complete base, relevant design and acceptance documents, SecuritySpec implementation, orchestration, Decision Trace, alert verification and Web integration. All required product architecture focus areas passed with zero blocking findings. Decision: approved."
+}

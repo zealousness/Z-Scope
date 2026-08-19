@@ -5,7 +5,8 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
-from zscope.cli.config_cli import main, migrate_legacy_document
+from zscope.cli.config_cli import main
+from zscope.compat.config import migrate_legacy_document
 
 
 def _legacy(root: Path) -> dict:

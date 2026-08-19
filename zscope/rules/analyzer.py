@@ -166,13 +166,13 @@ class RuleDrivenAnalyzer:
             attach_agent_contract=self._attach_agent_contract,
             remember_validation_result=self._remember_validation_result,
         )
-        factory = getattr(self, "_validator_agent_factory", None)
+        factory = getattr(self, "_proof_engine_agent_factory", None)
         if callable(factory):
-            runner.validator_agent_factory = factory
+            runner.proof_engine_agent_factory = factory
         return runner
 
     def _get_tools(self, agent_name: Optional[str] = None) -> List[Any]:
-        """Build the same bounded read-only Validator tools as the main pipeline."""
+        """Build the same bounded read-only Proof Engine tools as the main pipeline."""
 
         from ..tools.registry import build_tool_registry
 
@@ -841,7 +841,7 @@ class RuleDrivenAnalyzer:
             ),
             "ledger_summary": dict(validation_state.get("candidate_ledger_summary") or {}),
         }
-        from ..benchmarking.protocol import candidate_funnel
+        from ..reporting.funnel import candidate_funnel
 
         report_dict["metadata"]["candidate_funnel"] = candidate_funnel(report_dict)
         report.metadata = dict(report_dict["metadata"])

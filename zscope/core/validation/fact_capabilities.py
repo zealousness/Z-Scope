@@ -18,11 +18,30 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from ...retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
 from .function_ir import FUNCTION_IR_VERSION, FunctionIREvent, FunctionIRGraph, graph_from_mapping
+from .proof_kernel.checker import ProofChecker
+from .proof_kernel.models import (
+    build_evidence_action as build_proof_action,
+    build_proof_clause,
+    build_proof_obligation,
+    program_proof_ir_from_graph,
+    validate_certificate_envelope,
+)
+from .proof_kernel.provider import ProofProvider
+from .proof_kernel.registry import PREDICATE_REGISTRY
 
 
 CAPABILITY_REGISTRY_VERSION = "zscope.fact-capability-registry.v1"
 EVIDENCE_ACTION_VERSION = "zscope.evidence-action.v1"
 EVIDENCE_CERTIFICATE_VERSION = "zscope.evidence-certificate.v2"
+
+_FACT_PREDICATES = {
+    "lockset": "lock_must_hold_at_access",
+    "cleanup_coverage": "cleanup_covers_all_exits",
+    "source_sink_reachability": "source_sink_path_exists",
+    "guard_dominance": "guard_dominates_sink",
+    "source_controllability": "external_entry_parameter_binding",
+    "type_layout": "record_layout_matches",
+}
 
 SUPPORTED_FACT_KINDS = frozenset(
     {
@@ -184,6 +203,7 @@ class CertificateResult:
     reason_code: str
     certificate: Dict[str, Any]
     fact: Optional[Dict[str, Any]] = None
+    proof_artifacts: Optional[Dict[str, Dict[str, Any]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -191,6 +211,11 @@ class CertificateResult:
             "reason_code": self.reason_code,
             "certificate": dict(self.certificate),
             "verified_fact": dict(self.fact) if isinstance(self.fact, dict) else None,
+            "proof_artifacts": (
+                {key: dict(value) for key, value in self.proof_artifacts.items()}
+                if isinstance(self.proof_artifacts, dict)
+                else None
+            ),
         }
 
 
@@ -730,6 +755,8 @@ class FunctionIRFactService:
             "object_identity": ContractAndTypeProofProvider(),
             "type_layout": ContractAndTypeProofProvider(),
         }
+        self._proof_provider = ProofProvider()
+        self._proof_checker = ProofChecker()
 
     def graph(
         self,
@@ -832,12 +859,43 @@ class FunctionIRFactService:
                     "ir": graph.ir_sha256,
                 }
                 provider = self._providers[fact_kind]
+                proof_parameters = dict(parameters)
+                if fact_kind == "lockset" and "lock_uid" not in proof_parameters:
+                    locks = tuple(
+                        dict.fromkeys(
+                            symbol
+                            for event in graph.events
+                            if event.kind in {"lock_acquire", "lock_release"}
+                            for symbol in event.subject_symbols
+                        )
+                    )
+                    if len(locks) == 1:
+                        proof_parameters["lock_uid"] = locks[0]
+                compiled = self._compile_proof_artifacts(
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    parameters=proof_parameters,
+                )
+                strict_action = compiled.get("action") if compiled else None
                 actions.append(
                     EvidenceAction(
-                        action_id="EVACTION_" + _sha(body)[:32],
+                        action_id=(
+                            str(strict_action["action_uid"])
+                            if isinstance(strict_action, Mapping)
+                            else "EVACTION_" + _sha(body)[:32]
+                        ),
                         fact_kind=fact_kind,
-                        provider_id=provider.provider_id,
-                        verifier_id=provider.verifier_id,
+                        provider_id=(
+                            str(strict_action["provider_id"])
+                            if isinstance(strict_action, Mapping)
+                            else provider.provider_id
+                        ),
+                        verifier_id=(
+                            str(strict_action["verifier_id"])
+                            if isinstance(strict_action, Mapping)
+                            else provider.verifier_id
+                        ),
                         subject_uid=_subject(issue),
                         decision_region_uid=_region(issue),
                         fixed_parameters=parameters,
@@ -869,21 +927,143 @@ class FunctionIRFactService:
         if cached is not None:
             return cached
         provider = self._providers[action.fact_kind]
-        result = provider.prove(graph, issue, action.fact_kind, action.fixed_parameters)
-        if isinstance(result.fact, dict):
-            fact = dict(result.fact)
-            proof = self._decision_proof(result, issue)
+        stable_result = provider.prove(graph, issue, action.fact_kind, action.fixed_parameters)
+        if isinstance(stable_result.fact, dict):
+            stable_fact = dict(stable_result.fact)
+            proof = self._decision_proof(stable_result, issue)
             if proof is not None:
-                fact["deterministic_proof"] = proof
-                result = CertificateResult(
-                    status=result.status,
-                    reason_code=result.reason_code,
-                    certificate=dict(result.certificate),
-                    fact=fact,
+                stable_fact["deterministic_proof"] = proof
+            stable_result = CertificateResult(
+                status=stable_result.status,
+                reason_code=stable_result.reason_code,
+                certificate=dict(stable_result.certificate),
+                fact=stable_fact,
+            )
+        parameters = dict(action.fixed_parameters)
+        if action.fact_kind == "lockset" and "lock_uid" not in parameters:
+            locks = tuple(
+                dict.fromkeys(
+                    symbol
+                    for event in graph.events
+                    if event.kind in {"lock_acquire", "lock_release"}
+                    for symbol in event.subject_symbols
                 )
+            )
+            if len(locks) == 1:
+                parameters["lock_uid"] = locks[0]
+        artifacts = self._compile_proof_artifacts(
+            graph=graph,
+            issue=issue,
+            fact_kind=action.fact_kind,
+            parameters=parameters,
+        )
+        if artifacts is None:
+            result = stable_result
+            with self._lock:
+                self._results[cache_key] = result
+            return result
+        certificate = self._proof_provider.produce(
+            proof_ir=artifacts["program_proof_ir"],
+            obligation=artifacts["proof_obligation"],
+            action=artifacts["action"],
+        )
+        check_result = self._proof_checker.check(
+            proof_ir=artifacts["program_proof_ir"],
+            obligation=artifacts["proof_obligation"],
+            action=artifacts["action"],
+            certificate=certificate,
+        )
+        result = CertificateResult(
+            status=stable_result.status,
+            reason_code=stable_result.reason_code,
+            certificate=stable_result.certificate,
+            fact=stable_result.fact,
+            proof_artifacts={
+                **artifacts,
+                "evidence_certificate": certificate,
+                "proof_check_result": check_result,
+            },
+        )
         with self._lock:
             self._results[cache_key] = result
         return result
+
+    @staticmethod
+    def _compile_proof_artifacts(
+        *,
+        graph: FunctionIRGraph,
+        issue: Mapping[str, Any],
+        fact_kind: str,
+        parameters: Mapping[str, Any],
+    ) -> Optional[Dict[str, Dict[str, Any]]]:
+        predicate_id = _FACT_PREDICATES.get(fact_kind)
+        spec = PREDICATE_REGISTRY.get(predicate_id or "")
+        subject_uid = _subject(issue)
+        region_uid = _region(issue)
+        if spec is None or not subject_uid or not region_uid:
+            return None
+        fixed = dict(parameters)
+        if predicate_id == "source_sink_path_exists":
+            source_statement = str(fixed.pop("source_statement_uid", ""))
+            sink_statement = str(fixed.pop("sink_statement_uid", ""))
+            if source_statement:
+                record = graph.statement_map.get(source_statement)
+                fixed["source_node_uid"] = record.block_uid if record else ""
+            if sink_statement:
+                record = graph.statement_map.get(sink_statement)
+                fixed["sink_node_uid"] = record.block_uid if record else ""
+            fixed.setdefault("source_node_uid", str(fixed.pop("source_block_uid", "")))
+            fixed.setdefault("sink_node_uid", str(fixed.pop("sink_block_uid", "")))
+        elif predicate_id == "cleanup_covers_all_exits":
+            fixed = {"resource_uid": str(fixed.get("resource_symbol") or "")}
+        if set(fixed) != set(spec.parameter_keys) or any(
+            value in (None, "") for value in fixed.values()
+        ):
+            return None
+        proof_ir = program_proof_ir_from_graph(
+            graph,
+            project_uid="PROJECT_" + _sha({"file": graph.file})[:32],
+            revision_uid="REV_" + graph.code_snapshot_sha256[:32],
+        )
+        clause = build_proof_clause(
+            role="confirmation",
+            provider_family=spec.provider_family,
+            predicate_id=spec.predicate_id,
+            fact_kind=spec.fact_kind,
+            quantifier=spec.quantifier,
+            expected_value={"$derived": True},
+            parameters=fixed,
+        )
+        security_obligation = issue.get("security_obligation")
+        security_obligation = (
+            security_obligation if isinstance(security_obligation, Mapping) else {}
+        )
+        obligation = build_proof_obligation(
+            validation_cluster_uid=str(
+                issue.get("validation_cluster_uid")
+                or security_obligation.get("obligation_uid")
+                or region_uid
+            ),
+            defect_family=str(issue.get("defect_family") or issue.get("type") or "generic"),
+            subject_uid=subject_uid,
+            decision_region_uid=region_uid,
+            confirmation_clauses=(clause,),
+            counterproof_clauses=(),
+            open_clauses=(),
+            dependency_hashes=proof_ir["dependency_hashes"],
+        )
+        proof_action = build_proof_action(
+            obligation=obligation,
+            clause=clause,
+            proof_ir=proof_ir,
+            provider_id=spec.provider_id,
+            verifier_id=spec.verifier_id,
+        )
+        return {
+            "program_proof_ir": proof_ir,
+            "proof_obligation": obligation,
+            "action": proof_action,
+        }
 
     def resolve_first(
         self,
@@ -1003,6 +1183,8 @@ class FunctionIRFactService:
         if not isinstance(fact, Mapping):
             return None
         certificate = result.certificate
+        witness = certificate.get("witness")
+        witness = witness if isinstance(witness, Mapping) else {}
         fact_kind = str(fact.get("fact_kind") or "")
         value = fact.get("value")
         value = value if isinstance(value, Mapping) else {}
@@ -1036,15 +1218,25 @@ class FunctionIRFactService:
             "producer_engine": str(certificate.get("verifier_id") or "function_ir_verifier"),
             "proof_version": "zscope.decision-proof.v4",
             "fact_ids": [str(fact.get("fact_uid") or "")],
-            "cfg_nodes": list(certificate.get("cfg_nodes") or []),
+            "cfg_nodes": list(witness.get("cfg_nodes") or certificate.get("cfg_nodes") or []),
             "subject_identity": _subject(issue),
-            "code_hash": str(certificate.get("code_snapshot_sha256") or ""),
+            "code_hash": str(
+                certificate.get("code_sha256") or certificate.get("code_snapshot_sha256") or ""
+            ),
             "facts": facts,
             "completeness": "complete",
-            "scope": str(certificate.get("coverage") or "function CFG"),
-            "summary": str(certificate.get("reason_code") or proof_kind),
-            "assumptions": list(certificate.get("assumptions") or []),
-            "certificate_sha256": str(certificate.get("certificate_sha256") or ""),
+            "scope": str(
+                (certificate.get("coverage") or {}).get("domain")
+                if isinstance(certificate.get("coverage"), Mapping)
+                else certificate.get("coverage") or "function CFG"
+            ),
+            "summary": result.reason_code or proof_kind,
+            "assumptions": list(
+                certificate.get("assumption_ids") or certificate.get("assumptions") or []
+            ),
+            "certificate_sha256": str(
+                certificate.get("content_sha256") or certificate.get("certificate_sha256") or ""
+            ),
             "verification_certificate": dict(certificate),
         }
 
@@ -1119,6 +1311,14 @@ class FunctionIRFactService:
                     for statement in block.statements
                     if line and statement.source_line == line
                 )
+            locks = tuple(
+                dict.fromkeys(
+                    symbol
+                    for event in graph.events
+                    if event.kind in {"lock_acquire", "lock_release"}
+                    for symbol in event.subject_symbols
+                )
+            )
             return tuple({"access_statement_uid": value} for value in statements)[:16]
         if fact_kind == "happens_before":
             sync_events = [
@@ -1261,6 +1461,9 @@ class FactCapabilityRegistry:
 
 
 def verify_certificate_v2(certificate: Mapping[str, Any]) -> bool:
+    valid, _ = validate_certificate_envelope(certificate)
+    if valid:
+        return True
     if str(certificate.get("schema_version") or "") != EVIDENCE_CERTIFICATE_VERSION:
         return False
     supplied = str(certificate.get("certificate_sha256") or "")

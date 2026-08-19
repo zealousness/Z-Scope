@@ -1,5 +1,41 @@
 # P4：Hypothesis-driven Hunting
 
+## 当前实施状态
+
+入口契约、产品实现和资格证据已冻结，阶段为`complete`。完整门禁通过后，Claude Opus 5产品架构审核与DeepSeek-V4-Pro Max proof-security审核在同一候选commit/tree上均以零blocking finding批准。P4采用独立shadow Candidate Ledger：复用同一
+`CandidateRegistrar`和显式freeze语义，但不接入live验证队列或报告投影。现有
+`active_discovery`继续承担稳定产品路径，直到P5执行公共cutover。
+
+Hunter只选择系统生成的`HypothesisOffer v2`和其中已经绑定的`EvidenceAction v2`。模型不能生成
+predicate、参数、coverage或终态。缺字段和无信号结果只写入内容寻址的coverage observation。
+
+### 入口冻结矩阵
+
+| 对象或边界 | P4冻结语义 |
+|---|---|
+| `LocalizedCoverageKey v2` | 绑定function、defect family、subject、region和结构fingerprint；不得按family全局抑制 |
+| `AttackSurfaceAuditUnit v2` | 只由攻击面、SecuritySpec unknown/conflict、动态/backend缺口或局部candidate desert触发 |
+| `HypothesisOffer v2` | 程序预绑定Proof IR、obligation、clauses、action、证据和依赖；模型只选择ID |
+| `SecurityHypothesis v2` | 完整且内容hash有效时才可经Registrar进入独立shadow Ledger |
+| `HypothesisCoverageObservation v1` | 不完整、无offer、无信号或协议失败的唯一落点；没有Candidate或终态语义 |
+| P2 selected-action | 仅执行同一offer/obligation内的系统action；未知、重复或跨obligation引用fail closed |
+| authority | 固定`shadow`和`active_product_effect=none`；P5前无用户开关 |
+
+Qualification使用非Range、answer-free且source/expected分离的至少120个单元，覆盖至少三个无关
+项目和四个P2 provider family。safe/near-miss错误注册必须为0，全部注册对象的schema、证据和
+action可解析率必须为100%，并覆盖rename、wrapper、等价重排和fixed pair。当前冻结资格结果为
+120个单元、48个safe case、safe/near-miss错误注册均为0、契约解析率100%，三个项目均产生
+Checker可重放proof。qualification manifest、候选wheel和双审核分别绑定hash；测试通过本身不等于阶段complete。
+
+### 已实现数据流
+
+`stable candidates + active_discovery → P3 spec shadow → P4 planner/Hunter → P4 selected-action Checker → P4 shadow Ledger freeze → live Ledger freeze/validation`
+
+P4模型只有一次严格terminal调用且没有repository tool。投影在序列化前后递归检查key与scalar；
+offer绑定冻结IR、obligation、clause、action和依赖。Checker未形成完整确认proof时，选择只产生
+coverage observation，不形成shadow candidate。fast不调用Hunter；alert-verify只读加载相同root manifest。
+P4 refs只附加到稳定产品已经存在的唯一terminal event。
+
 ## 目标
 
 以攻击面和局部coverage gap驱动Hypothesis Hunter，恢复并强化主动挖掘，但不把Agent变成终态权威。
@@ -22,7 +58,7 @@
 ## 验收
 
 - candidate-blind同时检查key和scalar value。
-- Prompt不含candidate、rule、truth、score或历史verdict。
+- 模型数据投影不含candidate、rule、truth、score或历史verdict；静态约束说明可以描述被禁止的状态，但不得携带实例标识。
 - 同family不同函数不会全局抑制。
 - 缺位置、subject、region或证据的hypothesis不能注册。
 - Hunter不能直接改变默认视图。

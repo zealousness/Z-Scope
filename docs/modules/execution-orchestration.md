@@ -9,6 +9,7 @@ sources:
   - zscope/cli/cli.py
   - zscope/orchestration/scan_session.py
   - zscope/orchestration/parallel_analyzer.py
+  - zscope/orchestration/hypothesis_hunter
   - zscope/orchestration/rollout.py
   - zscope/orchestration/decision_trace.py
   - zscope/orchestration/workflow_runner.py
@@ -20,9 +21,13 @@ tests:
   - tests/test_workflow_runner.py
   - tests/test_workflow_specs.py
   - tests/test_scan_session_resume_svf.py
-  - tests/test_active_discovery.py
+  - tests/test_p5_runtime_authority.py
+  - tests/test_p4_hypothesis_hunter.py
+  - tests/test_p4_hypothesis_lifecycle.py
   - tests/test_balanced_rollout.py
   - tests/test_decision_trace.py
+  - tests/test_workflow_executor.py
+  - tests/test_cli_ruledriven_p1.py
 ---
 
 # 执行与编排
@@ -38,8 +43,8 @@ tests:
 - `zscope/cli/cli.py` 解析 `--resume`、`--maintain`、`--diff-*`、`--scan-depth`、WebUI、MCP、SARIF 和索引预热等入口参数。
 - `ScanSessionRunner` 把显式入口、自动发现入口或 diff impact 入口统一成扫描会话。
 - `WorkflowRunner` 创建单入口运行态并调用 `WorkflowExecutor`。
-- `zscope/workflows/*.yaml` 只声明阶段顺序；具体 handler 由 Python 编排层提供。
-- 批量任务经 scheduler/parallel analyzer 分发。确定性候选完成后，balanced/deep 在全局验证之前依次构建 Security Semantic Map、规划 coverage gap、登记主动发现 hypothesis；所有来源统一冻结 Ledger，最后按 validation cluster 验证和装配报告。单入口必须保持同样的阶段顺序。
+- `zscope/workflows/*.yaml` 只声明阶段顺序；具体 handler 由 Python 编排层提供。P1 的稳定阶段分别是 default `discover_entries → collect_candidates → validate_candidates → persist_report`、resume `discover_entries → plan_resume → run_pending_entries → merge_reused_reports`、maintain `discover_entries → compare_entry_state → reuse_unchanged_report → reconcile_history → run_changed_entry`。
+- 批量任务经scheduler/parallel analyzer分发。所有档位先运行authoritative SecuritySpec compilation和确定性候选；balanced/deep再运行Hunter并把选择强制未确认登记到同一live Ledger，fast固定不运行Hunter。全部producer结束后freeze Ledger，再由Proof Engine/Checker/TerminalAuthority逐cluster关闭。单入口保持同样顺序。
 - `DecisionTraceStore` 由单次扫描共享：Candidate Ledger、coverage planner、ValidationRunner、usage ledger 与 Finding-root 投影只追加结构化事件/内容寻址对象，最终生成一个可离线校验的 manifest。
 
 ## 必须保持的不变量
@@ -49,10 +54,13 @@ tests:
 - 没有匹配入口的 diff path 应明确停止，不能静默回退到 `main`。
 - 入口发现、断点续扫、历史报告备份和取消状态必须保持可审计。
 - 批量完整性检查必须以实际物化并调度的入口身份对齐结果，不能用签名不完整的原始入口把已完成任务误判为中断。
-- Workflow 文件和 handler 名称必须一一对应，未知 step 应明确失败。
+- Workflow 文件和 handler 名称必须一一对应，包括声明为 optional 的 step；每个声明 step 必须精确产生一条 `completed`、`skipped` 或 `failed` 记录，停止策略跳过的后续 step 必须携带原因。
+- C/C++ `--mode ruledriven` 必须在创建索引或模型调用前拒绝并指向默认 Candidate Ledger；Java 暂时保留 ruledriven。
 - `fast` 不运行语义补全或主动发现；它们未启用时不能误标 partial。balanced/deep 中已启用阶段因超时、取消、provider/工具故障跳过审计单元时必须保存已得结果、标记 `completeness=partial`，CLI 退出码为 2。
 - scan-wide token usage ledger 必须在配置生效边界创建一次并注入所有入口、Agent 和 LLM profile，不能为并行入口各建一份账本。它只计量，不按产品硬预算停止调用。
 - Ledger 必须在全部 producer 结束后显式 freeze；freeze 后不能登记新候选。每个 terminal cluster 和无候选 audit unit 都必须分别有 decision/coverage trace，usage call ID 与 token 总数必须和 JSONL sidecar 守恒。
+- resume/maintain只能复用相同P5 cache epoch、RuntimeAuthorityManifest和完整terminal trace的报告；P5前cache/report/snapshot只允许compat展示或历史复核，不能形成新证据。
+- 每个cluster恰好一个terminal event；SecuritySpec、Hunter和Proof refs附加到该事件，不得由任何producer创建第二个terminal-authority事件。
 
 ## Balanced 持久灰度决策
 
@@ -75,7 +83,7 @@ tests:
 ```bash
 python -m pytest -q tests/test_cli_output.py tests/test_workflow_runner.py tests/test_workflow_specs.py
 python -m pytest -q tests/test_entry_discovery.py tests/test_diff_impact.py tests/test_scan_scheduler.py
-python -m pytest -q tests/test_active_discovery.py
+python -m pytest -q tests/test_p5_runtime_authority.py
 python -m pytest -q tests/test_balanced_rollout.py tests/test_balanced_rollout_operator.py
 ```
 

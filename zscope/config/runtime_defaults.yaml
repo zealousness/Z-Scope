@@ -1,17 +1,16 @@
 runtime_spec_version: 1
 
 agents:
-  semantic_modeler:
+  security_spec_miner:
     enabled: true
     llm_role: modeling
-  vulnerability_analyzer:
+  hypothesis_hunter:
     enabled: true
     llm_role: analysis
-    can_spawn_subagents: true
-  issue_reconciler_agent:
+  history_maintenance_agent:
     enabled: true
     llm_role: modeling
-  validator_agent:
+  proof_engine:
     enabled: true
     llm_role: validation
 
@@ -21,32 +20,15 @@ analysis:
   max_tool_iterations: 50
   enable_snapshot_cache: true
   validation_cache_entries: 4096
-  enable_global_model: false
-  max_premodel_depth: 3
-  max_premodel_callees: 20
   trivial_function_max_lines: 5
-  enable_subagent_workers: false
-  # Rollout starts in shadow mode; release policy controls promotion to active.
-  security_semantic_enrichment_mode: shadow
-  max_subagent_tickets: 4
-  subagent_max_turns: 20
   request_deadline_seconds: 120
   validation_deadline_seconds: 240
-  subagent_ticket_timeout: 300
   entry_deadline_seconds: 1800
   scan_deadline_seconds: null
   budget_exhaustion_policy: observe
-  subagent_spawn_allowlist: [deep_worker]
-  subagent_skill_llm_refs: {}
-  subagent_skill_efforts: {}
   tool_audit_log: ""
 
-reporting:
-  semantic_dedup:
-    enabled: true
-    llm_enabled: false
-    llm_confidence_threshold: 0.85
-    max_cluster_size: 8
+reporting: {}
 
 paths:
   knowledge_db: .zscope_knowledge/code_knowledge.db

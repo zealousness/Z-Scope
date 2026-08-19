@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from zscope.config.function_entry import FunctionEntry
-from zscope.orchestration.global_modeler import GlobalModeler
 from zscope.retrieval import svf_analyzer as svf_module
 from zscope.retrieval.knowledge_db import KnowledgeDB
 from zscope.retrieval.svf_analyzer import SvfAnalyzer
@@ -858,124 +857,6 @@ def test_wpa_valid_marker_skips_and_missing_marker_reimports_without_runner(
     assert db.get_indirect_callees("td_init")[0]["name"] == "_packet_receiver_thread"
     marker = json.loads(db.get_metadata("svf_db_import:ander:default"))
     assert marker["imported_row_count"] == 1
-    db.close()
-
-
-def test_tu_purge_advances_generation_and_replays_dot_for_global_modeler(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    source_root, compile_commands = _write_compile_commands(tmp_path)
-    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
-    tu_id = db.register_tu("src/main.c", 1.0)
-    functions = [
-        ("td_init", "src/main.c", 1, 10),
-        ("_packet_receiver_thread", "src/main.c", 20, 30),
-        ("_net_accept_connection", "src/main.c", 40, 50),
-    ]
-    for name, file_path, start, end in functions:
-        db.insert_function(name, file_path, start, end, tu_id=tu_id)
-    db.insert_call_edge(
-        "_packet_receiver_thread",
-        "src/main.c",
-        "_net_accept_connection",
-        "src/main.c",
-        25,
-    )
-    db.commit()
-    bc_path = tmp_path / "default.bc"
-    bc_path.write_text("bitcode\n", encoding="utf-8")
-    calls = {"build": 0, "ander": 0}
-
-    class Builder:
-        def __init__(self, *args, **kwargs):
-            self.failed_tus = []
-            self.reused_linked_groups = set()
-
-        def build(self, **kwargs):
-            calls["build"] += 1
-            return {"default": bc_path}
-
-    class Runner:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def run_ander(self, _bc_path, output_dir):
-            calls["ander"] += 1
-            dot = _write_callgraph(
-                output_dir / "callgraph_final.dot",
-                [("td_init", "_packet_receiver_thread")],
-            )
-            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
-
-        def run_saber(self, _bc_path, _output_dir):
-            raise AssertionError("unexpected Saber run")
-
-    monkeypatch.setattr(svf_module, "BitcodeBuilder", Builder)
-    monkeypatch.setattr(svf_module, "SvfRunner", Runner)
-    analyzer = SvfAnalyzer(db=db)
-
-    assert analyzer.run(source_root, tmp_path, compile_commands) is True
-    assert calls == {"build": 1, "ander": 1}
-    assert db.get_svf_db_generation() == 0
-
-    db.purge_tu_data(tu_id)
-    assert db.get_svf_db_generation() == 1
-    for name, file_path, start, end in functions:
-        db.insert_function(name, file_path, start, end, tu_id=tu_id)
-    db.insert_call_edge(
-        "_packet_receiver_thread",
-        "src/main.c",
-        "_net_accept_connection",
-        "src/main.c",
-        25,
-    )
-    db.commit()
-
-    assert analyzer.run(source_root, tmp_path, compile_commands) is True
-    assert calls == {"build": 2, "ander": 1}
-    marker = json.loads(db.get_metadata("svf_db_import:ander:default"))
-    assert marker["db_generation"] == 1
-
-    class DBCodeIndex:
-        def get_function_impl(self, name, **kwargs):
-            info = db.get_function(name)
-            if not info:
-                return None
-            return {
-                "func_name": name,
-                "file": info["file_path"],
-                "index_name": f"{name}@{info['file_path']}:{info['start_line']}-{info['end_line']}",
-                "start_line": info["start_line"],
-                "end_line": info["end_line"],
-            }
-
-        def get_callees(self, name, limit=30):
-            direct = db.get_callees(name, limit=limit)
-            indirect = db.get_indirect_callees(name, limit=limit)
-            return direct + indirect
-
-    config = SimpleNamespace(
-        analysis=SimpleNamespace(
-            max_premodel_depth=-1,
-            max_premodel_callees=30,
-            max_function_lines=500,
-        ),
-        concurrency=SimpleNamespace(entry_workers=1),
-    )
-    modeler = GlobalModeler(
-        config,
-        DBCodeIndex(),
-        None,
-        None,
-        semantic_agent_factory=lambda: None,
-    )
-    graph = modeler._collect_graph([FunctionEntry("td_init")])
-    assert {key.name for key in graph.impls} == {
-        "td_init",
-        "_packet_receiver_thread",
-        "_net_accept_connection",
-    }
     db.close()
 
 

@@ -16,13 +16,28 @@ from zscope.config.function_entry import FunctionEntry
 from zscope.core.analysis import analyzer as analyzer_module
 from zscope.orchestration import parallel_analyzer as parallel_module
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
-from zscope.orchestration.subagents import SubAgentTicket
+from zscope.orchestration.candidates import CandidateTicket
 from zscope.rules.catalog import RuleCatalogError
 from zscope.semantics.models import LocalPatternSemantics
 
 
 class FakeCodeIndex:
-    pass
+    backend = None
+    backend_name = "regex"
+
+    def get_file_snippet(self, _path: str, _start: int, _end: int) -> str:
+        return "copy(dst, src, count);"
+
+    def get_function_impl(self, _name: str, **_kwargs):
+        return {"code": "void sink(void) { copy(dst, src, count); }"}
+
+    def get_callers(self, _name: str, limit: int = 8):
+        del limit
+        return []
+
+    def get_callees(self, _name: str, limit: int = 12):
+        del limit
+        return []
 
 
 def _config(tmp_path: Path) -> ZScopeConfig:
@@ -38,7 +53,7 @@ def _config(tmp_path: Path) -> ZScopeConfig:
         project=ProjectConfig(
             project_root=tmp_path,
             source_root=tmp_path,
-            agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
+            agents=[AgentConfig(name="proof_engine", task="validate")],
         ),
         concurrency=ConcurrencyConfig(entry_workers=3),
     )
@@ -53,275 +68,13 @@ def test_analyzer_initializes_java_project_file_rule_cache(tmp_path: Path) -> No
         assert analyzer._java_project_file_rule_cache is None
 
 
-def test_parallel_analyzer_builds_shared_semantics_once_per_batch(monkeypatch, tmp_path) -> None:
-    counts = {"build": 0, "compile": 0}
-    seen_semantics = []
-    seen_overlays = []
-    seen_lock = threading.Lock()
-
-    class CountingLocalPatternSemanticBuilder:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def build(self) -> LocalPatternSemantics:
-            counts["build"] += 1
-            semantics = LocalPatternSemantics()
-            semantics.add_api("allocator", "shared_alloc", "test-builder")
-            return semantics
-
-    class CountingSemanticOverlayCompiler:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def compile(self):
-            counts["compile"] += 1
-            return {"pointer_targets": [{"name": "shared_pointer_target"}]}
-
-    def fake_run(self):
-        semantics = self._get_local_pattern_semantics()
-        overlay = self._get_semantic_overlay()
-        assert "shared_alloc" in semantics.allocators
-        assert overlay["pointer_targets"][0]["name"] == "shared_pointer_target"
-
-        semantics.add_api(
-            "allocator",
-            f"{self.config.project.entry_function}_alloc",
-            "test-run",
-        )
-        overlay.setdefault("mutated_entries", []).append(self.config.project.entry_function)
-
-        with seen_lock:
-            seen_semantics.append(semantics)
-            seen_overlays.append(overlay)
-
-        return {
-            "overall_verdict": "clean",
-            "issues": [],
-            "metadata": {"audit_observations": [], "context_tokens": 1},
-        }
-
-    monkeypatch.setattr(
-        parallel_module,
-        "LocalPatternSemanticBuilder",
-        CountingLocalPatternSemanticBuilder,
-    )
-    monkeypatch.setattr(
-        analyzer_module,
-        "LocalPatternSemanticBuilder",
-        CountingLocalPatternSemanticBuilder,
-    )
-    monkeypatch.setattr(
-        parallel_module,
-        "SemanticOverlayCompiler",
-        CountingSemanticOverlayCompiler,
-    )
-    monkeypatch.setattr(
-        analyzer_module,
-        "SemanticOverlayCompiler",
-        CountingSemanticOverlayCompiler,
-    )
-    monkeypatch.setattr(analyzer_module.Analyzer, "run", fake_run)
-
-    parallel = ParallelAnalyzer(_config(tmp_path), code_index=FakeCodeIndex())
-    results = parallel.analyze_function_entries(
-        [
-            FunctionEntry("alpha"),
-            FunctionEntry("beta"),
-            FunctionEntry("gamma"),
-        ]
-    )
-
-    assert counts == {"build": 1, "compile": 1}
-    assert set(results) == {"alpha", "beta", "gamma"}
-    assert {result.verdict for result in results.values()} == {"clean"}
-
-    assert len(seen_semantics) == 3
-    assert len({id(semantics) for semantics in seen_semantics}) == 3
-    assert "alpha_alloc" not in parallel._shared_local_pattern_semantics.allocators
-    assert "beta_alloc" not in parallel._shared_local_pattern_semantics.allocators
-    assert "gamma_alloc" not in parallel._shared_local_pattern_semantics.allocators
-
-    assert len(seen_overlays) == 3
-    assert len({id(overlay) for overlay in seen_overlays}) == 3
-    assert "mutated_entries" not in parallel._shared_semantic_overlay
-
-
-def test_parallel_analyzer_runs_global_model_before_entries(monkeypatch, tmp_path) -> None:
-    events = []
-
-    class CountingLocalPatternSemanticBuilder:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def build(self) -> LocalPatternSemantics:
-            return LocalPatternSemantics()
-
-    class CountingSemanticOverlayCompiler:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def compile(self):
-            return {}
-
-    class FakeStats:
-        reachable_functions = 1
-        modeled_functions = 1
-        cache_hit_functions = 0
-        deterministic_snapshot_count = 0
-        llm_snapshot_count = 1
-        failed_functions = 0
-        unresolved_entry_functions = 0
-        reconciled_functions = 1
-        reconciliation_failures = 0
-        stage_complete = True
-
-        def to_dict(self):
-            return {"reachable_functions": 1, "modeled_functions": 1}
-
-    class FakeGlobalModeler:
-        def run(self, entries):
-            events.append(("global", [entry.function_name for entry in entries]))
-            return FakeStats()
-
-    def fake_from_helpers(*args, **kwargs):
-        return FakeGlobalModeler()
-
-    def fake_run(self):
-        events.append(("entry", self.config.project.entry_function))
-        return {
-            "overall_verdict": "clean",
-            "issues": [],
-            "metadata": {"audit_observations": [], "context_tokens": 1},
-        }
-
-    monkeypatch.setattr(
-        parallel_module,
-        "LocalPatternSemanticBuilder",
-        CountingLocalPatternSemanticBuilder,
-    )
-    monkeypatch.setattr(
-        analyzer_module,
-        "LocalPatternSemanticBuilder",
-        CountingLocalPatternSemanticBuilder,
-    )
-    monkeypatch.setattr(
-        parallel_module,
-        "SemanticOverlayCompiler",
-        CountingSemanticOverlayCompiler,
-    )
-    monkeypatch.setattr(
-        analyzer_module,
-        "SemanticOverlayCompiler",
-        CountingSemanticOverlayCompiler,
-    )
-    monkeypatch.setattr(parallel_module.GlobalModeler, "from_analyzer_helpers", fake_from_helpers)
-    monkeypatch.setattr(analyzer_module.Analyzer, "run", fake_run)
-
-    config = _config(tmp_path)
-    config.analysis.enable_global_model = True
-    parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
-    results = parallel.analyze_function_entries([FunctionEntry("alpha")])
-
-    assert list(results) == ["alpha"]
-    assert events == [("global", ["alpha"]), ("entry", "alpha")]
-    assert parallel._last_global_model_stats == {
-        "reachable_functions": 1,
-        "modeled_functions": 1,
-    }
-
-
-def test_parallel_analyzer_stops_when_global_model_fails(monkeypatch, tmp_path) -> None:
-    observed_flags = []
-
-    class CountingLocalPatternSemanticBuilder:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def build(self) -> LocalPatternSemantics:
-            return LocalPatternSemantics()
-
-    class CountingSemanticOverlayCompiler:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def compile(self):
-            return {}
-
-    class IncompleteStats:
-        reachable_functions = 1
-        modeled_functions = 0
-        cache_hit_functions = 0
-        deterministic_snapshot_count = 0
-        llm_snapshot_count = 0
-        failed_functions = 1
-        unresolved_entry_functions = 0
-        reconciled_functions = 0
-        reconciliation_failures = 0
-        stage_complete = False
-
-        def to_dict(self):
-            return {"failed_functions": 1, "stage_complete": False}
-
-    class IncompleteGlobalModeler:
-        def run(self, entries):
-            return IncompleteStats()
-
-    def incomplete_global_model(*args, **kwargs):
-        return IncompleteGlobalModeler()
-
-    def fake_run(self):
-        observed_flags.append(self.config.analysis.enable_global_model)
-        return {
-            "overall_verdict": "clean",
-            "issues": [],
-            "metadata": {"audit_observations": [], "context_tokens": 1},
-        }
-
-    monkeypatch.setattr(
-        parallel_module,
-        "LocalPatternSemanticBuilder",
-        CountingLocalPatternSemanticBuilder,
-    )
-    monkeypatch.setattr(
-        analyzer_module,
-        "LocalPatternSemanticBuilder",
-        CountingLocalPatternSemanticBuilder,
-    )
-    monkeypatch.setattr(
-        parallel_module,
-        "SemanticOverlayCompiler",
-        CountingSemanticOverlayCompiler,
-    )
-    monkeypatch.setattr(
-        analyzer_module,
-        "SemanticOverlayCompiler",
-        CountingSemanticOverlayCompiler,
-    )
-    monkeypatch.setattr(
-        parallel_module.GlobalModeler,
-        "from_analyzer_helpers",
-        incomplete_global_model,
-    )
-    monkeypatch.setattr(analyzer_module.Analyzer, "run", fake_run)
-
-    config = _config(tmp_path)
-    config.analysis.enable_global_model = True
-    parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
-    with pytest.raises(RuntimeError, match="Global semantic modeling did not complete"):
-        parallel.analyze_function_entries([FunctionEntry("alpha")])
-
-    assert observed_flags == []
-    assert parallel._last_global_model_stats == {
-        "failed_functions": 1,
-        "stage_complete": False,
-    }
-
-
 def test_scan_validation_queue_validates_one_shared_ledger_group(tmp_path) -> None:
     """Wrapper occurrences are merged before any validator work is scheduled."""
 
-    parallel = ParallelAnalyzer(_config(tmp_path), code_index=FakeCodeIndex())
-    ticket = SubAgentTicket(
+    config = _config(tmp_path)
+    config.project.agents = []
+    parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
+    ticket = CandidateTicket(
         id="RULE_1",
         skill="bounds",
         task="validate one structured bounds obligation",

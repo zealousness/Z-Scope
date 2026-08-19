@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.local/schemas/proof-check-result-v2.schema.json",
+  "title": "ProofCheckResult v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "protocol_revision", "check_uid", "checker_id", "checker_version",
+    "certificate_uid", "action_uid", "obligation_uid", "clause_uid", "proof_ir_uid",
+    "status", "certificate_status", "reason_codes", "terminal_contribution",
+    "recomputed_coverage", "accepted_fact", "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.proof-check-result.v2"},
+    "protocol_revision": {"const": 2},
+    "check_uid": {"type": "string", "pattern": "^PCHECK_[0-9a-f]{32}$"},
+    "checker_id": {"const": "zscope.proof-checker"},
+    "checker_version": {"type": "string", "minLength": 1},
+    "certificate_uid": {"type": "string", "minLength": 1},
+    "action_uid": {"type": "string", "minLength": 1},
+    "obligation_uid": {"type": "string", "minLength": 1},
+    "clause_uid": {"type": "string", "minLength": 1},
+    "proof_ir_uid": {"type": "string", "minLength": 1},
+    "status": {"enum": ["accepted", "rejected", "unknown", "conflicting"]},
+    "certificate_status": {"enum": ["verified_true", "verified_false", "unknown", "conflicting", "legacy_preview", "invalid"]},
+    "reason_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
+    "terminal_contribution": {"enum": ["none", "confirmation", "counterproof"]},
+    "recomputed_coverage": {"type": "object"},
+    "accepted_fact": {"type": ["object", "null"]},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

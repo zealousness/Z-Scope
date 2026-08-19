@@ -252,10 +252,6 @@ def _unmanaged_runtime_policy(
     if effective_depth != requested_depth:
         scan.depth = effective_depth
         scan.depth_source = "rollout_unmanaged"
-    semantic_mode = str(
-        getattr(getattr(config, "analysis", None), "security_semantic_enrichment_mode", "shadow")
-        or "shadow"
-    )
     return {
         "schema_version": ROLLOUT_RUNTIME_POLICY_SCHEMA_VERSION,
         "managed": False,
@@ -272,8 +268,11 @@ def _unmanaged_runtime_policy(
         "enrolled": False,
         "enrollment_reason": enrollment_reason,
         "forced_fast": forced_fast,
-        "semantic_enrichment_mode": semantic_mode if effective_depth != "fast" else "disabled",
-        "active_discovery_mode": "active" if effective_depth != "fast" else "disabled",
+        "security_spec_mode": "authoritative",
+        "hypothesis_hunter_execution": (
+            "enabled" if effective_depth != "fast" else "disabled_by_profile"
+        ),
+        "proof_engine_mode": "authoritative",
         "shadow_findings_visible_in_default": False,
         "state_error": state_error,
     }
@@ -403,8 +402,6 @@ def apply_persisted_rollout_policy(
     enrolled = False
     enrollment_reason = "stage_forces_fast"
     effective_depth = "fast"
-    semantic_mode = "disabled"
-    discovery_mode = "disabled"
 
     if stage in {"telemetry_only", "invalid_state"}:
         pass
@@ -422,9 +419,6 @@ def apply_persisted_rollout_policy(
             enrollment_reason = "explicit_semantic_shadow_opt_in"
         else:
             enrollment_reason = "semantic_shadow_requires_explicit_depth"
-        if effective_depth != "fast":
-            semantic_mode = "shadow"
-            discovery_mode = "shadow"
     elif stage in {"10", "50", "100"}:
         if explicit_depth:
             effective_depth = requested_depth
@@ -439,9 +433,6 @@ def apply_persisted_rollout_policy(
             )
         else:
             enrollment_reason = "language_gate_fast_only"
-        if effective_depth != "fast":
-            semantic_mode = "active"
-            discovery_mode = "active"
     elif stage == "balanced_default":
         if explicit_depth:
             effective_depth = requested_depth
@@ -452,9 +443,6 @@ def apply_persisted_rollout_policy(
         else:
             enrollment_reason = "language_gate_fast_only"
         enrolled = effective_depth != "fast"
-        if enrolled:
-            semantic_mode = "active"
-            discovery_mode = "active"
     else:  # Strict RolloutState normally makes this unreachable.
         state_error = f"unsupported rollout stage: {stage}"
         stage = "invalid_state"
@@ -468,12 +456,6 @@ def apply_persisted_rollout_policy(
         or (not explicit_depth and stage != "balanced_default")
         or requested_depth != "fast"
     )
-    # Managed active/shadow stages own semantic application.  The disabled
-    # value stays in policy only because AnalysisConfig intentionally accepts
-    # the stable shadow|active contract.
-    if semantic_mode in {"shadow", "active"}:
-        analysis.security_semantic_enrichment_mode = semantic_mode
-
     policy = {
         "schema_version": ROLLOUT_RUNTIME_POLICY_SCHEMA_VERSION,
         "managed": True,
@@ -490,8 +472,11 @@ def apply_persisted_rollout_policy(
         "enrolled": bool(enrolled),
         "enrollment_reason": enrollment_reason,
         "forced_fast": rollout_forced_fast,
-        "semantic_enrichment_mode": semantic_mode,
-        "active_discovery_mode": discovery_mode,
+        "security_spec_mode": "authoritative",
+        "hypothesis_hunter_execution": (
+            "enabled" if effective_depth != "fast" else "disabled_by_profile"
+        ),
+        "proof_engine_mode": "authoritative",
         "shadow_findings_visible_in_default": False,
         "state_error": state_error,
     }
@@ -504,16 +489,6 @@ def rollout_runtime_policy(config: Any) -> Dict[str, Any]:
 
     value = getattr(getattr(config, "scan", None), "rollout", None)
     return dict(value) if isinstance(value, Mapping) else {}
-
-
-def rollout_active_discovery_mode(config: Any) -> str:
-    """Return disabled|shadow|active for the candidate-blind stage."""
-
-    policy = rollout_runtime_policy(config)
-    if policy:
-        return str(policy.get("active_discovery_mode") or "disabled")
-    depth = str(getattr(getattr(config, "scan", None), "depth", "fast") or "fast")
-    return "disabled" if depth == "fast" else "active"
 
 
 def _exact_mapping(value: Any, fields: set[str], *, path: str) -> Mapping[str, Any]:
@@ -1550,7 +1525,6 @@ __all__ = [
     "RolloutThresholds",
     "apply_persisted_rollout_policy",
     "deterministic_rollout_bucket",
-    "rollout_active_discovery_mode",
     "rollout_management_key_from_environment",
     "rollout_runtime_policy",
 ]

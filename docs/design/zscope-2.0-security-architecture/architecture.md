@@ -19,10 +19,11 @@ flowchart LR
     Facts --> Planner["Attack-surface Planner"]
     Planner --> Hunter["Hypothesis Hunter"]
     Hunter --> Hypothesis["SecurityHypothesis v2"]
-    Hypothesis --> Ledger["Candidate Ledger + Freeze"]
-    Ledger --> Proof["Proof Engine"]
+    Hypothesis --> LiveLedger["Candidate Ledger + Freeze<br/>Hunter always unconfirmed"]
+    LiveLedger --> Proof["Proof Engine authoritative"]
     Facts --> Proof
-    Proof --> Terminal["confirmed / needs_review / rejected"]
+    Proof --> Checker["Independent Checker"]
+    Checker --> Terminal["TerminalAuthorityDecision v3"]
     Terminal --> Trace["Decision Trace"]
     Terminal --> Score["Benchmark v5"]
 ```
@@ -53,8 +54,8 @@ Security Spec是声明式分析数据，不是机器学习模型。编译器只�
 - Planner只从攻击面、语义unknown/conflict、动态调用缺口和局部candidate desert触发。
 - Hunter输出defect family、subject、decision region、正反clause和可执行EvidenceAction。
 - Hunter不得读取truth、score、规则结论、candidate ID或完整Candidate Ledger。
-- Hunter不得直接写confirmed；假设必须经CandidateRegistrar、Ledger freeze和Proof Engine。
-- `fast`不运行Hunter；`balanced/deep`按coverage gap运行。
+- Hunter不得直接写confirmed；合格选择只能由CandidateRegistrar强制未确认写入live Ledger，随后由Proof Engine重算并关闭。
+- `fast`固定不运行Hunter；`balanced/deep`运行Hunter。alert-verify只离线加载并复验已有artifact，不运行Hunter或模型。
 
 ## Proof Engine
 
@@ -73,11 +74,19 @@ region、路径/出口集合和分析假设的证书。独立Proof Checker重新
 终态规则：
 
 - 完整正proof：立即`confirmed`并停止后续LLM/tool调用。
-- 完整反proof：立即`rejected`。
+- 完整反proof：立即`rejected_with_proof`。
 - proof冲突：程序化比较scope、路径、量词和依赖；无法消解则`needs_review`。
 - 模型verified但存在open clause：`needs_review`。
 - 模型rejected但没有完整反proof：`needs_review`。
-- V3最多50轮，只能执行只读EvidenceAction；连续两轮无有效证书增量即停止。
+- 适配器只能选择EvidenceAction；完整正证、反证或确定needs-review后，cluster后续模型/工具调用为0。
+
+## P5 Runtime Authority
+
+P5没有用户可控authority开关：SecuritySpecCompiler固定`authoritative`，Hypothesis Hunter固定
+`active/candidate_registration_only`，Proof Engine固定`authoritative`。严格
+`RuntimeAuthorityManifest v1`绑定代码树、配置、backend、三类artifact root、registry/checker/provider
+revision、trace schema与cache epoch。P5前semantic snapshot、validation cache和entry report只能只读
+展示；只有相同epoch、authority manifest和完整trace的P5报告可以resume/maintain复用。
 
 ## 可追溯性
 

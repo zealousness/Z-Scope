@@ -1,4 +1,4 @@
-"""Report schema v2 status, manifest, and exit-policy helpers."""
+"""Report schema v3 authority, manifest, and exit-policy helpers."""
 
 from __future__ import annotations
 
@@ -8,9 +8,14 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from ..orchestration.candidate_envelope import CANDIDATE_SCHEMA_VERSION
+from ..orchestration.runtime_authority import (
+    P5_RELEASE_STATUS,
+    RUNTIME_CACHE_EPOCH,
+    validate_runtime_authority_manifest,
+)
 
 
-REPORT_SCHEMA_VERSION = 2
+REPORT_SCHEMA_VERSION = 3
 FINDING_STATUSES = {"clean", "needs_review", "confirmed"}
 COMPLETENESS_STATUSES = {"complete", "partial", "degraded", "failed", "interrupted"}
 EXIT_POLICIES = {"review", "confirmed", "legacy"}
@@ -350,7 +355,7 @@ def completeness_status(
         return "degraded"
     capability_values: list[str] = []
     capabilities = state.get("engine_capabilities") or state.get("backend_capabilities")
-    active_discovery = state.get("active_discovery")
+    security_runtime = state.get("security_runtime")
 
     def collect_capability_statuses(value: Any) -> None:
         if isinstance(value, Mapping):
@@ -365,7 +370,7 @@ def completeness_status(
                 collect_capability_statuses(nested)
 
     collect_capability_statuses(capabilities)
-    collect_capability_statuses(active_discovery)
+    collect_capability_statuses(security_runtime)
     if "interrupted" in capability_values:
         return "interrupted"
     if any(
@@ -431,6 +436,20 @@ def report_reuse_blockers(
         manifest = {}
     if str(manifest.get("candidate_schema_version") or "") != CANDIDATE_SCHEMA_VERSION:
         blockers.append("candidate_schema_mismatch")
+    if str(manifest.get("schema_version") or "") != "zscope.run-manifest.v2":
+        blockers.append("run_manifest_schema_mismatch")
+    if str(manifest.get("cache_epoch") or "") != RUNTIME_CACHE_EPOCH:
+        blockers.append("cache_epoch_mismatch")
+    authority_manifest = manifest.get("runtime_authority_manifest")
+    if not isinstance(authority_manifest, Mapping):
+        blockers.append("runtime_authority_manifest_missing")
+    else:
+        valid_authority, _reason = validate_runtime_authority_manifest(authority_manifest)
+        if not valid_authority:
+            blockers.append("runtime_authority_manifest_invalid")
+    trace = manifest.get("decision_trace")
+    if not isinstance(trace, Mapping) or trace.get("complete") is not True:
+        blockers.append("decision_trace_incomplete")
 
     unresolved_dispositions = {
         "needs_review",
@@ -472,6 +491,8 @@ def report_reuse_blockers(
             "model_manifest_hash",
             "knowledge_db_version",
             "effective_rules_sha256",
+            "cache_epoch",
+            "runtime_authority_sha256",
         ):
             expected = str(expected_manifest.get(key) or "")
             if not expected:
@@ -505,7 +526,7 @@ def build_run_manifest(
 ) -> Dict[str, Any]:
     governance = dict(review_governance or {})
     return {
-        "schema_version": "zscope.run-manifest.v1",
+        "schema_version": "zscope.run-manifest.v2",
         "run_id": metadata.get("run_id") or "",
         "entry_function": entry_function,
         "project_id": metadata.get("project_id") or "",
@@ -534,6 +555,13 @@ def build_run_manifest(
         ),
         "knowledge_db_version": metadata.get("knowledge_db_version") or "",
         "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
+        "cache_epoch": RUNTIME_CACHE_EPOCH,
+        "runtime_authority_manifest": metadata.get("runtime_authority_manifest") or {},
+        "runtime_authority_sha256": (
+            (metadata.get("runtime_authority_manifest") or {}).get("content_sha256", "")
+            if isinstance(metadata.get("runtime_authority_manifest"), Mapping)
+            else ""
+        ),
         "finding_status": finding,
         "completeness": completeness,
         "issue_count": int(issue_count),
@@ -710,6 +738,17 @@ def apply_report_schema_v2(
         release_blockers.append("budget_policy_not_observe_only")
     if not invariant["valid"]:
         release_blockers.append("report_invariant_failed")
+    if P5_RELEASE_STATUS != "complete":
+        release_blockers.append("p5_stage_not_complete")
+    authority_manifest = report["run_manifest"].get("runtime_authority_manifest")
+    authority_valid = isinstance(authority_manifest, Mapping) and (
+        validate_runtime_authority_manifest(authority_manifest)[0]
+    )
+    if not authority_valid:
+        release_blockers.append("runtime_authority_manifest_invalid")
+    trace = report["run_manifest"].get("decision_trace")
+    if not isinstance(trace, Mapping) or trace.get("complete") is not True:
+        release_blockers.append("decision_trace_incomplete")
     report["run_manifest"]["release_gate_status"] = {
         "runtime_valid": not release_blockers,
         "quality_evaluation_pending": True,

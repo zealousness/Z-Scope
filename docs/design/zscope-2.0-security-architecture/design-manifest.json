@@ -1,8 +1,8 @@
 {
   "schema_version": "zscope.design-manifest.v1",
   "design_id": "zscope-2.0-security-architecture",
-  "design_version": "1.0.0",
-  "status": "approved",
+  "design_version": "1.0.1",
+  "status": "implementing",
   "created_at": "2026-08-17T00:00:00+08:00",
   "current_product_authority": "docs/architecture.md and current source/tests",
   "target_design_root": "docs/design/zscope-2.0-security-architecture",
@@ -17,37 +17,75 @@
   },
   "document_hashes": {
     "docs/design/README.md": "049ceb43d18afdbf21162b2ca4c0965026dc0b1cdeff6fd71f282d82fdb46a99",
-    "README.md": "cc636b1621d59025387f00c3a3bdc6af681e740206434654eefb7df4cbf16163",
-    "architecture.md": "5a0197bf5469ce18d468aabbfce706b952f1ced98c499a0e5a72cdb0136c801b",
-    "contracts.md": "d058a16eb13641ba951948943b8f400dcfc58baeb72e15a08e74d5e9c0f04745",
-    "deprecation-plan.md": "a2475243e5ba10b191b50152a08e27dd762c032eaaf0cfceb4ad6ac2c7f97b9a",
+    "README.md": "9eddbc9140b2f0f84007c86c04e90bafdd9b8828cc09775d4b9136779c20b27f",
+    "architecture.md": "f90f320bb72ad01e412ac10ac63f0081478493ee80c40fc3071875fbe52156d0",
+    "contracts.md": "b55c157bb35cb832ae1649c2292f0c23661c76e7366d531e0d9426be21469273",
+    "deprecation-plan.md": "17c3b18ae107170f92507195f435a7ae05230391e5413a5842572c704b526d82",
     "benchmark-v5.md": "41489f657e4cce712e4c8467646d6184f0a58c42759c9abf068f328e993a294e",
     "implementation-governance.md": "d662fb3a3024d876d1db30eab321c9bbfdb572fd0728831844d66c49e96dad1a",
-    "CHANGELOG.md": "ed40b740873a9222da29eaf8eee803df4e9938f21e6c2b9adee4fd370b26722a",
+    "CHANGELOG.md": "21cf40d754590b6a998e47d5d719f95072936acbbaf101ed20c191073abd75d5",
     "adr/0001-replace-vulnerability-analyzer-with-hypothesis-hunter.md": "2bfa0ddcb882802dba9585d4dac2b71535825041aaf0eba848146b9e21581809",
     "adr/0002-finite-security-spec-dsl-and-user-review.md": "cf970220db9d65700d0678feb548a5e58db476b249836f0f39cea19c9111a8b9",
     "adr/0003-internal-proof-kernel.md": "e45002873bdb7e8fe1c6212ad15bbc48c17a2a97143b3204c49be0e0871ded20",
     "adr/0004-benchmark-v5-and-truth-v16.md": "055fa3cababc2c517d92a668bf2262cae36c461729e1bcc3bb593165ec94e722",
     "adr/0005-zscope-2.0-breaking-cleanup.md": "bf704b5d48a25cd4a5f28e64ec9eae0bfaee6b8cb5995a132ad14366bd2cd855",
     "adr/0006-product-and-benchmark-governance-separation.md": "0e528a1d9ed0c7cc22f37cbd002ecba51a9ff17f2778264a35529b7b9f856240",
+    "adr/0007-freeze-proof-provider-quantifiers.md": "ad8107e5c4bac6d6e39132e84d4bba969ca7b225211498359847f0e0e2cb4c85",
     "phases/P0-baseline-and-design-freeze.md": "bd78a6e9489c6ae05161275bfc0574dbf12c1d9ec499e7598aa049e55563ce83",
-    "phases/P1-dead-code-and-workflow-cleanup.md": "bab8d0fef807bc24e95f41e307e17c1a8240ea5d1bc4998b2f331f824d217604",
-    "phases/P2-proof-kernel.md": "7fd62fbb14702e0039ba43a069c9efc60358a52eede0441c5cd9979c30fa6d48",
-    "phases/P3-security-spec-mining-and-review.md": "37c495545f0ed9534ae322904cb1fd42468e8a06daafc79eec3fe43a9145e106",
-    "phases/P4-hypothesis-driven-hunting.md": "8cf467ab50dd5e81cead88569ba22755d2061499285a47af878001a047a6b110",
-    "phases/P5-runtime-cutover.md": "1859da91841e60bc9e2a24836cdeb69ce25c00441c1967dc059de8c083120641",
+    "phases/P1-dead-code-and-workflow-cleanup.md": "1202aa0adea4c77ea282c053438239dde8829498f4d41dd3d5e8ff793a37e0cf",
+    "phases/P2-proof-kernel.md": "9f47fc56a72c20b7ab213c6b1565eadf1fb8a79a1d7f799ee9c85e2ea517e80e",
+    "phases/P3-security-spec-mining-and-review.md": "4eb9fa3c8163571bae0143ac50d1f5115329096ce70c15c92c843c8f48663205",
+    "phases/P4-hypothesis-driven-hunting.md": "ed77aed8a01443699828fecaed9ddc818564556de21cf6af5d2e9ea791d2ba93",
+    "phases/P5-runtime-cutover.md": "ec36ad15fda5495a8e7217ec83fd26a07855073a2795c5246c9f2cea6d72b583",
     "phases/P6-pilot-validation.md": "0cfcddd02820343931e8a988a753939c325861c17abdfcc36dec93b4da7fd93d",
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "3a48044dc7f68832fcb33431f8ee7c0e5c163d79bbaf34c994e0db37f3c428f3",
-    "acceptance/runtime-reachability-manifest.json": "735ad6e1cbebadd8aad9edb7e25bf4d9e9b845950245612bd169d99c11ba2b88",
+    "acceptance/runtime-reachability-manifest.json": "f8ac37ede0af7ef15aeb4a5aae30005ad83f51e9bc0cc6525530ed2a69761409",
+    "acceptance/p2-qualification-manifest.json": "7e0b606f4943a4d1fbc8bda8df87cbd4b6f9758810ecfae1eb840bfd6fd6f904",
+    "acceptance/p3-qualification-manifest.json": "cdfe7dae89e1d0f952fc01399e3ecfb9e81a5010ad56ba7d515da3c1a93daeb9",
+    "acceptance/p4-qualification-manifest.json": "4521fb25f21678d8028cc80f08c0bb5bbcd8430bb720a72272967da08cb55500",
+    "acceptance/p5-qualification-manifest.json": "168f78950dcfcb40a9e633c59f287a2a3d113b2df7cb03fb7cc1c91d9a99a9ee",
     "acceptance/baseline-artifact-manifest.json": "0e96b854c81e299f48b4bff7e687b1f6504ebb059114c853c844179473bc3d50",
     "acceptance/p0-execution-preflight.json": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b",
     "acceptance/p0-cold-baseline-summary.json": "ebd95c07957e3f0a4bef7c446f2e079caebfad1d6395e45ed4cc1b06476a3b49",
     "acceptance/p0-fast-regression-repair.json": "77820c8d4f11d830bafc6bb536f0ff8960a3e09f516d01edc976a81ddb5f98d8",
     "acceptance/p0-review.schema.json": "715e78ff5b96167b2f0c5c9b399a210c22a57ddbb23b001f59a8231b19003b92",
+    "acceptance/p1-review.schema.json": "5a1f487360011f2abd153d9c13bf98c81c00a43912b4a8eff14122e242fce795",
+    "acceptance/p2-review.schema.json": "089d6012803091fb8a3ec416917d52050699a61e337f183ba14d8d5bdbafa822",
+    "acceptance/p3-review.schema.json": "c1f2bfa0360a2da257f477678e4441ad4df7fd1ac9d844490638bae95c39f4a1",
+    "acceptance/p4-review.schema.json": "c08009657940f18b8642b2fa04bbe361706258ea7893a7c008ef03b6241eb3fe",
+    "acceptance/p5-review.schema.json": "6a303321d9eaf92ac641eab576da25b84a6974178f75f6351bad6f97a3044089",
+    "schemas/runtime-authority-manifest-v1.schema.json": "b0cc4b53d1f6534e9107f028aa370abae92acd7edaf8da1f73348ba0a1b0e12a",
+    "schemas/p5-release-status-v1.schema.json": "3ae0d9330f31ea3506150227f6e88c1b8b2d39ef6585da7e18660671e3fe4a7d",
+    "schemas/evidence-action-v2.schema.json": "270890b24e2ce30d3d8318fb26d27f85a380a25e2c728d193fafa4650996ca3d",
+    "schemas/evidence-certificate-v2.schema.json": "467ebe3917d9ebb265ee93bf9d09563ce65c02427ffb69f3367eaafbbc6e71d8",
+    "schemas/function-security-summary-v2.schema.json": "7df4b67e100eae9db9218341255265fa2e069a64c66651fd6c526e5ff736382e",
+    "schemas/program-proof-ir-v2.schema.json": "a1cb563af1fdcb56e1196617797800608c5952f25b5009cfb349234e202929ce",
+    "schemas/proof-check-result-v2.schema.json": "de5a1b0d71f99489491dbf6e9069e4a2cfc50f5d498415ee0af0304ac70b684c",
+    "schemas/proof-obligation-v2.schema.json": "c6e0ea4a0b4278f6f7049ce5a9c76bab2420dd54c9652a5c1274eac82c49ac08",
+    "schemas/security-spec-v2.schema.json": "2c977e264a36021c17af1250e9c3b16459e1e262f9dc6d521949636b21d673f0",
+    "schemas/security-spec-review-event-v2.schema.json": "6b2bce070f547e4cb32104176bb897ac149519a57331bba29fc271788b946c49",
+    "schemas/security-spec-qualification-v1.schema.json": "24981e4190c8d627cf4fd3d3a6fda50d6b19a049d23afd70aaadf6643efe7fc3",
+    "schemas/compiled-security-spec-v2.schema.json": "87f004296d6c6a6ba05446bb4c509c08390a8e4beedf9bce76bab9230d036f5f",
+    "schemas/security-spec-archive-v2.schema.json": "4cefcb3d49cc40ed5764c705fb13504b1d09a664adea3d77fc19bfb665db7332",
+    "schemas/localized-coverage-key-v2.schema.json": "4467752748c9726140a5f46243d885ce70d179a43c99203830b7f53da8eea9c9",
+    "schemas/attack-surface-audit-unit-v2.schema.json": "f35cd25a21ddcd132524d876d3628b5cb4319022faca402094fc2ee1ddde9d11",
+    "schemas/hypothesis-offer-v2.schema.json": "44b91d6a7621e39a8708c893c0592d72f9f89e0ac9edfb64f1c4337ae0b6771d",
+    "schemas/hypothesis-hunt-report-v2.schema.json": "a150bea822705ec73db14bcab10f61d3d3277758f0934e42c4b198b948d89963",
+    "schemas/security-hypothesis-v2.schema.json": "259c7fb3a148b5a6cc93cf3527de4cdb97278031b6474b121bbd5f03a8af19a0",
+    "schemas/hypothesis-coverage-observation-v1.schema.json": "4f458c78ef663c2a5f9677c40e0ea3094319c88840dee2b70cfa65af3aa54cf2",
     "acceptance/reviews/p0-product-architecture.json": "3f5041fcecd635c38f2722aaa59e8fae69addfb1fa3d0db2f53e437b08d91037",
     "acceptance/reviews/p0-proof-security.json": "be5df762187bfc920c14144f4b8ca382280bd503558bbaae64185c8ddcade530",
-    "acceptance/reviews/p0-independent-benchmark.json": "96348ecbbd6b4c75750ecc291b1f32c5e02d67a27904599d8d4c35cefd74bfe0"
+    "acceptance/reviews/p0-independent-benchmark.json": "96348ecbbd6b4c75750ecc291b1f32c5e02d67a27904599d8d4c35cefd74bfe0",
+    "acceptance/reviews/p1-product-architecture.json": "f9150e004ee32abb1ddd992ab838d609d7b64534611b31eadea60afdf54b75a3",
+    "acceptance/reviews/p2-contract-freeze-proof-security.json": "9febdfb5eda063cf585a198f922018b0ee82936b241a76ac083ec58267f1327d",
+    "acceptance/reviews/p2-final-proof-security.json": "02d1f586ed32d5b8657b5188a3bfd773528a6bc38402e26d4ecd841102c34ba9",
+    "acceptance/reviews/p3-product-architecture.json": "e0a6194c43c388d059f25f96a1beed6b27a55efda66d970940b8ed315efc854f",
+    "acceptance/reviews/p3-proof-security.json": "b5c4a62a7d33112b965a718840f132c9da824d3b2c270da816b6af13d6f90ee4",
+    "acceptance/reviews/p4-product-architecture.json": "e49db548806251c20f0d2498974e7381cf868078ce640f6f6c99cc586f7bacc0",
+    "acceptance/reviews/p4-proof-security.json": "a21d6418a6025b7a8d885eb0dbd544b4ff8170e6c6c9365f68c5436ccec7dee4",
+    "acceptance/reviews/p5-product-architecture.json": "c2139969585ea6c8b08944dc7d9a28b3e61617f4cb59454e98008218f748adf7",
+    "acceptance/reviews/p5-proof-security.json": "cd22df6d80f09b9611d8ef397307313ff5e447c3d1f443c9039593d740102114"
   },
   "adrs": [
     {"id": "ADR-0001", "status": "accepted-for-design", "affected_phases": ["P1", "P4", "P5"]},
@@ -55,15 +93,16 @@
     {"id": "ADR-0003", "status": "accepted-for-design", "affected_phases": ["P2", "P5", "P6"]},
     {"id": "ADR-0004", "status": "accepted-for-design", "affected_phases": ["E0", "P6", "P7"]},
     {"id": "ADR-0005", "status": "accepted-for-design", "affected_phases": ["P1", "P5"]},
-    {"id": "ADR-0006", "status": "accepted-for-design", "affected_phases": ["P0", "P1", "P2", "P3", "P4", "P5", "E0", "P6", "P7"]}
+    {"id": "ADR-0006", "status": "accepted-for-design", "affected_phases": ["P0", "P1", "P2", "P3", "P4", "P5", "E0", "P6", "P7"]},
+    {"id": "ADR-0007", "status": "accepted-for-design", "affected_phases": ["P2", "P5", "P6"]}
   ],
   "phase_status": {
     "P0": "complete",
-    "P1": "pending",
-    "P2": "pending",
-    "P3": "pending",
-    "P4": "pending",
-    "P5": "pending",
+    "P1": "complete",
+    "P2": "complete",
+    "P3": "complete",
+    "P4": "complete",
+    "P5": "complete",
     "E0": "pending",
     "P6": "pending",
     "P7": "pending"
@@ -92,6 +131,101 @@
         "path": "acceptance/reviews/p0-independent-benchmark.json",
         "reviewer_model": "claude-fable-5",
         "harness": "claude-code/2.1.233; permission_mode=read-only"
+      }
+    }
+  },
+  "phase_reviews": {
+    "P1": {
+      "schema": "acceptance/p1-review.schema.json",
+      "reviewed_commit": "9b7dc480533de051ec1ea533efae25cf3e58d1e2",
+      "reviewed_tree": "99b386fe89d9fe5ff30cdcd0f1aaed763c02ed57",
+      "artifacts": {
+        "product_architecture": {
+          "path": "acceptance/reviews/p1-product-architecture.json",
+          "reviewer_model": "claude-opus-5",
+          "harness": "claude-code/2.1.233; permission_mode=plan-read-only"
+        }
+      }
+    },
+    "P2": {
+      "schema": "acceptance/p2-review.schema.json",
+      "qualification_manifest": "acceptance/p2-qualification-manifest.json",
+      "reviewed_commit": "45ee3de1d637cc72434f656cac4b589aa5fc0750",
+      "reviewed_tree": "14eae235198d884da2f3a8975a4d5e3d643a0336",
+      "artifacts": {
+        "proof_security": {
+          "path": "acceptance/reviews/p2-final-proof-security.json",
+          "reviewer_model": "deepseek-v4-pro",
+          "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only"
+        }
+      }
+    },
+    "P3": {
+      "schema": "acceptance/p3-review.schema.json",
+      "qualification_manifest": "acceptance/p3-qualification-manifest.json",
+      "reviewed_commit": "e69bce195d948e2d0832919eb105d82ba1d49ed4",
+      "reviewed_tree": "edbd217754849a91e1990cafad7371532c23d695",
+      "artifacts": {
+        "product_architecture": {
+          "path": "acceptance/reviews/p3-product-architecture.json",
+          "reviewer_model": "claude-opus-5",
+          "harness": "claude-code/2.1.233; permission_mode=plan-read-only"
+        },
+        "proof_security": {
+          "path": "acceptance/reviews/p3-proof-security.json",
+          "reviewer_model": "deepseek-v4-pro",
+          "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only"
+        }
+      }
+    },
+    "P4": {
+      "schema": "acceptance/p4-review.schema.json",
+      "qualification_manifest": "acceptance/p4-qualification-manifest.json",
+      "reviewed_commit": "cc0e25f1fa34f0d9234f108a7d8fd22aa772ee58",
+      "reviewed_tree": "71a63eb25fbf6d5c65f1294fa948caa88b64f026",
+      "artifacts": {
+        "product_architecture": {
+          "path": "acceptance/reviews/p4-product-architecture.json",
+          "reviewer_model": "claude-opus-5",
+          "harness": "claude-code/2.1.233; permission_mode=plan-read-only"
+        },
+        "proof_security": {
+          "path": "acceptance/reviews/p4-proof-security.json",
+          "reviewer_model": "deepseek-v4-pro",
+          "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only"
+        }
+      }
+    },
+    "P5": {
+      "schema": "acceptance/p5-review.schema.json",
+      "qualification_manifest": "acceptance/p5-qualification-manifest.json",
+      "reviewed_commit": "1797389af9807c74c1261f1ad85a3a18b17c23e2",
+      "reviewed_tree": "325b3c6a6cf7caf85200088af1a17324adafeb5d",
+      "artifacts": {
+        "product_architecture": {
+          "path": "acceptance/reviews/p5-product-architecture.json",
+          "reviewer_model": "claude-opus-5",
+          "harness": "claude-code/2.1.233; permission_mode=plan-read-only"
+        },
+        "proof_security": {
+          "path": "acceptance/reviews/p5-proof-security.json",
+          "reviewer_model": "deepseek-v4-pro",
+          "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only"
+        }
+      }
+    }
+  },
+  "phase_entry_reviews": {
+    "P2": {
+      "schema": "acceptance/p2-review.schema.json",
+      "reviewed_commit": "3442de63f98f90c5ba0df8efa707e8cc540ebd87",
+      "reviewed_tree": "14c7937ef5e892c4ab89dfb3c47f37e930fcba30",
+      "artifacts": {
+        "proof_security": {
+          "path": "acceptance/reviews/p2-contract-freeze-proof-security.json",
+          "reviewer_model": "deepseek-v4-pro",
+          "harness": "dsh/0.1.0-rc.6; reasoning_effort=max; permission_mode=read-only"
+        }
       }
     }
   },

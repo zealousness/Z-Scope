@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from zscope.config.config import ConfigLoader, SemanticDedupConfig
+from zscope.config.config import ConfigLoader, ReportingConfig
 
 
 def _base_config(tmp_path):
@@ -30,11 +30,10 @@ def _base_config(tmp_path):
     }
 
 
-def test_semantic_dedup_config_defaults_to_llm_disabled() -> None:
-    config = SemanticDedupConfig()
+def test_reporting_config_has_no_report_time_dedup_policy() -> None:
+    config = ReportingConfig()
 
-    assert config.enabled is True
-    assert config.llm_enabled is False
+    assert not hasattr(config, "semantic_dedup")
 
 
 def test_reporting_policy_comes_from_bundled_runtime_spec(tmp_path) -> None:
@@ -43,8 +42,7 @@ def test_reporting_policy_comes_from_bundled_runtime_spec(tmp_path) -> None:
 
     config = ConfigLoader.load(str(path))
 
-    assert config.reporting.semantic_dedup.enabled is True
-    assert config.reporting.semantic_dedup.llm_enabled is False
+    assert not hasattr(config.reporting, "semantic_dedup")
     assert config.runtime_provenance.version == 1
     assert len(config.runtime_provenance.sha256) == 64
 
