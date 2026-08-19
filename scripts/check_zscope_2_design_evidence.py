@@ -819,6 +819,16 @@ def validate_phase_gates(
             errors.append("P5 completion requires product_architecture and proof_security reviews")
         elif not isinstance(p5_review.get("qualification_manifest"), str):
             errors.append("P5 completion requires a qualification manifest binding")
+    if raw_manifest_phases.get("P6") in {"in_progress", "complete"} and any(
+        raw_manifest_phases.get(phase) != "complete"
+        for phase in ("P1", "P2", "P3", "P4", "P5", "E0")
+    ):
+        errors.append("P6 requires P1-P5 and E0 complete")
+    if (
+        raw_manifest_phases.get("P7") in {"in_progress", "complete"}
+        and raw_manifest_phases.get("P6") != "complete"
+    ):
+        errors.append("P7 requires P6 complete")
 
     approval = manifest.get("approval")
     review_roles = manifest.get("review_roles")
