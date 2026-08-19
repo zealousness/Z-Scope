@@ -48,6 +48,11 @@ DISPUTED_IDS = {
     "REAL-016",
 }
 
+OPENCODE_VERSION = "1.18.18"
+OPENCODE_MODEL_ID = "alibaba-cn/glm-5.2"
+OPENCODE_MODEL_IDENTITY = f"{OPENCODE_MODEL_ID}:max"
+OPENCODE_RELEASE_ARCHIVE_SHA256 = "05914655854c1dab48f0d52a8af8f74967e4e26daf87dfe6534f57e799a853d7"
+
 MATERIAL_DECISION_FIELDS = (
     "contract_kind",
     "disposition",
@@ -148,7 +153,7 @@ def _decision_schema_for_model() -> dict[str, Any]:
             "schema_version": {"const": DECISION_SCHEMA_VERSION},
             "packet_uid": {"type": "string"},
             "packet_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "reviewer_role": {"enum": ["primary_fable", "primary_deepseek", "arbiter_opus"]},
+            "reviewer_role": {"enum": ["primary_fable", "primary_glm", "arbiter_opus"]},
             "reviewer_model": {"type": "string"},
             "contract_kind": {
                 "enum": [
@@ -317,7 +322,7 @@ def _extract_claude_decision(stdout: str) -> Mapping[str, Any]:
     raise E0GovernanceError("Claude did not return a structured review decision")
 
 
-def _normalize_deepseek_json_artifact(stdout: str) -> str:
+def _normalize_opencode_json_artifact(stdout: str) -> str:
     """Accept direct JSON or one exact JSON fence, never prose extraction."""
 
     stripped = stdout.strip()
@@ -342,10 +347,10 @@ def _normalize_deepseek_json_artifact(stdout: str) -> str:
     return body
 
 
-def _extract_deepseek_decision(stdout: str) -> Mapping[str, Any]:
+def _extract_opencode_decision(stdout: str) -> Mapping[str, Any]:
     value = json.loads(stdout.strip())
     if not isinstance(value, Mapping):
-        raise E0GovernanceError("DeepSeek did not return a JSON object")
+        raise E0GovernanceError("OpenCode GLM did not return a JSON object")
     return dict(value)
 
 
@@ -374,11 +379,11 @@ def assert_no_hidden_reasoning_output(stdout: str) -> None:
 
 
 def _validated_decision_from_stdout(stdout: str, *, reviewer: str) -> Mapping[str, Any]:
-    artifact = _normalize_deepseek_json_artifact(stdout) if reviewer == "deepseek" else stdout
+    artifact = _normalize_opencode_json_artifact(stdout) if reviewer == "glm" else stdout
     assert_no_hidden_reasoning_output(artifact)
     return (
-        _extract_deepseek_decision(artifact)
-        if reviewer == "deepseek"
+        _extract_opencode_decision(artifact)
+        if reviewer == "glm"
         else _extract_claude_decision(artifact)
     )
 
@@ -506,43 +511,46 @@ def _claude_arguments(reviewer: str) -> list[str]:
     ]
 
 
-def _deepseek_patch_text() -> str:
-    """Return the sealed DSH overlay, including its auditable provider route."""
+def _opencode_inline_config() -> str:
+    """Return the sealed, tool-free OpenCode reviewer configuration."""
+
+    return json.dumps(
+        {
+            "agent": {
+                "e0-reviewer": {
+                    "description": "Isolated E0 benchmark contract reviewer",
+                    "mode": "primary",
+                    "prompt": (
+                        "Use only the read-only packet and schema files in the current "
+                        "isolated directory. Never use external knowledge. Return exactly "
+                        "the requested JSON object without prose or hidden reasoning."
+                    ),
+                    "permission": {
+                        "*": "deny",
+                        "read": "allow",
+                        "external_directory": "deny",
+                    },
+                }
+            },
+            "permission": {
+                "*": "deny",
+                "read": "allow",
+                "external_directory": "deny",
+            },
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _opencode_review_request() -> str:
     return (
-        "- id: agent-default-model\n"
-        "  config:\n"
-        "    provider: openai\n"
-        "    model: deepseek-v4-pro\n"
-        "    reasoningEffort: max\n"
-        "- id: system-prompt\n"
-        "  config:\n"
-        "    persona: >-\n"
-        "      You are an isolated benchmark contract reviewer. Only use the\n"
-        "      read-only packet.json and decision-schema.json in the current\n"
-        "      directory. Never use external knowledge or any other tool. Return\n"
-        "      exactly the requested JSON object with no markdown or prose wrapper.\n"
-        "- id: tool-web\n"
-        "  disabled: true\n"
-        "- id: tool-fs-search\n"
-        "  disabled: true\n"
-        "- id: tool-pwsh\n"
-        "  disabled: true\n"
-        "- id: tool-jobs\n"
-        "  disabled: true\n"
-        "- id: tool-subagent\n"
-        "  disabled: true\n"
-        "- id: tool-subagent-fork\n"
-        "  disabled: true\n"
-        "- id: tool-workflow\n"
-        "  disabled: true\n"
-        "- id: tool-ralph\n"
-        "  disabled: true\n"
-        "- id: tool-str-replace-editor\n"
-        "  disabled: true\n"
-        "- id: tool-todo\n"
-        "  disabled: true\n"
-        "- id: tool-goal\n"
-        "  disabled: true\n"
+        "Read review-instructions.txt, packet.json, and decision-schema.json from "
+        "the isolated current directory. Follow those instructions, review only "
+        "that packet, and return exactly one JSON object matching the schema. Set "
+        f"reviewer_role=primary_glm and reviewer_model={OPENCODE_MODEL_IDENTITY}. "
+        "Do not use web search or external knowledge."
     )
 
 
@@ -555,19 +563,19 @@ def _run_model(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if reviewer == "fable":
         role, model = "primary_fable", "claude-fable-5"
-    elif reviewer == "deepseek":
-        role, model = "primary_deepseek", "deepseek-v4-pro:max"
+    elif reviewer == "glm":
+        role, model = "primary_glm", OPENCODE_MODEL_IDENTITY
     elif reviewer == "opus":
         role, model = "arbiter_opus", "claude-opus-5"
     else:
         raise E0GovernanceError(f"unsupported reviewer: {reviewer}")
 
     claude_command = shutil.which("claude.cmd" if os.name == "nt" else "claude")
-    dsh_command = shutil.which("dsh.cmd" if os.name == "nt" else "dsh")
+    opencode_command = shutil.which("opencode.cmd" if os.name == "nt" else "opencode")
     if reviewer in {"fable", "opus"} and not claude_command:
         raise E0GovernanceError("Claude Code executable is unavailable")
-    if reviewer == "deepseek" and not dsh_command:
-        raise E0GovernanceError("DeepSeek Harness executable is unavailable")
+    if reviewer == "glm" and not opencode_command:
+        raise E0GovernanceError("OpenCode executable is unavailable")
 
     prompt = _prompt(packet, role=role, model=model, primary_decisions=primary_decisions)
     with tempfile.TemporaryDirectory(prefix="zscope-e0-review-") as raw_temp:
@@ -578,26 +586,27 @@ def _run_model(
         if primary_decisions:
             _json_dump(temp_root / "primary-decisions.json", list(primary_decisions))
 
-        patch_path: Path | None = None
+        opencode_config = ""
         if reviewer in {"fable", "opus"}:
             command = [str(claude_command), *_claude_arguments(reviewer)]
         else:
-            patch_path = temp_root / "deepseek-max.patch.yml"
-            patch_path.write_text(
-                _deepseek_patch_text(),
-                encoding="utf-8",
-            )
+            opencode_config = _opencode_inline_config()
+            (temp_root / "opencode-config").mkdir()
             command = [
-                str(dsh_command),
-                "--profile",
-                "headless",
-                "--patch",
-                str(patch_path),
-                "Read review-instructions.txt, packet.json, and decision-schema.json from "
-                "the isolated current directory. Follow those instructions, review only "
-                "that packet, and return exactly one JSON object matching the schema. Set "
-                "reviewer_role=primary_deepseek and reviewer_model=deepseek-v4-pro:max. "
-                "Do not use web search or external knowledge.",
+                str(opencode_command),
+                "run",
+                "--pure",
+                "--model",
+                OPENCODE_MODEL_ID,
+                "--variant",
+                "max",
+                "--agent",
+                "e0-reviewer",
+                "--format",
+                "default",
+                "--dir",
+                str(temp_root),
+                _opencode_review_request(),
             ]
 
         env = {
@@ -607,7 +616,12 @@ def _run_model(
             and "BENCHMARK_TRUTH" not in key.upper()
             and "SCORER" not in key.upper()
         }
-        env["DSH_PERMISSION_MODE"] = "read-only"
+        if reviewer == "glm":
+            env["OPENCODE_CONFIG_CONTENT"] = opencode_config
+            env["OPENCODE_CONFIG_DIR"] = str(temp_root / "opencode-config")
+            env["OPENCODE_AUTO_SHARE"] = "false"
+            env["OPENCODE_DISABLE_AUTOUPDATE"] = "true"
+            env["OPENCODE_DISABLE_PRUNE"] = "true"
         completed = subprocess.run(
             command,
             input=prompt if reviewer in {"fable", "opus"} else None,
@@ -620,7 +634,6 @@ def _run_model(
             check=False,
             timeout=1800,
         )
-        deepseek_patch_sha256 = sha256_file(patch_path) if patch_path is not None else ""
         raw = {
             "schema_version": "zscope.range-v16-review-raw-envelope.v1",
             "reviewer_role": role,
@@ -634,11 +647,22 @@ def _run_model(
                 [Path(command[0]).name, *command[1:]]
                 if reviewer in {"fable", "opus"}
                 else [
-                    "dsh",
-                    "--profile",
-                    "headless",
-                    "--patch",
-                    f"<ephemeral-patch-sha256:{deepseek_patch_sha256}>",
+                    "opencode",
+                    "run",
+                    "--pure",
+                    "--model",
+                    OPENCODE_MODEL_ID,
+                    "--variant",
+                    "max",
+                    "--agent",
+                    "e0-reviewer",
+                    "--format",
+                    "default",
+                    "--dir",
+                    "<isolated-review-dir>",
+                    f"<release-archive-sha256:{OPENCODE_RELEASE_ARCHIVE_SHA256}>",
+                    f"<inline-config-sha256:{sha256_value(opencode_config)}>",
+                    f"<prompt-sha256:{sha256_value(command[-1])}>",
                 ]
             ),
             "exit_code": completed.returncode,
@@ -653,7 +677,7 @@ def _run_model(
         try:
             decision = _validated_decision_from_stdout(completed.stdout, reviewer=reviewer)
         except (json.JSONDecodeError, E0GovernanceError) as exc:
-            if reviewer != "deepseek":
+            if reviewer != "glm":
                 raise
             format_prompts = (
                 "Read prior-output.txt and decision-schema.json in the isolated current "
@@ -661,15 +685,15 @@ def _run_model(
                 "the schema without changing its substantive decision. Your entire final "
                 "response must be that object: the first non-whitespace character must be "
                 "{ and the last must be }. Do not add prose, Markdown, or backticks. Set "
-                "reviewer_role=primary_deepseek and "
-                "reviewer_model=deepseek-v4-pro:max.",
+                "reviewer_role=primary_glm and "
+                f"reviewer_model={OPENCODE_MODEL_IDENTITY}.",
                 "The previous formatting attempt still violated the output protocol. Read "
                 "prior-output.txt and decision-schema.json in the isolated current "
                 "directory and return the same substantive decision as one schema-matching "
                 "JSON object. Emit no explanation and no Markdown. The first non-whitespace "
                 "character of your entire response must be { and the last must be }. Set "
-                "reviewer_role=primary_deepseek and "
-                "reviewer_model=deepseek-v4-pro:max.",
+                "reviewer_role=primary_glm and "
+                f"reviewer_model={OPENCODE_MODEL_IDENTITY}.",
             )
             prior_stdout = completed.stdout
             for attempt_index, format_prompt in enumerate(format_prompts):
@@ -679,11 +703,19 @@ def _run_model(
                 )
                 retry = subprocess.run(
                     [
-                        str(dsh_command),
-                        "--profile",
-                        "headless",
-                        "--patch",
-                        str(patch_path),
+                        str(opencode_command),
+                        "run",
+                        "--pure",
+                        "--model",
+                        OPENCODE_MODEL_ID,
+                        "--variant",
+                        "max",
+                        "--agent",
+                        "e0-reviewer",
+                        "--format",
+                        "default",
+                        "--dir",
+                        str(temp_root),
                         format_prompt,
                     ],
                     cwd=temp_root,
@@ -706,11 +738,11 @@ def _run_model(
                 if retry.returncode != 0:
                     if raw_output_path is not None:
                         _json_dump(raw_output_path, raw)
-                    raise E0GovernanceError("DeepSeek format-only retry failed") from exc
+                    raise E0GovernanceError("OpenCode GLM format-only retry failed") from exc
                 try:
                     decision = _validated_decision_from_stdout(
                         retry.stdout,
-                        reviewer="deepseek",
+                        reviewer="glm",
                     )
                     break
                 except (json.JSONDecodeError, E0GovernanceError) as retry_exc:
@@ -718,7 +750,7 @@ def _run_model(
                         if raw_output_path is not None:
                             _json_dump(raw_output_path, raw)
                         raise E0GovernanceError(
-                            "DeepSeek format retries did not produce a JSON artifact"
+                            "OpenCode GLM format retries did not produce a JSON artifact"
                         ) from retry_exc
                     prior_stdout = retry.stdout
         try:
@@ -742,7 +774,7 @@ def _run_model(
                 require_resolvable_evidence=reviewer == "opus",
             )
         except E0GovernanceError as exc:
-            if reviewer != "deepseek":
+            if reviewer != "glm":
                 if raw_output_path is not None:
                     _json_dump(raw_output_path, raw)
                 raise
@@ -770,11 +802,19 @@ def _run_model(
             )
             retry = subprocess.run(
                 [
-                    str(dsh_command),
-                    "--profile",
-                    "headless",
-                    "--patch",
-                    str(patch_path),
+                    str(opencode_command),
+                    "run",
+                    "--pure",
+                    "--model",
+                    OPENCODE_MODEL_ID,
+                    "--variant",
+                    "max",
+                    "--agent",
+                    "e0-reviewer",
+                    "--format",
+                    "default",
+                    "--dir",
+                    str(temp_root),
                     semantic_prompt,
                 ],
                 cwd=temp_root,
@@ -797,12 +837,12 @@ def _run_model(
             if retry.returncode != 0:
                 if raw_output_path is not None:
                     _json_dump(raw_output_path, raw)
-                raise E0GovernanceError("DeepSeek grounding-only retry failed") from exc
+                raise E0GovernanceError("OpenCode GLM grounding-only retry failed") from exc
             raw["stdout"] = retry.stdout
             try:
                 decision = _validated_decision_from_stdout(
                     retry.stdout,
-                    reviewer="deepseek",
+                    reviewer="glm",
                 )
                 validate_review_decision(
                     decision,
@@ -817,7 +857,7 @@ def _run_model(
                     != original_projection_sha256
                 ):
                     raise E0GovernanceError(
-                        "DeepSeek grounding-only retry changed substantive fields"
+                        "OpenCode GLM grounding-only retry changed substantive fields"
                     )
                 validate_decision_against_packet(
                     decision,
@@ -845,8 +885,8 @@ def _packet_files(path: Path) -> list[Path]:
 def _reviewer_identity(reviewer: str) -> tuple[str, str]:
     if reviewer == "fable":
         return "primary_fable", "claude-fable-5"
-    if reviewer == "deepseek":
-        return "primary_deepseek", "deepseek-v4-pro:max"
+    if reviewer == "glm":
+        return "primary_glm", OPENCODE_MODEL_IDENTITY
     if reviewer == "opus":
         return "arbiter_opus", "claude-opus-5"
     raise E0GovernanceError(f"unsupported reviewer: {reviewer}")
@@ -855,13 +895,30 @@ def _reviewer_identity(reviewer: str) -> tuple[str, str]:
 def _validate_command_identity(values: Any, *, reviewer: str) -> None:
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise E0GovernanceError("review command identity is invalid")
-    if reviewer == "deepseek":
+    if reviewer == "glm":
         if (
-            len(values) != 5
-            or values[:4] != ["dsh", "--profile", "headless", "--patch"]
-            or not re.fullmatch(r"<ephemeral-patch-sha256:[0-9a-f]{64}>", values[4])
+            len(values) != 16
+            or values[:13]
+            != [
+                "opencode",
+                "run",
+                "--pure",
+                "--model",
+                OPENCODE_MODEL_ID,
+                "--variant",
+                "max",
+                "--agent",
+                "e0-reviewer",
+                "--format",
+                "default",
+                "--dir",
+                "<isolated-review-dir>",
+            ]
+            or values[13] != f"<release-archive-sha256:{OPENCODE_RELEASE_ARCHIVE_SHA256}>"
+            or values[14] != f"<inline-config-sha256:{sha256_value(_opencode_inline_config())}>"
+            or values[15] != f"<prompt-sha256:{sha256_value(_opencode_review_request())}>"
         ):
-            raise E0GovernanceError("DeepSeek command identity is invalid")
+            raise E0GovernanceError("OpenCode GLM command identity is invalid")
         return
     if (
         len(values) != 16
@@ -942,7 +999,7 @@ def _validate_existing_primary(
         if retry is None:
             continue
         if (
-            reviewer != "deepseek"
+            reviewer != "glm"
             or not isinstance(retry, Mapping)
             or set(retry)
             != {
@@ -961,7 +1018,7 @@ def _validate_existing_primary(
     semantic_retry = raw.get("semantic_retry")
     if semantic_retry is not None:
         if (
-            reviewer != "deepseek"
+            reviewer != "glm"
             or not isinstance(semantic_retry, Mapping)
             or set(semantic_retry)
             != {
@@ -1105,9 +1162,9 @@ def _primary_decisions(
     *,
     truth_id: str,
     fable_dir: Path,
-    deepseek_dir: Path,
+    glm_dir: Path,
 ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
-    for reviewer, root in (("fable", fable_dir), ("deepseek", deepseek_dir)):
+    for reviewer, root in (("fable", fable_dir), ("glm", glm_dir)):
         _validate_existing_primary(
             packet,
             reviewer=reviewer,
@@ -1116,7 +1173,7 @@ def _primary_decisions(
         )
     return (
         _load_decision(fable_dir / "decisions" / f"{truth_id}.json"),
-        _load_decision(deepseek_dir / "decisions" / f"{truth_id}.json"),
+        _load_decision(glm_dir / "decisions" / f"{truth_id}.json"),
     )
 
 
@@ -1172,32 +1229,32 @@ def run_arbitration(args: argparse.Namespace) -> int:
     evidence_deficits: set[str] = set()
     work: list[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]] = []
     fable_dir = args.fable_dir.resolve(strict=True)
-    deepseek_dir = args.deepseek_dir.resolve(strict=True)
+    glm_dir = args.glm_dir.resolve(strict=True)
     for path in _packet_files(args.packet_dir.resolve()):
         packet = load_json_strict(path)
         if not isinstance(packet, Mapping):
             raise E0GovernanceError(f"packet must be an object: {path}")
         validate_review_packet(packet)
         truth_id = _packet_id(packet)
-        fable, deepseek = _primary_decisions(
+        fable, glm = _primary_decisions(
             packet,
             truth_id=truth_id,
             fable_dir=fable_dir,
-            deepseek_dir=deepseek_dir,
+            glm_dir=glm_dir,
         )
-        disagreement_fields = decision_disagreement_fields(fable, deepseek)
+        disagreement_fields = decision_disagreement_fields(fable, glm)
         if disagreement_fields:
             disagreements.add(truth_id)
         evidence_deficit = any(
             decision.get("contract_kind") in {"concrete_trigger", "public_api_contract"}
             and not decision.get("evidence_refs")
-            for decision in (fable, deepseek)
+            for decision in (fable, glm)
         )
         if evidence_deficit:
             evidence_deficits.add(truth_id)
         if truth_id not in DISPUTED_IDS and not disagreement_fields and not evidence_deficit:
             continue
-        work.append((packet, truth_id, (fable, deepseek)))
+        work.append((packet, truth_id, (fable, glm)))
     records: list[dict[str, Any]] = []
     completed_count = 0
     for offset in range(0, len(work), args.workers):
@@ -1248,7 +1305,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     primary = subparsers.add_parser("primary")
-    primary.add_argument("--reviewer", required=True, choices=("fable", "deepseek"))
+    primary.add_argument("--reviewer", required=True, choices=("fable", "glm"))
     primary.add_argument("--packet-dir", required=True, type=Path)
     primary.add_argument("--output-dir", required=True, type=Path)
     primary.add_argument("--workers", type=int, default=1, choices=range(1, 9))
@@ -1257,7 +1314,7 @@ def _parser() -> argparse.ArgumentParser:
     arbitration = subparsers.add_parser("arbitrate")
     arbitration.add_argument("--packet-dir", required=True, type=Path)
     arbitration.add_argument("--fable-dir", required=True, type=Path)
-    arbitration.add_argument("--deepseek-dir", required=True, type=Path)
+    arbitration.add_argument("--glm-dir", required=True, type=Path)
     arbitration.add_argument("--output-dir", required=True, type=Path)
     arbitration.add_argument("--workers", type=int, default=1, choices=range(1, 9))
     arbitration.add_argument("--resume", action="store_true")

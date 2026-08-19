@@ -77,7 +77,12 @@ def _validate_review_bundle(root: Path, manifest: Mapping[str, Any]) -> str:
         if not isinstance(record, Mapping) or set(record) != {"path", "size", "sha256"}:
             raise E0GovernanceError("protected review bundle file binding is invalid")
         relative = str(record.get("path") or "")
-        if not relative or relative in seen or "\\" in relative:
+        if (
+            not relative
+            or relative in seen
+            or "\\" in relative
+            or Path(relative).parts[0] not in {"fable", "glm", "opus"}
+        ):
             raise E0GovernanceError("protected review bundle path is invalid")
         seen.add(relative)
         path = (root / relative).resolve(strict=True)
@@ -220,7 +225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise E0GovernanceError("review provenance bundle hash mismatch")
         for reviewer, expected_count in (
             ("fable", 136),
-            ("deepseek", 136),
+            ("glm", 136),
             ("opus", args.opus_review_count),
         ):
             manifest = _object(args.review_bundle.parent / reviewer / "manifest.json")
