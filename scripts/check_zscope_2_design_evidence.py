@@ -280,6 +280,44 @@ def _git_blob_sha256(repo_root: Path, commit: str, raw_path: str) -> str | None:
     return hashlib.sha256(blob).hexdigest() if blob is not None else None
 
 
+def _phase_completion_boundary(
+    repo_root: Path,
+    *,
+    reviewed_commit: str,
+    phase: str,
+) -> str | None:
+    """Return the first descendant that records ``phase`` as complete.
+
+    A completed phase's review-only window ends at its completion commit. Later
+    phases may legitimately change product or governance files and must not
+    retroactively invalidate the sealed review window.
+    """
+
+    revisions = _git_text(
+        repo_root,
+        "rev-list",
+        "--reverse",
+        "--ancestry-path",
+        f"{reviewed_commit}..HEAD",
+        "--",
+        DESIGN_MANIFEST.as_posix(),
+    )
+    if revisions is None:
+        return None
+    for commit in revisions.splitlines():
+        blob = _git_blob(repo_root, commit, DESIGN_MANIFEST.as_posix())
+        if blob is None:
+            continue
+        try:
+            candidate = json.loads(blob.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        phase_status = candidate.get("phase_status")
+        if isinstance(phase_status, dict) and phase_status.get(phase) == "complete":
+            return commit
+    return None
+
+
 def validate_formal_review_documents(
     manifest: Mapping[str, Any],
     reviews: Mapping[str, Any],
@@ -1440,8 +1478,25 @@ def validate_design_evidence(
                     report.error(
                         "P5 review tree mismatch; " f"expected {reviewed_tree}, got {actual_tree}"
                     )
-                changed = _git_text(
-                    repo_root, "diff", "--name-only", f"{reviewed_commit}..HEAD", "--"
+                completion_commit = _phase_completion_boundary(
+                    repo_root,
+                    reviewed_commit=reviewed_commit,
+                    phase="P5",
+                )
+                if completion_commit is None:
+                    report.error(
+                        "P5 completion commit is unavailable in reviewed-candidate history"
+                    )
+                changed = (
+                    _git_text(
+                        repo_root,
+                        "diff",
+                        "--name-only",
+                        f"{reviewed_commit}..{completion_commit}",
+                        "--",
+                    )
+                    if completion_commit is not None
+                    else None
                 )
                 if changed is not None:
                     allowed = {
@@ -1551,15 +1606,15 @@ def validate_design_evidence(
                         report.checked_files.add(artifact_path.as_posix())
                     elif historical == expected:
                         report.checked_files.add(f"{artifact_commit}:{raw_path}")
-                    elif raw_path == (
-                        DESIGN_RELATIVE_ROOT
-                        / "acceptance/runtime-reachability-manifest.json"
-                    ).as_posix():
+                    elif (
+                        raw_path
+                        == (
+                            DESIGN_RELATIVE_ROOT / "acceptance/runtime-reachability-manifest.json"
+                        ).as_posix()
+                    ):
                         document_hashes = manifest.get("document_hashes")
                         current_binding = (
-                            document_hashes.get(
-                                "acceptance/runtime-reachability-manifest.json"
-                            )
+                            document_hashes.get("acceptance/runtime-reachability-manifest.json")
                             if isinstance(document_hashes, dict)
                             else None
                         )
