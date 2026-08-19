@@ -1,0 +1,48 @@
+{
+  "schema_version": "zscope.defect-taxonomy.v1",
+  "matcher_version": "zscope.truth-matcher.v2",
+  "normalization": "lowercase ASCII; non-alphanumeric runs become underscore",
+  "exact_category_policy": "Any explicit finding category/defect_family and truth category may match exactly; free text and truth keywords never establish a category.",
+  "families": {
+    "allocation_limit": [
+      "resource_allocation_without_limits",
+      "unchecked_allocation",
+      "excessive_allocation"
+    ],
+    "bounds": [
+      "bounds",
+      "size_limit_mismatch",
+      "out_of_bounds_write",
+      "buffer_overflow",
+      "heap_overflow",
+      "out_of_range_pointer_offset",
+      "buffer_overread",
+      "buffer_over_read",
+      "buffer_underread",
+      "buffer_underwrite",
+      "buffer_underflow"
+    ],
+    "busy_loop": ["busy_loop", "infinite_loop", "spin_loop"],
+    "deadlock": ["deadlock", "signal_deadlock", "lock_order_deadlock"],
+    "dynamic_array_race": ["dynamic_array_race", "race", "data_race"],
+    "file_type_validation": ["file_type_validation", "incorrect_validation_order"],
+    "integer_conversion": ["integer_overflow", "signed_unsigned", "signed_unsigned_conversion"],
+    "permission": ["permission", "incorrect_permission_check"],
+    "race": [
+      "race",
+      "data_race",
+      "shared_state_race",
+      "refcount_race"
+    ],
+    "resource_leak": [
+      "memory_leak",
+      "resource_leak",
+      "fd_leak",
+      "file_descriptor_leak",
+      "optimization_resource_lifecycle",
+      "thread_cache_leak"
+    ],
+    "shared_state_race": ["unsynchronized_shared_state", "race", "data_race", "shared_state_race"],
+    "use_after_free": ["use_after_free", "expired_pointer", "stale_pointer"]
+  }
+}

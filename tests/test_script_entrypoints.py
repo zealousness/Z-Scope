@@ -22,6 +22,13 @@ import pytest
         "scripts/score_validator_replay_experiment.py",
         "scripts/score_discovery_ablation_experiment.py",
         "scripts/verify_balanced_default_attestation.py",
+        "scripts/build_e0_attestation.py",
+        "scripts/build_e0_review_manifest.py",
+        "scripts/build_e0_review_provenance.py",
+        "scripts/run_e0_reviewers.py",
+        "scripts/verify_e0_attestation.py",
+        "scripts/verify_e0_review_provenance.py",
+        "scripts/score_range_v5.py",
     ),
 )
 def test_direct_script_help_uses_worktree(relative_path: str, tmp_path: Path) -> None:

@@ -17,6 +17,24 @@ zscope-benchmark run --language c_cpp --mode formal --runs 5
 
 `test/range/benchmark/ground_truth.json` 是唯一评分真源。当前 v15 只用于描述性回归；新 formal 结果必须绑定独立签发的 v16 truth contract。任一版本的 `total_vulnerabilities` 都必须与记录数及唯一 ID 一致，文档不维护另一份漏洞表。
 
+E0完成后，v16位于独立的`benchmark/v16/`治理目录，使用`zscope.range-truth-contract.v2`和动态confirmable分母；`pattern_model`只进入design-risk/with-review指标，`retired`不评分。`scripts/score_range_v5.py`产生`zscope.benchmark.v5`，正式五轮聚合产生`zscope.formal-benchmark.v4`。v4/v15保持只读，不能与v5/v16直接宣称召回回归；缺少受保护E0 attestation时formal v5必须fail closed。
+
+单轮formal v5还要求Security Spec、Hypothesis Hunter、Proof Engine、provider usage、token守恒和answer-isolation字段齐全；paired结果必须逐项绑定Truth v16中的pair UID、manifest/source hash及两个扫描报告hash。五轮聚合必须显式传入冻结基线precision，用于执行policy v2的precision-delta门禁：
+
+```bash
+python scripts/score_range_v5.py aggregate \
+  --trial run-1/score-v5.json --trial run-2/score-v5.json \
+  --trial run-3/score-v5.json --trial run-4/score-v5.json \
+  --trial run-5/score-v5.json \
+  --e0-attestation e0-attestation.json \
+  --workflow-run-id "$TRUSTED_E0_RUN_ID" \
+  --head-sha "$TRUSTED_E0_HEAD_SHA" \
+  --baseline-actionable-precision 0.95 \
+  --output formal-v4.json
+```
+
+`--workflow-run-id`和`--head-sha`必须来自调用方已验证的受保护GitHub artifact元数据，不能从attestation正文自取。输入JSON拒绝重复key和非有限数。
+
 每轮从 fixture 复制严格 allowlist：`src/**`、`include/**`、`internal/**`、`CMakeLists.txt` 和中性 README。整个 `benchmark/`、报告、缓存、构建目录和本地运行历史都不能进入 scan-input。health/index/scan 环境不含 truth 路径，报告落盘后才由独立 score 子进程读取 truth。Range 仅是分布内开发回归集；它没有 safe control，也不能代替跨项目 public external、sealed 与 shadow 结果。
 
 `benchmark/deterministic_entries.json` 只服务无 LLM 的确定性候选回归，不是 fixed-entry 正式协议，也不参与自动入口发现。
@@ -77,6 +95,8 @@ formal 与 sealed 还必须在 rootless Podman/Docker 容器中执行 scanner。
 
 受保护的 formal 环境必须配置 `Z_SCOPE_BENCHMARK_OCI_IMAGE`（`repository@sha256:<64-hex>`）、`Z_SCOPE_BENCHMARK_OCI_NETWORK` 和 `Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER`。该 internal network 在启动 scanner 前只能包含一个带 policy digest 的模型 endpoint proxy；缺少变量、rootless 证明、镜像 digest 或实际 inspect 证据都会直接阻断 formal 运行。
 
+Podman 4.x 的 `network inspect` 可能不返回容器成员。此时 runner 必须额外使用带精确 network filter 的 `podman ps --all --format json` 重建成员快照，并验证每个返回容器都显式绑定目标网络；若两个来源都提供成员，则集合必须一致。成员快照进入 evidence hash，缺失 ID、网络归属、唯一 proxy 或执行阶段 scanner/proxy 二元成员关系时继续 fail closed。
+
 计时口径显式拆分：`scan_wall_seconds` 来自扫描报告的 `summary.batch_wall_seconds`，用于跨轮比较和 rollout 的 p95 回退判断；`end_to_end_wall_seconds` 是 runner 从输入准备到评分完成的总耗时。兼容字段 `wall_seconds` 等于 `scan_wall_seconds`。artifact 另记录验证队列 wall time、session/API call 数和实际 Validator/LLM 并发配置。
 
 质量也必须按两种视图读取：`confirmed_recall`/`confirmed_precision` 只统计已确认 finding，`with_review_recall`/`with_review_precision` 将 needs-review 纳入人工复核队列。旧顶层 `recall` 仅是 confirmed 视图的兼容字段，不能称为“总召回”；两种视图的完整计数保存在 `quality_views`。Range 没有 true negatives，`FP/(TP+FP)` 必须称 actionable FDR，不能称经典 FPR。
@@ -89,7 +109,7 @@ formal 与 sealed 还必须在 rootless Podman/Docker 容器中执行 scanner。
 
 Validator A–E 隔离实验使用 `validator_replay_bundle.v1`。bundle 只含 canonical validation groups、事实、证据和全部身份哈希，禁止包含 truth、matched pairs、历史 Validator 输出或 verdict。事实合约显式分为 V1 初始 facts 和 provider-resolvable frozen reservoir；两区 record/UID 重叠时 fail closed，V2 不得把 V1 已见 fact 重新当作 delta。每轮必须导出 raw occurrence → grouped candidate → V0/V1/V2/V3 的漏斗、`discovered_by × decided_by` 交叉表、active-discovery 独占 TP，以及 call/by-agent/by-stage token 守恒结果。
 
-v15 及更早 Range truth 只保留为描述性分布内回归，历史 111/136、116/136 与 10M/12M 数值不得再解释为当前产品运行时门限或 v16 正式资格。新 formal Range 必须绑定独立测试团队签发的 `zscope.range-truth-contract.v1`：只有 `concrete_trigger` 与 `public_api_contract` 进入 confirmed 分母，`pattern_model` 单列 design-risk/with-review，`retired` 不进入分母；门槛由 manifest 动态计算为 `ceil(0.85 × confirmable_truth_count)`。五轮仍须满足 actionable FDR、TP Jaccard、recall 极差、provider usage、归因、队列、token 守恒与规则 qualification 门禁；token 数值只是完整扫描后的 Pareto/非回归评价，不参与模型请求准入或提前终止。缺少 v16 contract、独立 attestation、冻结 Arm A 或任一绑定字段时 formal fail closed。
+v15 及更早 Range truth 只保留为描述性分布内回归，历史 111/136、116/136 与 10M/12M 数值不得再解释为当前产品运行时门限或 v16 正式资格。新 formal Range 必须绑定独立测试团队签发的 `zscope.range-truth-contract.v2`：只有 `concrete_trigger` 与 `public_api_contract` 进入 confirmed 分母，`pattern_model` 单列 design-risk/with-review，`retired` 不进入分母；门槛由 manifest 动态计算为 `ceil(0.85 × confirmable_truth_count)`。五轮仍须满足 actionable FDR、TP Jaccard、recall 极差、provider usage、归因、队列、token 守恒与规则 qualification 门禁；token 数值只是完整扫描后的 Pareto/非回归评价，不参与模型请求准入或提前终止。缺少 v16 contract、独立 attestation、冻结 Arm A 或任一绑定字段时 formal fail closed。
 
 P0 replay 使用打包的 `validator_arms.v1.json` 与 `scripts/run_validator_replay.py`。输入只能是 answer-free `validator-replay-bundle.v1`；执行 ledger 会绑定 bundle、arm spec、模型、Prompt、每组 evidence slice/result 与 token 的哈希，truth 只能在全部输出冻结后由独立 scorer 读取。CLI 可传 run 级 `--expected-total-tokens`；2M/5M/8M/10M/12M 和 Arm E 的 17M 都是完整 replay 结束后的成本对照线，不会拒绝请求、缩短输出或跳过 cluster。P0 funnel 同时输出 occurrence、candidate、validation group、V0/V1/V2/V3（V4仅预留）及报告 finding 的不同计数单位，并以 `reached_by_level`、`transition_counts`、`drop_reason` 记录真实到达和停止原因，禁止把不同单位直接相除。
 
@@ -106,6 +126,8 @@ preflight 通过后使用 `scripts/run_v3_action_canary.py`，并通过 `--expec
 `scripts/analyze_range_gaps.py` 在 report/score/truth 全部冻结后生成 `zscope.range-gap-analysis.v1`，把每个 default FN 唯一归入反证错误、V3 资格、fact exhaustion、V3 事实消费、模型拒绝、错误 obligation/anchor、无候选或 truth 争议，并绑定 report、score、truth、usage sidecar 与 replay bundle SHA。该后置账本用于区分产品提升、Scorer 变化与 truth 治理变化，不进入扫描上下文。
 
 v16 不能由扫描实现方自行签发。当前争议项只登记在 `docs/benchmark-maintenance/range/range_v15_truth_review_queue.json`，状态固定为 pending/non-formal；独立测试团队必须按双人审查、第三人仲裁把每项归为 `concrete_trigger/public_api_contract/pattern_model/retired`，绑定审查证据与 attestation 后，才能生成 formal-eligible v16。禁止为通过门禁而在同一产品变更中修改 fixture、truth 和检测逻辑。
+
+受保护 reviewer 输出必须逐对象绑定 packet、raw envelope 和最终 decision。DeepSeek 只有在完整 JSON 已通过严格 schema/身份校验、但 anchor 或 evidence 未落在 packet 提供的窗口时，才允许一次同 packet 的 grounding-only 纠正；纠正只能调整 anchors 和 evidence refs，其他实质字段由投影哈希冻结。纠正输出仍不合法、改变 disposition/taxonomy/predicate/safe-pair 等实质字段，或 raw stdout 与 decision 不一致时，整次审核 fail closed。
 
 五轮输出冻结后由 `scripts/score_validator_replay_experiment.py` 独立评分。调用方必须传入 bundle、catalog、truth 和 Arm A–E 各 1–5 轮的外部预期 SHA，并显式签署 `--cold-trials-attested`；scorer 会先校验完 25 份 answer-free ledger，才打开 truth。结果严格绑定输入文件/内容/run/scorer/policy 哈希，计算每轮 TP、recall、actionable FDR 和 token，以及每 arm 的中位数、最大值、Jaccard、recall 极差、provider usage、队列、协议和守恒门禁。Arm E 即使以 17M cap 执行，也没有 12M `per_run_tokens` 发布门禁豁免。
 

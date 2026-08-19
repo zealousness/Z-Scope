@@ -32,6 +32,7 @@ class FakeOciRuntime:
         digest_matches: bool = True,
         internal_network: bool = True,
         tamper_mounts: bool = False,
+        extra_network_peer: bool = False,
     ) -> None:
         self.runtime = runtime
         self.image = image
@@ -43,6 +44,7 @@ class FakeOciRuntime:
         self.digest_matches = digest_matches
         self.internal_network = internal_network
         self.tamper_mounts = tamper_mounts
+        self.extra_network_peer = extra_network_peer
         self.scanner_name = ""
         self.run_argv: list[str] = []
 
@@ -61,23 +63,35 @@ class FakeOciRuntime:
         if command[1:3] == ["image", "inspect"]:
             digest = self.image.rsplit("@", 1)[1] if self.digest_matches else "sha256:" + "b" * 64
             return self._result(command, [{"Id": digest, "RepoDigests": ["repo@" + digest]}])
+        if self.runtime == "podman" and command[1:3] == ["ps", "--all"]:
+            assert command[3:5] == ["--filter", f"network={self.policy.network_name}"]
+            rows: list[dict[str, Any]] = [
+                {"Id": "proxy123", "Networks": [self.policy.network_name]}
+            ]
+            if self.scanner_name:
+                rows.append({"Id": "scanner123", "Networks": [self.policy.network_name]})
+            if self.extra_network_peer:
+                rows.append({"Id": "unexpected123", "Networks": [self.policy.network_name]})
+            return self._result(command, rows)
         if command[1:3] == ["network", "inspect"]:
             peers: dict[str, Any] = {"proxy123": {"Name": "model-proxy"}}
             if self.scanner_name:
                 peers["scanner123"] = {"Name": self.scanner_name}
+            if self.extra_network_peer:
+                peers["unexpected123"] = {"Name": "unexpected"}
+            network = {
+                "Name": self.policy.network_name,
+                "Internal": self.internal_network,
+                "Labels": {
+                    "io.zscope.network-policy": "model-endpoint-only",
+                    "io.zscope.network-policy-sha256": self.policy.policy_sha256,
+                },
+            }
+            if self.runtime != "podman":
+                network["Containers"] = peers
             return self._result(
                 command,
-                [
-                    {
-                        "Name": self.policy.network_name,
-                        "Internal": self.internal_network,
-                        "Labels": {
-                            "io.zscope.network-policy": "model-endpoint-only",
-                            "io.zscope.network-policy-sha256": self.policy.policy_sha256,
-                        },
-                        "Containers": peers,
-                    }
-                ],
+                [network],
             )
         if command[1] == "inspect" and command[2] == self.policy.proxy_container:
             return self._result(
@@ -222,6 +236,7 @@ def test_rootless_executor_collects_runtime_inspection_evidence(
     assert evidence["image_digest_verified"] is True
     assert evidence["actual_inspection_collected"] is True
     assert evidence["network_restriction_verified"] is True
+    assert len(evidence["network_membership_sha256"]) == 64
     assert evidence["phase_executions"][0]["working_dir"] == "/zscope-input"
     assert {row["purpose"] for row in evidence["mounts"]} == {
         "scan_input",
@@ -270,6 +285,12 @@ def test_rootless_executor_rejects_inspected_mount_drift(tmp_path: Path) -> None
     executor, _, _ = _executor(tmp_path, tamper_mounts=True)
     with pytest.raises(BenchmarkIsolationError, match="execution evidence"):
         executor.execute_phase("scan", ("zscope",), log_path=tmp_path / "scan.log")
+
+
+def test_rootless_podman_rejects_an_extra_filtered_network_peer(tmp_path: Path) -> None:
+    executor, _, _ = _executor(tmp_path, runtime="podman", extra_network_peer=True)
+    with pytest.raises(BenchmarkIsolationError, match="exactly the declared proxy"):
+        executor.preflight()
 
 
 def test_capability_requires_supported_runtime_and_pinned_image() -> None:
@@ -325,9 +346,7 @@ def test_formal_runner_routes_every_scan_phase_through_executor(
         (destination / "demo.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
         return benchmark_runner.scan_input_manifest(destination)
 
-    def write_config(
-        _spec: Any, project: Path, path: Path, *, scan_depth: str
-    ) -> dict[str, Any]:
+    def write_config(_spec: Any, project: Path, path: Path, *, scan_depth: str) -> dict[str, Any]:
         assert scan_depth == "fast"
         raw = {"config_version": 2, "project": {"root": str(project), "source_root": "."}}
         path.write_text(benchmark_runner.yaml.safe_dump(raw), encoding="utf-8")

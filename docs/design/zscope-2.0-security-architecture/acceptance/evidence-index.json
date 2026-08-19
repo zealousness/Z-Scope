@@ -30,7 +30,8 @@
       "artifacts": [
         {
           "path": "docs/design/zscope-2.0-security-architecture/design-manifest.json",
-          "sha256": "5ce204f6b804ada7309afa24e2bc87cd0c080aafd262f6c808ec490ad6cec82b"
+          "sha256": "a858c935f5bf2c7d01ec36b711bb273db0ef1bab8ba9ad305c992411fe948c3f",
+          "artifact_commit": "b2fb70a2807bab74b884d4cd4c4b0ef48c3c4d38"
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/runtime-reachability-manifest.json",
@@ -42,7 +43,8 @@
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
-          "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4"
+          "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4",
+          "artifact_commit": "b2fb70a2807bab74b884d4cd4c4b0ef48c3c4d38"
         }
       ],
       "review_status": "approved",
@@ -87,7 +89,8 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "06621354146ca09b08c0e885cf09ed3b7c0ee5e33671b136b6934c79b9963c2e"
+          "sha256": "b7165aa6ec079bec7dc84badc1e05bba773585056bd03ca7b9bd38e6e1dd2fa9",
+          "artifact_commit": "41caf4863b9ca3365e1b2321f64f9209d7d274ed"
         }
       ],
       "review_status": "approved",
@@ -266,11 +269,13 @@
       "artifacts": [
         {
           "path": "scripts/check_zscope_2_design_evidence.py",
-          "sha256": "26b6d4c5fbf4a682926c224fae64cda66b2617e6bedb25ca745f6e180c7e03c2"
+          "sha256": "821ada408a86d90e713776395f54e6d2e4d3ecf2ab5d5722f77c9c20c96519f1",
+          "artifact_commit": "b2fb70a2807bab74b884d4cd4c4b0ef48c3c4d38"
         },
         {
           "path": "tests/test_zscope_2_design_evidence.py",
-          "sha256": "4782202899623aa83c180e747c898f87323d5c4f03faa597e33a6640cdc24478"
+          "sha256": "7157e2588b5516a31a5e7a2ae8594906291393d91fa58fd936d1b34849110600",
+          "artifact_commit": "b2fb70a2807bab74b884d4cd4c4b0ef48c3c4d38"
         },
         {
           "path": ".github/workflows/zscope-2-design-evidence.yml",
@@ -278,7 +283,8 @@
         },
         {
           "path": "docs/design/zscope-2.0-security-architecture/acceptance/evidence-index.schema.json",
-          "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4"
+          "sha256": "c95a7cf0f6eea510d247282b3604d381a72a82bab9d867543eec55e45ce924d4",
+          "artifact_commit": "b2fb70a2807bab74b884d4cd4c4b0ef48c3c4d38"
         }
       ],
       "review_status": "approved",
@@ -413,11 +419,13 @@
       "artifacts": [
         {
           "path": "scripts/check_zscope_2_design_evidence.py",
-          "sha256": "26b6d4c5fbf4a682926c224fae64cda66b2617e6bedb25ca745f6e180c7e03c2"
+          "sha256": "821ada408a86d90e713776395f54e6d2e4d3ecf2ab5d5722f77c9c20c96519f1",
+          "artifact_commit": "b2fb70a2807bab74b884d4cd4c4b0ef48c3c4d38"
         },
         {
           "path": "tests/test_zscope_2_design_evidence.py",
-          "sha256": "4782202899623aa83c180e747c898f87323d5c4f03faa597e33a6640cdc24478"
+          "sha256": "7157e2588b5516a31a5e7a2ae8594906291393d91fa58fd936d1b34849110600",
+          "artifact_commit": "b2fb70a2807bab74b884d4cd4c4b0ef48c3c4d38"
         },
         {
           "path": ".github/workflows/zscope-2-design-evidence.yml",

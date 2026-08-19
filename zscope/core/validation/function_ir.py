@@ -28,8 +28,22 @@ def _sha(value: Any) -> str:
 
 def _symbols(text: str) -> Tuple[str, ...]:
     ignored = {
-        "if", "else", "return", "sizeof", "true", "false", "null", "nullptr",
-        "struct", "const", "unsigned", "signed", "int", "long", "short", "void",
+        "if",
+        "else",
+        "return",
+        "sizeof",
+        "true",
+        "false",
+        "null",
+        "nullptr",
+        "struct",
+        "const",
+        "unsigned",
+        "signed",
+        "int",
+        "long",
+        "short",
+        "void",
     }
     return tuple(
         dict.fromkeys(
@@ -140,9 +154,7 @@ class FunctionIRGraph:
 
         blocks: list[FunctionIRBlock] = []
         events: list[FunctionIREvent] = []
-        block_ids = {
-            str(item.get("id") or "") for item in raw_blocks if isinstance(item, Mapping)
-        }
+        block_ids = {str(item.get("id") or "") for item in raw_blocks if isinstance(item, Mapping)}
         for raw_block in raw_blocks:
             if not isinstance(raw_block, Mapping):
                 continue
@@ -153,9 +165,12 @@ class FunctionIRGraph:
             per_callee_index: Dict[str, int] = {}
             for ordinal, raw_text in enumerate(raw_block.get("statements") or []):
                 text = str(raw_text or "").strip()
-                statement_uid = "STMT_" + _sha(
-                    {"function": function, "block": block_uid, "ordinal": ordinal, "text": text}
-                )[:32]
+                statement_uid = (
+                    "STMT_"
+                    + _sha(
+                        {"function": function, "block": block_uid, "ordinal": ordinal, "text": text}
+                    )[:32]
+                )
                 callee = cls._callee(text)
                 line = 0
                 if callee:
@@ -179,7 +194,8 @@ class FunctionIRGraph:
                         event_subject_text = text.split("=", 1)[0]
                     events.append(
                         FunctionIREvent(
-                            event_uid="EVENT_" + _sha(
+                            event_uid="EVENT_"
+                            + _sha(
                                 {"statement_uid": statement_uid, "kind": kind, "callee": callee}
                             )[:32],
                             block_uid=block_uid,
@@ -362,9 +378,7 @@ class FunctionIRGraph:
             for block_uid, block in blocks.items():
                 if block_uid != self.entry_block_uid:
                     predecessor_sets = [
-                        out_sets[value]
-                        for value in block.predecessors
-                        if value in out_sets
+                        out_sets[value] for value in block.predecessors if value in out_sets
                     ]
                     incoming = (
                         set.intersection(*(set(value) for value in predecessor_sets))
@@ -460,11 +474,7 @@ class FunctionIRGraph:
                 event.block_uid
                 for event in self.events
                 if event.kind in wanted
-                and (
-                    not subject
-                    or subject in event.subject_symbols
-                    or subject == event.callee
-                )
+                and (not subject or subject in event.subject_symbols or subject == event.callee)
             )
         )
 
@@ -540,9 +550,7 @@ def graph_from_mapping(raw: Mapping[str, Any]) -> FunctionIRGraph:
         blocks=tuple(blocks),
         events=tuple(events),
         ast_calls=tuple(
-            dict(value)
-            for value in raw.get("ast_calls") or []
-            if isinstance(value, Mapping)
+            dict(value) for value in raw.get("ast_calls") or [] if isinstance(value, Mapping)
         ),
         code_snapshot_sha256=str(raw.get("code_snapshot_sha256") or ""),
         backend_sha256=str(raw.get("backend_sha256") or ""),

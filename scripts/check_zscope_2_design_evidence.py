@@ -1536,44 +1536,57 @@ def validate_design_evidence(
                     report.error(f"{uid}: {exc}")
                     continue
                 external = raw_path.startswith(EXTERNAL_ARTIFACT_PREFIXES)
-                if (
-                    not external
-                    and verify_git
-                    and HEX_40.fullmatch(commit)
-                    and _git_blob_sha256(repo_root, commit, raw_path) == expected
-                ):
-                    # Evidence binds the artifact as it existed in its implementation
-                    # commit.  A later phase may legitimately evolve the same gate file;
-                    # that evolution must be bound by a new evidence row instead of
-                    # rewriting the historical record.
-                    report.checked_files.add(f"git:{commit}:{raw_path}")
-                    continue
-                if (
-                    raw_path
-                    == (
-                        DESIGN_RELATIVE_ROOT / "acceptance/runtime-reachability-manifest.json"
-                    ).as_posix()
-                ):
-                    document_hashes = manifest.get("document_hashes")
-                    current_binding = (
-                        document_hashes.get("acceptance/runtime-reachability-manifest.json")
-                        if isinstance(document_hashes, dict)
-                        else None
+                label = f"{uid} artifact {raw_path}"
+                artifact_commit = str(artifact.get("artifact_commit") or commit)
+                # Phase evidence is immutable evidence about its implementation
+                # commit.  Later governed edits must not invalidate the old
+                # evidence merely because the same path evolved in HEAD.  Older
+                # P0 rows sometimes bound a finalized artifact added after the
+                # implementation commit, so first accept the current bytes and
+                # then fall back to the historical Git blob.
+                if verify_git and not external and HEX_40.fullmatch(artifact_commit):
+                    current = sha256_file(artifact_path) if artifact_path.is_file() else None
+                    historical = _git_blob_sha256(repo_root, artifact_commit, raw_path)
+                    if current == expected:
+                        report.checked_files.add(artifact_path.as_posix())
+                    elif historical == expected:
+                        report.checked_files.add(f"{artifact_commit}:{raw_path}")
+                    elif raw_path == (
+                        DESIGN_RELATIVE_ROOT
+                        / "acceptance/runtime-reachability-manifest.json"
+                    ).as_posix():
+                        document_hashes = manifest.get("document_hashes")
+                        current_binding = (
+                            document_hashes.get(
+                                "acceptance/runtime-reachability-manifest.json"
+                            )
+                            if isinstance(document_hashes, dict)
+                            else None
+                        )
+                        if isinstance(current_binding, str) and current_binding == current:
+                            # This manifest advances with each product phase. Historical
+                            # rows retain their original binding while the design manifest
+                            # binds the current, independently verified bytes.
+                            report.checked_files.add(artifact_path.as_posix())
+                        else:
+                            report.error(
+                                f"{label}: neither current nor {artifact_commit} Git-blob "
+                                f"SHA-256 matches {expected}; current={current}, "
+                                f"historical={historical}"
+                            )
+                    else:
+                        report.error(
+                            f"{label}: neither current nor {artifact_commit} Git-blob SHA-256 "
+                            f"matches {expected}; current={current}, historical={historical}"
+                        )
+                else:
+                    _verify_file_hash(
+                        artifact_path,
+                        expected,
+                        label,
+                        report,
+                        allow_missing_external=external and not strict_external_artifacts,
                     )
-                    actual = sha256_file(artifact_path) if artifact_path.is_file() else None
-                    if isinstance(current_binding, str) and current_binding == actual:
-                        # This single manifest is intentionally advanced by each
-                        # product phase. Historical evidence keeps its original
-                        # binding while the design manifest binds the current bytes.
-                        report.checked_files.add(str(artifact_path))
-                        continue
-                _verify_file_hash(
-                    artifact_path,
-                    expected,
-                    f"{uid} artifact {raw_path}",
-                    report,
-                    allow_missing_external=external and not strict_external_artifacts,
-                )
     return report
 
 

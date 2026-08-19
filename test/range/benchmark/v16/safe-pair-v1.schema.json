@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/range/safe-pair-v1.schema.json",
+  "title": "Z-Scope Range v16 safe pair manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "truth_id",
+    "pair_uid",
+    "contract_kind",
+    "kind",
+    "invariant_summary",
+    "review_decision_sha256",
+    "compiler_contract",
+    "vulnerable",
+    "fixed_or_near_miss",
+    "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.range-v16-safe-pair.v1"},
+    "truth_id": {"type": "string", "minLength": 1},
+    "pair_uid": {"type": "string", "pattern": "^range-v16-pair:.+$"},
+    "contract_kind": {"enum": ["concrete_trigger", "public_api_contract"]},
+    "kind": {"enum": ["fixed", "near_miss"]},
+    "invariant_summary": {"type": "string", "minLength": 1},
+    "review_decision_sha256": {"$ref": "#/$defs/sha256"},
+    "compiler_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "standard", "compiler", "arguments"],
+      "properties": {
+        "language": {"const": "c"},
+        "standard": {"enum": ["c11", "gnu11"]},
+        "compiler": {"enum": ["cc", "gcc", "clang"]},
+        "arguments": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "vulnerable": {"$ref": "#/$defs/source"},
+    "fixed_or_near_miss": {"$ref": "#/$defs/source"},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(vulnerable|fixed_or_near_miss)/[^/\\\\]+\\.c$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}
