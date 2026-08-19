@@ -517,11 +517,11 @@ def validate_normalized_decisions(value: Mapping[str, Any]) -> None:
             raise E0GovernanceError("normalized packet UID mismatch")
         _strict_sha(record.get("packet_sha256"), field="normalized packet hash")
         reviews = record.get("primary_reviews")
-        if not isinstance(reviews, Mapping) or set(reviews) != {"fable", "deepseek"}:
+        if not isinstance(reviews, Mapping) or set(reviews) != {"fable", "glm"}:
             raise E0GovernanceError("normalized primary review bindings are invalid")
         for reviewer, expected_role in (
             ("fable", "primary_fable"),
-            ("deepseek", "primary_deepseek"),
+            ("glm", "primary_glm"),
         ):
             binding = reviews[reviewer]
             if not isinstance(binding, Mapping) or set(binding) != {
@@ -697,7 +697,7 @@ def _validate_truth_record_contract(
         )
 
     reviews = contract.get("review_artifacts")
-    required_reviews = {"fable_sha256", "deepseek_sha256", "normalized_sha256"}
+    required_reviews = {"fable_sha256", "glm_sha256", "normalized_sha256"}
     if not isinstance(reviews, Mapping) or not required_reviews.issubset(reviews):
         raise E0GovernanceError(f"Truth v16 {truth_id} dual review artifacts are missing")
     if set(reviews) - (required_reviews | {"opus_sha256"}):
