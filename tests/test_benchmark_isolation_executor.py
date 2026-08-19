@@ -33,6 +33,9 @@ class FakeOciRuntime:
         internal_network: bool = True,
         tamper_mounts: bool = False,
         extra_network_peer: bool = False,
+        podman_v4_inspect: bool = False,
+        partial_cap_drop: bool = False,
+        extra_network_attachment: bool = False,
     ) -> None:
         self.runtime = runtime
         self.image = image
@@ -45,6 +48,9 @@ class FakeOciRuntime:
         self.internal_network = internal_network
         self.tamper_mounts = tamper_mounts
         self.extra_network_peer = extra_network_peer
+        self.podman_v4_inspect = podman_v4_inspect
+        self.partial_cap_drop = partial_cap_drop
+        self.extra_network_attachment = extra_network_attachment
         self.scanner_name = ""
         self.run_argv: list[str] = []
 
@@ -138,9 +144,31 @@ class FakeOciRuntime:
                         },
                         "HostConfig": {
                             "ReadonlyRootfs": True,
-                            "CapDrop": ["ALL"],
+                            "CapDrop": (
+                                ["CAP_CHOWN"]
+                                if self.partial_cap_drop
+                                else (
+                                    [
+                                        "CAP_CHOWN",
+                                        "CAP_DAC_OVERRIDE",
+                                        "CAP_FOWNER",
+                                        "CAP_FSETID",
+                                        "CAP_KILL",
+                                        "CAP_NET_BIND_SERVICE",
+                                        "CAP_SETFCAP",
+                                        "CAP_SETGID",
+                                        "CAP_SETPCAP",
+                                        "CAP_SETUID",
+                                        "CAP_SYS_CHROOT",
+                                    ]
+                                    if self.podman_v4_inspect
+                                    else ["ALL"]
+                                )
+                            ),
                             "SecurityOpt": ["no-new-privileges:true"],
-                            "NetworkMode": self.policy.network_name,
+                            "NetworkMode": (
+                                "bridge" if self.podman_v4_inspect else self.policy.network_name
+                            ),
                         },
                         "State": {"ExitCode": 0},
                         "Mounts": [
@@ -164,7 +192,14 @@ class FakeOciRuntime:
                             },
                         ],
                         "NetworkSettings": {
-                            "Networks": {self.policy.network_name: {"Aliases": [self.scanner_name]}}
+                            "Networks": {
+                                self.policy.network_name: {"Aliases": [self.scanner_name]},
+                                **(
+                                    {"unexpected-network": {"Aliases": [self.scanner_name]}}
+                                    if self.extra_network_attachment
+                                    else {}
+                                ),
+                            }
                         },
                     }
                 ],
@@ -283,6 +318,44 @@ def test_rootless_executor_preflight_fails_closed(
 
 def test_rootless_executor_rejects_inspected_mount_drift(tmp_path: Path) -> None:
     executor, _, _ = _executor(tmp_path, tamper_mounts=True)
+    with pytest.raises(BenchmarkIsolationError, match="execution evidence"):
+        executor.execute_phase("scan", ("zscope",), log_path=tmp_path / "scan.log")
+
+
+def test_rootless_podman_v4_accepts_expanded_cap_drop_and_bound_network(
+    tmp_path: Path,
+) -> None:
+    executor, _, _ = _executor(tmp_path, runtime="podman", podman_v4_inspect=True)
+
+    result = executor.execute_phase("scan", ("zscope",), log_path=tmp_path / "scan.log")
+
+    assert result.evidence["inspect_verified"] is True
+    assert result.evidence["cap_drop_verified"] is True
+    assert result.evidence["runtime_network_mode"] == "bridge"
+    assert result.evidence["network_name"] == "zscope-model-only"
+    assert result.evidence["network_attachment_verified"] is True
+
+
+def test_rootless_podman_v4_rejects_partial_expanded_cap_drop(tmp_path: Path) -> None:
+    executor, _, _ = _executor(
+        tmp_path,
+        runtime="podman",
+        podman_v4_inspect=True,
+        partial_cap_drop=True,
+    )
+
+    with pytest.raises(BenchmarkIsolationError, match="execution evidence"):
+        executor.execute_phase("scan", ("zscope",), log_path=tmp_path / "scan.log")
+
+
+def test_rootless_podman_v4_rejects_an_extra_network_attachment(tmp_path: Path) -> None:
+    executor, _, _ = _executor(
+        tmp_path,
+        runtime="podman",
+        podman_v4_inspect=True,
+        extra_network_attachment=True,
+    )
+
     with pytest.raises(BenchmarkIsolationError, match="execution evidence"):
         executor.execute_phase("scan", ("zscope",), log_path=tmp_path / "scan.log")
 
