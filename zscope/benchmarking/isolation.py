@@ -30,6 +30,21 @@ _NETWORK_LABEL_MODE = "io.zscope.network-policy"
 _NETWORK_LABEL_SHA = "io.zscope.network-policy-sha256"
 _PROXY_LABEL_ROLE = "io.zscope.role"
 _PROXY_LABEL_SHA = "io.zscope.network-policy-sha256"
+_PODMAN_V4_DEFAULT_CAPABILITIES = frozenset(
+    {
+        "CAP_CHOWN",
+        "CAP_DAC_OVERRIDE",
+        "CAP_FOWNER",
+        "CAP_FSETID",
+        "CAP_KILL",
+        "CAP_NET_BIND_SERVICE",
+        "CAP_SETFCAP",
+        "CAP_SETGID",
+        "CAP_SETPCAP",
+        "CAP_SETUID",
+        "CAP_SYS_CHROOT",
+    }
+)
 
 
 class BenchmarkIsolationError(RuntimeError):
@@ -744,13 +759,17 @@ class RootlessOciExecutor:
             and any(_identity_matches(container_id, peer) for peer in peers)
             and any(_identity_matches(proxy_id, peer) for peer in peers)
         )
-        network_mode = str(_nested(inspect, "HostConfig", "NetworkMode") or "")
-        if not network_mode:
-            network_mode = (
-                self.network_policy.network_name
-                if self.network_policy.network_name in networks
-                else ""
-            )
+        runtime_network_mode = str(_nested(inspect, "HostConfig", "NetworkMode") or "")
+        network_attachment_verified = set(networks) == {self.network_policy.network_name}
+        # Podman 4.x reports ``bridge`` in HostConfig.NetworkMode even when the
+        # inspected NetworkSettings map and the runtime membership query bind the
+        # container to one explicit user network.  Treat those two independent
+        # runtime facts as authoritative while retaining the raw mode for audit.
+        network_mode = runtime_network_mode
+        if network_attachment_verified and (
+            not runtime_network_mode or self.runtime_family == "podman"
+        ):
+            network_mode = self.network_policy.network_name
         image_ref = str(_nested(inspect, "Config", "Image") or "")
         container_image_id = str(inspect.get("Image") or inspect.get("ImageID") or "")
         expected_image_id = str(_as_mapping(self._preflight).get("image_id") or "")
@@ -762,9 +781,14 @@ class RootlessOciExecutor:
             scanner_labels.get(_PROXY_LABEL_ROLE) == "scanner"
             and scanner_labels.get(_NETWORK_LABEL_SHA) == self.network_policy.policy_sha256
         )
+        normalized_cap_drop = {str(value).upper() for value in cap_drop}
         cap_drop_verified = bool(
-            any(str(value).upper() == "ALL" for value in cap_drop)
+            "ALL" in normalized_cap_drop
             or (isinstance(effective_caps, list) and not effective_caps)
+            or (
+                self.runtime_family == "podman"
+                and _PODMAN_V4_DEFAULT_CAPABILITIES.issubset(normalized_cap_drop)
+            )
         )
         security_verified = bool(
             readonly_rootfs
@@ -777,7 +801,7 @@ class RootlessOciExecutor:
             and expected_sources == actual_sources
             and all(row.get("type") in {"bind", ""} for row in mounts)
             and network_mode == self.network_policy.network_name
-            and self.network_policy.network_name in networks
+            and network_attachment_verified
             and peer_ids_valid
             and network_contract_verified
             and scanner_labels_verified
@@ -800,12 +824,15 @@ class RootlessOciExecutor:
             "image_verified": image_verified,
             "read_only_rootfs": readonly_rootfs,
             "cap_drop": list(cap_drop) if isinstance(cap_drop, list) else [],
+            "cap_drop_verified": cap_drop_verified,
             "security_opt": list(security_opt) if isinstance(security_opt, list) else [],
             "security_verified": security_verified,
             "scanner_labels_verified": scanner_labels_verified,
             "mounts": mounts,
             "unexpected_mount_count": sum(row["purpose"] == "unexpected" for row in mounts),
             "network_name": network_mode,
+            "runtime_network_mode": runtime_network_mode,
+            "network_attachment_verified": network_attachment_verified,
             "network_peer_count": len(peers),
             "network_peers_verified": peer_ids_valid,
             "network_internal": network_internal is True,
