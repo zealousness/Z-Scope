@@ -17,7 +17,11 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        reviewer: [glm, fable]
+        include:
+          - reviewer: glm
+            workers: 1
+          - reviewer: fable
+            workers: 4
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 720
@@ -99,7 +103,7 @@ jobs:
             --reviewer '${{ matrix.reviewer }}' \
             --packet-dir test/range/benchmark/v16/review-packets \
             --output-dir 'review-evidence/${{ matrix.reviewer }}' \
-            --workers 4
+            --workers '${{ matrix.workers }}'
       - uses: actions/upload-artifact@v7
         with:
           name: range-v16-primary-${{ matrix.reviewer }}-${{ inputs.source_sha }}

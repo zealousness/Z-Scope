@@ -354,6 +354,9 @@ def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     assert workflow.count('if "zai" not in auth:') == 2
     assert workflow.count("OpenCode Z.AI authentication is unavailable") == 2
     assert "alibaba-cn" not in workflow
+    assert "- reviewer: glm\n            workers: 1" in workflow
+    assert "- reviewer: fable\n            workers: 4" in workflow
+    assert "--workers '${{ matrix.workers }}'" in workflow
 
 
 def test_review_command_identity_disables_claude_and_opencode_tools() -> None:
@@ -764,3 +767,16 @@ def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
     assert manifest["record_count"] == 136
     assert len(manifest["records"]) == 136
     assert manifest["records"][0]["status"] == "reused"
+
+
+def test_glm_primary_reviewer_rejects_parallel_workers(tmp_path: Path) -> None:
+    args = SimpleNamespace(
+        packet_dir=tmp_path / "packets",
+        output_dir=tmp_path / "output",
+        reviewer="glm",
+        workers=4,
+        resume=False,
+    )
+    with pytest.raises(reviewer_runner.E0GovernanceError, match="requires serialized execution"):
+        reviewer_runner.run_primary(args)
+    assert not args.output_dir.exists()

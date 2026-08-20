@@ -1085,6 +1085,8 @@ def _run_primary_packet(
 
 
 def run_primary(args: argparse.Namespace) -> int:
+    if args.reviewer == "glm" and args.workers != 1:
+        raise E0GovernanceError("OpenCode GLM reviewer requires serialized execution (--workers 1)")
     output = args.output_dir.resolve()
     if output.exists() and not args.resume:
         raise E0GovernanceError(f"output already exists: {output}")
