@@ -344,59 +344,38 @@ def test_review_provenance_separates_workflow_and_packet_commits() -> None:
 def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
     assert workflow.count("claude --version | awk '{print $1}'") == 2
-    assert workflow.count('.opencode/bin/opencode" --version') == 2
-    assert workflow.count('echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"') == 2
+    assert workflow.count("dsh --version") == 2
     assert workflow.count('"2.1.233"') == 2
-    assert workflow.count('"1.18.18"') == 6
-    assert workflow.count("Provision pinned native OpenCode") == 2
-    assert workflow.count(reviewer_runner.OPENCODE_RELEASE_ARCHIVE_SHA256) == 2
-    assert workflow.count('chmod 0600 "$auth"') == 2
-    assert workflow.count('if "zai" not in auth:') == 2
-    assert workflow.count("OpenCode Z.AI authentication is unavailable") == 2
-    assert "alibaba-cn" not in workflow
-    assert "- reviewer: glm\n            workers: 1" in workflow
-    assert "- reviewer: fable\n            workers: 4" in workflow
-    assert "--workers '${{ matrix.workers }}'" in workflow
+    assert workflow.count(f'"{reviewer_runner.DSH_VERSION}"') == 2
 
 
-def test_review_command_identity_disables_claude_and_opencode_tools() -> None:
+def test_review_command_identity_disables_claude_tools_and_binds_deepseek_patch() -> None:
     fable = ["claude", *reviewer_runner._claude_arguments("fable")]
     reviewer_runner._validate_command_identity(fable, reviewer="fable")
     without_tool_isolation = [value for index, value in enumerate(fable) if index not in {12, 13}]
     with pytest.raises(ValueError, match="Claude command identity"):
         reviewer_runner._validate_command_identity(without_tool_isolation, reviewer="fable")
-    glm = [
-        "opencode",
-        "run",
-        "--pure",
-        "--model",
-        "zai/glm-5.2",
-        "--variant",
-        "max",
-        "--agent",
-        "e0-reviewer",
-        "--format",
-        "default",
-        "--dir",
-        "<isolated-review-dir>",
-        f"<release-archive-sha256:{reviewer_runner.OPENCODE_RELEASE_ARCHIVE_SHA256}>",
-        f"<inline-config-sha256:{sha256_value(reviewer_runner._opencode_inline_config())}>",
-        f"<prompt-sha256:{sha256_value(reviewer_runner._opencode_review_request())}>",
+    deepseek = [
+        "dsh",
+        "--profile",
+        "headless",
+        "--patch",
+        f"<ephemeral-patch-sha256:{reviewer_runner._deepseek_patch_sha256()}>",
     ]
-    reviewer_runner._validate_command_identity(glm, reviewer="glm")
-    glm[-1] = "unbound-prompt"
-    with pytest.raises(ValueError, match="OpenCode GLM command identity"):
-        reviewer_runner._validate_command_identity(glm, reviewer="glm")
+    reviewer_runner._validate_command_identity(deepseek, reviewer="deepseek")
+    deepseek[-1] = "unbound.patch.yml"
+    with pytest.raises(ValueError, match="DeepSeek command identity"):
+        reviewer_runner._validate_command_identity(deepseek, reviewer="deepseek")
 
 
-def test_opencode_accepts_only_direct_json_or_one_exact_json_fence() -> None:
+def test_deepseek_accepts_only_direct_json_or_one_exact_json_fence() -> None:
     direct = json.dumps({"status": "ok"})
-    assert reviewer_runner._normalize_opencode_json_artifact(direct) == direct
+    assert reviewer_runner._normalize_deepseek_json_artifact(direct) == direct
 
     fenced = '```json\n{"status":"ok"}\n```'
-    assert reviewer_runner._normalize_opencode_json_artifact(fenced) == '{"status":"ok"}'
+    assert reviewer_runner._normalize_deepseek_json_artifact(fenced) == '{"status":"ok"}'
     unlabeled = '```\n{"status":"ok"}\n```'
-    assert reviewer_runner._normalize_opencode_json_artifact(unlabeled) == '{"status":"ok"}'
+    assert reviewer_runner._normalize_deepseek_json_artifact(unlabeled) == '{"status":"ok"}'
 
     rejected = [
         'Result:\n```json\n{"status":"ok"}\n```',
@@ -407,80 +386,32 @@ def test_opencode_accepts_only_direct_json_or_one_exact_json_fence() -> None:
     ]
     for value in rejected:
         with pytest.raises(ValueError, match="not a JSON artifact"):
-            reviewer_runner._normalize_opencode_json_artifact(value)
+            reviewer_runner._normalize_deepseek_json_artifact(value)
 
 
-def test_opencode_fenced_json_still_rejects_hidden_reasoning() -> None:
+def test_deepseek_fenced_json_still_rejects_hidden_reasoning() -> None:
     fenced = '```json\n{"hidden_reasoning":"do not retain"}\n```'
     with pytest.raises(ValueError, match="hidden reasoning"):
-        reviewer_runner._validated_decision_from_stdout(fenced, reviewer="glm")
+        reviewer_runner._validated_decision_from_stdout(fenced, reviewer="deepseek")
 
 
-def test_opencode_inline_config_is_tool_free_and_has_no_provider_override() -> None:
-    config = json.loads(reviewer_runner._opencode_inline_config())
-    assert config["permission"] == {
-        "*": "deny",
-        "read": "allow",
-        "external_directory": "deny",
-    }
-    assert config["agent"]["e0-reviewer"]["permission"] == config["permission"]
-    assert "provider" not in config
+def test_deepseek_review_patch_uses_deepseek_provider_and_pins_model() -> None:
+    patch = reviewer_runner._deepseek_patch_text()
+    assert "    provider: deepseek\n" in patch
+    assert "    model: deepseek-v4-pro-0813\n" in patch
+    assert "    reasoningEffort: max\n" in patch
+    assert "    provider: DeepSeek\n" not in patch
+    assert "    provider: openai\n" not in patch
+    assert "deepseek-official" not in patch
 
 
-def test_opencode_runner_pins_glm52_max_and_sealed_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    packet = _packet()
-    expected = _decision(packet)
-    expected["reviewer_role"] = "primary_glm"
-    expected["reviewer_model"] = "zai/glm-5.2:max"
-    observed: dict[str, object] = {}
-
-    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
-        observed["command"] = command
-        observed["env"] = kwargs["env"]
-        observed["cwd"] = kwargs["cwd"]
-        assert Path(command[command.index("--dir") + 1]) == kwargs["cwd"]
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(expected),
-            stderr="",
-        )
-
-    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
-    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
-    decision, raw = reviewer_runner._run_model(packet, reviewer="glm")
-
-    assert decision == expected
-    command = observed["command"]
-    assert isinstance(command, list)
-    assert command[1:11] == [
-        "run",
-        "--pure",
-        "--model",
-        "zai/glm-5.2",
-        "--variant",
-        "max",
-        "--agent",
-        "e0-reviewer",
-        "--format",
-        "default",
-    ]
-    env = observed["env"]
-    assert isinstance(env, dict)
-    assert env["OPENCODE_CONFIG_CONTENT"] == reviewer_runner._opencode_inline_config()
-    assert env["OPENCODE_AUTO_SHARE"] == "false"
-    assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "true"
-    reviewer_runner._validate_command_identity(raw["command_identity"], reviewer="glm")
-
-
-def test_opencode_format_retry_accepts_exact_fence_and_preserves_raw_stdout(
+def test_deepseek_format_retry_accepts_exact_fence_and_preserves_raw_stdout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     packet = _packet()
     expected = _decision(packet)
-    expected["reviewer_role"] = "primary_glm"
-    expected["reviewer_model"] = "zai/glm-5.2:max"
+    expected["reviewer_role"] = "primary_deepseek"
+    expected["reviewer_model"] = "deepseek-v4-pro-0813:max"
     fenced = f"```json\n{json.dumps(expected)}\n```"
     outputs = iter((f"Decision follows:\n{fenced}", fenced))
     calls: list[list[str]] = []
@@ -494,7 +425,7 @@ def test_opencode_format_retry_accepts_exact_fence_and_preserves_raw_stdout(
     raw_path = tmp_path / "raw.json"
     decision, raw = reviewer_runner._run_model(
         packet,
-        reviewer="glm",
+        reviewer="deepseek",
         raw_output_path=raw_path,
     )
 
@@ -506,19 +437,19 @@ def test_opencode_format_retry_accepts_exact_fence_and_preserves_raw_stdout(
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
     reviewer_runner._validate_existing_primary(
         packet,
-        reviewer="glm",
+        reviewer="deepseek",
         decision_path=decision_path,
         raw_path=raw_path,
     )
 
 
-def test_opencode_uses_bounded_second_format_retry_without_accepting_prose(
+def test_deepseek_uses_bounded_second_format_retry_without_accepting_prose(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     packet = _packet()
     expected = _decision(packet)
-    expected["reviewer_role"] = "primary_glm"
-    expected["reviewer_model"] = "zai/glm-5.2:max"
+    expected["reviewer_role"] = "primary_deepseek"
+    expected["reviewer_model"] = "deepseek-v4-pro-0813:max"
     fenced = f"```json\n{json.dumps(expected)}\n```"
     outputs = iter(
         (
@@ -538,7 +469,7 @@ def test_opencode_uses_bounded_second_format_retry_without_accepting_prose(
     raw_path = tmp_path / "raw.json"
     decision, raw = reviewer_runner._run_model(
         packet,
-        reviewer="glm",
+        reviewer="deepseek",
         raw_output_path=raw_path,
     )
 
@@ -553,19 +484,19 @@ def test_opencode_uses_bounded_second_format_retry_without_accepting_prose(
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
     reviewer_runner._validate_existing_primary(
         packet,
-        reviewer="glm",
+        reviewer="deepseek",
         decision_path=decision_path,
         raw_path=raw_path,
     )
 
 
-def test_opencode_grounding_retry_preserves_substantive_decision(
+def test_deepseek_grounding_retry_preserves_substantive_decision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     packet = _packet()
     original = _decision(packet)
-    original["reviewer_role"] = "primary_glm"
-    original["reviewer_model"] = "zai/glm-5.2:max"
+    original["reviewer_role"] = "primary_deepseek"
+    original["reviewer_model"] = "deepseek-v4-pro-0813:max"
     original["structured_anchors"].append(
         {
             "kind": "secondary",
@@ -594,7 +525,7 @@ def test_opencode_grounding_retry_preserves_substantive_decision(
     raw_path = tmp_path / "raw.json"
     decision, raw = reviewer_runner._run_model(
         packet,
-        reviewer="glm",
+        reviewer="deepseek",
         raw_output_path=raw_path,
     )
 
@@ -614,7 +545,7 @@ def test_opencode_grounding_retry_preserves_substantive_decision(
     decision_path.write_text(json.dumps(corrected), encoding="utf-8")
     reviewer_runner._validate_existing_primary(
         packet,
-        reviewer="glm",
+        reviewer="deepseek",
         decision_path=decision_path,
         raw_path=raw_path,
     )
@@ -628,7 +559,7 @@ def test_opencode_grounding_retry_preserves_substantive_decision(
     with pytest.raises(ValueError, match="raw review output does not match"):
         reviewer_runner._validate_existing_primary(
             packet,
-            reviewer="glm",
+            reviewer="deepseek",
             decision_path=decision_path,
             raw_path=raw_path,
         )
@@ -639,19 +570,19 @@ def test_opencode_grounding_retry_preserves_substantive_decision(
     with pytest.raises(ValueError, match="semantic retry envelope"):
         reviewer_runner._validate_existing_primary(
             packet,
-            reviewer="glm",
+            reviewer="deepseek",
             decision_path=decision_path,
             raw_path=raw_path,
         )
 
 
-def test_opencode_grounding_retry_rejects_substantive_changes(
+def test_deepseek_grounding_retry_rejects_substantive_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     packet = _packet()
     original = _decision(packet)
-    original["reviewer_role"] = "primary_glm"
-    original["reviewer_model"] = "zai/glm-5.2:max"
+    original["reviewer_role"] = "primary_deepseek"
+    original["reviewer_model"] = "deepseek-v4-pro-0813:max"
     original["structured_anchors"][0]["function"] = "not_in_the_supplied_window"
     changed = deepcopy(original)
     changed["structured_anchors"][0]["function"] = "f"
@@ -671,7 +602,7 @@ def test_opencode_grounding_retry_rejects_substantive_changes(
     with pytest.raises(ValueError, match="changed substantive fields"):
         reviewer_runner._run_model(
             packet,
-            reviewer="glm",
+            reviewer="deepseek",
             raw_output_path=tmp_path / "raw.json",
         )
 
@@ -767,16 +698,3 @@ def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
     assert manifest["record_count"] == 136
     assert len(manifest["records"]) == 136
     assert manifest["records"][0]["status"] == "reused"
-
-
-def test_glm_primary_reviewer_rejects_parallel_workers(tmp_path: Path) -> None:
-    args = SimpleNamespace(
-        packet_dir=tmp_path / "packets",
-        output_dir=tmp_path / "output",
-        reviewer="glm",
-        workers=4,
-        resume=False,
-    )
-    with pytest.raises(reviewer_runner.E0GovernanceError, match="requires serialized execution"):
-        reviewer_runner.run_primary(args)
-    assert not args.output_dir.exists()

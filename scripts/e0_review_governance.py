@@ -22,7 +22,7 @@ CONTRACT_KINDS = {
     "pattern_model",
     "retired",
 }
-REVIEWER_ROLES = {"primary_fable", "primary_glm", "arbiter_opus"}
+REVIEWER_ROLES = {"primary_fable", "primary_deepseek", "arbiter_opus"}
 DISPOSITIONS = {"keep", "correct", "retire", "unresolved"}
 REASON_CODES = {
     "TRIGGER_PRESENT",
