@@ -334,7 +334,7 @@ def _normalize_deepseek_json_artifact(stdout: str) -> str:
         pass
 
     match = re.fullmatch(
-        r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n```",
+        r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)(?:\r?\n)?```",
         stripped,
         flags=re.DOTALL,
     )
