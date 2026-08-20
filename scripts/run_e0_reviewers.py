@@ -807,7 +807,7 @@ def _run_model(
             timeout=1800,
         )
         transport_retry: dict[str, Any] | None = None
-        if reviewer == "deepseek" and completed.returncode != 0:
+        if completed.returncode != 0:
             transport_retry = {
                 "initial_exit_code": completed.returncode,
                 "initial_stdout_sha256": sha256_value(completed.stdout),
@@ -816,6 +816,7 @@ def _run_model(
             }
             completed = subprocess.run(
                 command,
+                input=prompt if reviewer in {"fable", "opus"} else None,
                 cwd=temp_root,
                 env=env,
                 capture_output=True,
@@ -1172,8 +1173,7 @@ def _validate_existing_primary(
     transport_retry = raw.get("transport_retry")
     if transport_retry is not None:
         if (
-            reviewer != "deepseek"
-            or not isinstance(transport_retry, Mapping)
+            not isinstance(transport_retry, Mapping)
             or set(transport_retry)
             != {
                 "initial_exit_code",
