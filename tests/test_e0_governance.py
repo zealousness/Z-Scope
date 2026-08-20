@@ -510,9 +510,13 @@ def test_deepseek_format_retry_requires_strict_schema_before_stopping(
         )
     )
     calls: list[list[str]] = []
+    feedbacks: list[dict[str, object]] = []
 
-    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
         calls.append(command)
+        if len(calls) > 1:
+            feedback_path = Path(str(kwargs["cwd"])) / "format-validation.json"
+            feedbacks.append(json.loads(feedback_path.read_text(encoding="utf-8")))
         return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
 
     monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
@@ -526,9 +530,16 @@ def test_deepseek_format_retry_requires_strict_schema_before_stopping(
 
     assert decision == expected
     assert len(calls) == 3
+    assert "format-validation.json" in calls[1][-1]
+    assert feedbacks[0]["parsed_object"] is False
+    assert feedbacks[1]["parsed_object"] is True
+    assert feedbacks[1]["missing_top_level_fields"] == ["safe_pair_recommendation"]
+    assert feedbacks[1]["unexpected_top_level_fields"] == ["safe_pair_recomendation"]
     assert raw["stdout"] == fenced
     assert raw["format_retry"]["original_stdout_retained"] is False
     assert raw["format_retry_second"]["original_stdout_retained"] is False
+    assert len(raw["format_retry"]["validation_feedback_sha256"]) == 64
+    assert len(raw["format_retry_second"]["validation_feedback_sha256"]) == 64
     decision_path = tmp_path / "decision.json"
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
     reviewer_runner._validate_existing_primary(
@@ -537,6 +548,17 @@ def test_deepseek_format_retry_requires_strict_schema_before_stopping(
         decision_path=decision_path,
         raw_path=raw_path,
     )
+
+    tampered = deepcopy(raw)
+    tampered["format_retry_second"]["validation_feedback_sha256"] = "invalid"
+    raw_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="format retry envelope"):
+        reviewer_runner._validate_existing_primary(
+            packet,
+            reviewer="deepseek",
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
 
 
 def test_deepseek_format_retry_fails_closed_after_two_schema_invalid_objects(

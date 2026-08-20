@@ -53,6 +53,7 @@ DSH_VERSION = "0.1.0-rc.6"
 DEEPSEEK_PROVIDER_ID = "deepseek"
 DEEPSEEK_MODEL_ID = "deepseek-v4-pro-0813"
 DEEPSEEK_MODEL_IDENTITY = f"{DEEPSEEK_MODEL_ID}:max"
+FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v1"
 
 MATERIAL_DECISION_FIELDS = (
     "contract_kind",
@@ -411,6 +412,35 @@ def _validated_bound_decision_from_stdout(
     return decision
 
 
+def _format_validation_feedback(
+    stdout: str,
+    *,
+    reviewer: str,
+    validation_error: Exception,
+) -> dict[str, Any]:
+    """Describe strict format failures without retaining substantive output."""
+
+    required_fields = sorted(DECISION_FIELDS)
+    actual_fields: list[str] = []
+    parsed_object = False
+    try:
+        decision = _validated_decision_from_stdout(stdout, reviewer=reviewer)
+    except (json.JSONDecodeError, E0GovernanceError):
+        pass
+    else:
+        parsed_object = True
+        actual_fields = sorted(str(field) for field in decision)
+    return {
+        "schema_version": FORMAT_VALIDATION_SCHEMA_VERSION,
+        "validation_error": str(validation_error),
+        "parsed_object": parsed_object,
+        "required_top_level_fields": required_fields,
+        "actual_top_level_fields": actual_fields,
+        "missing_top_level_fields": sorted(set(required_fields) - set(actual_fields)),
+        "unexpected_top_level_fields": sorted(set(actual_fields) - set(required_fields)),
+    }
+
+
 def validate_decision_against_packet(
     decision: Mapping[str, Any],
     packet: Mapping[str, Any],
@@ -546,9 +576,11 @@ def _deepseek_patch_text() -> str:
         "  config:\n"
         "    persona: >-\n"
         "      You are an isolated benchmark contract reviewer. Only use the\n"
-        "      read-only packet.json and decision-schema.json in the current\n"
-        "      directory. Never use external knowledge or any other tool. Return\n"
-        "      exactly the requested JSON object with no markdown or prose wrapper.\n"
+        "      read-only packet.json and decision-schema.json in the current directory,\n"
+        "      plus prior-output.txt and format-validation.json when they are present for\n"
+        "      a bounded format-only retry. Never use external knowledge or any other\n"
+        "      tool. Return exactly the requested JSON object with no markdown or prose\n"
+        "      wrapper.\n"
         "- id: tool-web\n"
         "  disabled: true\n"
         "- id: tool-fs-search\n"
@@ -700,26 +732,40 @@ def _run_model(
                     _json_dump(raw_output_path, raw)
                 raise
             format_prompts = (
-                "Read prior-output.txt and decision-schema.json in the isolated current "
-                "directory. Reformat the prior answer as exactly one JSON object matching "
-                "the schema without changing its substantive decision. Your entire final "
-                "response must be that object: the first non-whitespace character must be "
-                "{ and the last must be }. Do not add prose, Markdown, or backticks. Set "
-                "reviewer_role=primary_deepseek and "
+                "Read prior-output.txt, decision-schema.json, and format-validation.json "
+                "in the isolated current directory. Reformat the prior answer as exactly "
+                "one JSON object matching the schema without changing its substantive "
+                "decision. Copy every required top-level field name character-for-character "
+                "from format-validation.json and emit no unexpected field. Your entire "
+                "final response must be that object: the first non-whitespace character "
+                "must be { and the last must be }. Do not add prose, Markdown, or backticks. "
+                "Set reviewer_role=primary_deepseek and "
                 f"reviewer_model={DEEPSEEK_MODEL_IDENTITY}.",
-                "The previous formatting attempt still violated the output protocol. Read "
-                "prior-output.txt and decision-schema.json in the isolated current "
-                "directory and return the same substantive decision as one schema-matching "
-                "JSON object. Emit no explanation and no Markdown. The first non-whitespace "
-                "character of your entire response must be { and the last must be }. Set "
-                "reviewer_role=primary_deepseek and "
+                "The previous formatting attempt still failed strict validation. Read "
+                "prior-output.txt, decision-schema.json, and the updated "
+                "format-validation.json in the isolated current directory. Correct every "
+                "reported missing or unexpected field by copying the required field names "
+                "exactly; do not change the substantive decision. Return one "
+                "schema-matching JSON object with no explanation or Markdown. The first "
+                "non-whitespace character of your entire response must be { and the last "
+                "must be }. Set reviewer_role=primary_deepseek and "
                 f"reviewer_model={DEEPSEEK_MODEL_IDENTITY}.",
             )
             prior_stdout = completed.stdout
+            validation_error: Exception = exc
             for attempt_index, format_prompt in enumerate(format_prompts):
                 (temp_root / "prior-output.txt").write_text(
                     prior_stdout,
                     encoding="utf-8",
+                )
+                feedback_path = temp_root / "format-validation.json"
+                _json_dump(
+                    feedback_path,
+                    _format_validation_feedback(
+                        prior_stdout,
+                        reviewer="deepseek",
+                        validation_error=validation_error,
+                    ),
                 )
                 retry = subprocess.run(
                     [
@@ -744,6 +790,7 @@ def _run_model(
                     "exit_code": retry.returncode,
                     "original_stdout_sha256": sha256_value(prior_stdout),
                     "original_stdout_retained": False,
+                    "validation_feedback_sha256": sha256_file(feedback_path),
                     "stderr_sha256": sha256_value(retry.stderr),
                 }
                 raw["stdout"] = retry.stdout
@@ -769,6 +816,7 @@ def _run_model(
                             "decision"
                         ) from retry_exc
                     prior_stdout = retry.stdout
+                    validation_error = retry_exc
 
         try:
             validate_decision_against_packet(
@@ -980,19 +1028,28 @@ def _validate_existing_primary(
         retry = raw.get(retry_name)
         if retry is None:
             continue
+        retry_fields = {
+            "exit_code",
+            "original_stdout_sha256",
+            "original_stdout_retained",
+            "stderr_sha256",
+        }
+        retry_fields_with_feedback = retry_fields | {"validation_feedback_sha256"}
         if (
             reviewer != "deepseek"
             or not isinstance(retry, Mapping)
-            or set(retry)
-            != {
-                "exit_code",
-                "original_stdout_sha256",
-                "original_stdout_retained",
-                "stderr_sha256",
-            }
+            or frozenset(retry)
+            not in {frozenset(retry_fields), frozenset(retry_fields_with_feedback)}
             or retry.get("exit_code") != 0
             or not re.fullmatch(r"[0-9a-f]{64}", str(retry.get("original_stdout_sha256") or ""))
             or retry.get("original_stdout_retained") is not False
+            or (
+                "validation_feedback_sha256" in retry
+                and not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(retry.get("validation_feedback_sha256") or ""),
+                )
+            )
             or not isinstance(retry.get("stderr_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", str(retry["stderr_sha256"]))
         ):
