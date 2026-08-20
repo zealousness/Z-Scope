@@ -31,6 +31,7 @@ from e0_review_governance import (
     DECISION_SCHEMA_VERSION,
     E0GovernanceError,
     load_json_strict,
+    review_decision_contract_issues,
     sha256_file,
     sha256_value,
     validate_review_decision,
@@ -54,7 +55,7 @@ DSH_VERSION = "0.1.0-rc.6"
 DEEPSEEK_PROVIDER_ID = "deepseek"
 DEEPSEEK_MODEL_ID = "deepseek-v4-pro-0813"
 DEEPSEEK_MODEL_IDENTITY = f"{DEEPSEEK_MODEL_ID}:max"
-FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v2"
+FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v3"
 PRIMARY_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-primary-checkpoint.v1"
 PRIMARY_FAILURE_SCHEMA_VERSION = "zscope.range-v16-primary-failure.v1"
 
@@ -306,6 +307,23 @@ def _decision_schema_for_model() -> dict[str, Any]:
             },
         },
     }
+
+
+def _bound_decision_schema(
+    packet: Mapping[str, Any],
+    *,
+    role: str,
+    model: str,
+) -> dict[str, Any]:
+    """Bind the isolated schema file to the exact packet and reviewer identity."""
+
+    schema = _decision_schema_for_model()
+    properties = schema["properties"]
+    properties["packet_uid"] = {"const": str(packet["packet_uid"])}
+    properties["packet_sha256"] = {"const": str(packet["packet_sha256"])}
+    properties["reviewer_role"] = {"const": role}
+    properties["reviewer_model"] = {"const": model}
+    return schema
 
 
 def _prompt(
@@ -627,12 +645,33 @@ def _format_validation_feedback(
     else:
         parsed_object = True
         actual_fields = sorted(str(field) for field in decision)
-    shape_errors = (
-        _schema_shape_errors(decision, _decision_schema_for_model()) if parsed_object else []
+    schema = (
+        _bound_decision_schema(packet, role=role, model=model)
+        if packet is not None and role is not None and model is not None
+        else _decision_schema_for_model()
     )
+    shape_errors = _schema_shape_errors(decision, schema) if parsed_object else []
     material_issue_fields = list(_schema_issue_material_fields(decision)) if parsed_object else []
     binding_issue_fields: list[str] = []
+    semantic_contract_issues: list[dict[str, str]] = []
     if parsed_object and packet is not None and role is not None and model is not None:
+        issues = review_decision_contract_issues(
+            decision,
+            expected_packet_uid=str(packet["packet_uid"]),
+            expected_packet_sha256=str(packet["packet_sha256"]),
+            expected_role=role,
+        )
+        semantic_contract_issues = [
+            {"code": issue["code"], "path": issue["path"]} for issue in issues
+        ]
+        material_issue_fields = sorted(
+            set(material_issue_fields)
+            | {
+                issue["material_field"]
+                for issue in issues
+                if issue.get("material_field") in MATERIAL_DECISION_FIELDS
+            }
+        )
         expected_bindings = {
             "schema_version": DECISION_SCHEMA_VERSION,
             "packet_uid": str(packet["packet_uid"]),
@@ -641,9 +680,12 @@ def _format_validation_feedback(
             "reviewer_model": model,
         }
         binding_issue_fields = sorted(
-            field
-            for field, expected in expected_bindings.items()
-            if decision.get(field) != expected
+            {
+                field
+                for field, expected in expected_bindings.items()
+                if decision.get(field) != expected
+            }
+            | {issue["binding_field"] for issue in issues if "binding_field" in issue}
         )
     return {
         "schema_version": FORMAT_VALIDATION_SCHEMA_VERSION,
@@ -654,6 +696,7 @@ def _format_validation_feedback(
         "missing_top_level_fields": sorted(set(required_fields) - set(actual_fields)),
         "unexpected_top_level_fields": sorted(set(actual_fields) - set(required_fields)),
         "schema_shape_errors": shape_errors,
+        "semantic_contract_issues": semantic_contract_issues,
         "binding_issue_fields": binding_issue_fields,
         "material_issue_fields": material_issue_fields,
     }
@@ -800,9 +843,30 @@ def _identity_contract_error(exc: Exception) -> bool:
     }
 
 
+def _contract_validation_failure_code(exc: Exception) -> str:
+    """Classify retry validation failures without retaining reviewer material."""
+
+    message = str(exc)
+    if isinstance(exc, json.JSONDecodeError) or message in {
+        "reviewer output is not a JSON artifact",
+        "DeepSeek did not return a JSON object",
+        "Claude did not return a structured review decision",
+    }:
+        return "json_artifact_invalid"
+    if "hidden reasoning" in message:
+        return "hidden_reasoning_forbidden"
+    if _identity_contract_error(exc):
+        return "decision_binding_invalid"
+    return "decision_contract_invalid"
+
+
 def _contract_retry_mutable_material_fields(
     decision: Mapping[str, Any],
     validation_error: Exception,
+    *,
+    expected_packet_uid: str | None = None,
+    expected_packet_sha256: str | None = None,
+    expected_role: str | None = None,
 ) -> tuple[str, ...] | None:
     """Identify the smallest material repair surface from a strict contract error.
 
@@ -813,6 +877,16 @@ def _contract_retry_mutable_material_fields(
     """
 
     schema_fields = set(_schema_issue_material_fields(decision))
+    schema_fields.update(
+        issue["material_field"]
+        for issue in review_decision_contract_issues(
+            decision,
+            expected_packet_uid=expected_packet_uid,
+            expected_packet_sha256=expected_packet_sha256,
+            expected_role=expected_role,
+        )
+        if issue.get("material_field") in MATERIAL_DECISION_FIELDS
+    )
     if _identity_contract_error(validation_error):
         return tuple(sorted(schema_fields))
     message = str(validation_error)
@@ -934,7 +1008,10 @@ def _run_model(
     with tempfile.TemporaryDirectory(prefix="zscope-e0-review-") as raw_temp:
         temp_root = Path(raw_temp)
         _json_dump(temp_root / "packet.json", packet)
-        _json_dump(temp_root / "decision-schema.json", _decision_schema_for_model())
+        _json_dump(
+            temp_root / "decision-schema.json",
+            _bound_decision_schema(packet, role=role, model=model),
+        )
         (temp_root / "review-instructions.txt").write_text(prompt, encoding="utf-8")
         if primary_decisions:
             _json_dump(temp_root / "primary-decisions.json", list(primary_decisions))
@@ -1161,6 +1238,9 @@ def _run_model(
                 mutable_material_fields = _contract_retry_mutable_material_fields(
                     prior_decision,
                     contract_error,
+                    expected_packet_uid=str(packet["packet_uid"]),
+                    expected_packet_sha256=str(packet["packet_sha256"]),
+                    expected_role=role,
                 )
                 if mutable_material_fields is not None:
                     preserved_projection_sha256 = sha256_value(
@@ -1291,6 +1371,10 @@ def _run_model(
                     model=model,
                 )
             except (json.JSONDecodeError, E0GovernanceError) as retry_exc:
+                raw["contract_retry"]["validation_failure_code"] = (
+                    _contract_validation_failure_code(retry_exc)
+                )
+                raw["contract_retry"]["validation_error_sha256"] = sha256_value(str(retry_exc))
                 if raw_output_path is not None:
                     _json_dump(raw_output_path, raw)
                 raise E0GovernanceError(
@@ -2153,16 +2237,26 @@ def _checkpoint_raw_signals(path: Path) -> dict[str, Any]:
             continue
         exit_field = "initial_exit_code" if name == "transport_retry" else "exit_code"
         exit_code = value.get(exit_field)
-        retry_stages.append(
-            {
-                "stage": name,
-                "exit_code": (
-                    exit_code
-                    if isinstance(exit_code, int) and not isinstance(exit_code, bool)
-                    else None
-                ),
-            }
-        )
+        stage = {
+            "stage": name,
+            "exit_code": (
+                exit_code
+                if isinstance(exit_code, int) and not isinstance(exit_code, bool)
+                else None
+            ),
+        }
+        failure_code = value.get("validation_failure_code")
+        failure_hash = value.get("validation_error_sha256")
+        if isinstance(failure_code, str) and failure_code in {
+            "json_artifact_invalid",
+            "hidden_reasoning_forbidden",
+            "decision_binding_invalid",
+            "decision_contract_invalid",
+        }:
+            stage["validation_failure_code"] = failure_code
+        if isinstance(failure_hash, str) and re.fullmatch(r"[0-9a-f]{64}", failure_hash):
+            stage["validation_error_sha256"] = failure_hash
+        retry_stages.append(stage)
     top_level_exit_code = raw.get("exit_code")
     return {
         "raw_envelope_status": "parsed_object",
