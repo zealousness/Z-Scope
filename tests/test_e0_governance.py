@@ -351,7 +351,9 @@ def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     assert workflow.count("Provision pinned native OpenCode") == 2
     assert workflow.count(reviewer_runner.OPENCODE_RELEASE_ARCHIVE_SHA256) == 2
     assert workflow.count('chmod 0600 "$auth"') == 2
-    assert workflow.count("OpenCode alibaba-cn authentication is unavailable") == 2
+    assert workflow.count('if "zai" not in auth:') == 2
+    assert workflow.count("OpenCode Z.AI authentication is unavailable") == 2
+    assert "alibaba-cn" not in workflow
 
 
 def test_review_command_identity_disables_claude_and_opencode_tools() -> None:
@@ -365,7 +367,7 @@ def test_review_command_identity_disables_claude_and_opencode_tools() -> None:
         "run",
         "--pure",
         "--model",
-        "alibaba-cn/glm-5.2",
+        "zai/glm-5.2",
         "--variant",
         "max",
         "--agent",
@@ -428,7 +430,7 @@ def test_opencode_runner_pins_glm52_max_and_sealed_environment(
     packet = _packet()
     expected = _decision(packet)
     expected["reviewer_role"] = "primary_glm"
-    expected["reviewer_model"] = "alibaba-cn/glm-5.2:max"
+    expected["reviewer_model"] = "zai/glm-5.2:max"
     observed: dict[str, object] = {}
 
     def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
@@ -453,7 +455,7 @@ def test_opencode_runner_pins_glm52_max_and_sealed_environment(
         "run",
         "--pure",
         "--model",
-        "alibaba-cn/glm-5.2",
+        "zai/glm-5.2",
         "--variant",
         "max",
         "--agent",
@@ -475,7 +477,7 @@ def test_opencode_format_retry_accepts_exact_fence_and_preserves_raw_stdout(
     packet = _packet()
     expected = _decision(packet)
     expected["reviewer_role"] = "primary_glm"
-    expected["reviewer_model"] = "alibaba-cn/glm-5.2:max"
+    expected["reviewer_model"] = "zai/glm-5.2:max"
     fenced = f"```json\n{json.dumps(expected)}\n```"
     outputs = iter((f"Decision follows:\n{fenced}", fenced))
     calls: list[list[str]] = []
@@ -513,7 +515,7 @@ def test_opencode_uses_bounded_second_format_retry_without_accepting_prose(
     packet = _packet()
     expected = _decision(packet)
     expected["reviewer_role"] = "primary_glm"
-    expected["reviewer_model"] = "alibaba-cn/glm-5.2:max"
+    expected["reviewer_model"] = "zai/glm-5.2:max"
     fenced = f"```json\n{json.dumps(expected)}\n```"
     outputs = iter(
         (
@@ -560,7 +562,7 @@ def test_opencode_grounding_retry_preserves_substantive_decision(
     packet = _packet()
     original = _decision(packet)
     original["reviewer_role"] = "primary_glm"
-    original["reviewer_model"] = "alibaba-cn/glm-5.2:max"
+    original["reviewer_model"] = "zai/glm-5.2:max"
     original["structured_anchors"].append(
         {
             "kind": "secondary",
@@ -646,7 +648,7 @@ def test_opencode_grounding_retry_rejects_substantive_changes(
     packet = _packet()
     original = _decision(packet)
     original["reviewer_role"] = "primary_glm"
-    original["reviewer_model"] = "alibaba-cn/glm-5.2:max"
+    original["reviewer_model"] = "zai/glm-5.2:max"
     original["structured_anchors"][0]["function"] = "not_in_the_supplied_window"
     changed = deepcopy(original)
     changed["structured_anchors"][0]["function"] = "f"

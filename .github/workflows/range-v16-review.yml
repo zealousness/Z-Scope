@@ -34,8 +34,8 @@ jobs:
           python3 - "$auth" <<'PY'
           import json, pathlib, sys
           auth = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          if "alibaba-cn" not in auth:
-              raise SystemExit("OpenCode alibaba-cn authentication is unavailable")
+          if "zai" not in auth:
+              raise SystemExit("OpenCode Z.AI authentication is unavailable")
           PY
           install_root="$HOME/.opencode/bin"
           binary="$install_root/opencode"
@@ -124,8 +124,8 @@ jobs:
           python3 - "$auth" <<'PY'
           import json, pathlib, sys
           auth = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          if "alibaba-cn" not in auth:
-              raise SystemExit("OpenCode alibaba-cn authentication is unavailable")
+          if "zai" not in auth:
+              raise SystemExit("OpenCode Z.AI authentication is unavailable")
           PY
           install_root="$HOME/.opencode/bin"
           binary="$install_root/opencode"

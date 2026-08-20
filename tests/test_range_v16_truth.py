@@ -90,7 +90,7 @@ def _normalized_record(index: int) -> dict:
             },
             "glm": {
                 "role": "primary_glm",
-                "model": "alibaba-cn/glm-5.2:max",
+                "model": "zai/glm-5.2:max",
                 "decision_sha256": "4" * 64,
                 "raw_sha256": "5" * 64,
             },
