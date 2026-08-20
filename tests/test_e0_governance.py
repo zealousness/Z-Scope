@@ -352,16 +352,23 @@ def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
 def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
     assert "fable_checkpoint_run_id:" in workflow
+    assert "fable_checkpoint_source_sha:" in workflow
     assert "deepseek_checkpoint_run_id:" in workflow
-    assert '--checkpoint-source-sha "$PACKET_SOURCE_SHA"' in workflow
-    assert "if: steps.primary-review.outcome == 'failure'" in workflow
+    assert "deepseek_checkpoint_source_sha:" in workflow
+    assert "fail-fast: false" in workflow
+    assert "id: primary_review" in workflow
+    assert "failure() && steps.primary_review.outcome == 'failure'" in workflow
+    assert "${FABLE_CHECKPOINT_SOURCE_SHA:-$PACKET_SOURCE_SHA}" in workflow
+    assert "${DEEPSEEK_CHECKPOINT_SOURCE_SHA:-$PACKET_SOURCE_SHA}" in workflow
     assert "scripts/run_e0_reviewers.py checkpoint" in workflow
     assert "range-v16-primary-checkpoint-${{ matrix.reviewer }}" in workflow
 
     recovery = Path(".github/workflows/range-v16-review-recover.yml").read_text(encoding="utf-8")
-    freeze_index = recovery.index("Freeze retained DeepSeek workspace before checkout")
+    freeze_index = recovery.index("Freeze retained primary workspace before checkout")
     checkout_index = recovery.index("uses: actions/checkout@v7")
     assert freeze_index < checkout_index
+    assert "fable|deepseek" in recovery
+    assert '--reviewer "$REVIEWER"' in recovery
     assert "runs-on: [self-hosted, linux, x64, zscope-sealed]" in recovery
     assert "environment: sealed-benchmark" in recovery
     assert "clean: false" in recovery
@@ -426,13 +433,24 @@ def test_deepseek_review_patch_uses_deepseek_provider_and_pins_model() -> None:
     assert "deepseek-official" not in patch
 
 
-def test_deepseek_retries_one_transport_failure_and_binds_hashes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("reviewer", "role", "model"),
+    (
+        ("fable", "primary_fable", "claude-fable-5"),
+        ("deepseek", "primary_deepseek", "deepseek-v4-pro-0813:max"),
+    ),
+)
+def test_primary_reviewer_retries_one_transport_failure_and_binds_hashes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reviewer: str,
+    role: str,
+    model: str,
 ) -> None:
     packet = _packet()
     expected = _decision(packet)
-    expected["reviewer_role"] = "primary_deepseek"
-    expected["reviewer_model"] = "deepseek-v4-pro-0813:max"
+    expected["reviewer_role"] = role
+    expected["reviewer_model"] = model
     results = iter(
         (
             SimpleNamespace(
@@ -443,10 +461,10 @@ def test_deepseek_retries_one_transport_failure_and_binds_hashes(
             SimpleNamespace(returncode=0, stdout=json.dumps(expected), stderr=""),
         )
     )
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], object]] = []
 
-    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
-        calls.append(command)
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((command, kwargs.get("input")))
         return next(results)
 
     monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
@@ -454,7 +472,7 @@ def test_deepseek_retries_one_transport_failure_and_binds_hashes(
     raw_path = tmp_path / "raw.json"
     decision, raw = reviewer_runner._run_model(
         packet,
-        reviewer="deepseek",
+        reviewer=reviewer,
         raw_output_path=raw_path,
     )
 
@@ -474,7 +492,7 @@ def test_deepseek_retries_one_transport_failure_and_binds_hashes(
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
     reviewer_runner._validate_existing_primary(
         packet,
-        reviewer="deepseek",
+        reviewer=reviewer,
         decision_path=decision_path,
         raw_path=raw_path,
     )
@@ -485,14 +503,15 @@ def test_deepseek_retries_one_transport_failure_and_binds_hashes(
     with pytest.raises(ValueError, match="transport retry envelope"):
         reviewer_runner._validate_existing_primary(
             packet,
-            reviewer="deepseek",
+            reviewer=reviewer,
             decision_path=decision_path,
             raw_path=raw_path,
         )
 
 
-def test_deepseek_transport_retry_is_bounded_and_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("reviewer", ("fable", "deepseek"))
+def test_primary_transport_retry_is_bounded_and_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reviewer: str
 ) -> None:
     packet = _packet()
     calls: list[list[str]] = []
@@ -506,11 +525,11 @@ def test_deepseek_transport_retry_is_bounded_and_fails_closed(
 
     with pytest.raises(
         reviewer_runner.E0GovernanceError,
-        match="deepseek reviewer failed",
+        match=rf"{reviewer} reviewer failed",
     ):
         reviewer_runner._run_model(
             packet,
-            reviewer="deepseek",
+            reviewer=reviewer,
             raw_output_path=tmp_path / "raw.json",
         )
 
