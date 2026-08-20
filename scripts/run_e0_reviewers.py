@@ -804,6 +804,25 @@ def _run_model(
             check=False,
             timeout=1800,
         )
+        transport_retry: dict[str, Any] | None = None
+        if reviewer == "deepseek" and completed.returncode != 0:
+            transport_retry = {
+                "initial_exit_code": completed.returncode,
+                "initial_stdout_sha256": sha256_value(completed.stdout),
+                "initial_stdout_retained": False,
+                "initial_stderr_sha256": sha256_value(completed.stderr),
+            }
+            completed = subprocess.run(
+                command,
+                cwd=temp_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                check=False,
+                timeout=1800,
+            )
         deepseek_patch_sha256 = sha256_file(patch_path) if patch_path is not None else ""
         if reviewer == "deepseek" and deepseek_patch_sha256 != _deepseek_patch_sha256():
             raise E0GovernanceError("DeepSeek patch bytes do not match the frozen identity")
@@ -831,6 +850,8 @@ def _run_model(
             "stdout": completed.stdout,
             "stderr_sha256": sha256_value(completed.stderr),
         }
+        if transport_retry is not None:
+            raw["transport_retry"] = transport_retry
         if completed.returncode != 0:
             raise E0GovernanceError(
                 f"{reviewer} reviewer failed for {packet['packet_uid']}; "
@@ -1115,7 +1136,12 @@ def _validate_existing_primary(
         "stderr_sha256",
     }
     raw_fields = set(raw)
-    optional_raw_fields = {"format_retry", "format_retry_second", "semantic_retry"}
+    optional_raw_fields = {
+        "transport_retry",
+        "format_retry",
+        "format_retry_second",
+        "semantic_retry",
+    }
     if not required_raw_fields.issubset(raw_fields) or not (
         raw_fields - required_raw_fields
     ).issubset(optional_raw_fields):
@@ -1141,6 +1167,28 @@ def _validate_existing_primary(
     )
     if dict(raw_decision) != dict(decision):
         raise E0GovernanceError("existing raw review output does not match decision")
+    transport_retry = raw.get("transport_retry")
+    if transport_retry is not None:
+        if (
+            reviewer != "deepseek"
+            or not isinstance(transport_retry, Mapping)
+            or set(transport_retry)
+            != {
+                "initial_exit_code",
+                "initial_stdout_sha256",
+                "initial_stdout_retained",
+                "initial_stderr_sha256",
+            }
+            or not isinstance(transport_retry.get("initial_exit_code"), int)
+            or isinstance(transport_retry.get("initial_exit_code"), bool)
+            or transport_retry.get("initial_exit_code") == 0
+            or transport_retry.get("initial_stdout_retained") is not False
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", str(transport_retry.get(field) or ""))
+                for field in ("initial_stdout_sha256", "initial_stderr_sha256")
+            )
+        ):
+            raise E0GovernanceError("existing transport retry envelope is invalid")
     if raw.get("format_retry_second") is not None and raw.get("format_retry") is None:
         raise E0GovernanceError("existing second format retry lacks the first retry")
     for retry_name in ("format_retry", "format_retry_second"):

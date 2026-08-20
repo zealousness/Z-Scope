@@ -407,6 +407,98 @@ def test_deepseek_review_patch_uses_deepseek_provider_and_pins_model() -> None:
     assert "deepseek-official" not in patch
 
 
+def test_deepseek_retries_one_transport_failure_and_binds_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    expected = _decision(packet)
+    expected["reviewer_role"] = "primary_deepseek"
+    expected["reviewer_model"] = "deepseek-v4-pro-0813:max"
+    results = iter(
+        (
+            SimpleNamespace(
+                returncode=2,
+                stdout="partial response",
+                stderr="temporary provider error",
+            ),
+            SimpleNamespace(returncode=0, stdout=json.dumps(expected), stderr=""),
+        )
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        calls.append(command)
+        return next(results)
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    raw_path = tmp_path / "raw.json"
+    decision, raw = reviewer_runner._run_model(
+        packet,
+        reviewer="deepseek",
+        raw_output_path=raw_path,
+    )
+
+    assert decision == expected
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert raw["transport_retry"] == {
+        "initial_exit_code": 2,
+        "initial_stdout_sha256": sha256_value("partial response"),
+        "initial_stdout_retained": False,
+        "initial_stderr_sha256": sha256_value("temporary provider error"),
+    }
+    assert "partial response" not in json.dumps(raw)
+    assert "temporary provider error" not in json.dumps(raw)
+
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    reviewer_runner._validate_existing_primary(
+        packet,
+        reviewer="deepseek",
+        decision_path=decision_path,
+        raw_path=raw_path,
+    )
+
+    tampered = deepcopy(raw)
+    tampered["transport_retry"]["initial_stderr_sha256"] = "invalid"
+    raw_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="transport retry envelope"):
+        reviewer_runner._validate_existing_primary(
+            packet,
+            reviewer="deepseek",
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
+
+
+def test_deepseek_transport_retry_is_bounded_and_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=2, stdout="", stderr="provider unavailable")
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+
+    with pytest.raises(
+        reviewer_runner.E0GovernanceError,
+        match="deepseek reviewer failed",
+    ):
+        reviewer_runner._run_model(
+            packet,
+            reviewer="deepseek",
+            raw_output_path=tmp_path / "raw.json",
+        )
+
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+
+
 def test_deepseek_format_retry_accepts_exact_fence_and_preserves_raw_stdout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
