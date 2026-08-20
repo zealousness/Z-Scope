@@ -374,6 +374,8 @@ def test_deepseek_accepts_only_direct_json_or_one_exact_json_fence() -> None:
 
     fenced = '```json\n{"status":"ok"}\n```'
     assert reviewer_runner._normalize_deepseek_json_artifact(fenced) == '{"status":"ok"}'
+    tight_fenced = '```json\n{"status":"ok"}```'
+    assert reviewer_runner._normalize_deepseek_json_artifact(tight_fenced) == '{"status":"ok"}'
     unlabeled = '```\n{"status":"ok"}\n```'
     assert reviewer_runner._normalize_deepseek_json_artifact(unlabeled) == '{"status":"ok"}'
 
