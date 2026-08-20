@@ -6,6 +6,14 @@ on:
       source_sha:
         description: Commit containing the frozen 136 minimal review packets
         required: true
+      fable_checkpoint_run_id:
+        description: Optional protected run containing a verified Fable checkpoint
+        required: false
+        default: ""
+      deepseek_checkpoint_run_id:
+        description: Optional protected run containing a verified DeepSeek checkpoint
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -59,16 +67,66 @@ jobs:
           test "$(claude --version | awk '{print $1}')" = "2.1.233"
           test "$(dsh --version)" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
-      - name: Run independent primary reviewer
+      - name: Restore verified Fable checkpoint
+        if: matrix.reviewer == 'fable' && inputs.fable_checkpoint_run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.fable_checkpoint_run_id }}
+          name: range-v16-primary-checkpoint-fable-${{ inputs.source_sha }}
+          path: review-evidence/fable
+      - name: Restore verified DeepSeek checkpoint
+        if: matrix.reviewer == 'deepseek' && inputs.deepseek_checkpoint_run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.deepseek_checkpoint_run_id }}
+          name: range-v16-primary-checkpoint-deepseek-${{ inputs.source_sha }}
+          path: review-evidence/deepseek
+      - id: primary-review
+        name: Run independent primary reviewer
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          FABLE_CHECKPOINT_RUN_ID: ${{ inputs.fable_checkpoint_run_id }}
+          DEEPSEEK_CHECKPOINT_RUN_ID: ${{ inputs.deepseek_checkpoint_run_id }}
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           umask 077
+          checkpoint_args=()
+          if [[ '${{ matrix.reviewer }}' = fable && -n "$FABLE_CHECKPOINT_RUN_ID" ]]; then
+            checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA")
+          elif [[ '${{ matrix.reviewer }}' = deepseek && -n "$DEEPSEEK_CHECKPOINT_RUN_ID" ]]; then
+            checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA")
+          fi
           python3 scripts/run_e0_reviewers.py primary \
             --reviewer '${{ matrix.reviewer }}' \
             --packet-dir test/range/benchmark/v16/review-packets \
             --output-dir 'review-evidence/${{ matrix.reviewer }}' \
+            --workers 4 \
+            "${checkpoint_args[@]}"
+      - name: Build verified failure checkpoint
+        if: steps.primary-review.outcome == 'failure'
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          umask 077
+          python3 scripts/run_e0_reviewers.py checkpoint \
+            --reviewer '${{ matrix.reviewer }}' \
+            --packet-dir test/range/benchmark/v16/review-packets \
+            --retained-dir 'review-evidence/${{ matrix.reviewer }}' \
+            --output-dir 'review-checkpoint/${{ matrix.reviewer }}' \
+            --packet-source-sha '${{ inputs.source_sha }}' \
+            --retained-source-sha '${{ inputs.source_sha }}' \
+            --workflow-run-id '${{ github.run_id }}' \
             --workers 4
+      - name: Upload verified failure checkpoint
+        if: steps.primary-review.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-primary-checkpoint-${{ matrix.reviewer }}-${{ inputs.source_sha }}
+          path: review-checkpoint/${{ matrix.reviewer }}
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v7
         with:
           name: range-v16-primary-${{ matrix.reviewer }}-${{ inputs.source_sha }}
