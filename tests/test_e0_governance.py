@@ -747,7 +747,15 @@ def test_deepseek_contract_regeneration_fails_closed_after_format_retries(
     assert "format_retry" in raw
     assert "format_retry_second" in raw
     assert "contract_retry" in raw
-    assert raw["contract_retry"]["preserved_substantive_projection_sha256"] is None
+    assert raw["contract_retry"]["mutable_material_fields"] == ["safe_pair_recommendation"]
+    assert raw["contract_retry"]["preserved_substantive_projection_sha256"] == (
+        sha256_value(
+            reviewer_runner._contract_retry_locked_projection(
+                schema_invalid,
+                ["safe_pair_recommendation"],
+            )
+        )
+    )
     assert len(calls) == 4
 
 
@@ -778,8 +786,17 @@ def test_deepseek_contract_regeneration_recovers_after_format_retries(
 
     assert decision == expected
     assert len(calls) == 4
-    assert "contract-validation.json" in calls[-1][-1]
-    assert raw["contract_retry"]["preserved_substantive_projection_sha256"] is None
+    assert "format-validation.json" in calls[-1][-1]
+    assert "prior-output.txt" in calls[-1][-1]
+    assert raw["contract_retry"]["mutable_material_fields"] == ["safe_pair_recommendation"]
+    assert raw["contract_retry"]["preserved_substantive_projection_sha256"] == (
+        sha256_value(
+            reviewer_runner._contract_retry_locked_projection(
+                expected,
+                ["safe_pair_recommendation"],
+            )
+        )
+    )
     assert raw["contract_retry"]["original_stdout_retained"] is False
     assert raw["stdout"] == json.dumps(expected)
     decision_path = tmp_path / "decision.json"
@@ -790,6 +807,43 @@ def test_deepseek_contract_regeneration_recovers_after_format_retries(
         decision_path=decision_path,
         raw_path=raw_path,
     )
+
+
+def test_deepseek_contract_regeneration_locks_valid_material_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    expected = _decision(packet)
+    expected["reviewer_role"] = "primary_deepseek"
+    expected["reviewer_model"] = "deepseek-v4-pro-0813:max"
+    invalid = dict(expected)
+    invalid["safe_pair_recomendation"] = invalid.pop("safe_pair_recommendation")
+    changed = deepcopy(expected)
+    changed["confidence"] = 0.1
+    outputs = iter(
+        (
+            "not JSON",
+            json.dumps(invalid),
+            json.dumps(invalid),
+            json.dumps(changed),
+        )
+    )
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        del command
+        return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    with pytest.raises(
+        reviewer_runner.E0GovernanceError,
+        match="contract regeneration changed substantive fields",
+    ):
+        reviewer_runner._run_model(
+            packet,
+            reviewer="deepseek",
+            raw_output_path=tmp_path / "raw.json",
+        )
 
 
 def test_fable_contract_retry_corrects_only_frozen_identity(
@@ -966,6 +1020,93 @@ def test_deepseek_grounding_retry_preserves_substantive_decision(
         )
 
 
+def test_deepseek_grounding_format_retry_recovers_without_new_material_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    original = _decision(packet)
+    original["reviewer_role"] = "primary_deepseek"
+    original["reviewer_model"] = "deepseek-v4-pro-0813:max"
+    original["evidence_refs"] = ["src/example.c:3"]
+    corrected = deepcopy(original)
+    corrected["evidence_refs"] = ["src/example.c:1"]
+    outputs = iter((json.dumps(original), "not JSON", json.dumps(corrected)))
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    raw_path = tmp_path / "raw.json"
+    decision, raw = reviewer_runner._run_model(
+        packet,
+        reviewer="deepseek",
+        raw_output_path=raw_path,
+    )
+
+    assert decision == corrected
+    assert len(calls) == 3
+    assert "format-validation.json" in calls[-1][-1]
+    assert "prior-output.txt" in calls[-1][-1]
+    retry = raw["semantic_format_retry"]
+    assert retry["original_stdout_retained"] is False
+    assert retry["substantive_projection_sha256"] == sha256_value(
+        reviewer_runner._semantic_retry_substantive_projection(corrected)
+    )
+    assert "semantic_format_retry_second" not in raw
+
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    reviewer_runner._validate_existing_primary(
+        packet,
+        reviewer="deepseek",
+        decision_path=decision_path,
+        raw_path=raw_path,
+    )
+    tampered = deepcopy(raw)
+    tampered["semantic_format_retry"]["substantive_projection_sha256"] = "0" * 64
+    raw_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="semantic format retry envelope"):
+        reviewer_runner._validate_existing_primary(
+            packet,
+            reviewer="deepseek",
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
+
+
+def test_deepseek_grounding_format_retry_rejects_material_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    original = _decision(packet)
+    original["reviewer_role"] = "primary_deepseek"
+    original["reviewer_model"] = "deepseek-v4-pro-0813:max"
+    original["evidence_refs"] = ["src/example.c:3"]
+    changed = deepcopy(original)
+    changed["evidence_refs"] = ["src/example.c:1"]
+    changed["confidence"] = 0.1
+    outputs = iter((json.dumps(original), "not JSON", json.dumps(changed)))
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        del command
+        return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    with pytest.raises(
+        reviewer_runner.E0GovernanceError,
+        match="grounding-only retry changed substantive fields",
+    ):
+        reviewer_runner._run_model(
+            packet,
+            reviewer="deepseek",
+            raw_output_path=tmp_path / "raw.json",
+        )
+
+
 def test_deepseek_grounding_contract_retry_corrects_only_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1001,7 +1142,7 @@ def test_deepseek_grounding_contract_retry_corrects_only_identity(
 
     assert decision == corrected
     assert len(calls) == 3
-    assert "prior-semantic-output.txt" in calls[-1][-1]
+    assert "prior-output.txt" in calls[-1][-1]
     retry = raw["semantic_contract_retry"]
     assert retry["original_stdout_retained"] is False
     assert retry["substantive_projection_sha256"] == sha256_value(
@@ -1171,6 +1312,14 @@ def test_primary_failure_identifies_reviewer_and_packet(
         (
             "deepseek grounding contract retry changed material fields",
             "grounding_contract_retry_substantive_change",
+        ),
+        (
+            "deepseek grounding format retry failed",
+            "grounding_format_retry_process_nonzero",
+        ),
+        (
+            "deepseek grounding format retries did not produce a valid decision",
+            "grounding_format_retry_validation_failure",
         ),
     ),
 )
