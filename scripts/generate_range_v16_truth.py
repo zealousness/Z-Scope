@@ -50,7 +50,7 @@ from validate_range_v16_truth import (  # noqa: E402
 
 _REVIEW_IDENTITIES = {
     "fable": ("primary_fable", "claude-fable-5"),
-    "glm": ("primary_glm", "alibaba-cn/glm-5.2:max"),
+    "glm": ("primary_glm", "zai/glm-5.2:max"),
     "opus": ("arbiter_opus", "claude-opus-5"),
 }
 
