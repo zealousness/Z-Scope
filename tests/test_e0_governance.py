@@ -576,6 +576,125 @@ def test_deepseek_grounding_retry_preserves_substantive_decision(
         )
 
 
+@pytest.mark.parametrize(
+    ("reviewer", "role", "model"),
+    (
+        ("fable", "primary_fable", "claude-fable-5"),
+        ("opus", "arbiter_opus", "claude-opus-5"),
+    ),
+)
+def test_claude_grounding_retry_preserves_substantive_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reviewer: str,
+    role: str,
+    model: str,
+) -> None:
+    packet = _packet()
+    original = _decision(packet)
+    original["reviewer_role"] = role
+    original["reviewer_model"] = model
+    original["evidence_refs"] = ["src/example.c:3"]
+    corrected = deepcopy(original)
+    corrected["evidence_refs"] = ["src/example.c:1"]
+    outputs = iter((original, corrected))
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((command, kwargs))
+        decision = next(outputs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"structured_output": decision}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    raw_path = tmp_path / f"{reviewer}-raw.json"
+    decision, raw = reviewer_runner._run_model(
+        packet,
+        reviewer=reviewer,
+        primary_decisions=(_decision(packet), _decision(packet)) if reviewer == "opus" else (),
+        raw_output_path=raw_path,
+    )
+
+    assert decision == corrected
+    assert len(calls) == 2
+    claude_name = "claude.cmd" if reviewer_runner.os.name == "nt" else "claude"
+    assert calls[1][0] == [f"/bin/{claude_name}", *reviewer_runner._claude_arguments(reviewer)]
+    retry_prompt = str(calls[1][1]["input"])
+    assert "failed deterministic packet grounding" in retry_prompt
+    assert "PRIOR_DECISION:\n" in retry_prompt
+    assert "PACKET:\n" in retry_prompt
+    assert "Read prior-output.txt" not in retry_prompt
+    assert raw["semantic_retry"]["substantive_projection_sha256"] == sha256_value(
+        reviewer_runner._semantic_retry_substantive_projection(corrected)
+    )
+    assert raw["stdout"] == json.dumps({"structured_output": corrected})
+
+    decision_path = tmp_path / f"{reviewer}-decision.json"
+    decision_path.write_text(json.dumps(corrected), encoding="utf-8")
+    reviewer_runner._validate_existing_primary(
+        packet,
+        reviewer=reviewer,
+        decision_path=decision_path,
+        raw_path=raw_path,
+    )
+
+
+def test_fable_grounding_retry_rejects_substantive_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    original = _decision(packet)
+    original["evidence_refs"] = ["src/example.c:3"]
+    changed = deepcopy(original)
+    changed["evidence_refs"] = ["src/example.c:1"]
+    changed["confidence"] = 0.8
+    outputs = iter((original, changed))
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        del command
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"structured_output": next(outputs)}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    with pytest.raises(ValueError, match="changed substantive fields"):
+        reviewer_runner._run_model(
+            packet,
+            reviewer="fable",
+            raw_output_path=tmp_path / "raw.json",
+        )
+
+
+def test_primary_failure_identifies_reviewer_and_packet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "fable"
+    (output / "decisions").mkdir(parents=True)
+    (output / "raw").mkdir()
+
+    def fail_review(*_: object, **__: object) -> tuple[dict, dict]:
+        raise E0GovernanceError("grounding failed")
+
+    monkeypatch.setattr(reviewer_runner, "_run_model", fail_review)
+    with pytest.raises(
+        ValueError,
+        match="fable review failed for RANGE-001: grounding failed",
+    ):
+        reviewer_runner._run_primary_packet(
+            _packet(),
+            reviewer="fable",
+            output=output,
+            resume=False,
+        )
+
+
 def test_deepseek_grounding_retry_rejects_substantive_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

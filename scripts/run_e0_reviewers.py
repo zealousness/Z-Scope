@@ -756,21 +756,13 @@ def _run_model(
                 require_resolvable_evidence=reviewer == "opus",
             )
         except E0GovernanceError as exc:
-            if reviewer != "deepseek":
-                if raw_output_path is not None:
-                    _json_dump(raw_output_path, raw)
-                raise
             original_stdout = str(raw["stdout"])
             original_projection_sha256 = sha256_value(
                 _semantic_retry_substantive_projection(decision)
             )
-            (temp_root / "prior-output.txt").write_text(
-                original_stdout,
-                encoding="utf-8",
-            )
             semantic_prompt = (
-                "Read prior-output.txt, packet.json, and decision-schema.json in the "
-                "isolated current directory. The prior JSON passed the strict decision "
+                "The prior decision and its complete packet are embedded below. The prior "
+                "decision passed the strict decision "
                 "schema but failed deterministic packet grounding. Return one complete "
                 "replacement JSON object. You may change only structured_anchors, "
                 "evidence_refs, and evidence_refs inside required_evidence_clauses. "
@@ -780,17 +772,28 @@ def _run_model(
                 "reference must be contained in a supplied code window. Preserve every "
                 "other field exactly, including reviewer identity, disposition, contract "
                 "kind, taxonomy, predicates, summaries, assumptions, safe-pair content, "
-                "and reason codes. Do not add markdown, prose, or external knowledge."
+                "and reason codes. Do not add markdown, prose, or external knowledge.\n"
+                "PRIOR_DECISION:\n"
+                + json.dumps(decision, ensure_ascii=False, sort_keys=True)
+                + "\nPACKET:\n"
+                + json.dumps(packet, ensure_ascii=False, sort_keys=True)
             )
-            retry = subprocess.run(
-                [
+            if reviewer == "deepseek":
+                retry_command = [
                     str(dsh_command),
                     "--profile",
                     "headless",
                     "--patch",
                     str(patch_path),
                     semantic_prompt,
-                ],
+                ]
+                retry_input = None
+            else:
+                retry_command = [str(claude_command), *_claude_arguments(reviewer)]
+                retry_input = semantic_prompt
+            retry = subprocess.run(
+                retry_command,
+                input=retry_input,
                 cwd=temp_root,
                 env=env,
                 capture_output=True,
@@ -811,12 +814,12 @@ def _run_model(
             if retry.returncode != 0:
                 if raw_output_path is not None:
                     _json_dump(raw_output_path, raw)
-                raise E0GovernanceError("DeepSeek grounding-only retry failed") from exc
+                raise E0GovernanceError(f"{reviewer} grounding-only retry failed") from exc
             raw["stdout"] = retry.stdout
             try:
                 decision = _validated_decision_from_stdout(
                     retry.stdout,
-                    reviewer="deepseek",
+                    reviewer=reviewer,
                 )
                 validate_review_decision(
                     decision,
@@ -831,12 +834,12 @@ def _run_model(
                     != original_projection_sha256
                 ):
                     raise E0GovernanceError(
-                        "DeepSeek grounding-only retry changed substantive fields"
+                        f"{reviewer} grounding-only retry changed substantive fields"
                     )
                 validate_decision_against_packet(
                     decision,
                     packet,
-                    require_resolvable_evidence=False,
+                    require_resolvable_evidence=reviewer == "opus",
                 )
             except (json.JSONDecodeError, E0GovernanceError):
                 if raw_output_path is not None:
@@ -976,8 +979,7 @@ def _validate_existing_primary(
     semantic_retry = raw.get("semantic_retry")
     if semantic_retry is not None:
         if (
-            reviewer != "deepseek"
-            or not isinstance(semantic_retry, Mapping)
+            not isinstance(semantic_retry, Mapping)
             or set(semantic_retry)
             != {
                 "exit_code",
@@ -1025,11 +1027,14 @@ def _run_primary_packet(
         )
         status = "reused"
     else:
-        decision, raw = _run_model(
-            packet,
-            reviewer=reviewer,
-            raw_output_path=raw_path,
-        )
+        try:
+            decision, raw = _run_model(
+                packet,
+                reviewer=reviewer,
+                raw_output_path=raw_path,
+            )
+        except Exception as exc:
+            raise E0GovernanceError(f"{reviewer} review failed for {truth_id}: {exc}") from exc
         _json_dump(decision_path, decision)
         _json_dump(raw_path, raw)
         status = "reviewed"
@@ -1156,12 +1161,15 @@ def _run_arbitration_packet(
         )
         status = "reused"
     else:
-        decision, raw = _run_model(
-            packet,
-            reviewer="opus",
-            primary_decisions=primary_decisions,
-            raw_output_path=raw_path,
-        )
+        try:
+            decision, raw = _run_model(
+                packet,
+                reviewer="opus",
+                primary_decisions=primary_decisions,
+                raw_output_path=raw_path,
+            )
+        except Exception as exc:
+            raise E0GovernanceError(f"opus review failed for {truth_id}: {exc}") from exc
         _json_dump(decision_path, decision)
         _json_dump(raw_path, raw)
         status = "reviewed"
