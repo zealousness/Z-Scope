@@ -349,6 +349,25 @@ def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     assert workflow.count(f'"{reviewer_runner.DSH_VERSION}"') == 2
 
 
+def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume() -> None:
+    workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
+    assert "fable_checkpoint_run_id:" in workflow
+    assert "deepseek_checkpoint_run_id:" in workflow
+    assert '--checkpoint-source-sha "$PACKET_SOURCE_SHA"' in workflow
+    assert "if: steps.primary-review.outcome == 'failure'" in workflow
+    assert "scripts/run_e0_reviewers.py checkpoint" in workflow
+    assert "range-v16-primary-checkpoint-${{ matrix.reviewer }}" in workflow
+
+    recovery = Path(".github/workflows/range-v16-review-recover.yml").read_text(encoding="utf-8")
+    freeze_index = recovery.index("Freeze retained DeepSeek workspace before checkout")
+    checkout_index = recovery.index("uses: actions/checkout@v7")
+    assert freeze_index < checkout_index
+    assert "runs-on: [self-hosted, linux, x64, zscope-sealed]" in recovery
+    assert "environment: sealed-benchmark" in recovery
+    assert "clean: false" in recovery
+    assert "scripts/run_e0_reviewers.py checkpoint" in recovery
+
+
 def test_review_command_identity_disables_claude_tools_and_binds_deepseek_patch() -> None:
     fable = ["claude", *reviewer_runner._claude_arguments("fable")]
     reviewer_runner._validate_command_identity(fable, reviewer="fable")
@@ -910,6 +929,154 @@ def test_primary_failure_identifies_reviewer_and_packet(
             reviewer="fable",
             output=output,
             resume=False,
+        )
+    failure = json.loads((output / "failures" / "RANGE-001.json").read_text(encoding="utf-8"))
+    assert failure["failure_code"] == "grounding_validation_failure"
+    assert failure["answer_material_present"] is False
+    assert failure["decision_file_sha256"] is None
+    assert failure["raw_file_sha256"] is None
+    assert failure["content_sha256"] == reviewer_runner._checkpoint_manifest_content_sha256(failure)
+
+
+def test_primary_checkpoint_copies_only_verified_pairs_and_binds_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet_dir = tmp_path / "packets"
+    retained = tmp_path / "retained"
+    output = tmp_path / "checkpoint"
+    packet_dir.mkdir()
+    (retained / "decisions").mkdir(parents=True)
+    (retained / "raw").mkdir()
+    packets: list[dict] = []
+    for index in range(136):
+        packet = _packet()
+        truth_id = f"CASE-{index:03d}"
+        packet["packet_uid"] = f"range-v16:{truth_id}"
+        packet["truth_record"]["id"] = truth_id
+        unsigned = dict(packet)
+        unsigned.pop("packet_sha256")
+        packet["packet_sha256"] = sha256_value(unsigned)
+        packets.append(packet)
+        (packet_dir / f"{truth_id}.json").write_text(json.dumps(packet), encoding="utf-8")
+
+    def deepseek_pair(packet: dict) -> tuple[dict, dict]:
+        decision = _decision(packet)
+        decision["packet_uid"] = packet["packet_uid"]
+        decision["packet_sha256"] = packet["packet_sha256"]
+        decision["reviewer_role"] = "primary_deepseek"
+        decision["reviewer_model"] = "deepseek-v4-pro-0813:max"
+        raw = {
+            "schema_version": "zscope.range-v16-review-raw-envelope.v1",
+            "reviewer_role": "primary_deepseek",
+            "reviewer_model": "deepseek-v4-pro-0813:max",
+            "packet_uid": packet["packet_uid"],
+            "packet_sha256": packet["packet_sha256"],
+            "input_delivery": "isolated_files",
+            "command_identity": [
+                "dsh",
+                "--profile",
+                "headless",
+                "--patch",
+                f"<ephemeral-patch-sha256:{reviewer_runner._deepseek_patch_sha256()}>",
+            ],
+            "exit_code": 0,
+            "stdout": json.dumps(decision),
+            "stderr_sha256": sha256_value(""),
+        }
+        return decision, raw
+
+    valid_decision, valid_raw = deepseek_pair(packets[0])
+    (retained / "decisions" / "CASE-000.json").write_text(
+        json.dumps(valid_decision), encoding="utf-8"
+    )
+    (retained / "raw" / "CASE-000.json").write_text(json.dumps(valid_raw), encoding="utf-8")
+
+    _, orphan_raw = deepseek_pair(packets[1])
+    orphan_raw["stdout"] = "schema-invalid output"
+    orphan_raw["format_retry"] = {
+        "exit_code": 2,
+        "original_stdout_sha256": sha256_value("earlier output"),
+        "original_stdout_retained": False,
+        "stderr_sha256": sha256_value("provider error"),
+    }
+    (retained / "raw" / "CASE-001.json").write_text(json.dumps(orphan_raw), encoding="utf-8")
+
+    invalid_decision, invalid_raw = deepseek_pair(packets[2])
+    invalid_decision["packet_uid"] = "range-v16:WRONG"
+    (retained / "decisions" / "CASE-002.json").write_text(
+        json.dumps(invalid_decision), encoding="utf-8"
+    )
+    (retained / "raw" / "CASE-002.json").write_text(json.dumps(invalid_raw), encoding="utf-8")
+    failure_marker = reviewer_runner._primary_failure_marker(
+        packets[3],
+        reviewer="deepseek",
+        exc=E0GovernanceError(
+            "deepseek reviewer failed for range-v16:CASE-003; " f"stderr_sha256={'6' * 64}"
+        ),
+        decision_path=retained / "decisions" / "CASE-003.json",
+        raw_path=retained / "raw" / "CASE-003.json",
+    )
+    reviewer_runner._json_dump(
+        retained / "failures" / "CASE-003.json",
+        failure_marker,
+    )
+
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    args = SimpleNamespace(
+        reviewer="deepseek",
+        packet_dir=packet_dir,
+        retained_dir=retained,
+        output_dir=output,
+        packet_source_sha="a" * 40,
+        retained_source_sha="b" * 40,
+        workflow_run_id="32367751336",
+        workers=4,
+    )
+    assert reviewer_runner.build_primary_checkpoint(args) == 0
+
+    manifest_path = output / "checkpoint-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["verified_record_count"] == 1
+    assert manifest["incomplete_pair_count"] == 1
+    assert manifest["invalid_pair_count"] == 1
+    assert manifest["missing_pair_count"] == 133
+    assert manifest["failure_record_count"] == 1
+    assert manifest["failure_records"][0]["failure_code"] == "reviewer_process_nonzero"
+    assert manifest["failure_records"][0]["stderr_sha256"] == "6" * 64
+    assert manifest["first_unverified_batch_ids"] == [
+        "CASE-001",
+        "CASE-002",
+        "CASE-003",
+        "CASE-004",
+    ]
+    assert manifest["incomplete_records"] == [
+        {
+            "truth_id": "CASE-001",
+            "present_files": ["raw"],
+            "raw_signals": {
+                "raw_envelope_status": "parsed_object",
+                "top_level_exit_code": 0,
+                "retry_stages": [{"stage": "format_retry", "exit_code": 2}],
+            },
+        }
+    ]
+    assert sorted(path.name for path in (output / "decisions").iterdir()) == ["CASE-000.json"]
+    assert sorted(path.name for path in (output / "raw").iterdir()) == ["CASE-000.json"]
+    reviewer_runner._validate_primary_checkpoint(
+        output,
+        reviewer="deepseek",
+        packet_source_sha="a" * 40,
+        packets=packets,
+    )
+
+    manifest["content_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="checkpoint manifest is invalid"):
+        reviewer_runner._validate_primary_checkpoint(
+            output,
+            reviewer="deepseek",
+            packet_source_sha="a" * 40,
+            packets=packets,
         )
 
 

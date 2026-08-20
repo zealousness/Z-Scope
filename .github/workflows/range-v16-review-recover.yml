@@ -1,0 +1,58 @@
+name: Range v16 Retained Review Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      retained_source_sha:
+        description: Failed E0 source SHA still present in the sealed runner workspace
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover-deepseek:
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    steps:
+      - name: Freeze retained DeepSeek workspace before checkout
+        env:
+          RETAINED_SOURCE_SHA: ${{ inputs.retained_source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$RETAINED_SOURCE_SHA"
+          test -d "$GITHUB_WORKSPACE/review-evidence/deepseek/decisions"
+          test -d "$GITHUB_WORKSPACE/review-evidence/deepseek/raw"
+          test ! -e "$RUNNER_TEMP/e0-retained-deepseek"
+          mkdir -p "$RUNNER_TEMP/e0-retained-deepseek"
+          cp -a "$GITHUB_WORKSPACE/review-evidence/deepseek/." \
+            "$RUNNER_TEMP/e0-retained-deepseek/"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          clean: false
+          path: recovery-harness
+      - name: Build strictly verified recovery checkpoint
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          set -euo pipefail
+          test "$(git -C recovery-harness rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 recovery-harness/scripts/run_e0_reviewers.py checkpoint \
+            --reviewer deepseek \
+            --packet-dir recovery-harness/test/range/benchmark/v16/review-packets \
+            --retained-dir "$RUNNER_TEMP/e0-retained-deepseek" \
+            --output-dir "$RUNNER_TEMP/e0-recovered-deepseek" \
+            --packet-source-sha "$GITHUB_SHA" \
+            --retained-source-sha '${{ inputs.retained_source_sha }}' \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workers 4
+      - uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-primary-checkpoint-deepseek-${{ github.sha }}
+          path: ${{ runner.temp }}/e0-recovered-deepseek
+          if-no-files-found: error
+          retention-days: 7

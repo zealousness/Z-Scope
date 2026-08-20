@@ -54,6 +54,8 @@ DEEPSEEK_PROVIDER_ID = "deepseek"
 DEEPSEEK_MODEL_ID = "deepseek-v4-pro-0813"
 DEEPSEEK_MODEL_IDENTITY = f"{DEEPSEEK_MODEL_ID}:max"
 FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v1"
+PRIMARY_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-primary-checkpoint.v1"
+PRIMARY_FAILURE_SCHEMA_VERSION = "zscope.range-v16-primary-failure.v1"
 
 MATERIAL_DECISION_FIELDS = (
     "contract_kind",
@@ -1279,6 +1281,16 @@ def _run_primary_packet(
                 raw_output_path=raw_path,
             )
         except Exception as exc:
+            _json_dump(
+                output / "failures" / f"{truth_id}.json",
+                _primary_failure_marker(
+                    packet,
+                    reviewer=reviewer,
+                    exc=exc,
+                    decision_path=decision_path,
+                    raw_path=raw_path,
+                ),
+            )
             raise E0GovernanceError(f"{reviewer} review failed for {truth_id}: {exc}") from exc
         _json_dump(decision_path, decision)
         _json_dump(raw_path, raw)
@@ -1290,6 +1302,443 @@ def _run_primary_packet(
         "raw_file_sha256": sha256_file(raw_path),
         "status": status,
     }
+
+
+_PRIMARY_FAILURE_CODES = {
+    "reviewer_process_nonzero",
+    "format_retry_process_nonzero",
+    "format_retry_validation_failure",
+    "grounding_retry_process_nonzero",
+    "grounding_retry_substantive_change",
+    "grounding_validation_failure",
+    "governance_validation_failure",
+}
+
+
+def _primary_failure_code(message: str) -> str:
+    lowered = message.lower()
+    if "reviewer failed for" in lowered and "stderr_sha256=" in lowered:
+        return "reviewer_process_nonzero"
+    if "format-only retry failed" in lowered:
+        return "format_retry_process_nonzero"
+    if "format retries did not produce" in lowered:
+        return "format_retry_validation_failure"
+    if "grounding-only retry failed" in lowered:
+        return "grounding_retry_process_nonzero"
+    if "grounding-only retry changed substantive fields" in lowered:
+        return "grounding_retry_substantive_change"
+    if "grounding" in lowered or "outside the supplied windows" in lowered:
+        return "grounding_validation_failure"
+    return "governance_validation_failure"
+
+
+def _primary_failure_marker(
+    packet: Mapping[str, Any],
+    *,
+    reviewer: str,
+    exc: Exception,
+    decision_path: Path,
+    raw_path: Path,
+) -> dict[str, Any]:
+    message = str(exc)
+    stderr_match = re.search(r"stderr_sha256=([0-9a-f]{64})", message)
+    marker: dict[str, Any] = {
+        "schema_version": PRIMARY_FAILURE_SCHEMA_VERSION,
+        "reviewer": reviewer,
+        "packet_uid": packet["packet_uid"],
+        "packet_sha256": packet["packet_sha256"],
+        "failure_code": _primary_failure_code(message),
+        "error_sha256": sha256_value(message),
+        "stderr_sha256": stderr_match.group(1) if stderr_match else None,
+        "decision_file_sha256": sha256_file(decision_path) if decision_path.is_file() else None,
+        "raw_file_sha256": sha256_file(raw_path) if raw_path.is_file() else None,
+        "answer_material_present": False,
+    }
+    marker["content_sha256"] = _checkpoint_manifest_content_sha256(marker)
+    return marker
+
+
+def _validate_primary_failure_marker(
+    marker: Any,
+    *,
+    reviewer: str,
+    packet_by_uid: Mapping[str, Mapping[str, Any]],
+) -> None:
+    required_fields = {
+        "schema_version",
+        "reviewer",
+        "packet_uid",
+        "packet_sha256",
+        "failure_code",
+        "error_sha256",
+        "stderr_sha256",
+        "decision_file_sha256",
+        "raw_file_sha256",
+        "answer_material_present",
+        "content_sha256",
+    }
+    if not isinstance(marker, Mapping) or set(marker) != required_fields:
+        raise E0GovernanceError("primary failure marker fields are invalid")
+    packet = packet_by_uid.get(str(marker.get("packet_uid") or ""))
+    optional_hashes = (
+        marker.get("stderr_sha256"),
+        marker.get("decision_file_sha256"),
+        marker.get("raw_file_sha256"),
+    )
+    if (
+        marker.get("schema_version") != PRIMARY_FAILURE_SCHEMA_VERSION
+        or marker.get("reviewer") != reviewer
+        or packet is None
+        or marker.get("packet_sha256") != packet["packet_sha256"]
+        or marker.get("failure_code") not in _PRIMARY_FAILURE_CODES
+        or not re.fullmatch(r"[0-9a-f]{64}", str(marker.get("error_sha256") or ""))
+        or any(
+            value is not None and not re.fullmatch(r"[0-9a-f]{64}", str(value))
+            for value in optional_hashes
+        )
+        or marker.get("answer_material_present") is not False
+        or marker.get("content_sha256") != _checkpoint_manifest_content_sha256(marker)
+    ):
+        raise E0GovernanceError("primary failure marker is invalid")
+
+
+def _checkpoint_raw_signals(path: Path) -> dict[str, Any]:
+    """Return answer-free retry/process signals without retaining reviewer output."""
+
+    try:
+        raw = load_json_strict(path)
+    except (E0GovernanceError, OSError, json.JSONDecodeError):
+        return {"raw_envelope_status": "unreadable", "retry_stages": []}
+    if not isinstance(raw, Mapping):
+        return {"raw_envelope_status": "invalid_type", "retry_stages": []}
+    retry_stages: list[dict[str, Any]] = []
+    for name in (
+        "transport_retry",
+        "format_retry",
+        "format_retry_second",
+        "semantic_retry",
+    ):
+        value = raw.get(name)
+        if not isinstance(value, Mapping):
+            continue
+        exit_field = "initial_exit_code" if name == "transport_retry" else "exit_code"
+        exit_code = value.get(exit_field)
+        retry_stages.append(
+            {
+                "stage": name,
+                "exit_code": (
+                    exit_code
+                    if isinstance(exit_code, int) and not isinstance(exit_code, bool)
+                    else None
+                ),
+            }
+        )
+    top_level_exit_code = raw.get("exit_code")
+    return {
+        "raw_envelope_status": "parsed_object",
+        "top_level_exit_code": (
+            top_level_exit_code
+            if isinstance(top_level_exit_code, int) and not isinstance(top_level_exit_code, bool)
+            else None
+        ),
+        "retry_stages": retry_stages,
+    }
+
+
+def _checkpoint_manifest_content_sha256(manifest: Mapping[str, Any]) -> str:
+    unsigned = dict(manifest)
+    unsigned.pop("content_sha256", None)
+    return sha256_value(unsigned)
+
+
+def build_primary_checkpoint(args: argparse.Namespace) -> int:
+    """Copy only strictly verified pairs into a non-formal resume checkpoint."""
+
+    if os.environ.get("Z_SCOPE_E0_REVIEW_ENVIRONMENT") != "sealed-benchmark":
+        raise E0GovernanceError("primary checkpoint requires sealed-benchmark environment")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(args.packet_source_sha)):
+        raise E0GovernanceError("primary checkpoint packet source SHA is invalid")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(args.retained_source_sha)):
+        raise E0GovernanceError("primary checkpoint retained source SHA is invalid")
+    if not str(args.workflow_run_id).isdigit():
+        raise E0GovernanceError("primary checkpoint workflow run ID is invalid")
+
+    retained = args.retained_dir.resolve()
+    retained_decisions = retained / "decisions"
+    retained_raw = retained / "raw"
+    if not retained_decisions.is_dir() or not retained_raw.is_dir():
+        raise E0GovernanceError("retained primary review directories are unavailable")
+    output = args.output_dir.resolve()
+    if output.exists():
+        raise E0GovernanceError(f"checkpoint output already exists: {output}")
+    output_decisions = output / "decisions"
+    output_raw = output / "raw"
+    output_decisions.mkdir(parents=True)
+    output_raw.mkdir()
+
+    packets: list[Mapping[str, Any]] = []
+    for path in _packet_files(args.packet_dir.resolve()):
+        packet = load_json_strict(path)
+        if not isinstance(packet, Mapping):
+            raise E0GovernanceError(f"packet must be an object: {path}")
+        validate_review_packet(packet)
+        packets.append(packet)
+    packet_by_uid = {str(packet["packet_uid"]): packet for packet in packets}
+    failure_records: list[dict[str, Any]] = []
+    retained_failures = retained / "failures"
+    if retained_failures.exists() and not retained_failures.is_dir():
+        raise E0GovernanceError("retained primary failure path is invalid")
+    if retained_failures.is_dir():
+        for failure_path in sorted(retained_failures.glob("*.json")):
+            marker = load_json_strict(failure_path)
+            _validate_primary_failure_marker(
+                marker,
+                reviewer=args.reviewer,
+                packet_by_uid=packet_by_uid,
+            )
+            failure_records.append(dict(marker))
+        expected_failure_names = {
+            f"{_packet_id(packet_by_uid[str(marker['packet_uid'])])}.json"
+            for marker in failure_records
+        }
+        if {path.name for path in retained_failures.glob("*.json")} != expected_failure_names:
+            raise E0GovernanceError("retained primary failure marker name is invalid")
+
+    verified_records: list[dict[str, Any]] = []
+    invalid_records: list[dict[str, Any]] = []
+    incomplete_records: list[dict[str, Any]] = []
+    retained_bindings: list[dict[str, Any]] = []
+    unverified_ids: list[str] = []
+    for packet in packets:
+        truth_id = _packet_id(packet)
+        decision_path = retained_decisions / f"{truth_id}.json"
+        raw_path = retained_raw / f"{truth_id}.json"
+        decision_present = decision_path.is_file()
+        raw_present = raw_path.is_file()
+        retained_bindings.append(
+            {
+                "truth_id": truth_id,
+                "decision_sha256": sha256_file(decision_path) if decision_present else None,
+                "raw_sha256": sha256_file(raw_path) if raw_present else None,
+                "failure_sha256": (
+                    sha256_file(retained_failures / f"{truth_id}.json")
+                    if (retained_failures / f"{truth_id}.json").is_file()
+                    else None
+                ),
+            }
+        )
+        if decision_present and raw_present:
+            try:
+                _validate_existing_primary(
+                    packet,
+                    reviewer=args.reviewer,
+                    decision_path=decision_path,
+                    raw_path=raw_path,
+                )
+            except (E0GovernanceError, OSError, json.JSONDecodeError) as exc:
+                invalid_records.append(
+                    {"truth_id": truth_id, "error_sha256": sha256_value(str(exc))}
+                )
+                unverified_ids.append(truth_id)
+                continue
+            shutil.copy2(decision_path, output_decisions / decision_path.name)
+            shutil.copy2(raw_path, output_raw / raw_path.name)
+            verified_records.append(
+                {
+                    "truth_id": truth_id,
+                    "packet_sha256": packet["packet_sha256"],
+                    "decision_file_sha256": sha256_file(decision_path),
+                    "raw_file_sha256": sha256_file(raw_path),
+                }
+            )
+            continue
+        if decision_present or raw_present:
+            record: dict[str, Any] = {
+                "truth_id": truth_id,
+                "present_files": [
+                    name
+                    for name, present in (
+                        ("decision", decision_present),
+                        ("raw", raw_present),
+                    )
+                    if present
+                ],
+            }
+            if raw_present:
+                record["raw_signals"] = _checkpoint_raw_signals(raw_path)
+            incomplete_records.append(record)
+        unverified_ids.append(truth_id)
+
+    missing_pair_count = (
+        len(packets) - len(verified_records) - len(invalid_records) - len(incomplete_records)
+    )
+    manifest: dict[str, Any] = {
+        "schema_version": PRIMARY_CHECKPOINT_SCHEMA_VERSION,
+        "reviewer": args.reviewer,
+        "packet_source_sha": str(args.packet_source_sha),
+        "retained_source_sha": str(args.retained_source_sha),
+        "workflow_run_id": str(args.workflow_run_id),
+        "environment": "sealed-benchmark",
+        "record_count": len(packets),
+        "verified_record_count": len(verified_records),
+        "invalid_pair_count": len(invalid_records),
+        "incomplete_pair_count": len(incomplete_records),
+        "missing_pair_count": missing_pair_count,
+        "failure_record_count": len(failure_records),
+        "first_unverified_batch_ids": unverified_ids[: args.workers],
+        "failure_records": failure_records,
+        "invalid_records": invalid_records,
+        "incomplete_records": incomplete_records,
+        "verified_records": verified_records,
+        "retained_input_sha256": sha256_value(retained_bindings),
+        "checkpoint_contains_review_material": True,
+        "diagnostic_answer_material_present": False,
+        "formal_evidence": False,
+        "requires_resume_revalidation": True,
+    }
+    manifest["content_sha256"] = _checkpoint_manifest_content_sha256(manifest)
+    _json_dump(output / "checkpoint-manifest.json", manifest)
+    return 0
+
+
+def _validate_primary_checkpoint(
+    root: Path,
+    *,
+    reviewer: str,
+    packet_source_sha: str,
+    packets: Sequence[Mapping[str, Any]],
+) -> None:
+    manifest_path = root / "checkpoint-manifest.json"
+    manifest = load_json_strict(manifest_path)
+    required_fields = {
+        "schema_version",
+        "reviewer",
+        "packet_source_sha",
+        "retained_source_sha",
+        "workflow_run_id",
+        "environment",
+        "record_count",
+        "verified_record_count",
+        "invalid_pair_count",
+        "incomplete_pair_count",
+        "missing_pair_count",
+        "failure_record_count",
+        "first_unverified_batch_ids",
+        "failure_records",
+        "invalid_records",
+        "incomplete_records",
+        "verified_records",
+        "retained_input_sha256",
+        "checkpoint_contains_review_material",
+        "diagnostic_answer_material_present",
+        "formal_evidence",
+        "requires_resume_revalidation",
+        "content_sha256",
+    }
+    if not isinstance(manifest, Mapping) or set(manifest) != required_fields:
+        raise E0GovernanceError("primary checkpoint manifest fields are invalid")
+    if (
+        manifest.get("schema_version") != PRIMARY_CHECKPOINT_SCHEMA_VERSION
+        or manifest.get("reviewer") != reviewer
+        or manifest.get("packet_source_sha") != packet_source_sha
+        or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("retained_source_sha") or ""))
+        or not str(manifest.get("workflow_run_id") or "").isdigit()
+        or manifest.get("environment") != "sealed-benchmark"
+        or manifest.get("record_count") != len(packets)
+        or manifest.get("checkpoint_contains_review_material") is not True
+        or manifest.get("diagnostic_answer_material_present") is not False
+        or manifest.get("formal_evidence") is not False
+        or manifest.get("requires_resume_revalidation") is not True
+        or not re.fullmatch(r"[0-9a-f]{64}", str(manifest.get("retained_input_sha256") or ""))
+        or manifest.get("content_sha256") != _checkpoint_manifest_content_sha256(manifest)
+    ):
+        raise E0GovernanceError("primary checkpoint manifest is invalid")
+    count_fields = (
+        "verified_record_count",
+        "invalid_pair_count",
+        "incomplete_pair_count",
+        "missing_pair_count",
+    )
+    if any(
+        not isinstance(manifest.get(field), int)
+        or isinstance(manifest.get(field), bool)
+        or manifest.get(field, -1) < 0
+        for field in count_fields
+    ) or sum(int(manifest[field]) for field in count_fields) != len(packets):
+        raise E0GovernanceError("primary checkpoint counts are invalid")
+    if not isinstance(manifest.get("invalid_records"), list) or len(
+        manifest["invalid_records"]
+    ) != manifest.get("invalid_pair_count"):
+        raise E0GovernanceError("primary checkpoint invalid-pair records are invalid")
+    if not isinstance(manifest.get("incomplete_records"), list) or len(
+        manifest["incomplete_records"]
+    ) != manifest.get("incomplete_pair_count"):
+        raise E0GovernanceError("primary checkpoint incomplete-pair records are invalid")
+    failure_records = manifest.get("failure_records")
+    if (
+        not isinstance(manifest.get("failure_record_count"), int)
+        or isinstance(manifest.get("failure_record_count"), bool)
+        or manifest.get("failure_record_count", -1) < 0
+        or not isinstance(failure_records, list)
+        or len(failure_records) != manifest.get("failure_record_count")
+    ):
+        raise E0GovernanceError("primary checkpoint failure records are invalid")
+    if not isinstance(manifest.get("first_unverified_batch_ids"), list) or any(
+        not isinstance(value, str) for value in manifest["first_unverified_batch_ids"]
+    ):
+        raise E0GovernanceError("primary checkpoint unverified batch is invalid")
+
+    packet_by_id = {_packet_id(packet): packet for packet in packets}
+    packet_by_uid = {str(packet["packet_uid"]): packet for packet in packets}
+    failure_uids: set[str] = set()
+    for marker in failure_records:
+        _validate_primary_failure_marker(
+            marker,
+            reviewer=reviewer,
+            packet_by_uid=packet_by_uid,
+        )
+        packet_uid = str(marker["packet_uid"])
+        if packet_uid in failure_uids:
+            raise E0GovernanceError("primary checkpoint failure record is duplicated")
+        failure_uids.add(packet_uid)
+    records = manifest.get("verified_records")
+    if not isinstance(records, list) or len(records) != manifest.get("verified_record_count"):
+        raise E0GovernanceError("primary checkpoint verified records are invalid")
+    seen: set[str] = set()
+    for record in records:
+        if not isinstance(record, Mapping) or set(record) != {
+            "truth_id",
+            "packet_sha256",
+            "decision_file_sha256",
+            "raw_file_sha256",
+        }:
+            raise E0GovernanceError("primary checkpoint verified record fields are invalid")
+        truth_id = str(record.get("truth_id") or "")
+        packet = packet_by_id.get(truth_id)
+        if packet is None or truth_id in seen:
+            raise E0GovernanceError("primary checkpoint verified record identity is invalid")
+        seen.add(truth_id)
+        decision_path = root / "decisions" / f"{truth_id}.json"
+        raw_path = root / "raw" / f"{truth_id}.json"
+        if (
+            record.get("packet_sha256") != packet["packet_sha256"]
+            or not decision_path.is_file()
+            or not raw_path.is_file()
+            or record.get("decision_file_sha256") != sha256_file(decision_path)
+            or record.get("raw_file_sha256") != sha256_file(raw_path)
+        ):
+            raise E0GovernanceError("primary checkpoint verified record hash is invalid")
+        _validate_existing_primary(
+            packet,
+            reviewer=reviewer,
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
+    expected_names = {f"{truth_id}.json" for truth_id in seen}
+    if {path.name for path in (root / "decisions").glob("*.json")} != expected_names or {
+        path.name for path in (root / "raw").glob("*.json")
+    } != expected_names:
+        raise E0GovernanceError("primary checkpoint contains unbound review files")
 
 
 def run_primary(args: argparse.Namespace) -> int:
@@ -1313,6 +1762,17 @@ def run_primary(args: argparse.Namespace) -> int:
             raise E0GovernanceError(f"duplicate truth ID: {truth_id}")
         seen.add(truth_id)
         packets.append(packet)
+    checkpoint_source_sha = getattr(args, "checkpoint_source_sha", None)
+    if checkpoint_source_sha is not None:
+        if not args.resume:
+            raise E0GovernanceError("primary checkpoint validation requires resume mode")
+        _validate_primary_checkpoint(
+            output,
+            reviewer=args.reviewer,
+            packet_source_sha=str(checkpoint_source_sha),
+            packets=packets,
+        )
+        (output / "checkpoint-manifest.json").unlink()
     records: list[dict[str, Any]] = []
     completed_count = 0
     for offset in range(0, len(packets), args.workers):
@@ -1521,7 +1981,18 @@ def _parser() -> argparse.ArgumentParser:
     primary.add_argument("--output-dir", required=True, type=Path)
     primary.add_argument("--workers", type=int, default=1, choices=range(1, 9))
     primary.add_argument("--resume", action="store_true")
+    primary.add_argument("--checkpoint-source-sha")
     primary.set_defaults(handler=run_primary)
+    checkpoint = subparsers.add_parser("checkpoint")
+    checkpoint.add_argument("--reviewer", required=True, choices=("fable", "deepseek"))
+    checkpoint.add_argument("--packet-dir", required=True, type=Path)
+    checkpoint.add_argument("--retained-dir", required=True, type=Path)
+    checkpoint.add_argument("--output-dir", required=True, type=Path)
+    checkpoint.add_argument("--packet-source-sha", required=True)
+    checkpoint.add_argument("--retained-source-sha", required=True)
+    checkpoint.add_argument("--workflow-run-id", required=True)
+    checkpoint.add_argument("--workers", type=int, default=4, choices=range(1, 9))
+    checkpoint.set_defaults(handler=build_primary_checkpoint)
     arbitration = subparsers.add_parser("arbitrate")
     arbitration.add_argument("--packet-dir", required=True, type=Path)
     arbitration.add_argument("--fable-dir", required=True, type=Path)
