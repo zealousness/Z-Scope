@@ -499,8 +499,11 @@ def test_deepseek_format_retry_requires_strict_schema_before_stopping(
     expected = _decision(packet)
     expected["reviewer_role"] = "primary_deepseek"
     expected["reviewer_model"] = "deepseek-v4-pro-0813:max"
-    schema_invalid = dict(expected)
-    schema_invalid["safe_pair_recomendation"] = schema_invalid.pop("safe_pair_recommendation")
+    schema_invalid = deepcopy(expected)
+    invalid_safe_pair = schema_invalid["safe_pair_recommendation"]
+    invalid_safe_pair["invariant_sumary"] = invalid_safe_pair.pop("invariant_summary")
+    invalid_safe_pair["vulnerable_sumary"] = invalid_safe_pair.pop("vulnerable_summary")
+    invalid_safe_pair["safe_sumary"] = invalid_safe_pair.pop("safe_summary")
     fenced = f"```json\n{json.dumps(expected)}\n```"
     outputs = iter(
         (
@@ -533,8 +536,25 @@ def test_deepseek_format_retry_requires_strict_schema_before_stopping(
     assert "format-validation.json" in calls[1][-1]
     assert feedbacks[0]["parsed_object"] is False
     assert feedbacks[1]["parsed_object"] is True
-    assert feedbacks[1]["missing_top_level_fields"] == ["safe_pair_recommendation"]
-    assert feedbacks[1]["unexpected_top_level_fields"] == ["safe_pair_recomendation"]
+    assert feedbacks[1]["missing_top_level_fields"] == []
+    assert feedbacks[1]["unexpected_top_level_fields"] == []
+    assert feedbacks[1]["schema_shape_errors"] == [
+        {
+            "path": "$.safe_pair_recommendation",
+            "expected_types": ["object"],
+            "actual_type": "object",
+            "missing_fields": [
+                "invariant_summary",
+                "safe_summary",
+                "vulnerable_summary",
+            ],
+            "unexpected_fields": [
+                "invariant_sumary",
+                "safe_sumary",
+                "vulnerable_sumary",
+            ],
+        }
+    ]
     assert raw["stdout"] == fenced
     assert raw["format_retry"]["original_stdout_retained"] is False
     assert raw["format_retry_second"]["original_stdout_retained"] is False

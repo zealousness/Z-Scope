@@ -412,6 +412,120 @@ def _validated_bound_decision_from_stdout(
     return decision
 
 
+def _json_schema_type_matches(value: Any, expected_type: str) -> bool:
+    if expected_type == "object":
+        return isinstance(value, Mapping)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    return True
+
+
+def _json_value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    return type(value).__name__
+
+
+def _schema_shape_errors(
+    value: Any,
+    schema: Mapping[str, Any],
+    *,
+    path: str = "$",
+) -> list[dict[str, Any]]:
+    """Report schema paths, field names, and types without retaining values."""
+
+    raw_types = schema.get("type")
+    expected_types = (
+        [raw_types]
+        if isinstance(raw_types, str)
+        else [str(item) for item in raw_types] if isinstance(raw_types, list) else []
+    )
+    if expected_types and not any(
+        _json_schema_type_matches(value, expected_type) for expected_type in expected_types
+    ):
+        return [
+            {
+                "path": path,
+                "expected_types": expected_types,
+                "actual_type": _json_value_type(value),
+                "missing_fields": [],
+                "unexpected_fields": [],
+            }
+        ]
+
+    errors: list[dict[str, Any]] = []
+    if isinstance(value, Mapping):
+        properties = schema.get("properties")
+        properties = properties if isinstance(properties, Mapping) else {}
+        required = schema.get("required")
+        required_fields = (
+            {str(field) for field in required if isinstance(field, str)}
+            if isinstance(required, list)
+            else set()
+        )
+        actual_fields = {str(field) for field in value}
+        missing_fields = sorted(required_fields - actual_fields)
+        unexpected_fields = (
+            sorted(actual_fields - set(properties))
+            if schema.get("additionalProperties") is False
+            else []
+        )
+        if missing_fields or unexpected_fields:
+            errors.append(
+                {
+                    "path": path,
+                    "expected_types": expected_types,
+                    "actual_type": "object",
+                    "missing_fields": missing_fields,
+                    "unexpected_fields": unexpected_fields,
+                }
+            )
+        for field in sorted(actual_fields & set(properties)):
+            child_schema = properties[field]
+            if isinstance(child_schema, Mapping):
+                errors.extend(
+                    _schema_shape_errors(
+                        value[field],
+                        child_schema,
+                        path=f"{path}.{field}",
+                    )
+                )
+    elif isinstance(value, list):
+        item_schema = schema.get("items")
+        if isinstance(item_schema, Mapping):
+            for index, item in enumerate(value):
+                errors.extend(
+                    _schema_shape_errors(
+                        item,
+                        item_schema,
+                        path=f"{path}[{index}]",
+                    )
+                )
+    return errors
+
+
 def _format_validation_feedback(
     stdout: str,
     *,
@@ -430,6 +544,9 @@ def _format_validation_feedback(
     else:
         parsed_object = True
         actual_fields = sorted(str(field) for field in decision)
+    shape_errors = (
+        _schema_shape_errors(decision, _decision_schema_for_model()) if parsed_object else []
+    )
     return {
         "schema_version": FORMAT_VALIDATION_SCHEMA_VERSION,
         "validation_error": str(validation_error),
@@ -438,6 +555,7 @@ def _format_validation_feedback(
         "actual_top_level_fields": actual_fields,
         "missing_top_level_fields": sorted(set(required_fields) - set(actual_fields)),
         "unexpected_top_level_fields": sorted(set(actual_fields) - set(required_fields)),
+        "schema_shape_errors": shape_errors,
     }
 
 
@@ -744,8 +862,9 @@ def _run_model(
                 "The previous formatting attempt still failed strict validation. Read "
                 "prior-output.txt, decision-schema.json, and the updated "
                 "format-validation.json in the isolated current directory. Correct every "
-                "reported missing or unexpected field by copying the required field names "
-                "exactly; do not change the substantive decision. Return one "
+                "reported missing or unexpected field, including every path in "
+                "schema_shape_errors, by copying the required field names exactly; do not "
+                "change the substantive decision. Return one "
                 "schema-matching JSON object with no explanation or Markdown. The first "
                 "non-whitespace character of your entire response must be { and the last "
                 "must be }. Set reviewer_role=primary_deepseek and "
