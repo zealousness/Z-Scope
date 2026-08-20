@@ -72,6 +72,39 @@ MATERIAL_DECISION_FIELDS = (
     "reason_codes",
 )
 
+_CONTRACT_ERROR_MATERIAL_FIELDS = {
+    "review decision contract kind is invalid": "contract_kind",
+    "review decision disposition is invalid": "disposition",
+    "review decision confidence must be numeric": "confidence",
+    "review decision confidence is outside [0,1]": "confidence",
+    "review decision defect taxonomy ID is invalid": "defect_taxonomy_id",
+    "review decision CWE identities are invalid": "cwe_ids",
+    "review decision CWE identities are duplicate": "cwe_ids",
+    "review decision structured_anchors must be non-empty": "structured_anchors",
+    "review decision structured anchor fields are invalid": "structured_anchors",
+    "review decision structured anchor kind is invalid": "structured_anchors",
+    "review decision anchor correction flag is invalid": "structured_anchors",
+    "review decision structured anchor file is invalid": "structured_anchors",
+    "review decision structured anchor path is not canonical": "structured_anchors",
+    "review decision structured anchor function is invalid": "structured_anchors",
+    "review decision structured anchor range is invalid": "structured_anchors",
+    "review decision required evidence clauses must be non-empty": ("required_evidence_clauses"),
+    "review decision evidence clause fields are invalid": "required_evidence_clauses",
+    "review decision evidence clause ID is invalid or duplicate": ("required_evidence_clauses"),
+    "review decision evidence clause predicate is invalid": "required_evidence_clauses",
+    "review decision evidence clause refs are invalid": "required_evidence_clauses",
+    "review decision evidence refs are invalid": "evidence_refs",
+    "review decision trigger summary is invalid": "trigger_summary",
+    "review decision threat assumptions are invalid": "threat_assumptions",
+    "review decision reason codes are invalid": "reason_codes",
+    "review decision safe pair recommendation is invalid": "safe_pair_recommendation",
+    "review decision safe pair kind is invalid": "safe_pair_recommendation",
+    "review decision safe pair invariant_summary is invalid": "safe_pair_recommendation",
+    "review decision safe pair vulnerable_summary is invalid": "safe_pair_recommendation",
+    "review decision safe pair safe_summary is invalid": "safe_pair_recommendation",
+    "review decision compile requirements are invalid": "safe_pair_recommendation",
+}
+
 _HIDDEN_REASONING_KEYS = {
     "analysis",
     "chain_of_thought",
@@ -683,6 +716,41 @@ def _identity_contract_error(exc: Exception) -> bool:
     }
 
 
+def _contract_retry_mutable_material_fields(
+    decision: Mapping[str, Any],
+    validation_error: Exception,
+) -> tuple[str, ...] | None:
+    """Identify the smallest material repair surface from a strict contract error.
+
+    Returning ``None`` means the harness cannot prove a bounded material repair and
+    therefore must not claim that any material projection was preserved.  An empty
+    tuple means that only frozen envelope identity or non-material extra fields may
+    change.
+    """
+
+    if _identity_contract_error(validation_error):
+        return ()
+    message = str(validation_error)
+    if message == "review decision fields do not match v1 contract":
+        return tuple(sorted(field for field in MATERIAL_DECISION_FIELDS if field not in decision))
+    field = _CONTRACT_ERROR_MATERIAL_FIELDS.get(message)
+    return (field,) if field is not None else None
+
+
+def _contract_retry_locked_projection(
+    decision: Mapping[str, Any],
+    mutable_material_fields: Sequence[str],
+) -> dict[str, Any]:
+    """Project material fields that a bounded contract repair may not change."""
+
+    mutable = set(mutable_material_fields)
+    return {
+        field: {"present": field in decision, "value": decision.get(field)}
+        for field in MATERIAL_DECISION_FIELDS
+        if field not in mutable
+    }
+
+
 def _claude_arguments(reviewer: str) -> list[str]:
     if reviewer not in {"fable", "opus"}:
         raise E0GovernanceError("Claude reviewer identity is invalid")
@@ -982,19 +1050,28 @@ def _run_model(
         if contract_error is not None:
             prior_stdout = str(raw["stdout"])
             preserved_projection_sha256: str | None = None
-            if _identity_contract_error(contract_error):
-                try:
-                    prior_decision = _validated_decision_from_stdout(
-                        prior_stdout,
-                        reviewer=reviewer,
-                    )
-                except (json.JSONDecodeError, E0GovernanceError):
-                    pass
-                else:
+            mutable_material_fields: tuple[str, ...] | None = None
+            prior_decision: Mapping[str, Any] | None = None
+            try:
+                prior_decision = _validated_decision_from_stdout(
+                    prior_stdout,
+                    reviewer=reviewer,
+                )
+            except (json.JSONDecodeError, E0GovernanceError):
+                pass
+            else:
+                mutable_material_fields = _contract_retry_mutable_material_fields(
+                    prior_decision,
+                    contract_error,
+                )
+                if mutable_material_fields is not None:
                     preserved_projection_sha256 = sha256_value(
-                        _contract_retry_substantive_projection(prior_decision)
+                        _contract_retry_locked_projection(
+                            prior_decision,
+                            mutable_material_fields,
+                        )
                     )
-            feedback_path = temp_root / "contract-validation.json"
+            feedback_path = temp_root / "format-validation.json"
             _json_dump(
                 feedback_path,
                 _format_validation_feedback(
@@ -1013,7 +1090,7 @@ def _run_model(
                 "validation feedback is answer-free and may be used only to correct the "
                 "contract."
             )
-            if preserved_projection_sha256 is not None:
+            if preserved_projection_sha256 is not None and mutable_material_fields == ():
                 contract_instruction += (
                     " The prior response parsed successfully and only its frozen envelope "
                     "identity was invalid. Preserve every substantive decision field "
@@ -1021,27 +1098,35 @@ def _run_model(
                     "reviewer_role, or reviewer_model."
                 )
             if reviewer == "deepseek":
-                for stale_name in ("prior-output.txt", "format-validation.json"):
-                    stale_path = temp_root / stale_name
-                    if stale_path.exists():
-                        stale_path.unlink()
                 if preserved_projection_sha256 is not None:
-                    (temp_root / "prior-contract-output.txt").write_text(
+                    (temp_root / "prior-output.txt").write_text(
                         prior_stdout,
                         encoding="utf-8",
                     )
-                    contract_instruction += (
-                        " Read prior-contract-output.txt and change only its frozen "
-                        "envelope identity."
-                    )
+                    if mutable_material_fields:
+                        contract_instruction += (
+                            " Read prior-output.txt. Preserve every material field "
+                            "except this exact repair allowlist: "
+                            + json.dumps(list(mutable_material_fields), separators=(",", ":"))
+                            + ". Correct only those invalid or missing material fields and "
+                            "the frozen envelope identity; do not revise any other review "
+                            "judgment."
+                        )
+                    else:
+                        contract_instruction += (
+                            " Read prior-output.txt and change only its frozen "
+                            "envelope identity or non-material unexpected fields."
+                        )
                 retry_command = [
                     str(dsh_command),
                     "--profile",
                     "headless",
                     "--patch",
                     str(patch_path),
-                    "Read packet.json, decision-schema.json, and contract-validation.json "
-                    "from the isolated current directory. " + contract_instruction,
+                    "Read packet.json, decision-schema.json, and format-validation.json "
+                    "from the isolated current directory. When prior-output.txt is "
+                    "present, use it only for the bounded correction described below. "
+                    + contract_instruction,
                 ]
                 retry_input = None
             else:
@@ -1080,6 +1165,9 @@ def _run_model(
                 "original_stdout_retained": False,
                 "validation_feedback_sha256": sha256_file(feedback_path),
                 "preserved_substantive_projection_sha256": preserved_projection_sha256,
+                "mutable_material_fields": (
+                    list(mutable_material_fields) if mutable_material_fields is not None else None
+                ),
                 "stderr_sha256": sha256_value(retry.stderr),
             }
             raw["stdout"] = retry.stdout
@@ -1105,7 +1193,10 @@ def _run_model(
                 ) from retry_exc
             if (
                 preserved_projection_sha256 is not None
-                and sha256_value(_contract_retry_substantive_projection(decision))
+                and mutable_material_fields is not None
+                and sha256_value(
+                    _contract_retry_locked_projection(decision, mutable_material_fields)
+                )
                 != preserved_projection_sha256
             ):
                 if raw_output_path is not None:
@@ -1193,120 +1284,212 @@ def _run_model(
                     model=model,
                 )
             except (json.JSONDecodeError, E0GovernanceError) as semantic_contract_error:
-                try:
-                    unbound_semantic_decision = _validated_decision_from_stdout(
-                        retry.stdout,
-                        reviewer=reviewer,
-                    )
-                except (json.JSONDecodeError, E0GovernanceError):
-                    if raw_output_path is not None:
-                        _json_dump(raw_output_path, raw)
-                    raise semantic_contract_error
-                semantic_material_sha256 = sha256_value(
-                    _contract_retry_substantive_projection(unbound_semantic_decision)
-                )
-                semantic_feedback_path = temp_root / "semantic-contract-validation.json"
-                _json_dump(
-                    semantic_feedback_path,
-                    _format_validation_feedback(
-                        retry.stdout,
-                        reviewer=reviewer,
-                        validation_error=semantic_contract_error,
-                    ),
-                )
-                semantic_contract_instruction = (
-                    "The grounding correction parsed as an object but failed only the "
-                    "strict decision envelope contract. Reissue that same correction as "
-                    "a complete schema-valid decision. Preserve every material field "
-                    "exactly, including anchors and evidence. Correct only schema_version, "
-                    "packet_uid, packet_sha256, reviewer_role, or reviewer_model by copying "
-                    "their frozen values from the packet and instructions. Return no prose, "
-                    "Markdown, external knowledge, or hidden reasoning."
-                )
+                semantic_contract_resolved = False
                 if reviewer == "deepseek":
-                    (temp_root / "prior-semantic-output.txt").write_text(
-                        retry.stdout,
-                        encoding="utf-8",
-                    )
-                    semantic_contract_command = [
-                        str(dsh_command),
-                        "--profile",
-                        "headless",
-                        "--patch",
-                        str(patch_path),
-                        "Read prior-semantic-output.txt, packet.json, "
-                        "decision-schema.json, and semantic-contract-validation.json "
-                        "from the isolated current directory. " + semantic_contract_instruction,
-                    ]
-                    semantic_contract_input = None
-                else:
-                    semantic_contract_command = [
-                        str(claude_command),
-                        *_claude_arguments(reviewer),
-                    ]
-                    semantic_contract_input = (
-                        semantic_prompt
-                        + "\nSEMANTIC_CONTRACT_RETRY:\n"
-                        + semantic_contract_instruction
-                        + "\nVALIDATION_FEEDBACK:\n"
-                        + json.dumps(
-                            load_json_strict(semantic_feedback_path),
-                            ensure_ascii=False,
-                            sort_keys=True,
+                    try:
+                        _validated_decision_from_stdout(
+                            retry.stdout,
+                            reviewer=reviewer,
                         )
-                        + "\nPRIOR_SEMANTIC_RESPONSE:\n"
-                        + retry.stdout
+                    except (json.JSONDecodeError, E0GovernanceError):
+                        prior_semantic_stdout = retry.stdout
+                        semantic_format_prompts = (
+                            "Read prior-output.txt, decision-schema.json, and "
+                            "format-validation.json. Reformat the prior grounding "
+                            "correction as exactly one complete JSON object. This is a "
+                            "transport-only correction: do not perform another review and "
+                            "do not change any decision field. Return no prose or Markdown.",
+                        )
+                        for semantic_format_prompt in semantic_format_prompts:
+                            (temp_root / "prior-output.txt").write_text(
+                                prior_semantic_stdout,
+                                encoding="utf-8",
+                            )
+                            semantic_format_feedback_path = temp_root / "format-validation.json"
+                            _json_dump(
+                                semantic_format_feedback_path,
+                                _format_validation_feedback(
+                                    prior_semantic_stdout,
+                                    reviewer=reviewer,
+                                    validation_error=semantic_contract_error,
+                                ),
+                            )
+                            semantic_format_retry = subprocess.run(
+                                [
+                                    str(dsh_command),
+                                    "--profile",
+                                    "headless",
+                                    "--patch",
+                                    str(patch_path),
+                                    semantic_format_prompt,
+                                ],
+                                cwd=temp_root,
+                                env=env,
+                                capture_output=True,
+                                text=True,
+                                encoding="utf-8",
+                                errors="strict",
+                                check=False,
+                                timeout=600,
+                            )
+                            raw["semantic_format_retry"] = {
+                                "exit_code": semantic_format_retry.returncode,
+                                "original_stdout_sha256": sha256_value(prior_semantic_stdout),
+                                "original_stdout_retained": False,
+                                "validation_feedback_sha256": sha256_file(
+                                    semantic_format_feedback_path
+                                ),
+                                "substantive_projection_sha256": (original_projection_sha256),
+                                "stderr_sha256": sha256_value(semantic_format_retry.stderr),
+                            }
+                            raw["stdout"] = semantic_format_retry.stdout
+                            if semantic_format_retry.returncode != 0:
+                                if raw_output_path is not None:
+                                    _json_dump(raw_output_path, raw)
+                                raise E0GovernanceError(
+                                    f"{reviewer} grounding format retry failed"
+                                ) from semantic_contract_error
+                            try:
+                                decision = _validated_bound_decision_from_stdout(
+                                    semantic_format_retry.stdout,
+                                    reviewer=reviewer,
+                                    packet=packet,
+                                    role=role,
+                                    model=model,
+                                )
+                            except (
+                                json.JSONDecodeError,
+                                E0GovernanceError,
+                            ) as format_retry_exc:
+                                prior_semantic_stdout = semantic_format_retry.stdout
+                                semantic_contract_error = format_retry_exc
+                                continue
+                            semantic_contract_resolved = True
+                            break
+                if semantic_contract_resolved:
+                    unbound_semantic_decision = None
+                else:
+                    try:
+                        unbound_semantic_decision = _validated_decision_from_stdout(
+                            str(raw["stdout"]),
+                            reviewer=reviewer,
+                        )
+                    except (json.JSONDecodeError, E0GovernanceError):
+                        if raw_output_path is not None:
+                            _json_dump(raw_output_path, raw)
+                        if "semantic_format_retry" in raw:
+                            raise E0GovernanceError(
+                                f"{reviewer} grounding format retries did not produce "
+                                "a valid decision"
+                            ) from semantic_contract_error
+                        raise semantic_contract_error
+                if unbound_semantic_decision is not None:
+                    prior_semantic_artifact = str(raw["stdout"])
+                    semantic_material_sha256 = sha256_value(
+                        _contract_retry_substantive_projection(unbound_semantic_decision)
                     )
-                semantic_contract_retry = subprocess.run(
-                    semantic_contract_command,
-                    input=semantic_contract_input,
-                    cwd=temp_root,
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="strict",
-                    check=False,
-                    timeout=600,
-                )
-                raw["semantic_contract_retry"] = {
-                    "exit_code": semantic_contract_retry.returncode,
-                    "original_stdout_sha256": sha256_value(retry.stdout),
-                    "original_stdout_retained": False,
-                    "validation_feedback_sha256": sha256_file(semantic_feedback_path),
-                    "substantive_projection_sha256": semantic_material_sha256,
-                    "stderr_sha256": sha256_value(semantic_contract_retry.stderr),
-                }
-                raw["stdout"] = semantic_contract_retry.stdout
-                if semantic_contract_retry.returncode != 0:
-                    if raw_output_path is not None:
-                        _json_dump(raw_output_path, raw)
-                    raise E0GovernanceError(
-                        f"{reviewer} grounding contract retry failed"
-                    ) from semantic_contract_error
-                try:
-                    decision = _validated_bound_decision_from_stdout(
-                        semantic_contract_retry.stdout,
-                        reviewer=reviewer,
-                        packet=packet,
-                        role=role,
-                        model=model,
+                    semantic_feedback_path = temp_root / "format-validation.json"
+                    _json_dump(
+                        semantic_feedback_path,
+                        _format_validation_feedback(
+                            prior_semantic_artifact,
+                            reviewer=reviewer,
+                            validation_error=semantic_contract_error,
+                        ),
                     )
-                except (json.JSONDecodeError, E0GovernanceError) as retry_exc:
-                    if raw_output_path is not None:
-                        _json_dump(raw_output_path, raw)
-                    raise E0GovernanceError(
-                        f"{reviewer} grounding contract retry remained invalid"
-                    ) from retry_exc
-                if (
-                    sha256_value(_contract_retry_substantive_projection(decision))
-                    != semantic_material_sha256
-                ):
-                    if raw_output_path is not None:
-                        _json_dump(raw_output_path, raw)
-                    raise E0GovernanceError(
-                        f"{reviewer} grounding contract retry changed material fields"
+                    semantic_contract_instruction = (
+                        "The grounding correction parsed as an object but failed only the "
+                        "strict decision envelope contract. Reissue that same correction as "
+                        "a complete schema-valid decision. Preserve every material field "
+                        "exactly, including anchors and evidence. Correct only schema_version, "
+                        "packet_uid, packet_sha256, reviewer_role, or reviewer_model by copying "
+                        "their frozen values from the packet and instructions. Return no prose, "
+                        "Markdown, external knowledge, or hidden reasoning."
                     )
+                    if reviewer == "deepseek":
+                        (temp_root / "prior-output.txt").write_text(
+                            prior_semantic_artifact,
+                            encoding="utf-8",
+                        )
+                        semantic_contract_command = [
+                            str(dsh_command),
+                            "--profile",
+                            "headless",
+                            "--patch",
+                            str(patch_path),
+                            "Read prior-output.txt, packet.json, "
+                            "decision-schema.json, and format-validation.json "
+                            "from the isolated current directory. " + semantic_contract_instruction,
+                        ]
+                        semantic_contract_input = None
+                    else:
+                        semantic_contract_command = [
+                            str(claude_command),
+                            *_claude_arguments(reviewer),
+                        ]
+                        semantic_contract_input = (
+                            semantic_prompt
+                            + "\nSEMANTIC_CONTRACT_RETRY:\n"
+                            + semantic_contract_instruction
+                            + "\nVALIDATION_FEEDBACK:\n"
+                            + json.dumps(
+                                load_json_strict(semantic_feedback_path),
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            )
+                            + "\nPRIOR_SEMANTIC_RESPONSE:\n"
+                            + prior_semantic_artifact
+                        )
+                    semantic_contract_retry = subprocess.run(
+                        semantic_contract_command,
+                        input=semantic_contract_input,
+                        cwd=temp_root,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="strict",
+                        check=False,
+                        timeout=600,
+                    )
+                    raw["semantic_contract_retry"] = {
+                        "exit_code": semantic_contract_retry.returncode,
+                        "original_stdout_sha256": sha256_value(prior_semantic_artifact),
+                        "original_stdout_retained": False,
+                        "validation_feedback_sha256": sha256_file(semantic_feedback_path),
+                        "substantive_projection_sha256": semantic_material_sha256,
+                        "stderr_sha256": sha256_value(semantic_contract_retry.stderr),
+                    }
+                    raw["stdout"] = semantic_contract_retry.stdout
+                    if semantic_contract_retry.returncode != 0:
+                        if raw_output_path is not None:
+                            _json_dump(raw_output_path, raw)
+                        raise E0GovernanceError(
+                            f"{reviewer} grounding contract retry failed"
+                        ) from semantic_contract_error
+                    try:
+                        decision = _validated_bound_decision_from_stdout(
+                            semantic_contract_retry.stdout,
+                            reviewer=reviewer,
+                            packet=packet,
+                            role=role,
+                            model=model,
+                        )
+                    except (json.JSONDecodeError, E0GovernanceError) as retry_exc:
+                        if raw_output_path is not None:
+                            _json_dump(raw_output_path, raw)
+                        raise E0GovernanceError(
+                            f"{reviewer} grounding contract retry remained invalid"
+                        ) from retry_exc
+                    if (
+                        sha256_value(_contract_retry_substantive_projection(decision))
+                        != semantic_material_sha256
+                    ):
+                        if raw_output_path is not None:
+                            _json_dump(raw_output_path, raw)
+                        raise E0GovernanceError(
+                            f"{reviewer} grounding contract retry changed material fields"
+                        )
             if (
                 sha256_value(_semantic_retry_substantive_projection(decision))
                 != original_projection_sha256
@@ -1414,6 +1597,7 @@ def _validate_existing_primary(
         "format_retry_second",
         "contract_retry",
         "semantic_retry",
+        "semantic_format_retry",
         "semantic_contract_retry",
     }
     if not required_raw_fields.issubset(raw_fields) or not (
@@ -1501,19 +1685,36 @@ def _validate_existing_primary(
             if isinstance(contract_retry, Mapping)
             else None
         )
+        legacy_contract_fields = {
+            "exit_code",
+            "original_stdout_sha256",
+            "original_stdout_retained",
+            "validation_feedback_sha256",
+            "preserved_substantive_projection_sha256",
+            "stderr_sha256",
+        }
+        contract_fields = set(contract_retry) if isinstance(contract_retry, Mapping) else set()
+        mutable_material_fields = (
+            contract_retry.get("mutable_material_fields")
+            if isinstance(contract_retry, Mapping) and "mutable_material_fields" in contract_retry
+            else None
+        )
+        mutable_fields_valid = mutable_material_fields is None or (
+            isinstance(mutable_material_fields, list)
+            and all(isinstance(field, str) for field in mutable_material_fields)
+            and mutable_material_fields == sorted(set(mutable_material_fields))
+            and set(mutable_material_fields).issubset(MATERIAL_DECISION_FIELDS)
+        )
         if (
             not isinstance(contract_retry, Mapping)
-            or set(contract_retry)
-            != {
-                "exit_code",
-                "original_stdout_sha256",
-                "original_stdout_retained",
-                "validation_feedback_sha256",
-                "preserved_substantive_projection_sha256",
-                "stderr_sha256",
+            or frozenset(contract_fields)
+            not in {
+                frozenset(legacy_contract_fields),
+                frozenset(legacy_contract_fields | {"mutable_material_fields"}),
             }
             or contract_retry.get("exit_code") != 0
             or contract_retry.get("original_stdout_retained") is not False
+            or not mutable_fields_valid
             or any(
                 not re.fullmatch(r"[0-9a-f]{64}", str(contract_retry.get(field) or ""))
                 for field in (
@@ -1528,8 +1729,22 @@ def _validate_existing_primary(
             )
             or (
                 preserved_projection_sha256 is not None
-                and sha256_value(_contract_retry_substantive_projection(decision))
+                and (
+                    sha256_value(
+                        _contract_retry_locked_projection(
+                            decision,
+                            mutable_material_fields,
+                        )
+                    )
+                    if "mutable_material_fields" in contract_fields
+                    and isinstance(mutable_material_fields, list)
+                    else sha256_value(_contract_retry_substantive_projection(decision))
+                )
                 != preserved_projection_sha256
+            )
+            or (
+                "mutable_material_fields" in contract_fields
+                and (mutable_material_fields is None) != (preserved_projection_sha256 is None)
             )
         ):
             raise E0GovernanceError("existing contract retry envelope is invalid")
@@ -1561,6 +1776,41 @@ def _validate_existing_primary(
             != semantic_retry.get("substantive_projection_sha256")
         ):
             raise E0GovernanceError("existing semantic retry envelope is invalid")
+    for retry_name in ("semantic_format_retry",):
+        semantic_format_retry = raw.get(retry_name)
+        if semantic_format_retry is None:
+            continue
+        if (
+            reviewer != "deepseek"
+            or semantic_retry is None
+            or not isinstance(semantic_format_retry, Mapping)
+            or set(semantic_format_retry)
+            != {
+                "exit_code",
+                "original_stdout_sha256",
+                "original_stdout_retained",
+                "validation_feedback_sha256",
+                "substantive_projection_sha256",
+                "stderr_sha256",
+            }
+            or semantic_format_retry.get("exit_code") != 0
+            or semantic_format_retry.get("original_stdout_retained") is not False
+            or any(
+                not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(semantic_format_retry.get(field) or ""),
+                )
+                for field in (
+                    "original_stdout_sha256",
+                    "validation_feedback_sha256",
+                    "substantive_projection_sha256",
+                    "stderr_sha256",
+                )
+            )
+            or sha256_value(_semantic_retry_substantive_projection(decision))
+            != semantic_format_retry.get("substantive_projection_sha256")
+        ):
+            raise E0GovernanceError("existing semantic format retry envelope is invalid")
     semantic_contract_retry = raw.get("semantic_contract_retry")
     if semantic_contract_retry is not None:
         if (
@@ -1655,6 +1905,8 @@ _PRIMARY_FAILURE_CODES = {
     "contract_retry_substantive_change",
     "grounding_retry_process_nonzero",
     "grounding_retry_substantive_change",
+    "grounding_format_retry_process_nonzero",
+    "grounding_format_retry_validation_failure",
     "grounding_contract_retry_process_nonzero",
     "grounding_contract_retry_validation_failure",
     "grounding_contract_retry_substantive_change",
@@ -1667,6 +1919,10 @@ def _primary_failure_code(message: str) -> str:
     lowered = message.lower()
     if "reviewer failed for" in lowered and "stderr_sha256=" in lowered:
         return "reviewer_process_nonzero"
+    if "grounding format retry failed" in lowered:
+        return "grounding_format_retry_process_nonzero"
+    if "grounding format retries did not produce" in lowered:
+        return "grounding_format_retry_validation_failure"
     if "format-only retry failed" in lowered:
         return "format_retry_process_nonzero"
     if "format retries did not produce" in lowered:
@@ -1778,6 +2034,7 @@ def _checkpoint_raw_signals(path: Path) -> dict[str, Any]:
         "format_retry_second",
         "contract_retry",
         "semantic_retry",
+        "semantic_format_retry",
         "semantic_contract_retry",
     ):
         value = raw.get(name)
