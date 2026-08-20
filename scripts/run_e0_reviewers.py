@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -53,7 +54,7 @@ DSH_VERSION = "0.1.0-rc.6"
 DEEPSEEK_PROVIDER_ID = "deepseek"
 DEEPSEEK_MODEL_ID = "deepseek-v4-pro-0813"
 DEEPSEEK_MODEL_IDENTITY = f"{DEEPSEEK_MODEL_ID}:max"
-FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v1"
+FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v2"
 PRIMARY_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-primary-checkpoint.v1"
 PRIMARY_FAILURE_SCHEMA_VERSION = "zscope.range-v16-primary-failure.v1"
 
@@ -511,6 +512,50 @@ def _schema_shape_errors(
         ]
 
     errors: list[dict[str, Any]] = []
+    violated_constraints: list[str] = []
+    if "const" in schema and value != schema["const"]:
+        violated_constraints.append("const")
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and value not in enum_values:
+        violated_constraints.append("enum")
+    if isinstance(value, str):
+        minimum_length = schema.get("minLength")
+        if isinstance(minimum_length, int) and len(value) < minimum_length:
+            violated_constraints.append("minLength")
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str) and re.search(pattern, value) is None:
+            violated_constraints.append("pattern")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            violated_constraints.append("finite")
+        minimum = schema.get("minimum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            violated_constraints.append("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(maximum, (int, float)) and value > maximum:
+            violated_constraints.append("maximum")
+    if isinstance(value, list):
+        minimum_items = schema.get("minItems")
+        if isinstance(minimum_items, int) and len(value) < minimum_items:
+            violated_constraints.append("minItems")
+        if schema.get("uniqueItems") is True:
+            canonical_items = [
+                json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                for item in value
+            ]
+            if len(canonical_items) != len(set(canonical_items)):
+                violated_constraints.append("uniqueItems")
+    if violated_constraints:
+        errors.append(
+            {
+                "path": path,
+                "expected_types": expected_types,
+                "actual_type": _json_value_type(value),
+                "missing_fields": [],
+                "unexpected_fields": [],
+                "violated_constraints": sorted(set(violated_constraints)),
+            }
+        )
     if isinstance(value, Mapping):
         properties = schema.get("properties")
         properties = properties if isinstance(properties, Mapping) else {}
@@ -566,6 +611,9 @@ def _format_validation_feedback(
     *,
     reviewer: str,
     validation_error: Exception,
+    packet: Mapping[str, Any] | None = None,
+    role: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Describe strict format failures without retaining substantive output."""
 
@@ -582,6 +630,21 @@ def _format_validation_feedback(
     shape_errors = (
         _schema_shape_errors(decision, _decision_schema_for_model()) if parsed_object else []
     )
+    material_issue_fields = list(_schema_issue_material_fields(decision)) if parsed_object else []
+    binding_issue_fields: list[str] = []
+    if parsed_object and packet is not None and role is not None and model is not None:
+        expected_bindings = {
+            "schema_version": DECISION_SCHEMA_VERSION,
+            "packet_uid": str(packet["packet_uid"]),
+            "packet_sha256": str(packet["packet_sha256"]),
+            "reviewer_role": role,
+            "reviewer_model": model,
+        }
+        binding_issue_fields = sorted(
+            field
+            for field, expected in expected_bindings.items()
+            if decision.get(field) != expected
+        )
     return {
         "schema_version": FORMAT_VALIDATION_SCHEMA_VERSION,
         "validation_error": str(validation_error),
@@ -591,7 +654,28 @@ def _format_validation_feedback(
         "missing_top_level_fields": sorted(set(required_fields) - set(actual_fields)),
         "unexpected_top_level_fields": sorted(set(actual_fields) - set(required_fields)),
         "schema_shape_errors": shape_errors,
+        "binding_issue_fields": binding_issue_fields,
+        "material_issue_fields": material_issue_fields,
     }
+
+
+def _schema_issue_material_fields(decision: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return every material field implicated by answer-free schema diagnostics."""
+
+    fields: set[str] = set()
+    for issue in _schema_shape_errors(decision, _decision_schema_for_model()):
+        path = str(issue.get("path") or "")
+        if path == "$":
+            fields.update(
+                field
+                for field in issue.get("missing_fields") or []
+                if field in MATERIAL_DECISION_FIELDS
+            )
+            continue
+        match = re.match(r"^\$\.([A-Za-z0-9_]+)", path)
+        if match is not None and match.group(1) in MATERIAL_DECISION_FIELDS:
+            fields.add(match.group(1))
+    return tuple(sorted(fields))
 
 
 def validate_decision_against_packet(
@@ -728,13 +812,17 @@ def _contract_retry_mutable_material_fields(
     change.
     """
 
+    schema_fields = set(_schema_issue_material_fields(decision))
     if _identity_contract_error(validation_error):
-        return ()
+        return tuple(sorted(schema_fields))
     message = str(validation_error)
     if message == "review decision fields do not match v1 contract":
-        return tuple(sorted(field for field in MATERIAL_DECISION_FIELDS if field not in decision))
+        schema_fields.update(field for field in MATERIAL_DECISION_FIELDS if field not in decision)
+        return tuple(sorted(schema_fields))
     field = _CONTRACT_ERROR_MATERIAL_FIELDS.get(message)
-    return (field,) if field is not None else None
+    if field is not None:
+        schema_fields.add(field)
+    return tuple(sorted(schema_fields)) if schema_fields else None
 
 
 def _contract_retry_locked_projection(
@@ -997,6 +1085,9 @@ def _run_model(
                         prior_stdout,
                         reviewer="deepseek",
                         validation_error=validation_error,
+                        packet=packet,
+                        role=role,
+                        model=model,
                     ),
                 )
                 retry = subprocess.run(
@@ -1052,6 +1143,7 @@ def _run_model(
             preserved_projection_sha256: str | None = None
             mutable_material_fields: tuple[str, ...] | None = None
             prior_decision: Mapping[str, Any] | None = None
+            prior_artifact: str | None = None
             try:
                 prior_decision = _validated_decision_from_stdout(
                     prior_stdout,
@@ -1060,6 +1152,12 @@ def _run_model(
             except (json.JSONDecodeError, E0GovernanceError):
                 pass
             else:
+                prior_artifact = json.dumps(
+                    prior_decision,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                )
                 mutable_material_fields = _contract_retry_mutable_material_fields(
                     prior_decision,
                     contract_error,
@@ -1078,6 +1176,9 @@ def _run_model(
                     prior_stdout,
                     reviewer=reviewer,
                     validation_error=contract_error,
+                    packet=packet,
+                    role=role,
+                    model=model,
                 ),
             )
             contract_instruction = (
@@ -1088,35 +1189,39 @@ def _run_model(
                 "from the instructions. Return a complete schema-valid decision with no "
                 "prose, Markdown, external knowledge, or hidden reasoning. The machine "
                 "validation feedback is answer-free and may be used only to correct the "
-                "contract."
+                "contract. It enumerates every detected schema constraint, material field, "
+                "and frozen binding field; correct all listed issues in this single "
+                "regeneration."
             )
-            if preserved_projection_sha256 is not None and mutable_material_fields == ():
-                contract_instruction += (
-                    " The prior response parsed successfully and only its frozen envelope "
-                    "identity was invalid. Preserve every substantive decision field "
-                    "exactly; correct only schema_version, packet_uid, packet_sha256, "
-                    "reviewer_role, or reviewer_model."
-                )
+            if preserved_projection_sha256 is not None:
+                if mutable_material_fields:
+                    contract_instruction += (
+                        " Preserve every material field from the parsed prior decision "
+                        "except this exact repair allowlist: "
+                        + json.dumps(list(mutable_material_fields), separators=(",", ":"))
+                        + ". Correct all invalid or missing fields in that allowlist and "
+                        "the frozen envelope identity; do not revise any other review "
+                        "judgment."
+                    )
+                else:
+                    contract_instruction += (
+                        " The prior response parsed successfully and has no detected "
+                        "material-contract issue. Preserve every substantive decision field "
+                        "exactly; correct only schema_version, packet_uid, packet_sha256, "
+                        "reviewer_role, reviewer_model, or non-material unexpected fields."
+                    )
             if reviewer == "deepseek":
                 if preserved_projection_sha256 is not None:
+                    if prior_artifact is None:
+                        raise E0GovernanceError("bounded contract retry has no parsed decision")
                     (temp_root / "prior-output.txt").write_text(
-                        prior_stdout,
+                        prior_artifact + "\n",
                         encoding="utf-8",
                     )
-                    if mutable_material_fields:
-                        contract_instruction += (
-                            " Read prior-output.txt. Preserve every material field "
-                            "except this exact repair allowlist: "
-                            + json.dumps(list(mutable_material_fields), separators=(",", ":"))
-                            + ". Correct only those invalid or missing material fields and "
-                            "the frozen envelope identity; do not revise any other review "
-                            "judgment."
-                        )
-                    else:
-                        contract_instruction += (
-                            " Read prior-output.txt and change only its frozen "
-                            "envelope identity or non-material unexpected fields."
-                        )
+                    contract_instruction += (
+                        " Read prior-output.txt as the canonical parsed prior decision; it "
+                        "contains no provider transport envelope."
+                    )
                 retry_command = [
                     str(dsh_command),
                     "--profile",
@@ -1142,7 +1247,7 @@ def _run_model(
                         sort_keys=True,
                     )
                     + (
-                        "\nPRIOR_RESPONSE:\n" + prior_stdout
+                        "\nPRIOR_PARSED_DECISION:\n" + str(prior_artifact)
                         if preserved_projection_sha256 is not None
                         else ""
                     )
@@ -1312,6 +1417,9 @@ def _run_model(
                                     prior_semantic_stdout,
                                     reviewer=reviewer,
                                     validation_error=semantic_contract_error,
+                                    packet=packet,
+                                    role=role,
+                                    model=model,
                                 ),
                             )
                             semantic_format_retry = subprocess.run(
@@ -1395,6 +1503,9 @@ def _run_model(
                             prior_semantic_artifact,
                             reviewer=reviewer,
                             validation_error=semantic_contract_error,
+                            packet=packet,
+                            role=role,
+                            model=model,
                         ),
                     )
                     semantic_contract_instruction = (

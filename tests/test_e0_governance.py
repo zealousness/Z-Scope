@@ -711,6 +711,92 @@ def test_deepseek_format_retry_requires_strict_schema_before_stopping(
         )
 
 
+def test_contract_feedback_reports_all_schema_and_binding_issues() -> None:
+    packet = _packet()
+    invalid = _decision(packet)
+    invalid["packet_sha256"] = "0" * 64
+    invalid["confidence"] = 2.0
+    invalid["reason_codes"] = []
+    invalid["safe_pair_recommendation"]["kind"] = "unsupported"
+    stdout = json.dumps({"structured_output": invalid})
+    validation_error = E0GovernanceError("review decision packet hash mismatch")
+
+    feedback = reviewer_runner._format_validation_feedback(
+        stdout,
+        reviewer="fable",
+        validation_error=validation_error,
+        packet=packet,
+        role="primary_fable",
+        model="claude-fable-5",
+    )
+
+    assert feedback["schema_version"] == "zscope.range-v16-format-validation.v2"
+    assert feedback["binding_issue_fields"] == ["packet_sha256"]
+    assert feedback["material_issue_fields"] == [
+        "confidence",
+        "reason_codes",
+        "safe_pair_recommendation",
+    ]
+    constraints = {
+        issue["path"]: issue["violated_constraints"]
+        for issue in feedback["schema_shape_errors"]
+        if "violated_constraints" in issue
+    }
+    assert constraints == {
+        "$.confidence": ["maximum"],
+        "$.reason_codes": ["minItems"],
+        "$.safe_pair_recommendation.kind": ["enum"],
+    }
+    assert "unsupported" not in json.dumps(feedback)
+    assert reviewer_runner._contract_retry_mutable_material_fields(
+        invalid,
+        validation_error,
+    ) == ("confidence", "reason_codes", "safe_pair_recommendation")
+
+
+def test_fable_contract_regeneration_repairs_all_bounded_fields_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    invalid = _decision(packet)
+    invalid["packet_sha256"] = "0" * 64
+    invalid["confidence"] = 2.0
+    invalid["reason_codes"] = []
+    invalid["safe_pair_recommendation"]["kind"] = "unsupported"
+    corrected = _decision(packet)
+    outputs = iter((invalid, corrected))
+    calls: list[dict[str, object]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        del command
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"structured_output": next(outputs)}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    decision, raw = reviewer_runner._run_model(
+        packet,
+        reviewer="fable",
+        raw_output_path=tmp_path / "raw.json",
+    )
+
+    assert decision == corrected
+    assert len(calls) == 2
+    assert raw["contract_retry"]["mutable_material_fields"] == [
+        "confidence",
+        "reason_codes",
+        "safe_pair_recommendation",
+    ]
+    retry_input = str(calls[1]["input"])
+    assert "PRIOR_PARSED_DECISION" in retry_input
+    assert '"structured_output"' not in retry_input
+    assert '["confidence","reason_codes","safe_pair_recommendation"]' in retry_input
+
+
 def test_deepseek_contract_regeneration_fails_closed_after_format_retries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -768,11 +854,16 @@ def test_deepseek_contract_regeneration_recovers_after_format_retries(
     expected["reviewer_model"] = "deepseek-v4-pro-0813:max"
     invalid = dict(expected)
     invalid["safe_pair_recomendation"] = invalid.pop("safe_pair_recommendation")
-    outputs = iter(("not JSON", json.dumps(invalid), json.dumps(invalid), json.dumps(expected)))
+    fenced_invalid = f"```json\n{json.dumps(invalid)}\n```"
+    outputs = iter(("not JSON", json.dumps(invalid), fenced_invalid, json.dumps(expected)))
     calls: list[list[str]] = []
+    contract_prior: list[dict[str, object]] = []
 
-    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
         calls.append(command)
+        if len(calls) == 4:
+            prior_path = Path(str(kwargs["cwd"])) / "prior-output.txt"
+            contract_prior.append(json.loads(prior_path.read_text(encoding="utf-8")))
         return SimpleNamespace(returncode=0, stdout=next(outputs), stderr="")
 
     monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
@@ -786,6 +877,7 @@ def test_deepseek_contract_regeneration_recovers_after_format_retries(
 
     assert decision == expected
     assert len(calls) == 4
+    assert contract_prior == [invalid]
     assert "format-validation.json" in calls[-1][-1]
     assert "prior-output.txt" in calls[-1][-1]
     assert raw["contract_retry"]["mutable_material_fields"] == ["safe_pair_recommendation"]
