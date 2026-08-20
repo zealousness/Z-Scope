@@ -389,6 +389,28 @@ def _validated_decision_from_stdout(stdout: str, *, reviewer: str) -> Mapping[st
     )
 
 
+def _validated_bound_decision_from_stdout(
+    stdout: str,
+    *,
+    reviewer: str,
+    packet: Mapping[str, Any],
+    role: str,
+    model: str,
+) -> Mapping[str, Any]:
+    """Parse a decision and enforce its frozen packet and reviewer identity."""
+
+    decision = _validated_decision_from_stdout(stdout, reviewer=reviewer)
+    validate_review_decision(
+        decision,
+        expected_packet_uid=str(packet["packet_uid"]),
+        expected_packet_sha256=str(packet["packet_sha256"]),
+        expected_role=role,
+    )
+    if decision.get("reviewer_model") != model:
+        raise E0GovernanceError("reviewer model identity mismatch")
+    return decision
+
+
 def validate_decision_against_packet(
     decision: Mapping[str, Any],
     packet: Mapping[str, Any],
@@ -665,9 +687,17 @@ def _run_model(
                 f"stderr_sha256={raw['stderr_sha256']}"
             )
         try:
-            decision = _validated_decision_from_stdout(completed.stdout, reviewer=reviewer)
+            decision = _validated_bound_decision_from_stdout(
+                completed.stdout,
+                reviewer=reviewer,
+                packet=packet,
+                role=role,
+                model=model,
+            )
         except (json.JSONDecodeError, E0GovernanceError) as exc:
             if reviewer != "deepseek":
+                if raw_output_path is not None:
+                    _json_dump(raw_output_path, raw)
                 raise
             format_prompts = (
                 "Read prior-output.txt and decision-schema.json in the isolated current "
@@ -722,9 +752,12 @@ def _run_model(
                         _json_dump(raw_output_path, raw)
                     raise E0GovernanceError("DeepSeek format-only retry failed") from exc
                 try:
-                    decision = _validated_decision_from_stdout(
+                    decision = _validated_bound_decision_from_stdout(
                         retry.stdout,
                         reviewer="deepseek",
+                        packet=packet,
+                        role=role,
+                        model=model,
                     )
                     break
                 except (json.JSONDecodeError, E0GovernanceError) as retry_exc:
@@ -732,22 +765,10 @@ def _run_model(
                         if raw_output_path is not None:
                             _json_dump(raw_output_path, raw)
                         raise E0GovernanceError(
-                            "DeepSeek format retries did not produce a JSON artifact"
+                            "DeepSeek format retries did not produce a schema-valid JSON "
+                            "decision"
                         ) from retry_exc
                     prior_stdout = retry.stdout
-        try:
-            validate_review_decision(
-                decision,
-                expected_packet_uid=str(packet["packet_uid"]),
-                expected_packet_sha256=str(packet["packet_sha256"]),
-                expected_role=role,
-            )
-            if decision.get("reviewer_model") != model:
-                raise E0GovernanceError("reviewer model identity mismatch")
-        except E0GovernanceError:
-            if raw_output_path is not None:
-                _json_dump(raw_output_path, raw)
-            raise
 
         try:
             validate_decision_against_packet(
