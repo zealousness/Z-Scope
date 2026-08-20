@@ -88,9 +88,9 @@ def _normalized_record(index: int) -> dict:
                 "decision_sha256": "2" * 64,
                 "raw_sha256": "3" * 64,
             },
-            "glm": {
-                "role": "primary_glm",
-                "model": "zai/glm-5.2:max",
+            "deepseek": {
+                "role": "primary_deepseek",
+                "model": "deepseek-v4-pro-0813:max",
                 "decision_sha256": "4" * 64,
                 "raw_sha256": "5" * 64,
             },
@@ -210,7 +210,7 @@ def _truth_v16(tmp_path: Path) -> tuple[dict, Path]:
             ],
             "review_artifacts": {
                 "fable_sha256": "1" * 64,
-                "glm_sha256": "2" * 64,
+                "deepseek_sha256": "2" * 64,
                 "normalized_sha256": "3" * 64,
             },
             "safe_pair": pair,
