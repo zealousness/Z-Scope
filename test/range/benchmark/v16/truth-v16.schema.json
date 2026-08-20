@@ -83,10 +83,10 @@
     "reviewArtifacts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fable_sha256", "glm_sha256", "normalized_sha256"],
+      "required": ["fable_sha256", "deepseek_sha256", "normalized_sha256"],
       "properties": {
         "fable_sha256": {"$ref": "#/$defs/sha256"},
-        "glm_sha256": {"$ref": "#/$defs/sha256"},
+        "deepseek_sha256": {"$ref": "#/$defs/sha256"},
         "normalized_sha256": {"$ref": "#/$defs/sha256"},
         "opus_sha256": {"$ref": "#/$defs/sha256"}
       }

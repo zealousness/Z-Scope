@@ -2,7 +2,7 @@
 """Normalize protected E0 reviews and build independently bound Range Truth v16.
 
 The ``normalize`` command is intentionally strict: any material difference
-between Fable and GLM requires an Opus decision, and the nine frozen
+between Fable and DeepSeek requires an Opus decision, and the nine frozen
 disputed IDs always require Opus.  The ``build`` command consumes only that
 normalized adjudication plus independently compiled safe-pair manifests.
 """
@@ -50,7 +50,7 @@ from validate_range_v16_truth import (  # noqa: E402
 
 _REVIEW_IDENTITIES = {
     "fable": ("primary_fable", "claude-fable-5"),
-    "glm": ("primary_glm", "zai/glm-5.2:max"),
+    "deepseek": ("primary_deepseek", "deepseek-v4-pro-0813:max"),
     "opus": ("arbiter_opus", "claude-opus-5"),
 }
 
@@ -135,7 +135,7 @@ def _validate_review_bundle(root: Path, manifest_path: Path) -> str:
             or posix_path.is_absolute()
             or posix_path.as_posix() != relative
             or any(part in {"", ".", ".."} for part in posix_path.parts)
-            or posix_path.parts[0] not in {"fable", "glm", "opus"}
+            or posix_path.parts[0] not in {"fable", "deepseek", "opus"}
         ):
             raise E0GovernanceError("review bundle paths must be unique")
         seen.add(relative)
@@ -231,16 +231,16 @@ def normalize_reviews(
         fable, fable_binding = _load_review(
             review_root / "fable", truth_id, packet=packet, reviewer="fable"
         )
-        glm, glm_binding = _load_review(
-            review_root / "glm", truth_id, packet=packet, reviewer="glm"
+        deepseek, deepseek_binding = _load_review(
+            review_root / "deepseek", truth_id, packet=packet, reviewer="deepseek"
         )
         disagreement_fields = sorted(
-            field for field in MATERIAL_DECISION_FIELDS if fable.get(field) != glm.get(field)
+            field for field in MATERIAL_DECISION_FIELDS if fable.get(field) != deepseek.get(field)
         )
         evidence_deficit = any(
             decision.get("contract_kind") in {"concrete_trigger", "public_api_contract"}
             and not decision.get("evidence_refs")
-            for decision in (fable, glm)
+            for decision in (fable, deepseek)
         )
         opus_required = truth_id in DISPUTED_IDS or bool(disagreement_fields) or evidence_deficit
         opus_binding: dict[str, str] = {}
@@ -263,7 +263,7 @@ def normalize_reviews(
             "truth_id": truth_id,
             "packet_uid": packet["packet_uid"],
             "packet_sha256": packet["packet_sha256"],
-            "primary_reviews": {"fable": fable_binding, "glm": glm_binding},
+            "primary_reviews": {"fable": fable_binding, "deepseek": deepseek_binding},
             "disagreement_fields": disagreement_fields,
             "opus_required": opus_required,
             "opus_review": opus_binding,
@@ -396,7 +396,7 @@ def build_truth_v16(
         ]
         review_artifacts = {
             "fable_sha256": normalized_record["primary_reviews"]["fable"]["raw_sha256"],
-            "glm_sha256": normalized_record["primary_reviews"]["glm"]["raw_sha256"],
+            "deepseek_sha256": normalized_record["primary_reviews"]["deepseek"]["raw_sha256"],
             "normalized_sha256": normalized_record["normalized_record_sha256"],
         }
         if normalized_record["opus_required"]:
@@ -469,7 +469,7 @@ def build_truth_v16(
             "review_bundle_sha256": normalized["review_bundle_sha256"],
             "taxonomy_sha256": sha256_file(taxonomy_path.resolve(strict=True)),
             "independent_review_complete": True,
-            "review_protocol": "Fable 5 + OpenCode GLM-5.2 Max; Opus 5 mandatory/disagreement arbitration",
+            "review_protocol": "Fable 5 + DSH deepseek/deepseek-v4-pro-0813 Max; Opus 5 mandatory/disagreement arbitration",
             "safe_unit_count": len(pair_index_records),
         },
         "total_vulnerabilities": len(output_records),
