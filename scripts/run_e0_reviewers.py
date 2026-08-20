@@ -58,6 +58,7 @@ DEEPSEEK_MODEL_IDENTITY = f"{DEEPSEEK_MODEL_ID}:max"
 FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v3"
 PRIMARY_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-primary-checkpoint.v1"
 PRIMARY_FAILURE_SCHEMA_VERSION = "zscope.range-v16-primary-failure.v1"
+SEMANTIC_ENVELOPE_REPAIR_SCHEMA_VERSION = "zscope.range-v16-semantic-envelope-repair.v1"
 
 MATERIAL_DECISION_FIELDS = (
     "contract_kind",
@@ -72,6 +73,14 @@ MATERIAL_DECISION_FIELDS = (
     "threat_assumptions",
     "safe_pair_recommendation",
     "reason_codes",
+)
+
+FROZEN_DECISION_BINDING_FIELDS = (
+    "schema_version",
+    "packet_uid",
+    "packet_sha256",
+    "reviewer_role",
+    "reviewer_model",
 )
 
 _CONTRACT_ERROR_MATERIAL_FIELDS = {
@@ -913,6 +922,71 @@ def _contract_retry_locked_projection(
     }
 
 
+def _rebind_grounding_decision_identity(
+    decision: Mapping[str, Any],
+    packet: Mapping[str, Any],
+    *,
+    role: str,
+    model: str,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Rebind only frozen envelope identity after one grounding decision.
+
+    This is not semantic normalization: every material field is hash-locked,
+    and any independently detectable non-binding defect fails closed without a
+    further model call.
+    """
+
+    expected_bindings = {
+        "schema_version": DECISION_SCHEMA_VERSION,
+        "packet_uid": str(packet["packet_uid"]),
+        "packet_sha256": str(packet["packet_sha256"]),
+        "reviewer_role": role,
+        "reviewer_model": model,
+    }
+    expected_fields = set(DECISION_FIELDS)
+    actual_fields = set(decision)
+    missing_fields = expected_fields - actual_fields
+    unexpected_fields = actual_fields - expected_fields
+    top_level_identity_only = not unexpected_fields and missing_fields.issubset(
+        FROZEN_DECISION_BINDING_FIELDS
+    )
+    issues = review_decision_contract_issues(
+        decision,
+        expected_packet_uid=str(packet["packet_uid"]),
+        expected_packet_sha256=str(packet["packet_sha256"]),
+        expected_role=role,
+    )
+    non_binding_issues = [
+        issue
+        for issue in issues
+        if "binding_field" not in issue
+        and not (issue.get("code") == "top_level_fields_invalid" and top_level_identity_only)
+    ]
+    if non_binding_issues:
+        raise E0GovernanceError("grounding correction has non-binding decision-contract defects")
+    rebound_fields = {
+        field for field, expected in expected_bindings.items() if decision.get(field) != expected
+    }
+    if not rebound_fields:
+        raise E0GovernanceError(
+            "grounding correction failure is not an identity-only envelope defect"
+        )
+    original_projection_sha256 = sha256_value(_contract_retry_substantive_projection(decision))
+    rebound = dict(decision)
+    rebound.update(expected_bindings)
+    validate_review_decision(
+        rebound,
+        expected_packet_uid=str(packet["packet_uid"]),
+        expected_packet_sha256=str(packet["packet_sha256"]),
+        expected_role=role,
+    )
+    if rebound.get("reviewer_model") != model:
+        raise E0GovernanceError("reviewer model identity mismatch")
+    if sha256_value(_contract_retry_substantive_projection(rebound)) != original_projection_sha256:
+        raise E0GovernanceError("grounding identity rebind changed material fields")
+    return rebound, tuple(sorted(rebound_fields))
+
+
 def _claude_arguments(reviewer: str) -> list[str]:
     if reviewer not in {"fable", "opus"}:
         raise E0GovernanceError("Claude reviewer identity is invalid")
@@ -1592,32 +1666,47 @@ def _run_model(
                             model=model,
                         ),
                     )
-                    semantic_contract_instruction = (
-                        "The grounding correction parsed as an object but failed only the "
-                        "strict decision envelope contract. Reissue that same correction as "
-                        "a complete schema-valid decision. Preserve every material field "
-                        "exactly, including anchors and evidence. Correct only schema_version, "
-                        "packet_uid, packet_sha256, reviewer_role, or reviewer_model by copying "
-                        "their frozen values from the packet and instructions. Return no prose, "
-                        "Markdown, external knowledge, or hidden reasoning."
-                    )
                     if reviewer == "deepseek":
-                        (temp_root / "prior-output.txt").write_text(
-                            prior_semantic_artifact,
-                            encoding="utf-8",
+                        try:
+                            rebound_decision, rebound_fields = _rebind_grounding_decision_identity(
+                                unbound_semantic_decision,
+                                packet,
+                                role=role,
+                                model=model,
+                            )
+                        except E0GovernanceError:
+                            if raw_output_path is not None:
+                                _json_dump(raw_output_path, raw)
+                            raise
+                        rebound_stdout = json.dumps(
+                            rebound_decision,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
                         )
-                        semantic_contract_command = [
-                            str(dsh_command),
-                            "--profile",
-                            "headless",
-                            "--patch",
-                            str(patch_path),
-                            "Read prior-output.txt, packet.json, "
-                            "decision-schema.json, and format-validation.json "
-                            "from the isolated current directory. " + semantic_contract_instruction,
-                        ]
-                        semantic_contract_input = None
+                        raw["semantic_envelope_repair"] = {
+                            "schema_version": SEMANTIC_ENVELOPE_REPAIR_SCHEMA_VERSION,
+                            "algorithm": "frozen_identity_rebind_v1",
+                            "original_stdout_sha256": sha256_value(prior_semantic_artifact),
+                            "original_stdout_retained": False,
+                            "validation_feedback_sha256": sha256_file(semantic_feedback_path),
+                            "rebound_fields": list(rebound_fields),
+                            "substantive_projection_sha256": semantic_material_sha256,
+                            "rebound_stdout_sha256": sha256_value(rebound_stdout),
+                        }
+                        raw["stdout"] = rebound_stdout
+                        decision = rebound_decision
                     else:
+                        semantic_contract_instruction = (
+                            "The grounding correction parsed as an object but failed only the "
+                            "strict decision envelope contract. Reissue that same correction as "
+                            "a complete schema-valid decision. Preserve every material field "
+                            "exactly, including anchors and evidence. Correct only "
+                            "schema_version, packet_uid, packet_sha256, reviewer_role, or "
+                            "reviewer_model by copying their frozen values from the packet and "
+                            "instructions. Return no prose, Markdown, external knowledge, or "
+                            "hidden reasoning."
+                        )
                         semantic_contract_command = [
                             str(claude_command),
                             *_claude_arguments(reviewer),
@@ -1635,56 +1724,56 @@ def _run_model(
                             + "\nPRIOR_SEMANTIC_RESPONSE:\n"
                             + prior_semantic_artifact
                         )
-                    semantic_contract_retry = subprocess.run(
-                        semantic_contract_command,
-                        input=semantic_contract_input,
-                        cwd=temp_root,
-                        env=env,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="strict",
-                        check=False,
-                        timeout=600,
-                    )
-                    raw["semantic_contract_retry"] = {
-                        "exit_code": semantic_contract_retry.returncode,
-                        "original_stdout_sha256": sha256_value(prior_semantic_artifact),
-                        "original_stdout_retained": False,
-                        "validation_feedback_sha256": sha256_file(semantic_feedback_path),
-                        "substantive_projection_sha256": semantic_material_sha256,
-                        "stderr_sha256": sha256_value(semantic_contract_retry.stderr),
-                    }
-                    raw["stdout"] = semantic_contract_retry.stdout
-                    if semantic_contract_retry.returncode != 0:
-                        if raw_output_path is not None:
-                            _json_dump(raw_output_path, raw)
-                        raise E0GovernanceError(
-                            f"{reviewer} grounding contract retry failed"
-                        ) from semantic_contract_error
-                    try:
-                        decision = _validated_bound_decision_from_stdout(
-                            semantic_contract_retry.stdout,
-                            reviewer=reviewer,
-                            packet=packet,
-                            role=role,
-                            model=model,
+                        semantic_contract_retry = subprocess.run(
+                            semantic_contract_command,
+                            input=semantic_contract_input,
+                            cwd=temp_root,
+                            env=env,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="strict",
+                            check=False,
+                            timeout=600,
                         )
-                    except (json.JSONDecodeError, E0GovernanceError) as retry_exc:
-                        if raw_output_path is not None:
-                            _json_dump(raw_output_path, raw)
-                        raise E0GovernanceError(
-                            f"{reviewer} grounding contract retry remained invalid"
-                        ) from retry_exc
-                    if (
-                        sha256_value(_contract_retry_substantive_projection(decision))
-                        != semantic_material_sha256
-                    ):
-                        if raw_output_path is not None:
-                            _json_dump(raw_output_path, raw)
-                        raise E0GovernanceError(
-                            f"{reviewer} grounding contract retry changed material fields"
-                        )
+                        raw["semantic_contract_retry"] = {
+                            "exit_code": semantic_contract_retry.returncode,
+                            "original_stdout_sha256": sha256_value(prior_semantic_artifact),
+                            "original_stdout_retained": False,
+                            "validation_feedback_sha256": sha256_file(semantic_feedback_path),
+                            "substantive_projection_sha256": semantic_material_sha256,
+                            "stderr_sha256": sha256_value(semantic_contract_retry.stderr),
+                        }
+                        raw["stdout"] = semantic_contract_retry.stdout
+                        if semantic_contract_retry.returncode != 0:
+                            if raw_output_path is not None:
+                                _json_dump(raw_output_path, raw)
+                            raise E0GovernanceError(
+                                f"{reviewer} grounding contract retry failed"
+                            ) from semantic_contract_error
+                        try:
+                            decision = _validated_bound_decision_from_stdout(
+                                semantic_contract_retry.stdout,
+                                reviewer=reviewer,
+                                packet=packet,
+                                role=role,
+                                model=model,
+                            )
+                        except (json.JSONDecodeError, E0GovernanceError) as retry_exc:
+                            if raw_output_path is not None:
+                                _json_dump(raw_output_path, raw)
+                            raise E0GovernanceError(
+                                f"{reviewer} grounding contract retry remained invalid"
+                            ) from retry_exc
+                        if (
+                            sha256_value(_contract_retry_substantive_projection(decision))
+                            != semantic_material_sha256
+                        ):
+                            if raw_output_path is not None:
+                                _json_dump(raw_output_path, raw)
+                            raise E0GovernanceError(
+                                f"{reviewer} grounding contract retry changed material fields"
+                            )
             if (
                 sha256_value(_semantic_retry_substantive_projection(decision))
                 != original_projection_sha256
@@ -1793,6 +1882,7 @@ def _validate_existing_primary(
         "contract_retry",
         "semantic_retry",
         "semantic_format_retry",
+        "semantic_envelope_repair",
         "semantic_contract_retry",
     }
     if not required_raw_fields.issubset(raw_fields) or not (
@@ -2006,6 +2096,55 @@ def _validate_existing_primary(
             != semantic_format_retry.get("substantive_projection_sha256")
         ):
             raise E0GovernanceError("existing semantic format retry envelope is invalid")
+    semantic_envelope_repair = raw.get("semantic_envelope_repair")
+    if semantic_envelope_repair is not None:
+        rebound_fields = (
+            semantic_envelope_repair.get("rebound_fields")
+            if isinstance(semantic_envelope_repair, Mapping)
+            else None
+        )
+        if (
+            reviewer != "deepseek"
+            or semantic_retry is None
+            or raw.get("semantic_contract_retry") is not None
+            or not isinstance(semantic_envelope_repair, Mapping)
+            or set(semantic_envelope_repair)
+            != {
+                "schema_version",
+                "algorithm",
+                "original_stdout_sha256",
+                "original_stdout_retained",
+                "validation_feedback_sha256",
+                "rebound_fields",
+                "substantive_projection_sha256",
+                "rebound_stdout_sha256",
+            }
+            or semantic_envelope_repair.get("schema_version")
+            != SEMANTIC_ENVELOPE_REPAIR_SCHEMA_VERSION
+            or semantic_envelope_repair.get("algorithm") != "frozen_identity_rebind_v1"
+            or semantic_envelope_repair.get("original_stdout_retained") is not False
+            or not isinstance(rebound_fields, list)
+            or not rebound_fields
+            or rebound_fields != sorted(set(rebound_fields))
+            or not set(rebound_fields).issubset(FROZEN_DECISION_BINDING_FIELDS)
+            or any(
+                not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(semantic_envelope_repair.get(field) or ""),
+                )
+                for field in (
+                    "original_stdout_sha256",
+                    "validation_feedback_sha256",
+                    "substantive_projection_sha256",
+                    "rebound_stdout_sha256",
+                )
+            )
+            or sha256_value(_contract_retry_substantive_projection(decision))
+            != semantic_envelope_repair.get("substantive_projection_sha256")
+            or sha256_value(str(raw["stdout"]))
+            != semantic_envelope_repair.get("rebound_stdout_sha256")
+        ):
+            raise E0GovernanceError("existing semantic envelope repair is invalid")
     semantic_contract_retry = raw.get("semantic_contract_retry")
     if semantic_contract_retry is not None:
         if (

@@ -1360,7 +1360,7 @@ def test_deepseek_grounding_format_retry_rejects_material_change(
         )
 
 
-def test_deepseek_grounding_contract_retry_corrects_only_identity(
+def test_deepseek_grounding_identity_rebind_preserves_material_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     packet = _packet()
@@ -1373,7 +1373,7 @@ def test_deepseek_grounding_contract_retry_corrects_only_identity(
     grounded_with_bad_identity["packet_sha256"] = "0" * 64
     corrected = deepcopy(grounded_with_bad_identity)
     corrected["packet_sha256"] = packet["packet_sha256"]
-    outputs = iter((original, grounded_with_bad_identity, corrected))
+    outputs = iter((original, grounded_with_bad_identity))
     calls: list[list[str]] = []
 
     def fake_run(command: list[str], **_: object) -> SimpleNamespace:
@@ -1394,14 +1394,18 @@ def test_deepseek_grounding_contract_retry_corrects_only_identity(
     )
 
     assert decision == corrected
-    assert len(calls) == 3
-    assert "prior-output.txt" in calls[-1][-1]
-    retry = raw["semantic_contract_retry"]
-    assert retry["original_stdout_retained"] is False
-    assert retry["substantive_projection_sha256"] == sha256_value(
+    assert len(calls) == 2
+    assert "semantic_contract_retry" not in raw
+    repair = raw["semantic_envelope_repair"]
+    assert repair["schema_version"] == ("zscope.range-v16-semantic-envelope-repair.v1")
+    assert repair["algorithm"] == "frozen_identity_rebind_v1"
+    assert repair["original_stdout_retained"] is False
+    assert repair["rebound_fields"] == ["packet_sha256"]
+    assert repair["substantive_projection_sha256"] == sha256_value(
         reviewer_runner._contract_retry_substantive_projection(corrected)
     )
-    assert raw["stdout"] == json.dumps(corrected)
+    assert json.loads(raw["stdout"]) == corrected
+    assert repair["rebound_stdout_sha256"] == sha256_value(raw["stdout"])
     decision_path = tmp_path / "decision.json"
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
     reviewer_runner._validate_existing_primary(
@@ -1411,15 +1415,55 @@ def test_deepseek_grounding_contract_retry_corrects_only_identity(
         raw_path=raw_path,
     )
     tampered = deepcopy(raw)
-    tampered["semantic_contract_retry"]["validation_feedback_sha256"] = "invalid"
+    tampered["semantic_envelope_repair"]["substantive_projection_sha256"] = "0" * 64
     raw_path.write_text(json.dumps(tampered), encoding="utf-8")
-    with pytest.raises(ValueError, match="semantic contract retry envelope"):
+    with pytest.raises(ValueError, match="semantic envelope repair"):
         reviewer_runner._validate_existing_primary(
             packet,
             reviewer="deepseek",
             decision_path=decision_path,
             raw_path=raw_path,
         )
+
+
+def test_deepseek_grounding_identity_rebind_rejects_material_contract_defect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    original = _decision(packet)
+    original["reviewer_role"] = "primary_deepseek"
+    original["reviewer_model"] = "deepseek-v4-pro-0813:max"
+    original["evidence_refs"] = ["src/example.c:3"]
+    grounded_invalid = deepcopy(original)
+    grounded_invalid["evidence_refs"] = ["src/example.c:1"]
+    grounded_invalid["packet_sha256"] = "0" * 64
+    grounded_invalid["confidence"] = 2.0
+    outputs = iter((original, grounded_invalid))
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(next(outputs)),
+            stderr="",
+        )
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    with pytest.raises(
+        reviewer_runner.E0GovernanceError,
+        match="non-binding decision-contract defects",
+    ):
+        reviewer_runner._run_model(
+            packet,
+            reviewer="deepseek",
+            raw_output_path=tmp_path / "raw.json",
+        )
+    assert len(calls) == 2
+    raw = json.loads((tmp_path / "raw.json").read_text(encoding="utf-8"))
+    assert "semantic_envelope_repair" not in raw
+    assert "semantic_contract_retry" not in raw
 
 
 @pytest.mark.parametrize(
