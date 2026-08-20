@@ -239,13 +239,22 @@ def validate_review_packet(packet: Mapping[str, Any]) -> None:
         raise E0GovernanceError("review packet content hash mismatch")
 
 
-def validate_review_decision(
+def review_decision_contract_issues(
     decision: Mapping[str, Any],
     *,
-    expected_packet_uid: str,
-    expected_packet_sha256: str,
-    expected_role: str,
-) -> None:
+    expected_packet_uid: str | None = None,
+    expected_packet_sha256: str | None = None,
+    expected_role: str | None = None,
+) -> list[dict[str, str]]:
+    """Collect every answer-free decision-contract issue in validation order.
+
+    The collector deliberately exposes only stable issue codes, JSON paths, and
+    field classifications.  It never copies decision values into diagnostics.
+    ``validate_review_decision`` continues to fail on the first issue so callers
+    retain the original strict contract while a bounded regeneration can repair
+    every independently detectable defect in one pass.
+    """
+
     expected = {
         "schema_version",
         "packet_uid",
@@ -265,40 +274,129 @@ def validate_review_decision(
         "safe_pair_recommendation",
         "reason_codes",
     }
+
+    issues: list[dict[str, str]] = []
+
+    def add(
+        code: str,
+        message: str,
+        path: str,
+        *,
+        material_field: str | None = None,
+        binding_field: str | None = None,
+    ) -> None:
+        issue = {"code": code, "message": message, "path": path}
+        if material_field is not None:
+            issue["material_field"] = material_field
+        if binding_field is not None:
+            issue["binding_field"] = binding_field
+        issues.append(issue)
+
     if set(decision) != expected:
-        raise E0GovernanceError("review decision fields do not match v1 contract")
+        add(
+            "top_level_fields_invalid",
+            "review decision fields do not match v1 contract",
+            "$",
+        )
     if decision.get("schema_version") != DECISION_SCHEMA_VERSION:
-        raise E0GovernanceError("review decision schema_version is invalid")
-    if decision.get("packet_uid") != expected_packet_uid:
-        raise E0GovernanceError("review decision packet UID mismatch")
-    if decision.get("packet_sha256") != expected_packet_sha256:
-        raise E0GovernanceError("review decision packet hash mismatch")
-    if decision.get("reviewer_role") != expected_role or expected_role not in REVIEWER_ROLES:
-        raise E0GovernanceError("review decision role mismatch")
+        add(
+            "schema_version_invalid",
+            "review decision schema_version is invalid",
+            "$.schema_version",
+            binding_field="schema_version",
+        )
+    if expected_packet_uid is not None and decision.get("packet_uid") != expected_packet_uid:
+        add(
+            "packet_uid_mismatch",
+            "review decision packet UID mismatch",
+            "$.packet_uid",
+            binding_field="packet_uid",
+        )
+    if (
+        expected_packet_sha256 is not None
+        and decision.get("packet_sha256") != expected_packet_sha256
+    ):
+        add(
+            "packet_sha256_mismatch",
+            "review decision packet hash mismatch",
+            "$.packet_sha256",
+            binding_field="packet_sha256",
+        )
+    if expected_role is not None and (
+        decision.get("reviewer_role") != expected_role or expected_role not in REVIEWER_ROLES
+    ):
+        add(
+            "reviewer_role_mismatch",
+            "review decision role mismatch",
+            "$.reviewer_role",
+            binding_field="reviewer_role",
+        )
     if decision.get("contract_kind") not in CONTRACT_KINDS:
-        raise E0GovernanceError("review decision contract kind is invalid")
+        add(
+            "contract_kind_invalid",
+            "review decision contract kind is invalid",
+            "$.contract_kind",
+            material_field="contract_kind",
+        )
     if decision.get("disposition") not in DISPOSITIONS:
-        raise E0GovernanceError("review decision disposition is invalid")
+        add(
+            "disposition_invalid",
+            "review decision disposition is invalid",
+            "$.disposition",
+            material_field="disposition",
+        )
     confidence = decision.get("confidence")
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-        raise E0GovernanceError("review decision confidence must be numeric")
-    if not math.isfinite(float(confidence)) or not 0 <= float(confidence) <= 1:
-        raise E0GovernanceError("review decision confidence is outside [0,1]")
+        add(
+            "confidence_type_invalid",
+            "review decision confidence must be numeric",
+            "$.confidence",
+            material_field="confidence",
+        )
+    elif not math.isfinite(float(confidence)) or not 0 <= float(confidence) <= 1:
+        add(
+            "confidence_range_invalid",
+            "review decision confidence is outside [0,1]",
+            "$.confidence",
+            material_field="confidence",
+        )
     if not TAXONOMY_ID_RE.fullmatch(str(decision.get("defect_taxonomy_id") or "")):
-        raise E0GovernanceError("review decision defect taxonomy ID is invalid")
+        add(
+            "defect_taxonomy_id_invalid",
+            "review decision defect taxonomy ID is invalid",
+            "$.defect_taxonomy_id",
+            material_field="defect_taxonomy_id",
+        )
     cwe_ids = decision.get("cwe_ids")
     if (
         not isinstance(cwe_ids, list)
         or not cwe_ids
         or not all(isinstance(value, str) and CWE_ID_RE.fullmatch(value) for value in cwe_ids)
     ):
-        raise E0GovernanceError("review decision CWE identities are invalid")
-    if len(set(cwe_ids)) != len(cwe_ids):
-        raise E0GovernanceError("review decision CWE identities are duplicate")
+        add(
+            "cwe_ids_invalid",
+            "review decision CWE identities are invalid",
+            "$.cwe_ids",
+            material_field="cwe_ids",
+        )
+    elif len(set(cwe_ids)) != len(cwe_ids):
+        add(
+            "cwe_ids_duplicate",
+            "review decision CWE identities are duplicate",
+            "$.cwe_ids",
+            material_field="cwe_ids",
+        )
     anchors = decision.get("structured_anchors")
     if not isinstance(anchors, list) or not anchors:
-        raise E0GovernanceError("review decision structured_anchors must be non-empty")
-    for anchor in anchors:
+        add(
+            "structured_anchors_empty",
+            "review decision structured_anchors must be non-empty",
+            "$.structured_anchors",
+            material_field="structured_anchors",
+        )
+        anchors = []
+    for index, anchor in enumerate(anchors):
+        path_prefix = f"$.structured_anchors[{index}]"
         if not isinstance(anchor, Mapping) or set(anchor) != {
             "kind",
             "corrected",
@@ -307,22 +405,55 @@ def validate_review_decision(
             "start_line",
             "end_line",
         }:
-            raise E0GovernanceError("review decision structured anchor fields are invalid")
+            add(
+                "structured_anchor_fields_invalid",
+                "review decision structured anchor fields are invalid",
+                path_prefix,
+                material_field="structured_anchors",
+            )
+            if not isinstance(anchor, Mapping):
+                continue
         if anchor.get("kind") not in {"primary", "secondary", "additional"}:
-            raise E0GovernanceError("review decision structured anchor kind is invalid")
+            add(
+                "structured_anchor_kind_invalid",
+                "review decision structured anchor kind is invalid",
+                f"{path_prefix}.kind",
+                material_field="structured_anchors",
+            )
         if not isinstance(anchor.get("corrected"), bool):
-            raise E0GovernanceError("review decision anchor correction flag is invalid")
+            add(
+                "structured_anchor_corrected_invalid",
+                "review decision anchor correction flag is invalid",
+                f"{path_prefix}.corrected",
+                material_field="structured_anchors",
+            )
         if not isinstance(anchor.get("file"), str) or not anchor["file"]:
-            raise E0GovernanceError("review decision structured anchor file is invalid")
-        path = PurePosixPath(str(anchor["file"]))
-        if (
-            path.is_absolute()
-            or str(path) != anchor["file"]
-            or any(part in {"", ".", ".."} for part in path.parts)
-        ):
-            raise E0GovernanceError("review decision structured anchor path is not canonical")
+            add(
+                "structured_anchor_file_invalid",
+                "review decision structured anchor file is invalid",
+                f"{path_prefix}.file",
+                material_field="structured_anchors",
+            )
+        else:
+            path = PurePosixPath(str(anchor["file"]))
+            if (
+                path.is_absolute()
+                or str(path) != anchor["file"]
+                or any(part in {"", ".", ".."} for part in path.parts)
+            ):
+                add(
+                    "structured_anchor_path_noncanonical",
+                    "review decision structured anchor path is not canonical",
+                    f"{path_prefix}.file",
+                    material_field="structured_anchors",
+                )
         if not isinstance(anchor.get("function"), str) or not anchor["function"]:
-            raise E0GovernanceError("review decision structured anchor function is invalid")
+            add(
+                "structured_anchor_function_invalid",
+                "review decision structured anchor function is invalid",
+                f"{path_prefix}.function",
+                material_field="structured_anchors",
+            )
         start = anchor.get("start_line")
         end = anchor.get("end_line")
         if (
@@ -333,49 +464,108 @@ def validate_review_decision(
             or start < 1
             or end < start
         ):
-            raise E0GovernanceError("review decision structured anchor range is invalid")
+            add(
+                "structured_anchor_range_invalid",
+                "review decision structured anchor range is invalid",
+                path_prefix,
+                material_field="structured_anchors",
+            )
     clauses = decision.get("required_evidence_clauses")
     if not isinstance(clauses, list) or not clauses:
-        raise E0GovernanceError("review decision required evidence clauses must be non-empty")
+        add(
+            "required_evidence_clauses_empty",
+            "review decision required evidence clauses must be non-empty",
+            "$.required_evidence_clauses",
+            material_field="required_evidence_clauses",
+        )
+        clauses = []
     clause_ids: set[str] = set()
-    for clause in clauses:
+    for index, clause in enumerate(clauses):
+        path_prefix = f"$.required_evidence_clauses[{index}]"
         if not isinstance(clause, Mapping) or set(clause) != {
             "clause_id",
             "predicate",
             "evidence_refs",
         }:
-            raise E0GovernanceError("review decision evidence clause fields are invalid")
+            add(
+                "evidence_clause_fields_invalid",
+                "review decision evidence clause fields are invalid",
+                path_prefix,
+                material_field="required_evidence_clauses",
+            )
+            if not isinstance(clause, Mapping):
+                continue
         clause_id = str(clause.get("clause_id") or "")
         if not CLAUSE_ID_RE.fullmatch(clause_id) or clause_id in clause_ids:
-            raise E0GovernanceError("review decision evidence clause ID is invalid or duplicate")
-        clause_ids.add(clause_id)
+            add(
+                "evidence_clause_id_invalid_or_duplicate",
+                "review decision evidence clause ID is invalid or duplicate",
+                f"{path_prefix}.clause_id",
+                material_field="required_evidence_clauses",
+            )
+        else:
+            clause_ids.add(clause_id)
         if not isinstance(clause.get("predicate"), str) or not clause["predicate"].strip():
-            raise E0GovernanceError("review decision evidence clause predicate is invalid")
+            add(
+                "evidence_clause_predicate_invalid",
+                "review decision evidence clause predicate is invalid",
+                f"{path_prefix}.predicate",
+                material_field="required_evidence_clauses",
+            )
         clause_refs = clause.get("evidence_refs")
         if not isinstance(clause_refs, list) or not all(
             isinstance(value, str) and value.strip() for value in clause_refs
         ):
-            raise E0GovernanceError("review decision evidence clause refs are invalid")
+            add(
+                "evidence_clause_refs_invalid",
+                "review decision evidence clause refs are invalid",
+                f"{path_prefix}.evidence_refs",
+                material_field="required_evidence_clauses",
+            )
     evidence_refs = decision.get("evidence_refs")
     if not isinstance(evidence_refs, list) or not all(
         isinstance(value, str) and value.strip() for value in evidence_refs
     ):
-        raise E0GovernanceError("review decision evidence refs are invalid")
+        add(
+            "evidence_refs_invalid",
+            "review decision evidence refs are invalid",
+            "$.evidence_refs",
+            material_field="evidence_refs",
+        )
     if (
         not isinstance(decision.get("trigger_summary"), str)
         or not decision["trigger_summary"].strip()
     ):
-        raise E0GovernanceError("review decision trigger summary is invalid")
+        add(
+            "trigger_summary_invalid",
+            "review decision trigger summary is invalid",
+            "$.trigger_summary",
+            material_field="trigger_summary",
+        )
     threat_assumptions = decision.get("threat_assumptions")
     if (
         not isinstance(threat_assumptions, list)
         or not threat_assumptions
         or not all(isinstance(value, str) and value.strip() for value in threat_assumptions)
     ):
-        raise E0GovernanceError("review decision threat assumptions are invalid")
+        add(
+            "threat_assumptions_invalid",
+            "review decision threat assumptions are invalid",
+            "$.threat_assumptions",
+            material_field="threat_assumptions",
+        )
     codes = decision.get("reason_codes")
-    if not isinstance(codes, list) or not codes or not set(codes).issubset(REASON_CODES):
-        raise E0GovernanceError("review decision reason codes are invalid")
+    if (
+        not isinstance(codes, list)
+        or not codes
+        or not all(isinstance(code, str) and code in REASON_CODES for code in codes)
+    ):
+        add(
+            "reason_codes_invalid",
+            "review decision reason codes are invalid",
+            "$.reason_codes",
+            material_field="reason_codes",
+        )
     safe_pair = decision.get("safe_pair_recommendation")
     if not isinstance(safe_pair, Mapping) or set(safe_pair) != {
         "kind",
@@ -384,19 +574,59 @@ def validate_review_decision(
         "safe_summary",
         "compile_requirements",
     }:
-        raise E0GovernanceError("review decision safe pair recommendation is invalid")
+        add(
+            "safe_pair_recommendation_invalid",
+            "review decision safe pair recommendation is invalid",
+            "$.safe_pair_recommendation",
+            material_field="safe_pair_recommendation",
+        )
+        if not isinstance(safe_pair, Mapping):
+            return issues
     if safe_pair.get("kind") not in {"fixed", "near_miss"}:
-        raise E0GovernanceError("review decision safe pair kind is invalid")
+        add(
+            "safe_pair_kind_invalid",
+            "review decision safe pair kind is invalid",
+            "$.safe_pair_recommendation.kind",
+            material_field="safe_pair_recommendation",
+        )
     for field in ("invariant_summary", "vulnerable_summary", "safe_summary"):
         if not isinstance(safe_pair.get(field), str) or not safe_pair[field].strip():
-            raise E0GovernanceError(f"review decision safe pair {field} is invalid")
+            add(
+                f"safe_pair_{field}_invalid",
+                f"review decision safe pair {field} is invalid",
+                f"$.safe_pair_recommendation.{field}",
+                material_field="safe_pair_recommendation",
+            )
     compile_requirements = safe_pair.get("compile_requirements")
     if (
         not isinstance(compile_requirements, list)
         or not compile_requirements
         or not all(isinstance(value, str) and value.strip() for value in compile_requirements)
     ):
-        raise E0GovernanceError("review decision compile requirements are invalid")
+        add(
+            "safe_pair_compile_requirements_invalid",
+            "review decision compile requirements are invalid",
+            "$.safe_pair_recommendation.compile_requirements",
+            material_field="safe_pair_recommendation",
+        )
+    return issues
+
+
+def validate_review_decision(
+    decision: Mapping[str, Any],
+    *,
+    expected_packet_uid: str,
+    expected_packet_sha256: str,
+    expected_role: str,
+) -> None:
+    issues = review_decision_contract_issues(
+        decision,
+        expected_packet_uid=expected_packet_uid,
+        expected_packet_sha256=expected_packet_sha256,
+        expected_role=expected_role,
+    )
+    if issues:
+        raise E0GovernanceError(issues[0]["message"])
 
 
 def validate_review_provenance(

@@ -18,6 +18,7 @@ from scripts.e0_review_governance import (
     E0GovernanceError,
     PACKET_SCHEMA_VERSION,
     attestation_content_sha256,
+    review_decision_contract_issues,
     sha256_value,
     validate_e0_attestation,
     validate_review_decision,
@@ -730,7 +731,7 @@ def test_contract_feedback_reports_all_schema_and_binding_issues() -> None:
         model="claude-fable-5",
     )
 
-    assert feedback["schema_version"] == "zscope.range-v16-format-validation.v2"
+    assert feedback["schema_version"] == "zscope.range-v16-format-validation.v3"
     assert feedback["binding_issue_fields"] == ["packet_sha256"]
     assert feedback["material_issue_fields"] == [
         "confidence",
@@ -743,15 +744,120 @@ def test_contract_feedback_reports_all_schema_and_binding_issues() -> None:
         if "violated_constraints" in issue
     }
     assert constraints == {
+        "$.packet_sha256": ["const"],
         "$.confidence": ["maximum"],
         "$.reason_codes": ["minItems"],
         "$.safe_pair_recommendation.kind": ["enum"],
+    }
+    assert {issue["code"] for issue in feedback["semantic_contract_issues"]} >= {
+        "packet_sha256_mismatch",
+        "confidence_range_invalid",
+        "reason_codes_invalid",
+        "safe_pair_kind_invalid",
     }
     assert "unsupported" not in json.dumps(feedback)
     assert reviewer_runner._contract_retry_mutable_material_fields(
         invalid,
         validation_error,
     ) == ("confidence", "reason_codes", "safe_pair_recommendation")
+
+
+def test_contract_feedback_collects_all_answer_free_semantic_issues() -> None:
+    packet = _packet()
+    invalid = _decision(packet)
+    invalid["packet_sha256"] = "0" * 64
+    invalid["structured_anchors"][0]["file"] = "src/../example.c"
+    invalid["structured_anchors"][0]["start_line"] = 3
+    invalid["structured_anchors"][0]["end_line"] = 2
+    invalid["required_evidence_clauses"].append(
+        {
+            "clause_id": "path_exists",
+            "predicate": "   ",
+            "evidence_refs": ["   "],
+        }
+    )
+    invalid["trigger_summary"] = "   "
+    invalid["threat_assumptions"] = ["   "]
+    invalid["safe_pair_recommendation"]["safe_summary"] = "   "
+
+    issues = review_decision_contract_issues(
+        invalid,
+        expected_packet_uid=packet["packet_uid"],
+        expected_packet_sha256=packet["packet_sha256"],
+        expected_role="primary_fable",
+    )
+    issue_codes = {issue["code"] for issue in issues}
+    assert issue_codes >= {
+        "packet_sha256_mismatch",
+        "structured_anchor_path_noncanonical",
+        "structured_anchor_range_invalid",
+        "evidence_clause_id_invalid_or_duplicate",
+        "evidence_clause_predicate_invalid",
+        "evidence_clause_refs_invalid",
+        "trigger_summary_invalid",
+        "threat_assumptions_invalid",
+        "safe_pair_safe_summary_invalid",
+    }
+    assert {issue["material_field"] for issue in issues if "material_field" in issue} >= {
+        "structured_anchors",
+        "required_evidence_clauses",
+        "trigger_summary",
+        "threat_assumptions",
+        "safe_pair_recommendation",
+    }
+    with pytest.raises(E0GovernanceError, match="packet hash mismatch"):
+        validate_review_decision(
+            invalid,
+            expected_packet_uid=packet["packet_uid"],
+            expected_packet_sha256=packet["packet_sha256"],
+            expected_role="primary_fable",
+        )
+
+    feedback = reviewer_runner._format_validation_feedback(
+        json.dumps({"structured_output": invalid}),
+        reviewer="fable",
+        validation_error=E0GovernanceError("review decision packet hash mismatch"),
+        packet=packet,
+        role="primary_fable",
+        model="claude-fable-5",
+    )
+    encoded = json.dumps(feedback, sort_keys=True)
+    assert "src/../example.c" not in encoded
+    assert "path_exists" not in encoded
+    assert feedback["material_issue_fields"] == [
+        "required_evidence_clauses",
+        "safe_pair_recommendation",
+        "structured_anchors",
+        "threat_assumptions",
+        "trigger_summary",
+    ]
+    assert reviewer_runner._contract_retry_mutable_material_fields(
+        invalid,
+        E0GovernanceError("review decision packet hash mismatch"),
+        expected_packet_uid=packet["packet_uid"],
+        expected_packet_sha256=packet["packet_sha256"],
+        expected_role="primary_fable",
+    ) == (
+        "required_evidence_clauses",
+        "safe_pair_recommendation",
+        "structured_anchors",
+        "threat_assumptions",
+        "trigger_summary",
+    )
+
+
+def test_bound_decision_schema_freezes_packet_and_reviewer_identity() -> None:
+    packet = _packet()
+    schema = reviewer_runner._bound_decision_schema(
+        packet,
+        role="primary_deepseek",
+        model="deepseek-v4-pro-0813:max",
+    )
+    properties = schema["properties"]
+    assert properties["packet_uid"] == {"const": packet["packet_uid"]}
+    assert properties["packet_sha256"] == {"const": packet["packet_sha256"]}
+    assert properties["reviewer_role"] == {"const": "primary_deepseek"}
+    assert properties["reviewer_model"] == {"const": "deepseek-v4-pro-0813:max"}
 
 
 def test_fable_contract_regeneration_repairs_all_bounded_fields_once(
@@ -795,6 +901,53 @@ def test_fable_contract_regeneration_repairs_all_bounded_fields_once(
     assert "PRIOR_PARSED_DECISION" in retry_input
     assert '"structured_output"' not in retry_input
     assert '["confidence","reason_codes","safe_pair_recommendation"]' in retry_input
+
+
+def test_fable_contract_regeneration_repairs_all_semantic_fields_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet()
+    invalid = _decision(packet)
+    invalid["packet_sha256"] = "0" * 64
+    invalid["structured_anchors"][0]["file"] = "src/../example.c"
+    invalid["structured_anchors"][0]["start_line"] = 3
+    invalid["structured_anchors"][0]["end_line"] = 2
+    invalid["required_evidence_clauses"][0]["predicate"] = "   "
+    invalid["trigger_summary"] = "   "
+    invalid["safe_pair_recommendation"]["safe_summary"] = "   "
+    corrected = _decision(packet)
+    outputs = iter((invalid, corrected))
+    calls: list[dict[str, object]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        del command
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"structured_output": next(outputs)}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+    decision, raw = reviewer_runner._run_model(
+        packet,
+        reviewer="fable",
+        raw_output_path=tmp_path / "raw.json",
+    )
+
+    assert decision == corrected
+    assert len(calls) == 2
+    assert raw["contract_retry"]["mutable_material_fields"] == [
+        "required_evidence_clauses",
+        "safe_pair_recommendation",
+        "structured_anchors",
+        "trigger_summary",
+    ]
+    assert (
+        '["required_evidence_clauses","safe_pair_recommendation",'
+        '"structured_anchors","trigger_summary"]'
+    ) in str(calls[1]["input"])
 
 
 def test_deepseek_contract_regeneration_fails_closed_after_format_retries(
@@ -842,6 +995,14 @@ def test_deepseek_contract_regeneration_fails_closed_after_format_retries(
             )
         )
     )
+    assert raw["contract_retry"]["validation_failure_code"] == "decision_contract_invalid"
+    assert len(raw["contract_retry"]["validation_error_sha256"]) == 64
+    assert reviewer_runner._checkpoint_raw_signals(raw_path)["retry_stages"][-1] == {
+        "stage": "contract_retry",
+        "exit_code": 0,
+        "validation_failure_code": "decision_contract_invalid",
+        "validation_error_sha256": raw["contract_retry"]["validation_error_sha256"],
+    }
     assert len(calls) == 4
 
 
