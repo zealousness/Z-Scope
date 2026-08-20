@@ -15,13 +15,8 @@ jobs:
   primary:
     strategy:
       fail-fast: true
-      max-parallel: 1
       matrix:
-        include:
-          - reviewer: glm
-            workers: 1
-          - reviewer: fable
-            workers: 4
+        reviewer: [fable, deepseek]
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 720
@@ -30,34 +25,6 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
-      - name: Provision pinned native OpenCode
-        run: |
-          auth="$HOME/.local/share/opencode/auth.json"
-          test -s "$auth"
-          chmod 0600 "$auth"
-          python3 - "$auth" <<'PY'
-          import json, pathlib, sys
-          auth = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          if "zai" not in auth:
-              raise SystemExit("OpenCode Z.AI authentication is unavailable")
-          PY
-          install_root="$HOME/.opencode/bin"
-          binary="$install_root/opencode"
-          if ! test -x "$binary" || test "$("$binary" --version 2>/dev/null || true)" != "1.18.18"; then
-            archive_root="$(mktemp -d)"
-            trap 'rm -rf "$archive_root"' EXIT
-            archive="$archive_root/opencode-linux-x64-baseline.tar.gz"
-            curl --fail --location --proto '=https' --tlsv1.2 \
-              --connect-timeout 30 --max-time 600 --retry 3 \
-              --output "$archive" \
-              https://github.com/anomalyco/opencode/releases/download/v1.18.18/opencode-linux-x64-baseline.tar.gz
-            echo "05914655854c1dab48f0d52a8af8f74967e4e26daf87dfe6534f57e799a853d7  $archive" | sha256sum --check --strict
-            tar -xzf "$archive" -C "$archive_root"
-            mkdir -p "$install_root"
-            install -m 0755 "$archive_root/opencode" "$binary"
-          fi
-          test "$("$binary" --version)" = "1.18.18"
-          echo "$install_root" >> "$GITHUB_PATH"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -90,9 +57,7 @@ jobs:
               raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
           PY
           test "$(claude --version | awk '{print $1}')" = "2.1.233"
-          test -x "$HOME/.opencode/bin/opencode"
-          test "$("$HOME/.opencode/bin/opencode" --version)" = "1.18.18"
-          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+          test "$(dsh --version)" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
       - name: Run independent primary reviewer
         env:
@@ -103,7 +68,7 @@ jobs:
             --reviewer '${{ matrix.reviewer }}' \
             --packet-dir test/range/benchmark/v16/review-packets \
             --output-dir 'review-evidence/${{ matrix.reviewer }}' \
-            --workers '${{ matrix.workers }}'
+            --workers 4
       - uses: actions/upload-artifact@v7
         with:
           name: range-v16-primary-${{ matrix.reviewer }}-${{ inputs.source_sha }}
@@ -120,34 +85,6 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
-      - name: Provision pinned native OpenCode
-        run: |
-          auth="$HOME/.local/share/opencode/auth.json"
-          test -s "$auth"
-          chmod 0600 "$auth"
-          python3 - "$auth" <<'PY'
-          import json, pathlib, sys
-          auth = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          if "zai" not in auth:
-              raise SystemExit("OpenCode Z.AI authentication is unavailable")
-          PY
-          install_root="$HOME/.opencode/bin"
-          binary="$install_root/opencode"
-          if ! test -x "$binary" || test "$("$binary" --version 2>/dev/null || true)" != "1.18.18"; then
-            archive_root="$(mktemp -d)"
-            trap 'rm -rf "$archive_root"' EXIT
-            archive="$archive_root/opencode-linux-x64-baseline.tar.gz"
-            curl --fail --location --proto '=https' --tlsv1.2 \
-              --connect-timeout 30 --max-time 600 --retry 3 \
-              --output "$archive" \
-              https://github.com/anomalyco/opencode/releases/download/v1.18.18/opencode-linux-x64-baseline.tar.gz
-            echo "05914655854c1dab48f0d52a8af8f74967e4e26daf87dfe6534f57e799a853d7  $archive" | sha256sum --check --strict
-            tar -xzf "$archive" -C "$archive_root"
-            mkdir -p "$install_root"
-            install -m 0755 "$archive_root/opencode" "$binary"
-          fi
-          test "$("$binary" --version)" = "1.18.18"
-          echo "$install_root" >> "$GITHUB_PATH"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -180,9 +117,7 @@ jobs:
               raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
           PY
           test "$(claude --version | awk '{print $1}')" = "2.1.233"
-          test -x "$HOME/.opencode/bin/opencode"
-          test "$("$HOME/.opencode/bin/opencode" --version)" = "1.18.18"
-          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+          test "$(dsh --version)" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
       - uses: actions/download-artifact@v8
         with:
@@ -190,8 +125,8 @@ jobs:
           path: review-evidence/fable
       - uses: actions/download-artifact@v8
         with:
-          name: range-v16-primary-glm-${{ inputs.source_sha }}
-          path: review-evidence/glm
+          name: range-v16-primary-deepseek-${{ inputs.source_sha }}
+          path: review-evidence/deepseek
       - name: Run mandatory and disagreement arbitration
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
@@ -200,7 +135,7 @@ jobs:
           python3 scripts/run_e0_reviewers.py arbitrate \
             --packet-dir test/range/benchmark/v16/review-packets \
             --fable-dir review-evidence/fable \
-            --glm-dir review-evidence/glm \
+            --deepseek-dir review-evidence/deepseek \
             --output-dir review-evidence/opus \
             --workers 4
           python3 scripts/build_e0_review_manifest.py \

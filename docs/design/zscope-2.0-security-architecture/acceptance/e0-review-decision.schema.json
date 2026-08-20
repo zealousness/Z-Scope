@@ -27,7 +27,7 @@
     "schema_version": {"const": "zscope.range-v16-review-decision.v1"},
     "packet_uid": {"type": "string", "minLength": 1},
     "packet_sha256": {"$ref": "#/$defs/sha256"},
-    "reviewer_role": {"enum": ["primary_fable", "primary_glm", "arbiter_opus"]},
+    "reviewer_role": {"enum": ["primary_fable", "primary_deepseek", "arbiter_opus"]},
     "reviewer_model": {"type": "string", "minLength": 1},
     "contract_kind": {
       "enum": ["concrete_trigger", "public_api_contract", "pattern_model", "retired"]
