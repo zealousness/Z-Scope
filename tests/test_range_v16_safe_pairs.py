@@ -141,7 +141,10 @@ def test_safe_pair_anonymity_includes_packet_functions_and_macros() -> None:
                 {
                     "content": (
                         "#define PROJECT_PRIVATE_LIMIT 16\n"
-                        "static int project_helper(int value) { return value; }\n"
+                        "static int project_helper(int value) {\n"
+                        "  for (int i = 0; i < 1; ++i) { value += i; }\n"
+                        "  return (value);\n"
+                        "}\n"
                         "int project_entry(void) { return project_helper(PROJECT_PRIVATE_LIMIT); }"
                     )
                 }
@@ -155,6 +158,7 @@ def test_safe_pair_anonymity_includes_packet_functions_and_macros() -> None:
         "project_helper",
         "PROJECT_PRIVATE_LIMIT",
     }.issubset(identifiers)
+    assert {"for", "return"}.isdisjoint(identifiers)
 
 
 def test_materialize_pair_writes_only_bound_source_and_manifest(tmp_path: Path) -> None:
