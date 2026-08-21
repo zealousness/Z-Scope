@@ -89,6 +89,7 @@ tests:
 - formal workflow 除要求 `repository@sha256:<digest>` 外，还校验 scanner image 的 `org.opencontainers.image.revision` 等于被测 Git SHA；每轮 summary 绑定 report、score、input manifest、tool health、Validator replay bundle 与原始 usage sidecar 的实际字节 SHA，Release evaluator 会从下载 artifact 重新计算并逐项对账。
 - GitHub `actions/upload-artifact` 返回 64 位裸 SHA-256；受保护审核 workflow 必须在 provenance 边界补全 `sha256:` 算法标识，再由严格 provenance schema 与 attestation 消费，不能放宽 schema 接纳无算法 digest。
 - Safe-pair 匿名性提取必须从调用形状中排除完整 C11 关键字，避免把 `return (`、`for (` 等语言结构当作项目函数；项目函数、宏、truth ID 与其他专有标识仍严格 fail closed。
+- Safe-pair author 只允许一次 answer-free contract repair：冻结 packet/decision/role/model identity，只提供被拒绝对象和枚举 validation class；raw v2 必须绑定两次 envelope、唯一 accepted attempt 及最终 author 逐字段一致性，repair 后仍不合规即 fail closed，禁止第三次调用。
 - public external formal 必须把项目复制到 checkout 外的临时 sealed input，再复制到独立的 writable cache project；只读输入、writable artifact 和 writable cache 三个 mount 必须互不包含。entries 要先通过 answer-key 字段检查，容器 config/compile commands 只含容器路径，truth 必须等 scanner 退出并通过 `require_release_isolation` 后才由 host scorer 加载。
 - 正式 unified 结果要求 Linux 用户态和完整工具链，SVF/Saber 降级结果不能冒充正式结果。
 - Windows 主机使用 WSL；原生 Linux 直接运行等价命令；原生 Windows 不形成正式结果。
