@@ -224,7 +224,7 @@ jobs:
             --packet-catalog test/range/benchmark/v16/review-packet-catalog.json \
             --review-bundle-manifest review-evidence/review-bundle-manifest.json \
             --artifact-name 'range-v16-reviewed-${{ inputs.source_sha }}' \
-            --artifact-digest '${{ steps.upload-reviewed.outputs.artifact-digest }}' \
+            --artifact-digest 'sha256:${{ steps.upload-reviewed.outputs.artifact-digest }}' \
             --workflow-head-sha "$GITHUB_SHA" \
             --packet-source-sha '${{ inputs.source_sha }}' \
             --output review-provenance/review-provenance.json
