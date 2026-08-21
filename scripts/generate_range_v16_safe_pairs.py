@@ -41,6 +41,7 @@ from run_e0_reviewers import assert_no_hidden_reasoning_output  # noqa: E402
 
 
 AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author.v1"
+RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v2"
 AUTHOR_MODEL = "claude-opus-5"
 _FORBIDDEN_SOURCE = re.compile(
     r"(?i)(?:#\s*(?:include|pragma)|\b(?:system|popen|fork|exec[a-z]*|__asm__|asm)\s*\()"
@@ -109,6 +110,19 @@ _C11_KEYWORDS = {
     "void",
     "volatile",
     "while",
+}
+_REPAIRABLE_AUTHOR_VALIDATION_CLASSES = {
+    "decision_identity_mismatch",
+    "fields_or_schema_invalid",
+    "forbidden_c_facilities",
+    "invariant_missing",
+    "kind_invalid",
+    "main_contract_invalid",
+    "model_identity_mismatch",
+    "packet_identity_mismatch",
+    "source_invalid",
+    "source_not_anonymous",
+    "sources_identical",
 }
 
 
@@ -247,6 +261,86 @@ def _extract(stdout: str) -> Mapping[str, Any]:
     raise E0GovernanceError("Opus did not return a safe-pair author object")
 
 
+def _author_validation_class(error: E0GovernanceError) -> str:
+    message = str(error)
+    classes = (
+        ("fields or schema", "fields_or_schema_invalid"),
+        ("packet identity", "packet_identity_mismatch"),
+        ("decision identity", "decision_identity_mismatch"),
+        ("model identity", "model_identity_mismatch"),
+        ("kind is invalid", "kind_invalid"),
+        ("invariant is missing", "invariant_missing"),
+        ("uses forbidden C facilities", "forbidden_c_facilities"),
+        ("is not anonymous", "source_not_anonymous"),
+        ("requires exactly one C11 main", "main_contract_invalid"),
+        ("sources are identical", "sources_identical"),
+        ("is invalid", "source_invalid"),
+    )
+    for fragment, validation_class in classes:
+        if fragment in message:
+            return validation_class
+    return "unclassified_validation_failure"
+
+
+def _run_author_command(
+    command: Sequence[str],
+    *,
+    prompt: str,
+    env: Mapping[str, str],
+) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryDirectory(prefix="zscope-e0-pair-author-") as raw_temp:
+        return subprocess.run(
+            command,
+            input=prompt,
+            cwd=raw_temp,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            timeout=1800,
+        )
+
+
+def _raw_attempt(
+    completed: subprocess.CompletedProcess[str],
+    *,
+    attempt: int,
+    kind: str,
+    validation_class: str | None,
+) -> dict[str, Any]:
+    return {
+        "attempt": attempt,
+        "kind": kind,
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr_sha256": sha256_value(completed.stderr),
+        "validation_class": validation_class,
+    }
+
+
+def _raw_author_envelope(
+    *,
+    truth_id: str,
+    packet_sha256: str,
+    final_decision_sha256: str,
+    command: Sequence[str],
+    attempts: Sequence[Mapping[str, Any]],
+    accepted_attempt: int | None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": RAW_AUTHOR_SCHEMA_VERSION,
+        "truth_id": truth_id,
+        "packet_sha256": packet_sha256,
+        "final_decision_sha256": final_decision_sha256,
+        "author_model": AUTHOR_MODEL,
+        "command_identity": [Path(command[0]).name, *command[1:]],
+        "attempts": list(attempts),
+        "accepted_attempt": accepted_attempt,
+    }
+
+
 def _author_one(
     packet: Mapping[str, Any],
     normalized_record: Mapping[str, Any],
@@ -316,41 +410,131 @@ def _author_one(
             and "BENCHMARK_TRUTH" not in key.upper()
             and "SCORER" not in key.upper()
         }
-        with tempfile.TemporaryDirectory(prefix="zscope-e0-pair-author-") as raw_temp:
-            completed = subprocess.run(
-                command,
-                input=prompt,
-                cwd=raw_temp,
-                env=env,
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="strict",
-                timeout=1800,
-            )
+        completed = _run_author_command(command, prompt=prompt, env=env)
         if completed.returncode != 0:
             raise E0GovernanceError(f"safe-pair author failed: {truth_id}")
         assert_no_hidden_reasoning_output(completed.stdout)
-        raw = {
-            "schema_version": "zscope.range-v16-safe-pair-author-raw.v1",
-            "truth_id": truth_id,
-            "packet_sha256": packet["packet_sha256"],
-            "final_decision_sha256": final_sha,
-            "author_model": AUTHOR_MODEL,
-            "command_identity": [Path(command[0]).name, *command[1:]],
-            "exit_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr_sha256": sha256_value(completed.stderr),
-        }
-        _json_dump(raw_path, raw)
         author = dict(_extract(completed.stdout))
-        validate_author_record(
-            author,
-            truth_id=truth_id,
-            packet_sha256=str(packet["packet_sha256"]),
-            final_decision_sha256=final_sha,
-            forbidden_identifiers=forbidden,
+        attempts: list[dict[str, Any]] = []
+        try:
+            validate_author_record(
+                author,
+                truth_id=truth_id,
+                packet_sha256=str(packet["packet_sha256"]),
+                final_decision_sha256=final_sha,
+                forbidden_identifiers=forbidden,
+            )
+        except E0GovernanceError as error:
+            validation_class = _author_validation_class(error)
+            if validation_class not in _REPAIRABLE_AUTHOR_VALIDATION_CLASSES:
+                raise
+            attempts.append(
+                _raw_attempt(
+                    completed,
+                    attempt=1,
+                    kind="initial",
+                    validation_class=validation_class,
+                )
+            )
+            _json_dump(
+                raw_path,
+                _raw_author_envelope(
+                    truth_id=truth_id,
+                    packet_sha256=str(packet["packet_sha256"]),
+                    final_decision_sha256=final_sha,
+                    command=command,
+                    attempts=attempts,
+                    accepted_attempt=None,
+                ),
+            )
+            repair_prompt = (
+                "Repair only the rejected safe-pair author object below. The adjudicated "
+                "decision and the schema, packet, decision, role, and model identity fields "
+                "are immutable. Do not add facts or reconsider the decision. Apply the "
+                "smallest complete correction for the supplied validation class. Each source "
+                "must remain a standalone C11 translation unit and must use no includes, "
+                "pragmas, assembly, process/network/file APIs, original function names, truth "
+                "IDs, or project-specific identifiers. Return exactly the JSON schema. "
+                "REPAIR_REQUEST:\n"
+                + json.dumps(
+                    {
+                        "request": request,
+                        "rejected_author": author,
+                        "validation_class": validation_class,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            repaired = _run_author_command(command, prompt=repair_prompt, env=env)
+            if repaired.returncode != 0:
+                raise E0GovernanceError(
+                    f"safe-pair author contract repair failed: {validation_class}"
+                )
+            assert_no_hidden_reasoning_output(repaired.stdout)
+            repaired_author = dict(_extract(repaired.stdout))
+            try:
+                validate_author_record(
+                    repaired_author,
+                    truth_id=truth_id,
+                    packet_sha256=str(packet["packet_sha256"]),
+                    final_decision_sha256=final_sha,
+                    forbidden_identifiers=forbidden,
+                )
+            except E0GovernanceError as repair_error:
+                attempts.append(
+                    _raw_attempt(
+                        repaired,
+                        attempt=2,
+                        kind="contract_repair",
+                        validation_class=_author_validation_class(repair_error),
+                    )
+                )
+                _json_dump(
+                    raw_path,
+                    _raw_author_envelope(
+                        truth_id=truth_id,
+                        packet_sha256=str(packet["packet_sha256"]),
+                        final_decision_sha256=final_sha,
+                        command=command,
+                        attempts=attempts,
+                        accepted_attempt=None,
+                    ),
+                )
+                raise E0GovernanceError(
+                    "safe-pair author contract repair exhausted: "
+                    + _author_validation_class(repair_error)
+                ) from repair_error
+            attempts.append(
+                _raw_attempt(
+                    repaired,
+                    attempt=2,
+                    kind="contract_repair",
+                    validation_class=None,
+                )
+            )
+            author = repaired_author
+            accepted_attempt = 2
+        else:
+            attempts.append(
+                _raw_attempt(
+                    completed,
+                    attempt=1,
+                    kind="initial",
+                    validation_class=None,
+                )
+            )
+            accepted_attempt = 1
+        _json_dump(
+            raw_path,
+            _raw_author_envelope(
+                truth_id=truth_id,
+                packet_sha256=str(packet["packet_sha256"]),
+                final_decision_sha256=final_sha,
+                command=command,
+                attempts=attempts,
+                accepted_attempt=accepted_attempt,
+            ),
         )
         _json_dump(author_path, author)
         status = "authored"
@@ -487,9 +671,8 @@ def validate_author_run(
             "final_decision_sha256",
             "author_model",
             "command_identity",
-            "exit_code",
-            "stdout",
-            "stderr_sha256",
+            "attempts",
+            "accepted_attempt",
         }
         command_identity = raw.get("command_identity")
         expected_command_prefix = [
@@ -525,18 +708,55 @@ def validate_author_run(
                 command_valid = False
         if (
             set(raw) != raw_fields
-            or raw.get("schema_version") != "zscope.range-v16-safe-pair-author-raw.v1"
+            or raw.get("schema_version") != RAW_AUTHOR_SCHEMA_VERSION
             or raw.get("truth_id") != truth_id
             or raw.get("packet_sha256") != expected.get("packet_sha256")
             or raw.get("final_decision_sha256") != expected.get("final_decision_sha256")
             or raw.get("author_model") != AUTHOR_MODEL
-            or raw.get("exit_code") != 0
             or not command_valid
-            or not isinstance(raw.get("stdout"), str)
-            or not re.fullmatch(r"[0-9a-f]{64}", str(raw.get("stderr_sha256") or ""))
         ):
             raise E0GovernanceError(f"safe-pair raw author envelope is invalid: {truth_id}")
-        assert_no_hidden_reasoning_output(str(raw["stdout"]))
+        attempts = raw.get("attempts")
+        accepted_attempt = raw.get("accepted_attempt")
+        if (
+            not isinstance(attempts, list)
+            or len(attempts) not in {1, 2}
+            or accepted_attempt != len(attempts)
+        ):
+            raise E0GovernanceError(f"safe-pair raw author attempts are invalid: {truth_id}")
+        for index, attempt in enumerate(attempts, start=1):
+            expected_kind = "initial" if index == 1 else "contract_repair"
+            validation_class = (
+                attempt.get("validation_class") if isinstance(attempt, Mapping) else None
+            )
+            expected_validation = index < len(attempts)
+            if (
+                not isinstance(attempt, Mapping)
+                or set(attempt)
+                != {
+                    "attempt",
+                    "kind",
+                    "exit_code",
+                    "stdout",
+                    "stderr_sha256",
+                    "validation_class",
+                }
+                or attempt.get("attempt") != index
+                or attempt.get("kind") != expected_kind
+                or attempt.get("exit_code") != 0
+                or not isinstance(attempt.get("stdout"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", str(attempt.get("stderr_sha256") or ""))
+                or (
+                    expected_validation
+                    and validation_class not in _REPAIRABLE_AUTHOR_VALIDATION_CLASSES
+                )
+                or (not expected_validation and validation_class is not None)
+            ):
+                raise E0GovernanceError(f"safe-pair raw author attempt is invalid: {truth_id}")
+            assert_no_hidden_reasoning_output(str(attempt["stdout"]))
+        accepted_author = dict(_extract(str(attempts[-1]["stdout"])))
+        if accepted_author != _object(author_path):
+            raise E0GovernanceError(f"safe-pair raw accepted author binding is invalid: {truth_id}")
         by_truth[truth_id] = record
     if set(by_truth) != set(expected_records):
         raise E0GovernanceError("safe-pair author run is incomplete")

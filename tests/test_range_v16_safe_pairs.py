@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,8 @@ from scripts.e0_review_governance import sha256_file, sha256_value
 from scripts.generate_range_v16_safe_pairs import (
     AUTHOR_MODEL,
     AUTHOR_SCHEMA_VERSION,
+    RAW_AUTHOR_SCHEMA_VERSION,
+    _author_one,
     _author_schema,
     _source_identifiers,
     materialize_pairs,
@@ -71,7 +74,7 @@ def _author(record: dict) -> dict:
 
 def _raw_author(record: dict, author: dict) -> dict:
     return {
-        "schema_version": "zscope.range-v16-safe-pair-author-raw.v1",
+        "schema_version": RAW_AUTHOR_SCHEMA_VERSION,
         "truth_id": record["truth_id"],
         "packet_sha256": record["packet_sha256"],
         "final_decision_sha256": record["final_decision_sha256"],
@@ -94,9 +97,17 @@ def _raw_author(record: dict, author: dict) -> dict:
             "--no-session-persistence",
             "--disable-slash-commands",
         ],
-        "exit_code": 0,
-        "stdout": json.dumps({"structured_output": author}),
-        "stderr_sha256": sha256_value(""),
+        "attempts": [
+            {
+                "attempt": 1,
+                "kind": "initial",
+                "exit_code": 0,
+                "stdout": json.dumps({"structured_output": author}),
+                "stderr_sha256": sha256_value(""),
+                "validation_class": None,
+            }
+        ],
+        "accepted_attempt": 1,
     }
 
 
@@ -159,6 +170,108 @@ def test_safe_pair_anonymity_includes_packet_functions_and_macros() -> None:
         "PROJECT_PRIVATE_LIMIT",
     }.issubset(identifiers)
     assert {"for", "return"}.isdisjoint(identifiers)
+
+
+def test_safe_pair_author_uses_one_bounded_contract_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["vulnerable_source"] = "#include <stddef.h>\n" + invalid["vulnerable_source"]
+    repaired = _author(record)
+    responses = [invalid, repaired]
+    prompts: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/claude",
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        author = responses.pop(0)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"structured_output": author}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    result = _author_one(packet, record, output=tmp_path / "author", resume=False)
+    assert result["status"] == "authored"
+    assert len(prompts) == 2
+    assert '"validation_class": "forbidden_c_facilities"' in prompts[1]
+    raw = json.loads(
+        (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
+    )
+    assert raw["schema_version"] == RAW_AUTHOR_SCHEMA_VERSION
+    assert raw["accepted_attempt"] == 2
+    assert [attempt["kind"] for attempt in raw["attempts"]] == [
+        "initial",
+        "contract_repair",
+    ]
+    assert raw["attempts"][0]["validation_class"] == "forbidden_c_facilities"
+    assert raw["attempts"][1]["validation_class"] is None
+    normalized_path = tmp_path / "normalized.json"
+    _dump(normalized_path, normalized)
+    _dump(
+        tmp_path / "author" / "manifest.json",
+        {
+            "schema_version": "zscope.range-v16-safe-pair-author-run.v1",
+            "author_model": AUTHOR_MODEL,
+            "record_count": 1,
+            "normalized_decisions_sha256": sha256_file(normalized_path),
+            "records": [result],
+            "content_sha256": sha256_value([result]),
+        },
+    )
+    assert validate_author_run(
+        author_root=tmp_path / "author",
+        normalized_path=normalized_path,
+        expected_records={record["truth_id"]: record},
+    ) == {record["truth_id"]: result}
+
+
+def test_safe_pair_author_fails_closed_after_one_contract_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["vulnerable_source"] = "#include <stddef.h>\n" + invalid["vulnerable_source"]
+    call_count = 0
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/claude",
+    )
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        nonlocal call_count
+        call_count += 1
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"structured_output": invalid}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    with pytest.raises(ValueError, match="contract repair exhausted"):
+        _author_one(packet, record, output=tmp_path / "author", resume=False)
+    assert call_count == 2
+    raw = json.loads(
+        (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
+    )
+    assert raw["accepted_attempt"] is None
+    assert len(raw["attempts"]) == 2
+    assert all(
+        attempt["validation_class"] == "forbidden_c_facilities" for attempt in raw["attempts"]
+    )
 
 
 def test_materialize_pair_writes_only_bound_source_and_manifest(tmp_path: Path) -> None:
@@ -273,7 +386,7 @@ def test_safe_pair_run_rejects_hidden_reasoning_body(tmp_path: Path) -> None:
     raw_path = author_dir / "raw" / f"{record['truth_id']}.json"
     _dump(author_path, author)
     raw = _raw_author(record, author)
-    raw["stdout"] = json.dumps(
+    raw["attempts"][0]["stdout"] = json.dumps(
         {"structured_output": author, "reasoning_content": "must not be retained"}
     )
     _dump(raw_path, raw)
