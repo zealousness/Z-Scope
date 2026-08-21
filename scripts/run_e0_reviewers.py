@@ -1562,8 +1562,18 @@ def _run_model(
                             "correction as exactly one complete JSON object. This is a "
                             "transport-only correction: do not perform another review and "
                             "do not change any decision field. Return no prose or Markdown.",
+                            "The previous grounding transport formatting attempt still "
+                            "failed strict validation. Read prior-output.txt, "
+                            "decision-schema.json, and the updated format-validation.json. "
+                            "Reformat that prior output as exactly one complete JSON object, "
+                            "correcting every reported schema path and frozen binding field. "
+                            "This remains transport-only: do not perform another review, do "
+                            "not change any material decision field, and return no prose, "
+                            "Markdown, or code fence.",
                         )
-                        for semantic_format_prompt in semantic_format_prompts:
+                        for attempt_index, semantic_format_prompt in enumerate(
+                            semantic_format_prompts
+                        ):
                             (temp_root / "prior-output.txt").write_text(
                                 prior_semantic_stdout,
                                 encoding="utf-8",
@@ -1598,7 +1608,12 @@ def _run_model(
                                 check=False,
                                 timeout=600,
                             )
-                            raw["semantic_format_retry"] = {
+                            retry_key = (
+                                "semantic_format_retry"
+                                if attempt_index == 0
+                                else "semantic_format_retry_second"
+                            )
+                            raw[retry_key] = {
                                 "exit_code": semantic_format_retry.returncode,
                                 "original_stdout_sha256": sha256_value(prior_semantic_stdout),
                                 "original_stdout_retained": False,
@@ -1882,6 +1897,7 @@ def _validate_existing_primary(
         "contract_retry",
         "semantic_retry",
         "semantic_format_retry",
+        "semantic_format_retry_second",
         "semantic_envelope_repair",
         "semantic_contract_retry",
     }
@@ -2061,7 +2077,12 @@ def _validate_existing_primary(
             != semantic_retry.get("substantive_projection_sha256")
         ):
             raise E0GovernanceError("existing semantic retry envelope is invalid")
-    for retry_name in ("semantic_format_retry",):
+    if (
+        raw.get("semantic_format_retry_second") is not None
+        and raw.get("semantic_format_retry") is None
+    ):
+        raise E0GovernanceError("existing second semantic format retry lacks the first retry")
+    for retry_name in ("semantic_format_retry", "semantic_format_retry_second"):
         semantic_format_retry = raw.get(retry_name)
         if semantic_format_retry is None:
             continue
@@ -2369,6 +2390,7 @@ def _checkpoint_raw_signals(path: Path) -> dict[str, Any]:
         "contract_retry",
         "semantic_retry",
         "semantic_format_retry",
+        "semantic_format_retry_second",
         "semantic_contract_retry",
     ):
         value = raw.get(name)
