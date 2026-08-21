@@ -350,6 +350,17 @@ def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     assert workflow.count(f'"{reviewer_runner.DSH_VERSION}"') == 2
 
 
+def test_protected_review_workflow_canonicalizes_github_artifact_digest() -> None:
+    workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
+    assert (
+        "--artifact-digest 'sha256:${{ steps.upload-reviewed.outputs.artifact-digest }}'"
+        in workflow
+    )
+    assert (
+        "--artifact-digest '${{ steps.upload-reviewed.outputs.artifact-digest }}'" not in workflow
+    )
+
+
 def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
     assert "fable_checkpoint_run_id:" in workflow
