@@ -64,6 +64,52 @@ _GENERIC_C_CALLS = {
     "while",
 }
 _GENERIC_C_MACROS = {"NULL", "CHAR_BIT", "INT_MAX", "INT_MIN", "SIZE_MAX"}
+_C11_KEYWORDS = {
+    "_Alignas",
+    "_Alignof",
+    "_Atomic",
+    "_Bool",
+    "_Complex",
+    "_Generic",
+    "_Imaginary",
+    "_Noreturn",
+    "_Static_assert",
+    "_Thread_local",
+    "auto",
+    "break",
+    "case",
+    "char",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extern",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "register",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "struct",
+    "switch",
+    "typedef",
+    "union",
+    "unsigned",
+    "void",
+    "volatile",
+    "while",
+}
 
 
 def _json_dump(path: Path, value: Any) -> None:
@@ -132,7 +178,7 @@ def _source_identifiers(packet: Mapping[str, Any], truth_id: str) -> set[str]:
             identifiers.update(
                 match
                 for match in re.findall(r"\b([A-Za-z_]\w*)\s*\(", content)
-                if match not in _GENERIC_C_CALLS
+                if match not in _GENERIC_C_CALLS and match not in _C11_KEYWORDS
             )
             identifiers.update(
                 match
