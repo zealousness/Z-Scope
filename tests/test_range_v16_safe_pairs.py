@@ -144,6 +144,35 @@ def test_safe_pair_author_rejects_project_specific_identifiers() -> None:
         )
 
 
+def test_safe_pair_author_anonymity_matches_complete_c_identifiers() -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    author = _author(record)
+    author["vulnerable_source"] = author["vulnerable_source"].replace(
+        "read_item", "project_entry_count"
+    )
+    author["fixed_or_near_miss_source"] = author["fixed_or_near_miss_source"].replace(
+        "read_item", "project_entry_count"
+    )
+    validate_author_record(
+        author,
+        truth_id=record["truth_id"],
+        packet_sha256=record["packet_sha256"],
+        final_decision_sha256=record["final_decision_sha256"],
+        forbidden_identifiers={"project_entry", record["truth_id"]},
+    )
+
+    author["vulnerable_source"] += "int project_entry(void) { return 0; }\n"
+    with pytest.raises(ValueError, match="not anonymous"):
+        validate_author_record(
+            author,
+            truth_id=record["truth_id"],
+            packet_sha256=record["packet_sha256"],
+            final_decision_sha256=record["final_decision_sha256"],
+            forbidden_identifiers={"project_entry", record["truth_id"]},
+        )
+
+
 def test_safe_pair_anonymity_includes_packet_functions_and_macros() -> None:
     identifiers = _source_identifiers(
         {
@@ -233,6 +262,48 @@ def test_safe_pair_author_uses_one_bounded_contract_repair(
         normalized_path=normalized_path,
         expected_records={record["truth_id"]: record},
     ) == {record["truth_id"]: result}
+
+
+def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["vulnerable_source"] += "int project_specific_function(void) { return 0; }\n"
+    repaired = _author(record)
+    responses = [invalid, repaired]
+    prompts: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/claude",
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        author = responses.pop(0)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"structured_output": author}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    result = _author_one(packet, record, output=tmp_path / "author", resume=False)
+    assert result["status"] == "authored"
+    assert len(prompts) == 2
+    assert '"validation_class": "source_not_anonymous"' in prompts[1]
+    assert '"identifier_match": "exact_c_token_or_literal_non_identifier"' in prompts[1]
+    assert '"project_specific_function"' in prompts[1]
+    raw = json.loads(
+        (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
+    )
+    assert raw["accepted_attempt"] == 2
+    assert raw["attempts"][0]["validation_class"] == "source_not_anonymous"
+    assert raw["attempts"][1]["validation_class"] is None
 
 
 def test_safe_pair_author_fails_closed_after_one_contract_repair(
