@@ -58,6 +58,8 @@ DEEPSEEK_MODEL_IDENTITY = f"{DEEPSEEK_MODEL_ID}:max"
 FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v3"
 PRIMARY_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-primary-checkpoint.v1"
 PRIMARY_FAILURE_SCHEMA_VERSION = "zscope.range-v16-primary-failure.v1"
+ARBITRATION_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-arbitration-checkpoint.v1"
+ARBITRATION_SHARD_SCHEMA_VERSION = "zscope.range-v16-arbitration-shard.v1"
 SEMANTIC_ENVELOPE_REPAIR_SCHEMA_VERSION = "zscope.range-v16-semantic-envelope-repair.v1"
 
 MATERIAL_DECISION_FIELDS = (
@@ -2557,6 +2559,15 @@ def build_primary_checkpoint(args: argparse.Namespace) -> int:
     missing_pair_count = (
         len(packets) - len(verified_records) - len(invalid_records) - len(incomplete_records)
     )
+    if getattr(args, "require_complete", False) and (
+        len(verified_records) != len(packets)
+        or invalid_records
+        or incomplete_records
+        or missing_pair_count
+        or failure_records
+        or unverified_ids
+    ):
+        raise E0GovernanceError("retained primary artifact is not a complete verified review")
     manifest: dict[str, Any] = {
         "schema_version": PRIMARY_CHECKPOINT_SCHEMA_VERSION,
         "reviewer": args.reviewer,
@@ -2859,6 +2870,16 @@ def _run_arbitration_packet(
                 raw_output_path=raw_path,
             )
         except Exception as exc:
+            _json_dump(
+                output / "failures" / f"{truth_id}.json",
+                _primary_failure_marker(
+                    packet,
+                    reviewer="opus",
+                    exc=exc,
+                    decision_path=decision_path,
+                    raw_path=raw_path,
+                ),
+            )
             raise E0GovernanceError(f"opus review failed for {truth_id}: {exc}") from exc
         _json_dump(decision_path, decision)
         _json_dump(raw_path, raw)
@@ -2872,26 +2893,45 @@ def _run_arbitration_packet(
     }
 
 
-def run_arbitration(args: argparse.Namespace) -> int:
-    output = args.output_dir.resolve()
-    if output.exists() and not args.resume:
-        raise E0GovernanceError(f"output already exists: {output}")
-    (output / "decisions").mkdir(parents=True, exist_ok=args.resume)
-    (output / "raw").mkdir(exist_ok=args.resume)
-    manifest_path = output / "manifest.json"
-    if manifest_path.exists():
-        raise E0GovernanceError("Opus arbitration is already complete")
+def _arbitration_shard_for(truth_id: str, shard_count: int) -> int:
+    if shard_count < 1 or shard_count > 32:
+        raise E0GovernanceError("arbitration shard count is invalid")
+    digest = hashlib.sha256(truth_id.encode("utf-8")).hexdigest()
+    return int(digest[:16], 16) % shard_count
+
+
+def _validate_arbitration_shard_identity(shard_index: int, shard_count: int) -> None:
+    if shard_count < 1 or shard_count > 32 or shard_index < 0 or shard_index >= shard_count:
+        raise E0GovernanceError("arbitration shard identity is invalid")
+
+
+def _load_arbitration_plan(
+    packet_dir: Path,
+    *,
+    fable_dir: Path,
+    deepseek_dir: Path,
+) -> tuple[
+    list[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]],
+    set[str],
+    set[str],
+    str,
+]:
+    """Revalidate both primaries and derive one content-bound arbitration plan."""
+
     disagreements: set[str] = set()
     evidence_deficits: set[str] = set()
     work: list[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]] = []
-    fable_dir = args.fable_dir.resolve(strict=True)
-    deepseek_dir = args.deepseek_dir.resolve(strict=True)
-    for path in _packet_files(args.packet_dir.resolve()):
+    plan_bindings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in _packet_files(packet_dir):
         packet = load_json_strict(path)
         if not isinstance(packet, Mapping):
             raise E0GovernanceError(f"packet must be an object: {path}")
         validate_review_packet(packet)
         truth_id = _packet_id(packet)
+        if truth_id in seen:
+            raise E0GovernanceError(f"duplicate truth ID: {truth_id}")
+        seen.add(truth_id)
         fable, deepseek = _primary_decisions(
             packet,
             truth_id=truth_id,
@@ -2908,13 +2948,531 @@ def run_arbitration(args: argparse.Namespace) -> int:
         )
         if evidence_deficit:
             evidence_deficits.add(truth_id)
-        if truth_id not in DISPUTED_IDS and not disagreement_fields and not evidence_deficit:
+        selected = truth_id in DISPUTED_IDS or bool(disagreement_fields) or evidence_deficit
+        plan_bindings.append(
+            {
+                "truth_id": truth_id,
+                "packet_sha256": packet["packet_sha256"],
+                "fable_decision_sha256": sha256_file(fable_dir / "decisions" / f"{truth_id}.json"),
+                "fable_raw_sha256": sha256_file(fable_dir / "raw" / f"{truth_id}.json"),
+                "deepseek_decision_sha256": sha256_file(
+                    deepseek_dir / "decisions" / f"{truth_id}.json"
+                ),
+                "deepseek_raw_sha256": sha256_file(deepseek_dir / "raw" / f"{truth_id}.json"),
+                "disagreement_fields": list(disagreement_fields),
+                "evidence_deficit": evidence_deficit,
+                "mandatory_disputed": truth_id in DISPUTED_IDS,
+                "selected": selected,
+            }
+        )
+        if selected:
+            work.append((packet, truth_id, (fable, deepseek)))
+    return work, disagreements, evidence_deficits, sha256_value(plan_bindings)
+
+
+def _arbitration_shard_work(
+    work: Sequence[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]],
+    *,
+    shard_index: int,
+    shard_count: int,
+) -> list[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]]:
+    _validate_arbitration_shard_identity(shard_index, shard_count)
+    return [item for item in work if _arbitration_shard_for(item[1], shard_count) == shard_index]
+
+
+def _arbitration_checkpoint_required_fields() -> set[str]:
+    return {
+        "schema_version",
+        "reviewer",
+        "packet_source_sha",
+        "retained_source_sha",
+        "workflow_run_id",
+        "environment",
+        "shard_index",
+        "shard_count",
+        "plan_record_count",
+        "plan_sha256",
+        "planned_ids",
+        "record_count",
+        "verified_record_count",
+        "invalid_pair_count",
+        "incomplete_pair_count",
+        "missing_pair_count",
+        "failure_record_count",
+        "first_unverified_batch_ids",
+        "failure_records",
+        "invalid_records",
+        "incomplete_records",
+        "verified_records",
+        "retained_input_sha256",
+        "checkpoint_contains_review_material",
+        "diagnostic_answer_material_present",
+        "formal_evidence",
+        "requires_resume_revalidation",
+        "content_sha256",
+    }
+
+
+def build_arbitration_checkpoint(args: argparse.Namespace) -> int:
+    """Copy only revalidated Opus pairs for one deterministic shard."""
+
+    if os.environ.get("Z_SCOPE_E0_REVIEW_ENVIRONMENT") != "sealed-benchmark":
+        raise E0GovernanceError("arbitration checkpoint requires sealed-benchmark environment")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(args.packet_source_sha)):
+        raise E0GovernanceError("arbitration checkpoint packet source SHA is invalid")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(args.retained_source_sha)):
+        raise E0GovernanceError("arbitration checkpoint retained source SHA is invalid")
+    if not str(args.workflow_run_id).isdigit():
+        raise E0GovernanceError("arbitration checkpoint workflow run ID is invalid")
+    _validate_arbitration_shard_identity(args.shard_index, args.shard_count)
+
+    fable_dir = args.fable_dir.resolve(strict=True)
+    deepseek_dir = args.deepseek_dir.resolve(strict=True)
+    work, _, _, plan_sha256 = _load_arbitration_plan(
+        args.packet_dir.resolve(),
+        fable_dir=fable_dir,
+        deepseek_dir=deepseek_dir,
+    )
+    shard_work = _arbitration_shard_work(
+        work,
+        shard_index=args.shard_index,
+        shard_count=args.shard_count,
+    )
+    planned_ids = [truth_id for _, truth_id, _ in shard_work]
+    planned_id_set = set(planned_ids)
+    packet_by_id = {truth_id: packet for packet, truth_id, _ in shard_work}
+    packet_by_uid = {str(packet["packet_uid"]): packet for packet, _, _ in shard_work}
+
+    retained = args.retained_dir.resolve()
+    retained_decisions = retained / "decisions"
+    retained_raw = retained / "raw"
+    if not retained_decisions.is_dir() or not retained_raw.is_dir():
+        raise E0GovernanceError("retained arbitration review directories are unavailable")
+    for root, label in ((retained_decisions, "decision"), (retained_raw, "raw")):
+        extra = {path.stem for path in root.glob("*.json")} - planned_id_set
+        if extra:
+            raise E0GovernanceError(f"retained arbitration {label} files cross shard boundary")
+
+    output = args.output_dir.resolve()
+    if output.exists():
+        raise E0GovernanceError(f"checkpoint output already exists: {output}")
+    output_decisions = output / "decisions"
+    output_raw = output / "raw"
+    output_decisions.mkdir(parents=True)
+    output_raw.mkdir()
+
+    failure_records: list[dict[str, Any]] = []
+    retained_failures = retained / "failures"
+    if retained_failures.exists() and not retained_failures.is_dir():
+        raise E0GovernanceError("retained arbitration failure path is invalid")
+    if retained_failures.is_dir():
+        for failure_path in sorted(retained_failures.glob("*.json")):
+            marker = load_json_strict(failure_path)
+            _validate_primary_failure_marker(
+                marker,
+                reviewer="opus",
+                packet_by_uid=packet_by_uid,
+            )
+            truth_id = _packet_id(packet_by_uid[str(marker["packet_uid"])])
+            if failure_path.name != f"{truth_id}.json":
+                raise E0GovernanceError("retained arbitration failure marker name is invalid")
+            failure_records.append(dict(marker))
+
+    verified_records: list[dict[str, Any]] = []
+    invalid_records: list[dict[str, Any]] = []
+    incomplete_records: list[dict[str, Any]] = []
+    retained_bindings: list[dict[str, Any]] = []
+    unverified_ids: list[str] = []
+    for truth_id in planned_ids:
+        packet = packet_by_id[truth_id]
+        decision_path = retained_decisions / f"{truth_id}.json"
+        raw_path = retained_raw / f"{truth_id}.json"
+        decision_present = decision_path.is_file()
+        raw_present = raw_path.is_file()
+        failure_path = retained_failures / f"{truth_id}.json"
+        retained_bindings.append(
+            {
+                "truth_id": truth_id,
+                "decision_sha256": sha256_file(decision_path) if decision_present else None,
+                "raw_sha256": sha256_file(raw_path) if raw_present else None,
+                "failure_sha256": sha256_file(failure_path) if failure_path.is_file() else None,
+            }
+        )
+        if decision_present and raw_present:
+            try:
+                _validate_existing_primary(
+                    packet,
+                    reviewer="opus",
+                    decision_path=decision_path,
+                    raw_path=raw_path,
+                )
+            except (E0GovernanceError, OSError, json.JSONDecodeError) as exc:
+                invalid_records.append(
+                    {"truth_id": truth_id, "error_sha256": sha256_value(str(exc))}
+                )
+                unverified_ids.append(truth_id)
+                continue
+            shutil.copy2(decision_path, output_decisions / decision_path.name)
+            shutil.copy2(raw_path, output_raw / raw_path.name)
+            verified_records.append(
+                {
+                    "truth_id": truth_id,
+                    "packet_sha256": packet["packet_sha256"],
+                    "decision_file_sha256": sha256_file(decision_path),
+                    "raw_file_sha256": sha256_file(raw_path),
+                }
+            )
             continue
-        work.append((packet, truth_id, (fable, deepseek)))
+        if decision_present or raw_present:
+            record: dict[str, Any] = {
+                "truth_id": truth_id,
+                "present_files": [
+                    name
+                    for name, present in (("decision", decision_present), ("raw", raw_present))
+                    if present
+                ],
+            }
+            if raw_present:
+                record["raw_signals"] = _checkpoint_raw_signals(raw_path)
+            incomplete_records.append(record)
+        unverified_ids.append(truth_id)
+
+    missing_pair_count = (
+        len(planned_ids) - len(verified_records) - len(invalid_records) - len(incomplete_records)
+    )
+    manifest: dict[str, Any] = {
+        "schema_version": ARBITRATION_CHECKPOINT_SCHEMA_VERSION,
+        "reviewer": "opus",
+        "packet_source_sha": str(args.packet_source_sha),
+        "retained_source_sha": str(args.retained_source_sha),
+        "workflow_run_id": str(args.workflow_run_id),
+        "environment": "sealed-benchmark",
+        "shard_index": args.shard_index,
+        "shard_count": args.shard_count,
+        "plan_record_count": len(work),
+        "plan_sha256": plan_sha256,
+        "planned_ids": planned_ids,
+        "record_count": len(planned_ids),
+        "verified_record_count": len(verified_records),
+        "invalid_pair_count": len(invalid_records),
+        "incomplete_pair_count": len(incomplete_records),
+        "missing_pair_count": missing_pair_count,
+        "failure_record_count": len(failure_records),
+        "first_unverified_batch_ids": unverified_ids[: args.workers],
+        "failure_records": failure_records,
+        "invalid_records": invalid_records,
+        "incomplete_records": incomplete_records,
+        "verified_records": verified_records,
+        "retained_input_sha256": sha256_value(retained_bindings),
+        "checkpoint_contains_review_material": True,
+        "diagnostic_answer_material_present": False,
+        "formal_evidence": False,
+        "requires_resume_revalidation": True,
+    }
+    manifest["content_sha256"] = _checkpoint_manifest_content_sha256(manifest)
+    _json_dump(output / "checkpoint-manifest.json", manifest)
+    return 0
+
+
+def _validate_arbitration_checkpoint(
+    root: Path,
+    *,
+    packet_source_sha: str,
+    work: Sequence[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]],
+    plan_sha256: str,
+    shard_index: int,
+    shard_count: int,
+) -> None:
+    _validate_arbitration_shard_identity(shard_index, shard_count)
+    shard_work = _arbitration_shard_work(
+        work,
+        shard_index=shard_index,
+        shard_count=shard_count,
+    )
+    planned_ids = [truth_id for _, truth_id, _ in shard_work]
+    packet_by_id = {truth_id: packet for packet, truth_id, _ in shard_work}
+    packet_by_uid = {str(packet["packet_uid"]): packet for packet, _, _ in shard_work}
+    manifest = load_json_strict(root / "checkpoint-manifest.json")
+    if (
+        not isinstance(manifest, Mapping)
+        or set(manifest) != _arbitration_checkpoint_required_fields()
+    ):
+        raise E0GovernanceError("arbitration checkpoint manifest fields are invalid")
+    if (
+        manifest.get("schema_version") != ARBITRATION_CHECKPOINT_SCHEMA_VERSION
+        or manifest.get("reviewer") != "opus"
+        or manifest.get("packet_source_sha") != packet_source_sha
+        or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("retained_source_sha") or ""))
+        or not str(manifest.get("workflow_run_id") or "").isdigit()
+        or manifest.get("environment") != "sealed-benchmark"
+        or manifest.get("shard_index") != shard_index
+        or manifest.get("shard_count") != shard_count
+        or manifest.get("plan_record_count") != len(work)
+        or manifest.get("plan_sha256") != plan_sha256
+        or manifest.get("planned_ids") != planned_ids
+        or manifest.get("record_count") != len(planned_ids)
+        or manifest.get("checkpoint_contains_review_material") is not True
+        or manifest.get("diagnostic_answer_material_present") is not False
+        or manifest.get("formal_evidence") is not False
+        or manifest.get("requires_resume_revalidation") is not True
+        or not re.fullmatch(r"[0-9a-f]{64}", str(manifest.get("retained_input_sha256") or ""))
+        or manifest.get("content_sha256") != _checkpoint_manifest_content_sha256(manifest)
+    ):
+        raise E0GovernanceError("arbitration checkpoint manifest is invalid")
+    count_fields = (
+        "verified_record_count",
+        "invalid_pair_count",
+        "incomplete_pair_count",
+        "missing_pair_count",
+    )
+    if any(
+        not isinstance(manifest.get(field), int)
+        or isinstance(manifest.get(field), bool)
+        or int(manifest[field]) < 0
+        for field in count_fields
+    ) or sum(int(manifest[field]) for field in count_fields) != len(planned_ids):
+        raise E0GovernanceError("arbitration checkpoint counts are invalid")
+    for name, count_name in (
+        ("invalid_records", "invalid_pair_count"),
+        ("incomplete_records", "incomplete_pair_count"),
+        ("verified_records", "verified_record_count"),
+        ("failure_records", "failure_record_count"),
+    ):
+        if not isinstance(manifest.get(name), list) or len(manifest[name]) != manifest.get(
+            count_name
+        ):
+            raise E0GovernanceError(f"arbitration checkpoint {name} are invalid")
+    if (
+        not isinstance(manifest.get("failure_record_count"), int)
+        or isinstance(manifest.get("failure_record_count"), bool)
+        or manifest.get("failure_record_count", -1) < 0
+        or not isinstance(manifest.get("first_unverified_batch_ids"), list)
+        or any(not isinstance(value, str) for value in manifest["first_unverified_batch_ids"])
+    ):
+        raise E0GovernanceError("arbitration checkpoint diagnostics are invalid")
+    if len(set(manifest["first_unverified_batch_ids"])) != len(
+        manifest["first_unverified_batch_ids"]
+    ) or not set(manifest["first_unverified_batch_ids"]).issubset(planned_ids):
+        raise E0GovernanceError("arbitration checkpoint unverified batch is invalid")
+    diagnostic_ids: set[str] = set()
+    for record in manifest["invalid_records"]:
+        if (
+            not isinstance(record, Mapping)
+            or set(record) != {"truth_id", "error_sha256"}
+            or record.get("truth_id") not in planned_ids
+            or record.get("truth_id") in diagnostic_ids
+            or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("error_sha256") or ""))
+        ):
+            raise E0GovernanceError("arbitration checkpoint invalid-pair record is invalid")
+        diagnostic_ids.add(str(record["truth_id"]))
+    for record in manifest["incomplete_records"]:
+        if not isinstance(record, Mapping) or set(record) not in (
+            {"truth_id", "present_files"},
+            {"truth_id", "present_files", "raw_signals"},
+        ):
+            raise E0GovernanceError("arbitration checkpoint incomplete-pair record is invalid")
+        truth_id = str(record.get("truth_id") or "")
+        present_files = record.get("present_files")
+        if (
+            truth_id not in planned_ids
+            or truth_id in diagnostic_ids
+            or not isinstance(present_files, list)
+            or not present_files
+            or len(set(present_files)) != len(present_files)
+            or not set(present_files).issubset({"decision", "raw"})
+            or ("raw_signals" in record and not isinstance(record["raw_signals"], Mapping))
+        ):
+            raise E0GovernanceError("arbitration checkpoint incomplete-pair record is invalid")
+        diagnostic_ids.add(truth_id)
+    failure_uids: set[str] = set()
+    for marker in manifest["failure_records"]:
+        _validate_primary_failure_marker(
+            marker,
+            reviewer="opus",
+            packet_by_uid=packet_by_uid,
+        )
+        packet_uid = str(marker["packet_uid"])
+        if packet_uid in failure_uids:
+            raise E0GovernanceError("arbitration checkpoint failure record is duplicated")
+        failure_uids.add(packet_uid)
+    seen: set[str] = set()
+    for record in manifest["verified_records"]:
+        if not isinstance(record, Mapping) or set(record) != {
+            "truth_id",
+            "packet_sha256",
+            "decision_file_sha256",
+            "raw_file_sha256",
+        }:
+            raise E0GovernanceError("arbitration checkpoint verified record fields are invalid")
+        truth_id = str(record.get("truth_id") or "")
+        packet = packet_by_id.get(truth_id)
+        if packet is None or truth_id in seen:
+            raise E0GovernanceError("arbitration checkpoint verified record identity is invalid")
+        seen.add(truth_id)
+        decision_path = root / "decisions" / f"{truth_id}.json"
+        raw_path = root / "raw" / f"{truth_id}.json"
+        if (
+            record.get("packet_sha256") != packet["packet_sha256"]
+            or not decision_path.is_file()
+            or not raw_path.is_file()
+            or record.get("decision_file_sha256") != sha256_file(decision_path)
+            or record.get("raw_file_sha256") != sha256_file(raw_path)
+        ):
+            raise E0GovernanceError("arbitration checkpoint verified record hash is invalid")
+        _validate_existing_primary(
+            packet,
+            reviewer="opus",
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
+    expected_names = {f"{truth_id}.json" for truth_id in seen}
+    if {path.name for path in (root / "decisions").glob("*.json")} != expected_names or {
+        path.name for path in (root / "raw").glob("*.json")
+    } != expected_names:
+        raise E0GovernanceError("arbitration checkpoint contains unbound review files")
+
+
+def _arbitration_shard_manifest_fields() -> set[str]:
+    return {
+        "schema_version",
+        "reviewer",
+        "shard_index",
+        "shard_count",
+        "plan_record_count",
+        "plan_sha256",
+        "planned_ids",
+        "reviewed_count",
+        "disagreement_count",
+        "evidence_deficit_count",
+        "mandatory_disputed_ids",
+        "reviewed_ids",
+        "records",
+    }
+
+
+def _validate_arbitration_shard(
+    root: Path,
+    *,
+    work: Sequence[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]],
+    disagreements: set[str],
+    evidence_deficits: set[str],
+    plan_sha256: str,
+    shard_index: int,
+    shard_count: int,
+) -> list[dict[str, Any]]:
+    shard_work = _arbitration_shard_work(
+        work,
+        shard_index=shard_index,
+        shard_count=shard_count,
+    )
+    planned_ids = [truth_id for _, truth_id, _ in shard_work]
+    packet_by_id = {truth_id: packet for packet, truth_id, _ in shard_work}
+    manifest = load_json_strict(root / "manifest.json")
+    if not isinstance(manifest, Mapping) or set(manifest) != _arbitration_shard_manifest_fields():
+        raise E0GovernanceError("arbitration shard manifest fields are invalid")
+    if (
+        manifest.get("schema_version") != ARBITRATION_SHARD_SCHEMA_VERSION
+        or manifest.get("reviewer") != "opus"
+        or manifest.get("shard_index") != shard_index
+        or manifest.get("shard_count") != shard_count
+        or manifest.get("plan_record_count") != len(work)
+        or manifest.get("plan_sha256") != plan_sha256
+        or manifest.get("planned_ids") != planned_ids
+        or manifest.get("reviewed_count") != len(planned_ids)
+        or manifest.get("disagreement_count") != len(disagreements)
+        or manifest.get("evidence_deficit_count") != len(evidence_deficits)
+        or manifest.get("mandatory_disputed_ids") != sorted(DISPUTED_IDS)
+        or manifest.get("reviewed_ids") != planned_ids
+    ):
+        raise E0GovernanceError("arbitration shard manifest is invalid")
+    records = manifest.get("records")
+    if not isinstance(records, list) or len(records) != len(planned_ids):
+        raise E0GovernanceError("arbitration shard records are invalid")
+    seen: set[str] = set()
+    for record in records:
+        if not isinstance(record, Mapping) or set(record) != {
+            "truth_id",
+            "packet_sha256",
+            "decision_file_sha256",
+            "raw_file_sha256",
+            "status",
+        }:
+            raise E0GovernanceError("arbitration shard record fields are invalid")
+        truth_id = str(record.get("truth_id") or "")
+        packet = packet_by_id.get(truth_id)
+        decision_path = root / "decisions" / f"{truth_id}.json"
+        raw_path = root / "raw" / f"{truth_id}.json"
+        if (
+            packet is None
+            or truth_id in seen
+            or record.get("status") not in {"reviewed", "reused"}
+            or record.get("packet_sha256") != packet["packet_sha256"]
+            or not decision_path.is_file()
+            or not raw_path.is_file()
+            or record.get("decision_file_sha256") != sha256_file(decision_path)
+            or record.get("raw_file_sha256") != sha256_file(raw_path)
+        ):
+            raise E0GovernanceError("arbitration shard record binding is invalid")
+        seen.add(truth_id)
+        _validate_existing_primary(
+            packet,
+            reviewer="opus",
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
+    expected_names = {f"{truth_id}.json" for truth_id in planned_ids}
+    if (
+        seen != set(planned_ids)
+        or {path.name for path in (root / "decisions").glob("*.json")} != expected_names
+        or {path.name for path in (root / "raw").glob("*.json")} != expected_names
+    ):
+        raise E0GovernanceError("arbitration shard contains unbound review files")
+    return [dict(record) for record in records]
+
+
+def run_arbitration(args: argparse.Namespace) -> int:
+    shard_index = int(getattr(args, "shard_index", 0))
+    shard_count = int(getattr(args, "shard_count", 1))
+    _validate_arbitration_shard_identity(shard_index, shard_count)
+    output = args.output_dir.resolve()
+    if output.exists() and not args.resume:
+        raise E0GovernanceError(f"output already exists: {output}")
+    (output / "decisions").mkdir(parents=True, exist_ok=args.resume)
+    (output / "raw").mkdir(exist_ok=args.resume)
+    manifest_path = output / "manifest.json"
+    if manifest_path.exists():
+        raise E0GovernanceError("Opus arbitration is already complete")
+    fable_dir = args.fable_dir.resolve(strict=True)
+    deepseek_dir = args.deepseek_dir.resolve(strict=True)
+    work, disagreements, evidence_deficits, plan_sha256 = _load_arbitration_plan(
+        args.packet_dir.resolve(),
+        fable_dir=fable_dir,
+        deepseek_dir=deepseek_dir,
+    )
+    shard_work = _arbitration_shard_work(
+        work,
+        shard_index=shard_index,
+        shard_count=shard_count,
+    )
+    checkpoint_source_sha = getattr(args, "checkpoint_source_sha", None)
+    if args.resume:
+        if checkpoint_source_sha is None:
+            raise E0GovernanceError("arbitration resume requires a bound checkpoint")
+        _validate_arbitration_checkpoint(
+            output,
+            packet_source_sha=str(checkpoint_source_sha),
+            work=work,
+            plan_sha256=plan_sha256,
+            shard_index=shard_index,
+            shard_count=shard_count,
+        )
+        (output / "checkpoint-manifest.json").unlink()
+    elif checkpoint_source_sha is not None:
+        raise E0GovernanceError("arbitration checkpoint validation requires resume mode")
     records: list[dict[str, Any]] = []
     completed_count = 0
-    for offset in range(0, len(work), args.workers):
-        batch = work[offset : offset + args.workers]
+    for offset in range(0, len(shard_work), args.workers):
+        batch = shard_work[offset : offset + args.workers]
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
                 executor.submit(
@@ -2932,17 +3490,99 @@ def run_arbitration(args: argparse.Namespace) -> int:
                 records.append(future.result())
                 completed_count += 1
                 print(
-                    f"opus: {completed_count}/{len(work)} complete ({truth_id})",
+                    f"opus shard {shard_index}: {completed_count}/{len(shard_work)} "
+                    f"complete ({truth_id})",
                     flush=True,
                 )
     reviewed = {str(record["truth_id"]) for record in records}
-    if not DISPUTED_IDS.issubset(reviewed):
-        raise E0GovernanceError("Opus did not review all nine mandatory disputed records")
-    if not disagreements.issubset(reviewed):
-        raise E0GovernanceError("Opus did not arbitrate every primary disagreement")
+    planned_ids = [truth_id for _, truth_id, _ in shard_work]
+    if reviewed != set(planned_ids):
+        raise E0GovernanceError("Opus did not complete the deterministic arbitration shard")
     records.sort(key=lambda value: str(value["truth_id"]))
     _json_dump(
         manifest_path,
+        {
+            "schema_version": ARBITRATION_SHARD_SCHEMA_VERSION,
+            "reviewer": "opus",
+            "shard_index": shard_index,
+            "shard_count": shard_count,
+            "plan_record_count": len(work),
+            "plan_sha256": plan_sha256,
+            "planned_ids": planned_ids,
+            "reviewed_count": len(reviewed),
+            "disagreement_count": len(disagreements),
+            "evidence_deficit_count": len(evidence_deficits),
+            "mandatory_disputed_ids": sorted(DISPUTED_IDS),
+            "reviewed_ids": planned_ids,
+            "records": records,
+        },
+    )
+    return 0
+
+
+def merge_arbitration_shards(args: argparse.Namespace) -> int:
+    """Strictly revalidate and combine all deterministic Opus shard artifacts."""
+
+    _validate_arbitration_shard_identity(0, args.shard_count)
+    shard_dirs = [path.resolve(strict=True) for path in args.shard_dir]
+    if len(shard_dirs) != args.shard_count:
+        raise E0GovernanceError("arbitration merge requires exactly one directory per shard")
+    fable_dir = args.fable_dir.resolve(strict=True)
+    deepseek_dir = args.deepseek_dir.resolve(strict=True)
+    work, disagreements, evidence_deficits, plan_sha256 = _load_arbitration_plan(
+        args.packet_dir.resolve(),
+        fable_dir=fable_dir,
+        deepseek_dir=deepseek_dir,
+    )
+    output = args.output_dir.resolve()
+    if output.exists():
+        raise E0GovernanceError(f"arbitration merge output already exists: {output}")
+    (output / "decisions").mkdir(parents=True)
+    (output / "raw").mkdir()
+    all_records: list[dict[str, Any]] = []
+    reviewed: set[str] = set()
+    seen_shards: set[int] = set()
+    for root in shard_dirs:
+        manifest = load_json_strict(root / "manifest.json")
+        if not isinstance(manifest, Mapping):
+            raise E0GovernanceError("arbitration shard manifest must be an object")
+        shard_index = manifest.get("shard_index")
+        if (
+            not isinstance(shard_index, int)
+            or isinstance(shard_index, bool)
+            or shard_index in seen_shards
+        ):
+            raise E0GovernanceError("arbitration shard identity is duplicated or invalid")
+        seen_shards.add(shard_index)
+        records = _validate_arbitration_shard(
+            root,
+            work=work,
+            disagreements=disagreements,
+            evidence_deficits=evidence_deficits,
+            plan_sha256=plan_sha256,
+            shard_index=shard_index,
+            shard_count=args.shard_count,
+        )
+        for record in records:
+            truth_id = str(record["truth_id"])
+            if truth_id in reviewed:
+                raise E0GovernanceError("arbitration record is duplicated across shards")
+            reviewed.add(truth_id)
+            shutil.copy2(root / "decisions" / f"{truth_id}.json", output / "decisions")
+            shutil.copy2(root / "raw" / f"{truth_id}.json", output / "raw")
+            all_records.append(record)
+    if seen_shards != set(range(args.shard_count)):
+        raise E0GovernanceError("arbitration merge is missing a deterministic shard")
+    expected = {truth_id for _, truth_id, _ in work}
+    if (
+        reviewed != expected
+        or not DISPUTED_IDS.issubset(reviewed)
+        or not disagreements.issubset(reviewed)
+    ):
+        raise E0GovernanceError("merged arbitration does not cover the complete plan")
+    all_records.sort(key=lambda value: str(value["truth_id"]))
+    _json_dump(
+        output / "manifest.json",
         {
             "schema_version": "zscope.range-v16-arbitration-run.v1",
             "reviewer": "opus",
@@ -2951,7 +3591,7 @@ def run_arbitration(args: argparse.Namespace) -> int:
             "evidence_deficit_count": len(evidence_deficits),
             "mandatory_disputed_ids": sorted(DISPUTED_IDS),
             "reviewed_ids": sorted(reviewed),
-            "records": records,
+            "records": all_records,
         },
     )
     return 0
@@ -2977,6 +3617,7 @@ def _parser() -> argparse.ArgumentParser:
     checkpoint.add_argument("--retained-source-sha", required=True)
     checkpoint.add_argument("--workflow-run-id", required=True)
     checkpoint.add_argument("--workers", type=int, default=4, choices=range(1, 9))
+    checkpoint.add_argument("--require-complete", action="store_true")
     checkpoint.set_defaults(handler=build_primary_checkpoint)
     arbitration = subparsers.add_parser("arbitrate")
     arbitration.add_argument("--packet-dir", required=True, type=Path)
@@ -2984,8 +3625,32 @@ def _parser() -> argparse.ArgumentParser:
     arbitration.add_argument("--deepseek-dir", required=True, type=Path)
     arbitration.add_argument("--output-dir", required=True, type=Path)
     arbitration.add_argument("--workers", type=int, default=1, choices=range(1, 9))
+    arbitration.add_argument("--shard-index", type=int, default=0)
+    arbitration.add_argument("--shard-count", type=int, default=1)
     arbitration.add_argument("--resume", action="store_true")
+    arbitration.add_argument("--checkpoint-source-sha")
     arbitration.set_defaults(handler=run_arbitration)
+    arbitration_checkpoint = subparsers.add_parser("arbitration-checkpoint")
+    arbitration_checkpoint.add_argument("--packet-dir", required=True, type=Path)
+    arbitration_checkpoint.add_argument("--fable-dir", required=True, type=Path)
+    arbitration_checkpoint.add_argument("--deepseek-dir", required=True, type=Path)
+    arbitration_checkpoint.add_argument("--retained-dir", required=True, type=Path)
+    arbitration_checkpoint.add_argument("--output-dir", required=True, type=Path)
+    arbitration_checkpoint.add_argument("--packet-source-sha", required=True)
+    arbitration_checkpoint.add_argument("--retained-source-sha", required=True)
+    arbitration_checkpoint.add_argument("--workflow-run-id", required=True)
+    arbitration_checkpoint.add_argument("--shard-index", required=True, type=int)
+    arbitration_checkpoint.add_argument("--shard-count", required=True, type=int)
+    arbitration_checkpoint.add_argument("--workers", type=int, default=4, choices=range(1, 9))
+    arbitration_checkpoint.set_defaults(handler=build_arbitration_checkpoint)
+    merge_arbitration = subparsers.add_parser("merge-arbitration")
+    merge_arbitration.add_argument("--packet-dir", required=True, type=Path)
+    merge_arbitration.add_argument("--fable-dir", required=True, type=Path)
+    merge_arbitration.add_argument("--deepseek-dir", required=True, type=Path)
+    merge_arbitration.add_argument("--shard-dir", required=True, type=Path, action="append")
+    merge_arbitration.add_argument("--shard-count", required=True, type=int)
+    merge_arbitration.add_argument("--output-dir", required=True, type=Path)
+    merge_arbitration.set_defaults(handler=merge_arbitration_shards)
     return parser
 
 
