@@ -203,40 +203,71 @@ def _source_identifiers(packet: Mapping[str, Any], truth_id: str) -> set[str]:
     return identifiers
 
 
-def _contains_forbidden_identifier(source: str, identifier: str) -> bool:
-    """Match C identifiers as complete tokens and non-identifiers literally.
+def _forbidden_identifier_matches(
+    source: str,
+    forbidden_identifiers: set[str],
+) -> dict[str, int]:
+    """Return every match using complete C tokens or literal non-identifiers.
 
-    Packet-derived function and macro names are C identifiers.  Treating them
+    Packet-derived function and macro names are C identifiers. Treating them
     as arbitrary substrings makes a short project name reject an unrelated,
     freshly authored identifier that merely contains the same characters.
     Truth IDs and any other non-C identifiers remain exact literal bans.
     """
 
-    if _C_IDENTIFIER.fullmatch(identifier):
-        return (
-            re.search(
-                rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])",
-                source,
-            )
-            is not None
-        )
-    return identifier in source
+    matches: dict[str, int] = {}
+    for identifier in sorted(item for item in forbidden_identifiers if item):
+        if _C_IDENTIFIER.fullmatch(identifier):
+            pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])")
+            count = len(pattern.findall(source))
+        else:
+            count = source.count(identifier)
+        if count:
+            matches[identifier] = count
+    return matches
 
 
 def _repair_constraints(
     validation_class: str,
     forbidden_identifiers: set[str],
+    rejected_author: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     if validation_class != "source_not_anonymous":
         return {}
+    detected_conflicts: dict[str, list[dict[str, Any]]] = {}
+    for field in ("vulnerable_source", "fixed_or_near_miss_source"):
+        source = rejected_author.get(field)
+        if not isinstance(source, str):
+            continue
+        matches = _forbidden_identifier_matches(source, forbidden_identifiers)
+        if matches:
+            detected_conflicts[field] = [
+                {
+                    "identifier": identifier,
+                    "match_count": count,
+                    "match_kind": (
+                        "complete_c_token"
+                        if _C_IDENTIFIER.fullmatch(identifier)
+                        else "literal_non_identifier"
+                    ),
+                }
+                for identifier, count in matches.items()
+            ]
     return {
         "identifier_match": "exact_c_token_or_literal_non_identifier",
         "forbidden_identifiers": sorted(
             identifier for identifier in forbidden_identifiers if identifier
         ),
+        "detected_conflicts_by_source_field": detected_conflicts,
+        "required_postcondition": (
+            "zero forbidden-identifier matches across the complete text of both source fields"
+        ),
         "required_correction": (
-            "Rename every author-chosen identifier that conflicts with this catalog, "
-            "update all of its uses consistently, and do not alter main or identity fields."
+            "Remove every detected conflict from both complete source texts. Rename C "
+            "identifier tokens and all of their uses consistently; remove literal non-C "
+            "identifiers wherever they occur. Matches in declarations, uses, comments, "
+            "string or character literals, and preprocessor text all count. Do not alter "
+            "main or identity fields."
         ),
     }
 
@@ -277,9 +308,10 @@ def validate_author_record(
             raise E0GovernanceError(f"safe-pair author {field} is invalid")
         if _FORBIDDEN_SOURCE.search(source):
             raise E0GovernanceError(f"safe-pair author {field} uses forbidden C facilities")
-        for identifier in forbidden_identifiers:
-            if identifier and _contains_forbidden_identifier(source, identifier):
-                raise E0GovernanceError(f"safe-pair author {field} is not anonymous: {identifier}")
+        matches = _forbidden_identifier_matches(source, forbidden_identifiers)
+        if matches:
+            identifier = next(iter(matches))
+            raise E0GovernanceError(f"safe-pair author {field} is not anonymous: {identifier}")
         if len(re.findall(r"\bint\s+main\s*\(\s*void\s*\)", source)) != 1:
             raise E0GovernanceError(f"safe-pair author {field} requires exactly one C11 main")
         sources.append(source.replace("\r\n", "\n").replace("\r", "\n"))
@@ -503,6 +535,7 @@ def _author_one(
                         "deterministic_constraints": _repair_constraints(
                             validation_class,
                             forbidden,
+                            author,
                         ),
                     },
                     ensure_ascii=False,

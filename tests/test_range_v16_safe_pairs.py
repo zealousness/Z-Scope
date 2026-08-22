@@ -271,7 +271,14 @@ def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(
     record = normalized["records"][0]
     packet = _packet(record)
     invalid = _author(record)
-    invalid["vulnerable_source"] += "int project_specific_function(void) { return 0; }\n"
+    invalid["vulnerable_source"] += (
+        f"/* project_specific_function {record['truth_id']} */\n"
+        "int project_specific_function(void) { return 0; }\n"
+    )
+    invalid["fixed_or_near_miss_source"] += (
+        f'const char *case_name = "{record["truth_id"]}";\n'
+        "int project_specific_function(void) { return case_name[0]; }\n"
+    )
     repaired = _author(record)
     responses = [invalid, repaired]
     prompts: list[str] = []
@@ -298,6 +305,38 @@ def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(
     assert '"validation_class": "source_not_anonymous"' in prompts[1]
     assert '"identifier_match": "exact_c_token_or_literal_non_identifier"' in prompts[1]
     assert '"project_specific_function"' in prompts[1]
+    repair_request = json.loads(prompts[1].split("REPAIR_REQUEST:\n", 1)[1])
+    conflicts = repair_request["deterministic_constraints"]["detected_conflicts_by_source_field"]
+    assert conflicts == {
+        "fixed_or_near_miss_source": [
+            {
+                "identifier": record["truth_id"],
+                "match_count": 1,
+                "match_kind": "literal_non_identifier",
+            },
+            {
+                "identifier": "project_specific_function",
+                "match_count": 1,
+                "match_kind": "complete_c_token",
+            },
+        ],
+        "vulnerable_source": [
+            {
+                "identifier": record["truth_id"],
+                "match_count": 1,
+                "match_kind": "literal_non_identifier",
+            },
+            {
+                "identifier": "project_specific_function",
+                "match_count": 2,
+                "match_kind": "complete_c_token",
+            },
+        ],
+    }
+    assert (
+        repair_request["deterministic_constraints"]["required_postcondition"]
+        == "zero forbidden-identifier matches across the complete text of both source fields"
+    )
     raw = json.loads(
         (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
     )
