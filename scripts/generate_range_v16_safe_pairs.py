@@ -139,7 +139,51 @@ def _object(path: Path) -> Mapping[str, Any]:
     return value
 
 
-def _author_schema() -> dict[str, Any]:
+def _json_schema_regex_escape(value: str) -> str:
+    """Escape a literal for an ECMA-262-compatible JSON Schema pattern."""
+
+    escaped: list[str] = []
+    for character in value:
+        if character in r"\^$.*+?()[]{}|":
+            escaped.append("\\" + character)
+        elif character == "\n":
+            escaped.append(r"\n")
+        elif character == "\r":
+            escaped.append(r"\r")
+        elif character == "\t":
+            escaped.append(r"\t")
+        elif ord(character) < 0x20:
+            escaped.append(rf"\x{ord(character):02x}")
+        else:
+            escaped.append(character)
+    return "".join(escaped)
+
+
+def _source_anonymity_pattern(forbidden_identifiers: set[str]) -> str:
+    """Return a stable JSON-Schema pattern excluding the complete catalog.
+
+    JSON Schema uses search semantics for ``pattern``.  Anchor the expression
+    and use ``[\\s\\S]`` so the same constraint covers both complete multiline
+    source fields, including comments, literals, and preprocessor text.  The
+    negative lookahead avoids relying on lookbehind support in the structured
+    output validator while preserving the validator's complete-token boundary
+    for C identifiers and literal matching for non-identifiers.
+    """
+
+    conflicts: list[str] = []
+    for identifier in sorted(item for item in forbidden_identifiers if item):
+        escaped = _json_schema_regex_escape(identifier)
+        if _C_IDENTIFIER.fullmatch(identifier):
+            conflicts.append(rf"(?:^|[^A-Za-z0-9_]){escaped}(?:$|[^A-Za-z0-9_])")
+        else:
+            conflicts.append(escaped)
+    if not conflicts:
+        return r"^[\s\S]*$"
+    return rf"^(?![\s\S]*(?:{'|'.join(conflicts)}))[\s\S]*$"
+
+
+def _author_schema(forbidden_identifiers: set[str] | None = None) -> dict[str, Any]:
+    source_pattern = _source_anonymity_pattern(forbidden_identifiers or set())
     return {
         "type": "object",
         "additionalProperties": False,
@@ -167,11 +211,17 @@ def _author_schema() -> dict[str, Any]:
             "author_model": {"const": AUTHOR_MODEL},
             "kind": {"enum": ["fixed", "near_miss"]},
             "invariant_summary": {"type": "string", "minLength": 1},
-            "vulnerable_source": {"type": "string", "minLength": 1, "maxLength": 32768},
+            "vulnerable_source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32768,
+                "pattern": source_pattern,
+            },
             "fixed_or_near_miss_source": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 32768,
+                "pattern": source_pattern,
             },
         },
     }
@@ -456,6 +506,7 @@ def _author_one(
             "int main(void). Return exactly the JSON schema. REQUEST:\n"
             + json.dumps(request, ensure_ascii=False, sort_keys=True)
         )
+        author_schema = _author_schema(forbidden)
         command = [
             str(claude),
             "--print",
@@ -466,7 +517,7 @@ def _author_one(
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(_author_schema(), separators=(",", ":")),
+            json.dumps(author_schema, separators=(",", ":")),
             "--permission-mode",
             "plan",
             "--tools",
@@ -687,6 +738,7 @@ def validate_author_run(
     author_root: Path,
     normalized_path: Path,
     expected_records: Mapping[str, Mapping[str, Any]],
+    packet_dir: Path,
 ) -> Mapping[str, Mapping[str, Any]]:
     manifest = _object(author_root / "manifest.json")
     records = manifest.get("records")
@@ -725,6 +777,11 @@ def validate_author_run(
         if truth_id not in expected_records or truth_id in by_truth:
             raise E0GovernanceError("safe-pair author run truth coverage is invalid")
         expected = expected_records[truth_id]
+        packet = _object(packet_dir.resolve(strict=True) / f"{truth_id}.json")
+        validate_review_packet(packet)
+        if packet.get("packet_sha256") != expected.get("packet_sha256"):
+            raise E0GovernanceError(f"safe-pair packet binding mismatch: {truth_id}")
+        expected_author_schema = _author_schema(_source_identifiers(packet, truth_id))
         if (
             record.get("packet_sha256") != expected.get("packet_sha256")
             or record.get("final_decision_sha256") != expected.get("final_decision_sha256")
@@ -779,7 +836,7 @@ def validate_author_run(
             and isinstance(command_identity[9], str)
         ):
             try:
-                command_valid = json.loads(command_identity[9]) == _author_schema()
+                command_valid = json.loads(command_identity[9]) == expected_author_schema
             except json.JSONDecodeError:
                 command_valid = False
         if (
@@ -855,6 +912,7 @@ def materialize_pairs(args: argparse.Namespace) -> int:
         author_root=author_root,
         normalized_path=args.normalized_decisions,
         expected_records=records,
+        packet_dir=args.packet_dir,
     )
     output.mkdir(parents=True)
     for truth_id, record in sorted(records.items()):
