@@ -109,7 +109,15 @@ def _raw_author(record: dict, author: dict) -> dict:
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(_author_schema(forbidden), separators=(",", ":")),
+            json.dumps(
+                _author_schema(
+                    forbidden,
+                    truth_id=str(record["truth_id"]),
+                    packet_sha256=str(record["packet_sha256"]),
+                    final_decision_sha256=str(record["final_decision_sha256"]),
+                ),
+                separators=(",", ":"),
+            ),
             "--permission-mode",
             "plan",
             "--tools",
@@ -202,6 +210,24 @@ def test_safe_pair_author_schema_enforces_complete_anonymity_catalog() -> None:
     assert not re.search(pattern, "int project_entry(void) { return 0; }\n")
     assert not re.search(pattern, "int main(void) { /* CASE-1 */ return 0; }\n")
     assert not re.search(pattern, 'int main(void) { return "CASE-1"[0]; }\n')
+
+
+def test_safe_pair_author_schema_binds_all_frozen_identity_fields() -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    schema = _author_schema(
+        {"project_entry", str(record["truth_id"])},
+        truth_id=str(record["truth_id"]),
+        packet_sha256=str(record["packet_sha256"]),
+        final_decision_sha256=str(record["final_decision_sha256"]),
+    )
+    properties = schema["properties"]
+    assert properties["truth_id"] == {"const": record["truth_id"]}
+    assert properties["packet_sha256"] == {"const": record["packet_sha256"]}
+    assert properties["final_decision_sha256"] == {"const": record["final_decision_sha256"]}
+
+    with pytest.raises(ValueError, match="identity must be fully bound"):
+        _author_schema({"project_entry"}, truth_id=str(record["truth_id"]))
 
 
 def test_safe_pair_anonymity_includes_packet_functions_and_macros() -> None:
@@ -339,6 +365,11 @@ def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(
     assert result["status"] == "authored"
     assert len(prompts) == 2
     assert schemas[0] == schemas[1]
+    assert schemas[0]["properties"]["truth_id"] == {"const": record["truth_id"]}
+    assert schemas[0]["properties"]["packet_sha256"] == {"const": record["packet_sha256"]}
+    assert schemas[0]["properties"]["final_decision_sha256"] == {
+        "const": record["final_decision_sha256"]
+    }
     source_pattern = schemas[0]["properties"]["vulnerable_source"]["pattern"]
     assert not re.search(source_pattern, invalid["vulnerable_source"])
     assert not re.search(source_pattern, invalid["fixed_or_near_miss_source"])

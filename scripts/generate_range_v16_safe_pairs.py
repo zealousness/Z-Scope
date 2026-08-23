@@ -182,8 +182,32 @@ def _source_anonymity_pattern(forbidden_identifiers: set[str]) -> str:
     return rf"^(?![\s\S]*(?:{'|'.join(conflicts)}))[\s\S]*$"
 
 
-def _author_schema(forbidden_identifiers: set[str] | None = None) -> dict[str, Any]:
+def _author_schema(
+    forbidden_identifiers: set[str] | None = None,
+    *,
+    truth_id: str | None = None,
+    packet_sha256: str | None = None,
+    final_decision_sha256: str | None = None,
+) -> dict[str, Any]:
+    identity_values = (truth_id, packet_sha256, final_decision_sha256)
+    if any(value is not None for value in identity_values) and not all(
+        isinstance(value, str) and value for value in identity_values
+    ):
+        raise ValueError("safe-pair author schema identity must be fully bound")
     source_pattern = _source_anonymity_pattern(forbidden_identifiers or set())
+    truth_id_schema: dict[str, Any] = {"type": "string", "minLength": 1}
+    packet_sha256_schema: dict[str, Any] = {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$",
+    }
+    final_decision_sha256_schema: dict[str, Any] = {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$",
+    }
+    if truth_id is not None:
+        truth_id_schema = {"const": truth_id}
+        packet_sha256_schema = {"const": packet_sha256}
+        final_decision_sha256_schema = {"const": final_decision_sha256}
     return {
         "type": "object",
         "additionalProperties": False,
@@ -201,12 +225,9 @@ def _author_schema(forbidden_identifiers: set[str] | None = None) -> dict[str, A
         ],
         "properties": {
             "schema_version": {"const": AUTHOR_SCHEMA_VERSION},
-            "truth_id": {"type": "string", "minLength": 1},
-            "packet_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "final_decision_sha256": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$",
-            },
+            "truth_id": truth_id_schema,
+            "packet_sha256": packet_sha256_schema,
+            "final_decision_sha256": final_decision_sha256_schema,
             "author_role": {"const": "safe_pair_author"},
             "author_model": {"const": AUTHOR_MODEL},
             "kind": {"enum": ["fixed", "near_miss"]},
@@ -506,7 +527,12 @@ def _author_one(
             "int main(void). Return exactly the JSON schema. REQUEST:\n"
             + json.dumps(request, ensure_ascii=False, sort_keys=True)
         )
-        author_schema = _author_schema(forbidden)
+        author_schema = _author_schema(
+            forbidden,
+            truth_id=truth_id,
+            packet_sha256=str(packet["packet_sha256"]),
+            final_decision_sha256=final_sha,
+        )
         command = [
             str(claude),
             "--print",
@@ -781,7 +807,12 @@ def validate_author_run(
         validate_review_packet(packet)
         if packet.get("packet_sha256") != expected.get("packet_sha256"):
             raise E0GovernanceError(f"safe-pair packet binding mismatch: {truth_id}")
-        expected_author_schema = _author_schema(_source_identifiers(packet, truth_id))
+        expected_author_schema = _author_schema(
+            _source_identifiers(packet, truth_id),
+            truth_id=truth_id,
+            packet_sha256=str(expected["packet_sha256"]),
+            final_decision_sha256=str(expected["final_decision_sha256"]),
+        )
         if (
             record.get("packet_sha256") != expected.get("packet_sha256")
             or record.get("final_decision_sha256") != expected.get("final_decision_sha256")
