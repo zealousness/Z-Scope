@@ -84,7 +84,7 @@ def _normalized_record(index: int) -> dict:
         "primary_reviews": {
             "fable": {
                 "role": "primary_fable",
-                "model": "claude-fable-5",
+                "model": "glm-5.3",
                 "decision_sha256": "2" * 64,
                 "raw_sha256": "3" * 64,
             },

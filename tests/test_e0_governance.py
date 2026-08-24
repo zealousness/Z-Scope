@@ -58,7 +58,7 @@ def _decision(packet: dict) -> dict:
         "packet_uid": packet["packet_uid"],
         "packet_sha256": packet["packet_sha256"],
         "reviewer_role": "primary_fable",
-        "reviewer_model": "claude-fable-5",
+        "reviewer_model": "glm-5.3",
         "contract_kind": "concrete_trigger",
         "disposition": "keep",
         "confidence": 0.9,
@@ -345,8 +345,10 @@ def test_review_provenance_separates_workflow_and_packet_commits() -> None:
 def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
     assert workflow.count("claude --version | awk '{print $1}'") == 3
+    assert workflow.count("codex --version") == 3
     assert workflow.count("dsh --version") == 3
     assert workflow.count('"2.1.233"') == 3
+    assert workflow.count(f'"codex-cli {reviewer_runner.CODEX_CLI_VERSION}"') == 3
     assert workflow.count(f'"{reviewer_runner.DSH_VERSION}"') == 3
 
 
@@ -415,7 +417,7 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     )
 
 
-def test_review_command_identity_disables_claude_tools_and_binds_deepseek_patch() -> None:
+def test_review_command_identity_disables_tools_and_binds_harnesses() -> None:
     fable = ["claude", *reviewer_runner._claude_arguments("fable")]
     reviewer_runner._validate_command_identity(fable, reviewer="fable")
     without_tool_isolation = [value for index, value in enumerate(fable) if index not in {12, 13}]
@@ -432,6 +434,13 @@ def test_review_command_identity_disables_claude_tools_and_binds_deepseek_patch(
     deepseek[-1] = "unbound.patch.yml"
     with pytest.raises(ValueError, match="DeepSeek command identity"):
         reviewer_runner._validate_command_identity(deepseek, reviewer="deepseek")
+    codex = ["codex", *reviewer_runner._codex_arguments()]
+    reviewer_runner._validate_command_identity(codex, reviewer="opus")
+    assert "shell_tool" in codex
+    assert "read-only" in codex
+    codex[3] = "gpt-5.6-sol-untrusted"
+    with pytest.raises(ValueError, match="Codex command identity"):
+        reviewer_runner._validate_command_identity(codex, reviewer="opus")
 
 
 def test_deepseek_accepts_only_direct_json_or_one_exact_json_fence() -> None:
@@ -476,7 +485,7 @@ def test_deepseek_review_patch_uses_deepseek_provider_and_pins_model() -> None:
 @pytest.mark.parametrize(
     ("reviewer", "role", "model"),
     (
-        ("fable", "primary_fable", "claude-fable-5"),
+        ("fable", "primary_fable", "glm-5.3"),
         ("deepseek", "primary_deepseek", "deepseek-v4-pro-0813:max"),
     ),
 )
@@ -767,7 +776,7 @@ def test_contract_feedback_reports_all_schema_and_binding_issues() -> None:
         validation_error=validation_error,
         packet=packet,
         role="primary_fable",
-        model="claude-fable-5",
+        model="glm-5.3",
     )
 
     assert feedback["schema_version"] == "zscope.range-v16-format-validation.v3"
@@ -858,7 +867,7 @@ def test_contract_feedback_collects_all_answer_free_semantic_issues() -> None:
         validation_error=E0GovernanceError("review decision packet hash mismatch"),
         packet=packet,
         role="primary_fable",
-        model="claude-fable-5",
+        model="glm-5.3",
     )
     encoded = json.dumps(feedback, sort_keys=True)
     assert "src/../example.c" not in encoded
@@ -1610,11 +1619,11 @@ def test_deepseek_grounding_identity_rebind_rejects_material_contract_defect(
 @pytest.mark.parametrize(
     ("reviewer", "role", "model"),
     (
-        ("fable", "primary_fable", "claude-fable-5"),
-        ("opus", "arbiter_opus", "claude-opus-5"),
+        ("fable", "primary_fable", "glm-5.3"),
+        ("opus", "arbiter_opus", "gpt-5.6-sol:xhigh"),
     ),
 )
-def test_claude_grounding_retry_preserves_substantive_decision(
+def test_embedded_reviewer_grounding_retry_preserves_substantive_decision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     reviewer: str,
@@ -1636,7 +1645,11 @@ def test_claude_grounding_retry_preserves_substantive_decision(
         decision = next(outputs)
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"structured_output": decision}),
+            stdout=(
+                json.dumps({"structured_output": decision})
+                if reviewer == "fable"
+                else json.dumps(decision)
+            ),
             stderr="",
         )
 
@@ -1652,8 +1665,17 @@ def test_claude_grounding_retry_preserves_substantive_decision(
 
     assert decision == corrected
     assert len(calls) == 2
-    claude_name = "claude.cmd" if reviewer_runner.os.name == "nt" else "claude"
-    assert calls[1][0] == [f"/bin/{claude_name}", *reviewer_runner._claude_arguments(reviewer)]
+    executable_name = (
+        ("claude.cmd" if reviewer_runner.os.name == "nt" else "claude")
+        if reviewer == "fable"
+        else ("codex.cmd" if reviewer_runner.os.name == "nt" else "codex")
+    )
+    expected_arguments = (
+        reviewer_runner._claude_arguments(reviewer)
+        if reviewer == "fable"
+        else reviewer_runner._codex_arguments()
+    )
+    assert calls[1][0] == [f"/bin/{executable_name}", *expected_arguments]
     retry_prompt = str(calls[1][1]["input"])
     assert "failed deterministic packet grounding" in retry_prompt
     assert "PRIOR_DECISION:\n" in retry_prompt
@@ -1662,7 +1684,11 @@ def test_claude_grounding_retry_preserves_substantive_decision(
     assert raw["semantic_retry"]["substantive_projection_sha256"] == sha256_value(
         reviewer_runner._semantic_retry_substantive_projection(corrected)
     )
-    assert raw["stdout"] == json.dumps({"structured_output": corrected})
+    assert raw["stdout"] == (
+        json.dumps({"structured_output": corrected})
+        if reviewer == "fable"
+        else json.dumps(corrected)
+    )
 
     decision_path = tmp_path / f"{reviewer}-decision.json"
     decision_path.write_text(json.dumps(corrected), encoding="utf-8")
@@ -2055,7 +2081,7 @@ def test_primary_reviewer_resume_reuses_verified_outputs_and_finishes_catalog(
         return {
             "schema_version": "zscope.range-v16-review-raw-envelope.v1",
             "reviewer_role": "primary_fable",
-            "reviewer_model": "claude-fable-5",
+            "reviewer_model": "glm-5.3",
             "packet_uid": packet["packet_uid"],
             "packet_sha256": packet["packet_sha256"],
             "input_delivery": "embedded_prompt",
@@ -2111,11 +2137,15 @@ def _review_raw(packet: dict, reviewer: str, decision: dict) -> dict:
             f"<ephemeral-patch-sha256:{reviewer_runner._deepseek_patch_sha256()}>",
         ]
         stdout = json.dumps(decision)
-    else:
+    elif reviewer == "fable":
         input_delivery = "embedded_prompt"
         command_identity = ["claude", *reviewer_runner._claude_arguments(reviewer)]
         stdout = json.dumps({"structured_output": decision})
-    return {
+    else:
+        input_delivery = "embedded_prompt"
+        command_identity = ["codex", *reviewer_runner._codex_arguments()]
+        stdout = json.dumps(decision)
+    raw = {
         "schema_version": "zscope.range-v16-review-raw-envelope.v1",
         "reviewer_role": role,
         "reviewer_model": model,
@@ -2127,6 +2157,11 @@ def _review_raw(packet: dict, reviewer: str, decision: dict) -> dict:
         "stdout": stdout,
         "stderr_sha256": sha256_value(""),
     }
+    if reviewer == "opus":
+        raw["output_schema_sha256"] = sha256_value(
+            reviewer_runner._bound_decision_schema(packet, role=role, model=model)
+        )
+    return raw
 
 
 def _review_pair(packet: dict, reviewer: str) -> tuple[dict, dict]:

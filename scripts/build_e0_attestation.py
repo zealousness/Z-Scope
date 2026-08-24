@@ -21,6 +21,7 @@ from e0_review_governance import (
     sha256_value,
     validate_e0_attestation,
 )
+from run_e0_reviewers import CODEX_MODEL_IDENTITY
 
 
 _SCORER_BUNDLE_PATHS = frozenset(
@@ -173,7 +174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             or pair_author_manifest.get("schema_version")
             != "zscope.range-v16-safe-pair-author-run.v1"
-            or pair_author_manifest.get("author_model") != "claude-opus-5"
+            or pair_author_manifest.get("author_model") != CODEX_MODEL_IDENTITY
             or pair_author_manifest.get("record_count") != truth_contract.get("safe_unit_count")
             or pair_author_manifest.get("normalized_decisions_sha256")
             != artifacts["normalized_decisions"]
