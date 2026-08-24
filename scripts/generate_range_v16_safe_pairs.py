@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Author and materialize anonymous, independently compilable Range v16 pairs.
 
-The protected ``author`` mode asks Opus only for two minimal C translation
+The protected ``author`` mode asks Codex only for two minimal C translation
 units that embody an already-adjudicated invariant.  It cannot change the
 truth decision.  ``materialize`` consumes the protected author artifact and
 writes only validated source plus content-addressed manifests into Git.
@@ -37,12 +37,16 @@ from validate_range_v16_truth import (  # noqa: E402
     validate_normalized_decisions,
     validate_pair_manifest,
 )
-from run_e0_reviewers import assert_no_hidden_reasoning_output  # noqa: E402
+from run_e0_reviewers import (  # noqa: E402
+    CODEX_MODEL_IDENTITY,
+    _codex_arguments,
+    assert_no_hidden_reasoning_output,
+)
 
 
 AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author.v1"
-RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v2"
-AUTHOR_MODEL = "claude-opus-5"
+RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v3"
+AUTHOR_MODEL = CODEX_MODEL_IDENTITY
 _FORBIDDEN_SOURCE = re.compile(
     r"(?i)(?:#\s*(?:include|pragma)|\b(?:system|popen|fork|exec[a-z]*|__asm__|asm)\s*\()"
 )
@@ -392,15 +396,9 @@ def validate_author_record(
 
 def _extract(stdout: str) -> Mapping[str, Any]:
     value = json.loads(stdout)
-    if isinstance(value, Mapping) and isinstance(value.get("structured_output"), Mapping):
-        return dict(value["structured_output"])
-    if isinstance(value, Mapping) and isinstance(value.get("result"), str):
-        nested = json.loads(str(value["result"]))
-        if isinstance(nested, Mapping):
-            return dict(nested)
     if isinstance(value, Mapping) and set(_author_schema()["required"]).issubset(value):
         return dict(value)
-    raise E0GovernanceError("Opus did not return a safe-pair author object")
+    raise E0GovernanceError("Codex did not return a safe-pair author object")
 
 
 def _author_validation_class(error: E0GovernanceError) -> str:
@@ -429,8 +427,10 @@ def _run_author_command(
     *,
     prompt: str,
     env: Mapping[str, str],
+    output_schema: Mapping[str, Any],
 ) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory(prefix="zscope-e0-pair-author-") as raw_temp:
+        _json_dump(Path(raw_temp) / "author-schema.json", output_schema)
         return subprocess.run(
             command,
             input=prompt,
@@ -468,6 +468,7 @@ def _raw_author_envelope(
     packet_sha256: str,
     final_decision_sha256: str,
     command: Sequence[str],
+    output_schema: Mapping[str, Any],
     attempts: Sequence[Mapping[str, Any]],
     accepted_attempt: int | None,
 ) -> dict[str, Any]:
@@ -478,6 +479,7 @@ def _raw_author_envelope(
         "final_decision_sha256": final_decision_sha256,
         "author_model": AUTHOR_MODEL,
         "command_identity": [Path(command[0]).name, *command[1:]],
+        "output_schema_sha256": sha256_value(output_schema),
         "attempts": list(attempts),
         "accepted_attempt": accepted_attempt,
     }
@@ -509,9 +511,9 @@ def _author_one(
         )
         status = "reused"
     else:
-        claude = shutil.which("claude.cmd" if os.name == "nt" else "claude")
-        if not claude:
-            raise E0GovernanceError("Claude Code executable is unavailable")
+        codex = shutil.which("codex.cmd" if os.name == "nt" else "codex")
+        if not codex:
+            raise E0GovernanceError("Codex CLI executable is unavailable")
         request = {
             "packet": packet,
             "final_decision": decision,
@@ -534,22 +536,8 @@ def _author_one(
             final_decision_sha256=final_sha,
         )
         command = [
-            str(claude),
-            "--print",
-            "--model",
-            AUTHOR_MODEL,
-            "--effort",
-            "max",
-            "--output-format",
-            "json",
-            "--json-schema",
-            json.dumps(author_schema, separators=(",", ":")),
-            "--permission-mode",
-            "plan",
-            "--tools",
-            "",
-            "--no-session-persistence",
-            "--disable-slash-commands",
+            str(codex),
+            *_codex_arguments(output_schema="author-schema.json"),
         ]
         env = {
             key: item
@@ -558,7 +546,12 @@ def _author_one(
             and "BENCHMARK_TRUTH" not in key.upper()
             and "SCORER" not in key.upper()
         }
-        completed = _run_author_command(command, prompt=prompt, env=env)
+        completed = _run_author_command(
+            command,
+            prompt=prompt,
+            env=env,
+            output_schema=author_schema,
+        )
         if completed.returncode != 0:
             raise E0GovernanceError(f"safe-pair author failed: {truth_id}")
         assert_no_hidden_reasoning_output(completed.stdout)
@@ -591,6 +584,7 @@ def _author_one(
                     packet_sha256=str(packet["packet_sha256"]),
                     final_decision_sha256=final_sha,
                     command=command,
+                    output_schema=author_schema,
                     attempts=attempts,
                     accepted_attempt=None,
                 ),
@@ -619,7 +613,12 @@ def _author_one(
                     sort_keys=True,
                 )
             )
-            repaired = _run_author_command(command, prompt=repair_prompt, env=env)
+            repaired = _run_author_command(
+                command,
+                prompt=repair_prompt,
+                env=env,
+                output_schema=author_schema,
+            )
             if repaired.returncode != 0:
                 raise E0GovernanceError(
                     f"safe-pair author contract repair failed: {validation_class}"
@@ -650,6 +649,7 @@ def _author_one(
                         packet_sha256=str(packet["packet_sha256"]),
                         final_decision_sha256=final_sha,
                         command=command,
+                        output_schema=author_schema,
                         attempts=attempts,
                         accepted_attempt=None,
                     ),
@@ -685,6 +685,7 @@ def _author_one(
                 packet_sha256=str(packet["packet_sha256"]),
                 final_decision_sha256=final_sha,
                 command=command,
+                output_schema=author_schema,
                 attempts=attempts,
                 accepted_attempt=accepted_attempt,
             ),
@@ -835,41 +836,17 @@ def validate_author_run(
             "final_decision_sha256",
             "author_model",
             "command_identity",
+            "output_schema_sha256",
             "attempts",
             "accepted_attempt",
         }
         command_identity = raw.get("command_identity")
-        expected_command_prefix = [
-            "--print",
-            "--model",
-            AUTHOR_MODEL,
-            "--effort",
-            "max",
-            "--output-format",
-            "json",
-            "--json-schema",
-        ]
-        command_valid = False
-        if (
+        command_valid = (
             isinstance(command_identity, list)
-            and len(command_identity) == 16
-            and command_identity[0] in {"claude", "claude.cmd"}
-            and command_identity[1:9] == expected_command_prefix
-            and command_identity[10:]
-            == [
-                "--permission-mode",
-                "plan",
-                "--tools",
-                "",
-                "--no-session-persistence",
-                "--disable-slash-commands",
-            ]
-            and isinstance(command_identity[9], str)
-        ):
-            try:
-                command_valid = json.loads(command_identity[9]) == expected_author_schema
-            except json.JSONDecodeError:
-                command_valid = False
+            and bool(command_identity)
+            and command_identity[0] in {"codex", "codex.cmd"}
+            and command_identity[1:] == _codex_arguments(output_schema="author-schema.json")
+        )
         if (
             set(raw) != raw_fields
             or raw.get("schema_version") != RAW_AUTHOR_SCHEMA_VERSION
@@ -877,6 +854,7 @@ def validate_author_run(
             or raw.get("packet_sha256") != expected.get("packet_sha256")
             or raw.get("final_decision_sha256") != expected.get("final_decision_sha256")
             or raw.get("author_model") != AUTHOR_MODEL
+            or raw.get("output_schema_sha256") != sha256_value(expected_author_schema)
             or not command_valid
         ):
             raise E0GovernanceError(f"safe-pair raw author envelope is invalid: {truth_id}")
