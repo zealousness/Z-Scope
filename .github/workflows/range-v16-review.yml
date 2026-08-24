@@ -94,9 +94,14 @@ jobs:
           if invalid:
               raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
           PY
-          test "$(claude --version | awk '{print $1}')" = "2.1.233"
-          test "$(codex --version)" = "codex-cli 0.144.4"
-          test "$(dsh --version)" = "0.1.0-rc.6"
+          claude_version="$(claude --version | awk '{print $1}')"
+          codex_version="$(codex --version)"
+          dsh_version="$(dsh --version)"
+          printf 'reviewer harness versions: claude=%s codex=%s dsh=%s\n' \
+            "$claude_version" "$codex_version" "$dsh_version"
+          test "$claude_version" = "2.1.233"
+          test "$codex_version" = "codex-cli 0.144.4"
+          test "$dsh_version" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
       - name: Validate primary recovery inputs
         env:
@@ -298,9 +303,14 @@ jobs:
           if invalid:
               raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
           PY
-          test "$(claude --version | awk '{print $1}')" = "2.1.233"
-          test "$(codex --version)" = "codex-cli 0.144.4"
-          test "$(dsh --version)" = "0.1.0-rc.6"
+          claude_version="$(claude --version | awk '{print $1}')"
+          codex_version="$(codex --version)"
+          dsh_version="$(dsh --version)"
+          printf 'reviewer harness versions: claude=%s codex=%s dsh=%s\n' \
+            "$claude_version" "$codex_version" "$dsh_version"
+          test "$claude_version" = "2.1.233"
+          test "$codex_version" = "codex-cli 0.144.4"
+          test "$dsh_version" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
       - uses: actions/download-artifact@v8
         with:
@@ -452,9 +462,14 @@ jobs:
           if invalid:
               raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
           PY
-          test "$(claude --version | awk '{print $1}')" = "2.1.233"
-          test "$(codex --version)" = "codex-cli 0.144.4"
-          test "$(dsh --version)" = "0.1.0-rc.6"
+          claude_version="$(claude --version | awk '{print $1}')"
+          codex_version="$(codex --version)"
+          dsh_version="$(dsh --version)"
+          printf 'reviewer harness versions: claude=%s codex=%s dsh=%s\n' \
+            "$claude_version" "$codex_version" "$dsh_version"
+          test "$claude_version" = "2.1.233"
+          test "$codex_version" = "codex-cli 0.144.4"
+          test "$dsh_version" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
       - uses: actions/download-artifact@v8
         with:
