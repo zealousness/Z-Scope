@@ -7,11 +7,11 @@ on:
         description: Commit containing the frozen 136 minimal review packets
         required: true
       fable_checkpoint_run_id:
-        description: Optional protected run containing a verified Fable checkpoint
+        description: Optional protected run containing a verified Claude primary checkpoint (legacy fable slot)
         required: false
         default: ""
       fable_checkpoint_source_sha:
-        description: Source SHA bound by the optional Fable checkpoint (defaults to source_sha)
+        description: Source SHA bound by the optional Claude checkpoint (defaults to source_sha)
         required: false
         default: ""
       deepseek_checkpoint_run_id:
@@ -23,11 +23,11 @@ on:
         required: false
         default: ""
       fable_primary_run_id:
-        description: Optional protected run containing a complete Fable primary artifact
+        description: Optional protected run containing a complete Claude primary artifact (legacy fable slot)
         required: false
         default: ""
       fable_primary_source_sha:
-        description: Source SHA naming the complete Fable primary artifact (defaults to source_sha)
+        description: Source SHA naming the complete Claude primary artifact (defaults to source_sha)
         required: false
         default: ""
       deepseek_primary_run_id:
@@ -45,10 +45,16 @@ permissions:
 
 jobs:
   primary:
+    name: primary (${{ matrix.display_name }})
     strategy:
       fail-fast: false
       matrix:
-        reviewer: [fable, deepseek]
+        include:
+          # Keep the fable machine slot/artifact name for protected-protocol compatibility.
+          - reviewer: fable
+            display_name: claude-glm-5.3
+          - reviewer: deepseek
+            display_name: deepseek-v4-pro
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 720
@@ -89,6 +95,7 @@ jobs:
               raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
           PY
           test "$(claude --version | awk '{print $1}')" = "2.1.233"
+          test "$(codex --version)" = "codex-cli 0.144.4"
           test "$(dsh --version)" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
       - name: Validate primary recovery inputs
@@ -246,6 +253,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
   arbitrate:
+    name: codex arbitration (shard ${{ matrix.shard }})
     needs: primary
     strategy:
       fail-fast: false
@@ -291,6 +299,7 @@ jobs:
               raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
           PY
           test "$(claude --version | awk '{print $1}')" = "2.1.233"
+          test "$(codex --version)" = "codex-cli 0.144.4"
           test "$(dsh --version)" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
       - uses: actions/download-artifact@v8
@@ -307,7 +316,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: range-v16-arbitration-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}
-          path: restored-checkpoint/opus-shard
+          path: restored-checkpoint/codex-shard
       - id: arbitration_paths
         name: Prepare content-bound arbitration shard resume
         env:
@@ -320,9 +329,9 @@ jobs:
           current_dir="$RUNNER_TEMP/range-v16-arbitration-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$SHARD_INDEX"
           test ! -e "$current_dir"
           resume=false
-          if [[ -f restored-checkpoint/opus-shard/checkpoint-manifest.json ]]; then
+          if [[ -f restored-checkpoint/codex-shard/checkpoint-manifest.json ]]; then
             mkdir -p "$current_dir"
-            cp -a restored-checkpoint/opus-shard/. "$current_dir/"
+            cp -a restored-checkpoint/codex-shard/. "$current_dir/"
             resume=true
           elif (( GITHUB_RUN_ATTEMPT > 1 )); then
             prior_attempt=$((GITHUB_RUN_ATTEMPT - 1))
@@ -346,11 +355,11 @@ jobs:
           echo "output_dir=$current_dir" >> "$GITHUB_OUTPUT"
           echo "resume=$resume" >> "$GITHUB_OUTPUT"
       - id: arbitration_review
-        name: Run deterministic mandatory and disagreement arbitration shard
+        name: Run deterministic Codex mandatory and disagreement arbitration shard
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
           PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
-          OPUS_OUTPUT: ${{ steps.arbitration_paths.outputs.output_dir }}
+          CODEX_OUTPUT: ${{ steps.arbitration_paths.outputs.output_dir }}
           RESUME: ${{ steps.arbitration_paths.outputs.resume }}
         run: |
           umask 077
@@ -362,7 +371,7 @@ jobs:
             --packet-dir test/range/benchmark/v16/review-packets \
             --fable-dir review-evidence/fable \
             --deepseek-dir review-evidence/deepseek \
-            --output-dir "$OPUS_OUTPUT" \
+            --output-dir "$CODEX_OUTPUT" \
             --shard-index '${{ matrix.shard }}' \
             --shard-count 4 \
             --workers 1 \
@@ -378,7 +387,7 @@ jobs:
             --fable-dir review-evidence/fable \
             --deepseek-dir review-evidence/deepseek \
             --retained-dir '${{ steps.arbitration_paths.outputs.output_dir }}' \
-            --output-dir review-checkpoint/opus-shard \
+            --output-dir review-checkpoint/codex-shard \
             --packet-source-sha '${{ inputs.source_sha }}' \
             --retained-source-sha '${{ inputs.source_sha }}' \
             --workflow-run-id '${{ github.run_id }}' \
@@ -390,7 +399,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: range-v16-arbitration-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}
-          path: review-checkpoint/opus-shard
+          path: review-checkpoint/codex-shard
           if-no-files-found: error
           overwrite: true
           retention-days: 7
@@ -402,6 +411,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
   finalize:
+    name: codex arbitration finalize and safe-pair author
     needs: [primary, arbitrate]
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
@@ -443,6 +453,7 @@ jobs:
               raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
           PY
           test "$(claude --version | awk '{print $1}')" = "2.1.233"
+          test "$(codex --version)" = "codex-cli 0.144.4"
           test "$(dsh --version)" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
       - uses: actions/download-artifact@v8

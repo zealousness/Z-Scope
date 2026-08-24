@@ -21,6 +21,7 @@ from scripts.generate_range_v16_safe_pairs import (
     validate_author_run,
     validate_author_record,
 )
+from scripts.run_e0_reviewers import _codex_arguments
 from tests.test_range_v16_truth import _normalized
 
 
@@ -100,37 +101,23 @@ def _raw_author(record: dict, author: dict) -> dict:
         "final_decision_sha256": record["final_decision_sha256"],
         "author_model": AUTHOR_MODEL,
         "command_identity": [
-            "claude",
-            "--print",
-            "--model",
-            AUTHOR_MODEL,
-            "--effort",
-            "max",
-            "--output-format",
-            "json",
-            "--json-schema",
-            json.dumps(
-                _author_schema(
-                    forbidden,
-                    truth_id=str(record["truth_id"]),
-                    packet_sha256=str(record["packet_sha256"]),
-                    final_decision_sha256=str(record["final_decision_sha256"]),
-                ),
-                separators=(",", ":"),
-            ),
-            "--permission-mode",
-            "plan",
-            "--tools",
-            "",
-            "--no-session-persistence",
-            "--disable-slash-commands",
+            "codex",
+            *_codex_arguments(output_schema="author-schema.json"),
         ],
+        "output_schema_sha256": sha256_value(
+            _author_schema(
+                forbidden,
+                truth_id=str(record["truth_id"]),
+                packet_sha256=str(record["packet_sha256"]),
+                final_decision_sha256=str(record["final_decision_sha256"]),
+            )
+        ),
         "attempts": [
             {
                 "attempt": 1,
                 "kind": "initial",
                 "exit_code": 0,
-                "stdout": json.dumps({"structured_output": author}),
+                "stdout": json.dumps(author),
                 "stderr_sha256": sha256_value(""),
                 "validation_class": None,
             }
@@ -272,7 +259,7 @@ def test_safe_pair_author_uses_one_bounded_contract_repair(
 
     monkeypatch.setattr(
         "scripts.generate_range_v16_safe_pairs.shutil.which",
-        lambda _: "/usr/bin/claude",
+        lambda _: "/usr/bin/codex",
     )
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -281,7 +268,7 @@ def test_safe_pair_author_uses_one_bounded_contract_repair(
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps({"structured_output": author}),
+            stdout=json.dumps(author),
             stderr="",
         )
 
@@ -346,17 +333,21 @@ def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(
 
     monkeypatch.setattr(
         "scripts.generate_range_v16_safe_pairs.shutil.which",
-        lambda _: "/usr/bin/claude",
+        lambda _: "/usr/bin/codex",
     )
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         prompts.append(str(kwargs["input"]))
-        schemas.append(json.loads(command[9]))
+        schemas.append(
+            json.loads(
+                (Path(str(kwargs["cwd"])) / "author-schema.json").read_text(encoding="utf-8")
+            )
+        )
         author = responses.pop(0)
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps({"structured_output": author}),
+            stdout=json.dumps(author),
             stderr="",
         )
 
@@ -430,7 +421,7 @@ def test_safe_pair_author_fails_closed_after_one_contract_repair(
 
     monkeypatch.setattr(
         "scripts.generate_range_v16_safe_pairs.shutil.which",
-        lambda _: "/usr/bin/claude",
+        lambda _: "/usr/bin/codex",
     )
 
     def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -439,7 +430,7 @@ def test_safe_pair_author_fails_closed_after_one_contract_repair(
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps({"structured_output": invalid}),
+            stdout=json.dumps(invalid),
             stderr="",
         )
 
@@ -530,7 +521,7 @@ def test_safe_pair_run_rejects_untrusted_raw_command_envelope(tmp_path: Path) ->
     raw_path = author_dir / "raw" / f"{record['truth_id']}.json"
     _dump(author_path, author)
     raw = _raw_author(record, author)
-    raw["command_identity"][3] = "claude-opus-untrusted"
+    raw["command_identity"][3] = "gpt-5.6-sol-untrusted"
     _dump(raw_path, raw)
     author_records = [
         {
@@ -575,7 +566,7 @@ def test_safe_pair_run_rejects_unbound_anonymity_schema(tmp_path: Path) -> None:
     raw_path = author_dir / "raw" / f"{record['truth_id']}.json"
     _dump(author_path, author)
     raw = _raw_author(record, author)
-    raw["command_identity"][9] = json.dumps(_author_schema(), separators=(",", ":"))
+    raw["output_schema_sha256"] = sha256_value(_author_schema())
     _dump(raw_path, raw)
     records = [
         {
@@ -620,9 +611,9 @@ def test_safe_pair_run_rejects_hidden_reasoning_body(tmp_path: Path) -> None:
     raw_path = author_dir / "raw" / f"{record['truth_id']}.json"
     _dump(author_path, author)
     raw = _raw_author(record, author)
-    raw["attempts"][0]["stdout"] = json.dumps(
-        {"structured_output": author, "reasoning_content": "must not be retained"}
-    )
+    hidden = dict(author)
+    hidden["reasoning_content"] = "must not be retained"
+    raw["attempts"][0]["stdout"] = json.dumps(hidden)
     _dump(raw_path, raw)
     records = [
         {
