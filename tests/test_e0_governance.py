@@ -347,6 +347,7 @@ def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     assert workflow.count("claude --version | awk '{print $1}'") == 3
     assert workflow.count("codex --version") == 3
     assert workflow.count("dsh --version") == 3
+    assert workflow.count("reviewer harness versions:") == 3
     assert workflow.count('"2.1.233"') == 3
     assert workflow.count(f'"codex-cli {reviewer_runner.CODEX_CLI_VERSION}"') == 3
     assert workflow.count(f'"{reviewer_runner.DSH_VERSION}"') == 3
