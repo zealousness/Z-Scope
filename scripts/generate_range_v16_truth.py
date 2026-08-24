@@ -2,8 +2,9 @@
 """Normalize protected E0 reviews and build independently bound Range Truth v16.
 
 The ``normalize`` command is intentionally strict: any material difference
-between Fable and DeepSeek requires an Opus decision, and the nine frozen
-disputed IDs always require Opus.  The ``build`` command consumes only that
+between the legacy Fable slot (now Claude) and DeepSeek requires the legacy
+Opus slot (now Codex), and the nine frozen disputed IDs always require Codex.
+The ``build`` command consumes only that
 normalized adjudication plus independently compiled safe-pair manifests.
 """
 
@@ -29,6 +30,8 @@ from e0_review_governance import (  # noqa: E402
     validate_review_packet,
 )
 from run_e0_reviewers import (  # noqa: E402
+    CLAUDE_PRIMARY_MODEL_IDENTITY,
+    CODEX_MODEL_IDENTITY,
     DISPUTED_IDS,
     MATERIAL_DECISION_FIELDS,
     _validate_existing_primary,
@@ -49,9 +52,9 @@ from validate_range_v16_truth import (  # noqa: E402
 
 
 _REVIEW_IDENTITIES = {
-    "fable": ("primary_fable", "claude-fable-5"),
+    "fable": ("primary_fable", CLAUDE_PRIMARY_MODEL_IDENTITY),
     "deepseek": ("primary_deepseek", "deepseek-v4-pro-0813:max"),
-    "opus": ("arbiter_opus", "claude-opus-5"),
+    "opus": ("arbiter_opus", CODEX_MODEL_IDENTITY),
 }
 
 
@@ -469,7 +472,7 @@ def build_truth_v16(
             "review_bundle_sha256": normalized["review_bundle_sha256"],
             "taxonomy_sha256": sha256_file(taxonomy_path.resolve(strict=True)),
             "independent_review_complete": True,
-            "review_protocol": "Fable 5 + DSH deepseek/deepseek-v4-pro-0813 Max; Opus 5 mandatory/disagreement arbitration",
+            "review_protocol": "Claude/GLM-5.3 primary + DSH deepseek/deepseek-v4-pro-0813 Max; Codex gpt-5.6-sol xhigh mandatory/disagreement arbitration",
             "safe_unit_count": len(pair_index_records),
         },
         "total_vulnerabilities": len(output_records),

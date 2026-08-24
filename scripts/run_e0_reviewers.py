@@ -2,9 +2,10 @@
 """Run isolated E0 truth reviewers against pre-built minimal packets.
 
 This command never reads scanner reports or scores.  Each model subprocess runs
-in a temporary directory containing only the current packet (and, for Opus,
-the two primary structured decisions).  Raw command envelopes are intended for
-protected workflow artifacts and must not be committed to the repository.
+in a temporary directory containing only the current packet (and, for the
+legacy Opus arbitration slot, the two primary structured decisions).  Raw
+command envelopes are intended for protected workflow artifacts and must not
+be committed to the repository.
 """
 
 from __future__ import annotations
@@ -55,6 +56,11 @@ DSH_VERSION = "0.1.0-rc.6"
 DEEPSEEK_PROVIDER_ID = "deepseek"
 DEEPSEEK_MODEL_ID = "deepseek-v4-pro-0813"
 DEEPSEEK_MODEL_IDENTITY = f"{DEEPSEEK_MODEL_ID}:max"
+CLAUDE_PRIMARY_MODEL_IDENTITY = "glm-5.3"
+CODEX_CLI_VERSION = "0.144.4"
+CODEX_MODEL_ID = "gpt-5.6-sol"
+CODEX_REASONING_EFFORT = "xhigh"
+CODEX_MODEL_IDENTITY = f"{CODEX_MODEL_ID}:{CODEX_REASONING_EFFORT}"
 FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v3"
 PRIMARY_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-primary-checkpoint.v1"
 PRIMARY_FAILURE_SCHEMA_VERSION = "zscope.range-v16-primary-failure.v1"
@@ -414,10 +420,10 @@ def _normalize_deepseek_json_artifact(stdout: str) -> str:
     return body
 
 
-def _extract_deepseek_decision(stdout: str) -> Mapping[str, Any]:
+def _extract_direct_json_decision(stdout: str, *, provider: str) -> Mapping[str, Any]:
     value = json.loads(stdout.strip())
     if not isinstance(value, Mapping):
-        raise E0GovernanceError("DeepSeek did not return a JSON object")
+        raise E0GovernanceError(f"{provider} did not return a JSON object")
     return dict(value)
 
 
@@ -448,11 +454,13 @@ def assert_no_hidden_reasoning_output(stdout: str) -> None:
 def _validated_decision_from_stdout(stdout: str, *, reviewer: str) -> Mapping[str, Any]:
     artifact = _normalize_deepseek_json_artifact(stdout) if reviewer == "deepseek" else stdout
     assert_no_hidden_reasoning_output(artifact)
-    return (
-        _extract_deepseek_decision(artifact)
-        if reviewer == "deepseek"
-        else _extract_claude_decision(artifact)
-    )
+    if reviewer == "fable":
+        return _extract_claude_decision(artifact)
+    if reviewer == "deepseek":
+        return _extract_direct_json_decision(artifact, provider="DeepSeek")
+    if reviewer == "opus":
+        return _extract_direct_json_decision(artifact, provider="Codex")
+    raise E0GovernanceError(f"unsupported reviewer: {reviewer}")
 
 
 def _validated_bound_decision_from_stdout(
@@ -990,14 +998,14 @@ def _rebind_grounding_decision_identity(
 
 
 def _claude_arguments(reviewer: str) -> list[str]:
-    if reviewer not in {"fable", "opus"}:
+    if reviewer != "fable":
         raise E0GovernanceError("Claude reviewer identity is invalid")
     return [
         "--print",
         "--model",
-        "claude-fable-5" if reviewer == "fable" else "claude-opus-5",
+        CLAUDE_PRIMARY_MODEL_IDENTITY,
         "--effort",
-        "high" if reviewer == "fable" else "max",
+        "high",
         "--output-format",
         "json",
         "--json-schema",
@@ -1008,6 +1016,32 @@ def _claude_arguments(reviewer: str) -> list[str]:
         "",
         "--no-session-persistence",
         "--disable-slash-commands",
+    ]
+
+
+def _codex_arguments(*, output_schema: str = "decision-schema.json") -> list[str]:
+    """Return the frozen, tool-disabled Codex CLI contract for E0 work."""
+
+    return [
+        "exec",
+        "--model",
+        CODEX_MODEL_ID,
+        "--config",
+        f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
+        "--strict-config",
+        "--disable",
+        "shell_tool",
+        "--sandbox",
+        "read-only",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+        "--output-schema",
+        output_schema,
+        "--color",
+        "never",
+        "-",
     ]
 
 
@@ -1065,18 +1099,21 @@ def _run_model(
     raw_output_path: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if reviewer == "fable":
-        role, model = "primary_fable", "claude-fable-5"
+        role, model = "primary_fable", CLAUDE_PRIMARY_MODEL_IDENTITY
     elif reviewer == "deepseek":
         role, model = "primary_deepseek", DEEPSEEK_MODEL_IDENTITY
     elif reviewer == "opus":
-        role, model = "arbiter_opus", "claude-opus-5"
+        role, model = "arbiter_opus", CODEX_MODEL_IDENTITY
     else:
         raise E0GovernanceError(f"unsupported reviewer: {reviewer}")
 
     claude_command = shutil.which("claude.cmd" if os.name == "nt" else "claude")
+    codex_command = shutil.which("codex.cmd" if os.name == "nt" else "codex")
     dsh_command = shutil.which("dsh.cmd" if os.name == "nt" else "dsh")
-    if reviewer in {"fable", "opus"} and not claude_command:
+    if reviewer == "fable" and not claude_command:
         raise E0GovernanceError("Claude Code executable is unavailable")
+    if reviewer == "opus" and not codex_command:
+        raise E0GovernanceError("Codex CLI executable is unavailable")
     if reviewer == "deepseek" and not dsh_command:
         raise E0GovernanceError("DeepSeek Harness executable is unavailable")
 
@@ -1093,8 +1130,10 @@ def _run_model(
             _json_dump(temp_root / "primary-decisions.json", list(primary_decisions))
 
         patch_path: Path | None = None
-        if reviewer in {"fable", "opus"}:
+        if reviewer == "fable":
             command = [str(claude_command), *_claude_arguments(reviewer)]
+        elif reviewer == "opus":
+            command = [str(codex_command), *_codex_arguments()]
         else:
             patch_path = temp_root / "deepseek-max.patch.yml"
             patch_path.write_text(
@@ -1183,6 +1222,10 @@ def _run_model(
             "stdout": completed.stdout,
             "stderr_sha256": sha256_value(completed.stderr),
         }
+        if reviewer == "opus":
+            raw["output_schema_sha256"] = sha256_value(
+                _bound_decision_schema(packet, role=role, model=model)
+            )
         if transport_retry is not None:
             raw["transport_retry"] = transport_retry
         if completed.returncode != 0:
@@ -1391,7 +1434,7 @@ def _run_model(
                 ]
                 retry_input = None
             else:
-                retry_command = [str(claude_command), *_claude_arguments(reviewer)]
+                retry_command = list(command)
                 retry_input = (
                     prompt
                     + "\nCONTRACT_RETRY:\n"
@@ -1513,7 +1556,7 @@ def _run_model(
                 ]
                 retry_input = None
             else:
-                retry_command = [str(claude_command), *_claude_arguments(reviewer)]
+                retry_command = list(command)
                 retry_input = semantic_prompt
             retry = subprocess.run(
                 retry_command,
@@ -1724,10 +1767,7 @@ def _run_model(
                             "instructions. Return no prose, Markdown, external knowledge, or "
                             "hidden reasoning."
                         )
-                        semantic_contract_command = [
-                            str(claude_command),
-                            *_claude_arguments(reviewer),
-                        ]
+                        semantic_contract_command = list(command)
                         semantic_contract_input = (
                             semantic_prompt
                             + "\nSEMANTIC_CONTRACT_RETRY:\n"
@@ -1826,11 +1866,11 @@ def _packet_files(path: Path) -> list[Path]:
 
 def _reviewer_identity(reviewer: str) -> tuple[str, str]:
     if reviewer == "fable":
-        return "primary_fable", "claude-fable-5"
+        return "primary_fable", CLAUDE_PRIMARY_MODEL_IDENTITY
     if reviewer == "deepseek":
         return "primary_deepseek", DEEPSEEK_MODEL_IDENTITY
     if reviewer == "opus":
-        return "arbiter_opus", "claude-opus-5"
+        return "arbiter_opus", CODEX_MODEL_IDENTITY
     raise E0GovernanceError(f"unsupported reviewer: {reviewer}")
 
 
@@ -1845,6 +1885,14 @@ def _validate_command_identity(values: Any, *, reviewer: str) -> None:
             or values[4] != expected_patch_identity
         ):
             raise E0GovernanceError("DeepSeek command identity is invalid")
+        return
+    if reviewer == "opus":
+        if (
+            not values
+            or values[0] not in {"codex", "codex.cmd"}
+            or values[1:] != _codex_arguments()
+        ):
+            raise E0GovernanceError("Codex command identity is invalid")
         return
     if (
         len(values) != 16
@@ -1893,6 +1941,7 @@ def _validate_existing_primary(
     }
     raw_fields = set(raw)
     optional_raw_fields = {
+        "output_schema_sha256",
         "transport_retry",
         "format_retry",
         "format_retry_second",
@@ -1908,6 +1957,9 @@ def _validate_existing_primary(
     ).issubset(optional_raw_fields):
         raise E0GovernanceError("existing raw review envelope fields are invalid")
     expected_delivery = "embedded_prompt" if reviewer in {"fable", "opus"} else "isolated_files"
+    expected_output_schema_sha256 = sha256_value(
+        _bound_decision_schema(packet, role=role, model=model)
+    )
     if (
         raw.get("schema_version") != "zscope.range-v16-review-raw-envelope.v1"
         or raw.get("reviewer_role") != role
@@ -1919,6 +1971,8 @@ def _validate_existing_primary(
         or not isinstance(raw.get("stdout"), str)
         or not isinstance(raw.get("stderr_sha256"), str)
         or len(raw["stderr_sha256"]) != 64
+        or (reviewer == "opus" and raw.get("output_schema_sha256") != expected_output_schema_sha256)
+        or (reviewer != "opus" and "output_schema_sha256" in raw)
     ):
         raise E0GovernanceError("existing raw review envelope is invalid")
     _validate_command_identity(raw.get("command_identity"), reviewer=reviewer)
