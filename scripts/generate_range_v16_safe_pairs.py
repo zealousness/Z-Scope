@@ -210,9 +210,17 @@ def _author_schema(
         "pattern": "^[0-9a-f]{64}$",
     }
     if truth_id is not None:
-        truth_id_schema = {"const": truth_id}
-        packet_sha256_schema = {"const": packet_sha256}
-        final_decision_sha256_schema = {"const": final_decision_sha256}
+        truth_id_schema = {"type": "string", "const": truth_id}
+        packet_sha256_schema = {
+            "type": "string",
+            "const": packet_sha256,
+            "pattern": "^[0-9a-f]{64}$",
+        }
+        final_decision_sha256_schema = {
+            "type": "string",
+            "const": final_decision_sha256,
+            "pattern": "^[0-9a-f]{64}$",
+        }
     return {
         "type": "object",
         "additionalProperties": False,
@@ -229,13 +237,13 @@ def _author_schema(
             "fixed_or_near_miss_source",
         ],
         "properties": {
-            "schema_version": {"const": AUTHOR_SCHEMA_VERSION},
+            "schema_version": {"type": "string", "const": AUTHOR_SCHEMA_VERSION},
             "truth_id": truth_id_schema,
             "packet_sha256": packet_sha256_schema,
             "final_decision_sha256": final_decision_sha256_schema,
-            "author_role": {"const": "safe_pair_author"},
-            "author_model": {"const": AUTHOR_MODEL},
-            "kind": {"enum": ["fixed", "near_miss"]},
+            "author_role": {"type": "string", "const": "safe_pair_author"},
+            "author_model": {"type": "string", "const": AUTHOR_MODEL},
+            "kind": {"type": "string", "enum": ["fixed", "near_miss"]},
             "invariant_summary": {"type": "string", "minLength": 1},
             "vulnerable_source": {
                 "type": "string",
