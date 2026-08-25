@@ -532,30 +532,22 @@ jobs:
           test "$codex_version" = "codex-cli 0.144.4"
           test "$dsh_version" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-primary-fable-${{ inputs.source_sha }}
-          path: review-evidence/fable
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-primary-deepseek-${{ inputs.source_sha }}
-          path: review-evidence/deepseek
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-arbitration-shard-0-${{ inputs.source_sha }}
-          path: arbitration-shards/0
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-arbitration-shard-1-${{ inputs.source_sha }}
-          path: arbitration-shards/1
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-arbitration-shard-2-${{ inputs.source_sha }}
-          path: arbitration-shards/2
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-arbitration-shard-3-${{ inputs.source_sha }}
-          path: arbitration-shards/3
+      - name: Restore exact current-run review artifacts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          umask 077
+          python3 scripts/download_e0_run_artifacts.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$GITHUB_SHA" \
+            --artifact 'range-v16-primary-fable-${{ inputs.source_sha }}=review-evidence/fable' \
+            --artifact 'range-v16-primary-deepseek-${{ inputs.source_sha }}=review-evidence/deepseek' \
+            --artifact 'range-v16-arbitration-shard-0-${{ inputs.source_sha }}=arbitration-shards/0' \
+            --artifact 'range-v16-arbitration-shard-1-${{ inputs.source_sha }}=arbitration-shards/1' \
+            --artifact 'range-v16-arbitration-shard-2-${{ inputs.source_sha }}=arbitration-shards/2' \
+            --artifact 'range-v16-arbitration-shard-3-${{ inputs.source_sha }}=arbitration-shards/3'
       - name: Merge and revalidate arbitration shards
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark

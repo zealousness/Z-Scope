@@ -437,6 +437,13 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     assert workflow.index("scripts/run_e0_reviewers.py merge-arbitration") < workflow.index(
         "scripts/build_e0_review_manifest.py"
     )
+    finalize = workflow.split("  finalize:\n", 1)[1]
+    assert "Restore exact current-run review artifacts" in finalize
+    assert "scripts/download_e0_run_artifacts.py" in finalize
+    assert '--expected-run-id "$GITHUB_RUN_ID"' in finalize
+    assert '--expected-head-sha "$GITHUB_SHA"' in finalize
+    assert finalize.count("--artifact '") == 6
+    assert "actions/download-artifact@v8" not in finalize
 
 
 def test_review_command_identity_disables_tools_and_binds_harnesses() -> None:
