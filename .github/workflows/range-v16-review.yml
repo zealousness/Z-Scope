@@ -52,8 +52,36 @@ permissions:
   actions: read
 
 jobs:
+  codex_readiness:
+    name: codex answer-free readiness
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Verify frozen Codex runtime
+        run: |
+          test "$GITHUB_REF" = 'refs/heads/main'
+          codex_version="$(codex --version)"
+          printf 'Codex readiness runtime: %s\n' "$codex_version"
+          test "$codex_version" = "codex-cli 0.144.4"
+          test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
+      - name: Verify Codex auth, reachability, and model access
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: |
+          umask 077
+          python3 scripts/run_e0_reviewers.py codex-preflight
   primary:
     name: primary (${{ matrix.display_name }})
+    needs: codex_readiness
     strategy:
       fail-fast: false
       matrix:
@@ -399,11 +427,13 @@ jobs:
         name: Run deterministic Codex mandatory and disagreement arbitration shard
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
           CODEX_OUTPUT: ${{ steps.arbitration_paths.outputs.output_dir }}
           RESUME: ${{ steps.arbitration_paths.outputs.resume }}
         run: |
           umask 077
+          python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only
           checkpoint_args=()
           if [[ "$RESUME" = true ]]; then
             checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA")
@@ -572,8 +602,10 @@ jobs:
       - name: Normalize adjudication and author safe pairs
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
         run: |
           umask 077
+          python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only
           mkdir -p pair-author-evidence
           python3 scripts/generate_range_v16_truth.py normalize \
             --packet-dir test/range/benchmark/v16/review-packets \
