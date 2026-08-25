@@ -521,11 +521,7 @@ def test_codex_preflight_checks_doctor_then_constant_model_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
-    expected = {
-        "schema_version": reviewer_runner.CODEX_PREFLIGHT_SCHEMA_VERSION,
-        "status": "ready",
-        "reviewer_model": reviewer_runner.CODEX_MODEL_IDENTITY,
-    }
+    expected = reviewer_runner._codex_preflight_expected()
 
     def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
         calls.append((command, kwargs))
@@ -554,18 +550,37 @@ def test_codex_preflight_checks_doctor_then_constant_model_probe(
 
 
 def test_codex_preflight_schema_types_every_constant_binding() -> None:
-    properties = reviewer_runner._codex_preflight_schema()["properties"]
-    assert properties == {
-        "schema_version": {
-            "type": "string",
-            "const": reviewer_runner.CODEX_PREFLIGHT_SCHEMA_VERSION,
-        },
-        "status": {"type": "string", "const": "ready"},
-        "reviewer_model": {
-            "type": "string",
-            "const": reviewer_runner.CODEX_MODEL_IDENTITY,
-        },
-    }
+    schema = reviewer_runner._codex_preflight_schema()
+    expected = reviewer_runner._codex_preflight_expected()
+    properties = schema["properties"]
+    assert set(properties) == set(reviewer_runner.DECISION_FIELDS)
+    assert properties["packet_uid"]["const"] == expected["packet_uid"]
+    assert properties["packet_sha256"]["const"] == expected["packet_sha256"]
+    assert properties["reviewer_role"]["const"] == expected["reviewer_role"]
+    assert properties["reviewer_model"]["const"] == expected["reviewer_model"]
+    reviewer_runner._assert_codex_transport_schema(schema)
+
+
+def test_codex_transport_schema_projects_only_locally_revalidated_constraints() -> None:
+    strict = reviewer_runner._bound_decision_schema(
+        _packet(),
+        role="arbiter_opus",
+        model=reviewer_runner.CODEX_MODEL_IDENTITY,
+    )
+    original = deepcopy(strict)
+    projected = reviewer_runner._codex_transport_schema(strict)
+
+    assert strict == original
+    assert strict["properties"]["trigger_summary"]["minLength"] == 1
+    assert "minLength" not in projected["properties"]["trigger_summary"]
+    assert strict["properties"]["cwe_ids"]["uniqueItems"] is True
+    assert "uniqueItems" not in projected["properties"]["cwe_ids"]
+    assert projected["properties"]["packet_sha256"]["pattern"] == "^[0-9a-f]{64}$"
+    reviewer_runner._assert_codex_transport_schema(projected)
+    unsupported = deepcopy(projected)
+    unsupported["properties"]["trigger_summary"]["minLength"] = 1
+    with pytest.raises(reviewer_runner.E0GovernanceError, match="unsupported keywords"):
+        reviewer_runner._assert_codex_transport_schema(unsupported)
 
 
 def test_codex_output_schemas_type_all_const_and_enum_nodes() -> None:
@@ -716,7 +731,6 @@ def test_primary_reviewer_retries_one_transport_failure_and_binds_hashes(
         decision_path=decision_path,
         raw_path=raw_path,
     )
-
     tampered = deepcopy(raw)
     tampered["transport_retry"]["initial_stderr_sha256"] = "invalid"
     raw_path.write_text(json.dumps(tampered), encoding="utf-8")
@@ -1882,6 +1896,26 @@ def test_embedded_reviewer_grounding_retry_preserves_substantive_decision(
         decision_path=decision_path,
         raw_path=raw_path,
     )
+    if reviewer == "opus":
+        contract_schema = reviewer_runner._bound_decision_schema(
+            packet,
+            role=role,
+            model=model,
+        )
+        assert raw["output_schema_sha256"] == sha256_value(
+            reviewer_runner._codex_transport_schema(contract_schema)
+        )
+        assert raw["contract_schema_sha256"] == sha256_value(contract_schema)
+        tampered = deepcopy(raw)
+        tampered["contract_schema_sha256"] = "0" * 64
+        raw_path.write_text(json.dumps(tampered), encoding="utf-8")
+        with pytest.raises(reviewer_runner.E0GovernanceError, match="raw review envelope"):
+            reviewer_runner._validate_existing_primary(
+                packet,
+                reviewer=reviewer,
+                decision_path=decision_path,
+                raw_path=raw_path,
+            )
 
 
 def test_fable_grounding_retry_rejects_substantive_changes(
@@ -2365,9 +2399,15 @@ def _review_raw(packet: dict, reviewer: str, decision: dict) -> dict:
         "stderr_sha256": sha256_value(""),
     }
     if reviewer == "opus":
-        raw["output_schema_sha256"] = sha256_value(
-            reviewer_runner._bound_decision_schema(packet, role=role, model=model)
+        contract_schema = reviewer_runner._bound_decision_schema(
+            packet,
+            role=role,
+            model=model,
         )
+        raw["output_schema_sha256"] = sha256_value(
+            reviewer_runner._codex_transport_schema(contract_schema)
+        )
+        raw["contract_schema_sha256"] = sha256_value(contract_schema)
     return raw
 
 

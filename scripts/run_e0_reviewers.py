@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -61,7 +62,6 @@ CODEX_CLI_VERSION = "0.144.4"
 CODEX_MODEL_ID = "gpt-5.6-sol"
 CODEX_REASONING_EFFORT = "xhigh"
 CODEX_MODEL_IDENTITY = f"{CODEX_MODEL_ID}:{CODEX_REASONING_EFFORT}"
-CODEX_PREFLIGHT_SCHEMA_VERSION = "zscope.range-v16-codex-preflight.v1"
 FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v3"
 PRIMARY_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-primary-checkpoint.v1"
 PRIMARY_FAILURE_SCHEMA_VERSION = "zscope.range-v16-primary-failure.v1"
@@ -133,6 +133,35 @@ _HIDDEN_REASONING_KEYS = {
     "reasoning_content",
     "thinking",
     "thinking_content",
+}
+
+_CODEX_TRANSPORT_SCHEMA_KEYWORDS = {
+    "$defs",
+    "$ref",
+    "$schema",
+    "additionalProperties",
+    "anyOf",
+    "const",
+    "description",
+    "enum",
+    "exclusiveMaximum",
+    "exclusiveMinimum",
+    "format",
+    "items",
+    "maxItems",
+    "maximum",
+    "minItems",
+    "minimum",
+    "multipleOf",
+    "pattern",
+    "properties",
+    "required",
+    "type",
+}
+_CODEX_LOCALLY_REVALIDATED_SCHEMA_KEYWORDS = {
+    "minLength",
+    "maxLength",
+    "uniqueItems",
 }
 
 
@@ -359,6 +388,98 @@ def _bound_decision_schema(
     }
     properties["reviewer_role"] = {"type": "string", "const": role}
     properties["reviewer_model"] = {"type": "string", "const": model}
+    return schema
+
+
+def _assert_codex_transport_schema(schema: Mapping[str, Any]) -> None:
+    """Fail closed unless a schema fits the Codex Structured Outputs subset."""
+
+    def visit(node: Mapping[str, Any], *, path: str, root: bool = False) -> None:
+        unknown = set(node) - _CODEX_TRANSPORT_SCHEMA_KEYWORDS
+        if unknown:
+            raise E0GovernanceError(
+                "Codex output schema contains unsupported keywords at " f"{path}: {sorted(unknown)}"
+            )
+        if root and (node.get("type") != "object" or "anyOf" in node):
+            raise E0GovernanceError("Codex output schema root must be one object")
+        if ("const" in node or "enum" in node) and "type" not in node:
+            raise E0GovernanceError(f"Codex output schema binding has no explicit type at {path}")
+        pattern = node.get("pattern")
+        if isinstance(pattern, str) and "(?" in pattern:
+            raise E0GovernanceError(f"Codex output schema contains a non-portable regex at {path}")
+
+        properties = node.get("properties")
+        if properties is not None:
+            if not isinstance(properties, Mapping) or not all(
+                isinstance(value, Mapping) for value in properties.values()
+            ):
+                raise E0GovernanceError(f"Codex output schema properties are invalid at {path}")
+            required = node.get("required")
+            if (
+                node.get("type") != "object"
+                or node.get("additionalProperties") is not False
+                or not isinstance(required, list)
+                or set(required) != set(properties)
+                or len(required) != len(properties)
+            ):
+                raise E0GovernanceError(f"Codex output schema object is not strict at {path}")
+            for field, child in properties.items():
+                assert isinstance(child, Mapping)
+                visit(child, path=f"{path}.properties.{field}")
+
+        definitions = node.get("$defs")
+        if definitions is not None:
+            if not isinstance(definitions, Mapping) or not all(
+                isinstance(value, Mapping) for value in definitions.values()
+            ):
+                raise E0GovernanceError(f"Codex output schema definitions are invalid at {path}")
+            for field, child in definitions.items():
+                assert isinstance(child, Mapping)
+                visit(child, path=f"{path}.$defs.{field}")
+
+        items = node.get("items")
+        if items is not None:
+            if not isinstance(items, Mapping):
+                raise E0GovernanceError(f"Codex output schema items are invalid at {path}")
+            visit(items, path=f"{path}.items")
+
+        alternatives = node.get("anyOf")
+        if alternatives is not None:
+            if (
+                not isinstance(alternatives, list)
+                or not alternatives
+                or not all(isinstance(value, Mapping) for value in alternatives)
+            ):
+                raise E0GovernanceError(f"Codex output schema anyOf is invalid at {path}")
+            for index, child in enumerate(alternatives):
+                assert isinstance(child, Mapping)
+                visit(child, path=f"{path}.anyOf[{index}]")
+
+    visit(schema, path="$", root=True)
+
+
+def _codex_transport_schema(strict_schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a strict local contract onto Codex's supported wire subset.
+
+    Constraints removed here are still enforced by the existing deterministic
+    validators before any decision can enter a checkpoint, provenance, or
+    attestation artifact.  The raw envelope binds both schema hashes.
+    """
+
+    schema = deepcopy(dict(strict_schema))
+    pending: list[Any] = [schema]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            for keyword in _CODEX_LOCALLY_REVALIDATED_SCHEMA_KEYWORDS:
+                node.pop(keyword, None)
+            pattern = node.get("pattern")
+            if isinstance(pattern, str) and "(?" in pattern:
+                node.pop("pattern")
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    _assert_codex_transport_schema(schema)
     return schema
 
 
@@ -1102,19 +1223,59 @@ def _reviewer_environment() -> dict[str, str]:
 
 
 def _codex_preflight_schema() -> dict[str, Any]:
+    packet = {
+        "packet_uid": "answer-free:codex-schema-probe",
+        "packet_sha256": "a" * 64,
+    }
+    return _codex_transport_schema(
+        _bound_decision_schema(
+            packet,
+            role="arbiter_opus",
+            model=CODEX_MODEL_IDENTITY,
+        )
+    )
+
+
+def _codex_preflight_expected() -> dict[str, Any]:
     return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["schema_version", "status", "reviewer_model"],
-        "properties": {
-            "schema_version": {
-                "type": "string",
-                "const": CODEX_PREFLIGHT_SCHEMA_VERSION,
-            },
-            "status": {"type": "string", "const": "ready"},
-            "reviewer_model": {"type": "string", "const": CODEX_MODEL_IDENTITY},
+        "schema_version": DECISION_SCHEMA_VERSION,
+        "packet_uid": "answer-free:codex-schema-probe",
+        "packet_sha256": "a" * 64,
+        "reviewer_role": "arbiter_opus",
+        "reviewer_model": CODEX_MODEL_IDENTITY,
+        "contract_kind": "pattern_model",
+        "disposition": "unresolved",
+        "confidence": 0.5,
+        "defect_taxonomy_id": "synthetic_probe",
+        "cwe_ids": ["CWE-0"],
+        "structured_anchors": [
+            {
+                "kind": "primary",
+                "corrected": False,
+                "file": "answer-free.c",
+                "function": "probe",
+                "start_line": 1,
+                "end_line": 1,
+            }
+        ],
+        "required_evidence_clauses": [
+            {
+                "clause_id": "synthetic_probe",
+                "predicate": "Constant answer-free schema probe.",
+                "evidence_refs": ["answer-free.c:1-1"],
+            }
+        ],
+        "evidence_refs": ["answer-free.c:1-1"],
+        "trigger_summary": "Constant answer-free schema probe.",
+        "threat_assumptions": ["No benchmark material is present."],
+        "safe_pair_recommendation": {
+            "kind": "near_miss",
+            "invariant_summary": "Synthetic invariant.",
+            "vulnerable_summary": "Synthetic vulnerable side.",
+            "safe_summary": "Synthetic safe side.",
+            "compile_requirements": ["No compilation is performed."],
         },
+        "reason_codes": ["INSUFFICIENT_EVIDENCE"],
     }
 
 
@@ -1197,11 +1358,7 @@ def run_codex_preflight(args: argparse.Namespace) -> int:
         print("Codex readiness passed: doctor-only")
         return 0
 
-    expected = {
-        "schema_version": CODEX_PREFLIGHT_SCHEMA_VERSION,
-        "status": "ready",
-        "reviewer_model": CODEX_MODEL_IDENTITY,
-    }
+    expected = _codex_preflight_expected()
     with tempfile.TemporaryDirectory(prefix="zscope-e0-codex-preflight-") as raw_temp:
         temp_root = Path(raw_temp)
         _json_dump(temp_root / "codex-preflight-schema.json", _codex_preflight_schema())
@@ -1321,10 +1478,11 @@ def _run_model(
     with tempfile.TemporaryDirectory(prefix="zscope-e0-review-") as raw_temp:
         temp_root = Path(raw_temp)
         _json_dump(temp_root / "packet.json", packet)
-        _json_dump(
-            temp_root / "decision-schema.json",
-            _bound_decision_schema(packet, role=role, model=model),
+        contract_schema = _bound_decision_schema(packet, role=role, model=model)
+        output_schema = (
+            _codex_transport_schema(contract_schema) if reviewer == "opus" else contract_schema
         )
+        _json_dump(temp_root / "decision-schema.json", output_schema)
         (temp_root / "review-instructions.txt").write_text(prompt, encoding="utf-8")
         if primary_decisions:
             _json_dump(temp_root / "primary-decisions.json", list(primary_decisions))
@@ -1416,9 +1574,8 @@ def _run_model(
             "stderr_sha256": sha256_value(completed.stderr),
         }
         if reviewer == "opus":
-            raw["output_schema_sha256"] = sha256_value(
-                _bound_decision_schema(packet, role=role, model=model)
-            )
+            raw["output_schema_sha256"] = sha256_value(output_schema)
+            raw["contract_schema_sha256"] = sha256_value(contract_schema)
         if transport_retry is not None:
             raw["transport_retry"] = transport_retry
         if completed.returncode != 0:
@@ -2137,6 +2294,7 @@ def _validate_existing_primary(
     raw_fields = set(raw)
     optional_raw_fields = {
         "output_schema_sha256",
+        "contract_schema_sha256",
         "transport_retry",
         "format_retry",
         "format_retry_second",
@@ -2152,9 +2310,18 @@ def _validate_existing_primary(
     ).issubset(optional_raw_fields):
         raise E0GovernanceError("existing raw review envelope fields are invalid")
     expected_delivery = "embedded_prompt" if reviewer in {"fable", "opus"} else "isolated_files"
-    expected_output_schema_sha256 = sha256_value(
-        _bound_decision_schema(packet, role=role, model=model)
+    expected_contract_schema = _bound_decision_schema(
+        packet,
+        role=role,
+        model=model,
     )
+    expected_output_schema = (
+        _codex_transport_schema(expected_contract_schema)
+        if reviewer == "opus"
+        else expected_contract_schema
+    )
+    expected_output_schema_sha256 = sha256_value(expected_output_schema)
+    expected_contract_schema_sha256 = sha256_value(expected_contract_schema)
     if (
         raw.get("schema_version") != "zscope.range-v16-review-raw-envelope.v1"
         or raw.get("reviewer_role") != role
@@ -2167,7 +2334,14 @@ def _validate_existing_primary(
         or not isinstance(raw.get("stderr_sha256"), str)
         or len(raw["stderr_sha256"]) != 64
         or (reviewer == "opus" and raw.get("output_schema_sha256") != expected_output_schema_sha256)
-        or (reviewer != "opus" and "output_schema_sha256" in raw)
+        or (
+            reviewer == "opus"
+            and raw.get("contract_schema_sha256") != expected_contract_schema_sha256
+        )
+        or (
+            reviewer != "opus"
+            and ("output_schema_sha256" in raw or "contract_schema_sha256" in raw)
+        )
     ):
         raise E0GovernanceError("existing raw review envelope is invalid")
     _validate_command_identity(raw.get("command_identity"), reviewer=reviewer)
