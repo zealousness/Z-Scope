@@ -367,8 +367,10 @@ def test_protected_review_workflow_canonicalizes_github_artifact_digest() -> Non
 def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
     assert "fable_checkpoint_run_id:" in workflow
+    assert "fable_checkpoint_artifact_id:" in workflow
     assert "fable_checkpoint_source_sha:" in workflow
     assert "deepseek_checkpoint_run_id:" in workflow
+    assert "deepseek_checkpoint_artifact_id:" in workflow
     assert "deepseek_checkpoint_source_sha:" in workflow
     assert "fail-fast: false" in workflow
     assert "id: primary_review" in workflow
@@ -382,6 +384,10 @@ def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume()
     assert "deepseek_primary_run_id:" in workflow
     assert "deepseek_primary_source_sha:" in workflow
     assert "checkpoint and complete primary recovery are mutually exclusive" in workflow
+    assert "checkpoint run ID and immutable artifact ID must be provided together" in workflow
+    assert workflow.count("artifact-ids: ${{ inputs.") == 2
+    assert workflow.count("digest-mismatch: error") >= 2
+    assert workflow.count("--checkpoint-workflow-run-id") == 4
     assert "Revalidate complete primary artifact as a zero-call checkpoint" in workflow
     assert "--require-complete" in workflow
     assert "range-v16-primary-fable-${{ inputs.fable_primary_source_sha" in workflow
@@ -1928,6 +1934,7 @@ def test_primary_checkpoint_copies_only_verified_pairs_and_binds_resume(
         output,
         reviewer="deepseek",
         packet_source_sha="a" * 40,
+        expected_workflow_run_id="32367751336",
         packets=packets,
     )
 
@@ -1971,6 +1978,26 @@ def test_primary_checkpoint_copies_only_verified_pairs_and_binds_resume(
     assert complete_manifest["verified_record_count"] == 136
     assert complete_manifest["first_unverified_batch_ids"] == []
 
+    mismatched_manifest = deepcopy(complete_manifest)
+    mismatched_manifest["workflow_run_id"] = "32367751337"
+    mismatched_manifest["content_sha256"] = reviewer_runner._checkpoint_manifest_content_sha256(
+        mismatched_manifest
+    )
+    (complete_output / "checkpoint-manifest.json").write_text(
+        json.dumps(mismatched_manifest), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="checkpoint manifest is invalid"):
+        reviewer_runner._validate_primary_checkpoint(
+            complete_output,
+            reviewer="deepseek",
+            packet_source_sha="a" * 40,
+            expected_workflow_run_id="32367751336",
+            packets=packets,
+        )
+    (complete_output / "checkpoint-manifest.json").write_text(
+        json.dumps(complete_manifest), encoding="utf-8"
+    )
+
     def unexpected_model_call(*_: object, **__: object) -> tuple[dict, dict]:
         raise AssertionError("complete primary reuse must not call a model")
 
@@ -1984,6 +2011,7 @@ def test_primary_checkpoint_copies_only_verified_pairs_and_binds_resume(
                 workers=4,
                 resume=True,
                 checkpoint_source_sha="a" * 40,
+                checkpoint_workflow_run_id="32367751336",
             )
         )
         == 0
@@ -1998,6 +2026,7 @@ def test_primary_checkpoint_copies_only_verified_pairs_and_binds_resume(
             output,
             reviewer="deepseek",
             packet_source_sha="a" * 40,
+            expected_workflow_run_id="32367751336",
             packets=packets,
         )
 

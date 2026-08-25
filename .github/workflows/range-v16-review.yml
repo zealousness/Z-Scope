@@ -10,12 +10,20 @@ on:
         description: Optional protected run containing a verified Claude primary checkpoint (legacy fable slot)
         required: false
         default: ""
+      fable_checkpoint_artifact_id:
+        description: Immutable artifact ID for the optional Claude checkpoint
+        required: false
+        default: ""
       fable_checkpoint_source_sha:
         description: Source SHA bound by the optional Claude checkpoint (defaults to source_sha)
         required: false
         default: ""
       deepseek_checkpoint_run_id:
         description: Optional protected run containing a verified DeepSeek checkpoint
+        required: false
+        default: ""
+      deepseek_checkpoint_artifact_id:
+        description: Immutable artifact ID for the optional DeepSeek checkpoint
         required: false
         default: ""
       deepseek_checkpoint_source_sha:
@@ -106,8 +114,10 @@ jobs:
       - name: Validate primary recovery inputs
         env:
           FABLE_CHECKPOINT_RUN_ID: ${{ inputs.fable_checkpoint_run_id }}
+          FABLE_CHECKPOINT_ARTIFACT_ID: ${{ inputs.fable_checkpoint_artifact_id }}
           FABLE_CHECKPOINT_SOURCE_SHA: ${{ inputs.fable_checkpoint_source_sha }}
           DEEPSEEK_CHECKPOINT_RUN_ID: ${{ inputs.deepseek_checkpoint_run_id }}
+          DEEPSEEK_CHECKPOINT_ARTIFACT_ID: ${{ inputs.deepseek_checkpoint_artifact_id }}
           DEEPSEEK_CHECKPOINT_SOURCE_SHA: ${{ inputs.deepseek_checkpoint_source_sha }}
           FABLE_PRIMARY_RUN_ID: ${{ inputs.fable_primary_run_id }}
           FABLE_PRIMARY_SOURCE_SHA: ${{ inputs.fable_primary_source_sha }}
@@ -117,11 +127,13 @@ jobs:
           set -euo pipefail
           if [[ '${{ matrix.reviewer }}' = fable ]]; then
             checkpoint_run_id="$FABLE_CHECKPOINT_RUN_ID"
+            checkpoint_artifact_id="$FABLE_CHECKPOINT_ARTIFACT_ID"
             checkpoint_source_sha="$FABLE_CHECKPOINT_SOURCE_SHA"
             primary_run_id="$FABLE_PRIMARY_RUN_ID"
             primary_source_sha="$FABLE_PRIMARY_SOURCE_SHA"
           else
             checkpoint_run_id="$DEEPSEEK_CHECKPOINT_RUN_ID"
+            checkpoint_artifact_id="$DEEPSEEK_CHECKPOINT_ARTIFACT_ID"
             checkpoint_source_sha="$DEEPSEEK_CHECKPOINT_SOURCE_SHA"
             primary_run_id="$DEEPSEEK_PRIMARY_RUN_ID"
             primary_source_sha="$DEEPSEEK_PRIMARY_SOURCE_SHA"
@@ -134,6 +146,15 @@ jobs:
             echo "checkpoint source SHA requires a checkpoint run ID" >&2
             exit 2
           fi
+          if [[ -n "$checkpoint_run_id" && -z "$checkpoint_artifact_id" ]] || \
+             [[ -z "$checkpoint_run_id" && -n "$checkpoint_artifact_id" ]]; then
+            echo "checkpoint run ID and immutable artifact ID must be provided together" >&2
+            exit 2
+          fi
+          if [[ -n "$checkpoint_artifact_id" && ! "$checkpoint_artifact_id" =~ ^[0-9]+$ ]]; then
+            echo "checkpoint artifact ID must be numeric" >&2
+            exit 2
+          fi
           if [[ -n "$primary_source_sha" && -z "$primary_run_id" ]]; then
             echo "complete primary source SHA requires a complete primary run ID" >&2
             exit 2
@@ -144,16 +165,18 @@ jobs:
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.fable_checkpoint_run_id }}
-          name: range-v16-primary-checkpoint-fable-${{ inputs.fable_checkpoint_source_sha || inputs.source_sha }}
+          artifact-ids: ${{ inputs.fable_checkpoint_artifact_id }}
           path: review-evidence/fable
+          digest-mismatch: error
       - name: Restore verified DeepSeek checkpoint
         if: matrix.reviewer == 'deepseek' && inputs.deepseek_checkpoint_run_id != ''
         uses: actions/download-artifact@v8
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.deepseek_checkpoint_run_id }}
-          name: range-v16-primary-checkpoint-deepseek-${{ inputs.deepseek_checkpoint_source_sha || inputs.source_sha }}
+          artifact-ids: ${{ inputs.deepseek_checkpoint_artifact_id }}
           path: review-evidence/deepseek
+          digest-mismatch: error
       - name: Restore complete Fable primary artifact
         if: matrix.reviewer == 'fable' && inputs.fable_primary_run_id != ''
         uses: actions/download-artifact@v8
@@ -214,13 +237,13 @@ jobs:
           umask 077
           checkpoint_args=()
           if [[ '${{ matrix.reviewer }}' = fable && -n "$FABLE_CHECKPOINT_RUN_ID" ]]; then
-            checkpoint_args=(--resume --checkpoint-source-sha "${FABLE_CHECKPOINT_SOURCE_SHA:-$PACKET_SOURCE_SHA}")
+            checkpoint_args=(--resume --checkpoint-source-sha "${FABLE_CHECKPOINT_SOURCE_SHA:-$PACKET_SOURCE_SHA}" --checkpoint-workflow-run-id "$FABLE_CHECKPOINT_RUN_ID")
           elif [[ '${{ matrix.reviewer }}' = fable && -n "$FABLE_PRIMARY_RUN_ID" ]]; then
-            checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA")
+            checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA" --checkpoint-workflow-run-id "$FABLE_PRIMARY_RUN_ID")
           elif [[ '${{ matrix.reviewer }}' = deepseek && -n "$DEEPSEEK_CHECKPOINT_RUN_ID" ]]; then
-            checkpoint_args=(--resume --checkpoint-source-sha "${DEEPSEEK_CHECKPOINT_SOURCE_SHA:-$PACKET_SOURCE_SHA}")
+            checkpoint_args=(--resume --checkpoint-source-sha "${DEEPSEEK_CHECKPOINT_SOURCE_SHA:-$PACKET_SOURCE_SHA}" --checkpoint-workflow-run-id "$DEEPSEEK_CHECKPOINT_RUN_ID")
           elif [[ '${{ matrix.reviewer }}' = deepseek && -n "$DEEPSEEK_PRIMARY_RUN_ID" ]]; then
-            checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA")
+            checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA" --checkpoint-workflow-run-id "$DEEPSEEK_PRIMARY_RUN_ID")
           fi
           python3 scripts/run_e0_reviewers.py primary \
             --reviewer '${{ matrix.reviewer }}' \
