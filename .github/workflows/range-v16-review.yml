@@ -161,22 +161,30 @@ jobs:
           fi
       - name: Restore verified Fable checkpoint
         if: matrix.reviewer == 'fable' && inputs.fable_checkpoint_run_id != ''
-        uses: actions/download-artifact@v8
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.fable_checkpoint_run_id }}
-          artifact-ids: ${{ inputs.fable_checkpoint_artifact_id }}
-          path: review-evidence/fable
-          digest-mismatch: error
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          python3 scripts/download_e0_checkpoint_artifact.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --artifact-id '${{ inputs.fable_checkpoint_artifact_id }}' \
+            --expected-run-id '${{ inputs.fable_checkpoint_run_id }}' \
+            --expected-source-sha '${{ inputs.fable_checkpoint_source_sha || inputs.source_sha }}' \
+            --expected-name 'range-v16-primary-checkpoint-fable-${{ inputs.fable_checkpoint_source_sha || inputs.source_sha }}' \
+            --output-dir review-evidence/fable
       - name: Restore verified DeepSeek checkpoint
         if: matrix.reviewer == 'deepseek' && inputs.deepseek_checkpoint_run_id != ''
-        uses: actions/download-artifact@v8
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.deepseek_checkpoint_run_id }}
-          artifact-ids: ${{ inputs.deepseek_checkpoint_artifact_id }}
-          path: review-evidence/deepseek
-          digest-mismatch: error
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          python3 scripts/download_e0_checkpoint_artifact.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --artifact-id '${{ inputs.deepseek_checkpoint_artifact_id }}' \
+            --expected-run-id '${{ inputs.deepseek_checkpoint_run_id }}' \
+            --expected-source-sha '${{ inputs.deepseek_checkpoint_source_sha || inputs.source_sha }}' \
+            --expected-name 'range-v16-primary-checkpoint-deepseek-${{ inputs.deepseek_checkpoint_source_sha || inputs.source_sha }}' \
+            --output-dir review-evidence/deepseek
       - name: Restore complete Fable primary artifact
         if: matrix.reviewer == 'fable' && inputs.fable_primary_run_id != ''
         uses: actions/download-artifact@v8
