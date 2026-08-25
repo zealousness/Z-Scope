@@ -535,6 +535,43 @@ def test_codex_preflight_checks_doctor_then_constant_model_probe(
     assert "CODEX_API_KEY" not in calls[1][1]["env"]
 
 
+def test_codex_preflight_schema_types_every_constant_binding() -> None:
+    properties = reviewer_runner._codex_preflight_schema()["properties"]
+    assert properties == {
+        "schema_version": {
+            "type": "string",
+            "const": reviewer_runner.CODEX_PREFLIGHT_SCHEMA_VERSION,
+        },
+        "status": {"type": "string", "const": "ready"},
+        "reviewer_model": {
+            "type": "string",
+            "const": reviewer_runner.CODEX_MODEL_IDENTITY,
+        },
+    }
+
+
+def test_codex_output_schemas_type_all_const_and_enum_nodes() -> None:
+    packet = _packet()
+    schemas = [
+        reviewer_runner._codex_preflight_schema(),
+        reviewer_runner._bound_decision_schema(
+            packet,
+            role="arbiter_opus",
+            model=reviewer_runner.CODEX_MODEL_IDENTITY,
+        ),
+    ]
+    for schema in schemas:
+        pending: list[object] = [schema]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, dict):
+                if "const" in node or "enum" in node:
+                    assert "type" in node
+                pending.extend(node.values())
+            elif isinstance(node, list):
+                pending.extend(node)
+
+
 def test_codex_preflight_stops_before_probe_when_auth_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1018,10 +1055,23 @@ def test_bound_decision_schema_freezes_packet_and_reviewer_identity() -> None:
         model="deepseek-v4-pro-0813:max",
     )
     properties = schema["properties"]
-    assert properties["packet_uid"] == {"const": packet["packet_uid"]}
-    assert properties["packet_sha256"] == {"const": packet["packet_sha256"]}
-    assert properties["reviewer_role"] == {"const": "primary_deepseek"}
-    assert properties["reviewer_model"] == {"const": "deepseek-v4-pro-0813:max"}
+    assert properties["packet_uid"] == {
+        "type": "string",
+        "const": packet["packet_uid"],
+    }
+    assert properties["packet_sha256"] == {
+        "type": "string",
+        "const": packet["packet_sha256"],
+        "pattern": "^[0-9a-f]{64}$",
+    }
+    assert properties["reviewer_role"] == {
+        "type": "string",
+        "const": "primary_deepseek",
+    }
+    assert properties["reviewer_model"] == {
+        "type": "string",
+        "const": "deepseek-v4-pro-0813:max",
+    }
 
 
 def test_fable_contract_regeneration_repairs_all_bounded_fields_once(
