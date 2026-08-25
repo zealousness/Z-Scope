@@ -385,8 +385,10 @@ def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume()
     assert "deepseek_primary_source_sha:" in workflow
     assert "checkpoint and complete primary recovery are mutually exclusive" in workflow
     assert "checkpoint run ID and immutable artifact ID must be provided together" in workflow
-    assert workflow.count("artifact-ids: ${{ inputs.") == 2
-    assert workflow.count("digest-mismatch: error") >= 2
+    assert workflow.count("scripts/download_e0_checkpoint_artifact.py") == 2
+    assert workflow.count("--artifact-id '${{ inputs.") == 2
+    assert workflow.count("--expected-run-id '${{ inputs.") == 2
+    assert workflow.count("--expected-source-sha '${{ inputs.") == 2
     assert workflow.count("--checkpoint-workflow-run-id") == 4
     assert "Revalidate complete primary artifact as a zero-call checkpoint" in workflow
     assert "--require-complete" in workflow
