@@ -40,6 +40,7 @@ from validate_range_v16_truth import (  # noqa: E402
 from run_e0_reviewers import (  # noqa: E402
     CODEX_MODEL_IDENTITY,
     _codex_arguments,
+    _reviewer_environment,
     assert_no_hidden_reasoning_output,
 )
 
@@ -539,13 +540,7 @@ def _author_one(
             str(codex),
             *_codex_arguments(output_schema="author-schema.json"),
         ]
-        env = {
-            key: item
-            for key, item in os.environ.items()
-            if "GROUND_TRUTH" not in key.upper()
-            and "BENCHMARK_TRUTH" not in key.upper()
-            and "SCORER" not in key.upper()
-        }
+        env = _reviewer_environment()
         completed = _run_author_command(
             command,
             prompt=prompt,
