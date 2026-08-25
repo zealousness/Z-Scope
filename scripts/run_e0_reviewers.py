@@ -2656,6 +2656,7 @@ def _validate_primary_checkpoint(
     *,
     reviewer: str,
     packet_source_sha: str,
+    expected_workflow_run_id: str,
     packets: Sequence[Mapping[str, Any]],
 ) -> None:
     manifest_path = root / "checkpoint-manifest.json"
@@ -2693,6 +2694,7 @@ def _validate_primary_checkpoint(
         or manifest.get("packet_source_sha") != packet_source_sha
         or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("retained_source_sha") or ""))
         or not str(manifest.get("workflow_run_id") or "").isdigit()
+        or manifest.get("workflow_run_id") != expected_workflow_run_id
         or manifest.get("environment") != "sealed-benchmark"
         or manifest.get("record_count") != len(packets)
         or manifest.get("checkpoint_contains_review_material") is not True
@@ -2813,6 +2815,13 @@ def run_primary(args: argparse.Namespace) -> int:
         seen.add(truth_id)
         packets.append(packet)
     checkpoint_source_sha = getattr(args, "checkpoint_source_sha", None)
+    checkpoint_workflow_run_id = getattr(args, "checkpoint_workflow_run_id", None)
+    if (checkpoint_source_sha is None) != (checkpoint_workflow_run_id is None):
+        raise E0GovernanceError(
+            "primary checkpoint source SHA and workflow run ID must be provided together"
+        )
+    if checkpoint_workflow_run_id is not None and not str(checkpoint_workflow_run_id).isdigit():
+        raise E0GovernanceError("primary checkpoint workflow run ID is invalid")
     if checkpoint_source_sha is not None:
         if not args.resume:
             raise E0GovernanceError("primary checkpoint validation requires resume mode")
@@ -2820,6 +2829,7 @@ def run_primary(args: argparse.Namespace) -> int:
             output,
             reviewer=args.reviewer,
             packet_source_sha=str(checkpoint_source_sha),
+            expected_workflow_run_id=str(checkpoint_workflow_run_id),
             packets=packets,
         )
         (output / "checkpoint-manifest.json").unlink()
@@ -3661,6 +3671,7 @@ def _parser() -> argparse.ArgumentParser:
     primary.add_argument("--workers", type=int, default=1, choices=range(1, 9))
     primary.add_argument("--resume", action="store_true")
     primary.add_argument("--checkpoint-source-sha")
+    primary.add_argument("--checkpoint-workflow-run-id")
     primary.set_defaults(handler=run_primary)
     checkpoint = subparsers.add_parser("checkpoint")
     checkpoint.add_argument("--reviewer", required=True, choices=("fable", "deepseek"))
