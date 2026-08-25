@@ -207,20 +207,27 @@ def _decision_schema_for_model() -> dict[str, Any]:
         "additionalProperties": False,
         "required": list(DECISION_FIELDS),
         "properties": {
-            "schema_version": {"const": DECISION_SCHEMA_VERSION},
+            "schema_version": {"type": "string", "const": DECISION_SCHEMA_VERSION},
             "packet_uid": {"type": "string"},
             "packet_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "reviewer_role": {"enum": ["primary_fable", "primary_deepseek", "arbiter_opus"]},
+            "reviewer_role": {
+                "type": "string",
+                "enum": ["primary_fable", "primary_deepseek", "arbiter_opus"],
+            },
             "reviewer_model": {"type": "string"},
             "contract_kind": {
+                "type": "string",
                 "enum": [
                     "concrete_trigger",
                     "public_api_contract",
                     "pattern_model",
                     "retired",
-                ]
+                ],
             },
-            "disposition": {"enum": ["keep", "correct", "retire", "unresolved"]},
+            "disposition": {
+                "type": "string",
+                "enum": ["keep", "correct", "retire", "unresolved"],
+            },
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "defect_taxonomy_id": {
                 "type": "string",
@@ -247,7 +254,10 @@ def _decision_schema_for_model() -> dict[str, Any]:
                         "end_line",
                     ],
                     "properties": {
-                        "kind": {"enum": ["primary", "secondary", "additional"]},
+                        "kind": {
+                            "type": "string",
+                            "enum": ["primary", "secondary", "additional"],
+                        },
                         "corrected": {"type": "boolean"},
                         "file": {"type": "string", "minLength": 1},
                         "function": {"type": "string", "minLength": 1},
@@ -294,7 +304,7 @@ def _decision_schema_for_model() -> dict[str, Any]:
                     "compile_requirements",
                 ],
                 "properties": {
-                    "kind": {"enum": ["fixed", "near_miss"]},
+                    "kind": {"type": "string", "enum": ["fixed", "near_miss"]},
                     "invariant_summary": {"type": "string", "minLength": 1},
                     "vulnerable_summary": {"type": "string", "minLength": 1},
                     "safe_summary": {"type": "string", "minLength": 1},
@@ -309,6 +319,7 @@ def _decision_schema_for_model() -> dict[str, Any]:
                 "type": "array",
                 "minItems": 1,
                 "items": {
+                    "type": "string",
                     "enum": [
                         "TRIGGER_PRESENT",
                         "PUBLIC_CONTRACT_SUPPORTED",
@@ -320,7 +331,7 @@ def _decision_schema_for_model() -> dict[str, Any]:
                         "CODE_COUNTEREVIDENCE",
                         "SAFE_PAIR_REQUIRED",
                         "INSUFFICIENT_EVIDENCE",
-                    ]
+                    ],
                 },
             },
         },
@@ -337,10 +348,17 @@ def _bound_decision_schema(
 
     schema = _decision_schema_for_model()
     properties = schema["properties"]
-    properties["packet_uid"] = {"const": str(packet["packet_uid"])}
-    properties["packet_sha256"] = {"const": str(packet["packet_sha256"])}
-    properties["reviewer_role"] = {"const": role}
-    properties["reviewer_model"] = {"const": model}
+    properties["packet_uid"] = {
+        "type": "string",
+        "const": str(packet["packet_uid"]),
+    }
+    properties["packet_sha256"] = {
+        "type": "string",
+        "const": str(packet["packet_sha256"]),
+        "pattern": "^[0-9a-f]{64}$",
+    }
+    properties["reviewer_role"] = {"type": "string", "const": role}
+    properties["reviewer_model"] = {"type": "string", "const": model}
     return schema
 
 
@@ -1071,9 +1089,12 @@ def _codex_preflight_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": ["schema_version", "status", "reviewer_model"],
         "properties": {
-            "schema_version": {"const": CODEX_PREFLIGHT_SCHEMA_VERSION},
-            "status": {"const": "ready"},
-            "reviewer_model": {"const": CODEX_MODEL_IDENTITY},
+            "schema_version": {
+                "type": "string",
+                "const": CODEX_PREFLIGHT_SCHEMA_VERSION,
+            },
+            "status": {"type": "string", "const": "ready"},
+            "reviewer_model": {"type": "string", "const": CODEX_MODEL_IDENTITY},
         },
     }
 

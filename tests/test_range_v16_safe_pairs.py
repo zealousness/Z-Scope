@@ -209,12 +209,38 @@ def test_safe_pair_author_schema_binds_all_frozen_identity_fields() -> None:
         final_decision_sha256=str(record["final_decision_sha256"]),
     )
     properties = schema["properties"]
-    assert properties["truth_id"] == {"const": record["truth_id"]}
-    assert properties["packet_sha256"] == {"const": record["packet_sha256"]}
-    assert properties["final_decision_sha256"] == {"const": record["final_decision_sha256"]}
+    assert properties["truth_id"] == {"type": "string", "const": record["truth_id"]}
+    assert properties["packet_sha256"] == {
+        "type": "string",
+        "const": record["packet_sha256"],
+        "pattern": "^[0-9a-f]{64}$",
+    }
+    assert properties["final_decision_sha256"] == {
+        "type": "string",
+        "const": record["final_decision_sha256"],
+        "pattern": "^[0-9a-f]{64}$",
+    }
 
     with pytest.raises(ValueError, match="identity must be fully bound"):
         _author_schema({"project_entry"}, truth_id=str(record["truth_id"]))
+
+
+def test_safe_pair_author_schema_types_all_const_and_enum_nodes() -> None:
+    schema = _author_schema(
+        {"project_entry", "CASE-1"},
+        truth_id="CASE-1",
+        packet_sha256="1" * 64,
+        final_decision_sha256="2" * 64,
+    )
+    pending: list[object] = [schema]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            if "const" in node or "enum" in node:
+                assert "type" in node
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
 
 
 def test_safe_pair_anonymity_includes_packet_functions_and_macros() -> None:
@@ -356,10 +382,19 @@ def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(
     assert result["status"] == "authored"
     assert len(prompts) == 2
     assert schemas[0] == schemas[1]
-    assert schemas[0]["properties"]["truth_id"] == {"const": record["truth_id"]}
-    assert schemas[0]["properties"]["packet_sha256"] == {"const": record["packet_sha256"]}
+    assert schemas[0]["properties"]["truth_id"] == {
+        "type": "string",
+        "const": record["truth_id"],
+    }
+    assert schemas[0]["properties"]["packet_sha256"] == {
+        "type": "string",
+        "const": record["packet_sha256"],
+        "pattern": "^[0-9a-f]{64}$",
+    }
     assert schemas[0]["properties"]["final_decision_sha256"] == {
-        "const": record["final_decision_sha256"]
+        "type": "string",
+        "const": record["final_decision_sha256"],
+        "pattern": "^[0-9a-f]{64}$",
     }
     source_pattern = schemas[0]["properties"]["vulnerable_source"]["pattern"]
     assert not re.search(source_pattern, invalid["vulnerable_source"])
