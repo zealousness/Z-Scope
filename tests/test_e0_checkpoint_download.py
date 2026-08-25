@@ -84,6 +84,23 @@ def test_checkpoint_archive_extracts_only_safe_bound_tree(tmp_path: Path) -> Non
     assert (output / "raw" / "CASE-000.json").is_file()
 
 
+def test_artifact_archive_can_require_a_formal_manifest(tmp_path: Path) -> None:
+    archive = tmp_path / "formal.zip"
+    output = tmp_path / "output"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("manifest.json", json.dumps({"schema_version": "formal"}))
+
+    checkpoint_download._extract_archive(
+        archive,
+        output=output,
+        required_members=("manifest.json",),
+    )
+
+    assert json.loads((output / "manifest.json").read_text(encoding="utf-8")) == {
+        "schema_version": "formal"
+    }
+
+
 def test_checkpoint_download_does_not_forward_token_to_signed_redirect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

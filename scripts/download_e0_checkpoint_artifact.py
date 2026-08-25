@@ -14,6 +14,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from http.client import HTTPMessage
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
@@ -28,6 +29,10 @@ class CheckpointArtifactError(ValueError):
     """Raised when immutable checkpoint recovery cannot be proven safe."""
 
 
+class CheckpointArtifactTransportError(CheckpointArtifactError):
+    """Raised when GitHub transport fails before artifact validation."""
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(
         self,
@@ -35,7 +40,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         fp: Any,
         code: int,
         msg: str,
-        headers: Mapping[str, str],
+        headers: HTTPMessage,
         newurl: str,
     ) -> None:
         return None
@@ -58,13 +63,15 @@ def _fetch_metadata(url: str, *, token: str) -> Mapping[str, Any]:
         with urllib.request.urlopen(request, timeout=60) as response:
             payload = response.read(MAX_ARCHIVE_BYTES + 1)
     except (OSError, urllib.error.URLError) as exc:
-        raise CheckpointArtifactError("GitHub artifact metadata request failed") from exc
+        raise CheckpointArtifactTransportError("GitHub artifact metadata request failed") from exc
     if len(payload) > MAX_ARCHIVE_BYTES:
         raise CheckpointArtifactError("GitHub artifact metadata response is too large")
     try:
         value = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CheckpointArtifactError("GitHub artifact metadata is not strict JSON") from exc
+        raise CheckpointArtifactTransportError(
+            "GitHub artifact metadata is not strict JSON"
+        ) from exc
     if not isinstance(value, Mapping):
         raise CheckpointArtifactError("GitHub artifact metadata must be an object")
     return value
@@ -110,13 +117,16 @@ def _download_archive(url: str, *, token: str, output: Path) -> str:
         response = opener.open(request, timeout=60)
     except urllib.error.HTTPError as exc:
         if exc.code not in {301, 302, 303, 307, 308}:
-            raise CheckpointArtifactError(
-                f"GitHub artifact download failed with HTTP {exc.code}"
-            ) from exc
+            error_type = (
+                CheckpointArtifactTransportError
+                if exc.code in {408, 429, 500, 502, 503, 504}
+                else CheckpointArtifactError
+            )
+            raise error_type(f"GitHub artifact download failed with HTTP {exc.code}") from exc
         location = exc.headers.get("Location")
         response = None
     except (OSError, urllib.error.URLError) as exc:
-        raise CheckpointArtifactError("GitHub artifact download request failed") from exc
+        raise CheckpointArtifactTransportError("GitHub artifact download request failed") from exc
 
     if location is not None:
         parsed = urlparse(location)
@@ -129,11 +139,18 @@ def _download_archive(url: str, *, token: str, output: Path) -> str:
         try:
             response = urllib.request.urlopen(signed_request, timeout=60)
         except urllib.error.HTTPError as exc:
-            raise CheckpointArtifactError(
+            error_type = (
+                CheckpointArtifactTransportError
+                if exc.code in {408, 429, 500, 502, 503, 504}
+                else CheckpointArtifactError
+            )
+            raise error_type(
                 f"GitHub signed artifact download failed with HTTP {exc.code}"
             ) from exc
         except (OSError, urllib.error.URLError) as exc:
-            raise CheckpointArtifactError("GitHub signed artifact download failed") from exc
+            raise CheckpointArtifactTransportError(
+                "GitHub signed artifact download failed"
+            ) from exc
 
     if response is None:
         raise CheckpointArtifactError("GitHub artifact download produced no response")
@@ -166,9 +183,17 @@ def _safe_member_path(name: str) -> PurePosixPath:
     return path
 
 
-def _extract_archive(archive: Path, *, output: Path) -> None:
+def _extract_archive(
+    archive: Path,
+    *,
+    output: Path,
+    required_members: Sequence[str] = ("checkpoint-manifest.json",),
+) -> None:
     if output.exists():
         raise CheckpointArtifactError("checkpoint output directory already exists")
+    required_paths = {_safe_member_path(name) for name in required_members}
+    if len(required_paths) != len(required_members):
+        raise CheckpointArtifactError("required archive members are invalid")
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".e0-checkpoint-", dir=output.parent))
     try:
@@ -178,9 +203,10 @@ def _extract_archive(archive: Path, *, output: Path) -> None:
                 if not infos or len({info.filename for info in infos}) != len(infos):
                     raise CheckpointArtifactError("checkpoint archive members are invalid")
                 total_size = 0
-                has_manifest = False
+                member_paths: set[PurePosixPath] = set()
                 for info in infos:
                     path = _safe_member_path(info.filename)
+                    member_paths.add(path)
                     mode = (info.external_attr >> 16) & 0o170000
                     if mode == stat.S_IFLNK:
                         raise CheckpointArtifactError("checkpoint archive contains a symlink")
@@ -190,10 +216,8 @@ def _extract_archive(archive: Path, *, output: Path) -> None:
                             raise CheckpointArtifactError(
                                 "checkpoint archive expands beyond the size limit"
                             )
-                    if path == PurePosixPath("checkpoint-manifest.json"):
-                        has_manifest = True
-                if not has_manifest:
-                    raise CheckpointArtifactError("checkpoint archive manifest is missing")
+                if not required_paths.issubset(member_paths):
+                    raise CheckpointArtifactError("required archive member is missing")
 
                 for info in infos:
                     relative = _safe_member_path(info.filename)
