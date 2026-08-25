@@ -40,13 +40,14 @@ from validate_range_v16_truth import (  # noqa: E402
 from run_e0_reviewers import (  # noqa: E402
     CODEX_MODEL_IDENTITY,
     _codex_arguments,
+    _codex_transport_schema,
     _reviewer_environment,
     assert_no_hidden_reasoning_output,
 )
 
 
 AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author.v1"
-RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v3"
+RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v4"
 AUTHOR_MODEL = CODEX_MODEL_IDENTITY
 _FORBIDDEN_SOURCE = re.compile(
     r"(?i)(?:#\s*(?:include|pragma)|\b(?:system|popen|fork|exec[a-z]*|__asm__|asm)\s*\()"
@@ -478,6 +479,7 @@ def _raw_author_envelope(
     final_decision_sha256: str,
     command: Sequence[str],
     output_schema: Mapping[str, Any],
+    contract_schema: Mapping[str, Any],
     attempts: Sequence[Mapping[str, Any]],
     accepted_attempt: int | None,
 ) -> dict[str, Any]:
@@ -489,6 +491,7 @@ def _raw_author_envelope(
         "author_model": AUTHOR_MODEL,
         "command_identity": [Path(command[0]).name, *command[1:]],
         "output_schema_sha256": sha256_value(output_schema),
+        "contract_schema_sha256": sha256_value(contract_schema),
         "attempts": list(attempts),
         "accepted_attempt": accepted_attempt,
     }
@@ -538,12 +541,13 @@ def _author_one(
             "int main(void). Return exactly the JSON schema. REQUEST:\n"
             + json.dumps(request, ensure_ascii=False, sort_keys=True)
         )
-        author_schema = _author_schema(
+        contract_schema = _author_schema(
             forbidden,
             truth_id=truth_id,
             packet_sha256=str(packet["packet_sha256"]),
             final_decision_sha256=final_sha,
         )
+        output_schema = _codex_transport_schema(contract_schema)
         command = [
             str(codex),
             *_codex_arguments(output_schema="author-schema.json"),
@@ -553,7 +557,7 @@ def _author_one(
             command,
             prompt=prompt,
             env=env,
-            output_schema=author_schema,
+            output_schema=output_schema,
         )
         if completed.returncode != 0:
             raise E0GovernanceError(f"safe-pair author failed: {truth_id}")
@@ -587,7 +591,8 @@ def _author_one(
                     packet_sha256=str(packet["packet_sha256"]),
                     final_decision_sha256=final_sha,
                     command=command,
-                    output_schema=author_schema,
+                    output_schema=output_schema,
+                    contract_schema=contract_schema,
                     attempts=attempts,
                     accepted_attempt=None,
                 ),
@@ -620,7 +625,7 @@ def _author_one(
                 command,
                 prompt=repair_prompt,
                 env=env,
-                output_schema=author_schema,
+                output_schema=output_schema,
             )
             if repaired.returncode != 0:
                 raise E0GovernanceError(
@@ -652,7 +657,8 @@ def _author_one(
                         packet_sha256=str(packet["packet_sha256"]),
                         final_decision_sha256=final_sha,
                         command=command,
-                        output_schema=author_schema,
+                        output_schema=output_schema,
+                        contract_schema=contract_schema,
                         attempts=attempts,
                         accepted_attempt=None,
                     ),
@@ -688,7 +694,8 @@ def _author_one(
                 packet_sha256=str(packet["packet_sha256"]),
                 final_decision_sha256=final_sha,
                 command=command,
-                output_schema=author_schema,
+                output_schema=output_schema,
+                contract_schema=contract_schema,
                 attempts=attempts,
                 accepted_attempt=accepted_attempt,
             ),
@@ -817,6 +824,7 @@ def validate_author_run(
             packet_sha256=str(expected["packet_sha256"]),
             final_decision_sha256=str(expected["final_decision_sha256"]),
         )
+        expected_output_schema = _codex_transport_schema(expected_author_schema)
         if (
             record.get("packet_sha256") != expected.get("packet_sha256")
             or record.get("final_decision_sha256") != expected.get("final_decision_sha256")
@@ -840,6 +848,7 @@ def validate_author_run(
             "author_model",
             "command_identity",
             "output_schema_sha256",
+            "contract_schema_sha256",
             "attempts",
             "accepted_attempt",
         }
@@ -857,7 +866,8 @@ def validate_author_run(
             or raw.get("packet_sha256") != expected.get("packet_sha256")
             or raw.get("final_decision_sha256") != expected.get("final_decision_sha256")
             or raw.get("author_model") != AUTHOR_MODEL
-            or raw.get("output_schema_sha256") != sha256_value(expected_author_schema)
+            or raw.get("output_schema_sha256") != sha256_value(expected_output_schema)
+            or raw.get("contract_schema_sha256") != sha256_value(expected_author_schema)
             or not command_valid
         ):
             raise E0GovernanceError(f"safe-pair raw author envelope is invalid: {truth_id}")
