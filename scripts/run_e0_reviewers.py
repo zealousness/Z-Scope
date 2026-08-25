@@ -1038,6 +1038,25 @@ def _claude_arguments(reviewer: str) -> list[str]:
     ]
 
 
+def _legacy_claude_arguments(reviewer: str) -> list[str]:
+    """Rebuild the exact pre-Codex-schema-fix Claude command for artifact import."""
+
+    schema = _decision_schema_for_model()
+    pending: list[Any] = [schema]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            if "const" in node or "enum" in node:
+                node.pop("type", None)
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    arguments = _claude_arguments(reviewer)
+    schema_index = arguments.index("--json-schema") + 1
+    arguments[schema_index] = json.dumps(schema, separators=(",", ":"))
+    return arguments
+
+
 def _codex_arguments(*, output_schema: str = "decision-schema.json") -> list[str]:
     """Return the frozen, tool-disabled Codex CLI contract for E0 work."""
 
@@ -2068,10 +2087,12 @@ def _validate_command_identity(values: Any, *, reviewer: str) -> None:
         ):
             raise E0GovernanceError("Codex command identity is invalid")
         return
+    current_arguments = _claude_arguments(reviewer)
+    legacy_arguments = _legacy_claude_arguments(reviewer)
     if (
         len(values) != 16
         or values[0] not in {"claude", "claude.cmd"}
-        or values[1:] != _claude_arguments(reviewer)
+        or values[1:] not in (current_arguments, legacy_arguments)
     ):
         raise E0GovernanceError("Claude command identity is invalid")
 
