@@ -21,7 +21,11 @@ from scripts.generate_range_v16_safe_pairs import (
     validate_author_run,
     validate_author_record,
 )
-from scripts.run_e0_reviewers import _codex_arguments
+from scripts.run_e0_reviewers import (
+    _assert_codex_transport_schema,
+    _codex_arguments,
+    _codex_transport_schema,
+)
 from tests.test_range_v16_truth import _normalized
 
 
@@ -94,6 +98,12 @@ def _author(record: dict) -> dict:
 def _raw_author(record: dict, author: dict) -> dict:
     packet = _packet(record)
     forbidden = _source_identifiers(packet, str(record["truth_id"]))
+    contract_schema = _author_schema(
+        forbidden,
+        truth_id=str(record["truth_id"]),
+        packet_sha256=str(record["packet_sha256"]),
+        final_decision_sha256=str(record["final_decision_sha256"]),
+    )
     return {
         "schema_version": RAW_AUTHOR_SCHEMA_VERSION,
         "truth_id": record["truth_id"],
@@ -104,14 +114,8 @@ def _raw_author(record: dict, author: dict) -> dict:
             "codex",
             *_codex_arguments(output_schema="author-schema.json"),
         ],
-        "output_schema_sha256": sha256_value(
-            _author_schema(
-                forbidden,
-                truth_id=str(record["truth_id"]),
-                packet_sha256=str(record["packet_sha256"]),
-                final_decision_sha256=str(record["final_decision_sha256"]),
-            )
-        ),
+        "output_schema_sha256": sha256_value(_codex_transport_schema(contract_schema)),
+        "contract_schema_sha256": sha256_value(contract_schema),
         "attempts": [
             {
                 "attempt": 1,
@@ -124,6 +128,28 @@ def _raw_author(record: dict, author: dict) -> dict:
         ],
         "accepted_attempt": 1,
     }
+
+
+def test_safe_pair_codex_schema_preserves_strict_local_contract() -> None:
+    strict = _author_schema(
+        {"project_specific_function"},
+        truth_id="PAIR-001",
+        packet_sha256="a" * 64,
+        final_decision_sha256="b" * 64,
+    )
+    original = json.loads(json.dumps(strict))
+    projected = _codex_transport_schema(strict)
+
+    assert strict == original
+    for field in ("vulnerable_source", "fixed_or_near_miss_source"):
+        assert strict["properties"][field]["minLength"] == 1
+        assert strict["properties"][field]["maxLength"] == 32768
+        assert "(?" in strict["properties"][field]["pattern"]
+        assert "minLength" not in projected["properties"][field]
+        assert "maxLength" not in projected["properties"][field]
+        assert "pattern" not in projected["properties"][field]
+    assert projected["properties"]["packet_sha256"]["pattern"] == "^[0-9a-f]{64}$"
+    _assert_codex_transport_schema(projected)
 
 
 def test_safe_pair_author_rejects_project_specific_identifiers() -> None:
@@ -396,7 +422,13 @@ def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(
         "const": record["final_decision_sha256"],
         "pattern": "^[0-9a-f]{64}$",
     }
-    source_pattern = schemas[0]["properties"]["vulnerable_source"]["pattern"]
+    assert "pattern" not in schemas[0]["properties"]["vulnerable_source"]
+    source_pattern = _author_schema(
+        _source_identifiers(packet, str(record["truth_id"])),
+        truth_id=str(record["truth_id"]),
+        packet_sha256=str(record["packet_sha256"]),
+        final_decision_sha256=str(record["final_decision_sha256"]),
+    )["properties"]["vulnerable_source"]["pattern"]
     assert not re.search(source_pattern, invalid["vulnerable_source"])
     assert not re.search(source_pattern, invalid["fixed_or_near_miss_source"])
     assert re.search(source_pattern, repaired["vulnerable_source"])
