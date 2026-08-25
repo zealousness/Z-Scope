@@ -442,6 +442,24 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
 def test_review_command_identity_disables_tools_and_binds_harnesses() -> None:
     fable = ["claude", *reviewer_runner._claude_arguments("fable")]
     reviewer_runner._validate_command_identity(fable, reviewer="fable")
+    legacy_fable = ["claude", *reviewer_runner._legacy_claude_arguments("fable")]
+    reviewer_runner._validate_command_identity(legacy_fable, reviewer="fable")
+    assert legacy_fable != fable
+    legacy_schema_index = legacy_fable.index("--json-schema") + 1
+    legacy_schema = json.loads(legacy_fable[legacy_schema_index])
+    pending: list[object] = [legacy_schema]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            if "const" in node or "enum" in node:
+                assert "type" not in node
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    tampered_legacy = list(legacy_fable)
+    tampered_legacy[3] = "glm-5.3-untrusted"
+    with pytest.raises(ValueError, match="Claude command identity"):
+        reviewer_runner._validate_command_identity(tampered_legacy, reviewer="fable")
     without_tool_isolation = [value for index, value in enumerate(fable) if index not in {12, 13}]
     with pytest.raises(ValueError, match="Claude command identity"):
         reviewer_runner._validate_command_identity(without_tool_isolation, reviewer="fable")
@@ -2359,6 +2377,39 @@ def _review_pair(packet: dict, reviewer: str) -> tuple[dict, dict]:
         reviewer
     )
     return decision, _review_raw(packet, reviewer, decision)
+
+
+def test_existing_fable_primary_accepts_only_exact_legacy_schema_command(
+    tmp_path: Path,
+) -> None:
+    packet = _packet()
+    decision, raw = _review_pair(packet, "fable")
+    raw["command_identity"] = [
+        "claude",
+        *reviewer_runner._legacy_claude_arguments("fable"),
+    ]
+    decision_path = tmp_path / "decision.json"
+    raw_path = tmp_path / "raw.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    raw_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    reviewer_runner._validate_existing_primary(
+        packet,
+        reviewer="fable",
+        decision_path=decision_path,
+        raw_path=raw_path,
+    )
+
+    tampered = deepcopy(raw)
+    tampered["command_identity"][3] = "glm-5.3-untrusted"
+    raw_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="Claude command identity"):
+        reviewer_runner._validate_existing_primary(
+            packet,
+            reviewer="fable",
+            decision_path=decision_path,
+            raw_path=raw_path,
+        )
 
 
 def _write_arbitration_fixture(tmp_path: Path) -> tuple[Path, Path, Path, list[dict]]:
