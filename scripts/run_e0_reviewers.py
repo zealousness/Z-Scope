@@ -61,6 +61,7 @@ CODEX_CLI_VERSION = "0.144.4"
 CODEX_MODEL_ID = "gpt-5.6-sol"
 CODEX_REASONING_EFFORT = "xhigh"
 CODEX_MODEL_IDENTITY = f"{CODEX_MODEL_ID}:{CODEX_REASONING_EFFORT}"
+CODEX_PREFLIGHT_SCHEMA_VERSION = "zscope.range-v16-codex-preflight.v1"
 FORMAT_VALIDATION_SCHEMA_VERSION = "zscope.range-v16-format-validation.v3"
 PRIMARY_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-primary-checkpoint.v1"
 PRIMARY_FAILURE_SCHEMA_VERSION = "zscope.range-v16-primary-failure.v1"
@@ -1045,6 +1046,165 @@ def _codex_arguments(*, output_schema: str = "decision-schema.json") -> list[str
     ]
 
 
+def _reviewer_environment() -> dict[str, str]:
+    """Return the answer-isolated subprocess environment for protected reviewers."""
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if "GROUND_TRUTH" not in key.upper()
+        and "BENCHMARK_TRUTH" not in key.upper()
+        and "SCORER" not in key.upper()
+    }
+    # An absent GitHub secret is expanded as an empty string. Do not let that
+    # shadow a valid CODEX_HOME login on a sealed self-hosted runner.
+    if not env.get("CODEX_API_KEY"):
+        env.pop("CODEX_API_KEY", None)
+    env["DSH_PERMISSION_MODE"] = "read-only"
+    return env
+
+
+def _codex_preflight_schema() -> dict[str, Any]:
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "status", "reviewer_model"],
+        "properties": {
+            "schema_version": {"const": CODEX_PREFLIGHT_SCHEMA_VERSION},
+            "status": {"const": "ready"},
+            "reviewer_model": {"const": CODEX_MODEL_IDENTITY},
+        },
+    }
+
+
+def _codex_doctor_failure_code(report: Mapping[str, Any]) -> str | None:
+    """Reduce the redacted doctor report to a fixed answer-free failure class."""
+
+    if report.get("schemaVersion") != 1:
+        return "codex_doctor_contract_invalid"
+    checks = report.get("checks")
+    if not isinstance(checks, Mapping):
+        return "codex_doctor_contract_invalid"
+
+    def status(check_id: str) -> str | None:
+        check = checks.get(check_id)
+        if not isinstance(check, Mapping):
+            return None
+        value = check.get("status")
+        return value if isinstance(value, str) else None
+
+    if status("auth.credentials") != "ok":
+        return "codex_auth_unavailable"
+    if status("network.provider_reachability") != "ok":
+        return "codex_provider_unreachable"
+    if status("installation") != "ok" or status("runtime.provenance") != "ok":
+        return "codex_runtime_invalid"
+    runtime = checks.get("runtime.provenance")
+    assert isinstance(runtime, Mapping)
+    details = runtime.get("details")
+    if not isinstance(details, Mapping) or details.get("version") != CODEX_CLI_VERSION:
+        return "codex_runtime_invalid"
+    return None
+
+
+def _verify_codex_doctor(codex_command: str, *, env: Mapping[str, str]) -> None:
+    completed = subprocess.run(
+        [
+            codex_command,
+            "doctor",
+            "--json",
+            "--disable",
+            "shell_tool",
+            "--config",
+            'model_provider="openai"',
+        ],
+        env=dict(env),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+        check=False,
+        timeout=60,
+    )
+    try:
+        report = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise E0GovernanceError(
+            "Codex readiness failed: codex_doctor_contract_invalid; "
+            f"exit_code={completed.returncode}; "
+            f"stdout_sha256={sha256_value(completed.stdout)}; "
+            f"stderr_sha256={sha256_value(completed.stderr)}"
+        ) from exc
+    if not isinstance(report, Mapping):
+        raise E0GovernanceError("Codex readiness failed: codex_doctor_contract_invalid")
+    failure_code = _codex_doctor_failure_code(report)
+    if failure_code is not None:
+        raise E0GovernanceError(f"Codex readiness failed: {failure_code}")
+
+
+def run_codex_preflight(args: argparse.Namespace) -> int:
+    """Verify sealed Codex auth/network state and, once per run, model readiness."""
+
+    if os.environ.get("Z_SCOPE_E0_REVIEW_ENVIRONMENT") != "sealed-benchmark":
+        raise E0GovernanceError("Codex preflight requires sealed-benchmark environment")
+    codex = shutil.which("codex.cmd" if os.name == "nt" else "codex")
+    if not codex:
+        raise E0GovernanceError("Codex CLI executable is unavailable")
+    env = _reviewer_environment()
+    _verify_codex_doctor(str(codex), env=env)
+    if args.doctor_only:
+        print("Codex readiness passed: doctor-only")
+        return 0
+
+    expected = {
+        "schema_version": CODEX_PREFLIGHT_SCHEMA_VERSION,
+        "status": "ready",
+        "reviewer_model": CODEX_MODEL_IDENTITY,
+    }
+    with tempfile.TemporaryDirectory(prefix="zscope-e0-codex-preflight-") as raw_temp:
+        temp_root = Path(raw_temp)
+        _json_dump(temp_root / "codex-preflight-schema.json", _codex_preflight_schema())
+        prompt = (
+            "This is an answer-free protected runtime readiness probe. Do not use tools or "
+            "external knowledge. Return exactly this JSON object and nothing else: "
+            + json.dumps(expected, separators=(",", ":"), sort_keys=True)
+        )
+        completed = subprocess.run(
+            [
+                str(codex),
+                *_codex_arguments(output_schema="codex-preflight-schema.json"),
+            ],
+            input=prompt,
+            cwd=temp_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            check=False,
+            timeout=300,
+        )
+    if completed.returncode != 0:
+        raise E0GovernanceError(
+            "Codex readiness failed: codex_model_probe_nonzero; "
+            f"exit_code={completed.returncode}; "
+            f"stdout_sha256={sha256_value(completed.stdout)}; "
+            f"stderr_sha256={sha256_value(completed.stderr)}"
+        )
+    assert_no_hidden_reasoning_output(completed.stdout)
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise E0GovernanceError(
+            "Codex readiness failed: codex_model_probe_contract_invalid"
+        ) from exc
+    if result != expected:
+        raise E0GovernanceError("Codex readiness failed: codex_model_probe_contract_invalid")
+    print(f"Codex readiness passed: {CODEX_MODEL_IDENTITY}")
+    return 0
+
+
 def _deepseek_patch_text() -> str:
     """Return the sealed DSH overlay, including its auditable provider route."""
     return (
@@ -1155,14 +1315,7 @@ def _run_model(
                 "Do not use web search or external knowledge.",
             ]
 
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if "GROUND_TRUTH" not in key.upper()
-            and "BENCHMARK_TRUTH" not in key.upper()
-            and "SCORER" not in key.upper()
-        }
-        env["DSH_PERMISSION_MODE"] = "read-only"
+        env = _reviewer_environment()
         completed = subprocess.run(
             command,
             input=prompt if reviewer in {"fable", "opus"} else None,
@@ -3664,6 +3817,9 @@ def merge_arbitration_shards(args: argparse.Namespace) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    codex_preflight = subparsers.add_parser("codex-preflight")
+    codex_preflight.add_argument("--doctor-only", action="store_true")
+    codex_preflight.set_defaults(handler=run_codex_preflight)
     primary = subparsers.add_parser("primary")
     primary.add_argument("--reviewer", required=True, choices=("fable", "deepseek"))
     primary.add_argument("--packet-dir", required=True, type=Path)

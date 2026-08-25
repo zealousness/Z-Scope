@@ -345,12 +345,25 @@ def test_review_provenance_separates_workflow_and_packet_commits() -> None:
 def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
     assert workflow.count("claude --version | awk '{print $1}'") == 3
-    assert workflow.count("codex --version") == 3
+    assert workflow.count("codex --version") == 4
     assert workflow.count("dsh --version") == 3
     assert workflow.count("reviewer harness versions:") == 3
     assert workflow.count('"2.1.233"') == 3
-    assert workflow.count(f'"codex-cli {reviewer_runner.CODEX_CLI_VERSION}"') == 3
+    assert workflow.count(f'"codex-cli {reviewer_runner.CODEX_CLI_VERSION}"') == 4
     assert workflow.count(f'"{reviewer_runner.DSH_VERSION}"') == 3
+
+
+def test_protected_review_gates_codex_calls_on_answer_free_readiness() -> None:
+    workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
+    assert "codex_readiness:" in workflow
+    assert "name: codex answer-free readiness" in workflow
+    assert "needs: codex_readiness" in workflow
+    assert workflow.count("scripts/run_e0_reviewers.py codex-preflight") == 3
+    assert workflow.count("codex-preflight --doctor-only") == 2
+    assert workflow.count("CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}") == 3
+    readiness = workflow.index("python3 scripts/run_e0_reviewers.py codex-preflight\n")
+    primary = workflow.index("  primary:\n")
+    assert readiness < primary
 
 
 def test_protected_review_workflow_canonicalizes_github_artifact_digest() -> None:
@@ -450,6 +463,100 @@ def test_review_command_identity_disables_tools_and_binds_harnesses() -> None:
     codex[3] = "gpt-5.6-sol-untrusted"
     with pytest.raises(ValueError, match="Codex command identity"):
         reviewer_runner._validate_command_identity(codex, reviewer="opus")
+
+
+def _codex_doctor_report(*, auth: str = "ok", network: str = "ok") -> dict:
+    return {
+        "schemaVersion": 1,
+        "checks": {
+            "auth.credentials": {"status": auth},
+            "network.provider_reachability": {"status": network},
+            "installation": {"status": "ok"},
+            "runtime.provenance": {
+                "status": "ok",
+                "details": {"version": reviewer_runner.CODEX_CLI_VERSION},
+            },
+        },
+    }
+
+
+def test_codex_doctor_reduces_only_to_fixed_answer_free_classes() -> None:
+    assert reviewer_runner._codex_doctor_failure_code(_codex_doctor_report()) is None
+    assert (
+        reviewer_runner._codex_doctor_failure_code(_codex_doctor_report(auth="fail"))
+        == "codex_auth_unavailable"
+    )
+    assert (
+        reviewer_runner._codex_doctor_failure_code(_codex_doctor_report(network="fail"))
+        == "codex_provider_unreachable"
+    )
+    wrong_version = _codex_doctor_report()
+    wrong_version["checks"]["runtime.provenance"]["details"]["version"] = "0.0.0"
+    assert reviewer_runner._codex_doctor_failure_code(wrong_version) == "codex_runtime_invalid"
+    assert (
+        reviewer_runner._codex_doctor_failure_code({"schemaVersion": 1, "checks": {}})
+        == "codex_auth_unavailable"
+    )
+
+
+def test_codex_preflight_checks_doctor_then_constant_model_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    expected = {
+        "schema_version": reviewer_runner.CODEX_PREFLIGHT_SCHEMA_VERSION,
+        "status": "ready",
+        "reviewer_model": reviewer_runner.CODEX_MODEL_IDENTITY,
+    }
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((command, kwargs))
+        stdout = (
+            json.dumps(_codex_doctor_report()) if command[1] == "doctor" else json.dumps(expected)
+        )
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("CODEX_API_KEY", "")
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda _: "/bin/codex")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+
+    assert reviewer_runner.run_codex_preflight(SimpleNamespace(doctor_only=False)) == 0
+    assert len(calls) == 2
+    assert calls[0][0][1:3] == ["doctor", "--json"]
+    assert calls[1][0] == [
+        "/bin/codex",
+        *reviewer_runner._codex_arguments(output_schema="codex-preflight-schema.json"),
+    ]
+    assert calls[1][1]["input"].startswith(
+        "This is an answer-free protected runtime readiness probe."
+    )
+    assert "CODEX_API_KEY" not in calls[0][1]["env"]
+    assert "CODEX_API_KEY" not in calls[1][1]["env"]
+
+
+def test_codex_preflight_stops_before_probe_when_auth_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            returncode=1,
+            stdout=json.dumps(_codex_doctor_report(auth="fail")),
+            stderr="secret-bearing diagnostic",
+        )
+
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setattr(reviewer_runner.shutil, "which", lambda _: "/bin/codex")
+    monkeypatch.setattr(reviewer_runner.subprocess, "run", fake_run)
+
+    with pytest.raises(reviewer_runner.E0GovernanceError, match="codex_auth_unavailable") as raised:
+        reviewer_runner.run_codex_preflight(SimpleNamespace(doctor_only=False))
+    assert calls == 1
+    assert "secret-bearing diagnostic" not in str(raised.value)
 
 
 def test_deepseek_accepts_only_direct_json_or_one_exact_json_fence() -> None:
