@@ -213,22 +213,33 @@ jobs:
             --expected-source-sha '${{ inputs.deepseek_checkpoint_source_sha || inputs.source_sha }}' \
             --expected-name 'range-v16-primary-checkpoint-deepseek-${{ inputs.deepseek_checkpoint_source_sha || inputs.source_sha }}' \
             --output-dir review-evidence/deepseek
-      - name: Restore complete Fable primary artifact
-        if: matrix.reviewer == 'fable' && inputs.fable_primary_run_id != ''
-        uses: actions/download-artifact@v8
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.fable_primary_run_id }}
-          name: range-v16-primary-fable-${{ inputs.fable_primary_source_sha || inputs.source_sha }}
-          path: retained-primary/fable
-      - name: Restore complete DeepSeek primary artifact
-        if: matrix.reviewer == 'deepseek' && inputs.deepseek_primary_run_id != ''
-        uses: actions/download-artifact@v8
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.deepseek_primary_run_id }}
-          name: range-v16-primary-deepseek-${{ inputs.deepseek_primary_source_sha || inputs.source_sha }}
-          path: retained-primary/deepseek
+      - name: Restore exact complete primary artifact
+        if: ${{ (matrix.reviewer == 'fable' && inputs.fable_primary_run_id != '') || (matrix.reviewer == 'deepseek' && inputs.deepseek_primary_run_id != '') }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+          FABLE_PRIMARY_RUN_ID: ${{ inputs.fable_primary_run_id }}
+          FABLE_PRIMARY_SOURCE_SHA: ${{ inputs.fable_primary_source_sha }}
+          DEEPSEEK_PRIMARY_RUN_ID: ${{ inputs.deepseek_primary_run_id }}
+          DEEPSEEK_PRIMARY_SOURCE_SHA: ${{ inputs.deepseek_primary_source_sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          reviewer='${{ matrix.reviewer }}'
+          if [[ "$reviewer" = fable ]]; then
+            primary_run_id="$FABLE_PRIMARY_RUN_ID"
+            primary_source_sha="${FABLE_PRIMARY_SOURCE_SHA:-$PACKET_SOURCE_SHA}"
+          else
+            primary_run_id="$DEEPSEEK_PRIMARY_RUN_ID"
+            primary_source_sha="${DEEPSEEK_PRIMARY_SOURCE_SHA:-$PACKET_SOURCE_SHA}"
+          fi
+          artifact_name="range-v16-primary-$reviewer-$primary_source_sha"
+          python3 scripts/download_e0_run_artifacts.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --expected-run-id "$primary_run_id" \
+            --expected-head-sha "$primary_source_sha" \
+            --artifact "$artifact_name=retained-primary/$reviewer"
       - name: Revalidate complete primary artifact as a zero-call checkpoint
         if: ${{ (matrix.reviewer == 'fable' && inputs.fable_primary_run_id != '') || (matrix.reviewer == 'deepseek' && inputs.deepseek_primary_run_id != '') }}
         env:
@@ -371,21 +382,27 @@ jobs:
           test "$codex_version" = "codex-cli 0.144.4"
           test "$dsh_version" = "0.1.0-rc.6"
           test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-primary-fable-${{ inputs.source_sha }}
-          path: review-evidence/fable
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-primary-deepseek-${{ inputs.source_sha }}
-          path: review-evidence/deepseek
-      - name: Restore verified arbitration shard checkpoint
-        if: ${{ github.run_attempt > 1 }}
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: range-v16-arbitration-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}
-          path: restored-checkpoint/codex-shard
+      - name: Restore exact current-run arbitration inputs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          set -euo pipefail
+          umask 077
+          artifact_args=(
+            --artifact 'range-v16-primary-fable-${{ inputs.source_sha }}=review-evidence/fable'
+            --artifact 'range-v16-primary-deepseek-${{ inputs.source_sha }}=review-evidence/deepseek'
+          )
+          if (( GITHUB_RUN_ATTEMPT > 1 )); then
+            artifact_args+=(
+              --optional-artifact 'range-v16-arbitration-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}=restored-checkpoint/codex-shard'
+            )
+          fi
+          python3 scripts/download_e0_run_artifacts.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$GITHUB_SHA" \
+            "${artifact_args[@]}"
       - id: arbitration_paths
         name: Prepare content-bound arbitration shard resume
         env:
