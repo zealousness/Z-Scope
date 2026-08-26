@@ -48,6 +48,8 @@ from run_e0_reviewers import (  # noqa: E402
 
 AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author.v1"
 RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v4"
+AUTHOR_FAILURE_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-failure.v1"
+AUTHOR_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-checkpoint.v1"
 AUTHOR_MODEL = CODEX_MODEL_IDENTITY
 _FORBIDDEN_SOURCE = re.compile(
     r"(?i)(?:#\s*(?:include|pragma)|\b(?:system|popen|fork|exec[a-z]*|__asm__|asm)\s*\()"
@@ -472,6 +474,17 @@ def _raw_attempt(
     }
 
 
+def _transport_retry_signal(
+    completed: subprocess.CompletedProcess[str],
+) -> dict[str, Any]:
+    return {
+        "initial_exit_code": completed.returncode,
+        "initial_stdout_sha256": sha256_value(completed.stdout),
+        "initial_stdout_retained": False,
+        "initial_stderr_sha256": sha256_value(completed.stderr),
+    }
+
+
 def _raw_author_envelope(
     *,
     truth_id: str,
@@ -482,8 +495,9 @@ def _raw_author_envelope(
     contract_schema: Mapping[str, Any],
     attempts: Sequence[Mapping[str, Any]],
     accepted_attempt: int | None,
+    transport_retry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    envelope: dict[str, Any] = {
         "schema_version": RAW_AUTHOR_SCHEMA_VERSION,
         "truth_id": truth_id,
         "packet_sha256": packet_sha256,
@@ -494,6 +508,198 @@ def _raw_author_envelope(
         "contract_schema_sha256": sha256_value(contract_schema),
         "attempts": list(attempts),
         "accepted_attempt": accepted_attempt,
+    }
+    if transport_retry is not None:
+        envelope["transport_retry"] = dict(transport_retry)
+    return envelope
+
+
+class _SafePairAuthorProcessError(E0GovernanceError):
+    def __init__(
+        self,
+        truth_id: str,
+        *,
+        initial: Mapping[str, Any],
+        retry: subprocess.CompletedProcess[str],
+    ) -> None:
+        self.failure_record = {
+            "truth_id": truth_id,
+            "failure_code": "reviewer_process_nonzero",
+            **dict(initial),
+            "retry_exit_code": retry.returncode,
+            "retry_stdout_sha256": sha256_value(retry.stdout),
+            "retry_stdout_retained": False,
+            "retry_stderr_sha256": sha256_value(retry.stderr),
+            "answer_material_present": False,
+        }
+        super().__init__(
+            f"safe-pair author failed after transport retry: {truth_id}; "
+            f"stderr_sha256={self.failure_record['retry_stderr_sha256']}"
+        )
+
+
+def _validate_transport_retry(value: Any) -> None:
+    if (
+        not isinstance(value, Mapping)
+        or set(value)
+        != {
+            "initial_exit_code",
+            "initial_stdout_sha256",
+            "initial_stdout_retained",
+            "initial_stderr_sha256",
+        }
+        or not isinstance(value.get("initial_exit_code"), int)
+        or isinstance(value.get("initial_exit_code"), bool)
+        or value.get("initial_exit_code") == 0
+        or value.get("initial_stdout_retained") is not False
+        or any(
+            not re.fullmatch(r"[0-9a-f]{64}", str(value.get(field) or ""))
+            for field in ("initial_stdout_sha256", "initial_stderr_sha256")
+        )
+    ):
+        raise E0GovernanceError("safe-pair author transport retry is invalid")
+
+
+def _validate_raw_author_envelope(
+    raw: Mapping[str, Any],
+    author: Mapping[str, Any],
+    *,
+    truth_id: str,
+    packet: Mapping[str, Any],
+    normalized_record: Mapping[str, Any],
+) -> None:
+    forbidden = _source_identifiers(packet, truth_id)
+    expected_author_schema = _author_schema(
+        forbidden,
+        truth_id=truth_id,
+        packet_sha256=str(normalized_record["packet_sha256"]),
+        final_decision_sha256=str(normalized_record["final_decision_sha256"]),
+    )
+    expected_output_schema = _codex_transport_schema(expected_author_schema)
+    raw_fields = {
+        "schema_version",
+        "truth_id",
+        "packet_sha256",
+        "final_decision_sha256",
+        "author_model",
+        "command_identity",
+        "output_schema_sha256",
+        "contract_schema_sha256",
+        "attempts",
+        "accepted_attempt",
+    }
+    if "transport_retry" in raw:
+        raw_fields.add("transport_retry")
+    command_identity = raw.get("command_identity")
+    command_valid = (
+        isinstance(command_identity, list)
+        and bool(command_identity)
+        and command_identity[0] in {"codex", "codex.cmd"}
+        and command_identity[1:] == _codex_arguments(output_schema="author-schema.json")
+    )
+    if (
+        set(raw) != raw_fields
+        or raw.get("schema_version") != RAW_AUTHOR_SCHEMA_VERSION
+        or raw.get("truth_id") != truth_id
+        or raw.get("packet_sha256") != normalized_record.get("packet_sha256")
+        or raw.get("final_decision_sha256") != normalized_record.get("final_decision_sha256")
+        or raw.get("author_model") != AUTHOR_MODEL
+        or raw.get("output_schema_sha256") != sha256_value(expected_output_schema)
+        or raw.get("contract_schema_sha256") != sha256_value(expected_author_schema)
+        or not command_valid
+    ):
+        raise E0GovernanceError(f"safe-pair raw author envelope is invalid: {truth_id}")
+    if "transport_retry" in raw:
+        _validate_transport_retry(raw["transport_retry"])
+    attempts = raw.get("attempts")
+    accepted_attempt = raw.get("accepted_attempt")
+    if (
+        not isinstance(attempts, list)
+        or len(attempts) not in {1, 2}
+        or accepted_attempt != len(attempts)
+    ):
+        raise E0GovernanceError(f"safe-pair raw author attempts are invalid: {truth_id}")
+    for index, attempt in enumerate(attempts, start=1):
+        expected_kind = "initial" if index == 1 else "contract_repair"
+        validation_class = attempt.get("validation_class") if isinstance(attempt, Mapping) else None
+        expected_validation = index < len(attempts)
+        if (
+            not isinstance(attempt, Mapping)
+            or set(attempt)
+            != {
+                "attempt",
+                "kind",
+                "exit_code",
+                "stdout",
+                "stderr_sha256",
+                "validation_class",
+            }
+            or attempt.get("attempt") != index
+            or attempt.get("kind") != expected_kind
+            or attempt.get("exit_code") != 0
+            or not isinstance(attempt.get("stdout"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(attempt.get("stderr_sha256") or ""))
+            or (
+                expected_validation
+                and validation_class not in _REPAIRABLE_AUTHOR_VALIDATION_CLASSES
+            )
+            or (not expected_validation and validation_class is not None)
+        ):
+            raise E0GovernanceError(f"safe-pair raw author attempt is invalid: {truth_id}")
+        assert_no_hidden_reasoning_output(str(attempt["stdout"]))
+    accepted_author = dict(_extract(str(attempts[-1]["stdout"])))
+    if accepted_author != dict(author):
+        raise E0GovernanceError(f"safe-pair raw accepted author binding is invalid: {truth_id}")
+
+
+def _validated_existing_author_pair(
+    root: Path,
+    packet: Mapping[str, Any],
+    normalized_record: Mapping[str, Any],
+    *,
+    status: str,
+) -> dict[str, Any]:
+    truth_id = str(normalized_record["truth_id"])
+    author_dir = root / "authors"
+    raw_dir = root / "raw"
+    author_candidate = author_dir / f"{truth_id}.json"
+    raw_candidate = raw_dir / f"{truth_id}.json"
+    if (
+        author_dir.is_symlink()
+        or raw_dir.is_symlink()
+        or author_candidate.is_symlink()
+        or raw_candidate.is_symlink()
+    ):
+        raise E0GovernanceError("safe-pair author run cannot contain symlink artifacts")
+    author_path = author_candidate.resolve(strict=True)
+    raw_path = raw_candidate.resolve(strict=True)
+    if author_path.parent != author_dir.resolve(strict=True) or raw_path.parent != raw_dir.resolve(
+        strict=True
+    ):
+        raise E0GovernanceError("safe-pair author artifact escaped its bound directory")
+    author = _object(author_path)
+    validate_author_record(
+        author,
+        truth_id=truth_id,
+        packet_sha256=str(normalized_record["packet_sha256"]),
+        final_decision_sha256=str(normalized_record["final_decision_sha256"]),
+        forbidden_identifiers=_source_identifiers(packet, truth_id),
+    )
+    raw = _object(raw_path)
+    _validate_raw_author_envelope(
+        raw,
+        author,
+        truth_id=truth_id,
+        packet=packet,
+        normalized_record=normalized_record,
+    )
+    return {
+        "truth_id": truth_id,
+        "packet_sha256": normalized_record["packet_sha256"],
+        "final_decision_sha256": normalized_record["final_decision_sha256"],
+        "author_sha256": sha256_file(author_path),
+        "raw_sha256": sha256_file(raw_path),
+        "status": status,
     }
 
 
@@ -513,15 +719,12 @@ def _author_one(
     if author_path.exists() or raw_path.exists():
         if not resume or not author_path.is_file() or not raw_path.is_file():
             raise E0GovernanceError(f"incomplete or unexpected safe-pair author: {truth_id}")
-        author = _object(author_path)
-        validate_author_record(
-            author,
-            truth_id=truth_id,
-            packet_sha256=str(packet["packet_sha256"]),
-            final_decision_sha256=final_sha,
-            forbidden_identifiers=forbidden,
+        return _validated_existing_author_pair(
+            output,
+            packet,
+            normalized_record,
+            status="reused",
         )
-        status = "reused"
     else:
         codex = shutil.which("codex.cmd" if os.name == "nt" else "codex")
         if not codex:
@@ -559,8 +762,23 @@ def _author_one(
             env=env,
             output_schema=output_schema,
         )
+        transport_retry: dict[str, Any] | None = None
         if completed.returncode != 0:
-            raise E0GovernanceError(f"safe-pair author failed: {truth_id}")
+            transport_retry = _transport_retry_signal(completed)
+            completed = _run_author_command(
+                command,
+                prompt=prompt,
+                env=env,
+                output_schema=output_schema,
+            )
+        if completed.returncode != 0:
+            if transport_retry is None:
+                raise E0GovernanceError("safe-pair transport retry state is invalid")
+            raise _SafePairAuthorProcessError(
+                truth_id,
+                initial=transport_retry,
+                retry=completed,
+            )
         assert_no_hidden_reasoning_output(completed.stdout)
         author = dict(_extract(completed.stdout))
         attempts: list[dict[str, Any]] = []
@@ -595,6 +813,7 @@ def _author_one(
                     contract_schema=contract_schema,
                     attempts=attempts,
                     accepted_attempt=None,
+                    transport_retry=transport_retry,
                 ),
             )
             repair_prompt = (
@@ -661,6 +880,7 @@ def _author_one(
                         contract_schema=contract_schema,
                         attempts=attempts,
                         accepted_attempt=None,
+                        transport_retry=transport_retry,
                     ),
                 )
                 raise E0GovernanceError(
@@ -698,18 +918,399 @@ def _author_one(
                 contract_schema=contract_schema,
                 attempts=attempts,
                 accepted_attempt=accepted_attempt,
+                transport_retry=transport_retry,
             ),
         )
         _json_dump(author_path, author)
         status = "authored"
-    return {
+    return _validated_existing_author_pair(
+        output,
+        packet,
+        normalized_record,
+        status=status,
+    )
+
+
+def _confirmable_work(
+    normalized: Mapping[str, Any],
+    *,
+    packet_dir: Path,
+) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
+    work: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
+    for record in normalized["records"]:
+        if record["final_decision"]["contract_kind"] not in {
+            "concrete_trigger",
+            "public_api_contract",
+        }:
+            continue
+        truth_id = str(record["truth_id"])
+        packet = _object(packet_dir / f"{truth_id}.json")
+        validate_review_packet(packet)
+        if packet.get("packet_sha256") != record.get("packet_sha256"):
+            raise E0GovernanceError(f"safe-pair packet binding mismatch: {truth_id}")
+        work.append((packet, record))
+    return work
+
+
+def _failure_manifest_content_sha256(value: Mapping[str, Any]) -> str:
+    unsigned = dict(value)
+    unsigned.pop("content_sha256", None)
+    return sha256_value(unsigned)
+
+
+def _failure_code(exc: BaseException) -> str:
+    if isinstance(exc, _SafePairAuthorProcessError):
+        return "reviewer_process_nonzero"
+    message = str(exc)
+    if "contract repair" in message:
+        return "contract_repair_failure"
+    if isinstance(exc, (json.JSONDecodeError, UnicodeError)):
+        return "reviewer_output_invalid"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "reviewer_timeout"
+    if isinstance(exc, E0GovernanceError):
+        return "author_contract_failure"
+    return "author_harness_failure"
+
+
+def _author_failure_record(truth_id: str, exc: BaseException) -> dict[str, Any]:
+    process = exc.failure_record if isinstance(exc, _SafePairAuthorProcessError) else {}
+    record = {
         "truth_id": truth_id,
-        "packet_sha256": packet["packet_sha256"],
-        "final_decision_sha256": final_sha,
-        "author_sha256": sha256_file(author_path),
-        "raw_sha256": sha256_file(raw_path),
-        "status": status,
+        "failure_code": _failure_code(exc),
+        "error_sha256": sha256_value(str(exc)),
+        "initial_exit_code": process.get("initial_exit_code"),
+        "initial_stdout_sha256": process.get("initial_stdout_sha256"),
+        "initial_stdout_retained": process.get("initial_stdout_retained", False),
+        "initial_stderr_sha256": process.get("initial_stderr_sha256"),
+        "retry_exit_code": process.get("retry_exit_code"),
+        "retry_stdout_sha256": process.get("retry_stdout_sha256"),
+        "retry_stdout_retained": process.get("retry_stdout_retained", False),
+        "retry_stderr_sha256": process.get("retry_stderr_sha256"),
+        "answer_material_present": False,
     }
+    return record
+
+
+def _validate_failure_record(value: Any) -> None:
+    fields = {
+        "truth_id",
+        "failure_code",
+        "error_sha256",
+        "initial_exit_code",
+        "initial_stdout_sha256",
+        "initial_stdout_retained",
+        "initial_stderr_sha256",
+        "retry_exit_code",
+        "retry_stdout_sha256",
+        "retry_stdout_retained",
+        "retry_stderr_sha256",
+        "answer_material_present",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or not isinstance(value.get("truth_id"), str)
+        or not value["truth_id"]
+        or value.get("failure_code")
+        not in {
+            "reviewer_process_nonzero",
+            "contract_repair_failure",
+            "reviewer_output_invalid",
+            "reviewer_timeout",
+            "author_contract_failure",
+            "author_harness_failure",
+        }
+        or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("error_sha256") or ""))
+        or value.get("initial_stdout_retained") is not False
+        or value.get("retry_stdout_retained") is not False
+        or value.get("answer_material_present") is not False
+    ):
+        raise E0GovernanceError("safe-pair failure record is invalid")
+    transport_fields = (
+        "initial_stdout_sha256",
+        "initial_stderr_sha256",
+        "retry_stdout_sha256",
+        "retry_stderr_sha256",
+    )
+    if value["failure_code"] == "reviewer_process_nonzero":
+        if (
+            not isinstance(value.get("initial_exit_code"), int)
+            or isinstance(value.get("initial_exit_code"), bool)
+            or value.get("initial_exit_code") == 0
+            or not isinstance(value.get("retry_exit_code"), int)
+            or isinstance(value.get("retry_exit_code"), bool)
+            or value.get("retry_exit_code") == 0
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", str(value.get(field) or ""))
+                for field in transport_fields
+            )
+        ):
+            raise E0GovernanceError("safe-pair transport failure record is invalid")
+    elif any(value.get(field) is not None for field in transport_fields) or any(
+        value.get(field) is not None for field in ("initial_exit_code", "retry_exit_code")
+    ):
+        raise E0GovernanceError("safe-pair non-transport failure signals are invalid")
+
+
+def _write_failure_manifest(
+    output: Path,
+    *,
+    normalized_sha256: str,
+    expected_record_count: int,
+    verified_record_count: int,
+    failure_records: Sequence[Mapping[str, Any]],
+) -> None:
+    ordered = sorted(
+        (dict(record) for record in failure_records), key=lambda item: item["truth_id"]
+    )
+    for record in ordered:
+        _validate_failure_record(record)
+    manifest = {
+        "schema_version": AUTHOR_FAILURE_SCHEMA_VERSION,
+        "author_model": AUTHOR_MODEL,
+        "normalized_decisions_sha256": normalized_sha256,
+        "expected_record_count": expected_record_count,
+        "verified_record_count": verified_record_count,
+        "failure_record_count": len(ordered),
+        "failure_records": ordered,
+        "diagnostic_answer_material_present": False,
+        "requires_resume_revalidation": True,
+    }
+    manifest["content_sha256"] = _failure_manifest_content_sha256(manifest)
+    _json_dump(output / "failure-manifest.json", manifest)
+
+
+def _load_failure_manifest(
+    path: Path,
+    *,
+    normalized_sha256: str,
+    expected_record_count: int,
+) -> list[Mapping[str, Any]]:
+    if not path.is_file():
+        return []
+    manifest = _object(path)
+    fields = {
+        "schema_version",
+        "author_model",
+        "normalized_decisions_sha256",
+        "expected_record_count",
+        "verified_record_count",
+        "failure_record_count",
+        "failure_records",
+        "diagnostic_answer_material_present",
+        "requires_resume_revalidation",
+        "content_sha256",
+    }
+    records = manifest.get("failure_records")
+    if (
+        set(manifest) != fields
+        or manifest.get("schema_version") != AUTHOR_FAILURE_SCHEMA_VERSION
+        or manifest.get("author_model") != AUTHOR_MODEL
+        or manifest.get("normalized_decisions_sha256") != normalized_sha256
+        or manifest.get("expected_record_count") != expected_record_count
+        or not isinstance(manifest.get("verified_record_count"), int)
+        or not isinstance(records, list)
+        or manifest.get("failure_record_count") != len(records)
+        or manifest.get("diagnostic_answer_material_present") is not False
+        or manifest.get("requires_resume_revalidation") is not True
+        or manifest.get("content_sha256") != _failure_manifest_content_sha256(manifest)
+    ):
+        raise E0GovernanceError("safe-pair failure manifest is invalid")
+    seen: set[str] = set()
+    for record in records:
+        _validate_failure_record(record)
+        truth_id = str(record["truth_id"])
+        if truth_id in seen:
+            raise E0GovernanceError("safe-pair failure record is duplicated")
+        seen.add(truth_id)
+    return records
+
+
+def _checkpoint_manifest_content_sha256(value: Mapping[str, Any]) -> str:
+    unsigned = dict(value)
+    unsigned.pop("content_sha256", None)
+    return sha256_value(unsigned)
+
+
+def build_author_checkpoint(args: argparse.Namespace) -> int:
+    if os.environ.get("Z_SCOPE_E0_REVIEW_ENVIRONMENT") != "sealed-benchmark":
+        raise E0GovernanceError("safe-pair checkpoint requires sealed-benchmark environment")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(args.packet_source_sha)):
+        raise E0GovernanceError("safe-pair checkpoint packet source SHA is invalid")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(args.retained_source_sha)):
+        raise E0GovernanceError("safe-pair checkpoint retained source SHA is invalid")
+    if args.packet_source_sha != args.retained_source_sha:
+        raise E0GovernanceError("safe-pair checkpoint cannot cross source commits")
+    if not str(args.workflow_run_id).isdigit():
+        raise E0GovernanceError("safe-pair checkpoint workflow run ID is invalid")
+    retained = args.retained_dir.resolve(strict=True)
+    output = args.output_dir.resolve()
+    if output.exists():
+        raise E0GovernanceError(f"safe-pair checkpoint output already exists: {output}")
+    normalized = _object(args.normalized_decisions)
+    validate_normalized_decisions(normalized)
+    normalized_sha256 = sha256_file(args.normalized_decisions)
+    work = _confirmable_work(normalized, packet_dir=args.packet_dir.resolve(strict=True))
+    output.mkdir(parents=True)
+    (output / "authors").mkdir()
+    (output / "raw").mkdir()
+    verified: list[dict[str, Any]] = []
+    invalid: list[dict[str, str]] = []
+    incomplete: list[dict[str, Any]] = []
+    for packet, record in work:
+        truth_id = str(record["truth_id"])
+        author_path = retained / "authors" / f"{truth_id}.json"
+        raw_path = retained / "raw" / f"{truth_id}.json"
+        if not author_path.exists() and not raw_path.exists():
+            continue
+        if not author_path.is_file() or not raw_path.is_file():
+            incomplete.append(
+                {
+                    "truth_id": truth_id,
+                    "author_present": author_path.is_file(),
+                    "raw_present": raw_path.is_file(),
+                }
+            )
+            continue
+        try:
+            verified_record = _validated_existing_author_pair(
+                retained,
+                packet,
+                record,
+                status="reused",
+            )
+        except (E0GovernanceError, OSError, json.JSONDecodeError) as exc:
+            invalid.append({"truth_id": truth_id, "error_sha256": sha256_value(str(exc))})
+            continue
+        shutil.copy2(author_path, output / "authors" / author_path.name)
+        shutil.copy2(raw_path, output / "raw" / raw_path.name)
+        verified.append(verified_record)
+    failure_records = _load_failure_manifest(
+        retained / "failure-manifest.json",
+        normalized_sha256=normalized_sha256,
+        expected_record_count=len(work),
+    )
+    verified.sort(key=lambda item: item["truth_id"])
+    invalid.sort(key=lambda item: item["truth_id"])
+    incomplete.sort(key=lambda item: item["truth_id"])
+    manifest = {
+        "schema_version": AUTHOR_CHECKPOINT_SCHEMA_VERSION,
+        "author_model": AUTHOR_MODEL,
+        "packet_source_sha": args.packet_source_sha,
+        "retained_source_sha": args.retained_source_sha,
+        "workflow_run_id": str(args.workflow_run_id),
+        "normalized_decisions_sha256": normalized_sha256,
+        "expected_record_count": len(work),
+        "verified_record_count": len(verified),
+        "verified_records": verified,
+        "invalid_records": invalid,
+        "incomplete_records": incomplete,
+        "failure_records": list(failure_records),
+        "checkpoint_contains_author_material": bool(verified),
+        "diagnostic_answer_material_present": False,
+        "requires_resume_revalidation": True,
+    }
+    manifest["content_sha256"] = _checkpoint_manifest_content_sha256(manifest)
+    _json_dump(output / "checkpoint-manifest.json", manifest)
+    return 0
+
+
+def _validate_author_checkpoint(
+    root: Path,
+    *,
+    normalized_path: Path,
+    packet_dir: Path,
+    packet_source_sha: str,
+    workflow_run_id: str,
+) -> None:
+    normalized = _object(normalized_path)
+    validate_normalized_decisions(normalized)
+    work = _confirmable_work(normalized, packet_dir=packet_dir.resolve(strict=True))
+    manifest = _object(root / "checkpoint-manifest.json")
+    fields = {
+        "schema_version",
+        "author_model",
+        "packet_source_sha",
+        "retained_source_sha",
+        "workflow_run_id",
+        "normalized_decisions_sha256",
+        "expected_record_count",
+        "verified_record_count",
+        "verified_records",
+        "invalid_records",
+        "incomplete_records",
+        "failure_records",
+        "checkpoint_contains_author_material",
+        "diagnostic_answer_material_present",
+        "requires_resume_revalidation",
+        "content_sha256",
+    }
+    verified = manifest.get("verified_records")
+    if (
+        set(manifest) != fields
+        or manifest.get("schema_version") != AUTHOR_CHECKPOINT_SCHEMA_VERSION
+        or manifest.get("author_model") != AUTHOR_MODEL
+        or manifest.get("packet_source_sha") != packet_source_sha
+        or manifest.get("retained_source_sha") != packet_source_sha
+        or manifest.get("workflow_run_id") != workflow_run_id
+        or manifest.get("normalized_decisions_sha256") != sha256_file(normalized_path)
+        or manifest.get("expected_record_count") != len(work)
+        or not isinstance(verified, list)
+        or manifest.get("verified_record_count") != len(verified)
+        or not isinstance(manifest.get("invalid_records"), list)
+        or not isinstance(manifest.get("incomplete_records"), list)
+        or not isinstance(manifest.get("failure_records"), list)
+        or manifest.get("checkpoint_contains_author_material") is not bool(verified)
+        or manifest.get("diagnostic_answer_material_present") is not False
+        or manifest.get("requires_resume_revalidation") is not True
+        or manifest.get("content_sha256") != _checkpoint_manifest_content_sha256(manifest)
+    ):
+        raise E0GovernanceError("safe-pair checkpoint manifest is invalid")
+    by_truth = {str(record["truth_id"]): (packet, record) for packet, record in work}
+    seen: set[str] = set()
+    for checkpoint_record in verified:
+        if not isinstance(checkpoint_record, Mapping):
+            raise E0GovernanceError("safe-pair checkpoint verified record is invalid")
+        truth_id = str(checkpoint_record.get("truth_id") or "")
+        if truth_id not in by_truth or truth_id in seen:
+            raise E0GovernanceError("safe-pair checkpoint truth coverage is invalid")
+        packet, normalized_record = by_truth[truth_id]
+        actual = _validated_existing_author_pair(
+            root,
+            packet,
+            normalized_record,
+            status="reused",
+        )
+        if actual != dict(checkpoint_record):
+            raise E0GovernanceError("safe-pair checkpoint record binding is invalid")
+        seen.add(truth_id)
+    author_names = {path.stem for path in (root / "authors").glob("*.json")}
+    raw_names = {path.stem for path in (root / "raw").glob("*.json")}
+    if author_names != seen or raw_names != seen:
+        raise E0GovernanceError("safe-pair checkpoint contains unbound author files")
+    for record in manifest["failure_records"]:
+        _validate_failure_record(record)
+        if str(record["truth_id"]) not in by_truth:
+            raise E0GovernanceError("safe-pair checkpoint failure record is unbound")
+    for record in manifest["invalid_records"]:
+        if (
+            not isinstance(record, Mapping)
+            or set(record) != {"truth_id", "error_sha256"}
+            or str(record.get("truth_id") or "") not in by_truth
+            or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("error_sha256") or ""))
+        ):
+            raise E0GovernanceError("safe-pair checkpoint invalid record is invalid")
+    for record in manifest["incomplete_records"]:
+        if (
+            not isinstance(record, Mapping)
+            or set(record) != {"truth_id", "author_present", "raw_present"}
+            or str(record.get("truth_id") or "") not in by_truth
+            or not isinstance(record.get("author_present"), bool)
+            or not isinstance(record.get("raw_present"), bool)
+            or record["author_present"] == record["raw_present"]
+        ):
+            raise E0GovernanceError("safe-pair checkpoint incomplete record is invalid")
 
 
 def author_pairs(args: argparse.Namespace) -> int:
@@ -723,23 +1324,27 @@ def author_pairs(args: argparse.Namespace) -> int:
         raise E0GovernanceError("safe-pair author run is already complete")
     normalized = _object(args.normalized_decisions)
     validate_normalized_decisions(normalized)
-    confirmable = [
-        record
-        for record in normalized["records"]
-        if record["final_decision"]["contract_kind"] in {"concrete_trigger", "public_api_contract"}
-    ]
     packet_dir = args.packet_dir.resolve(strict=True)
-    work: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
-    for record in confirmable:
-        truth_id = str(record["truth_id"])
-        packet = _object(packet_dir / f"{truth_id}.json")
-        validate_review_packet(packet)
-        if packet.get("packet_sha256") != record.get("packet_sha256"):
-            raise E0GovernanceError(f"safe-pair packet binding mismatch: {truth_id}")
-        work.append((packet, record))
+    work = _confirmable_work(normalized, packet_dir=packet_dir)
+    checkpoint_source_sha = getattr(args, "checkpoint_source_sha", None)
+    checkpoint_workflow_run_id = getattr(args, "checkpoint_workflow_run_id", None)
+    if args.resume:
+        if checkpoint_source_sha is None or checkpoint_workflow_run_id is None:
+            raise E0GovernanceError("safe-pair resume requires a bound checkpoint")
+        _validate_author_checkpoint(
+            output,
+            normalized_path=args.normalized_decisions,
+            packet_dir=packet_dir,
+            packet_source_sha=str(checkpoint_source_sha),
+            workflow_run_id=str(checkpoint_workflow_run_id),
+        )
+        (output / "checkpoint-manifest.json").unlink()
+    elif checkpoint_source_sha is not None or checkpoint_workflow_run_id is not None:
+        raise E0GovernanceError("safe-pair checkpoint validation requires resume mode")
     records: list[dict[str, Any]] = []
     for offset in range(0, len(work), args.workers):
         batch = work[offset : offset + args.workers]
+        failures: list[dict[str, Any]] = []
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
                 executor.submit(
@@ -753,8 +1358,30 @@ def author_pairs(args: argparse.Namespace) -> int:
             }
             for future in as_completed(futures):
                 truth_id = futures[future]
-                records.append(future.result())
-                print(f"safe-pair: {len(records)}/{len(work)} complete ({truth_id})", flush=True)
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    failures.append(_author_failure_record(truth_id, exc))
+                    continue
+                records.append(result)
+                print(
+                    f"safe-pair: {len(records)}/{len(work)} complete ({truth_id})",
+                    flush=True,
+                )
+        if failures:
+            _write_failure_manifest(
+                output,
+                normalized_sha256=sha256_file(args.normalized_decisions),
+                expected_record_count=len(work),
+                verified_record_count=len(records),
+                failure_records=failures,
+            )
+            first = sorted(failures, key=lambda item: item["truth_id"])[0]
+            raise E0GovernanceError(
+                "safe-pair author batch failed: "
+                f"failure_code={first['failure_code']}; truth_id={first['truth_id']}; "
+                f"failure_count={len(failures)}"
+            )
     records.sort(key=lambda item: str(item["truth_id"]))
     _json_dump(
         manifest_path,
@@ -818,13 +1445,6 @@ def validate_author_run(
         validate_review_packet(packet)
         if packet.get("packet_sha256") != expected.get("packet_sha256"):
             raise E0GovernanceError(f"safe-pair packet binding mismatch: {truth_id}")
-        expected_author_schema = _author_schema(
-            _source_identifiers(packet, truth_id),
-            truth_id=truth_id,
-            packet_sha256=str(expected["packet_sha256"]),
-            final_decision_sha256=str(expected["final_decision_sha256"]),
-        )
-        expected_output_schema = _codex_transport_schema(expected_author_schema)
         if (
             record.get("packet_sha256") != expected.get("packet_sha256")
             or record.get("final_decision_sha256") != expected.get("final_decision_sha256")
@@ -833,85 +1453,18 @@ def validate_author_run(
             raise E0GovernanceError(f"safe-pair author run identity mismatch: {truth_id}")
         author_path = (author_root / "authors" / f"{truth_id}.json").resolve(strict=True)
         raw_path = (author_root / "raw" / f"{truth_id}.json").resolve(strict=True)
-        if author_path.is_symlink() or raw_path.is_symlink():
-            raise E0GovernanceError("safe-pair author run cannot contain symlink artifacts")
         if sha256_file(author_path) != record.get("author_sha256") or sha256_file(
             raw_path
         ) != record.get("raw_sha256"):
             raise E0GovernanceError(f"safe-pair author artifact hash mismatch: {truth_id}")
-        raw = _object(raw_path)
-        raw_fields = {
-            "schema_version",
-            "truth_id",
-            "packet_sha256",
-            "final_decision_sha256",
-            "author_model",
-            "command_identity",
-            "output_schema_sha256",
-            "contract_schema_sha256",
-            "attempts",
-            "accepted_attempt",
-        }
-        command_identity = raw.get("command_identity")
-        command_valid = (
-            isinstance(command_identity, list)
-            and bool(command_identity)
-            and command_identity[0] in {"codex", "codex.cmd"}
-            and command_identity[1:] == _codex_arguments(output_schema="author-schema.json")
+        actual = _validated_existing_author_pair(
+            author_root,
+            packet,
+            expected,
+            status=str(record["status"]),
         )
-        if (
-            set(raw) != raw_fields
-            or raw.get("schema_version") != RAW_AUTHOR_SCHEMA_VERSION
-            or raw.get("truth_id") != truth_id
-            or raw.get("packet_sha256") != expected.get("packet_sha256")
-            or raw.get("final_decision_sha256") != expected.get("final_decision_sha256")
-            or raw.get("author_model") != AUTHOR_MODEL
-            or raw.get("output_schema_sha256") != sha256_value(expected_output_schema)
-            or raw.get("contract_schema_sha256") != sha256_value(expected_author_schema)
-            or not command_valid
-        ):
-            raise E0GovernanceError(f"safe-pair raw author envelope is invalid: {truth_id}")
-        attempts = raw.get("attempts")
-        accepted_attempt = raw.get("accepted_attempt")
-        if (
-            not isinstance(attempts, list)
-            or len(attempts) not in {1, 2}
-            or accepted_attempt != len(attempts)
-        ):
-            raise E0GovernanceError(f"safe-pair raw author attempts are invalid: {truth_id}")
-        for index, attempt in enumerate(attempts, start=1):
-            expected_kind = "initial" if index == 1 else "contract_repair"
-            validation_class = (
-                attempt.get("validation_class") if isinstance(attempt, Mapping) else None
-            )
-            expected_validation = index < len(attempts)
-            if (
-                not isinstance(attempt, Mapping)
-                or set(attempt)
-                != {
-                    "attempt",
-                    "kind",
-                    "exit_code",
-                    "stdout",
-                    "stderr_sha256",
-                    "validation_class",
-                }
-                or attempt.get("attempt") != index
-                or attempt.get("kind") != expected_kind
-                or attempt.get("exit_code") != 0
-                or not isinstance(attempt.get("stdout"), str)
-                or not re.fullmatch(r"[0-9a-f]{64}", str(attempt.get("stderr_sha256") or ""))
-                or (
-                    expected_validation
-                    and validation_class not in _REPAIRABLE_AUTHOR_VALIDATION_CLASSES
-                )
-                or (not expected_validation and validation_class is not None)
-            ):
-                raise E0GovernanceError(f"safe-pair raw author attempt is invalid: {truth_id}")
-            assert_no_hidden_reasoning_output(str(attempt["stdout"]))
-        accepted_author = dict(_extract(str(attempts[-1]["stdout"])))
-        if accepted_author != _object(author_path):
-            raise E0GovernanceError(f"safe-pair raw accepted author binding is invalid: {truth_id}")
+        if actual != dict(record):
+            raise E0GovernanceError(f"safe-pair author artifact hash mismatch: {truth_id}")
         by_truth[truth_id] = record
     if set(by_truth) != set(expected_records):
         raise E0GovernanceError("safe-pair author run is incomplete")
@@ -1008,7 +1561,18 @@ def _parser() -> argparse.ArgumentParser:
     author.add_argument("--output-dir", required=True, type=Path)
     author.add_argument("--workers", type=int, choices=range(1, 9), default=4)
     author.add_argument("--resume", action="store_true")
+    author.add_argument("--checkpoint-source-sha")
+    author.add_argument("--checkpoint-workflow-run-id")
     author.set_defaults(handler=author_pairs)
+    checkpoint = sub.add_parser("checkpoint")
+    checkpoint.add_argument("--packet-dir", required=True, type=Path)
+    checkpoint.add_argument("--normalized-decisions", required=True, type=Path)
+    checkpoint.add_argument("--retained-dir", required=True, type=Path)
+    checkpoint.add_argument("--output-dir", required=True, type=Path)
+    checkpoint.add_argument("--packet-source-sha", required=True)
+    checkpoint.add_argument("--retained-source-sha", required=True)
+    checkpoint.add_argument("--workflow-run-id", required=True)
+    checkpoint.set_defaults(handler=build_author_checkpoint)
     materialize = sub.add_parser("materialize")
     materialize.add_argument("--packet-dir", required=True, type=Path)
     materialize.add_argument("--normalized-decisions", required=True, type=Path)
