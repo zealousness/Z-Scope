@@ -11,12 +11,16 @@ import pytest
 
 from scripts.e0_review_governance import PACKET_SCHEMA_VERSION, sha256_file, sha256_value
 from scripts.generate_range_v16_safe_pairs import (
+    AUTHOR_CHECKPOINT_SCHEMA_VERSION,
+    AUTHOR_FAILURE_SCHEMA_VERSION,
     AUTHOR_MODEL,
     AUTHOR_SCHEMA_VERSION,
     RAW_AUTHOR_SCHEMA_VERSION,
     _author_one,
     _author_schema,
     _source_identifiers,
+    author_pairs,
+    build_author_checkpoint,
     materialize_pairs,
     validate_author_run,
     validate_author_record,
@@ -361,6 +365,207 @@ def test_safe_pair_author_uses_one_bounded_contract_repair(
         expected_records={record["truth_id"]: record},
         packet_dir=packet_dir,
     ) == {record["truth_id"]: result}
+
+
+def test_safe_pair_author_retries_nonzero_transport_without_retaining_bodies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    expected = _author(record)
+    responses = iter(
+        (
+            subprocess.CompletedProcess(
+                ["codex"],
+                2,
+                stdout="partial answer material",
+                stderr="temporary provider body",
+            ),
+            subprocess.CompletedProcess(
+                ["codex"],
+                0,
+                stdout=json.dumps(expected),
+                stderr="",
+            ),
+        )
+    )
+    calls: list[tuple[list[str], str]] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, str(kwargs["input"])))
+        return next(responses)
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    result = _author_one(packet, record, output=tmp_path / "author", resume=False)
+
+    assert result["status"] == "authored"
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    raw = json.loads(
+        (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
+    )
+    assert raw["transport_retry"] == {
+        "initial_exit_code": 2,
+        "initial_stdout_sha256": sha256_value("partial answer material"),
+        "initial_stdout_retained": False,
+        "initial_stderr_sha256": sha256_value("temporary provider body"),
+    }
+    assert "partial answer material" not in json.dumps(raw)
+    assert "temporary provider body" not in json.dumps(raw)
+
+
+def test_safe_pair_author_transport_retry_is_bounded_and_answer_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            2,
+            stdout="untrusted partial output",
+            stderr="provider unavailable",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    with pytest.raises(ValueError, match="failed after transport retry"):
+        _author_one(packet, record, output=tmp_path / "author", resume=False)
+
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert not (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").exists()
+
+
+def test_safe_pair_batch_collects_completed_futures_before_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized_path = tmp_path / "normalized.json"
+    _dump(normalized_path, {"records": []})
+    work = [
+        ({"packet_sha256": str(index) * 64}, {"truth_id": f"T-{index:03d}"})
+        for index in range(1, 5)
+    ]
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.validate_normalized_decisions",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._confirmable_work",
+        lambda *_, **__: work,
+    )
+
+    def fake_author(
+        _packet_value: object,
+        record: dict,
+        **_: object,
+    ) -> dict:
+        truth_id = record["truth_id"]
+        calls.append(truth_id)
+        if truth_id == "T-001":
+            raise ValueError("synthetic failure")
+        return {"truth_id": truth_id}
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs._author_one", fake_author)
+    args = SimpleNamespace(
+        output_dir=tmp_path / "author",
+        normalized_decisions=normalized_path,
+        packet_dir=tmp_path,
+        workers=4,
+        resume=False,
+        checkpoint_source_sha=None,
+        checkpoint_workflow_run_id=None,
+    )
+    with pytest.raises(ValueError, match="failure_count=1"):
+        author_pairs(args)
+
+    assert sorted(calls) == ["T-001", "T-002", "T-003", "T-004"]
+    failure = json.loads(
+        (tmp_path / "author" / "failure-manifest.json").read_text(encoding="utf-8")
+    )
+    assert failure["schema_version"] == AUTHOR_FAILURE_SCHEMA_VERSION
+    assert failure["verified_record_count"] == 3
+    assert failure["failure_record_count"] == 1
+    assert failure["failure_records"][0]["answer_material_present"] is False
+
+
+def test_safe_pair_checkpoint_revalidates_and_resumes_without_model_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    normalized_path = tmp_path / "normalized.json"
+    packet_dir = tmp_path / "packets"
+    retained = tmp_path / "retained"
+    checkpoint = tmp_path / "checkpoint"
+    _dump(normalized_path, normalized)
+    _dump(packet_dir / f"{record['truth_id']}.json", _packet(record))
+    author = _author(record)
+    _dump(retained / "authors" / f"{record['truth_id']}.json", author)
+    _dump(retained / "raw" / f"{record['truth_id']}.json", _raw_author(record, author))
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    source_sha = "a" * 40
+    run_id = "32862797901"
+
+    assert (
+        build_author_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                normalized_decisions=normalized_path,
+                retained_dir=retained,
+                output_dir=checkpoint,
+                packet_source_sha=source_sha,
+                retained_source_sha=source_sha,
+                workflow_run_id=run_id,
+            )
+        )
+        == 0
+    )
+    checkpoint_manifest = json.loads(
+        (checkpoint / "checkpoint-manifest.json").read_text(encoding="utf-8")
+    )
+    assert checkpoint_manifest["schema_version"] == AUTHOR_CHECKPOINT_SCHEMA_VERSION
+    assert checkpoint_manifest["verified_record_count"] == 1
+    assert checkpoint_manifest["checkpoint_contains_author_material"] is True
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.subprocess.run",
+        lambda *_args, **_kwargs: pytest.fail("resume must not call the model"),
+    )
+    assert (
+        author_pairs(
+            SimpleNamespace(
+                output_dir=checkpoint,
+                normalized_decisions=normalized_path,
+                packet_dir=packet_dir,
+                workers=4,
+                resume=True,
+                checkpoint_source_sha=source_sha,
+                checkpoint_workflow_run_id=run_id,
+            )
+        )
+        == 0
+    )
+    completed = json.loads((checkpoint / "manifest.json").read_text(encoding="utf-8"))
+    assert completed["record_count"] == 1
+    assert completed["records"][0]["status"] == "reused"
+    assert not (checkpoint / "checkpoint-manifest.json").exists()
 
 
 def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(

@@ -591,29 +591,103 @@ jobs:
           path: review-provenance/review-provenance.json
           if-no-files-found: error
           retention-days: 90
-      - name: Normalize adjudication and author safe pairs
+      - id: pair_author_paths
+        name: Normalize adjudication and prepare safe-pair resume
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
-          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
+          set -euo pipefail
           umask 077
-          python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only
-          mkdir -p pair-author-evidence
+          current_root="$RUNNER_TEMP/range-v16-pair-author-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$current_root"
+          mkdir -p "$current_root"
           python3 scripts/generate_range_v16_truth.py normalize \
             --packet-dir test/range/benchmark/v16/review-packets \
             --packet-catalog test/range/benchmark/v16/review-packet-catalog.json \
             --review-root review-evidence \
             --review-bundle-manifest review-evidence/review-bundle-manifest.json \
             --review-provenance review-provenance/review-provenance.json \
-            --output pair-author-evidence/normalized-decisions.json
+            --output "$current_root/normalized-decisions.json"
+          resume=false
+          if (( GITHUB_RUN_ATTEMPT > 1 )); then
+            prior_attempt=$((GITHUB_RUN_ATTEMPT - 1))
+            prior_root="$RUNNER_TEMP/range-v16-pair-author-$GITHUB_RUN_ID-$prior_attempt"
+            if [[ -d "$prior_root/author/authors" && -d "$prior_root/author/raw" ]]; then
+              python3 scripts/generate_range_v16_safe_pairs.py checkpoint \
+                --packet-dir test/range/benchmark/v16/review-packets \
+                --normalized-decisions "$current_root/normalized-decisions.json" \
+                --retained-dir "$prior_root/author" \
+                --output-dir "$current_root/author" \
+                --packet-source-sha "$PACKET_SOURCE_SHA" \
+                --retained-source-sha "$PACKET_SOURCE_SHA" \
+                --workflow-run-id "$GITHUB_RUN_ID"
+              resume=true
+            fi
+          fi
+          echo "root_dir=$current_root" >> "$GITHUB_OUTPUT"
+          echo "resume=$resume" >> "$GITHUB_OUTPUT"
+      - id: pair_author
+        name: Author normalized safe pairs
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+          PAIR_ROOT: ${{ steps.pair_author_paths.outputs.root_dir }}
+          RESUME: ${{ steps.pair_author_paths.outputs.resume }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only
+          checkpoint_args=()
+          if [[ "$RESUME" = true ]]; then
+            checkpoint_args=(
+              --resume
+              --checkpoint-source-sha "$PACKET_SOURCE_SHA"
+              --checkpoint-workflow-run-id "$GITHUB_RUN_ID"
+            )
+          fi
           python3 scripts/generate_range_v16_safe_pairs.py author \
             --packet-dir test/range/benchmark/v16/review-packets \
-            --normalized-decisions pair-author-evidence/normalized-decisions.json \
-            --output-dir pair-author-evidence/author \
-            --workers 4
+            --normalized-decisions "$PAIR_ROOT/normalized-decisions.json" \
+            --output-dir "$PAIR_ROOT/author" \
+            --workers 4 \
+            "${checkpoint_args[@]}"
+      - id: pair_author_checkpoint
+        name: Build verified safe-pair failure checkpoint
+        if: ${{ failure() && steps.pair_author.outcome == 'failure' }}
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+          PAIR_ROOT: ${{ steps.pair_author_paths.outputs.root_dir }}
+        run: |
+          set -euo pipefail
+          umask 077
+          created=false
+          if [[ -d "$PAIR_ROOT/author/authors" && -d "$PAIR_ROOT/author/raw" ]]; then
+            python3 scripts/generate_range_v16_safe_pairs.py checkpoint \
+              --packet-dir test/range/benchmark/v16/review-packets \
+              --normalized-decisions "$PAIR_ROOT/normalized-decisions.json" \
+              --retained-dir "$PAIR_ROOT/author" \
+              --output-dir review-checkpoint/safe-pair \
+              --packet-source-sha "$PACKET_SOURCE_SHA" \
+              --retained-source-sha "$PACKET_SOURCE_SHA" \
+              --workflow-run-id "$GITHUB_RUN_ID"
+            created=true
+          fi
+          echo "created=$created" >> "$GITHUB_OUTPUT"
+      - name: Upload verified safe-pair failure checkpoint
+        if: ${{ failure() && steps.pair_author_checkpoint.outputs.created == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: range-v16-pair-author-checkpoint-${{ inputs.source_sha }}
+          path: review-checkpoint/safe-pair
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
       - uses: actions/upload-artifact@v7
         with:
           name: range-v16-pair-author-${{ inputs.source_sha }}
-          path: pair-author-evidence
+          path: ${{ steps.pair_author_paths.outputs.root_dir }}
           if-no-files-found: error
           retention-days: 90
