@@ -129,7 +129,7 @@ v16 不能由扫描实现方自行签发。当前争议项只登记在 `docs/ben
 
 GitHub `actions/upload-artifact` 的 `artifact-digest` 输出是 64 位裸 SHA-256；受保护 workflow 必须在 provenance 边界显式规范化为 `sha256:<64-hex>`，再交给严格 schema 和下游 attestation 校验。不得放宽 provenance schema 来接纳无算法标识的 digest。
 
-受保护审核的最终合并不得为每个同 run artifact 重复依赖 `actions/download-artifact` 的 latest-list 查询。finalize 作业先以当前 workflow run identity 有界重试一次完整 artifact 列表，再把两份 primary 与四份正式 shard 的精确名称各解析为唯一不可变 artifact ID；随后逐 ID 读取 metadata，绑定 run/head SHA/name/expiry/archive URL 和服务端 SHA-256 digest，并以不向签名重定向转发 `GITHUB_TOKEN` 的方式下载。ZIP 必须通过路径穿越、反斜杠、symlink、重复成员、解压大小和 `manifest.json` 检查后才能原子安装到合并目录。列表不完整、同名不唯一、身份变化或重试耗尽均 fail closed；`rerun-failed` 只重做 finalize，不触碰已经成功的 primary 或 shard。
+受保护审核的必需 artifact 恢复不得重复依赖 `actions/download-artifact` 的 latest-list 查询。跨 run 的完整 primary reuse、每个 arbitration shard 的两份当前 run primary 输入，以及 finalize 的两份 primary 与四份正式 shard，都必须按预期 run/head/name 通过同一有界重试下载器解析唯一不可变 artifact ID；arbitration 的同 run failure checkpoint 可以声明为 optional，但一旦存在也必须经过相同的 metadata 和内容验证。下载器逐 ID 绑定 run/head SHA/name/expiry/archive URL 和服务端 SHA-256 digest，并以不向签名重定向转发 `GITHUB_TOKEN` 的方式下载。ZIP 必须通过路径穿越、反斜杠、symlink、重复成员、解压大小和 `manifest.json` 检查后才能原子安装。列表不完整、必需名称缺失、同名不唯一、身份变化或重试耗尽均 fail closed；`rerun-failed` 不触碰已经成功的 primary 或 shard。
 
 Safe-pair 匿名性检查从 packet 的函数调用形状和项目宏提取禁止标识符，但必须先排除完整 C11 关键字集合；`return (`、`for (` 等合法语言结构不能被误判为项目函数。C 标识符按完整 token 比较，不能因短项目名只是另一个新标识符的子串而误拒；truth ID 等非 C 标识符仍按完整字面量拒绝。项目函数、项目宏、truth ID 和其他专有标识仍须严格 fail closed。
 
