@@ -134,3 +134,57 @@ def test_run_artifact_spec_stays_inside_workspace(tmp_path: Path) -> None:
             f"{ARTIFACT_NAME}=../escape",
             workspace=tmp_path.resolve(),
         )
+
+
+def test_run_artifact_optional_missing_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    optional_name = f"range-v16-arbitration-checkpoint-3-{HEAD_SHA}"
+    downloads: list[tuple[int, str, Path]] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(
+        run_download,
+        "_list_run_artifacts",
+        lambda **_kwargs: [{"id": ARTIFACT_ID, "name": ARTIFACT_NAME}],
+    )
+
+    def download_and_extract(**kwargs: object) -> str:
+        output = kwargs["output"]
+        assert isinstance(output, Path)
+        output.mkdir()
+        (output / "manifest.json").write_text("{}", encoding="utf-8")
+        downloads.append(
+            (
+                int(kwargs["artifact_id"]),
+                str(kwargs["expected_name"]),
+                output,
+            )
+        )
+        return "b" * 64
+
+    monkeypatch.setattr(run_download, "_download_and_extract", download_and_extract)
+
+    assert (
+        run_download.main(
+            [
+                "--repository",
+                REPOSITORY,
+                "--expected-run-id",
+                RUN_ID,
+                "--expected-head-sha",
+                HEAD_SHA,
+                "--artifact",
+                f"{ARTIFACT_NAME}=required",
+                "--optional-artifact",
+                f"{optional_name}=optional",
+            ]
+        )
+        == 0
+    )
+    assert [(artifact_id, name) for artifact_id, name, _ in downloads] == [
+        (ARTIFACT_ID, ARTIFACT_NAME)
+    ]
+    assert (tmp_path / "required" / "manifest.json").is_file()
+    assert not (tmp_path / "optional").exists()
