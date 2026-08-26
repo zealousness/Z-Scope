@@ -402,7 +402,7 @@ def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume()
     assert workflow.count("--artifact-id '${{ inputs.") == 2
     assert workflow.count("--expected-run-id '${{ inputs.") == 2
     assert workflow.count("--expected-source-sha '${{ inputs.") == 2
-    assert workflow.count("--checkpoint-workflow-run-id") == 4
+    assert workflow.count("--checkpoint-workflow-run-id") == 5
     assert "Revalidate complete primary artifact as a zero-call checkpoint" in workflow
     assert "--require-complete" in workflow
     assert "range-v16-primary-fable-${{ inputs.fable_primary_source_sha" in workflow
@@ -444,6 +444,16 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     assert '--expected-head-sha "$GITHUB_SHA"' in finalize
     assert finalize.count("--artifact '") == 6
     assert "actions/download-artifact@v8" not in finalize
+    assert "id: pair_author_paths" in finalize
+    assert "id: pair_author" in finalize
+    assert "id: pair_author_checkpoint" in finalize
+    assert "range-v16-pair-author-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" in finalize
+    assert "scripts/generate_range_v16_safe_pairs.py checkpoint" in finalize
+    assert '--checkpoint-workflow-run-id "$GITHUB_RUN_ID"' in finalize
+    assert "failure() && steps.pair_author.outcome == 'failure'" in finalize
+    assert "range-v16-pair-author-checkpoint-${{ inputs.source_sha }}" in finalize
+    assert "--resume" in finalize
+    assert "overwrite: true" in finalize
 
 
 def test_review_command_identity_disables_tools_and_binds_harnesses() -> None:
