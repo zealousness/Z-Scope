@@ -186,6 +186,12 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         metavar="NAME=OUTPUT_DIR",
     )
+    parser.add_argument(
+        "--optional-artifact",
+        action="append",
+        default=[],
+        metavar="NAME=OUTPUT_DIR",
+    )
     return parser
 
 
@@ -204,7 +210,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise RunArtifactError("GitHub workflow head SHA is invalid")
 
     workspace = Path.cwd().resolve()
-    specs = [_parse_artifact_spec(value, workspace=workspace) for value in args.artifact]
+    required_specs = [_parse_artifact_spec(value, workspace=workspace) for value in args.artifact]
+    optional_specs = [
+        _parse_artifact_spec(value, workspace=workspace) for value in args.optional_artifact
+    ]
+    specs = [*required_specs, *optional_specs]
     names = [name for name, _ in specs]
     outputs = [output for _, output in specs]
     if len(set(names)) != len(names) or len(set(outputs)) != len(outputs):
@@ -218,7 +228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         token=token,
     )
     resolved: dict[str, int] = {}
-    for expected_name in names:
+    for expected_name, _ in required_specs:
         matches = [artifact for artifact in listed if artifact.get("name") == expected_name]
         if len(matches) != 1:
             raise RunArtifactError("expected immutable run artifact is not unique")
@@ -226,11 +236,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not isinstance(artifact_id, int) or isinstance(artifact_id, bool):
             raise RunArtifactError("expected immutable run artifact identity is invalid")
         resolved[expected_name] = artifact_id
+    for expected_name, _ in optional_specs:
+        matches = [artifact for artifact in listed if artifact.get("name") == expected_name]
+        if len(matches) > 1:
+            raise RunArtifactError("optional immutable run artifact is not unique")
+        if matches:
+            artifact_id = matches[0].get("id")
+            if not isinstance(artifact_id, int) or isinstance(artifact_id, bool):
+                raise RunArtifactError("optional immutable run artifact identity is invalid")
+            resolved[expected_name] = artifact_id
 
     temporary = Path(tempfile.mkdtemp(prefix=".e0-run-artifacts-", dir=workspace))
     restored: list[tuple[str, int, str, Path]] = []
     try:
-        for index, (name, output) in enumerate(specs):
+        selected_specs = [(name, output) for name, output in specs if name in resolved]
+        for index, (name, output) in enumerate(selected_specs):
             temporary_output = temporary / str(index)
             artifact_id = resolved[name]
             digest = _download_and_extract(
@@ -257,6 +277,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"artifact_id={artifact_id} run_id={args.expected_run_id} "
             f"name={name} digest=sha256:{digest}"
         )
+    for name, _ in optional_specs:
+        if name not in resolved:
+            print(f"optional immutable run artifact absent name={name}")
     return 0
 
 

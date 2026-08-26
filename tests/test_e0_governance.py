@@ -403,10 +403,14 @@ def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume()
     assert workflow.count("--expected-run-id '${{ inputs.") == 2
     assert workflow.count("--expected-source-sha '${{ inputs.") == 2
     assert workflow.count("--checkpoint-workflow-run-id") == 5
+    assert "Restore exact complete primary artifact" in workflow
+    assert '--expected-run-id "$primary_run_id"' in workflow
+    assert '--expected-head-sha "$primary_source_sha"' in workflow
+    assert 'artifact_name="range-v16-primary-$reviewer-$primary_source_sha"' in workflow
+    assert '--artifact "$artifact_name=retained-primary/$reviewer"' in workflow
     assert "Revalidate complete primary artifact as a zero-call checkpoint" in workflow
     assert "--require-complete" in workflow
-    assert "range-v16-primary-fable-${{ inputs.fable_primary_source_sha" in workflow
-    assert "range-v16-primary-deepseek-${{ inputs.deepseek_primary_source_sha" in workflow
+    assert workflow.count("scripts/download_e0_run_artifacts.py") == 3
 
     recovery = Path(".github/workflows/range-v16-review-recover.yml").read_text(encoding="utf-8")
     freeze_index = recovery.index("Freeze retained primary workspace before checkout")
@@ -422,6 +426,7 @@ def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume()
 
 def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
+    arbitration = workflow.split("  arbitrate:\n", 1)[1].split("  finalize:\n", 1)[0]
     assert "shard: [0, 1, 2, 3]" in workflow
     assert "id: arbitration_review" in workflow
     assert "--shard-index '${{ matrix.shard }}'" in workflow
@@ -434,6 +439,14 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     assert "overwrite: true" in workflow
     assert "scripts/run_e0_reviewers.py merge-arbitration" in workflow
     assert "needs: [primary, arbitrate]" in workflow
+    assert "Restore exact current-run arbitration inputs" in arbitration
+    assert "scripts/download_e0_run_artifacts.py" in arbitration
+    assert arbitration.count("--artifact '") == 2
+    assert arbitration.count("--optional-artifact '") == 1
+    assert '--expected-run-id "$GITHUB_RUN_ID"' in arbitration
+    assert '--expected-head-sha "$GITHUB_SHA"' in arbitration
+    assert "actions/download-artifact@v8" not in arbitration
+    assert "actions/download-artifact@v8" not in workflow
     assert workflow.index("scripts/run_e0_reviewers.py merge-arbitration") < workflow.index(
         "scripts/build_e0_review_manifest.py"
     )
