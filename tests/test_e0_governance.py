@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from scripts import run_e0_reviewers as reviewer_runner
 from scripts import build_e0_attestation as attestation_builder
@@ -467,6 +468,32 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     assert "range-v16-pair-author-checkpoint-${{ inputs.source_sha }}" in finalize
     assert "--resume" in finalize
     assert "overwrite: true" in finalize
+
+
+def test_protected_review_artifact_uploads_use_bounded_retry_action() -> None:
+    workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
+    action_path = Path(".github/actions/upload-artifact-retry/action.yml")
+    action = yaml.safe_load(action_path.read_text(encoding="utf-8"))
+
+    assert workflow.count("uses: ./.github/actions/upload-artifact-retry") == 8
+    assert "uses: actions/upload-artifact@v7" not in workflow
+    assert action["runs"]["using"] == "composite"
+    steps = action["runs"]["steps"]
+    by_id = {step["id"]: step for step in steps if "id" in step}
+    assert set(by_id) == {"attempt_1", "attempt_2", "attempt_3", "select"}
+    for attempt in ("attempt_1", "attempt_2", "attempt_3"):
+        assert by_id[attempt]["uses"] == "actions/upload-artifact@v7"
+        assert by_id[attempt]["continue-on-error"] is True
+    assert by_id["attempt_2"]["with"]["overwrite"] is True
+    assert by_id["attempt_3"]["with"]["overwrite"] is True
+    assert sum(step.get("run") == "sleep 3" for step in steps) == 1
+    assert sum(step.get("run") == "sleep 7" for step in steps) == 1
+    assert by_id["select"]["if"] == "${{ always() }}"
+    assert "failed after 3 bounded attempts" in by_id["select"]["run"]
+    assert action["outputs"]["artifact-id"]["value"] == ("${{ steps.select.outputs.artifact-id }}")
+    assert action["outputs"]["artifact-digest"]["value"] == (
+        "${{ steps.select.outputs.artifact-digest }}"
+    )
 
 
 def test_review_command_identity_disables_tools_and_binds_harnesses() -> None:

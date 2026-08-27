@@ -127,7 +127,7 @@ preflight 通过后使用 `scripts/run_v3_action_canary.py`，并通过 `--expec
 
 v16 不能由扫描实现方自行签发。当前争议项只登记在 `docs/benchmark-maintenance/range/range_v15_truth_review_queue.json`，状态固定为 pending/non-formal；独立测试团队必须按双人审查、第三人仲裁把每项归为 `concrete_trigger/public_api_contract/pattern_model/retired`，绑定审查证据与 attestation 后，才能生成 formal-eligible v16。禁止为通过门禁而在同一产品变更中修改 fixture、truth 和检测逻辑。
 
-GitHub `actions/upload-artifact` 的 `artifact-digest` 输出是 64 位裸 SHA-256；受保护 workflow 必须在 provenance 边界显式规范化为 `sha256:<64-hex>`，再交给严格 schema 和下游 attestation 校验。不得放宽 provenance schema 来接纳无算法标识的 digest。
+GitHub `actions/upload-artifact` 的 `artifact-digest` 输出是 64 位裸 SHA-256；受保护 workflow 必须在 provenance 边界显式规范化为 `sha256:<64-hex>`，再交给严格 schema 和下游 attestation 校验。不得放宽 provenance schema 来接纳无算法标识的 digest。所有受保护审核上传统一经过仓库内 bounded composite：首次 CreateArtifact/FinalizeArtifact 失败后分别退避 3 秒和 7 秒，最多三次；后续尝试允许覆盖同名半成品，并且只有实际成功 attempt 的 immutable artifact ID、URL 和 digest 可以输出给 provenance。三次均失败必须 fail closed，不能用无限重跑掩盖外部传输故障。
 
 受保护审核的必需 artifact 恢复不得重复依赖 `actions/download-artifact` 的 latest-list 查询。跨 run 的完整 primary reuse、每个 arbitration shard 的两份当前 run primary 输入，以及 finalize 的两份 primary 与四份正式 shard，都必须按预期 run/head/name 通过同一有界重试下载器解析唯一不可变 artifact ID；arbitration 的同 run failure checkpoint 可以声明为 optional，但一旦存在也必须经过相同的 metadata 和内容验证。下载器逐 ID 绑定 run/head SHA/name/expiry/archive URL 和服务端 SHA-256 digest，并以不向签名重定向转发 `GITHUB_TOKEN` 的方式下载。ZIP 必须通过路径穿越、反斜杠、symlink、重复成员、解压大小和 `manifest.json` 检查后才能原子安装。列表不完整、必需名称缺失、同名不唯一、身份变化或重试耗尽均 fail closed；`rerun-failed` 不触碰已经成功的 primary 或 shard。
 
