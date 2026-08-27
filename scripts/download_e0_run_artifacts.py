@@ -135,6 +135,7 @@ def _download_and_extract(
     expected_name: str,
     token: str,
     output: Path,
+    required_members: Sequence[str] = ("manifest.json",),
 ) -> str:
     metadata_url = f"https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}"
     metadata = _retry_transport(
@@ -168,7 +169,7 @@ def _download_and_extract(
         _extract_archive(
             archive,
             output=output,
-            required_members=("manifest.json",),
+            required_members=required_members,
         )
     finally:
         archive.unlink(missing_ok=True)
@@ -188,6 +189,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--optional-artifact",
+        action="append",
+        default=[],
+        metavar="NAME=OUTPUT_DIR",
+    )
+    parser.add_argument(
+        "--optional-checkpoint-artifact",
         action="append",
         default=[],
         metavar="NAME=OUTPUT_DIR",
@@ -214,7 +221,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     optional_specs = [
         _parse_artifact_spec(value, workspace=workspace) for value in args.optional_artifact
     ]
-    specs = [*required_specs, *optional_specs]
+    optional_checkpoint_specs = [
+        _parse_artifact_spec(value, workspace=workspace)
+        for value in args.optional_checkpoint_artifact
+    ]
+    specs = [*required_specs, *optional_specs, *optional_checkpoint_specs]
     names = [name for name, _ in specs]
     outputs = [output for _, output in specs]
     if len(set(names)) != len(names) or len(set(outputs)) != len(outputs):
@@ -236,7 +247,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not isinstance(artifact_id, int) or isinstance(artifact_id, bool):
             raise RunArtifactError("expected immutable run artifact identity is invalid")
         resolved[expected_name] = artifact_id
-    for expected_name, _ in optional_specs:
+    for expected_name, _ in [*optional_specs, *optional_checkpoint_specs]:
         matches = [artifact for artifact in listed if artifact.get("name") == expected_name]
         if len(matches) > 1:
             raise RunArtifactError("optional immutable run artifact is not unique")
@@ -249,8 +260,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     temporary = Path(tempfile.mkdtemp(prefix=".e0-run-artifacts-", dir=workspace))
     restored: list[tuple[str, int, str, Path]] = []
     try:
-        selected_specs = [(name, output) for name, output in specs if name in resolved]
-        for index, (name, output) in enumerate(selected_specs):
+        checkpoint_names = {name for name, _ in optional_checkpoint_specs}
+        selected_specs = [
+            (
+                name,
+                output,
+                (("checkpoint-manifest.json",) if name in checkpoint_names else ("manifest.json",)),
+            )
+            for name, output in specs
+            if name in resolved
+        ]
+        for index, (name, output, required_members) in enumerate(selected_specs):
             temporary_output = temporary / str(index)
             artifact_id = resolved[name]
             digest = _download_and_extract(
@@ -261,6 +281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_name=name,
                 token=token,
                 output=temporary_output,
+                required_members=required_members,
             )
             restored.append((name, artifact_id, digest, output))
         for _, _, _, output in restored:
@@ -277,7 +298,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"artifact_id={artifact_id} run_id={args.expected_run_id} "
             f"name={name} digest=sha256:{digest}"
         )
-    for name, _ in optional_specs:
+    for name, _ in [*optional_specs, *optional_checkpoint_specs]:
         if name not in resolved:
             print(f"optional immutable run artifact absent name={name}")
     return 0

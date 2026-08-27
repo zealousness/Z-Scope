@@ -188,3 +188,60 @@ def test_run_artifact_optional_missing_is_skipped(
     ]
     assert (tmp_path / "required" / "manifest.json").is_file()
     assert not (tmp_path / "optional").exists()
+
+
+def test_run_checkpoint_artifact_requires_checkpoint_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_name = f"range-v16-pair-author-checkpoint-{HEAD_SHA}"
+    checkpoint_id = ARTIFACT_ID + 1
+    required_members_by_name: dict[str, tuple[str, ...]] = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(
+        run_download,
+        "_list_run_artifacts",
+        lambda **_kwargs: [
+            {"id": ARTIFACT_ID, "name": ARTIFACT_NAME},
+            {"id": checkpoint_id, "name": checkpoint_name},
+        ],
+    )
+
+    def download_and_extract(**kwargs: object) -> str:
+        output = kwargs["output"]
+        required_members = kwargs["required_members"]
+        expected_name = str(kwargs["expected_name"])
+        assert isinstance(output, Path)
+        assert isinstance(required_members, tuple)
+        output.mkdir()
+        for member in required_members:
+            (output / member).write_text("{}", encoding="utf-8")
+        required_members_by_name[expected_name] = required_members
+        return "c" * 64
+
+    monkeypatch.setattr(run_download, "_download_and_extract", download_and_extract)
+
+    assert (
+        run_download.main(
+            [
+                "--repository",
+                REPOSITORY,
+                "--expected-run-id",
+                RUN_ID,
+                "--expected-head-sha",
+                HEAD_SHA,
+                "--artifact",
+                f"{ARTIFACT_NAME}=required",
+                "--optional-checkpoint-artifact",
+                f"{checkpoint_name}=retained-checkpoint",
+            ]
+        )
+        == 0
+    )
+    assert required_members_by_name == {
+        ARTIFACT_NAME: ("manifest.json",),
+        checkpoint_name: ("checkpoint-manifest.json",),
+    }
+    assert (tmp_path / "required" / "manifest.json").is_file()
+    assert (tmp_path / "retained-checkpoint" / "checkpoint-manifest.json").is_file()
