@@ -1,0 +1,114 @@
+name: Upload artifact with bounded retries
+description: Retry GitHub artifact creation/finalization without unbounded reviewer reruns.
+
+inputs:
+  name:
+    description: Artifact name
+    required: true
+  path:
+    description: File or directory to upload
+    required: true
+  if-no-files-found:
+    description: Behavior when the path contains no files
+    required: false
+    default: error
+  retention-days:
+    description: Artifact retention in days
+    required: false
+    default: "90"
+  overwrite:
+    description: Whether the first attempt may replace an existing artifact
+    required: false
+    default: "false"
+
+outputs:
+  artifact-id:
+    description: Immutable ID returned by the successful upload attempt
+    value: ${{ steps.select.outputs.artifact-id }}
+  artifact-url:
+    description: URL returned by the successful upload attempt
+    value: ${{ steps.select.outputs.artifact-url }}
+  artifact-digest:
+    description: SHA-256 digest returned by the successful upload attempt
+    value: ${{ steps.select.outputs.artifact-digest }}
+
+runs:
+  using: composite
+  steps:
+    - id: attempt_1
+      continue-on-error: true
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+        overwrite: ${{ inputs.overwrite }}
+    - name: Back off before artifact upload attempt 2
+      if: ${{ steps.attempt_1.outcome == 'failure' }}
+      shell: bash
+      run: sleep 3
+    - id: attempt_2
+      if: ${{ steps.attempt_1.outcome == 'failure' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+        overwrite: true
+    - name: Back off before artifact upload attempt 3
+      if: ${{ steps.attempt_1.outcome == 'failure' && steps.attempt_2.outcome == 'failure' }}
+      shell: bash
+      run: sleep 7
+    - id: attempt_3
+      if: ${{ steps.attempt_1.outcome == 'failure' && steps.attempt_2.outcome == 'failure' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+        overwrite: true
+    - id: select
+      name: Select successful immutable artifact identity
+      if: ${{ always() }}
+      shell: bash
+      env:
+        ATTEMPT_1_OUTCOME: ${{ steps.attempt_1.outcome }}
+        ATTEMPT_1_ID: ${{ steps.attempt_1.outputs.artifact-id }}
+        ATTEMPT_1_URL: ${{ steps.attempt_1.outputs.artifact-url }}
+        ATTEMPT_1_DIGEST: ${{ steps.attempt_1.outputs.artifact-digest }}
+        ATTEMPT_2_OUTCOME: ${{ steps.attempt_2.outcome }}
+        ATTEMPT_2_ID: ${{ steps.attempt_2.outputs.artifact-id }}
+        ATTEMPT_2_URL: ${{ steps.attempt_2.outputs.artifact-url }}
+        ATTEMPT_2_DIGEST: ${{ steps.attempt_2.outputs.artifact-digest }}
+        ATTEMPT_3_OUTCOME: ${{ steps.attempt_3.outcome }}
+        ATTEMPT_3_ID: ${{ steps.attempt_3.outputs.artifact-id }}
+        ATTEMPT_3_URL: ${{ steps.attempt_3.outputs.artifact-url }}
+        ATTEMPT_3_DIGEST: ${{ steps.attempt_3.outputs.artifact-digest }}
+      run: |
+        set -euo pipefail
+        if [[ "$ATTEMPT_1_OUTCOME" = success ]]; then
+          artifact_id="$ATTEMPT_1_ID"
+          artifact_url="$ATTEMPT_1_URL"
+          artifact_digest="$ATTEMPT_1_DIGEST"
+        elif [[ "$ATTEMPT_2_OUTCOME" = success ]]; then
+          artifact_id="$ATTEMPT_2_ID"
+          artifact_url="$ATTEMPT_2_URL"
+          artifact_digest="$ATTEMPT_2_DIGEST"
+        elif [[ "$ATTEMPT_3_OUTCOME" = success ]]; then
+          artifact_id="$ATTEMPT_3_ID"
+          artifact_url="$ATTEMPT_3_URL"
+          artifact_digest="$ATTEMPT_3_DIGEST"
+        else
+          echo "::error::Artifact upload failed after 3 bounded attempts"
+          exit 1
+        fi
+        [[ "$artifact_id" =~ ^[0-9]+$ ]]
+        [[ "$artifact_digest" =~ ^[0-9a-f]{64}$ ]]
+        echo "artifact-id=$artifact_id" >> "$GITHUB_OUTPUT"
+        echo "artifact-url=$artifact_url" >> "$GITHUB_OUTPUT"
+        echo "artifact-digest=$artifact_digest" >> "$GITHUB_OUTPUT"
