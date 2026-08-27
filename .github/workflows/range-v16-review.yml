@@ -568,7 +568,8 @@ jobs:
             --artifact 'range-v16-arbitration-shard-0-${{ inputs.source_sha }}=arbitration-shards/0' \
             --artifact 'range-v16-arbitration-shard-1-${{ inputs.source_sha }}=arbitration-shards/1' \
             --artifact 'range-v16-arbitration-shard-2-${{ inputs.source_sha }}=arbitration-shards/2' \
-            --artifact 'range-v16-arbitration-shard-3-${{ inputs.source_sha }}=arbitration-shards/3'
+            --artifact 'range-v16-arbitration-shard-3-${{ inputs.source_sha }}=arbitration-shards/3' \
+            --optional-checkpoint-artifact 'range-v16-pair-author-checkpoint-${{ inputs.source_sha }}=retained-pair-checkpoint'
       - name: Merge and revalidate arbitration shards
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
@@ -631,20 +632,28 @@ jobs:
             --review-provenance review-provenance/review-provenance.json \
             --output "$current_root/normalized-decisions.json"
           resume=false
-          if (( GITHUB_RUN_ATTEMPT > 1 )); then
+          retained_root=""
+          if [[ -f retained-pair-checkpoint/checkpoint-manifest.json \
+              && -d retained-pair-checkpoint/authors \
+              && -d retained-pair-checkpoint/raw ]]; then
+            retained_root=retained-pair-checkpoint
+          elif (( GITHUB_RUN_ATTEMPT > 1 )); then
             prior_attempt=$((GITHUB_RUN_ATTEMPT - 1))
             prior_root="$RUNNER_TEMP/range-v16-pair-author-$GITHUB_RUN_ID-$prior_attempt"
             if [[ -d "$prior_root/author/authors" && -d "$prior_root/author/raw" ]]; then
-              python3 scripts/generate_range_v16_safe_pairs.py checkpoint \
-                --packet-dir test/range/benchmark/v16/review-packets \
-                --normalized-decisions "$current_root/normalized-decisions.json" \
-                --retained-dir "$prior_root/author" \
-                --output-dir "$current_root/author" \
-                --packet-source-sha "$PACKET_SOURCE_SHA" \
-                --retained-source-sha "$PACKET_SOURCE_SHA" \
-                --workflow-run-id "$GITHUB_RUN_ID"
-              resume=true
+              retained_root="$prior_root/author"
             fi
+          fi
+          if [[ -n "$retained_root" ]]; then
+            python3 scripts/generate_range_v16_safe_pairs.py checkpoint \
+              --packet-dir test/range/benchmark/v16/review-packets \
+              --normalized-decisions "$current_root/normalized-decisions.json" \
+              --retained-dir "$retained_root" \
+              --output-dir "$current_root/author" \
+              --packet-source-sha "$PACKET_SOURCE_SHA" \
+              --retained-source-sha "$PACKET_SOURCE_SHA" \
+              --workflow-run-id "$GITHUB_RUN_ID"
+            resume=true
           fi
           echo "root_dir=$current_root" >> "$GITHUB_OUTPUT"
           echo "resume=$resume" >> "$GITHUB_OUTPUT"
