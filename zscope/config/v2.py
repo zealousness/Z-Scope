@@ -35,7 +35,9 @@ from .config import (
     ScanConfig,
     ScanLLMProfiles,
     SemanticDedupConfig,
+    WikiConfig,
     UserConfigV2,
+    _optional_positive_int,
 )
 
 
@@ -523,6 +525,18 @@ def _interface_patterns(value: Any, path: str) -> List[str]:
     return patterns
 
 
+def _wiki_document_patterns(value: Any, path: str) -> List[str]:
+    patterns = _interface_patterns(value, path)
+    for index, pattern in enumerate(patterns):
+        if (
+            pattern.startswith("/")
+            or re.match(r"^[A-Za-z]:/", pattern)
+            or ".." in Path(pattern).parts
+        ):
+            raise ValueError(f"{path}[{index}] must be project-root relative")
+    return patterns
+
+
 def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
     data = _mapping(raw, "project", required=True)
     _check_keys(
@@ -541,6 +555,7 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
             "exclude_paths",
             "compile_commands_path",
             "user_config_file",
+            "wiki",
         },
         "project",
     )
@@ -578,6 +593,55 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         ),
     )
 
+    wiki_data = _mapping(data.get("wiki"), "project.wiki")
+    _check_keys(
+        wiki_data,
+        {"mode", "auto_maintain", "state_dir", "compiler_enabled", "documents", "max_file_bytes", "max_files", "max_total_bytes", "max_context_tokens", "compiler_max_tokens", "max_source_chars", "max_output_chars", "max_wall_seconds", "max_pages"},
+        "project.wiki",
+    )
+    documents = _mapping(wiki_data.get("documents"), "project.wiki.documents")
+    _check_keys(documents, {"exclude", "classify"}, "project.wiki.documents")
+    classify = _mapping(documents.get("classify"), "project.wiki.documents.classify")
+    _check_keys(classify, {"explanatory", "generated"}, "project.wiki.documents.classify")
+    document_exclude = _wiki_document_patterns(
+        documents.get("exclude", []),
+        "project.wiki.documents.exclude",
+    )
+    explanatory_overrides = _wiki_document_patterns(
+        classify.get("explanatory", []),
+        "project.wiki.documents.classify.explanatory",
+    )
+    generated_overrides = _wiki_document_patterns(
+        classify.get("generated", []),
+        "project.wiki.documents.classify.generated",
+    )
+    conflicting_overrides = sorted(
+        set(explanatory_overrides).intersection(generated_overrides)
+    )
+    if conflicting_overrides:
+        raise ValueError(
+            "project.wiki.documents.classify assigns the same glob to explanatory "
+            f"and generated: {conflicting_overrides[0]!r}"
+        )
+    wiki = WikiConfig(
+        mode=_string(wiki_data.get("mode", "off"), "project.wiki.mode"),
+        auto_maintain=_boolean(wiki_data.get("auto_maintain", False), "project.wiki.auto_maintain"),
+        state_dir=_string(wiki_data.get("state_dir", ".zscope_knowledge/wiki"), "project.wiki.state_dir"),
+        compiler_enabled=_boolean(wiki_data.get("compiler_enabled", False), "project.wiki.compiler_enabled"),
+        document_exclude=document_exclude,
+        explanatory_overrides=explanatory_overrides,
+        generated_overrides=generated_overrides,
+        max_file_bytes=_positive_int(wiki_data.get("max_file_bytes", 10 * 1024 * 1024), "project.wiki.max_file_bytes"),
+        max_files=_positive_int(wiki_data.get("max_files", 10_000), "project.wiki.max_files"),
+        max_total_bytes=_positive_int(wiki_data.get("max_total_bytes", 100 * 1024 * 1024), "project.wiki.max_total_bytes"),
+        max_context_tokens=_optional_positive_int(wiki_data.get("max_context_tokens"), None),
+        compiler_max_tokens=_optional_positive_int(wiki_data.get("compiler_max_tokens"), None),
+        max_source_chars=_optional_positive_int(wiki_data.get("max_source_chars"), None),
+        max_output_chars=_optional_positive_int(wiki_data.get("max_output_chars"), None),
+        max_wall_seconds=_optional_positive_int(wiki_data.get("max_wall_seconds"), None),
+        max_pages=_optional_positive_int(wiki_data.get("max_pages"), None),
+    )
+
     project = ProjectConfig(
         project_root=Path(root),
         source_root=Path(source_root),
@@ -612,6 +676,7 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         include_paths=_string_list(data.get("include_paths", []), "project.include_paths"),
         exclude_paths=_string_list(data.get("exclude_paths", []), "project.exclude_paths"),
         entry_discovery=discovery,
+        wiki=wiki,
     )
     if project.entry_discovery.search_root:
         try:

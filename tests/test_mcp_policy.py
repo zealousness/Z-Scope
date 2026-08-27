@@ -140,6 +140,109 @@ def test_mcp_scan_tool_forwards_only_depth_override(tmp_path: Path) -> None:
     assert result["data"]["effective_scan"]["depth"] == "balanced"
 
 
+def test_mcp_exposes_only_readonly_wiki_status_and_query(tmp_path: Path, monkeypatch) -> None:
+    provider = _provider(
+        tmp_path,
+        ToolPolicy(allowed_tools={"zscope.wiki.status", "zscope.wiki.query"}),
+    )
+    provider.config.project.wiki.document_exclude = ["legacy/**"]
+    calls = []
+    monkeypatch.setattr(
+        "zscope.mcp.provider.wiki_status",
+        lambda project_root, *, state_dir: calls.append(("status", project_root, state_dir))
+        or {"available": False},
+    )
+
+    def fake_query(project_root, **kwargs):
+        calls.append(("query", project_root, kwargs))
+        return {"schema_version": "zscope.validator-project-knowledge.v1"}
+
+    monkeypatch.setattr("zscope.mcp.provider.wiki_query", fake_query)
+
+    names = {tool["function"]["name"] for tool in provider.list_tools()}
+    status = provider.call_tool("zscope.wiki.status")
+    query = provider.call_tool(
+        "zscope.wiki.query",
+        {
+            "subjects": ["parse_byte"],
+            "fact_kind": "input_range",
+            "candidate_file": "src/parser.c",
+            "max_tokens": 512,
+        },
+    )
+
+    assert names == {"zscope.wiki.status", "zscope.wiki.query"}
+    assert status == {"success": True, "data": {"available": False}}
+    assert query["success"] is True
+    assert calls[0][0] == "status"
+    assert calls[1][0] == "query"
+    assert calls[1][2]["subjects"] == ["parse_byte"]
+    assert calls[1][2]["overrides"]["exclude"] == ["legacy/**"]
+    assert "project_root" not in calls[1][2]
+    assert not any("build" in name or "rollback" in name for name in names)
+
+
+def test_mcp_wiki_query_rejects_unbounded_arguments(tmp_path: Path) -> None:
+    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.wiki.query"}))
+
+    missing_subject = provider.call_tool("zscope.wiki.query", {})
+    excessive_budget = provider.call_tool(
+        "zscope.wiki.query",
+        {"subjects": ["parse_byte"], "max_tokens": 3501},
+    )
+
+    assert missing_subject["success"] is False
+    assert "subjects" in missing_subject["error"]
+    assert excessive_budget["success"] is False
+    assert "max_tokens" in excessive_budget["error"]
+
+
+def test_mcp_wiki_query_rejects_unsafe_path_before_control_call(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.wiki.query"}))
+    called = False
+
+    def fake_query(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr("zscope.mcp.provider.wiki_query", fake_query)
+    result = provider.call_tool(
+        "zscope.wiki.query",
+        {"subjects": ["parse_byte"], "candidate_file": "../secret.md"},
+    )
+
+    assert result["success"] is False
+    assert "candidate_file" in result["error"]
+    assert called is False
+
+
+def test_mcp_wiki_control_does_not_expose_internal_exception_text(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.wiki.query"}))
+    monkeypatch.setattr(
+        "zscope.mcp.provider.wiki_query",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("secret /home/private/wiki")
+        ),
+    )
+
+    result = provider.call_tool(
+        "zscope.wiki.query",
+        {"subjects": ["parse_byte"]},
+    )
+
+    assert result == {
+        "success": False,
+        "error": "Wiki control operation is unavailable.",
+    }
+
+
 def test_mcp_sensitive_path_hook_blocks_secret_file_tool(tmp_path: Path) -> None:
     provider = _provider(
         tmp_path,

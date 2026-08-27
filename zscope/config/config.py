@@ -246,6 +246,49 @@ class EntryDiscoveryConfig:
 
 
 @dataclass
+class WikiConfig:
+    """Public project Wiki controls; off remains the compatibility default."""
+
+    mode: str = "off"  # off | build_only | shadow | active
+    auto_maintain: bool = False
+    state_dir: str = ".zscope_knowledge/wiki"
+    compiler_enabled: bool = True
+    document_exclude: List[str] = field(default_factory=list)
+    explanatory_overrides: List[str] = field(default_factory=list)
+    generated_overrides: List[str] = field(default_factory=list)
+    max_file_bytes: int = 10 * 1024 * 1024
+    max_files: int = 10_000
+    max_total_bytes: int = 100 * 1024 * 1024
+    # Wiki-local limits are opt-in. ``None`` means unlimited; the ordinary
+    # LLM profile max_tokens remains the physical request ceiling.
+    max_context_tokens: Optional[int] = None
+    compiler_max_tokens: Optional[int] = None
+    max_source_chars: Optional[int] = None
+    max_output_chars: Optional[int] = None
+    max_wall_seconds: Optional[int] = None
+    max_pages: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        self.mode = str(self.mode or "off").strip().lower().replace("-", "_")
+        if self.mode not in {"off", "build_only", "shadow", "active"}:
+            raise ValueError("project.wiki.mode must be off, build_only, shadow, or active")
+        self.state_dir = str(self.state_dir or ".zscope_knowledge/wiki").strip()
+        if not self.state_dir or Path(self.state_dir).is_absolute() or ".." in Path(self.state_dir).parts:
+            raise ValueError("project.wiki.state_dir must be project-root relative")
+        self.max_file_bytes = int(self.max_file_bytes)
+        self.max_files = int(self.max_files)
+        self.max_total_bytes = int(self.max_total_bytes)
+        self.max_context_tokens = _optional_positive_int(self.max_context_tokens, None)
+        self.compiler_max_tokens = _optional_positive_int(self.compiler_max_tokens, None)
+        self.max_source_chars = _optional_positive_int(self.max_source_chars, None)
+        self.max_output_chars = _optional_positive_int(self.max_output_chars, None)
+        self.max_wall_seconds = _optional_positive_int(self.max_wall_seconds, None)
+        self.max_pages = _optional_positive_int(self.max_pages, None)
+        if min(self.max_file_bytes, self.max_files, self.max_total_bytes) <= 0:
+            raise ValueError("project.wiki limits must be positive")
+
+
+@dataclass
 class ScanLLMProfiles:
     """User-selected LLM profiles for stable runtime roles."""
 
@@ -526,6 +569,7 @@ class ProjectConfig:
     exclude_paths: List[str] = field(default_factory=list)
     entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
     diff_impact: DiffImpactConfig = field(default_factory=DiffImpactConfig)
+    wiki: WikiConfig = field(default_factory=WikiConfig)
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()

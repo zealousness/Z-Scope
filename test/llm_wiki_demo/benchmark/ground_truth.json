@@ -1,0 +1,55 @@
+{
+  "benchmark": "zscope-llm-wiki-demo",
+  "suite": "llm_wiki_demo",
+  "language": "c_cpp",
+  "version": 1,
+  "total_vulnerabilities": 1,
+  "notes": "Scoring truth only; never expose this file to Z-SCOPE analysis context.",
+  "vulnerabilities": [
+    {
+      "id": "WIKI-DEMO-VULN-001",
+      "rule_id": "c_command_execution",
+      "cwe": "CWE-78",
+      "category": "command_injection",
+      "title": "Caller-controlled command reaches system",
+      "file": "src/command_runner.c",
+      "function": "wiki_execute_command",
+      "line": 10,
+      "end_line": 10,
+      "severity": "high",
+      "keywords": ["system", "command"]
+    }
+  ],
+  "safe_entries": [
+    {
+      "file": "src/label_store.c",
+      "function": "wiki_copy_label",
+      "reason": "README documents a 1--31 byte gateway precondition."
+    },
+    {
+      "file": "src/frame_decoder.c",
+      "function": "wiki_decode_frame",
+      "reason": "The implementation checks frame_len against out_len."
+    },
+    {
+      "file": "src/port_parser.c",
+      "function": "wiki_parse_port",
+      "reason": "The implementation enforces the documented port range."
+    },
+    {
+      "file": "src/callback_registry.c",
+      "function": "wiki_register_callback",
+      "reason": "The registry update is protected by one mutex."
+    }
+  ],
+  "transition_target": {
+    "file": "src/label_store.c",
+    "function": "wiki_copy_label",
+    "off_disposition": "confirmed",
+    "active_disposition": "needs_review"
+  },
+  "matching": {
+    "keys": ["file", "function", "category"],
+    "line_tolerance": 3
+  }
+}

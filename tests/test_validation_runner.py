@@ -194,6 +194,56 @@ def test_validation_runner_cache_key_rejects_weak_fingerprint_without_candidate_
     assert runner._validator_cache_key(item) == ""
 
 
+def test_validation_runner_cluster_cache_key_includes_project_knowledge_identity() -> None:
+    runner = _runner(None)
+    issue = _issue(validation_cluster_uid="cluster:shared")
+
+    def item(context_digest: str):
+        return SimpleNamespace(
+            raw_issue=dict(issue),
+            issue_func="sink_func",
+            issue_code="void sink_func(void) {}",
+            evidence_pack={
+                "project_knowledge": {
+                    "schema_version": "zscope.validator-project-knowledge.v1",
+                    "resolution_mode": "source_fallback",
+                    "wiki_revision_id": None,
+                    "source_manifest_digest": "sha256:" + "1" * 64,
+                    "context_digest": context_digest,
+                    "selection": {"ranking_version": "source-index.v1"},
+                }
+            },
+        )
+
+    first = runner._validator_cache_key(item("sha256:" + "2" * 64))
+    second = runner._validator_cache_key(item("sha256:" + "3" * 64))
+
+    assert first
+    assert second
+    assert first != second
+
+
+def test_validation_runner_cache_key_keeps_off_mode_compatibility_branch() -> None:
+    runner = _runner(None)
+    issue = _issue(validation_cluster_uid="cluster:shared")
+    without_wiki = SimpleNamespace(
+        raw_issue=dict(issue),
+        issue_func="sink_func",
+        issue_code="void sink_func(void) {}",
+        evidence_pack={},
+    )
+    empty_projection = SimpleNamespace(
+        raw_issue=dict(issue),
+        issue_func="sink_func",
+        issue_code="void sink_func(void) {}",
+        evidence_pack={"project_knowledge": {}},
+    )
+
+    assert runner._validator_cache_key(without_wiki) == runner._validator_cache_key(
+        empty_projection
+    )
+
+
 def test_validation_runner_cache_is_scoped_to_runner_instance() -> None:
     first = _runner(None)
     second = _runner(None)

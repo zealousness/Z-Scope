@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.document-source-manifest.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project_id",
+    "project_root_digest",
+    "scanner",
+    "accepted",
+    "excluded",
+    "unsupported_extensions",
+    "override_digest",
+    "source_manifest_digest",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "zscope.document-source-manifest.v1"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "project_root_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "scanner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "discovery_version",
+        "classifier_version",
+        "parser_version"
+      ],
+      "properties": {
+        "discovery_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "classifier_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parser_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "accepted": {
+      "type": "array",
+      "items": {
+        "$ref": "zscope.document-source.v1"
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "descriptor_id",
+          "relative_path",
+          "classification",
+          "reason"
+        ],
+        "properties": {
+          "descriptor_id": {
+            "type": "string",
+            "pattern": "^docdesc_[a-z0-9_:-]+$"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "generated_artifact",
+              "runtime_instruction",
+              "benchmark_truth",
+              "sensitive_rejected",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content_digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "unsupported_extensions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "override_digest": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

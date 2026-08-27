@@ -116,6 +116,14 @@ from ...framework.llm_usage import (
 from ...agents.semantic_modeler.agent import SemanticModeler
 from ...agents.semantic_modeler.retry import run_semantic_model_with_retries
 from ...agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
+from ...wiki.service import ProjectKnowledgeService
+from ...wiki.source_index import SourceIndex
+from ...wiki.source_manifest import build_source_manifest
+from ...wiki.compiler.compiler import WikiCompiler
+from ...wiki.compiler.llm_compiler import LLMWikiCompilerProvider
+from ...wiki.compiler.workset import build_ingest_workset
+from ...wiki.maintenance import WikiWriterLock, compare_manifests, dirty_page_closure
+from ...wiki.store.revision_store import WikiStore, resolve_project_state_root
 from ...reporting.report import FinalReport, Issue, ReportGenerator
 from ...common.issue_identity import (
     canonical_issue_key,
@@ -186,6 +194,38 @@ def _as_dict(value: Any) -> Dict[str, Any]:
 def _as_list(value: Any) -> List[Any]:
     """Narrow an untyped runtime payload to a list without copying it."""
     return cast(List[Any], value) if isinstance(value, list) else []
+
+
+def _wiki_revision_compiler_kind(store: WikiStore, active: Optional[Dict[str, Any]]) -> str:
+    revision_id = str((active or {}).get("revision_id") or "")
+    if not revision_id:
+        return ""
+    path = store.revisions_root / revision_id / "revision.json"
+    try:
+        revision = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    compiler = revision.get("compiler") if isinstance(revision, dict) else None
+    return str(compiler.get("kind") or "") if isinstance(compiler, dict) else ""
+
+
+def _wiki_maintenance_requested(
+    *,
+    had_active_revision: bool,
+    manifest_changed: bool,
+    auto_maintain: bool,
+    compiler_enabled: bool,
+    active_compiler_kind: str,
+) -> bool:
+    if had_active_revision and manifest_changed:
+        return True
+    if not had_active_revision:
+        return compiler_enabled
+    return bool(
+        auto_maintain
+        and compiler_enabled
+        and active_compiler_kind not in {"llm", "mixed"}
+    )
 
 
 class Analyzer:
@@ -320,6 +360,7 @@ class Analyzer:
                     token_usage_ledger=token_usage_ledger,
                     llm_ref=name,
                 )
+        self.project_knowledge_service = self._build_project_knowledge_service()
         self.validation_runner = self._make_validation_runner()
         self.report_generator = ReportGenerator(config.project.project_root)
         self.report_assembler = ReportAssembler(
@@ -403,6 +444,16 @@ class Analyzer:
             return self.workflow_runner.run()
 
     def close(self) -> None:
+        service = getattr(self, "project_knowledge_service", None)
+        source_index = getattr(service, "source_index", None)
+        wiki_store = getattr(service, "wiki_store", None)
+        for resource in (source_index, wiki_store):
+            close_resource = getattr(resource, "close", None)
+            if callable(close_resource):
+                try:
+                    close_resource()
+                except Exception:
+                    logger.debug("Failed to close Wiki resource", exc_info=True)
         if not getattr(self, "_owns_llm_clients", False):
             return
         seen: Set[int] = set()
@@ -414,6 +465,171 @@ class Analyzer:
             close_client = getattr(client, "close", None)
             if callable(close_client):
                 close_client()
+
+    def _build_project_knowledge_service(self) -> Optional[ProjectKnowledgeService]:
+        """Build one scan-pinned Wiki/source resolver when explicitly enabled."""
+
+        wiki = getattr(getattr(self.config, "project", None), "wiki", None)
+        mode = str(getattr(wiki, "mode", "off") or "off").strip().lower()
+        if mode == "off":
+            return None
+        root = Path(self.config.project.project_root)
+        try:
+            state_dir = resolve_project_state_root(
+                root,
+                str(getattr(wiki, "state_dir", ".zscope_knowledge/wiki")),
+            )
+        except ValueError as exc:
+            logger.warning("Wiki state directory rejected: %s", exc)
+            state_dir = None
+        manifest = None
+        source_index = None
+        source_index_ready = False
+        wiki_store = None
+        try:
+            overrides = {
+                "exclude": list(getattr(wiki, "document_exclude", []) or []),
+                "explanatory": list(getattr(wiki, "explanatory_overrides", []) or []),
+                "generated": list(getattr(wiki, "generated_overrides", []) or []),
+            }
+            manifest = build_source_manifest(
+                root,
+                project_id=str(getattr(self.config.project, "project_id", "") or root.name),
+                overrides=overrides,
+                max_file_bytes=int(getattr(wiki, "max_file_bytes", 10 * 1024 * 1024)),
+                max_files=int(getattr(wiki, "max_files", 10_000)),
+                max_total_bytes=int(getattr(wiki, "max_total_bytes", 100 * 1024 * 1024)),
+                prune_paths=(state_dir.relative_to(root.resolve()),) if state_dir is not None else None,
+            )
+            source_index = SourceIndex(
+                state_dir / "source-index.db" if state_dir is not None else ":memory:"
+            )
+            source_index.rebuild(
+                root,
+                manifest=manifest,
+                overrides=overrides,
+                prune_paths=(state_dir.relative_to(root.resolve()),) if state_dir is not None else None,
+            )
+            source_index_ready = True
+            if state_dir is None:
+                if mode == "build_only":
+                    source_index.close()
+                    return None
+                return ProjectKnowledgeService(
+                    source_index=source_index,
+                    wiki_store=None,
+                    source_manifest_digest=manifest.source_manifest_digest,
+                    mode=mode if mode in {"shadow", "active"} else "shadow",
+                )
+            wiki_store = WikiStore(state_dir)
+            active = wiki_store.active_revision()
+            had_active_revision = active is not None
+            manifest_changed = active is None or active.get("source_manifest_digest") != manifest.source_manifest_digest
+            if mode in {"build_only", "shadow", "active"} and active is None:
+                wiki_store.build_skeleton(root, manifest)
+                active = wiki_store.active_revision()
+            # Compiler maintenance is opt-in and uses the same bounded
+            # workset/ChangeSet/store boundary as the standalone CLI.  A
+            # missing client never turns into a fake successful revision; the
+            # Validator will use direct source fallback instead.
+            maintenance_requested = _wiki_maintenance_requested(
+                had_active_revision=had_active_revision,
+                manifest_changed=manifest_changed,
+                auto_maintain=bool(getattr(wiki, "auto_maintain", False)),
+                compiler_enabled=bool(getattr(wiki, "compiler_enabled", False)),
+                active_compiler_kind=_wiki_revision_compiler_kind(wiki_store, active),
+            )
+            if maintenance_requested and active:
+                compiler_client = self.llm_clients.get("wiki_compiler") or self.llm_clients.get("default")
+                rows = wiki_store.connection.execute(
+                    "SELECT page_id, frontmatter_json FROM pages WHERE revision_id=? ORDER BY page_id",
+                    (active.get("revision_id"),),
+                ).fetchall()
+                target_pages = [str(row["page_id"]) for row in rows]
+                source_to_pages = {}
+                page_dependencies = {}
+                for row in rows:
+                    try:
+                        front = json.loads(row["frontmatter_json"])
+                    except Exception:
+                        front = {}
+                    for source_id in front.get("source_ids", ()):
+                        source_to_pages.setdefault(str(source_id), []).append(str(row["page_id"]))
+                    page_dependencies[str(row["page_id"])] = [str(item) for item in front.get("depends_on", ())]
+                previous_manifest = wiki_store.revision_manifest(str(active.get("revision_id")))
+                if previous_manifest is not None:
+                    delta = compare_manifests(previous_manifest, manifest)
+                    dirty_pages = dirty_page_closure(
+                        delta,
+                        source_to_pages=source_to_pages,
+                        page_dependencies=page_dependencies,
+                    )
+                else:
+                    delta = None
+                    dirty_pages = tuple(target_pages) or ("page_project",)
+                workset = build_ingest_workset(
+                    manifest,
+                    source_index=source_index,
+                    base_revision_id=str(active.get("revision_id")),
+                    added_source_ids=delta.added_source_ids if delta else (),
+                    changed_source_ids=delta.changed_source_ids if delta else (),
+                    removed_source_ids=delta.removed_source_ids if delta else (),
+                    target_page_ids=dirty_pages,
+                    allowed_existing_pages=target_pages,
+                    max_source_chars=int(getattr(wiki, "max_source_chars", 200_000)),
+                    max_output_chars=int(getattr(wiki, "max_output_chars", 100_000)),
+                    max_wall_seconds=int(getattr(wiki, "max_wall_seconds", 600)),
+                )
+                compiler = WikiCompiler()
+                if bool(getattr(wiki, "compiler_enabled", False)) and compiler_client is not None:
+                    compiler = WikiCompiler(
+                        LLMWikiCompilerProvider(
+                            compiler_client,
+                            max_tokens=int(getattr(wiki, "compiler_max_tokens", 4000)),
+                        )
+                    )
+                lock_path = state_dir / "locks" / "compiler.lock"
+                with WikiWriterLock(lock_path, timeout_seconds=0.0):
+                    wiki_store.compile_and_apply(root, manifest, workset, compiler)
+            if mode == "build_only":
+                # Keep the build artifact but do not expose it to Validator.
+                source_index.close()
+                wiki_store.close()
+                return None
+            return ProjectKnowledgeService(
+                source_index=source_index,
+                wiki_store=wiki_store,
+                source_manifest_digest=manifest.source_manifest_digest,
+                mode=mode if mode in {"shadow", "active"} else "shadow",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Wiki preflight failed; Validator will use direct source fallback when available: %s",
+                exc,
+            )
+            try:
+                if wiki_store is not None:
+                    wiki_store.close()
+            except Exception:
+                pass
+            if (
+                mode != "build_only"
+                and source_index_ready
+                and source_index is not None
+                and manifest is not None
+            ):
+                return ProjectKnowledgeService(
+                    source_index=source_index,
+                    wiki_store=None,
+                    source_manifest_digest=manifest.source_manifest_digest,
+                    mode=mode if mode in {"shadow", "active"} else "shadow",
+                )
+            if source_index is not None:
+                try:
+                    source_index.close()
+                except Exception:
+                    pass
+            return None
 
     def _set_current_workflow_step(self, step_id: Optional[str]) -> None:
         self.current_workflow_step = step_id
@@ -4793,6 +5009,7 @@ class Analyzer:
             deduplicate_issues_fn=self._deduplicate_candidate_issues,
             result_cache=getattr(self, "validation_result_cache", None),
             scheduler=getattr(self, "scheduler", None),
+            project_knowledge_service=getattr(self, "project_knowledge_service", None),
         )
 
     def _remember_validation_result(self, issue: Dict[str, Any], status: str) -> None:
@@ -5366,6 +5583,24 @@ class Analyzer:
             else dict(state.get("candidate_ledger_summary", {}))
         )
         state["candidate_ledger_summary"] = ledger_summary
+        wiki_service = getattr(self, "project_knowledge_service", None)
+        wiki_telemetry_fn = getattr(wiki_service, "telemetry_snapshot", None)
+        wiki_telemetry = wiki_telemetry_fn() if callable(wiki_telemetry_fn) else {
+            "effective_mode": "off",
+            "active_effective_mode": False,
+            "resolution_count": 0,
+            "wiki_resolution_count": 0,
+            "source_fallback_count": 0,
+            "none_count": 0,
+            "knowledge_context_tokens": 0,
+            "incremental_fact_count": 0,
+            "wiki_context_injected": False,
+            "selected_constraint_ids": {},
+            "selected_page_ids": {},
+            "selected_source_ref_ids": {},
+            "fallback_reasons": {},
+        }
+        state["wiki_telemetry"] = wiki_telemetry
         return {
             "timestamp": datetime.datetime.now().isoformat(),
             "run_id": state.get("run_id", ""),
@@ -5398,6 +5633,7 @@ class Analyzer:
             "rollout": rollout_runtime_policy(self.config),
             "llm_usage": llm_usage,
             "engine_capabilities": engine_capabilities,
+            "wiki_telemetry": wiki_telemetry,
             "version": __version__,
             "knowledge_db_version": self._knowledge_db_version(),
             "snapshot_schema_version": "semantic_snapshot_v1",

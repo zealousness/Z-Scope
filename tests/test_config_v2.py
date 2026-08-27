@@ -165,6 +165,76 @@ def test_rules_enabled_ids_reject_duplicates(tmp_path: Path) -> None:
         ConfigLoader.load(str(_write(tmp_path, data)))
 
 
+def test_project_wiki_config_is_strict_and_root_relative(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {
+        "mode": "shadow",
+        "auto_maintain": True,
+        "documents": {
+            "exclude": ["legacy/**"],
+            "classify": {"explanatory": ["docs/contracts/**/*.md"], "generated": ["artifacts/**"]},
+        },
+        "max_context_tokens": 1200,
+    }
+    config = ConfigLoader.load(str(_write(tmp_path, data)))
+    assert config.project.wiki.mode == "shadow"
+    assert config.project.wiki.auto_maintain is True
+    assert config.project.wiki.max_context_tokens == 1200
+    assert config.project.wiki.document_exclude == ["legacy/**"]
+    assert config.project.wiki.explanatory_overrides == ["docs/contracts/**/*.md"]
+
+
+def test_project_wiki_limits_default_to_unlimited_without_changing_llm_profile(tmp_path: Path) -> None:
+    config = ConfigLoader.load(str(_write(tmp_path, _config(tmp_path))))
+
+    wiki = config.project.wiki
+    assert wiki.max_context_tokens is None
+    assert wiki.compiler_max_tokens is None
+    assert wiki.max_source_chars is None
+    assert wiki.max_output_chars is None
+    assert wiki.max_wall_seconds is None
+    assert wiki.max_pages is None
+    assert config.llms["default"].max_tokens == 4096
+
+
+def test_project_wiki_rejects_absolute_state_dir(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {"mode": "active", "state_dir": "/tmp/wiki"}
+    with pytest.raises(ValueError, match=r"project\.wiki\.state_dir"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+@pytest.mark.parametrize("pattern", ["../legacy/**", "/tmp/docs/**", "C:/docs/**"])
+def test_project_wiki_rejects_non_relative_document_globs(
+    tmp_path: Path,
+    pattern: str,
+) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {
+        "mode": "shadow",
+        "documents": {"exclude": [pattern]},
+    }
+
+    with pytest.raises(ValueError, match=r"project\.wiki\.documents\.exclude"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+def test_project_wiki_rejects_conflicting_classification_globs(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {
+        "mode": "shadow",
+        "documents": {
+            "classify": {
+                "explanatory": ["docs/contracts/**"],
+                "generated": ["docs/contracts/**"],
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match="same glob"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
 def test_unknown_key_reports_full_path_and_suggestion(tmp_path: Path) -> None:
     data = _config(tmp_path)
     discovery = data["project"]["entry_discovery"]

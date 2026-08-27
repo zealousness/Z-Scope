@@ -21,6 +21,7 @@ from ..orchestration.scan_request import ScanRequestError, ScanRequestService
 from ..retrieval.code_index import CodeIndex
 from ..rules.catalog import serialize_effective_rules
 from ..rules.extensions import preflight_rules
+from ..wiki.control import wiki_query, wiki_status
 
 
 MCP_TOOL_ALIASES: Dict[str, str] = {
@@ -40,6 +41,8 @@ MCP_TOOL_ALIASES: Dict[str, str] = {
     "zscope.entries.discover": "discover_entries",
     "zscope.scan.run": "run_scan",
     "zscope.scan.status": "scan_status",
+    "zscope.wiki.status": "wiki_status",
+    "zscope.wiki.query": "wiki_query",
 }
 
 MCP_RAW_TOOL_ALIASES: Dict[str, str] = {
@@ -299,6 +302,41 @@ class ZScopeMcpProvider:
                         },
                     },
                 },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "wiki_status",
+                        "description": "Read the active project Wiki revision status.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "wiki_query",
+                        "description": "Query bounded project Wiki or direct Markdown context for candidate subjects.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "subjects": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "maxItems": 32,
+                                    "items": {"type": "string", "minLength": 1, "maxLength": 300},
+                                },
+                                "fact_kind": {"type": "string", "default": "unknown"},
+                                "candidate_file": {"type": "string", "default": ""},
+                                "max_tokens": {"type": "integer", "minimum": 256},
+                            },
+                            "required": ["subjects"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
             ]
         )
         return self.tool_policy.filter_tool_schemas(self._with_namespaced_aliases(tools))
@@ -354,6 +392,84 @@ class ZScopeMcpProvider:
                     result = {"success": True, "data": data}
                 except ScanRequestError as exc:
                     result = {"success": False, "error": str(exc)}
+            return self._post_tool_result(requested_name, arguments, result, start)
+        if runtime_name in {"wiki_status", "wiki_query"}:
+            wiki = self.config.project.wiki
+            root = self.config.project.project_root
+            try:
+                if runtime_name == "wiki_status":
+                    data = wiki_status(root, state_dir=wiki.state_dir)
+                else:
+                    subjects = arguments.get("subjects")
+                    if not isinstance(subjects, list) or not subjects:
+                        raise ValueError("subjects must be a non-empty array")
+                    if len(subjects) > 32 or any(
+                        not isinstance(item, str)
+                        or not item.strip()
+                        or len(item) > 300
+                        or re.search(r"[\x00-\x1f\x7f]", item)
+                        for item in subjects
+                    ):
+                        raise ValueError("subjects must contain 1-32 non-empty strings up to 300 characters")
+                    fact_kind = str(arguments.get("fact_kind") or "unknown").strip()
+                    if len(fact_kind) > 80 or re.search(r"[\x00-\x1f\x7f]", fact_kind):
+                        raise ValueError("fact_kind must be at most 80 characters")
+                    candidate_file = str(arguments.get("candidate_file") or "").replace("\\", "/").strip()
+                    if (
+                        len(candidate_file) > 500
+                        or candidate_file.startswith("/")
+                        or re.match(r"^[A-Za-z]:/", candidate_file)
+                        or ".." in Path(candidate_file).parts
+                        or re.search(r"[\x00-\x1f\x7f]", candidate_file)
+                    ):
+                        raise ValueError("candidate_file must be project-root relative")
+                    configured_limit = wiki.max_context_tokens
+                    raw_max_tokens = arguments.get("max_tokens")
+                    max_tokens = configured_limit if raw_max_tokens is None else int(raw_max_tokens)
+                    if max_tokens is not None and max_tokens < 256:
+                        raise ValueError("max_tokens must be at least 256")
+                    if configured_limit is not None and max_tokens is not None and max_tokens > configured_limit:
+                        raise ValueError(f"max_tokens must not exceed {configured_limit}")
+                    data = wiki_query(
+                        root,
+                        subjects=[item.strip() for item in subjects],
+                        fact_kind=fact_kind,
+                        candidate_file=candidate_file,
+                        max_tokens=max_tokens,
+                        project_id=str(self.config.project.project_id or root.name),
+                        state_dir=wiki.state_dir,
+                        overrides={
+                            "exclude": list(wiki.document_exclude),
+                            "explanatory": list(wiki.explanatory_overrides),
+                            "generated": list(wiki.generated_overrides),
+                        },
+                        max_file_bytes=wiki.max_file_bytes,
+                        max_files=wiki.max_files,
+                        max_total_bytes=wiki.max_total_bytes,
+                    )
+                result = {"success": True, "data": data}
+            except (TypeError, ValueError) as exc:
+                message = str(exc)
+                safe_prefixes = (
+                    "subjects",
+                    "fact_kind",
+                    "candidate_file",
+                    "max_tokens",
+                )
+                result = {
+                    "success": False,
+                    "error": (
+                        message[:500]
+                        if message.startswith(safe_prefixes)
+                        else "Wiki control operation is unavailable."
+                    ),
+                }
+            except OSError:
+                result = {
+                    "success": False,
+                    "error": "Wiki control operation is unavailable.",
+                }
+            result = self._bounded_tool_result(requested_name, result)
             return self._post_tool_result(requested_name, arguments, result, start)
         result = self._bounded_tool_result(
             requested_name,
