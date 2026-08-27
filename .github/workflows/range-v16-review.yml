@@ -315,13 +315,13 @@ jobs:
             --workers 4
       - name: Upload verified failure checkpoint
         if: ${{ failure() && steps.primary_review.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: range-v16-primary-checkpoint-${{ matrix.reviewer }}-${{ inputs.source_sha }}
           path: review-checkpoint/${{ matrix.reviewer }}
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@v7
+      - uses: ./.github/actions/upload-artifact-retry
         with:
           name: range-v16-primary-${{ matrix.reviewer }}-${{ inputs.source_sha }}
           path: review-evidence/${{ matrix.reviewer }}
@@ -484,7 +484,7 @@ jobs:
             --workers 1
       - name: Upload verified arbitration shard failure checkpoint
         if: ${{ failure() && steps.arbitration_review.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: range-v16-arbitration-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}
           path: review-checkpoint/codex-shard
@@ -492,7 +492,7 @@ jobs:
           overwrite: true
           retention-days: 7
       - name: Upload completed arbitration shard
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: range-v16-arbitration-shard-${{ matrix.shard }}-${{ inputs.source_sha }}
           path: ${{ steps.arbitration_paths.outputs.output_dir }}
@@ -584,7 +584,7 @@ jobs:
             --review-root review-evidence \
             --output review-evidence/review-bundle-manifest.json
       - id: upload-reviewed
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: range-v16-reviewed-${{ inputs.source_sha }}
           path: review-evidence
@@ -602,7 +602,7 @@ jobs:
             --workflow-head-sha "$GITHUB_SHA" \
             --packet-source-sha '${{ inputs.source_sha }}' \
             --output review-provenance/review-provenance.json
-      - uses: actions/upload-artifact@v7
+      - uses: ./.github/actions/upload-artifact-retry
         with:
           name: range-v16-review-provenance-${{ inputs.source_sha }}
           path: review-provenance/review-provenance.json
@@ -695,14 +695,14 @@ jobs:
           echo "created=$created" >> "$GITHUB_OUTPUT"
       - name: Upload verified safe-pair failure checkpoint
         if: ${{ failure() && steps.pair_author_checkpoint.outputs.created == 'true' }}
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: range-v16-pair-author-checkpoint-${{ inputs.source_sha }}
           path: review-checkpoint/safe-pair
           if-no-files-found: error
           overwrite: true
           retention-days: 7
-      - uses: actions/upload-artifact@v7
+      - uses: ./.github/actions/upload-artifact-retry
         with:
           name: range-v16-pair-author-${{ inputs.source_sha }}
           path: ${{ steps.pair_author_paths.outputs.root_dir }}
