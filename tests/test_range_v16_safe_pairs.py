@@ -14,9 +14,11 @@ from scripts.generate_range_v16_safe_pairs import (
     AUTHOR_CHECKPOINT_SCHEMA_VERSION,
     AUTHOR_FAILURE_SCHEMA_VERSION,
     AUTHOR_MODEL,
+    AUTHOR_REQUEST_SCHEMA_VERSION,
     AUTHOR_SCHEMA_VERSION,
     RAW_AUTHOR_SCHEMA_VERSION,
     _author_one,
+    _author_request,
     _author_schema,
     _source_identifiers,
     author_pairs,
@@ -101,6 +103,7 @@ def _author(record: dict) -> dict:
 
 def _raw_author(record: dict, author: dict) -> dict:
     packet = _packet(record)
+    request = _author_request(packet, record)
     forbidden = _source_identifiers(packet, str(record["truth_id"]))
     contract_schema = _author_schema(
         forbidden,
@@ -120,6 +123,8 @@ def _raw_author(record: dict, author: dict) -> dict:
         ],
         "output_schema_sha256": sha256_value(_codex_transport_schema(contract_schema)),
         "contract_schema_sha256": sha256_value(contract_schema),
+        "author_request_schema_version": AUTHOR_REQUEST_SCHEMA_VERSION,
+        "author_request_sha256": sha256_value(request),
         "attempts": [
             {
                 "attempt": 1,
@@ -154,6 +159,27 @@ def test_safe_pair_codex_schema_preserves_strict_local_contract() -> None:
         assert "pattern" not in projected["properties"][field]
     assert projected["properties"]["packet_sha256"]["pattern"] == "^[0-9a-f]{64}$"
     _assert_codex_transport_schema(projected)
+
+
+def test_safe_pair_author_request_projects_only_frozen_contract() -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+
+    request = _author_request(packet, record)
+
+    assert request == {
+        "schema_version": AUTHOR_REQUEST_SCHEMA_VERSION,
+        "truth_id": record["truth_id"],
+        "packet_uid": record["packet_uid"],
+        "packet_sha256": record["packet_sha256"],
+        "final_decision_sha256": record["final_decision_sha256"],
+        "contract_kind": record["final_decision"]["contract_kind"],
+        "safe_pair_recommendation": record["final_decision"]["safe_pair_recommendation"],
+    }
+    serialized = json.dumps(request)
+    assert "code_windows" not in serialized
+    assert "project_specific_function" not in serialized
 
 
 def test_safe_pair_author_rejects_project_specific_identifiers() -> None:
@@ -407,6 +433,10 @@ def test_safe_pair_author_retries_nonzero_transport_without_retaining_bodies(
     assert result["status"] == "authored"
     assert len(calls) == 2
     assert calls[0] == calls[1]
+    assert "authorized defensive static-analysis benchmark" in calls[0][1]
+    assert "code_windows" not in calls[0][1]
+    assert "project_specific_function" not in calls[0][1]
+    assert "safe_pair_recommendation" in calls[0][1]
     raw = json.loads(
         (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
     )
