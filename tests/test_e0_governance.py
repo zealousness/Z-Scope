@@ -469,6 +469,7 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     assert '--expected-run-id "$GITHUB_RUN_ID"' in finalize
     assert '--expected-head-sha "$GITHUB_SHA"' in finalize
     assert finalize.count("--artifact '") == 6
+    assert finalize.count("--optional-checkpoint-artifact '") == 1
     assert "actions/download-artifact@v8" not in finalize
     assert "id: pair_author_paths" in finalize
     assert "id: pair_author" in finalize
@@ -478,6 +479,12 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     assert '--checkpoint-workflow-run-id "$GITHUB_RUN_ID"' in finalize
     assert "failure() && steps.pair_author.outcome == 'failure'" in finalize
     assert "range-v16-pair-author-checkpoint-${{ inputs.source_sha }}" in finalize
+    assert "retained-pair-checkpoint/checkpoint-manifest.json" in finalize
+    assert "retained_root=retained-pair-checkpoint" in finalize
+    assert '--retained-dir "$retained_root"' in finalize
+    assert finalize.index("retained_root=retained-pair-checkpoint") < finalize.index(
+        'prior_root="$RUNNER_TEMP/range-v16-pair-author-$GITHUB_RUN_ID-$prior_attempt"'
+    )
     assert "--resume" in finalize
     assert "overwrite: true" in finalize
 
