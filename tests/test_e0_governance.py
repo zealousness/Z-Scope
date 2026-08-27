@@ -446,6 +446,18 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     assert arbitration.count("--optional-artifact '") == 1
     assert '--expected-run-id "$GITHUB_RUN_ID"' in arbitration
     assert '--expected-head-sha "$GITHUB_SHA"' in arbitration
+    assert (
+        "if ! python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only; then"
+        in arbitration
+    )
+    assert (
+        'mkdir -p "$CODEX_OUTPUT/decisions" "$CODEX_OUTPUT/raw" '
+        '"$CODEX_OUTPUT/failures"' in arbitration
+    )
+    assert 'echo "::error::codex_preflight_failed_before_arbitration"' in arbitration
+    assert arbitration.index("codex_preflight_failed_before_arbitration") < arbitration.index(
+        "scripts/run_e0_reviewers.py arbitrate"
+    )
     assert "actions/download-artifact@v8" not in arbitration
     assert "actions/download-artifact@v8" not in workflow
     assert workflow.index("scripts/run_e0_reviewers.py merge-arbitration") < workflow.index(
@@ -2782,3 +2794,71 @@ def test_arbitration_checkpoint_revalidates_and_resumes_only_missing_pairs(
     final_manifest = json.loads((checkpoint / "manifest.json").read_text(encoding="utf-8"))
     status_by_id = {record["truth_id"]: record["status"] for record in final_manifest["records"]}
     assert status_by_id[first_id] == "reused"
+
+
+def test_arbitration_checkpoint_preserves_preflight_failure_skeleton(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet_dir, fable_dir, deepseek_dir, _ = _write_arbitration_fixture(tmp_path)
+    work, _, _, plan_sha256 = reviewer_runner._load_arbitration_plan(
+        packet_dir,
+        fable_dir=fable_dir,
+        deepseek_dir=deepseek_dir,
+    )
+    shard_index = max(
+        range(4),
+        key=lambda value: len(
+            reviewer_runner._arbitration_shard_work(
+                work,
+                shard_index=value,
+                shard_count=4,
+            )
+        ),
+    )
+    shard_work = reviewer_runner._arbitration_shard_work(
+        work,
+        shard_index=shard_index,
+        shard_count=4,
+    )
+    retained = tmp_path / "preflight-failure"
+    for name in ("decisions", "raw", "failures"):
+        (retained / name).mkdir(parents=True)
+
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    checkpoint = tmp_path / "checkpoint"
+    assert (
+        reviewer_runner.build_arbitration_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                fable_dir=fable_dir,
+                deepseek_dir=deepseek_dir,
+                retained_dir=retained,
+                output_dir=checkpoint,
+                packet_source_sha="a" * 40,
+                retained_source_sha="a" * 40,
+                workflow_run_id="33030145550",
+                shard_index=shard_index,
+                shard_count=4,
+                workers=1,
+            )
+        )
+        == 0
+    )
+    manifest = json.loads((checkpoint / "checkpoint-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["plan_sha256"] == plan_sha256
+    assert manifest["verified_record_count"] == 0
+    assert manifest["invalid_pair_count"] == 0
+    assert manifest["incomplete_pair_count"] == 0
+    assert manifest["failure_record_count"] == 0
+    assert manifest["missing_pair_count"] == len(shard_work)
+    assert manifest["first_unverified_batch_ids"] == [shard_work[0][1]]
+    assert manifest["diagnostic_answer_material_present"] is False
+    assert manifest["requires_resume_revalidation"] is True
+    reviewer_runner._validate_arbitration_checkpoint(
+        checkpoint,
+        packet_source_sha="a" * 40,
+        work=work,
+        plan_sha256=plan_sha256,
+        shard_index=shard_index,
+        shard_count=4,
+    )
