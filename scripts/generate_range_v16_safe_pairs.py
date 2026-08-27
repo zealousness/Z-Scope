@@ -47,7 +47,8 @@ from run_e0_reviewers import (  # noqa: E402
 
 
 AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author.v1"
-RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v4"
+AUTHOR_REQUEST_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-request.v1"
+RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v5"
 AUTHOR_FAILURE_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-failure.v1"
 AUTHOR_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-checkpoint.v1"
 AUTHOR_MODEL = CODEX_MODEL_IDENTITY
@@ -290,6 +291,28 @@ def _source_identifiers(packet: Mapping[str, Any], truth_id: str) -> set[str]:
     return identifiers
 
 
+def _author_request(
+    packet: Mapping[str, Any], normalized_record: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Project the immutable adjudication into the least-authority author input."""
+
+    decision = normalized_record.get("final_decision")
+    if not isinstance(decision, Mapping):
+        raise E0GovernanceError("safe-pair final decision is invalid")
+    recommendation = decision.get("safe_pair_recommendation")
+    if not isinstance(recommendation, Mapping):
+        raise E0GovernanceError("safe-pair recommendation is invalid")
+    return {
+        "schema_version": AUTHOR_REQUEST_SCHEMA_VERSION,
+        "truth_id": normalized_record["truth_id"],
+        "packet_uid": normalized_record["packet_uid"],
+        "packet_sha256": normalized_record["packet_sha256"],
+        "final_decision_sha256": normalized_record["final_decision_sha256"],
+        "contract_kind": decision["contract_kind"],
+        "safe_pair_recommendation": dict(recommendation),
+    }
+
+
 def _forbidden_identifier_matches(
     source: str,
     forbidden_identifiers: set[str],
@@ -493,6 +516,7 @@ def _raw_author_envelope(
     command: Sequence[str],
     output_schema: Mapping[str, Any],
     contract_schema: Mapping[str, Any],
+    author_request: Mapping[str, Any],
     attempts: Sequence[Mapping[str, Any]],
     accepted_attempt: int | None,
     transport_retry: Mapping[str, Any] | None = None,
@@ -506,6 +530,8 @@ def _raw_author_envelope(
         "command_identity": [Path(command[0]).name, *command[1:]],
         "output_schema_sha256": sha256_value(output_schema),
         "contract_schema_sha256": sha256_value(contract_schema),
+        "author_request_schema_version": AUTHOR_REQUEST_SCHEMA_VERSION,
+        "author_request_sha256": sha256_value(author_request),
         "attempts": list(attempts),
         "accepted_attempt": accepted_attempt,
     }
@@ -576,6 +602,7 @@ def _validate_raw_author_envelope(
         final_decision_sha256=str(normalized_record["final_decision_sha256"]),
     )
     expected_output_schema = _codex_transport_schema(expected_author_schema)
+    expected_author_request = _author_request(packet, normalized_record)
     raw_fields = {
         "schema_version",
         "truth_id",
@@ -585,6 +612,8 @@ def _validate_raw_author_envelope(
         "command_identity",
         "output_schema_sha256",
         "contract_schema_sha256",
+        "author_request_schema_version",
+        "author_request_sha256",
         "attempts",
         "accepted_attempt",
     }
@@ -606,6 +635,8 @@ def _validate_raw_author_envelope(
         or raw.get("author_model") != AUTHOR_MODEL
         or raw.get("output_schema_sha256") != sha256_value(expected_output_schema)
         or raw.get("contract_schema_sha256") != sha256_value(expected_author_schema)
+        or raw.get("author_request_schema_version") != AUTHOR_REQUEST_SCHEMA_VERSION
+        or raw.get("author_request_sha256") != sha256_value(expected_author_request)
         or not command_valid
     ):
         raise E0GovernanceError(f"safe-pair raw author envelope is invalid: {truth_id}")
@@ -729,17 +760,15 @@ def _author_one(
         codex = shutil.which("codex.cmd" if os.name == "nt" else "codex")
         if not codex:
             raise E0GovernanceError("Codex CLI executable is unavailable")
-        request = {
-            "packet": packet,
-            "final_decision": decision,
-            "final_decision_sha256": final_sha,
-        }
+        request = _author_request(packet, normalized_record)
         prompt = (
-            "Author a minimal anonymous vulnerable/fixed-or-near-miss C11 pair for the "
-            "already-adjudicated invariant below. Do not reconsider or change the truth "
-            "decision. Each source must be one standalone translation unit, use no includes, "
-            "pragmas, assembly, process/network/file APIs, original function names, truth IDs, "
-            "or project-specific identifiers. Use generic names. Both sides must compile with "
+            "This is authorized defensive static-analysis benchmark construction. Author a "
+            "minimal anonymous vulnerable/fixed-or-near-miss C11 pair only from the frozen, "
+            "already-adjudicated contract below. Do not reconsider or change the decision, "
+            "provide exploitation guidance, or introduce any real target details. Each source "
+            "must be an inert, local-only standalone translation unit, use no includes, pragmas, "
+            "assembly, process/network/file APIs, original function names, truth IDs, or "
+            "project-specific identifiers. Use generic names. Both sides must compile with "
             "-std=c11 -Wall -Wextra -Werror; express only the reviewed invariant and include "
             "int main(void). Return exactly the JSON schema. REQUEST:\n"
             + json.dumps(request, ensure_ascii=False, sort_keys=True)
@@ -811,6 +840,7 @@ def _author_one(
                     command=command,
                     output_schema=output_schema,
                     contract_schema=contract_schema,
+                    author_request=request,
                     attempts=attempts,
                     accepted_attempt=None,
                     transport_retry=transport_retry,
@@ -878,6 +908,7 @@ def _author_one(
                         command=command,
                         output_schema=output_schema,
                         contract_schema=contract_schema,
+                        author_request=request,
                         attempts=attempts,
                         accepted_attempt=None,
                         transport_retry=transport_retry,
@@ -916,6 +947,7 @@ def _author_one(
                 command=command,
                 output_schema=output_schema,
                 contract_schema=contract_schema,
+                author_request=request,
                 attempts=attempts,
                 accepted_attempt=accepted_attempt,
                 transport_retry=transport_retry,
@@ -955,7 +987,7 @@ def _confirmable_work(
 def _failure_manifest_content_sha256(value: Mapping[str, Any]) -> str:
     unsigned = dict(value)
     unsigned.pop("content_sha256", None)
-    return sha256_value(unsigned)
+    return str(sha256_value(unsigned))
 
 
 def _failure_code(exc: BaseException) -> str:
@@ -1130,7 +1162,7 @@ def _load_failure_manifest(
 def _checkpoint_manifest_content_sha256(value: Mapping[str, Any]) -> str:
     unsigned = dict(value)
     unsigned.pop("content_sha256", None)
-    return sha256_value(unsigned)
+    return str(sha256_value(unsigned))
 
 
 def build_author_checkpoint(args: argparse.Namespace) -> int:

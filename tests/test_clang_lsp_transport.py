@@ -54,6 +54,11 @@ def test_start_cleans_up_process_that_exits_immediately(tmp_path, monkeypatch) -
 def test_send_request_is_condition_driven_and_records_latency(tmp_path, monkeypatch) -> None:
     extractor = ClangExtractor(tmp_path)
     written = []
+    monotonic_tick = [100.0]
+
+    def monotonic() -> float:
+        monotonic_tick[0] += 0.001
+        return monotonic_tick[0]
 
     def write_message(message):
         written.append(message)
@@ -66,6 +71,7 @@ def test_send_request_is_condition_driven_and_records_latency(tmp_path, monkeypa
             ).start()
 
     monkeypatch.setattr(extractor, "_write_message", write_message)
+    monkeypatch.setattr("zscope.retrieval.clang_extractor.time.monotonic", monotonic)
     monkeypatch.setattr(
         "zscope.retrieval.clang_extractor.time.sleep",
         lambda _seconds: (_ for _ in ()).throw(AssertionError("send_request must not poll")),
