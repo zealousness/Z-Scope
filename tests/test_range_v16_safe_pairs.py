@@ -568,6 +568,71 @@ def test_safe_pair_checkpoint_revalidates_and_resumes_without_model_calls(
     assert not (checkpoint / "checkpoint-manifest.json").exists()
 
 
+def test_safe_pair_checkpoint_rebuilds_uploaded_checkpoint_after_provenance_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    normalized_path = tmp_path / "normalized-original.json"
+    changed_normalized_path = tmp_path / "normalized-current.json"
+    packet_dir = tmp_path / "packets"
+    retained = tmp_path / "retained"
+    uploaded_checkpoint = tmp_path / "uploaded-checkpoint"
+    rebuilt_checkpoint = tmp_path / "rebuilt-checkpoint"
+    _dump(normalized_path, normalized)
+    _dump(packet_dir / f"{record['truth_id']}.json", _packet(record))
+    author = _author(record)
+    _dump(retained / "authors" / f"{record['truth_id']}.json", author)
+    _dump(retained / "raw" / f"{record['truth_id']}.json", _raw_author(record, author))
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    source_sha = "a" * 40
+    run_id = "33037684216"
+
+    assert (
+        build_author_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                normalized_decisions=normalized_path,
+                retained_dir=retained,
+                output_dir=uploaded_checkpoint,
+                packet_source_sha=source_sha,
+                retained_source_sha=source_sha,
+                workflow_run_id=run_id,
+            )
+        )
+        == 0
+    )
+    changed = json.loads(json.dumps(normalized))
+    changed["review_provenance"]["artifact_digest"] = f"sha256:{'b' * 64}"
+    unsigned = dict(changed)
+    unsigned.pop("content_sha256")
+    changed["content_sha256"] = sha256_value(unsigned)
+    _dump(changed_normalized_path, changed)
+
+    assert sha256_file(changed_normalized_path) != sha256_file(normalized_path)
+    assert (
+        build_author_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                normalized_decisions=changed_normalized_path,
+                retained_dir=uploaded_checkpoint,
+                output_dir=rebuilt_checkpoint,
+                packet_source_sha=source_sha,
+                retained_source_sha=source_sha,
+                workflow_run_id=run_id,
+            )
+        )
+        == 0
+    )
+    rebuilt_manifest = json.loads(
+        (rebuilt_checkpoint / "checkpoint-manifest.json").read_text(encoding="utf-8")
+    )
+    assert rebuilt_manifest["verified_record_count"] == 1
+    assert rebuilt_manifest["invalid_records"] == []
+    assert rebuilt_manifest["incomplete_records"] == []
+    assert rebuilt_manifest["normalized_decisions_sha256"] == sha256_file(changed_normalized_path)
+
+
 def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
