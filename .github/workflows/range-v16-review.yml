@@ -450,7 +450,11 @@ jobs:
           RESUME: ${{ steps.arbitration_paths.outputs.resume }}
         run: |
           umask 077
-          python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only
+          if ! python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only; then
+            mkdir -p "$CODEX_OUTPUT/decisions" "$CODEX_OUTPUT/raw" "$CODEX_OUTPUT/failures"
+            echo "::error::codex_preflight_failed_before_arbitration"
+            exit 2
+          fi
           checkpoint_args=()
           if [[ "$RESUME" = true ]]; then
             checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA")
