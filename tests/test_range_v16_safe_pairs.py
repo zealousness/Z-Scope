@@ -776,6 +776,55 @@ def test_safe_pair_author_anonymity_repair_gets_recomputed_constraints(
     assert raw["attempts"][1]["validation_class"] is None
 
 
+def test_safe_pair_author_identical_source_repair_gets_behavioral_constraints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["fixed_or_near_miss_source"] = invalid["vulnerable_source"]
+    repaired = _author(record)
+    responses = [invalid, repaired]
+    prompts: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(responses.pop(0)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    result = _author_one(packet, record, output=tmp_path / "author", resume=False)
+
+    assert result["status"] == "authored"
+    assert len(prompts) == 2
+    repair_request = json.loads(prompts[1].split("REPAIR_REQUEST:\n", 1)[1])
+    assert repair_request["validation_class"] == "sources_identical"
+    constraints = repair_request["deterministic_constraints"]
+    assert constraints["detected_condition"] == "sources_equal_after_newline_normalization"
+    assert constraints["required_postcondition"] == (
+        "vulnerable_source and fixed_or_near_miss_source differ after normalizing CRLF and CR "
+        "newlines to LF"
+    )
+    assert "Rewrite only fixed_or_near_miss_source" in constraints["required_correction"]
+    assert "safe_pair_recommendation" in constraints["required_correction"]
+    raw = json.loads(
+        (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
+    )
+    assert raw["accepted_attempt"] == 2
+    assert raw["attempts"][0]["validation_class"] == "sources_identical"
+    assert raw["attempts"][1]["validation_class"] is None
+
+
 def test_safe_pair_author_fails_closed_after_one_contract_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

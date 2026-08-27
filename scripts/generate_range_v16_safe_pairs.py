@@ -342,6 +342,34 @@ def _repair_constraints(
     forbidden_identifiers: set[str],
     rejected_author: Mapping[str, Any],
 ) -> Mapping[str, Any]:
+    if validation_class == "sources_identical":
+        vulnerable = rejected_author.get("vulnerable_source")
+        fixed = rejected_author.get("fixed_or_near_miss_source")
+        normalized_equal = (
+            isinstance(vulnerable, str)
+            and isinstance(fixed, str)
+            and vulnerable.replace("\r\n", "\n").replace("\r", "\n")
+            == fixed.replace("\r\n", "\n").replace("\r", "\n")
+        )
+        return {
+            "detected_condition": (
+                "sources_equal_after_newline_normalization"
+                if normalized_equal
+                else "sources_reported_identical_by_validator"
+            ),
+            "required_postcondition": (
+                "vulnerable_source and fixed_or_near_miss_source differ after normalizing "
+                "CRLF and CR newlines to LF"
+            ),
+            "required_correction": (
+                "Keep vulnerable_source as the minimal violating baseline. Rewrite only "
+                "fixed_or_near_miss_source so it applies exactly the frozen request's "
+                "safe_pair_recommendation to the same minimal setup. The difference must "
+                "change the reviewed behavior; comments, formatting, identifier renaming, "
+                "or unreachable code alone do not satisfy this correction. Do not alter "
+                "identity fields or add facts beyond the frozen request."
+            ),
+        }
     if validation_class != "source_not_anonymous":
         return {}
     detected_conflicts: dict[str, list[dict[str, Any]]] = {}
