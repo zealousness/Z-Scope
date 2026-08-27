@@ -90,6 +90,7 @@ Z-SCOPE 是面向 Java 与 C/C++ 项目的 AI 静态分析平台。典型数据�
 - [代码检索与后端](docs/modules/retrieval-backends.md)
 - [Agent 运行时](docs/modules/agent-runtime.md)
 - [配置、语义与状态](docs/modules/configuration-state.md)
+- [LLM Wiki](docs/modules/wiki.md)
 - [接口与报告](docs/modules/interfaces-reporting.md)
 - [Benchmark](docs/modules/benchmarking.md)
 

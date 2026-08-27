@@ -21,6 +21,7 @@ from ..reporting.views import (
     report_view_summary,
 )
 from ..rules.query import query_effective_rules, validate_rule_filters
+from ..wiki.control import wiki_query, wiki_status
 
 
 ALLOWED_VALIDATION_STATUSES = {
@@ -259,6 +260,72 @@ class RuleService:
             skill=filters["skill"],
             status=filters["status"],
             query=filters["q"],
+        )
+
+
+class WikiControlService:
+    """Expose only read-only Wiki status and bounded candidate-context query."""
+
+    def __init__(self, config_path: Optional[Path] = None, *, default_name: str = "zscope.yaml"):
+        self.config_path = Path(config_path).resolve() if config_path else None
+        self.default_name = default_name
+
+    @property
+    def path(self) -> Path:
+        return self.config_path or Path(self.default_name)
+
+    def _config(self) -> Any:
+        return ConfigLoader.load(str(self.path))
+
+    def status_payload(self) -> Dict[str, Any]:
+        config = self._config()
+        wiki = config.project.wiki
+        return wiki_status(config.project.project_root, state_dir=wiki.state_dir)
+
+    def query_payload(self, query: str) -> Dict[str, Any]:
+        params = parse_qs(query, keep_blank_values=True, max_num_fields=64)
+        unknown = sorted(set(params) - {"subject", "fact_kind", "candidate_file", "max_tokens"})
+        if unknown:
+            raise ValueError(f"unsupported Wiki query fields: {unknown}")
+        subjects = [str(item).strip() for item in params.get("subject", ()) if str(item).strip()]
+        if not subjects or len(subjects) > 32 or any(len(item) > 300 for item in subjects):
+            raise ValueError("subject must be provided 1-32 times and be at most 300 characters")
+        fact_kind = str((params.get("fact_kind") or ["unknown"])[0] or "unknown").strip()
+        if len(fact_kind) > 80:
+            raise ValueError("fact_kind must be at most 80 characters")
+        candidate_file = str((params.get("candidate_file") or [""])[0] or "").replace("\\", "/").strip()
+        if candidate_file.startswith("/") or ".." in Path(candidate_file).parts:
+            raise ValueError("candidate_file must be project-root relative")
+
+        config = self._config()
+        wiki = config.project.wiki
+        configured_limit = wiki.max_context_tokens
+        raw_limit = (params.get("max_tokens") or [configured_limit])[0]
+        try:
+            max_tokens = None if raw_limit is None else int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_tokens must be an integer") from exc
+        if max_tokens is not None and max_tokens < 256:
+            raise ValueError("max_tokens must be at least 256")
+        if configured_limit is not None and max_tokens is not None and max_tokens > configured_limit:
+            raise ValueError(f"max_tokens must not exceed {configured_limit}")
+        root = config.project.project_root
+        return wiki_query(
+            root,
+            subjects=subjects,
+            fact_kind=fact_kind,
+            candidate_file=candidate_file,
+            max_tokens=max_tokens,
+            project_id=str(config.project.project_id or root.name),
+            state_dir=wiki.state_dir,
+            overrides={
+                "exclude": list(wiki.document_exclude),
+                "explanatory": list(wiki.explanatory_overrides),
+                "generated": list(wiki.generated_overrides),
+            },
+            max_file_bytes=wiki.max_file_bytes,
+            max_files=wiki.max_files,
+            max_total_bytes=wiki.max_total_bytes,
         )
 
 

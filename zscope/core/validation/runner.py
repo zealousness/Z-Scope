@@ -224,6 +224,7 @@ class ValidationRunner:
         validator_agent_factory: Callable[..., Any] = ValidatorAgent,
         result_cache: Optional[ValidationResultCache] = None,
         scheduler: Optional[ScanScheduler] = None,
+        project_knowledge_service: Optional[Any] = None,
     ):
         self.config = config
         self.llm_clients = llm_clients
@@ -238,6 +239,10 @@ class ValidationRunner:
         self.deduplicate_issues = deduplicate_issues_fn
         self.validator_agent_factory = validator_agent_factory
         self.scheduler = scheduler
+        # Optional read-only Wiki/source resolver.  It is intentionally
+        # injected rather than constructed inside Validator threads so one
+        # scan pins a single manifest/revision and cache identity.
+        self.project_knowledge_service = project_knowledge_service
         # Validator verdicts are contextual.  Keeping this cache on the runner
         # scopes it to one immutable scan instead of leaking decisions between
         # projects, revisions, entries, or long-lived service requests.
@@ -1025,6 +1030,23 @@ class ValidationRunner:
         except (TypeError, ValueError):
             return 240.0
 
+    @staticmethod
+    def _project_knowledge_cache_identity(pack: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        knowledge = _as_dict(pack.get("project_knowledge"))
+        if not knowledge:
+            # Preserve the pre-Wiki cache branch exactly when mode is off or
+            # shadow context was intentionally not injected.
+            return None
+        selection = _as_dict(knowledge.get("selection"))
+        return {
+            "schema_version": knowledge.get("schema_version"),
+            "resolution_mode": knowledge.get("resolution_mode"),
+            "wiki_revision_id": knowledge.get("wiki_revision_id"),
+            "source_manifest_digest": knowledge.get("source_manifest_digest"),
+            "context_digest": knowledge.get("context_digest"),
+            "ranking_version": selection.get("ranking_version"),
+        }
+
     def _validator_cache_key(self, item: _PreparedValidation) -> str:
         issue = item.raw_issue
         prepared_pack = getattr(item, "evidence_pack", None)
@@ -1040,6 +1062,7 @@ class ValidationRunner:
         validation_cluster_uid = issue.get("validation_cluster_uid") or pack.get(
             "validation_cluster_uid"
         )
+        project_knowledge_identity = self._project_knowledge_cache_identity(pack)
         # v3's cluster identity already includes the project revision, root
         # cause, decision-changing code/evidence, and validator contract.
         # Adding occurrence-local function/location/source fields here defeats
@@ -1051,6 +1074,8 @@ class ValidationRunner:
                 "environment": self._validation_environment_fingerprint,
                 "validation_cluster_uid": validation_cluster_uid,
             }
+            if project_knowledge_identity is not None:
+                payload["project_knowledge"] = project_knowledge_identity
             stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
             return hashlib.sha256(stable.encode("utf-8")).hexdigest()
         source_value = issue.get("source") or pack.get("source")
@@ -1099,6 +1124,8 @@ class ValidationRunner:
             ),
             "prompt_hash": issue.get("prompt_hash") or pack.get("prompt_hash"),
         }
+        if project_knowledge_identity is not None:
+            payload["project_knowledge"] = project_knowledge_identity
         stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
@@ -2285,7 +2312,7 @@ class ValidationRunner:
         state: Dict[str, Any],
         issue_code: str,
     ) -> Dict[str, Any]:
-        return build_validation_evidence_pack(
+        evidence_pack = build_validation_evidence_pack(
             raw_issue,
             state,
             issue_code,
@@ -2294,6 +2321,30 @@ class ValidationRunner:
             score_components_fn=self.validation_pipeline.score_components,
             issue_key_fn=self.issue_key_fn,
         )
+        service = self.project_knowledge_service
+        resolver = getattr(service, "resolve_for_candidate", None)
+        if callable(resolver):
+            try:
+                knowledge = resolver(raw_issue, evidence_pack)
+            except Exception as exc:
+                logger.warning("Project knowledge resolution failed; preserving base evidence: %s", exc)
+                knowledge = None
+            if isinstance(knowledge, dict):
+                try:
+                    from ...wiki.service import validate_project_knowledge
+
+                    validated_knowledge = validate_project_knowledge(knowledge)
+                    if str(getattr(service, "mode", "active")) == "shadow":
+                        # Shadow computes and records the exact selection but
+                        # must not alter the Validator model input or verdict.
+                        telemetry_fn = getattr(service, "telemetry_snapshot", None)
+                        if callable(telemetry_fn):
+                            state["wiki_telemetry"] = telemetry_fn()
+                    else:
+                        evidence_pack["project_knowledge"] = validated_knowledge
+                except Exception as exc:
+                    logger.warning("Project knowledge contract rejected; preserving base evidence: %s", exc)
+        return evidence_pack
 
     def _validator_input(
         self,
@@ -2321,6 +2372,13 @@ class ValidationRunner:
                 validation_pass=validation_pass,
                 evidence_delta=evidence_delta,
             )
+            # build_validator_evidence_slice_v3 projects the optional Wiki
+            # context and registers its refs without making it deterministic
+            # proof.  Keep this fallback for custom evidence builders.
+            if "project_knowledge" not in evidence_slice:
+                knowledge = evidence_pack.get("project_knowledge")
+                if isinstance(knowledge, dict):
+                    evidence_slice["project_knowledge"] = knowledge
             obligation = _as_dict(evidence_slice.get("obligation"))
             obligation["candidate_uid"] = finding_uid
             obligation["validation_cluster_uid"] = validation_cluster_uid

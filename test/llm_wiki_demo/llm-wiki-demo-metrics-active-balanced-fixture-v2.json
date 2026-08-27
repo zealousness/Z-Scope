@@ -1,0 +1,208 @@
+{
+  "schema_version": "zscope.llm-wiki-demo-metrics.v1",
+  "benchmark": "zscope-llm-wiki-demo",
+  "suite": "llm_wiki_demo",
+  "valid": true,
+  "truth_sha256": "ed63f3defa05c8c48c8544d0a82c154021a3dc3b0e06d44a219cd3df33cce5b8",
+  "report_sha256": {
+    "off": "c5bbad48d4b29fa7fc012889553b9cf0cf4421a745ee02bb3937a839b2f71d61",
+    "active": "a65e5db4478e6ea4c6412ee91b31b81407d3c251ac1cd04651ead360a0e7ddec"
+  },
+  "views": {
+    "off": {
+      "confirmed": {
+        "reported": 3,
+        "true_positives": 1,
+        "false_positives": 1,
+        "false_negatives": 0,
+        "precision": 0.5,
+        "recall": 1.0,
+        "matched": [
+          "WIKI-DEMO-VULN-001"
+        ],
+        "missed": [],
+        "matched_pairs": [
+          {
+            "truth_id": "WIKI-DEMO-VULN-001",
+            "issue_index": 0,
+            "issue_identity": "v1|command_injection|src/command_runner.c|wiki_execute_command|command_injection_unknown_system_system_system|clang_ast_command_string_control|system|system",
+            "attribution": {
+              "schema_version": "zscope.finding-attribution.v1",
+              "discovered_by": [
+                "deterministic_rule"
+              ],
+              "decided_by": "validator_llm",
+              "decision_level": "V3",
+              "attribution_inferred": false,
+              "inferred": false,
+              "valid": true,
+              "errors": []
+            },
+            "match": {
+              "category": "category_alias:command injection",
+              "function": "primary:structured_anchor",
+              "file": "path",
+              "line": "primary_line:within_tolerance"
+            },
+            "score": 212
+          }
+        ],
+        "false_positive_issue_identities": [
+          "v1|out_of_bounds_write|src/label_store.c|wiki_copy_label|structured_root_af0aa46204c5aebb|clang_cfg_unbounded_count_indexes_fixed_array|stored_label declaration at line 9; loop at line 20|stored_label[index] = label[index];"
+        ]
+      },
+      "with_needs_review": {
+        "reported": 5,
+        "true_positives": 1,
+        "false_positives": 3,
+        "false_negatives": 0,
+        "precision": 0.25,
+        "recall": 1.0,
+        "matched": [
+          "WIKI-DEMO-VULN-001"
+        ],
+        "missed": [],
+        "matched_pairs": [
+          {
+            "truth_id": "WIKI-DEMO-VULN-001",
+            "issue_index": 0,
+            "issue_identity": "v1|command_injection|src/command_runner.c|wiki_execute_command|command_injection_unknown_system_system_system|clang_ast_command_string_control|system|system",
+            "attribution": {
+              "schema_version": "zscope.finding-attribution.v1",
+              "discovered_by": [
+                "deterministic_rule"
+              ],
+              "decided_by": "validator_llm",
+              "decision_level": "V3",
+              "attribution_inferred": false,
+              "inferred": false,
+              "valid": true,
+              "errors": []
+            },
+            "match": {
+              "category": "category_alias:command injection",
+              "function": "primary:structured_anchor",
+              "file": "path",
+              "line": "primary_line:within_tolerance"
+            },
+            "score": 212
+          }
+        ],
+        "false_positive_issue_identities": [
+          "v1|out_of_bounds_write|src/label_store.c|wiki_copy_label|structured_root_af0aa46204c5aebb|clang_cfg_unbounded_count_indexes_fixed_array|stored_label declaration at line 9; loop at line 20|stored_label[index] = label[index];",
+          "v1|bounds|src/callback_registry.c|wiki_register_callback|bounds_unknown_strcpy_strcpy_strcpy|clang_ast_unbounded_copy_sink|strcpy|strcpy",
+          "v1|bounds|src/frame_decoder.c|wiki_decode_frame|bounds_unknown_memcpy_memcpy_memcpy|clang_ast_copy_size_relation|memcpy|memcpy"
+        ]
+      }
+    },
+    "active": {
+      "confirmed": {
+        "reported": 2,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "matched": [
+          "WIKI-DEMO-VULN-001"
+        ],
+        "missed": [],
+        "matched_pairs": [
+          {
+            "truth_id": "WIKI-DEMO-VULN-001",
+            "issue_index": 0,
+            "issue_identity": "v1|command_injection|src/command_runner.c|wiki_execute_command|command_injection_unknown_system_system_system|clang_ast_command_string_control|system|system",
+            "attribution": {
+              "schema_version": "zscope.finding-attribution.v1",
+              "discovered_by": [
+                "deterministic_rule"
+              ],
+              "decided_by": "validator_llm",
+              "decision_level": "V3",
+              "attribution_inferred": false,
+              "inferred": false,
+              "valid": true,
+              "errors": []
+            },
+            "match": {
+              "category": "category_alias:command injection",
+              "function": "primary:structured_anchor",
+              "file": "path",
+              "line": "primary_line:within_tolerance"
+            },
+            "score": 212
+          }
+        ],
+        "false_positive_issue_identities": []
+      },
+      "with_needs_review": {
+        "reported": 5,
+        "true_positives": 1,
+        "false_positives": 3,
+        "false_negatives": 0,
+        "precision": 0.25,
+        "recall": 1.0,
+        "matched": [
+          "WIKI-DEMO-VULN-001"
+        ],
+        "missed": [],
+        "matched_pairs": [
+          {
+            "truth_id": "WIKI-DEMO-VULN-001",
+            "issue_index": 0,
+            "issue_identity": "v1|command_injection|src/command_runner.c|wiki_execute_command|command_injection_unknown_system_system_system|clang_ast_command_string_control|system|system",
+            "attribution": {
+              "schema_version": "zscope.finding-attribution.v1",
+              "discovered_by": [
+                "deterministic_rule"
+              ],
+              "decided_by": "validator_llm",
+              "decision_level": "V3",
+              "attribution_inferred": false,
+              "inferred": false,
+              "valid": true,
+              "errors": []
+            },
+            "match": {
+              "category": "category_alias:command injection",
+              "function": "primary:structured_anchor",
+              "file": "path",
+              "line": "primary_line:within_tolerance"
+            },
+            "score": 212
+          }
+        ],
+        "false_positive_issue_identities": [
+          "v1|bounds|src/callback_registry.c|wiki_register_callback|bounds_unknown_strcpy_strcpy_strcpy|clang_ast_unbounded_copy_sink|strcpy|strcpy",
+          "v1|out_of_bounds_write|src/label_store.c|wiki_copy_label|structured_root_af0aa46204c5aebb|clang_cfg_unbounded_count_indexes_fixed_array|stored_label declaration at line 9; loop at line 20|stored_label[index] = label[index];",
+          "v1|bounds|src/frame_decoder.c|wiki_decode_frame|bounds_unknown_memcpy_memcpy_memcpy|clang_ast_copy_size_relation|memcpy|memcpy"
+        ]
+      }
+    }
+  },
+  "transition_check": {
+    "target": {
+      "file": "src/label_store.c",
+      "function": "wiki_copy_label"
+    },
+    "expected": {
+      "off": "confirmed",
+      "active": "needs_review"
+    },
+    "observed": {
+      "off": [
+        "confirmed"
+      ],
+      "active": [
+        "needs_review"
+      ]
+    },
+    "passed": true
+  },
+  "metric_definition": {
+    "precision": "true_positives / (true_positives + false_positives)",
+    "recall": "true_positives / (true_positives + false_negatives)",
+    "confirmed_view": "report default view only",
+    "with_needs_review_view": "confirmed plus needs_review observations"
+  }
+}

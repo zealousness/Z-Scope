@@ -504,6 +504,17 @@ def build_validator_evidence_slice_v3(
         max_string_chars=1800,
     )
 
+    # Project knowledge is an auxiliary, claim-first context projection.  It
+    # is deliberately copied only when supplied by the read-only Wiki service;
+    # missing or invalid Wiki state leaves the existing evidence slice intact.
+    project_knowledge = pack.get("project_knowledge")
+    if isinstance(project_knowledge, Mapping):
+        result["project_knowledge"] = _compact_validation_value(
+            project_knowledge,
+            max_list_items=16,
+            max_string_chars=1800,
+        )
+
     catalog: Dict[str, Dict[str, Any]] = {}
 
     def add_ref(ref: Any, kind: str, summary: Any = "") -> None:
@@ -569,6 +580,23 @@ def build_validator_evidence_slice_v3(
                     fact,
                 )
     result["evidence_ref_catalog"] = catalog
+    knowledge = result.get("project_knowledge")
+    if isinstance(knowledge, Mapping):
+        for item in knowledge.get("constraints") or []:
+            if isinstance(item, Mapping):
+                add_ref(item.get("constraint_id"), "project_constraint", item.get("statement"))
+                for ref in item.get("source_refs") or []:
+                    add_ref(ref, "project_document_ref", item.get("statement"))
+                for ref in item.get("page_refs") or []:
+                    add_ref(ref, "project_wiki_page", item.get("statement"))
+        for item in knowledge.get("page_excerpts") or []:
+            if isinstance(item, Mapping):
+                add_ref(item.get("page_id"), "project_wiki_page", item.get("canonical_slug"))
+                for ref in item.get("source_refs") or []:
+                    add_ref(ref, "project_document_ref", item.get("canonical_slug"))
+        for item in knowledge.get("source_excerpts") or []:
+            if isinstance(item, Mapping):
+                add_ref(item.get("ref_id"), "project_document_ref", item.get("relative_path"))
     return result
 
 

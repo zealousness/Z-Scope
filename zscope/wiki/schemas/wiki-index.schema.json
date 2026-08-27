@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.wiki-index.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project_id",
+    "revision_id",
+    "source_manifest_digest",
+    "generated_language",
+    "content_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "zscope.wiki-index.v1"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "revision_id": {
+      "type": "string",
+      "pattern": "^wikirev_[a-z0-9_:-]+$"
+    },
+    "source_manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "generated_language": {
+      "const": "zh-CN"
+    },
+    "content_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

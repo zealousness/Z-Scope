@@ -51,6 +51,22 @@ Validation bar:
 - Missing context is not proof of a bug. Prefer `uncertain` only when the
   candidate has concrete positive evidence but the final proof depends on a
   missing callee, caller, type, or thread contract.
+
+Project Wiki context, when present in `ValidatorEvidenceSlice v3`, is the
+optional top-level `project_knowledge` object with schema
+`zscope.validator-project-knowledge.v1`. It contains `resolution_mode`
+(`wiki`, `source_fallback`, or `none`), a pinned revision/manifest digest,
+candidate `target`, bounded `constraints`, `page_excerpts`,
+`source_excerpts`, `conflicts`, `unknowns`, and a `selection` budget trace.
+Use only IDs whose payload is also registered in `evidence_ref_catalog`.
+Treat Wiki constraints as documented auxiliary context: they can identify a
+project/API precondition, range, ownership, or lock contract, but they are not
+deterministic proof and cannot alone produce `verified` or `rejected`.
+`source_fallback` and `none` never contain Wiki constraints/pages. A
+recommended/descriptive/unknown statement, stale/conflicted item, or missing
+document is not negative evidence. If code evidence conflicts with a
+documented contract, code facts take priority and the result is `uncertain` or
+requests one allowed deterministic fact.
 - Reject dead code, generic robustness advice, policy disagreement, and
   "could be safer" candidates without a concrete source-to-sink path.
 - The current analysis entry in the evidence pack is the selected scan root.

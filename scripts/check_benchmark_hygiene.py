@@ -45,6 +45,18 @@ def _tracked_test_files() -> List[Path]:
 
 def _allowed(relative: Path) -> bool:
     value = relative.as_posix()
+    if value.startswith("test/llm_wiki_demo/src/") or value.startswith(
+        "test/llm_wiki_demo/include/"
+    ):
+        return True
+    if value in {
+        "test/llm_wiki_demo/README.md",
+        "test/llm_wiki_demo/CMakeLists.txt",
+        "test/llm_wiki_demo/zscope.benchmark.yaml",
+        "test/llm_wiki_demo/benchmark/README.md",
+        "test/llm_wiki_demo/benchmark/ground_truth.json",
+    }:
+        return True
     if value.startswith("test/range/src/") or value.startswith("test/range/include/"):
         return True
     if value.startswith("test/range/internal/"):
@@ -179,6 +191,9 @@ def check_hygiene() -> List[str]:
     if range_truth.get("version") != 14 or range_truth.get("total_vulnerabilities") != 136:
         errors.append("Range canonical truth must remain version 14 with 136 records")
     errors.extend(_java_entry_errors())
+    demo_truth = ROOT / "test" / "llm_wiki_demo" / "benchmark" / "ground_truth.json"
+    if demo_truth.is_file():
+        errors.extend(_truth_errors(demo_truth))
     active = [
         ROOT / "zscope/benchmarking/runner.py",
         ROOT / "zscope/cli/benchmark.py",

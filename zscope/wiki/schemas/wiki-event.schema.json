@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.wiki-event.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "project_id",
+    "occurred_at",
+    "actor",
+    "status",
+    "payload_digest",
+    "previous_event_digest",
+    "event_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "zscope.wiki-event.v1"
+    },
+    "event_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "discover",
+        "ingest",
+        "build",
+        "lint",
+        "publish",
+        "rollback",
+        "maintenance",
+        "fallback"
+      ]
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 80
+    },
+    "actor": {
+      "type": "string",
+      "enum": [
+        "program",
+        "wiki_compiler",
+        "system"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "started",
+        "succeeded",
+        "failed",
+        "quarantined",
+        "rolled_back"
+      ]
+    },
+    "payload_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "previous_event_digest": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "event_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "revision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^wikirev_[a-z0-9_:-]+$"
+    },
+    "workset_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^workset_[a-z0-9_:-]+$"
+    },
+    "fallback_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 120
+    }
+  }
+}

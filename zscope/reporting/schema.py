@@ -559,6 +559,21 @@ def build_run_manifest(
         "valid": completeness == "complete",
         "resume_lineage": metadata.get("resume_lineage") or [],
         "engine_capabilities": metadata.get("engine_capabilities") or {},
+        "wiki_telemetry": metadata.get("wiki_telemetry") or {
+            "effective_mode": "off",
+            "active_effective_mode": False,
+            "wiki_context_injected": False,
+            "resolution_count": 0,
+            "wiki_resolution_count": 0,
+            "source_fallback_count": 0,
+            "none_count": 0,
+            "knowledge_context_tokens": 0,
+            "incremental_fact_count": 0,
+            "selected_constraint_ids": {},
+            "selected_page_ids": {},
+            "selected_source_ref_ids": {},
+            "fallback_reasons": {},
+        },
         "timestamp": metadata.get("timestamp") or "",
     }
 

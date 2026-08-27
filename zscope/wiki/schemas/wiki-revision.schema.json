@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.wiki-revision.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "revision_id",
+    "parent_revision_id",
+    "project_id",
+    "source_manifest_digest",
+    "compiler",
+    "pages_digest",
+    "constraints_digest",
+    "edges_digest",
+    "lint",
+    "dirty_modules",
+    "created_at",
+    "active"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "zscope.wiki-revision.v1"
+    },
+    "revision_id": {
+      "type": "string",
+      "pattern": "^wikirev_[a-z0-9_:-]+$"
+    },
+    "parent_revision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^wikirev_[a-z0-9_:-]+$"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "source_manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "compiler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "identity",
+        "prompt_version"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "deterministic",
+            "llm",
+            "mixed"
+          ]
+        },
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "prompt_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 120
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 160
+        }
+      }
+    },
+    "pages_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "constraints_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "edges_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "lint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "errors",
+        "warnings"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed"
+          ]
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warnings": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "dirty_modules": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^module:[a-z0-9_.:/-]+$"
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "active": {
+      "type": "boolean"
+    }
+  }
+}

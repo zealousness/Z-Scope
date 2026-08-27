@@ -10,6 +10,7 @@ MODULE_DOC_NAMES = (
     "retrieval-backends.md",
     "agent-runtime.md",
     "configuration-state.md",
+    "wiki.md",
     "interfaces-reporting.md",
     "benchmarking.md",
 )

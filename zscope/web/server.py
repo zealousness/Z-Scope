@@ -16,6 +16,7 @@ USER_CONFIG_WORKBOOK_NAME = "user_config.xlsx"
 
 _config_service = web_services.ConfigService()
 _rule_service = web_services.RuleService()
+_wiki_control_service = web_services.WikiControlService()
 _workbook_service = web_services.WorkbookService()
 _user_config_service = web_services.UserConfigService()
 _cpg_service = web_services.CpgService()
@@ -80,6 +81,38 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(_rule_service.payload(parsed.query))
             except Exception as exc:
                 self._send_json({"error": str(exc), "rules": []}, status=400)
+        elif parsed.path == "/api/wiki/status":
+            try:
+                self._send_json(_wiki_control_service.status_payload())
+            except Exception:
+                self._send_json(
+                    {"error": "Wiki status is unavailable.", "available": False},
+                    status=400,
+                )
+        elif parsed.path == "/api/wiki/query":
+            try:
+                self._send_json(_wiki_control_service.query_payload(parsed.query))
+            except ValueError as exc:
+                message = str(exc)
+                safe_prefixes = (
+                    "unsupported Wiki query fields",
+                    "subject",
+                    "fact_kind",
+                    "candidate_file",
+                    "max_tokens",
+                )
+                self._send_json(
+                    {
+                        "error": (
+                            message[:500]
+                            if message.startswith(safe_prefixes)
+                            else "Wiki query is unavailable."
+                        )
+                    },
+                    status=400,
+                )
+            except Exception:
+                self._send_json({"error": "Wiki query is unavailable."}, status=400)
         elif parsed.path == "/api/cpg_status":
             self._handle_cpg_status()
         elif parsed.path == "/api/source_snippet":
@@ -309,7 +342,7 @@ def run_server(
     host="0.0.0.0",
     port=PORT,
 ):
-    global _config_service, _rule_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service, _scan_request_service
+    global _config_service, _rule_service, _wiki_control_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service, _scan_request_service
     config_file_path = (
         Path(config_path).resolve() if config_path else Path(CONFIG_FILENAME).resolve()
     )
@@ -319,6 +352,7 @@ def run_server(
         scan_depth=scan_depth,
     )
     _rule_service = web_services.RuleService(config_file_path, default_name=CONFIG_FILENAME)
+    _wiki_control_service = web_services.WikiControlService(config_file_path, default_name=CONFIG_FILENAME)
     _workbook_service = web_services.WorkbookService(user_config_store)
     _user_config_service = web_services.UserConfigService(user_config_store)
     _cpg_service = web_services.CpgService(code_index, project_config)

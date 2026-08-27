@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zscope.wiki-page-frontmatter.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "page_id",
+    "page_kind",
+    "canonical_slug",
+    "title",
+    "project_id",
+    "module_ids",
+    "subject_ids",
+    "status",
+    "source_ids",
+    "constraint_ids",
+    "depends_on",
+    "generated_language",
+    "compiler_revision",
+    "content_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "zscope.wiki-page-frontmatter.v1"
+    },
+    "page_id": {
+      "type": "string",
+      "pattern": "^page_[a-z0-9_:-]+$"
+    },
+    "page_kind": {
+      "type": "string",
+      "enum": [
+        "project_overview",
+        "module",
+        "api_contract",
+        "resource_protocol",
+        "lock_protocol",
+        "configuration",
+        "topic",
+        "source"
+      ]
+    },
+    "canonical_slug": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*\\.\\.)(?:[a-z0-9-]+/)*[a-z0-9-]+$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "module_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^module:[a-z0-9_.:/-]+$"
+      }
+    },
+    "subject_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "stale",
+        "conflicted",
+        "retired",
+        "quarantined"
+      ]
+    },
+    "source_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^docsrc_[a-z0-9_:-]+$"
+      }
+    },
+    "constraint_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^constraint_[a-z0-9_:-]+$"
+      }
+    },
+    "depends_on": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^page_[a-z0-9_:-]+$"
+      }
+    },
+    "generated_language": {
+      "const": "zh-CN"
+    },
+    "compiler_revision": {
+      "type": "string",
+      "pattern": "^wikirev_[a-z0-9_:-]+$"
+    },
+    "content_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
