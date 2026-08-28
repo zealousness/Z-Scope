@@ -393,6 +393,116 @@ def test_safe_pair_author_uses_one_bounded_contract_repair(
     ) == {record["truth_id"]: result}
 
 
+def test_safe_pair_author_compile_gate_does_not_expose_compiler_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    author = _author(record)
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/cc",
+    )
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if len(calls) == 1:
+            output = Path(command[command.index("-o") + 1])
+            output.write_bytes(b"object")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="untrusted compiler stdout",
+            stderr="private compiler diagnostic body",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    with pytest.raises(ValueError, match="independent compilation failed") as captured:
+        validate_author_record(
+            author,
+            truth_id=str(record["truth_id"]),
+            packet_sha256=str(record["packet_sha256"]),
+            final_decision_sha256=str(record["final_decision_sha256"]),
+            forbidden_identifiers=_source_identifiers(packet, str(record["truth_id"])),
+            compiler="cc",
+        )
+
+    assert getattr(captured.value, "failing_source_fields") == ("fixed_or_near_miss_source",)
+    assert "private compiler diagnostic body" not in str(captured.value)
+    assert "untrusted compiler stdout" not in str(captured.value)
+    assert all(
+        argument in calls[0] for argument in ("-std=c11", "-Werror", "-Wall", "-Wextra", "-c")
+    )
+
+
+def test_safe_pair_author_repairs_independent_compile_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["fixed_or_near_miss_source"] = "int main(void) { int unused_value = 0; return 0; }\n"
+    repaired = _author(record)
+    responses = [invalid, repaired]
+    prompts: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._compile_author_source_fields",
+        lambda value, *, compiler: (
+            ("fixed_or_near_miss_source",)
+            if "unused_value" in str(value["fixed_or_near_miss_source"])
+            else ()
+        ),
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(responses.pop(0)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    result = _author_one(
+        packet,
+        record,
+        output=tmp_path / "author",
+        resume=False,
+        compiler="cc",
+    )
+
+    assert result["status"] == "authored"
+    assert len(prompts) == 2
+    repair_request = json.loads(prompts[1].split("REPAIR_REQUEST:\n", 1)[1])
+    assert repair_request["validation_class"] == "independent_compile_failure"
+    assert repair_request["deterministic_constraints"]["failing_source_fields"] == [
+        "fixed_or_near_miss_source"
+    ]
+    assert repair_request["deterministic_constraints"]["compiler_contract"] == {
+        "language": "c",
+        "standard": "c11",
+        "compiler": "cc",
+        "arguments": ["-Werror", "-Wall", "-Wextra", "-c"],
+    }
+    raw = json.loads(
+        (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
+    )
+    assert raw["accepted_attempt"] == 2
+    assert raw["attempts"][0]["validation_class"] == "independent_compile_failure"
+    assert raw["attempts"][1]["validation_class"] is None
+
+
 def test_safe_pair_author_retries_nonzero_transport_without_retaining_bodies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
