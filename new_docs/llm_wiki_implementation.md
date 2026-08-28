@@ -400,7 +400,7 @@ python -m pytest -q tests/test_wiki_lint.py tests/test_wiki_cli.py tests/test_wi
   - 增加 page、constraint、edge、retire 的 allowlist 和 authority/schema 检查，以及 source result 必须属于 workset 的校验。
   - 变更集先通过本地 Schema registry，再执行 outcome 状态机和跨字段不变量。
 - `zscope/wiki/compiler/workset.py`、`zscope/wiki/schemas/wiki-ingest-workset.schema.json`
-  - Workset 新增固定 `source_sections` 投影，包含 section digest、行号、符号、module hints、规范性词和链接；内容受 `max_source_chars` 硬限制，不再只向 Compiler 发送 source ID。
+  - Workset 新增固定 `source_sections` 投影，包含 section digest、行号、符号、module hints、规范性词和链接；显式配置 `max_source_chars` 时受其限制，默认 `null` 不施加该 Wiki 局部预算，不再只向 Compiler 发送 source ID。
 - `zscope/wiki/schema.py`、`tests/test_wiki_schema_resolver.py`
   - 新增 registry 加载、local `$ref` 检查和 Draft 2020-12 常用关键字的无依赖校验；安装 `jsonschema` 时自动委托完整 Draft 2020-12 validator，禁止网络 resolver。
 - `zscope/wiki/service.py`
@@ -602,10 +602,10 @@ git diff --check
   - 定义 `[[page_id|中文标题]]` wikilink 解析、中文正文检查、frontmatter 后 body 提取和程序 index link 投影。
 - `zscope/wiki/compiler/changeset.py`
   - upsert 页面必须严格满足 heading 顺序、中文正文、source ref 展示和 wikilink allowlist。
-  - 同一 ChangeSet upsert 多个页面时，每个页面必须链接另一个本次修改页面；重复 page ID、`max_pages` 和 `max_output_chars` 越界 fail closed。
+  - 同一 ChangeSet upsert 多个页面时，每个页面必须链接另一个本次修改页面；重复 page ID 始终 fail closed，显式配置 `max_pages` 或 `max_output_chars` 时对应越界同样 fail closed，默认 `null` 不施加这两项 Wiki 局部预算。
 - `zscope/wiki/compiler/llm_compiler.py`、`zscope/agents/wiki_compiler/AGENT.md`
   - Compiler prompt/Agent contract 固定中文页面结构、wikilink 语法和来源索引要求。
-  - revision provenance 固定记录 `prompt_version=zscope.wiki-compiler.prompt.v2`、provider identity 和模型名。
+  - Compiler 通过终态工具 `emit_wiki_changeset` 提交结果，初次提交失败后最多进行两次修复重试；revision provenance 固定记录 `prompt_version=zscope.wiki-compiler.prompt.v3`、provider identity 和模型名。
 - `zscope/wiki/store/revision_store.py`
   - skeleton 与 ChangeSet revision 的 `index.md` 均由程序生成，带 `zscope.wiki-index.v1` frontmatter、body digest、固定六节和只指向 `pages/<slug>.md` 的同 revision 链接。
   - `log.md` 不再追加不可重建的自由文本，而是从 `audit-events.jsonl` 原子重建。
@@ -889,7 +889,7 @@ git diff --check
 
 - `zscope/cli/wiki.py`
   - 增加 `--config/-c`，保留 `--root`；两者同时提供但解析出的 root 不一致时 fail closed。
-  - config 模式固定读取 `project.root`、`project.id`、`project.wiki.state_dir`、三组 document override、discovery 三项资源上限和 `max_context_tokens`。
+  - config 模式固定读取 `project.root`、`project.id`、`project.wiki.state_dir`、三组 document override、discovery 三项资源上限和可选 `max_context_tokens`；该字段默认 `null`，CLI/Web/MCP 仅在显式配置时收紧查询预算。
   - `query` 复用 `wiki_query()` 的 Wiki-first/direct-source fallback 路径；`status` 复用 bounded `wiki_status()`；`lint` 使用 read-only `WikiStore`。
   - 四个写命令统一持有 `<state_dir>/locks/compiler.lock`；rollback 测试在实际调用 `WikiStore.rollback()` 时校验 owner JSON 已存在。
 - `zscope/wiki/store/revision_store.py`、`zscope/wiki/control.py`
@@ -1019,3 +1019,166 @@ unzip -l <wheel> | grep 'zscope/wiki/schemas/'
 ```
 
 迁移后结果为 `11 passed`（schema/registry/resolver 与 Agent 文档测试）和 `231 passed`（完整 Wiki/Validator 离线回归）；`compileall` 与 `git diff --check` 均通过。离线 wheel 构建成功，wheel 内包含全部 14 个 `zscope/wiki/schemas/*.json` 文件。不会以删除 `new_docs/schemas` 后的文件计数作为运行时可用性的充分证明。
+
+## 2026-08-27：阶段 22——Compiler candidate 发布前校验与页面身份修复
+
+### 修复目标
+
+闭合 demo 暴露的 Wiki Compiler 发布失败链路：增量维护必须使用真实 project overview 页面身份；程序生成的 slug 必须与 page Schema 一致；任何 candidate revision 只有在完整 lint 通过后才能成为 active；模型不能伪造 Compiler provenance。本阶段只实施代码、测试和文档修复，不运行 demo 扫描，也不修改现有 demo active revision。
+
+### 实施内容
+
+- `zscope/wiki/maintenance.py`、`zscope/wiki/compiler/workset.py`
+  - `dirty_page_closure()` 改为强制显式传入 `project_page_id`，拒绝空值并移除 `page_project` 默认占位符。
+  - Workset 未显式指定目标页面时，使用 `stable_id("page", project_id, "project")`，与 deterministic skeleton 的 project overview 页面身份一致。
+- `zscope/core/analysis/analyzer.py`
+  - 增量维护优先从 active revision 中查找 `page_kind=project_overview` 或 `canonical_slug=project` 的真实 `page_id`；缺失时才按相同稳定身份算法重建。
+  - source-to-page、depends-on 和 dirty closure 均使用真实页面 ID，不再把不存在的 `page_project` 发送给 Compiler。
+- `zscope/wiki/identity.py`
+  - `slugify()` 不再保留下划线；`page_project` 会规范化为 `page-project`，保证程序生成的 canonical slug 满足 page frontmatter Schema。
+- `zscope/wiki/store/revision_store.py`
+  - 最终页面 frontmatter 在写盘前执行 `zscope.wiki-page-frontmatter.v1` 实例校验。
+  - candidate revision 完成 staging、不可变目录和 SQLite projection 后，在 active pointer 切换前执行完整 `lint_revision()`。
+  - lint 失败时标记该 revision 为 failed、重建程序拥有的 `log.md` 并抛出 `WikiChangeSetApplyError`；旧 active pointer 保持不变。
+  - lint 通过后把真实 warning/error 计数写回 `revision.json` 和 SQLite；active pointer 发布失败同样标记 failed 并重建日志。
+- `zscope/wiki/compiler/llm_compiler.py`
+  - 终态 payload 校验前和最终返回前都由程序无条件覆盖 `compiler.kind`、adapter identity、prompt version 和实际 client model，模型提交的同名 metadata 不再保留。
+- `zscope/wiki/compiler/changeset.py`
+  - 将 `background_only` 的约束变更错误与 source extraction status 错误拆分，非法 status 返回精确诊断，不再统一误报为 `background_only cannot create constraints`。
+
+### 新增和更新测试
+
+- `tests/test_wiki_maintenance.py`
+  - 覆盖真实稳定 project page ID、默认 Workset target、slug 规范化，以及 Analyzer auto-maintain 不再产生 `page_project`。
+- `tests/test_wiki_revision_store.py`
+  - 覆盖安全 slug、candidate lint 失败保持旧 active、失败 revision metadata、audit/log 一致性。
+- `tests/test_wiki_llm_compiler.py`
+  - Fake LLM 主动提交伪造 provenance，断言最终 metadata 仍由程序覆盖。
+- `tests/test_wiki_compiler.py`
+  - 覆盖 `background_only` 非法 source status 的精确错误信息。
+
+### 固定行为和恢复边界
+
+- page ID 与 canonical slug 是不同身份层：page ID 使用稳定 hash，slug 只用于受 Schema 约束的可读路径；二者不得通过 `page_project` 占位符混用。
+- revision 目录或 SQLite projection 已生成不代表可发布；完整 lint 是 active pointer 之前的强制门禁。
+- failed candidate 可以保留用于审计，但不能成为 Validator 的 pinned Wiki snapshot；旧 active revision 继续服务，或者在 manifest 不匹配时走 direct-source fallback。
+- Compiler provenance 不属于模型可编辑知识，不能用 ChangeSet payload 覆盖真实调用信息。
+- 当前 demo active revision 保持原状；本阶段不执行 rollback，也不运行 Z-SCOPE/demo 扫描。
+
+### 验证命令和结果
+
+```text
+python -m pytest -q tests/test_wiki_maintenance.py tests/test_wiki_compiler.py tests/test_wiki_llm_compiler.py tests/test_wiki_revision_store.py tests/test_wiki_lint.py
+python -m pytest -q tests/test_wiki_maintenance.py tests/test_wiki_compiler.py tests/test_wiki_llm_compiler.py tests/test_wiki_revision_store.py tests/test_wiki_lint.py tests/test_wiki_service.py tests/test_wiki_workflow.py tests/test_wiki_schema_resolver.py tests/test_agent_docs.py
+python -m pytest -q tests/test_wiki_*.py tests/test_validator_project_knowledge.py tests/test_config_v2.py tests/test_validation_runner.py tests/test_validator_evidence_slice.py tests/test_report_schema_v2.py tests/test_report_assembler.py tests/test_mcp_policy.py tests/test_web_wiki_api.py tests/test_web_rules_api.py tests/test_agent_docs.py
+python -m black zscope/wiki/maintenance.py zscope/wiki/compiler/workset.py zscope/wiki/identity.py zscope/core/analysis/analyzer.py zscope/wiki/compiler/changeset.py zscope/wiki/compiler/llm_compiler.py zscope/wiki/store/revision_store.py tests/test_wiki_maintenance.py tests/test_wiki_compiler.py tests/test_wiki_llm_compiler.py tests/test_wiki_revision_store.py
+python -m py_compile zscope/wiki/maintenance.py zscope/wiki/compiler/workset.py zscope/wiki/identity.py zscope/core/analysis/analyzer.py zscope/wiki/compiler/changeset.py zscope/wiki/compiler/llm_compiler.py zscope/wiki/store/revision_store.py
+git diff --check
+```
+
+三组 pytest 分别为 `45 passed`、`62 passed` 和 `247 passed`；定向 Black 完成，`py_compile` 与 `git diff --check` 均通过。未访问 LLM endpoint，未启动 demo 扫描。
+
+## 2026-08-27：阶段 23——Wiki Compiler 统一加载 Agent 契约
+
+### 实施内容
+
+- `zscope/agents/wiki_compiler/AGENT.md`
+  - 补齐 source/page ID allowlist、来源提示词不可信和运行时终态工具由程序提供等契约。
+  - 该文件成为 Wiki Compiler 稳定 system prompt 的唯一文本来源。
+- `zscope/wiki/compiler/llm_compiler.py`
+  - 通过 `SpecRegistry().get_agent("wiki_compiler")` 加载 `AGENT.md`，使用 `AgentSpec.to_prompt_block()` 作为 system message。
+  - 删除 Provider 内重复的硬编码 system prompt；代码仅保留 final-tool schema、终态处理器、重试参数和模型 provenance。
+  - `compiler.prompt_version` 更新为 `zscope.wiki-compiler.agent.v1`。
+- `tests/test_wiki_llm_compiler.py`
+  - 断言发送给模型的 system message 与注册表加载的 `wiki_compiler/AGENT.md` 完全一致，防止契约文件和实际提示漂移。
+
+### 固定边界
+
+- `AGENT.md` 负责稳定业务和安全规则；Workset、工具 schema、终态校验结果和重试上限仍由程序提供，不能写死到文档中。
+- 找不到 `wiki_compiler/AGENT.md` 时 Provider 直接失败，不回退到隐含的旧硬编码 prompt。
+- 本阶段不运行 demo 扫描，不访问真实 LLM endpoint，不修改 demo active revision。
+
+### 验证命令和结果
+
+```text
+python -m pytest -q tests/test_wiki_llm_compiler.py tests/test_wiki_compiler.py tests/test_wiki_revision_store.py
+python -m pytest -q tests/test_wiki_*.py tests/test_validator_project_knowledge.py tests/test_config_v2.py tests/test_validation_runner.py tests/test_validator_evidence_slice.py tests/test_report_schema_v2.py tests/test_report_assembler.py tests/test_mcp_policy.py tests/test_web_wiki_api.py tests/test_web_rules_api.py tests/test_agent_docs.py
+python -m black zscope/wiki/compiler/llm_compiler.py tests/test_wiki_llm_compiler.py
+python -m py_compile zscope/wiki/compiler/llm_compiler.py
+git diff --check
+```
+
+定向回归为 `41 passed`，完整 Wiki/Validator 离线回归为 `261 passed`；Black、`py_compile` 和 `git diff --check` 均通过。未访问真实 LLM endpoint，未启动 demo 扫描。
+
+## 2026-08-27：阶段 24——删除来源的确定性维护路径
+
+### 问题
+
+当文档因删除或 `documents.exclude` 从当前 manifest 消失时，增量 Workset 只有 `removed_source_ids`，没有原始文档正文、`source_sections` 或可安全提供给模型的旧 Wiki 内容。此前仍会调用 LLM，模型只能凭来源 ID 猜测页面内容，导致无效 Markdown 覆盖或错误描述删除来源。
+
+### 实施内容
+
+- `zscope/wiki/compiler/compiler.py`
+  - `WikiCompiler.compile()` 在 provider 前识别 removed-only delta（`removed_source_ids` 非空且 added/changed 为空）。
+  - 直接生成 `outcome=background_only`、空 `page_changes`/`constraint_proposals`/`edge_proposals`/`retire_proposals` 的 deterministic ChangeSet，使用 `zscope.wiki.removal.v1` provenance。
+  - 每个 removed source 只记录 `no_constraints_found` 和固定 reason `removed_source_invalidated_deterministically`；provider 完全不调用。
+- `zscope/agents/wiki_compiler/AGENT.md`
+  - 明确 removed source 不得被推测、重述或重建；删除导致的 ref/page/constraint stale 由程序处理；removed-only 不生成内容。
+- `zscope/wiki/store/revision_store.py`（复用既有逻辑）
+  - 继续将旧 DocumentRef 设为 `resolvable=false`，将依赖 constraint 设为 `stale`，将引用已删除 source 的页面设为 `stale`，并发布与当前 manifest 一致的新 revision。
+
+### 新增测试
+
+- `tests/test_wiki_compiler.py`
+  - provider 即使存在也不会在 removed-only Workset 中调用；ChangeSet 不含任何内容变更。
+- `tests/test_wiki_revision_store.py`
+  - 端到端验证删除来源后 active revision 更新、manifest pin 更新、ref 不可解析、constraint/page stale，且旧页面正文不会被模型重写。
+
+### 固定边界
+
+```text
+removed-only:  program stale propagation -> publish current-manifest revision
+added/changed: LLM may compile current source sections -> Store merge + stale propagation
+mixed:         LLM only handles added/changed; Store always handles removed sources
+```
+
+删除来源不是内容生成任务；旧页面仍可作为历史审计投影保留，但 stale 页面和 constraint 不得进入 active Validator context。当前阶段不运行 demo 扫描、不访问真实 LLM endpoint、不修改 demo active revision。
+
+### 验证命令和结果
+
+```text
+python -m pytest -q tests/test_wiki_compiler.py tests/test_wiki_revision_store.py tests/test_wiki_maintenance.py
+python -m pytest -q tests/test_wiki_*.py tests/test_spec_registry.py tests/test_validator_project_knowledge.py tests/test_config_v2.py tests/test_validation_runner.py tests/test_validator_evidence_slice.py tests/test_report_schema_v2.py tests/test_report_assembler.py tests/test_mcp_policy.py tests/test_web_wiki_api.py tests/test_web_rules_api.py tests/test_agent_docs.py
+```
+
+本阶段定向测试为 `37 passed`；完整 Wiki/Validator 离线回归为 `263 passed`。未访问真实 LLM endpoint，未启动 demo 扫描。
+
+## 2026-08-28：阶段 25——未物化父 revision 的全量 bootstrap
+
+### 问题
+
+父 revision 可能只有 deterministic skeleton、空页面投影，或此前 LLM 编译失败而未产生页面。此时即使当前 manifest 发生 added、changed 或 removed delta，也不能按普通增量处理；否则 removed-only 会只传播 stale，增改也只把变更文档交给 Compiler，项目会长期停留在未建立 Wiki 的状态。
+
+### 实施内容
+
+- `zscope/core/analysis/analyzer.py`
+  - 沿父 revision lineage 查找成功的 LLM/mixed publish event，并以 `changed_pages>0` 作为页面已物化证据。
+  - 未找到物化证据时，将当前 manifest 的全部 accepted source IDs 放入 `added_source_ids`，保留本次 `removed_source_ids`，并将全部已有页面作为 bootstrap 目标。
+  - 父 revision 没有任何 page row 时，按 skeleton 的稳定命名规则生成 project/module/source page allowlist，避免 bootstrap 只能创建 project 页面。
+  - 已物化 revision 继续使用原有 added/changed 增量和 removed-only 确定性路径。
+- `zscope/wiki/compiler/compiler.py`
+  - 保持 removed-only 的纯形状判断：只要 Workset 只有 `removed_source_ids` 就不读取或生成删除来源内容。
+  - 是否需要 bootstrap 由 Analyzer 根据父 revision 的物化证据决定；未物化时 Analyzer 会把当前 accepted 文档放入 `added_source_ids`，因此不会命中该快速路径。
+
+### 新增测试
+
+- `tests/test_wiki_maintenance.py` 覆盖父 revision 未物化时的 added、changed、removed 三类 delta，确认当前所有 accepted 文档都会进入 bootstrap Workset。
+- `tests/test_wiki_compiler.py` 确认有既有页面的 removed-only 仍不调用 LLM。
+
+### 验证结果
+
+```text
+python -m pytest -q tests/test_wiki_maintenance.py tests/test_wiki_compiler.py
+```
+
+定向测试为 `30 passed`；未运行 demo 扫描，未访问真实 LLM endpoint。

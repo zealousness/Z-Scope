@@ -19,6 +19,7 @@ tests:
   - tests/test_workflow_runner.py
   - tests/test_workflow_specs.py
   - tests/test_scan_session_resume_svf.py
+  - tests/test_wiki_workflow.py
   - tests/test_active_discovery.py
   - tests/test_balanced_rollout.py
 ---
@@ -36,7 +37,7 @@ tests:
 - `zscope/cli/cli.py` 解析 `--resume`、`--maintain`、`--diff-*`、`--scan-depth`、WebUI、MCP、SARIF 和索引预热等入口参数。
 - `ScanSessionRunner` 把显式入口、自动发现入口或 diff impact 入口统一成扫描会话。
 - `WorkflowRunner` 创建单入口运行态并调用 `WorkflowExecutor`。
-- `zscope/workflows/*.yaml` 只声明阶段顺序；具体 handler 由 Python 编排层提供。
+- `zscope/workflows/*.yaml` 只声明阶段顺序；具体 handler 由 Python 编排层提供。内置扫描 workflow 在入口发现后先执行一次 session 级 `wiki_compile`，该阶段完整结束后才允许进入任何 entry 分析或 Validator 验证。
 - 批量任务经 scheduler/parallel analyzer 分发。确定性候选完成后，balanced/deep 在全局验证之前依次构建 Security Semantic Map、规划 coverage gap、登记主动发现 hypothesis；所有来源统一冻结 Ledger，最后按 validation cluster 验证和装配报告。单入口必须保持同样的阶段顺序。
 
 ## 必须保持的不变量
@@ -47,6 +48,7 @@ tests:
 - 入口发现、断点续扫、历史报告备份和取消状态必须保持可审计。
 - 批量完整性检查必须以实际物化并调度的入口身份对齐结果，不能用签名不完整的原始入口把已完成任务误判为中断。
 - Workflow 文件和 handler 名称必须一一对应，未知 step 应明确失败。
+- 启用 Wiki 时，每个 scan session 只能编译并固定一次 `ProjectKnowledgeService`；所有入口和 scan-level Validator 共享该只读实例，入口 Analyzer 不得再次编译或提前关闭它，session 结束后统一释放。
 - `fast` 不运行语义补全或主动发现；它们未启用时不能误标 partial。balanced/deep 中已启用阶段因预算跳过审计单元时必须保存已得结果、标记 `completeness=partial`，CLI 退出码为 2。
 - scan-wide token manager 必须在配置生效边界创建一次并注入所有入口、Agent 和 LLM profile，不能为并行入口各建一份预算。
 

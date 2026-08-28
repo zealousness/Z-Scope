@@ -673,6 +673,8 @@ required_headings:
 
 `added_source_ids`、`changed_source_ids` 和 `removed_source_ids` 不得交集；`allowed_source_refs` 必须来自这些 source ID 或 Workset 的已发布依赖；`target_page_ids` 必须是 dirty closure 的结果。Agent 无权读任意路径、shell、网络或未发布 staging。
 
+资源预算采用显式 opt-in：`project.wiki.max_context_tokens`、`compiler_max_tokens`、`max_source_chars`、`max_output_chars`、`max_wall_seconds` 和 `max_pages` 默认均为 `null`，表示不施加对应 Wiki 局部上限。配置正整数时才收紧；`compiler_max_tokens=null` 仅表示 Compiler 不覆盖请求参数，仍保留 `llms.<profile>.max_tokens` 的通用单请求 completion 上限。
+
 ### 9.3 WikiChangeSet schema
 
 ```json

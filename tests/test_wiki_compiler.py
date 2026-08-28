@@ -11,12 +11,13 @@ from zscope.wiki.page_format import markdown_links_for_pages, page_markdown_erro
 from zscope.wiki.source_index import SourceIndex
 from zscope.wiki.source_manifest import build_source_manifest
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "wiki_project"
 
 
 def _workset(tmp_path: Path) -> dict:
-    manifest = build_source_manifest(FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z")
+    manifest = build_source_manifest(
+        FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z"
+    )
     index = SourceIndex(tmp_path / "source.db")
     index.rebuild(FIXTURE, manifest=manifest)
     return build_ingest_workset(manifest, source_index=index, target_page_ids=("page_project",))
@@ -46,13 +47,53 @@ def test_no_llm_compiler_returns_background_only_without_constraints(tmp_path: P
     workset = _workset(tmp_path)
     assert workset["source_sections"]
     assert any("parse_byte" in section["excerpt"] for section in workset["source_sections"])
-    assert {item["ref_id"] for item in workset["source_ref_catalog"]} == set(workset["allowed_source_refs"])
+    assert {item["ref_id"] for item in workset["source_ref_catalog"]} == set(
+        workset["allowed_source_refs"]
+    )
     assert "api:parse_byte" in workset["allowed_subject_ids"]
     result = WikiCompiler().compile(workset)
     assert result["outcome"] == "background_only"
     assert result["constraint_proposals"] == []
-    assert all(item["extraction_status"] == "no_constraints_found" for item in result["source_results"])
+    assert all(
+        item["extraction_status"] == "no_constraints_found" for item in result["source_results"]
+    )
     assert validate_changeset(result, workset)["outcome"] == "background_only"
+
+
+def test_removed_only_delta_bypasses_llm_and_emits_no_content(tmp_path: Path) -> None:
+    workset = _workset(tmp_path)
+    removed_source_id = workset["added_source_ids"][0]
+    workset["added_source_ids"] = []
+    workset["changed_source_ids"] = []
+    workset["removed_source_ids"] = [removed_source_id]
+    workset["allowed_source_refs"] = []
+    workset["source_ref_catalog"] = []
+    workset["source_sections"] = []
+
+    calls = []
+
+    def provider(_workset):
+        calls.append(True)
+        raise AssertionError("removed-only deltas must not invoke the LLM")
+
+    result = WikiCompiler(provider).compile(workset)
+
+    assert calls == []
+    assert result["outcome"] == "background_only"
+    assert result["page_changes"] == []
+    assert result["constraint_proposals"] == []
+    assert result["edge_proposals"] == []
+    assert result["retire_proposals"] == []
+    assert result["compiler"]["identity"] == "zscope.wiki.removal.v1"
+    assert result["source_results"] == [
+        {
+            "source_ref": removed_source_id,
+            "extraction_status": "no_constraints_found",
+            "source_refs_used": [],
+            "constraint_ids": [],
+            "reason": "removed_source_invalidated_deterministically",
+        }
+    ]
 
 
 def test_changeset_rejects_background_constraint_injection(tmp_path: Path) -> None:
@@ -60,6 +101,20 @@ def test_changeset_rejects_background_constraint_injection(tmp_path: Path) -> No
     result = WikiCompiler().compile(workset)
     result["constraint_proposals"] = [{"fake": "constraint"}]
     with pytest.raises(ChangeSetValidationError):
+        validate_changeset(result, workset)
+
+
+def test_background_only_reports_invalid_source_result_status_precisely(
+    tmp_path: Path,
+) -> None:
+    workset = _workset(tmp_path)
+    result = WikiCompiler().compile(workset)
+    result["source_results"][0]["extraction_status"] = "source_rejected"
+
+    with pytest.raises(
+        ChangeSetValidationError,
+        match="background_only source_results must use",
+    ):
         validate_changeset(result, workset)
 
 
@@ -80,17 +135,119 @@ def test_changeset_rejects_forged_constraint_subject(tmp_path: Path) -> None:
         "workset_id": workset["workset_id"],
         "base_revision_id": workset["base_revision_id"],
         "outcome": "changed",
-        "source_results": [{"source_ref": source_id, "extraction_status": "constraints_found", "source_refs_used": [ref_id], "constraint_ids": ["constraint_forged"], "reason": "forged"}],
+        "source_results": [
+            {
+                "source_ref": source_id,
+                "extraction_status": "constraints_found",
+                "source_refs_used": [ref_id],
+                "constraint_ids": ["constraint_forged"],
+                "reason": "forged",
+            }
+        ],
         "page_changes": [],
-        "constraint_proposals": [{"schema_version": "zscope.project-constraint.v1", "constraint_id": "constraint_forged", "subject": {"kind": "api", "canonical_id": "api:not_in_source"}, "scope": {"project_id": "fixture", "module_ids": [], "path_globs": []}, "kind": "input_range", "statement": "forged", "normalized_value": {"min": 0, "max": 1}, "authority": "documented_contract", "normativity": "required", "status": "active", "source_refs": [ref_id], "page_refs": [], "conflicts_with": [], "source_manifest_digest": workset["source_manifest_digest"], "created_revision_id": "wikirev_forged"}],
-        "edge_proposals": [], "retire_proposals": [], "unresolved_conflicts": [], "summary": "forged",
+        "constraint_proposals": [
+            {
+                "schema_version": "zscope.project-constraint.v1",
+                "constraint_id": "constraint_forged",
+                "subject": {"kind": "api", "canonical_id": "api:not_in_source"},
+                "scope": {"project_id": "fixture", "module_ids": [], "path_globs": []},
+                "kind": "input_range",
+                "statement": "forged",
+                "normalized_value": {"min": 0, "max": 1},
+                "authority": "documented_contract",
+                "normativity": "required",
+                "status": "active",
+                "source_refs": [ref_id],
+                "page_refs": [],
+                "conflicts_with": [],
+                "source_manifest_digest": workset["source_manifest_digest"],
+                "created_revision_id": "wikirev_forged",
+            }
+        ],
+        "edge_proposals": [],
+        "retire_proposals": [],
+        "unresolved_conflicts": [],
+        "summary": "forged",
     }
     with pytest.raises(ChangeSetValidationError, match="subject escapes"):
         validate_changeset(result, workset)
 
 
+def test_changeset_allows_edges_through_proposed_constraints(tmp_path: Path) -> None:
+    workset = _workset(tmp_path)
+    ref_id = workset["allowed_source_refs"][0]
+    source_id = workset["added_source_ids"][0]
+    constraint_id = "constraint_parse_byte_range"
+    result = {
+        "schema_version": "zscope.wiki-changeset.v1",
+        "workset_id": workset["workset_id"],
+        "base_revision_id": workset["base_revision_id"],
+        "outcome": "changed",
+        "source_results": [
+            {
+                "source_ref": source_id,
+                "extraction_status": "constraints_found",
+                "source_refs_used": [ref_id],
+                "constraint_ids": [constraint_id],
+                "reason": "documented input range",
+            }
+        ],
+        "page_changes": [],
+        "constraint_proposals": [
+            {
+                "schema_version": "zscope.project-constraint.v1",
+                "constraint_id": constraint_id,
+                "subject": {"kind": "api", "canonical_id": "api:parse_byte"},
+                "scope": {"project_id": "fixture", "module_ids": [], "path_globs": []},
+                "kind": "input_range",
+                "statement": "parse_byte accepts values from 0 to 255.",
+                "normalized_value": {"min": 0, "max": 255},
+                "authority": "documented_contract",
+                "normativity": "required",
+                "status": "active",
+                "source_refs": [ref_id],
+                "page_refs": ["page_project"],
+                "conflicts_with": [],
+                "source_manifest_digest": workset["source_manifest_digest"],
+                "created_revision_id": "wikirev_test",
+            }
+        ],
+        "edge_proposals": [
+            {
+                "schema_version": "zscope.wiki-edge.v1",
+                "edge_id": "wikiedge_page_documents_parse_byte_range",
+                "from_id": "page_project",
+                "edge_type": "documents",
+                "to_id": constraint_id,
+                "source_refs": [ref_id],
+                "status": "active",
+            },
+            {
+                "schema_version": "zscope.wiki-edge.v1",
+                "edge_id": "wikiedge_parse_byte_range_constrains_api",
+                "from_id": constraint_id,
+                "edge_type": "constrains",
+                "to_id": "api:parse_byte",
+                "source_refs": [ref_id],
+                "status": "active",
+            },
+        ],
+        "retire_proposals": [],
+        "unresolved_conflicts": [],
+        "summary": "linked one documented constraint",
+    }
+
+    assert len(validate_changeset(result, workset)["edge_proposals"]) == 2
+
+    result["edge_proposals"][0]["to_id"] = "constraint_outside_workset"
+    with pytest.raises(ChangeSetValidationError, match="edge to_id escapes workset"):
+        validate_changeset(result, workset)
+
+
 def test_changeset_accepts_linked_multi_page_chinese_markdown(tmp_path: Path) -> None:
-    manifest = build_source_manifest(FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z")
+    manifest = build_source_manifest(
+        FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z"
+    )
     with SourceIndex(tmp_path / "source.db") as index:
         index.rebuild(FIXTURE, manifest=manifest)
         workset = build_ingest_workset(
@@ -105,13 +262,15 @@ def test_changeset_accepts_linked_multi_page_chinese_markdown(tmp_path: Path) ->
         "workset_id": workset["workset_id"],
         "base_revision_id": workset["base_revision_id"],
         "outcome": "background_only",
-        "source_results": [{
-            "source_ref": source_id,
-            "extraction_status": "background_page_updated",
-            "source_refs_used": [ref_id],
-            "constraint_ids": [],
-            "reason": "linked background pages",
-        }],
+        "source_results": [
+            {
+                "source_ref": source_id,
+                "extraction_status": "background_page_updated",
+                "source_refs_used": [ref_id],
+                "constraint_ids": [],
+                "reason": "linked background pages",
+            }
+        ],
         "page_changes": [
             {
                 "operation": "upsert",
@@ -135,9 +294,7 @@ def test_changeset_accepts_linked_multi_page_chinese_markdown(tmp_path: Path) ->
 
     assert len(validate_changeset(result, workset)["page_changes"]) == 2
 
-    result["page_changes"][1]["markdown"] = _page_markdown(
-        "page_module", "page_outside", ref_id
-    )
+    result["page_changes"][1]["markdown"] = _page_markdown("page_module", "page_outside", ref_id)
     with pytest.raises(ChangeSetValidationError, match="wikilink escapes"):
         validate_changeset(result, workset)
 
@@ -165,8 +322,7 @@ def test_prompt_injection_text_cannot_expand_changeset_authority(tmp_path: Path)
             target_page_ids=("page_project",),
         )
     assert any(
-        "IGNORE ALL PRIOR INSTRUCTIONS" in item["excerpt"]
-        for item in workset["source_sections"]
+        "IGNORE ALL PRIOR INSTRUCTIONS" in item["excerpt"] for item in workset["source_sections"]
     )
 
     source_id = workset["added_source_ids"][0]

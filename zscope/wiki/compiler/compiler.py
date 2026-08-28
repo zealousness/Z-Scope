@@ -15,11 +15,53 @@ class WikiCompiler:
         self.provider = provider
 
     def compile(self, workset: Mapping[str, Any]) -> Dict[str, Any]:
-        source_ids = (
-            list(workset.get("added_source_ids", []))
-            + list(workset.get("changed_source_ids", []))
-            + list(workset.get("removed_source_ids", []))
-        )
+        added_source_ids = list(workset.get("added_source_ids", []))
+        changed_source_ids = list(workset.get("changed_source_ids", []))
+        removed_source_ids = list(workset.get("removed_source_ids", []))
+        source_ids = added_source_ids + changed_source_ids + removed_source_ids
+
+        # A removed-only delta has no current source text and must not ask the
+        # LLM to reconstruct either the deleted document or old Wiki pages.
+        # RevisionStore performs the deterministic ref/page/constraint stale
+        # propagation while publishing the current manifest revision.
+        if (
+            removed_source_ids
+            and not added_source_ids
+            and not changed_source_ids
+        ):
+            result = {
+                "schema_version": "zscope.wiki-changeset.v1",
+                "workset_id": workset["workset_id"],
+                "base_revision_id": workset.get("base_revision_id"),
+                "outcome": "background_only",
+                "source_results": [
+                    {
+                        "source_ref": source_id,
+                        "extraction_status": "no_constraints_found",
+                        "source_refs_used": [],
+                        "constraint_ids": [],
+                        "reason": "removed_source_invalidated_deterministically",
+                    }
+                    for source_id in removed_source_ids
+                ],
+                "page_changes": [],
+                "constraint_proposals": [],
+                "edge_proposals": [],
+                "retire_proposals": [],
+                "unresolved_conflicts": [],
+                "summary": (
+                    "Removed-only sources are handled deterministically; "
+                    "no document or Wiki content was regenerated."
+                ),
+                "compiler": {
+                    "kind": "deterministic",
+                    "identity": "zscope.wiki.removal.v1",
+                    "prompt_version": None,
+                    "model": None,
+                },
+            }
+            return validate_changeset(result, workset)
+
         if self.provider is None:
             results = [
                 {
@@ -51,7 +93,12 @@ class WikiCompiler:
                 "retire_proposals": [],
                 "unresolved_conflicts": [],
                 "summary": "No-LLM compiler emitted no constraints.",
-                "compiler": {"kind": "deterministic", "identity": "zscope.wiki.deterministic.v1", "prompt_version": None, "model": None},
+                "compiler": {
+                    "kind": "deterministic",
+                    "identity": "zscope.wiki.deterministic.v1",
+                    "prompt_version": None,
+                    "model": None,
+                },
             }
             return validate_changeset(result, workset)
         try:
@@ -61,7 +108,15 @@ class WikiCompiler:
             if not isinstance(raw, Mapping):
                 raise ValueError("provider output is not an object")
             enriched = dict(raw)
-            enriched.setdefault("compiler", {"kind": "llm", "identity": "zscope.wiki.provider.v1", "prompt_version": None, "model": None})
+            enriched.setdefault(
+                "compiler",
+                {
+                    "kind": "llm",
+                    "identity": "zscope.wiki.provider.v1",
+                    "prompt_version": None,
+                    "model": None,
+                },
+            )
             return validate_changeset(enriched, workset)
         except Exception as exc:
             return {
@@ -69,7 +124,15 @@ class WikiCompiler:
                 "workset_id": workset["workset_id"],
                 "base_revision_id": workset.get("base_revision_id"),
                 "outcome": "extraction_failed",
-                "source_results": [{"source_ref": source_ids[0] if source_ids else "docsrc_none", "extraction_status": "extraction_failed", "source_refs_used": [], "constraint_ids": [], "reason": str(exc)[:1000]}],
+                "source_results": [
+                    {
+                        "source_ref": source_ids[0] if source_ids else "docsrc_none",
+                        "extraction_status": "extraction_failed",
+                        "source_refs_used": [],
+                        "constraint_ids": [],
+                        "reason": str(exc)[:1000],
+                    }
+                ],
                 "page_changes": [],
                 "constraint_proposals": [],
                 "edge_proposals": [],

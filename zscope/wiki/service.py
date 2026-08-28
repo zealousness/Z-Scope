@@ -177,6 +177,11 @@ class ProjectKnowledgeService:
                 continue
             if not isinstance(frontmatter, dict):
                 continue
+            # Only current Wiki pages may enter the Validator runtime
+            # projection.  Historical/stale pages remain available in the
+            # revision for audit and maintenance, but are not queryable.
+            if frontmatter.get("status") != "active":
+                continue
             pages.append(
                 {
                     "page_id": str(row["page_id"]),
@@ -301,6 +306,11 @@ class ProjectKnowledgeService:
         selected = []
         for row in self._pinned_pages:
             front = row["frontmatter"]
+            # Keep this guard even though _pin_active_revision filters the
+            # snapshot, so manually supplied or future projections cannot
+            # re-introduce non-active pages into Validator context.
+            if front.get("status") != "active":
+                continue
             subject = " ".join(str(item) for item in front.get("subject_ids", []))
             modules = " ".join(str(item) for item in front.get("module_ids", []))
             slug = str(row["canonical_slug"])

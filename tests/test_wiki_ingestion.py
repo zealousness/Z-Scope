@@ -67,6 +67,50 @@ def test_manifest_classification_and_digest_are_stable() -> None:
     assert excluded["docs/secrets.md"] == "sensitive_rejected"
 
 
+def test_non_markdown_files_do_not_change_manifest_digests(tmp_path: Path) -> None:
+    readme = tmp_path / "README.md"
+    readme.write_text("# Contract\n\nThe API must return zero.\n", encoding="utf-8")
+    first = build_source_manifest(
+        tmp_path,
+        project_id="fixture",
+        created_at="2026-01-01T00:00:00Z",
+    )
+
+    (tmp_path / "scan.log").write_text("first run\n", encoding="utf-8")
+    (tmp_path / "report.json").write_text('{"status":"complete"}\n', encoding="utf-8")
+    (tmp_path / "source.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    second = build_source_manifest(
+        tmp_path,
+        project_id="fixture",
+        created_at="2026-02-01T00:00:00Z",
+    )
+
+    assert first.project_root_digest == second.project_root_digest
+    assert first.source_manifest_digest == second.source_manifest_digest
+    assert second.unsupported_extensions == {".c": 1, ".json": 1, ".log": 1}
+
+    (tmp_path / "scan.log").write_text("changed run\n", encoding="utf-8")
+    (tmp_path / "another.log").write_text("another run\n", encoding="utf-8")
+    third = build_source_manifest(
+        tmp_path,
+        project_id="fixture",
+        created_at="2026-03-01T00:00:00Z",
+    )
+
+    assert second.project_root_digest == third.project_root_digest
+    assert second.source_manifest_digest == third.source_manifest_digest
+    assert third.unsupported_extensions == {".c": 1, ".json": 1, ".log": 2}
+
+    readme.write_text("# Contract\n\nThe API must return one.\n", encoding="utf-8")
+    changed_markdown = build_source_manifest(
+        tmp_path,
+        project_id="fixture",
+        created_at="2026-04-01T00:00:00Z",
+    )
+    assert changed_markdown.project_root_digest != third.project_root_digest
+    assert changed_markdown.source_manifest_digest != third.source_manifest_digest
+
+
 def test_parser_keeps_heading_locations_features_and_links() -> None:
     result = discover_markdown(FIXTURE)
     readme = next(item for item in result.files if item.relative_path == "README.md")
@@ -127,6 +171,64 @@ def test_public_exclusion_filters_explanatory_docs_and_changes_manifest_identity
     assert descriptor.reason == "user_excluded_path"
     assert filtered.override_digest is not None
     assert filtered.source_manifest_digest != baseline.source_manifest_digest
+
+
+def test_public_exclusion_content_does_not_change_manifest_digest(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text(
+        "# Contract\n\nThe API must return zero.\n",
+        encoding="utf-8",
+    )
+    conversations = tmp_path / ".zscope_conversations" / "run_1"
+    conversations.mkdir(parents=True)
+    transcript = conversations / "validator.md"
+    transcript.write_text("# First transcript\n", encoding="utf-8")
+    trace = conversations / "validator.jsonl"
+    trace.write_text('{"event":"first"}\n', encoding="utf-8")
+    invalid = conversations / "invalid.md"
+    invalid.write_bytes(b"\xff")
+    overrides = {"exclude": [".zscope_conversations/**"]}
+
+    first = build_source_manifest(
+        tmp_path,
+        project_id="fixture",
+        overrides=overrides,
+        created_at="2026-01-01T00:00:00Z",
+    )
+
+    transcript.write_text("# Changed transcript\n", encoding="utf-8")
+    trace.write_text('{"event":"changed"}\n', encoding="utf-8")
+    invalid.write_bytes(b"\xfe")
+    (conversations / "new-validator.md").write_text(
+        "# New transcript\n",
+        encoding="utf-8",
+    )
+    (conversations / "new-validator.jsonl").write_text(
+        '{"event":"new"}\n',
+        encoding="utf-8",
+    )
+    second = build_source_manifest(
+        tmp_path,
+        project_id="fixture",
+        overrides=overrides,
+        created_at="2026-02-01T00:00:00Z",
+    )
+
+    assert first.project_root_digest == second.project_root_digest
+    assert first.source_manifest_digest == second.source_manifest_digest
+    assert first.unsupported_extensions == second.unsupported_extensions == {}
+    assert any(item.reason == "user_excluded_path" for item in second.excluded)
+
+    (tmp_path / "README.md").write_text(
+        "# Contract\n\nThe API must return one.\n",
+        encoding="utf-8",
+    )
+    changed_source = build_source_manifest(
+        tmp_path,
+        project_id="fixture",
+        overrides=overrides,
+        created_at="2026-03-01T00:00:00Z",
+    )
+    assert changed_source.source_manifest_digest != second.source_manifest_digest
 
 
 def test_public_exclusion_cannot_mask_mandatory_or_sensitive_classification(

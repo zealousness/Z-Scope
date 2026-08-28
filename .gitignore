@@ -97,26 +97,26 @@ Thumbs.db
 
 # Test outputs
 scan_output.log
-test/range/build/
-test/range/codeql_runs/
-test/range/.zscope*
-test/range/.zscope_knowledge/
-test/range/.zscope_snapshots*/
-test/range/.zscope_svf/
-test/range/.zscope_conversations*/
-test/range/benchmark_runs/
-test/range/zscope_batch_report.json
-test/range/zscope_batch_report.md
-test/range/zscope_alert_verify_report.json
-test/range/report.json
-test/range/report.md
-test/range/zscope_run.log
-test/range/zscope.local.yaml
-test/range/zscope.local.env
-test/range/current_eval.json
-test/range/metrics.json
-test/range/entry_functions_list.json
-test/range/entry_functions_diff*.json
+test/*/build/
+test/*/codeql_runs/
+test/*/.zscope*
+test/*/.zscope_knowledge/
+test/*/.zscope_snapshots*/
+test/*/.zscope_svf/
+test/*/.zscope_conversations*/
+test/*/benchmark_runs/
+test/*/zscope_batch_report.json
+test/*/zscope_batch_report.md
+test/*/zscope_alert_verify_report.json
+test/*/report.json
+test/*/report.md
+test/*/zscope_run.log
+test/*/zscope.local.yaml
+test/*/zscope.local.env
+test/*/current_eval.json
+test/*/metrics.json
+test/*/entry_functions_list.json
+test/*/entry_functions_diff*.json
 
 # Java Preview generated data
 tools/java-*/target/

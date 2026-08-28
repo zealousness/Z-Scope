@@ -15,7 +15,7 @@ import uuid
 from collections import deque
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, cast
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, cast
 
 from ...config.config import ZScopeConfig, minimum_optional_positive_seconds
 from ...config.function_entry import FunctionEntry
@@ -122,6 +122,7 @@ from ...wiki.source_manifest import build_source_manifest
 from ...wiki.compiler.compiler import WikiCompiler
 from ...wiki.compiler.llm_compiler import LLMWikiCompilerProvider
 from ...wiki.compiler.workset import build_ingest_workset
+from ...wiki.identity import slugify, stable_id
 from ...wiki.maintenance import WikiWriterLock, compare_manifests, dirty_page_closure
 from ...wiki.store.revision_store import WikiStore, resolve_project_state_root
 from ...reporting.report import FinalReport, Issue, ReportGenerator
@@ -185,6 +186,8 @@ DEFAULT_SCAN_STEP_IDS = (
     "persist_report",
 )
 
+_PROJECT_KNOWLEDGE_UNSET = object()
+
 
 def _as_dict(value: Any) -> Dict[str, Any]:
     """Narrow an untyped runtime payload to the mutable mapping we expect."""
@@ -209,6 +212,69 @@ def _wiki_revision_compiler_kind(store: WikiStore, active: Optional[Dict[str, An
     return str(compiler.get("kind") or "") if isinstance(compiler, dict) else ""
 
 
+def _wiki_revision_has_materialized_pages(
+    store: WikiStore, active: Optional[Dict[str, Any]]
+) -> bool:
+    """Return whether this revision lineage contains a successful Wiki page build.
+
+    Deterministic skeleton/removal revisions preserve page rows but do not
+    prove that the LLM Wiki was ever materialized.  A successful LLM publish
+    records ``changed_pages`` in its publish event; walking the lineage keeps
+    that fact when a later deterministic revision only propagates freshness.
+    """
+
+    revision_id = str((active or {}).get("revision_id") or "")
+    seen = set()
+    while revision_id and revision_id not in seen:
+        seen.add(revision_id)
+        try:
+            revision = store.revision_metadata(revision_id)
+        except (OSError, ValueError):
+            break
+        compiler = revision.get("compiler") if isinstance(revision, dict) else None
+        kind = str(compiler.get("kind") or "") if isinstance(compiler, dict) else ""
+        if kind in {"llm", "mixed"}:
+            row = store.connection.execute(
+                "SELECT payload_json FROM wiki_events "
+                "WHERE revision_id=? AND event_type='publish' AND status='succeeded' "
+                "ORDER BY event_id DESC LIMIT 1",
+                (revision_id,),
+            ).fetchone()
+            if row is not None:
+                try:
+                    payload = json.loads(str(row["payload_json"]))
+                except (TypeError, ValueError):
+                    payload = {}
+                if isinstance(payload, dict):
+                    try:
+                        changed_pages = int(payload.get("changed_pages", 0) or 0)
+                    except (TypeError, ValueError):
+                        changed_pages = 0
+                    if changed_pages > 0:
+                        return True
+        revision_id = str(revision.get("parent_revision_id") or "")
+    return False
+
+
+def _wiki_bootstrap_page_ids(manifest: Any) -> Tuple[str, ...]:
+    """Return the stable page IDs that a fresh Wiki skeleton would expose."""
+
+    project_id = str(manifest.project_id)
+    slugs = {"project"}
+    modules = {
+        str(module)
+        for source in manifest.accepted
+        for module in source.module_hints
+        if str(module)
+    }
+    slugs.update("modules/" + slugify(module.removeprefix("module:")) for module in modules)
+    slugs.update(
+        "sources/" + slugify(Path(source.relative_path).with_suffix("").as_posix())
+        for source in manifest.accepted
+    )
+    return tuple(sorted(stable_id("page", project_id, slug) for slug in slugs))
+
+
 def _wiki_maintenance_requested(
     *,
     had_active_revision: bool,
@@ -221,11 +287,7 @@ def _wiki_maintenance_requested(
         return True
     if not had_active_revision:
         return compiler_enabled
-    return bool(
-        auto_maintain
-        and compiler_enabled
-        and active_compiler_kind not in {"llm", "mixed"}
-    )
+    return bool(auto_maintain and compiler_enabled and active_compiler_kind not in {"llm", "mixed"})
 
 
 class Analyzer:
@@ -252,6 +314,8 @@ class Analyzer:
         decision_fact_cache: Optional[DecisionFactGraphCache] = None,
         write_root_reports: bool = True,
         defer_validation_to_scan: bool = False,
+        project_knowledge_service: Any = _PROJECT_KNOWLEDGE_UNSET,
+        owns_project_knowledge_service: bool = False,
     ):
         self.config = config
         # Defensive preflight for third-party callers that construct an
@@ -360,7 +424,15 @@ class Analyzer:
                     token_usage_ledger=token_usage_ledger,
                     llm_ref=name,
                 )
-        self.project_knowledge_service = self._build_project_knowledge_service()
+        if project_knowledge_service is _PROJECT_KNOWLEDGE_UNSET:
+            self.project_knowledge_service = self._build_project_knowledge_service()
+            self._owns_project_knowledge_service = True
+        else:
+            self.project_knowledge_service = cast(
+                Optional[ProjectKnowledgeService],
+                project_knowledge_service,
+            )
+            self._owns_project_knowledge_service = bool(owns_project_knowledge_service)
         self.validation_runner = self._make_validation_runner()
         self.report_generator = ReportGenerator(config.project.project_root)
         self.report_assembler = ReportAssembler(
@@ -444,16 +516,8 @@ class Analyzer:
             return self.workflow_runner.run()
 
     def close(self) -> None:
-        service = getattr(self, "project_knowledge_service", None)
-        source_index = getattr(service, "source_index", None)
-        wiki_store = getattr(service, "wiki_store", None)
-        for resource in (source_index, wiki_store):
-            close_resource = getattr(resource, "close", None)
-            if callable(close_resource):
-                try:
-                    close_resource()
-                except Exception:
-                    logger.debug("Failed to close Wiki resource", exc_info=True)
+        if getattr(self, "_owns_project_knowledge_service", False):
+            self.close_project_knowledge_service(getattr(self, "project_knowledge_service", None))
         if not getattr(self, "_owns_llm_clients", False):
             return
         seen: Set[int] = set()
@@ -466,14 +530,35 @@ class Analyzer:
             if callable(close_client):
                 close_client()
 
+    @staticmethod
+    def close_project_knowledge_service(
+        service: Optional[ProjectKnowledgeService],
+    ) -> None:
+        source_index = getattr(service, "source_index", None)
+        wiki_store = getattr(service, "wiki_store", None)
+        for resource in (source_index, wiki_store):
+            close_resource = getattr(resource, "close", None)
+            if callable(close_resource):
+                try:
+                    close_resource()
+                except Exception:
+                    logger.debug("Failed to close Wiki resource", exc_info=True)
+
     def _build_project_knowledge_service(self) -> Optional[ProjectKnowledgeService]:
+        return self.build_project_knowledge_service(self.config, self.llm_clients)
+
+    @staticmethod
+    def build_project_knowledge_service(
+        config: ZScopeConfig,
+        llm_clients: Dict[str, LLMClient],
+    ) -> Optional[ProjectKnowledgeService]:
         """Build one scan-pinned Wiki/source resolver when explicitly enabled."""
 
-        wiki = getattr(getattr(self.config, "project", None), "wiki", None)
+        wiki = getattr(getattr(config, "project", None), "wiki", None)
         mode = str(getattr(wiki, "mode", "off") or "off").strip().lower()
         if mode == "off":
             return None
-        root = Path(self.config.project.project_root)
+        root = Path(config.project.project_root)
         try:
             state_dir = resolve_project_state_root(
                 root,
@@ -494,12 +579,14 @@ class Analyzer:
             }
             manifest = build_source_manifest(
                 root,
-                project_id=str(getattr(self.config.project, "project_id", "") or root.name),
+                project_id=str(getattr(config.project, "project_id", "") or root.name),
                 overrides=overrides,
                 max_file_bytes=int(getattr(wiki, "max_file_bytes", 10 * 1024 * 1024)),
                 max_files=int(getattr(wiki, "max_files", 10_000)),
                 max_total_bytes=int(getattr(wiki, "max_total_bytes", 100 * 1024 * 1024)),
-                prune_paths=(state_dir.relative_to(root.resolve()),) if state_dir is not None else None,
+                prune_paths=(
+                    (state_dir.relative_to(root.resolve()),) if state_dir is not None else None
+                ),
             )
             source_index = SourceIndex(
                 state_dir / "source-index.db" if state_dir is not None else ":memory:"
@@ -508,7 +595,9 @@ class Analyzer:
                 root,
                 manifest=manifest,
                 overrides=overrides,
-                prune_paths=(state_dir.relative_to(root.resolve()),) if state_dir is not None else None,
+                prune_paths=(
+                    (state_dir.relative_to(root.resolve()),) if state_dir is not None else None
+                ),
             )
             source_index_ready = True
             if state_dir is None:
@@ -520,11 +609,15 @@ class Analyzer:
                     wiki_store=None,
                     source_manifest_digest=manifest.source_manifest_digest,
                     mode=mode if mode in {"shadow", "active"} else "shadow",
+                    max_context_tokens=getattr(wiki, "max_context_tokens", None),
                 )
             wiki_store = WikiStore(state_dir)
             active = wiki_store.active_revision()
             had_active_revision = active is not None
-            manifest_changed = active is None or active.get("source_manifest_digest") != manifest.source_manifest_digest
+            manifest_changed = (
+                active is None
+                or active.get("source_manifest_digest") != manifest.source_manifest_digest
+            )
             if mode in {"build_only", "shadow", "active"} and active is None:
                 wiki_store.build_skeleton(root, manifest)
                 active = wiki_store.active_revision()
@@ -540,7 +633,7 @@ class Analyzer:
                 active_compiler_kind=_wiki_revision_compiler_kind(wiki_store, active),
             )
             if maintenance_requested and active:
-                compiler_client = self.llm_clients.get("wiki_compiler") or self.llm_clients.get("default")
+                compiler_client = llm_clients.get("wiki_compiler") or llm_clients.get("default")
                 rows = wiki_store.connection.execute(
                     "SELECT page_id, frontmatter_json FROM pages WHERE revision_id=? ORDER BY page_id",
                     (active.get("revision_id"),),
@@ -548,44 +641,77 @@ class Analyzer:
                 target_pages = [str(row["page_id"]) for row in rows]
                 source_to_pages = {}
                 page_dependencies = {}
+                project_page_id = ""
                 for row in rows:
                     try:
                         front = json.loads(row["frontmatter_json"])
                     except Exception:
                         front = {}
+                    if not project_page_id and (
+                        front.get("page_kind") == "project_overview"
+                        or front.get("canonical_slug") == "project"
+                    ):
+                        project_page_id = str(row["page_id"])
                     for source_id in front.get("source_ids", ()):
                         source_to_pages.setdefault(str(source_id), []).append(str(row["page_id"]))
-                    page_dependencies[str(row["page_id"])] = [str(item) for item in front.get("depends_on", ())]
+                    page_dependencies[str(row["page_id"])] = [
+                        str(item) for item in front.get("depends_on", ())
+                    ]
+                if not project_page_id:
+                    project_page_id = stable_id("page", manifest.project_id, "project")
                 previous_manifest = wiki_store.revision_manifest(str(active.get("revision_id")))
                 if previous_manifest is not None:
                     delta = compare_manifests(previous_manifest, manifest)
                     dirty_pages = dirty_page_closure(
                         delta,
                         source_to_pages=source_to_pages,
+                        project_page_id=project_page_id,
                         page_dependencies=page_dependencies,
                     )
                 else:
                     delta = None
-                    dirty_pages = tuple(target_pages) or ("page_project",)
+                    dirty_pages = tuple(target_pages) or _wiki_bootstrap_page_ids(manifest)
+                materialized_pages = bool(target_pages) and _wiki_revision_has_materialized_pages(
+                    wiki_store, active
+                )
+                if not materialized_pages:
+                    # A deterministic skeleton (or an empty/corrupt parent)
+                    # is not an incremental Wiki.  Any manifest delta must
+                    # bootstrap from all currently accepted documents so an
+                    # earlier failed compile cannot leave the project stuck
+                    # with only stale propagation or one changed source.
+                    bootstrap_source_ids = tuple(
+                        sorted(str(item.source_id) for item in manifest.accepted)
+                    )
+                    added_source_ids = bootstrap_source_ids
+                    changed_source_ids = ()
+                    dirty_pages = tuple(
+                        sorted(set(target_pages) | set(_wiki_bootstrap_page_ids(manifest)))
+                    )
+                else:
+                    added_source_ids = delta.added_source_ids if delta else ()
+                    changed_source_ids = delta.changed_source_ids if delta else ()
+                removed_source_ids = delta.removed_source_ids if delta else ()
                 workset = build_ingest_workset(
                     manifest,
                     source_index=source_index,
                     base_revision_id=str(active.get("revision_id")),
-                    added_source_ids=delta.added_source_ids if delta else (),
-                    changed_source_ids=delta.changed_source_ids if delta else (),
-                    removed_source_ids=delta.removed_source_ids if delta else (),
+                    added_source_ids=added_source_ids,
+                    changed_source_ids=changed_source_ids,
+                    removed_source_ids=removed_source_ids,
                     target_page_ids=dirty_pages,
                     allowed_existing_pages=target_pages,
-                    max_source_chars=int(getattr(wiki, "max_source_chars", 200_000)),
-                    max_output_chars=int(getattr(wiki, "max_output_chars", 100_000)),
-                    max_wall_seconds=int(getattr(wiki, "max_wall_seconds", 600)),
+                    max_pages=getattr(wiki, "max_pages", None),
+                    max_source_chars=getattr(wiki, "max_source_chars", None),
+                    max_output_chars=getattr(wiki, "max_output_chars", None),
+                    max_wall_seconds=getattr(wiki, "max_wall_seconds", None),
                 )
                 compiler = WikiCompiler()
                 if bool(getattr(wiki, "compiler_enabled", False)) and compiler_client is not None:
                     compiler = WikiCompiler(
                         LLMWikiCompilerProvider(
                             compiler_client,
-                            max_tokens=int(getattr(wiki, "compiler_max_tokens", 4000)),
+                            max_tokens=getattr(wiki, "compiler_max_tokens", None),
                         )
                     )
                 lock_path = state_dir / "locks" / "compiler.lock"
@@ -601,6 +727,7 @@ class Analyzer:
                 wiki_store=wiki_store,
                 source_manifest_digest=manifest.source_manifest_digest,
                 mode=mode if mode in {"shadow", "active"} else "shadow",
+                max_context_tokens=getattr(wiki, "max_context_tokens", None),
             )
         except Exception as exc:
             logger.warning(
@@ -623,6 +750,7 @@ class Analyzer:
                     wiki_store=None,
                     source_manifest_digest=manifest.source_manifest_digest,
                     mode=mode if mode in {"shadow", "active"} else "shadow",
+                    max_context_tokens=getattr(wiki, "max_context_tokens", None),
                 )
             if source_index is not None:
                 try:
@@ -5585,21 +5713,25 @@ class Analyzer:
         state["candidate_ledger_summary"] = ledger_summary
         wiki_service = getattr(self, "project_knowledge_service", None)
         wiki_telemetry_fn = getattr(wiki_service, "telemetry_snapshot", None)
-        wiki_telemetry = wiki_telemetry_fn() if callable(wiki_telemetry_fn) else {
-            "effective_mode": "off",
-            "active_effective_mode": False,
-            "resolution_count": 0,
-            "wiki_resolution_count": 0,
-            "source_fallback_count": 0,
-            "none_count": 0,
-            "knowledge_context_tokens": 0,
-            "incremental_fact_count": 0,
-            "wiki_context_injected": False,
-            "selected_constraint_ids": {},
-            "selected_page_ids": {},
-            "selected_source_ref_ids": {},
-            "fallback_reasons": {},
-        }
+        wiki_telemetry = (
+            wiki_telemetry_fn()
+            if callable(wiki_telemetry_fn)
+            else {
+                "effective_mode": "off",
+                "active_effective_mode": False,
+                "resolution_count": 0,
+                "wiki_resolution_count": 0,
+                "source_fallback_count": 0,
+                "none_count": 0,
+                "knowledge_context_tokens": 0,
+                "incremental_fact_count": 0,
+                "wiki_context_injected": False,
+                "selected_constraint_ids": {},
+                "selected_page_ids": {},
+                "selected_source_ref_ids": {},
+                "fallback_reasons": {},
+            }
+        )
         state["wiki_telemetry"] = wiki_telemetry
         return {
             "timestamp": datetime.datetime.now().isoformat(),

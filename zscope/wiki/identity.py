@@ -14,7 +14,7 @@ def stable_id(prefix: str, *parts: object, length: int = 32) -> str:
 
 def slugify(value: str) -> str:
     value = str(value).strip().lower().replace("\\", "/")
-    value = re.sub(r"[^a-z0-9_./-]+", "-", value)
+    value = re.sub(r"[^a-z0-9./-]+", "-", value)
     value = re.sub(r"/{2,}", "/", value).strip("/.")
     return value or "untitled"
 

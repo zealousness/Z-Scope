@@ -153,6 +153,15 @@ class ScanSessionRunner:
                 )
             return self._run_single(state)
         finally:
+            parallel_analyzer = state.get("parallel_analyzer")
+            can_close_session_resources = not bool(
+                getattr(parallel_analyzer, "_interrupted", False)
+            )
+            if state.get("wiki_compile_completed") and can_close_session_resources:
+                Analyzer.close_project_knowledge_service(
+                    state.get("project_knowledge_service")
+                )
+                self._close_llm_clients(state.get("llm_clients") or {})
             code_index = state.get("code_index")
             if code_index:
                 code_index.close()
@@ -168,6 +177,9 @@ class ScanSessionRunner:
             "batch_mode": False,
             "results": {},
             "parallel_analyzer": None,
+            "project_knowledge_service": None,
+            "llm_clients": None,
+            "wiki_compile_completed": False,
             "merged_skipped_reports": 0,
             "discovery_result": None,
             "diff_impact_result": None,
@@ -186,6 +198,7 @@ class ScanSessionRunner:
     def _build_session_step_handlers(self) -> Dict[str, WorkflowStepHandler]:
         return {
             "discover_entries": self._handle_discover_entries,
+            "wiki_compile": self._handle_wiki_compile,
             "plan_resume_entries": self._handle_plan_resume_entries,
         }
 
@@ -241,6 +254,46 @@ class ScanSessionRunner:
         if not discovered_entries and self.config.project.entry_function:
             self.emit("No discovered entries found; falling back to configured entry_function.")
         return False
+
+    def _handle_wiki_compile(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        """Compile and pin project knowledge before any entry analysis starts."""
+
+        wiki = getattr(getattr(self.config, "project", None), "wiki", None)
+        mode = str(getattr(wiki, "mode", "off") or "off").strip().lower()
+        if mode == "off":
+            state["project_knowledge_service"] = None
+            state["wiki_compile_completed"] = True
+            return False
+
+        logger.info("[wiki-compile] start mode=%s", mode)
+        self.emit("Compiling project Wiki before entry analysis and validation...")
+        llm_clients = ParallelAnalyzer._build_shared_llm_clients(self.config)
+        state["llm_clients"] = llm_clients
+        try:
+            state["project_knowledge_service"] = Analyzer.build_project_knowledge_service(
+                self.config,
+                llm_clients,
+            )
+        except Exception:
+            self._close_llm_clients(llm_clients)
+            state["llm_clients"] = None
+            raise
+        state["wiki_compile_completed"] = True
+        logger.info("[wiki-compile] end mode=%s", mode)
+        self.emit("Project Wiki compile stage completed.")
+        return False
+
+    @staticmethod
+    def _close_llm_clients(llm_clients: Dict[str, Any]) -> None:
+        seen: set[int] = set()
+        for client in llm_clients.values():
+            client_id = id(client)
+            if client_id in seen:
+                continue
+            seen.add(client_id)
+            close_client = getattr(client, "close", None)
+            if callable(close_client):
+                close_client()
 
     def _plan_diff_impact_entries(self, state: Dict[str, Any]) -> None:
         if not self.diff_base or state.get("diff_impact_result"):
@@ -549,6 +602,12 @@ class ScanSessionRunner:
         else:
             self._ensure_svf_for_entries(state, entries)
 
+        parallel_kwargs: Dict[str, Any] = {}
+        if state.get("wiki_compile_completed"):
+            parallel_kwargs["project_knowledge_service"] = state.get(
+                "project_knowledge_service"
+            )
+            parallel_kwargs["llm_clients"] = state.get("llm_clients")
         parallel_analyzer = ParallelAnalyzer(
             self.config,
             code_index=state["code_index"],
@@ -556,6 +615,7 @@ class ScanSessionRunner:
             maintain_mode=self.maintain,
             cancellation_token=self._cancellation_token,
             benchmark_ablation_override=self._benchmark_ablation_override,
+            **parallel_kwargs,
         )
         state["parallel_analyzer"] = parallel_analyzer
         discovery_result = state.get("discovery_result")
@@ -652,6 +712,12 @@ class ScanSessionRunner:
             None,
         )
         try:
+            analyzer_kwargs: Dict[str, Any] = {}
+            if state.get("wiki_compile_completed"):
+                analyzer_kwargs["project_knowledge_service"] = state.get(
+                    "project_knowledge_service"
+                )
+                analyzer_kwargs["llm_clients"] = state.get("llm_clients")
             analyzer = Analyzer(
                 self.config,
                 code_index=state.get("code_index"),
@@ -659,6 +725,7 @@ class ScanSessionRunner:
                 maintain_mode=self.maintain,
                 cancellation_token=self._cancellation_token.child(None),
                 scheduler=scheduler,
+                **analyzer_kwargs,
             )
             result = analyzer.run()
         finally:
