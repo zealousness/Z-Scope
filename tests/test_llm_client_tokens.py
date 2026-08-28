@@ -1,6 +1,61 @@
 import json
 
+import pytest
+
+from zscope.framework.conversation_recorder import (
+    disable_conversation_recording,
+    enable_conversation_recording,
+)
 from zscope.framework.llm_client import LLMClient
+
+
+class _CompletedResponse:
+    status_code = 200
+    text = "ok"
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("transport", ["requests", "curl"])
+def test_direct_chat_records_length_finish_as_truncated(monkeypatch, tmp_path, transport) -> None:
+    recorder = enable_conversation_recording(tmp_path)
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid/v1",
+        models=["unit-model"],
+        max_retries=0,
+    )
+    message = {"role": "assistant", "content": "partial"}
+
+    if transport == "curl":
+        monkeypatch.setattr(
+            client,
+            "_curl_chat_completion",
+            lambda _url, _payload: (message, "length", None),
+        )
+        monkeypatch.setenv("Z_SCOPE_LLM_TRANSPORT", "curl")
+        client._transport = "curl"
+    else:
+        monkeypatch.setattr(
+            client,
+            "_assemble_chat_response_with_usage",
+            lambda _response: (message, "length", None),
+        )
+        monkeypatch.setattr(
+            client,
+            "_session_for_thread",
+            lambda: type("Session", (), {"post": lambda self, *args, **kwargs: _CompletedResponse()})(),
+        )
+
+    try:
+        result = client.chat_completion([{"role": "user", "content": "hello"}])
+        assert result["choices"][0]["finish_reason"] == "length"
+        session_files = list(recorder.run_dir.glob("*.md"))
+        assert len(session_files) == 1
+        assert "- Truncated: `true`" in session_files[0].read_text(encoding="utf-8")
+    finally:
+        disable_conversation_recording()
 
 
 def test_run_conversation_with_tools_accumulates_api_tokens(monkeypatch) -> None:

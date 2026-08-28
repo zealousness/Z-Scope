@@ -197,6 +197,28 @@ def test_project_wiki_limits_default_to_unlimited_without_changing_llm_profile(t
     assert config.llms["default"].max_tokens == 4096
 
 
+def test_project_wiki_accepts_explicit_local_limits(tmp_path: Path) -> None:
+    data = _config(tmp_path)
+    data["project"]["wiki"] = {
+        "max_context_tokens": 5000,
+        "compiler_max_tokens": 6000,
+        "max_source_chars": 7000,
+        "max_output_chars": 8000,
+        "max_wall_seconds": 9000,
+        "max_pages": 10,
+    }
+
+    config = ConfigLoader.load(str(_write(tmp_path, data)))
+
+    wiki = config.project.wiki
+    assert wiki.max_context_tokens == 5000
+    assert wiki.compiler_max_tokens == 6000
+    assert wiki.max_source_chars == 7000
+    assert wiki.max_output_chars == 8000
+    assert wiki.max_wall_seconds == 9000
+    assert wiki.max_pages == 10
+
+
 def test_project_wiki_rejects_absolute_state_dir(tmp_path: Path) -> None:
     data = _config(tmp_path)
     data["project"]["wiki"] = {"mode": "active", "state_dir": "/tmp/wiki"}

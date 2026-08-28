@@ -9,13 +9,19 @@ from types import SimpleNamespace
 import pytest
 
 from zscope.core.analysis.analyzer import Analyzer
-from zscope.wiki.maintenance import WikiWriterLock, compare_manifests, dirty_page_closure, merge_constraint_proposals, propagate_stale
+from zscope.wiki.maintenance import (
+    WikiWriterLock,
+    compare_manifests,
+    dirty_page_closure,
+    merge_constraint_proposals,
+    propagate_stale,
+)
 from zscope.wiki.source_manifest import build_source_manifest
 from zscope.wiki.compiler.compiler import WikiCompiler
 from zscope.wiki.compiler.workset import build_ingest_workset
+from zscope.wiki.identity import slugify, stable_id
 from zscope.wiki.source_index import SourceIndex
 from zscope.wiki.store.revision_store import WikiStore
-
 
 FIXTURE = Path(__file__).parent / "fixtures" / "wiki_project"
 
@@ -71,16 +77,55 @@ def test_manifest_delta_and_dirty_closure(tmp_path: Path) -> None:
     import shutil
 
     shutil.copytree(FIXTURE, changed)
-    (changed / "README.md").write_text((changed / "README.md").read_text() + "\nNew note.\n", encoding="utf-8")
+    (changed / "README.md").write_text(
+        (changed / "README.md").read_text() + "\nNew note.\n", encoding="utf-8"
+    )
     after = build_source_manifest(changed, project_id="fixture", created_at="2026-01-01T00:00:00Z")
     delta = compare_manifests(before, after)
     assert len(delta.changed_source_ids) == 1
-    closure = dirty_page_closure(delta, source_to_pages={delta.changed_source_ids[0]: ["page_readme"]}, page_dependencies={"page_project": ["page_readme"], "page_dependent": ["page_project"]})
-    assert closure == ("page_dependent", "page_project", "page_readme")
+    project_page_id = stable_id("page", "fixture", "project")
+    closure = dirty_page_closure(
+        delta,
+        source_to_pages={delta.changed_source_ids[0]: ["page_readme"]},
+        project_page_id=project_page_id,
+        page_dependencies={
+            project_page_id: ["page_readme"],
+            "page_dependent": [project_page_id],
+        },
+    )
+    assert closure == tuple(sorted(("page_dependent", project_page_id, "page_readme")))
+
+
+def test_default_workset_targets_the_deterministic_project_page(tmp_path: Path) -> None:
+    manifest = build_source_manifest(
+        FIXTURE,
+        project_id="fixture",
+        created_at="2026-01-01T00:00:00Z",
+    )
+    with SourceIndex(tmp_path / "source.db") as index:
+        index.rebuild(FIXTURE, manifest=manifest)
+        workset = build_ingest_workset(manifest, source_index=index)
+
+    assert workset["target_page_ids"] == [stable_id("page", "fixture", "project")]
+    assert "page_project" not in workset["target_page_ids"]
+
+
+def test_slugify_matches_the_wiki_page_slug_contract() -> None:
+    assert slugify("page_project") == "page-project"
+    assert slugify("Modules/API_Limits") == "modules/api-limits"
 
 
 def test_equal_values_merge_refs_and_conflicting_values_remain_conflicted() -> None:
-    base = {"constraint_id": "constraint_a", "subject": {"canonical_id": "api:parse"}, "kind": "input_range", "scope": {}, "normalized_value": {"min": 0, "max": 255}, "source_refs": ["docref_a"], "page_refs": [], "status": "active"}
+    base = {
+        "constraint_id": "constraint_a",
+        "subject": {"canonical_id": "api:parse"},
+        "kind": "input_range",
+        "scope": {},
+        "normalized_value": {"min": 0, "max": 255},
+        "source_refs": ["docref_a"],
+        "page_refs": [],
+        "status": "active",
+    }
     equal = dict(base, constraint_id="constraint_b", source_refs=["docref_b"])
     merged = merge_constraint_proposals([base], [equal])
     assert len(merged) == 1 and merged[0]["source_refs"] == ["docref_a", "docref_b"]
@@ -90,7 +135,11 @@ def test_equal_values_merge_refs_and_conflicting_values_remain_conflicted() -> N
 
 
 def test_removed_source_marks_supporting_constraint_stale() -> None:
-    item = {"constraint_id": "constraint_a", "source_refs": ["docsrc_removed:section"] , "status": "active"}
+    item = {
+        "constraint_id": "constraint_a",
+        "source_refs": ["docsrc_removed:section"],
+        "status": "active",
+    }
     assert propagate_stale([item], ["docsrc_removed"])[0]["status"] == "stale"
 
 
@@ -164,42 +213,114 @@ def test_writer_lock_exit_does_not_delete_a_new_owner(tmp_path: Path) -> None:
     assert json.loads(path.read_text(encoding="utf-8"))["token"] == "b" * 32
 
 
-def test_manifest_delta_refresh_keeps_revision_and_marks_changed_constraint_stale(tmp_path: Path) -> None:
+def test_manifest_delta_refresh_keeps_revision_and_marks_changed_constraint_stale(
+    tmp_path: Path,
+) -> None:
     before_root = tmp_path / "before"
     import shutil
+
     shutil.copytree(FIXTURE, before_root)
     after_root = tmp_path / "after"
     shutil.copytree(before_root, after_root)
-    before = build_source_manifest(before_root, project_id="fixture", created_at="2026-01-01T00:00:00Z")
-    (after_root / "README.md").write_text((after_root / "README.md").read_text(encoding="utf-8") + "\nAdditional contract note.\n", encoding="utf-8")
-    after = build_source_manifest(after_root, project_id="fixture", created_at="2026-01-01T00:00:00Z")
+    before = build_source_manifest(
+        before_root, project_id="fixture", created_at="2026-01-01T00:00:00Z"
+    )
+    (after_root / "README.md").write_text(
+        (after_root / "README.md").read_text(encoding="utf-8") + "\nAdditional contract note.\n",
+        encoding="utf-8",
+    )
+    after = build_source_manifest(
+        after_root, project_id="fixture", created_at="2026-01-01T00:00:00Z"
+    )
     delta = compare_manifests(before, after)
     assert len(delta.changed_source_ids) == 1
     state = tmp_path / "wiki"
-    with SourceIndex(tmp_path / "before.db") as old_index, SourceIndex(tmp_path / "after.db") as new_index, WikiStore(state) as store:
+    with (
+        SourceIndex(tmp_path / "before.db") as old_index,
+        SourceIndex(tmp_path / "after.db") as new_index,
+        WikiStore(state) as store,
+    ):
         old_index.rebuild(before_root, manifest=before)
         first = store.build_skeleton(before_root, before)
         source_id = delta.changed_source_ids[0]
-        ref_id = store.connection.execute("SELECT ref_id FROM document_refs WHERE revision_id=? ORDER BY ref_id LIMIT 1", (first.revision_id,)).fetchone()["ref_id"]
-        page_id = store.connection.execute("SELECT page_id FROM pages WHERE revision_id=? AND canonical_slug='project'", (first.revision_id,)).fetchone()["page_id"]
-        seed_workset = build_ingest_workset(before, source_index=old_index, base_revision_id=first.revision_id, changed_source_ids=[source_id], target_page_ids=[page_id])
+        ref_id = store.connection.execute(
+            "SELECT ref_id FROM document_refs WHERE revision_id=? ORDER BY ref_id LIMIT 1",
+            (first.revision_id,),
+        ).fetchone()["ref_id"]
+        page_id = store.connection.execute(
+            "SELECT page_id FROM pages WHERE revision_id=? AND canonical_slug='project'",
+            (first.revision_id,),
+        ).fetchone()["page_id"]
+        seed_workset = build_ingest_workset(
+            before,
+            source_index=old_index,
+            base_revision_id=first.revision_id,
+            changed_source_ids=[source_id],
+            target_page_ids=[page_id],
+        )
         # Seed one active constraint so a changed supporting document has a
         # concrete freshness transition to assert.
         seed_constraint = {
-            "schema_version": "zscope.wiki-changeset.v1", "workset_id": seed_workset["workset_id"], "base_revision_id": first.revision_id,
-            "outcome": "changed", "source_results": [{"source_ref": source_id, "extraction_status": "constraints_found", "source_refs_used": [ref_id], "constraint_ids": ["constraint_seed"], "reason": "seed"}],
-            "page_changes": [], "constraint_proposals": [{"schema_version": "zscope.project-constraint.v1", "constraint_id": "constraint_seed", "subject": {"kind": "api", "canonical_id": "api:parse_byte"}, "scope": {"project_id": "fixture", "module_ids": [], "path_globs": []}, "kind": "input_range", "statement": "0..255", "normalized_value": {"min": 0, "max": 255}, "authority": "documented_contract", "normativity": "required", "status": "active", "source_refs": [ref_id], "page_refs": [], "conflicts_with": [], "source_manifest_digest": before.source_manifest_digest, "created_revision_id": "wikirev_seed"}],
-            "edge_proposals": [], "retire_proposals": [], "unresolved_conflicts": [], "summary": "seed",
+            "schema_version": "zscope.wiki-changeset.v1",
+            "workset_id": seed_workset["workset_id"],
+            "base_revision_id": first.revision_id,
+            "outcome": "changed",
+            "source_results": [
+                {
+                    "source_ref": source_id,
+                    "extraction_status": "constraints_found",
+                    "source_refs_used": [ref_id],
+                    "constraint_ids": ["constraint_seed"],
+                    "reason": "seed",
+                }
+            ],
+            "page_changes": [],
+            "constraint_proposals": [
+                {
+                    "schema_version": "zscope.project-constraint.v1",
+                    "constraint_id": "constraint_seed",
+                    "subject": {"kind": "api", "canonical_id": "api:parse_byte"},
+                    "scope": {"project_id": "fixture", "module_ids": [], "path_globs": []},
+                    "kind": "input_range",
+                    "statement": "0..255",
+                    "normalized_value": {"min": 0, "max": 255},
+                    "authority": "documented_contract",
+                    "normativity": "required",
+                    "status": "active",
+                    "source_refs": [ref_id],
+                    "page_refs": [],
+                    "conflicts_with": [],
+                    "source_manifest_digest": before.source_manifest_digest,
+                    "created_revision_id": "wikirev_seed",
+                }
+            ],
+            "edge_proposals": [],
+            "retire_proposals": [],
+            "unresolved_conflicts": [],
+            "summary": "seed",
         }
         seeded = store.apply_changeset(before_root, before, seed_workset, seed_constraint)
         new_index.rebuild(after_root, manifest=after)
-        workset = build_ingest_workset(after, source_index=new_index, base_revision_id=seeded.revision_id, changed_source_ids=[source_id], target_page_ids=[page_id], allowed_existing_pages=[page_id])
+        workset = build_ingest_workset(
+            after,
+            source_index=new_index,
+            base_revision_id=seeded.revision_id,
+            changed_source_ids=[source_id],
+            target_page_ids=[page_id],
+            allowed_existing_pages=[page_id],
+        )
         refreshed = store.compile_and_apply(after_root, after, workset, WikiCompiler())
         assert refreshed.revision_id != seeded.revision_id
-        row = store.connection.execute("SELECT constraint_json FROM constraints WHERE revision_id=? AND constraint_id='constraint_seed'", (refreshed.revision_id,)).fetchone()
+        row = store.connection.execute(
+            "SELECT constraint_json FROM constraints WHERE revision_id=? AND constraint_id='constraint_seed'",
+            (refreshed.revision_id,),
+        ).fetchone()
         assert row is not None
-        assert __import__('json').loads(row["constraint_json"])["status"] == "stale"
-        assert store.revision_manifest(refreshed.revision_id)["source_manifest_digest"] == after.source_manifest_digest
+        assert __import__("json").loads(row["constraint_json"])["status"] == "stale"
+        assert (
+            store.revision_manifest(refreshed.revision_id)["source_manifest_digest"]
+            == after.source_manifest_digest
+        )
 
 
 def test_analyzer_build_only_publishes_changed_manifest_revision(tmp_path: Path) -> None:
@@ -296,9 +417,7 @@ def test_analyzer_prunes_custom_state_tree_from_later_manifest(tmp_path: Path) -
         )
         paths = {
             row["relative_path"]
-            for row in second.source_index.connection.execute(
-                "SELECT relative_path FROM documents"
-            )
+            for row in second.source_index.connection.execute("SELECT relative_path FROM documents")
         }
         assert active is not None
         assert active["revision_id"] == first_active["revision_id"]
@@ -406,7 +525,7 @@ def test_analyzer_auto_maintain_enriches_once_without_revision_churn(
             self.max_tokens = max_tokens
 
         def __call__(self, workset):
-            calls.append(workset["workset_id"])
+            calls.append(dict(workset))
             source_ids = (
                 list(workset["added_source_ids"])
                 + list(workset["changed_source_ids"])
@@ -465,3 +584,98 @@ def test_analyzer_auto_maintain_enriches_once_without_revision_churn(
     with WikiStore(state) as store:
         assert store.active_revision()["revision_id"] == enriched["revision_id"]
     assert len(calls) == 1
+    expected_project_page = stable_id("page", "fixture", "project")
+    assert expected_project_page in calls[0]["target_page_ids"]
+    assert "page_project" not in calls[0]["target_page_ids"]
+
+
+@pytest.mark.parametrize("delta_kind", ("added", "changed", "removed"))
+def test_analyzer_bootstraps_all_sources_when_parent_has_no_materialized_wiki(
+    tmp_path: Path,
+    monkeypatch,
+    delta_kind: str,
+) -> None:
+    project = tmp_path / "project"
+    shutil.copytree(FIXTURE, project)
+    state = project / ".zscope_knowledge" / "wiki"
+    before = build_source_manifest(project, project_id="fixture")
+    before_ids = {item.source_id for item in before.accepted}
+    with WikiStore(state) as store:
+        skeleton = store.build_skeleton(project, before)
+        expected_page_ids = {
+            str(row["page_id"])
+            for row in store.connection.execute(
+                "SELECT page_id FROM pages WHERE revision_id=?",
+                (skeleton.revision_id,),
+            ).fetchall()
+        }
+
+    if delta_kind == "added":
+        shutil.copyfile(project / "docs" / "api-limits-legacy.md", project / "docs" / "new-api.md")
+    elif delta_kind == "changed":
+        readme = project / "README.md"
+        readme.write_text(readme.read_text(encoding="utf-8") + "\nNew contract note.\n", encoding="utf-8")
+    else:
+        (project / "docs" / "api-limits-legacy.md").unlink()
+    current = build_source_manifest(project, project_id="fixture")
+    current_ids = {item.source_id for item in current.accepted}
+    removed_ids = before_ids - current_ids
+
+    calls = []
+
+    class FakeProvider:
+        def __init__(self, _client, *, max_tokens):
+            self.max_tokens = max_tokens
+
+        def __call__(self, workset):
+            calls.append(dict(workset))
+            source_ids = (
+                list(workset["added_source_ids"])
+                + list(workset["changed_source_ids"])
+                + list(workset["removed_source_ids"])
+            )
+            return {
+                "schema_version": "zscope.wiki-changeset.v1",
+                "workset_id": workset["workset_id"],
+                "base_revision_id": workset["base_revision_id"],
+                "outcome": "background_only",
+                "source_results": [
+                    {
+                        "source_ref": source_id,
+                        "extraction_status": "no_constraints_found",
+                        "source_refs_used": [],
+                        "constraint_ids": [],
+                        "reason": "bootstrap test",
+                    }
+                    for source_id in source_ids
+                ],
+                "page_changes": [],
+                "constraint_proposals": [],
+                "edge_proposals": [],
+                "retire_proposals": [],
+                "unresolved_conflicts": [],
+                "summary": "bootstrap test",
+            }
+
+    monkeypatch.setattr(
+        "zscope.core.analysis.analyzer.LLMWikiCompilerProvider",
+        FakeProvider,
+    )
+    analyzer = _analyzer(
+        project,
+        mode="shadow",
+        auto_maintain=False,
+        compiler_enabled=True,
+    )
+    analyzer.llm_clients = {"wiki_compiler": object()}
+
+    service = analyzer._build_project_knowledge_service()
+    _close_service(service)
+
+    assert len(calls) == 1
+    workset = calls[0]
+    assert set(workset["added_source_ids"]) == current_ids
+    assert workset["changed_source_ids"] == []
+    assert set(workset["removed_source_ids"]) == removed_ids
+    assert expected_page_ids <= set(workset["target_page_ids"])
+    assert stable_id("page", "fixture", "project") in set(workset["target_page_ids"])

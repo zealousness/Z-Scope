@@ -21,11 +21,15 @@ project:
     mode: active
     auto_maintain: false
     compiler_enabled: true
+    compiler_max_tokens: 20000
     state_dir: .zscope_knowledge/wiki-active-fixture-v2
     documents:
       exclude:
         - .zscope_conversations/**
         - .zscope_knowledge/**
+        - benchmark/README.md
+        - benchmark_runs/**
+        - zscope_batch_report.md
   entry_discovery:
     enabled: true
     search_root: .

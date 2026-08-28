@@ -107,6 +107,8 @@ _ENTRY_EXPOSURE_WEIGHTS = {
     "api": 140,
 }
 
+_PROJECT_KNOWLEDGE_UNSET = object()
+
 
 @dataclass
 class ParallelAnalysisResult:
@@ -151,6 +153,9 @@ class ParallelAnalyzer:
         maintain_mode: bool = False,
         cancellation_token: Optional[CancellationToken] = None,
         benchmark_ablation_override: Optional[DiscoveryAblationRuntimeOverride] = None,
+        project_knowledge_service: Any = _PROJECT_KNOWLEDGE_UNSET,
+        owns_project_knowledge_service: bool = False,
+        llm_clients: Optional[Dict[str, LLMClient]] = None,
     ):
         preflight_rules(config)
         self.base_config = config
@@ -166,7 +171,19 @@ class ParallelAnalyzer:
                 raise DiscoveryAblationError(
                     "isolated-cold ablation requires ignored history and forbids maintain mode"
                 )
-        self._shared_llm_clients = self._build_shared_llm_clients(config)
+        self._owns_llm_clients = llm_clients is None
+        self._shared_llm_clients = (
+            llm_clients if llm_clients is not None else self._build_shared_llm_clients(config)
+        )
+        if project_knowledge_service is _PROJECT_KNOWLEDGE_UNSET:
+            self.project_knowledge_service = Analyzer.build_project_knowledge_service(
+                config,
+                self._shared_llm_clients,
+            )
+            self._owns_project_knowledge_service = True
+        else:
+            self.project_knowledge_service = project_knowledge_service
+            self._owns_project_knowledge_service = bool(owns_project_knowledge_service)
         self._validation_result_cache = ValidationResultCache(
             max_entries=getattr(config.analysis, "validation_cache_entries", 4096)
         )
@@ -578,6 +595,7 @@ class ParallelAnalyzer:
             decision_fact_cache=self._decision_fact_cache,
             write_root_reports=False,
             defer_validation_to_scan=False,
+            project_knowledge_service=self.project_knowledge_service,
         )
         ledger_records = list(self._candidate_ledger.records())
         raw_occurrence_count = sum(len(record.occurrence_uids) for record in ledger_records)
@@ -743,6 +761,7 @@ class ParallelAnalyzer:
                 scheduler=self._scheduler,
                 decision_fact_cache=self._decision_fact_cache,
                 write_root_reports=False,
+                project_knowledge_service=self.project_knowledge_service,
             )
             modeler = GlobalModeler.from_analyzer_helpers(
                 self.base_config,
@@ -838,6 +857,7 @@ class ParallelAnalyzer:
             decision_fact_cache=self._decision_fact_cache,
             write_root_reports=False,
             defer_validation_to_scan=True,
+            project_knowledge_service=self.project_knowledge_service,
         )
 
         # Keep one call path per (entry, function) to avoid exponential path
@@ -1566,6 +1586,7 @@ class ParallelAnalyzer:
                 decision_fact_cache=self._decision_fact_cache,
                 write_root_reports=False,
                 defer_validation_to_scan=self._uses_scan_validation_queue(),
+                project_knowledge_service=self.project_knowledge_service,
             )
             logger.info(
                 "[entry-worker] analyzer-ready entry=%s key=%s duration=%.2fs",
@@ -1737,6 +1758,8 @@ class ParallelAnalyzer:
         }
 
     def _close_thread_llm_sessions(self) -> None:
+        if not getattr(self, "_owns_llm_clients", False):
+            return
         seen: Set[int] = set()
         for client in self._shared_llm_clients.values():
             client_id = id(client)
@@ -1751,6 +1774,10 @@ class ParallelAnalyzer:
         scheduler = getattr(self, "_scheduler", None)
         if scheduler is not None:
             scheduler.shutdown(wait=True, cancel_futures=True)
+        if getattr(self, "_owns_project_knowledge_service", False):
+            Analyzer.close_project_knowledge_service(
+                getattr(self, "project_knowledge_service", None)
+            )
         seen: Set[int] = set()
         for client in getattr(self, "_shared_llm_clients", {}).values():
             client_id = id(client)
@@ -2114,6 +2141,27 @@ class ParallelAnalyzer:
         scan_token_usage = (
             scan_token_usage_snapshot(base_config) if base_config is not None else {}
         )
+        wiki_service = getattr(self, "project_knowledge_service", None)
+        wiki_telemetry_fn = getattr(wiki_service, "telemetry_snapshot", None)
+        wiki_telemetry = (
+            wiki_telemetry_fn()
+            if callable(wiki_telemetry_fn)
+            else {
+                "effective_mode": "off",
+                "active_effective_mode": False,
+                "resolution_count": 0,
+                "wiki_resolution_count": 0,
+                "source_fallback_count": 0,
+                "none_count": 0,
+                "knowledge_context_tokens": 0,
+                "incremental_fact_count": 0,
+                "wiki_context_injected": False,
+                "selected_constraint_ids": {},
+                "selected_page_ids": {},
+                "selected_source_ref_ids": {},
+                "fallback_reasons": {},
+            }
+        )
         llm_usage_summary["scan_token_usage"] = scan_token_usage
         retained_prompt_tokens = sum(r.cumulative_prompt_tokens for r in results.values())
         retained_completion_tokens = sum(r.cumulative_completion_tokens for r in results.values())
@@ -2381,6 +2429,7 @@ class ParallelAnalyzer:
                 "retained_entry_completion_tokens": retained_completion_tokens,
                 "retained_entry_total_tokens": retained_total_tokens,
                 "llm_usage": llm_usage_summary,
+                "wiki_telemetry": wiki_telemetry,
                 "validation_performance": validation_performance_summary,
                 "global_validation_queue": dict(global_validation_report),
                 "project_deterministic_fact_pass": project_fact_state,

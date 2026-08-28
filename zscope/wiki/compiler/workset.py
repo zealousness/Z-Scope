@@ -34,7 +34,9 @@ def _refs_for_sources(index: SourceIndex, source_ids: Sequence[str]) -> Tuple[st
     return tuple(stable_id("docref", row["source_id"], row["section_id"]) for row in rows)
 
 
-def _ref_catalog_for_sources(index: SourceIndex, source_ids: Sequence[str]) -> Tuple[Dict[str, Any], ...]:
+def _ref_catalog_for_sources(
+    index: SourceIndex, source_ids: Sequence[str]
+) -> Tuple[Dict[str, Any], ...]:
     if not source_ids:
         return ()
     placeholders = ",".join("?" for _ in source_ids)
@@ -44,19 +46,23 @@ def _ref_catalog_for_sources(index: SourceIndex, source_ids: Sequence[str]) -> T
         "ORDER BY s.source_id, s.start_line, s.section_id",
         tuple(source_ids),
     ).fetchall()
-    return tuple({
-        "schema_version": "zscope.document-ref.v1",
-        "ref_id": stable_id("docref", row["source_id"], row["section_id"]),
-        "source_id": row["source_id"],
-        "relative_path": row["relative_path"],
-        "heading_path": json.loads(row["heading_path_json"]),
-        "start_line": int(row["start_line"]),
-        "end_line": int(row["end_line"]),
-        "source_digest": row["content_digest"],
-        "excerpt_digest": "sha256:" + hashlib.sha256(str(row["excerpt"]).encode("utf-8")).hexdigest(),
-        "resolvable": True,
-        "excerpt": str(row["excerpt"]),
-    } for row in rows)
+    return tuple(
+        {
+            "schema_version": "zscope.document-ref.v1",
+            "ref_id": stable_id("docref", row["source_id"], row["section_id"]),
+            "source_id": row["source_id"],
+            "relative_path": row["relative_path"],
+            "heading_path": json.loads(row["heading_path_json"]),
+            "start_line": int(row["start_line"]),
+            "end_line": int(row["end_line"]),
+            "source_digest": row["content_digest"],
+            "excerpt_digest": "sha256:"
+            + hashlib.sha256(str(row["excerpt"]).encode("utf-8")).hexdigest(),
+            "resolvable": True,
+            "excerpt": str(row["excerpt"]),
+        }
+        for row in rows
+    )
 
 
 def _allowed_subject_ids(project_id: str, sections: Sequence[Mapping[str, Any]]) -> Tuple[str, ...]:
@@ -76,7 +82,9 @@ def _allowed_subject_ids(project_id: str, sections: Sequence[Mapping[str, Any]])
     return tuple(sorted(values))
 
 
-def _sections_for_sources(index: SourceIndex, source_ids: Sequence[str], max_source_chars: Optional[int]) -> Tuple[Dict[str, Any], ...]:
+def _sections_for_sources(
+    index: SourceIndex, source_ids: Sequence[str], max_source_chars: Optional[int]
+) -> Tuple[Dict[str, Any], ...]:
     """Project bounded source sections into the Compiler input envelope."""
 
     if not source_ids or (max_source_chars is not None and max_source_chars <= 0):
@@ -104,21 +112,23 @@ def _sections_for_sources(index: SourceIndex, source_ids: Sequence[str], max_sou
         if max_source_chars is not None and not selected and cost > max_source_chars:
             excerpt = excerpt[:max_source_chars]
             cost = len(excerpt)
-        selected.append({
-            "schema_version": "zscope.document-section.v1",
-            "section_id": row["section_id"],
-            "source_id": row["source_id"],
-            "heading_path": json.loads(row["heading_path_json"]),
-            "heading_level": int(row["heading_level"]),
-            "start_line": int(row["start_line"]),
-            "end_line": int(row["end_line"]),
-            "text_digest": row["text_digest"],
-            "excerpt": excerpt,
-            "symbols": json.loads(row["symbols_json"]),
-            "module_hints": json.loads(row["module_hints_json"]),
-            "normative_terms": json.loads(row["normative_terms_json"]),
-            "link_targets": links.get(str(row["source_id"]), []),
-        })
+        selected.append(
+            {
+                "schema_version": "zscope.document-section.v1",
+                "section_id": row["section_id"],
+                "source_id": row["source_id"],
+                "heading_path": json.loads(row["heading_path_json"]),
+                "heading_level": int(row["heading_level"]),
+                "start_line": int(row["start_line"]),
+                "end_line": int(row["end_line"]),
+                "text_digest": row["text_digest"],
+                "excerpt": excerpt,
+                "symbols": json.loads(row["symbols_json"]),
+                "module_hints": json.loads(row["module_hints_json"]),
+                "normative_terms": json.loads(row["normative_terms_json"]),
+                "link_targets": links.get(str(row["source_id"]), []),
+            }
+        )
         used += cost
     return tuple(selected)
 
@@ -131,7 +141,7 @@ def build_ingest_workset(
     added_source_ids: Sequence[str] = (),
     changed_source_ids: Sequence[str] = (),
     removed_source_ids: Sequence[str] = (),
-    target_page_ids: Sequence[str] = ("page_project",),
+    target_page_ids: Optional[Sequence[str]] = None,
     allowed_existing_pages: Sequence[str] = (),
     max_pages: Optional[int] = None,
     max_source_chars: Optional[int] = None,
@@ -157,8 +167,15 @@ def build_ingest_workset(
         unknown = sorted((set(added) | set(changed)) - accepted)
         raise ValueError(f"workset source IDs are not accepted by manifest: {unknown}")
     if set(added) & set(changed) or set(added) & set(removed) or set(changed) & set(removed):
-        raise ValueError("added_source_ids, changed_source_ids and removed_source_ids must be disjoint")
-    page_ids = tuple(dict.fromkeys(str(item) for item in target_page_ids if str(item)))
+        raise ValueError(
+            "added_source_ids, changed_source_ids and removed_source_ids must be disjoint"
+        )
+    requested_page_ids = (
+        target_page_ids
+        if target_page_ids is not None
+        else (stable_id("page", source_manifest.project_id, "project"),)
+    )
+    page_ids = tuple(dict.fromkeys(str(item) for item in requested_page_ids if str(item)))
     if not page_ids:
         raise ValueError("target_page_ids must not be empty")
     active_source_ids = tuple(sorted(set(added) | set(changed)))
@@ -168,7 +185,13 @@ def build_ingest_workset(
     allowed_subject_ids = _allowed_subject_ids(source_manifest.project_id, source_sections)
     result = {
         "schema_version": "zscope.wiki-ingest-workset.v1",
-        "workset_id": stable_id("workset", source_manifest.project_id, source_manifest.source_manifest_digest, base_revision_id or "none", *sorted(all_changed)),
+        "workset_id": stable_id(
+            "workset",
+            source_manifest.project_id,
+            source_manifest.source_manifest_digest,
+            base_revision_id or "none",
+            *sorted(all_changed),
+        ),
         "project_id": source_manifest.project_id,
         "base_revision_id": base_revision_id,
         "source_manifest_digest": source_manifest.source_manifest_digest,

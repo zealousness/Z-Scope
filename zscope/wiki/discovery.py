@@ -59,6 +59,7 @@ class DiscoveryResult:
     files: Tuple[DiscoveredFile, ...] = ()
     issues: Tuple[DiscoveryIssue, ...] = ()
     unsupported_extensions: Dict[str, int] = field(default_factory=dict)
+    unsupported_paths: Tuple[Tuple[str, str], ...] = ()
 
     def __iter__(self):
         # A small compatibility convenience for callers that unpack results.
@@ -198,6 +199,7 @@ def discover_markdown(
     files: List[DiscoveredFile] = []
     issues: List[DiscoveryIssue] = []
     unsupported: Dict[str, int] = {}
+    unsupported_paths: List[Tuple[str, str]] = []
     total_bytes = 0
 
     for path, entry in _iter_entries(root, prune_paths=normalized_prune_paths):
@@ -209,7 +211,9 @@ def discover_markdown(
 
         suffix = path.suffix.lower()
         if suffix not in MARKDOWN_SUFFIXES:
-            unsupported[suffix or "<none>"] = unsupported.get(suffix or "<none>", 0) + 1
+            extension = suffix or "<none>"
+            unsupported[extension] = unsupported.get(extension, 0) + 1
+            unsupported_paths.append((relative, extension))
             continue
         if len(files) >= max_files:
             issues.append(DiscoveryIssue(relative, "max_file_count_exceeded"))
@@ -262,7 +266,12 @@ def discover_markdown(
 
     files.sort(key=lambda item: item.relative_path)
     issues.sort(key=lambda item: item.relative_path)
-    return DiscoveryResult(tuple(files), tuple(issues), dict(sorted(unsupported.items())))
+    return DiscoveryResult(
+        tuple(files),
+        tuple(issues),
+        dict(sorted(unsupported.items())),
+        tuple(sorted(unsupported_paths)),
+    )
 
 
 class MarkdownDiscovery:

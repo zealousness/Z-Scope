@@ -182,19 +182,24 @@ def test_mcp_exposes_only_readonly_wiki_status_and_query(tmp_path: Path, monkeyp
     assert not any("build" in name or "rollback" in name for name in names)
 
 
-def test_mcp_wiki_query_rejects_unbounded_arguments(tmp_path: Path) -> None:
+def test_mcp_wiki_query_rejects_invalid_arguments_but_allows_large_explicit_budget(tmp_path: Path) -> None:
     provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.wiki.query"}))
 
     missing_subject = provider.call_tool("zscope.wiki.query", {})
-    excessive_budget = provider.call_tool(
+    large_budget = provider.call_tool(
         "zscope.wiki.query",
         {"subjects": ["parse_byte"], "max_tokens": 3501},
+    )
+    too_small_budget = provider.call_tool(
+        "zscope.wiki.query",
+        {"subjects": ["parse_byte"], "max_tokens": 255},
     )
 
     assert missing_subject["success"] is False
     assert "subjects" in missing_subject["error"]
-    assert excessive_budget["success"] is False
-    assert "max_tokens" in excessive_budget["error"]
+    assert large_budget["success"] is True
+    assert too_small_budget["success"] is False
+    assert "max_tokens" in too_small_budget["error"]
 
 
 def test_mcp_wiki_query_rejects_unsafe_path_before_control_call(

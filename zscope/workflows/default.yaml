@@ -7,6 +7,10 @@ steps:
     handler: discover_entries
     required: false
     action: classify API, communication, thread, and other user-input entries when requested
+  - id: wiki_compile
+    scope: session
+    handler: wiki_compile
+    action: compile and pin project Wiki before entry analysis and validation
   - id: focused_subagent_planning
     scope: entry
     agent: vulnerability_analyzer

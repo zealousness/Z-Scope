@@ -25,16 +25,31 @@ class SourceDelta:
 
 def _sources(manifest: Union[SourceManifest, Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
     if isinstance(manifest, SourceManifest):
-        return {item.source_id: {"relative_path": item.relative_path, "content_digest": item.content_digest, "module_hints": item.module_hints} for item in manifest.accepted}
+        return {
+            item.source_id: {
+                "relative_path": item.relative_path,
+                "content_digest": item.content_digest,
+                "module_hints": item.module_hints,
+            }
+            for item in manifest.accepted
+        }
     return {str(item["source_id"]): dict(item) for item in manifest.get("accepted", ())}
 
 
-def compare_manifests(previous: Union[SourceManifest, Mapping[str, Any]], current: Union[SourceManifest, Mapping[str, Any]]) -> SourceDelta:
+def compare_manifests(
+    previous: Union[SourceManifest, Mapping[str, Any]],
+    current: Union[SourceManifest, Mapping[str, Any]],
+) -> SourceDelta:
     old = _sources(previous)
     new = _sources(current)
     added = sorted(set(new) - set(old))
     removed = sorted(set(old) - set(new))
-    changed = sorted(source_id for source_id in set(old) & set(new) if old[source_id].get("content_digest") != new[source_id].get("content_digest") or old[source_id].get("relative_path") != new[source_id].get("relative_path"))
+    changed = sorted(
+        source_id
+        for source_id in set(old) & set(new)
+        if old[source_id].get("content_digest") != new[source_id].get("content_digest")
+        or old[source_id].get("relative_path") != new[source_id].get("relative_path")
+    )
     return SourceDelta(tuple(added), tuple(changed), tuple(removed))
 
 
@@ -42,13 +57,20 @@ def dirty_page_closure(
     delta: SourceDelta,
     *,
     source_to_pages: Mapping[str, Sequence[str]],
+    project_page_id: str,
     page_dependencies: Optional[Mapping[str, Sequence[str]]] = None,
-    project_page_id: str = "page_project",
 ) -> Tuple[str, ...]:
     """Return stable source -> page -> dependent-page closure."""
 
-    dirty: Set[str] = {project_page_id}
-    for source_id in (*delta.added_source_ids, *delta.changed_source_ids, *delta.removed_source_ids):
+    normalized_project_page_id = str(project_page_id or "").strip()
+    if not normalized_project_page_id:
+        raise ValueError("project_page_id is required")
+    dirty: Set[str] = {normalized_project_page_id}
+    for source_id in (
+        *delta.added_source_ids,
+        *delta.changed_source_ids,
+        *delta.removed_source_ids,
+    ):
         dirty.update(source_to_pages.get(source_id, ()))
     dependencies = page_dependencies or {}
     changed = True
@@ -63,31 +85,56 @@ def dirty_page_closure(
     return tuple(sorted(dirty))
 
 
-def merge_constraint_proposals(existing: Sequence[Mapping[str, Any]], proposals: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+def merge_constraint_proposals(
+    existing: Sequence[Mapping[str, Any]], proposals: Sequence[Mapping[str, Any]]
+) -> List[Dict[str, Any]]:
     """Merge same-slot equal values and preserve unequal values as conflicts."""
 
     result = [dict(item) for item in existing]
     by_slot: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
     for item in result:
         subject = item.get("subject", {})
-        slot = (str(subject.get("canonical_id", item.get("subject_id", ""))), str(item.get("kind", "")), json.dumps(item.get("scope", {}), sort_keys=True, ensure_ascii=False))
+        slot = (
+            str(subject.get("canonical_id", item.get("subject_id", ""))),
+            str(item.get("kind", "")),
+            json.dumps(item.get("scope", {}), sort_keys=True, ensure_ascii=False),
+        )
         by_slot.setdefault(slot, []).append(item)
     for proposal in proposals:
         item = dict(proposal)
         subject = item.get("subject", {})
-        slot = (str(subject.get("canonical_id", item.get("subject_id", ""))), str(item.get("kind", "")), json.dumps(item.get("scope", {}), sort_keys=True, ensure_ascii=False))
+        slot = (
+            str(subject.get("canonical_id", item.get("subject_id", ""))),
+            str(item.get("kind", "")),
+            json.dumps(item.get("scope", {}), sort_keys=True, ensure_ascii=False),
+        )
         matches = by_slot.setdefault(slot, [])
-        same = next((candidate for candidate in matches if candidate.get("normalized_value") == item.get("normalized_value")), None)
+        same = next(
+            (
+                candidate
+                for candidate in matches
+                if candidate.get("normalized_value") == item.get("normalized_value")
+            ),
+            None,
+        )
         if same is not None:
-            same["source_refs"] = sorted(set(same.get("source_refs", ())) | set(item.get("source_refs", ())))
-            same["page_refs"] = sorted(set(same.get("page_refs", ())) | set(item.get("page_refs", ())))
+            same["source_refs"] = sorted(
+                set(same.get("source_refs", ())) | set(item.get("source_refs", ()))
+            )
+            same["page_refs"] = sorted(
+                set(same.get("page_refs", ())) | set(item.get("page_refs", ()))
+            )
             continue
         for conflict in matches:
             conflict["status"] = "conflicted"
             conflict.setdefault("conflicts_with", [])
-            conflict["conflicts_with"] = sorted(set(conflict["conflicts_with"]) | {item.get("constraint_id")})
+            conflict["conflicts_with"] = sorted(
+                set(conflict["conflicts_with"]) | {item.get("constraint_id")}
+            )
             item.setdefault("conflicts_with", [])
-            item["conflicts_with"] = sorted(set(item["conflicts_with"]) | {conflict.get("constraint_id")})
+            item["conflicts_with"] = sorted(
+                set(item["conflicts_with"]) | {conflict.get("constraint_id")}
+            )
             item["status"] = "conflicted"
         matches.append(item)
         result.append(item)
@@ -107,7 +154,14 @@ def propagate_stale(
         copy = dict(item)
         refs = set(copy.get("source_refs", ()))
         supported_sources = {ref_sources.get(str(ref)) for ref in refs}
-        if refs & removed or supported_sources & removed or any(str(ref).startswith("docsrc_") and str(ref).split(":", 1)[0] in removed for ref in refs):
+        if (
+            refs & removed
+            or supported_sources & removed
+            or any(
+                str(ref).startswith("docsrc_") and str(ref).split(":", 1)[0] in removed
+                for ref in refs
+            )
+        ):
             copy["status"] = "stale"
         result.append(copy)
     return result
@@ -172,7 +226,12 @@ class WikiWriterLock:
             raise RuntimeError("Wiki writer lock owner token is invalid")
         if not isinstance(created_at, str) or not created_at or len(created_at) > 80:
             raise RuntimeError("Wiki writer lock timestamp is invalid")
-        return {"schema_version": cls.SCHEMA_VERSION, "pid": pid, "token": token, "created_at": created_at}
+        return {
+            "schema_version": cls.SCHEMA_VERSION,
+            "pid": pid,
+            "token": token,
+            "created_at": created_at,
+        }
 
     def _write_owner(self, fd: int, owner: dict) -> None:
         payload = (json.dumps(owner, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
@@ -246,4 +305,11 @@ class WikiWriterLock:
             pass
 
 
-__all__ = ["SourceDelta", "compare_manifests", "dirty_page_closure", "merge_constraint_proposals", "propagate_stale", "WikiWriterLock"]
+__all__ = [
+    "SourceDelta",
+    "compare_manifests",
+    "dirty_page_closure",
+    "merge_constraint_proposals",
+    "propagate_stale",
+    "WikiWriterLock",
+]

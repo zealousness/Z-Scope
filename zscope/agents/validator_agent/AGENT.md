@@ -61,12 +61,11 @@ candidate `target`, bounded `constraints`, `page_excerpts`,
 Use only IDs whose payload is also registered in `evidence_ref_catalog`.
 Treat Wiki constraints as documented auxiliary context: they can identify a
 project/API precondition, range, ownership, or lock contract, but they are not
-deterministic proof and cannot alone produce `verified` or `rejected`.
+deterministic proof.
 `source_fallback` and `none` never contain Wiki constraints/pages. A
 recommended/descriptive/unknown statement, stale/conflicted item, or missing
 document is not negative evidence. If code evidence conflicts with a
-documented contract, code facts take priority and the result is `uncertain` or
-requests one allowed deterministic fact.
+documented contract, code facts take priority and requests one allowed deterministic fact.
 - Reject dead code, generic robustness advice, policy disagreement, and
   "could be safer" candidates without a concrete source-to-sink path.
 - The current analysis entry in the evidence pack is the selected scan root.

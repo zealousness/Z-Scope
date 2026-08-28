@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 
 from zscope.wiki.service import ProjectKnowledgeService
@@ -26,6 +27,30 @@ def test_shadow_service_returns_direct_source_context_without_llm(tmp_path: Path
         assert context["source_excerpts"][0]["relative_path"] == "README.md"
         assert context["selection"]["selected_source_ref_ids"]
         assert context["context_digest"].startswith("sha256:")
+    finally:
+        index.close()
+
+
+def test_service_applies_only_an_explicit_context_budget(tmp_path: Path) -> None:
+    manifest = build_source_manifest(FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z")
+    index = SourceIndex(tmp_path / "source.db")
+    index.rebuild(FIXTURE, manifest=manifest)
+    try:
+        unlimited = ProjectKnowledgeService(
+            source_index=index,
+            source_manifest_digest=manifest.source_manifest_digest,
+            mode="shadow",
+        ).resolve_for_candidate({"project_id": "fixture", "subject_id": "parse_byte", "fact_kind": "value_range"})
+        limited = ProjectKnowledgeService(
+            source_index=index,
+            source_manifest_digest=manifest.source_manifest_digest,
+            mode="shadow",
+            max_context_tokens=256,
+        ).resolve_for_candidate({"project_id": "fixture", "subject_id": "parse_byte", "fact_kind": "value_range"})
+
+        assert unlimited["selection"]["max_tokens"] is None
+        assert limited["selection"]["max_tokens"] == 256
+        assert limited["selection"]["estimated_tokens"] <= 256
     finally:
         index.close()
 
@@ -96,6 +121,57 @@ def test_service_pins_one_revision_across_pointer_changes_and_worker_threads(
             }
             assert all(item["resolution_mode"] == "wiki" for item in contexts)
             assert service.telemetry_snapshot()["resolution_count"] == 12
+    finally:
+        index.close()
+
+
+def test_stale_wiki_pages_are_not_available_to_validator(tmp_path: Path) -> None:
+    manifest = build_source_manifest(
+        FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z"
+    )
+    index = SourceIndex(tmp_path / "source.db")
+    index.rebuild(FIXTURE, manifest=manifest)
+    state = tmp_path / "wiki"
+    try:
+        with WikiStore(state) as store:
+            store.build_skeleton(FIXTURE, manifest)
+            revision_id = store.active_revision()["revision_id"]
+            rows = store.connection.execute(
+                "SELECT page_id, frontmatter_json FROM pages WHERE revision_id=?",
+                (revision_id,),
+            ).fetchall()
+            assert rows
+            for row in rows:
+                frontmatter = json.loads(row["frontmatter_json"])
+                frontmatter["status"] = "stale"
+                store.connection.execute(
+                    "UPDATE pages SET frontmatter_json=? WHERE page_id=? AND revision_id=?",
+                    (
+                        json.dumps(frontmatter, ensure_ascii=False, sort_keys=True),
+                        row["page_id"],
+                        revision_id,
+                    ),
+                )
+            store.connection.commit()
+
+            service = ProjectKnowledgeService(
+                source_index=index,
+                wiki_store=store,
+                source_manifest_digest=manifest.source_manifest_digest,
+                mode="active",
+                compiler_available=True,
+            )
+            context = service.resolve_for_candidate(
+                {
+                    "project_id": "fixture",
+                    "subject_id": "parse_byte",
+                    "fact_kind": "value_range",
+                    "relative_file": "src/parser.c",
+                }
+            )
+            assert context["resolution_mode"] == "source_fallback"
+            assert context["page_excerpts"] == []
+            assert context["constraints"] == []
     finally:
         index.close()
 

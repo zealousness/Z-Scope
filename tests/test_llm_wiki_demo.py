@@ -58,6 +58,13 @@ def test_demo_config_is_accepted_by_public_v2_loader(monkeypatch: pytest.MonkeyP
     assert config.project.entry_discovery.max_entries == 5
 
 
+def test_demo_wiki_excludes_generated_benchmark_readme_but_keeps_project_readme() -> None:
+    config = yaml.safe_load((DEMO / "zscope.llm-wiki-active.yaml").read_text(encoding="utf-8"))
+    excludes = config["project"]["wiki"]["documents"]["exclude"]
+    assert "benchmark/README.md" in excludes
+    assert "README.md" not in excludes
+
+
 def test_readme_contains_constraints_without_answer_terms() -> None:
     readme = (DEMO / "README.md").read_text(encoding="utf-8")
     for required in (

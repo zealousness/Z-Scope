@@ -1098,6 +1098,7 @@ class LLMClient:
                                     trace_session,
                                     trace_iteration or 1,
                                     prompt_tokens + completion_tokens,
+                                    truncated=finish_reason == "length",
                                 )
                         self._record_endpoint_success(endpoint)
                         return {
@@ -1185,6 +1186,7 @@ class LLMClient:
                                     trace_session,
                                     trace_iteration or 1,
                                     prompt_tokens + completion_tokens,
+                                    truncated=finish_reason == "length",
                                 )
 
                         self._record_endpoint_success(endpoint)
@@ -1865,6 +1867,8 @@ class LLMClient:
         max_identical_invalid_terminal_calls: int = 3,
         max_invalid_terminal_calls: int = 5,
         preserve_reasoning_metadata: bool = False,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Run a conversation loop with tool calling support.
@@ -1975,14 +1979,18 @@ class LLMClient:
                     and schema["function"].get("name") == terminal_tool_name
                 ]
                 request_tools = terminal_schemas or None
-            response = self.chat_completion(
-                model_conversation,
-                tools=request_tools,
-                trace_agent=trace_agent,
-                trace_label=trace_label,
-                trace_iteration=iterations,
-                trace_session=trace_session,
-            )
+            completion_kwargs: Dict[str, Any] = {
+                "tools": request_tools,
+                "trace_agent": trace_agent,
+                "trace_label": trace_label,
+                "trace_iteration": iterations,
+                "trace_session": trace_session,
+            }
+            if max_tokens is not None:
+                completion_kwargs["max_tokens"] = max_tokens
+            if temperature is not None:
+                completion_kwargs["temperature"] = temperature
+            response = self.chat_completion(model_conversation, **completion_kwargs)
 
             # Extract assistant message
             choice = response.get("choices", [{}])[0]

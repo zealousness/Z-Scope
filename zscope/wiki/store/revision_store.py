@@ -29,8 +29,8 @@ from ..page_format import (
     markdown_links_for_pages,
     page_markdown_errors,
 )
+from ..schema import SchemaValidationError, validate_instance
 from ..source_index import SourceIndex
-
 
 ACTIVE_POINTER_MAX_BYTES = 64 * 1024
 REVISION_METADATA_MAX_BYTES = 1024 * 1024
@@ -269,13 +269,10 @@ def _render_index(
             statuses=("stale", "conflicted", "retired", "quarantined"),
         ),
         "维护信息": (
-            f"- revision: `{revision_id}`\n"
-            f"- source manifest: `{source_manifest_digest}`"
+            f"- revision: `{revision_id}`\n" f"- source manifest: `{source_manifest_digest}`"
         ),
     }
-    body = "\n".join(
-        f"## {heading}\n\n{sections[heading]}\n" for heading in INDEX_HEADINGS
-    )
+    body = "\n".join(f"## {heading}\n\n{sections[heading]}\n" for heading in INDEX_HEADINGS)
     import hashlib
 
     frontmatter = {
@@ -284,8 +281,7 @@ def _render_index(
         "revision_id": revision_id,
         "source_manifest_digest": source_manifest_digest,
         "generated_language": "zh-CN",
-        "content_digest": "sha256:"
-        + hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "content_digest": "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest(),
     }
     return _frontmatter_text(frontmatter) + body
 
@@ -389,7 +385,9 @@ class WikiStore:
             return None
         return value
 
-    def _publish_active(self, revision_id: str, source_manifest_digest: str, updated_at: str) -> None:
+    def _publish_active(
+        self, revision_id: str, source_manifest_digest: str, updated_at: str
+    ) -> None:
         """Atomically switch the pointer after projection commit."""
 
         revision_id = validate_revision_id(revision_id)
@@ -420,10 +418,25 @@ class WikiStore:
                 revision = json.loads(path.read_text(encoding="utf-8"))
                 revision["active"] = False
                 revision["lint"] = {"status": "failed", "errors": 1, "warnings": 0}
-                path.write_text(json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                path.write_text(
+                    json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
                 with self.connection:
-                    self.connection.execute("UPDATE revisions SET revision_json=? WHERE revision_id=?", (json.dumps(revision, ensure_ascii=False, sort_keys=True), revision_id))
-                    self.connection.execute("INSERT INTO wiki_events(revision_id,event_type,status,payload_json,occurred_at) VALUES (?, ?, ?, ?, ?)", (revision_id, "publish", "failed", json.dumps({"reason": str(reason)[:1000]}, sort_keys=True), _utc_now()))
+                    self.connection.execute(
+                        "UPDATE revisions SET revision_json=? WHERE revision_id=?",
+                        (json.dumps(revision, ensure_ascii=False, sort_keys=True), revision_id),
+                    )
+                    self.connection.execute(
+                        "INSERT INTO wiki_events(revision_id,event_type,status,payload_json,occurred_at) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            revision_id,
+                            "publish",
+                            "failed",
+                            json.dumps({"reason": str(reason)[:1000]}, sort_keys=True),
+                            _utc_now(),
+                        ),
+                    )
                 self._append_audit_event(
                     event_type="publish",
                     project_id=str(revision.get("project_id") or "project"),
@@ -455,8 +468,7 @@ class WikiStore:
             replay = replay_audit_events(self.audit_events_path)
             if not replay.passed:
                 raise ValueError(
-                    "cannot append to invalid Wiki audit event chain: "
-                    + ", ".join(replay.errors)
+                    "cannot append to invalid Wiki audit event chain: " + ", ".join(replay.errors)
                 )
             previous = dict(replay.events[-1]) if replay.events else None
         normalized_project_id = str(project_id or "")
@@ -484,7 +496,9 @@ class WikiStore:
             event["workset_id"] = workset_id
         if fallback_reason is not None:
             event["fallback_reason"] = fallback_reason
-        event["event_digest"] = digest_json({key: value for key, value in event.items() if key != "event_digest"})
+        event["event_digest"] = digest_json(
+            {key: value for key, value in event.items() if key != "event_digest"}
+        )
         from ..schema import validate_instance
 
         validate_instance(event, "zscope.wiki-event.v1")
@@ -502,7 +516,9 @@ class WikiStore:
         # schema coercion rules.
         return SourceIndex._manifest(manifest)  # type: ignore[arg-type]
 
-    def _load_sections(self, project_root: Path, manifest: SourceManifest) -> Tuple[Dict[str, Any], ...]:
+    def _load_sections(
+        self, project_root: Path, manifest: SourceManifest
+    ) -> Tuple[Dict[str, Any], ...]:
         index = SourceIndex(":memory:")
         try:
             index.rebuild(project_root, manifest=manifest)
@@ -601,19 +617,62 @@ class WikiStore:
         pages: List[Tuple[Dict[str, Any], str, str]] = []
         all_source_ids = [item.source_id for item in manifest_obj.accepted]
         all_ref_ids = [str(ref["ref_id"]) for ref in refs]
-        pages.append(self._make_page(manifest_obj.project_id, rid, "project_overview", "project", manifest_obj.project_id, all_source_ids, all_ref_ids, "项目说明文档的确定性 Wiki 骨架。", "项目级背景页面；具体模块边界以来源引用为准。") + ("project",))
+        pages.append(
+            self._make_page(
+                manifest_obj.project_id,
+                rid,
+                "project_overview",
+                "project",
+                manifest_obj.project_id,
+                all_source_ids,
+                all_ref_ids,
+                "项目说明文档的确定性 Wiki 骨架。",
+                "项目级背景页面；具体模块边界以来源引用为准。",
+            )
+            + ("project",)
+        )
         module_sources: Dict[str, List[str]] = {}
         for source in manifest_obj.accepted:
             for module in source.module_hints:
                 module_sources.setdefault(module, []).append(source.source_id)
         for module in sorted(module_sources):
             slug = "modules/" + slugify(module.removeprefix("module:"))
-            module_refs = [str(ref["ref_id"]) for sid in module_sources[module] for ref in refs_by_source.get(sid, ())]
-            pages.append(self._make_page(manifest_obj.project_id, rid, "module", slug, module, module_sources[module], module_refs, "模块背景骨架，尚未生成结构化约束。", f"模块标识：{module}。") + (slug,))
+            module_refs = [
+                str(ref["ref_id"])
+                for sid in module_sources[module]
+                for ref in refs_by_source.get(sid, ())
+            ]
+            pages.append(
+                self._make_page(
+                    manifest_obj.project_id,
+                    rid,
+                    "module",
+                    slug,
+                    module,
+                    module_sources[module],
+                    module_refs,
+                    "模块背景骨架，尚未生成结构化约束。",
+                    f"模块标识：{module}。",
+                )
+                + (slug,)
+            )
         for source in manifest_obj.accepted:
             slug = "sources/" + slugify(Path(source.relative_path).with_suffix("").as_posix())
             source_refs = [str(ref["ref_id"]) for ref in refs_by_source.get(source.source_id, ())]
-            pages.append(self._make_page(manifest_obj.project_id, rid, "source", slug, source.relative_path, [source.source_id], source_refs, "说明性 Markdown 来源页面。", f"来源路径：{source.relative_path}。") + (slug,))
+            pages.append(
+                self._make_page(
+                    manifest_obj.project_id,
+                    rid,
+                    "source",
+                    slug,
+                    source.relative_path,
+                    [source.source_id],
+                    source_refs,
+                    "说明性 Markdown 来源页面。",
+                    f"来源路径：{source.relative_path}。",
+                )
+                + (slug,)
+            )
 
         revision_dir = self.staging_root / f"{rid}.tmp"
         if revision_dir.exists():
@@ -626,7 +685,13 @@ class WikiStore:
             path = revision_dir / "pages" / f"{slug}.md"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(markdown, encoding="utf-8")
-            page_meta.append({"page_id": frontmatter["page_id"], "canonical_slug": slug, "content_digest": frontmatter["content_digest"]})
+            page_meta.append(
+                {
+                    "page_id": frontmatter["page_id"],
+                    "canonical_slug": slug,
+                    "content_digest": frontmatter["content_digest"],
+                }
+            )
         index_pages = [
             {
                 "page_id": frontmatter["page_id"],
@@ -648,7 +713,12 @@ class WikiStore:
             "parent_revision_id": parent,
             "project_id": manifest_obj.project_id,
             "source_manifest_digest": manifest_obj.source_manifest_digest,
-            "compiler": {"kind": "deterministic", "identity": "zscope.wiki.skeleton.v1", "prompt_version": None, "model": None},
+            "compiler": {
+                "kind": "deterministic",
+                "identity": "zscope.wiki.skeleton.v1",
+                "prompt_version": None,
+                "model": None,
+            },
             "pages_digest": digest_json(page_meta),
             "constraints_digest": digest_json([]),
             "edges_digest": digest_json([]),
@@ -657,11 +727,19 @@ class WikiStore:
             "created_at": _utc_now(),
             "active": True,
         }
-        (revision_dir / "refs.json").write_text(json.dumps(refs, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        (revision_dir / "source-manifest.json").write_text(json.dumps(manifest_obj.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (revision_dir / "refs.json").write_text(
+            json.dumps(refs, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        (revision_dir / "source-manifest.json").write_text(
+            json.dumps(manifest_obj.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         (revision_dir / "constraints.json").write_text("[]\n", encoding="utf-8")
         (revision_dir / "edges.json").write_text("[]\n", encoding="utf-8")
-        (revision_dir / "revision.json").write_text(json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (revision_dir / "revision.json").write_text(
+            json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         final_dir = self.revisions_root / rid
         if final_dir.exists():
             import shutil
@@ -669,16 +747,54 @@ class WikiStore:
             shutil.rmtree(final_dir)
         os.replace(revision_dir, final_dir)
         with self.connection:
-            self.connection.execute("INSERT OR REPLACE INTO revisions VALUES (?, ?, ?, ?, ?)", (rid, parent, manifest_obj.project_id, manifest_obj.source_manifest_digest, json.dumps(revision, ensure_ascii=False, sort_keys=True)))
+            self.connection.execute(
+                "INSERT OR REPLACE INTO revisions VALUES (?, ?, ?, ?, ?)",
+                (
+                    rid,
+                    parent,
+                    manifest_obj.project_id,
+                    manifest_obj.source_manifest_digest,
+                    json.dumps(revision, ensure_ascii=False, sort_keys=True),
+                ),
+            )
             self.connection.execute("DELETE FROM pages WHERE revision_id=?", (rid,))
             self.connection.execute("DELETE FROM document_refs WHERE revision_id=?", (rid,))
             self.connection.execute("DELETE FROM constraints WHERE revision_id=?", (rid,))
             self.connection.execute("DELETE FROM edges WHERE revision_id=?", (rid,))
             for frontmatter, markdown, slug in pages:
-                self.connection.execute("INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?)", (rid, frontmatter["page_id"], slug, json.dumps(frontmatter, ensure_ascii=False, sort_keys=True), markdown, frontmatter["content_digest"]))
+                self.connection.execute(
+                    "INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        rid,
+                        frontmatter["page_id"],
+                        slug,
+                        json.dumps(frontmatter, ensure_ascii=False, sort_keys=True),
+                        markdown,
+                        frontmatter["content_digest"],
+                    ),
+                )
             for ref in refs:
-                self.connection.execute("INSERT INTO document_refs VALUES (?, ?, ?, ?)", (rid, ref["ref_id"], ref["source_id"], json.dumps(ref, ensure_ascii=False, sort_keys=True)))
-            self.connection.execute("INSERT INTO wiki_events(revision_id,event_type,status,payload_json,occurred_at) VALUES (?, ?, ?, ?, ?)", (rid, "publish", "succeeded", json.dumps({"outcome": "background_only", "constraints_created": 0}, sort_keys=True), revision["created_at"]))
+                self.connection.execute(
+                    "INSERT INTO document_refs VALUES (?, ?, ?, ?)",
+                    (
+                        rid,
+                        ref["ref_id"],
+                        ref["source_id"],
+                        json.dumps(ref, ensure_ascii=False, sort_keys=True),
+                    ),
+                )
+            self.connection.execute(
+                "INSERT INTO wiki_events(revision_id,event_type,status,payload_json,occurred_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    rid,
+                    "publish",
+                    "succeeded",
+                    json.dumps(
+                        {"outcome": "background_only", "constraints_created": 0}, sort_keys=True
+                    ),
+                    revision["created_at"],
+                ),
+            )
         try:
             self._publish_active(rid, manifest_obj.source_manifest_digest, revision["created_at"])
         except Exception as exc:
@@ -688,11 +804,24 @@ class WikiStore:
             event_type="publish",
             project_id=manifest_obj.project_id,
             status="succeeded",
-            payload={"outcome": "background_only", "pages": len(pages), "refs": len(refs), "constraints_created": 0},
+            payload={
+                "outcome": "background_only",
+                "pages": len(pages),
+                "refs": len(refs),
+                "constraints_created": 0,
+            },
             revision_id=rid,
         )
         self._append_log(revision, len(pages), len(refs))
-        return WikiBuildResult(rid, parent, manifest_obj.source_manifest_digest, len(pages), len(refs), 0, self.active_path)
+        return WikiBuildResult(
+            rid,
+            parent,
+            manifest_obj.source_manifest_digest,
+            len(pages),
+            len(refs),
+            0,
+            self.active_path,
+        )
 
     build = build_skeleton
 
@@ -726,7 +855,7 @@ class WikiStore:
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
             if line.startswith("  - ") and current_list:
-                hints.setdefault(current_list, []).append(line[4:].strip().strip('"\''))
+                hints.setdefault(current_list, []).append(line[4:].strip().strip("\"'"))
                 continue
             if ":" not in line:
                 continue
@@ -738,7 +867,7 @@ class WikiStore:
                 current_list = key
             else:
                 current_list = None
-                hints[key] = raw.strip('"\'')
+                hints[key] = raw.strip("\"'")
         return hints
 
     @staticmethod
@@ -746,16 +875,21 @@ class WikiStore:
         body = body_from_markdown(markdown).strip()
         errors = page_markdown_errors(markdown)
         if errors:
-            raise WikiChangeSetApplyError(
-                "invalid Wiki page body: " + ", ".join(errors)
-            )
+            raise WikiChangeSetApplyError("invalid Wiki page body: " + ", ".join(errors))
         return body + "\n"
 
-    def _revision_rows(self, revision_id: Optional[str]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    def _revision_rows(self, revision_id: Optional[str]) -> Tuple[
+        Dict[str, Dict[str, Any]],
+        Dict[str, Dict[str, Any]],
+        Dict[str, Dict[str, Any]],
+        Dict[str, Dict[str, Any]],
+    ]:
         if not revision_id:
             return {}, {}, {}, {}
         pages: Dict[str, Dict[str, Any]] = {}
-        for row in self.connection.execute("SELECT * FROM pages WHERE revision_id=?", (revision_id,)).fetchall():
+        for row in self.connection.execute(
+            "SELECT * FROM pages WHERE revision_id=?", (revision_id,)
+        ).fetchall():
             item = dict(row)
             try:
                 item["frontmatter"] = json.loads(item.pop("frontmatter_json"))
@@ -763,26 +897,35 @@ class WikiStore:
                 item["frontmatter"] = {}
             pages[str(item["page_id"])] = item
         refs: Dict[str, Dict[str, Any]] = {}
-        for row in self.connection.execute("SELECT ref_id, ref_json FROM document_refs WHERE revision_id=?", (revision_id,)).fetchall():
+        for row in self.connection.execute(
+            "SELECT ref_id, ref_json FROM document_refs WHERE revision_id=?", (revision_id,)
+        ).fetchall():
             try:
                 refs[str(row["ref_id"])] = json.loads(row["ref_json"])
             except Exception:
                 continue
         constraints: Dict[str, Dict[str, Any]] = {}
-        for row in self.connection.execute("SELECT constraint_id, constraint_json FROM constraints WHERE revision_id=?", (revision_id,)).fetchall():
+        for row in self.connection.execute(
+            "SELECT constraint_id, constraint_json FROM constraints WHERE revision_id=?",
+            (revision_id,),
+        ).fetchall():
             try:
                 constraints[str(row["constraint_id"])] = json.loads(row["constraint_json"])
             except Exception:
                 continue
         edges: Dict[str, Dict[str, Any]] = {}
-        for row in self.connection.execute("SELECT edge_id, edge_json FROM edges WHERE revision_id=?", (revision_id,)).fetchall():
+        for row in self.connection.execute(
+            "SELECT edge_id, edge_json FROM edges WHERE revision_id=?", (revision_id,)
+        ).fetchall():
             try:
                 edges[str(row["edge_id"])] = json.loads(row["edge_json"])
             except Exception:
                 continue
         return pages, refs, constraints, edges
 
-    def _current_refs(self, project_root: Optional[Union[Path, str]], manifest: SourceManifest) -> Dict[str, Dict[str, Any]]:
+    def _current_refs(
+        self, project_root: Optional[Union[Path, str]], manifest: SourceManifest
+    ) -> Dict[str, Dict[str, Any]]:
         if project_root is None:
             return {}
         rows = self._load_sections(Path(project_root).resolve(), manifest)
@@ -817,13 +960,24 @@ class WikiStore:
         parent_id = active.get("revision_id")
         base_id = workset.get("base_revision_id")
         if base_id != parent_id:
-            raise WikiChangeSetApplyError("ChangeSet base_revision_id does not match active revision")
+            raise WikiChangeSetApplyError(
+                "ChangeSet base_revision_id does not match active revision"
+            )
         outcome = str(validated["outcome"])
         if outcome in {"extraction_failed", "source_rejected"}:
             with self.connection:
                 self.connection.execute(
                     "INSERT INTO wiki_events(revision_id,event_type,status,payload_json,occurred_at) VALUES (?, ?, ?, ?, ?)",
-                    (parent_id, "ingest", "quarantined", json.dumps({"outcome": outcome, "workset_id": workset.get("workset_id")}, sort_keys=True), _utc_now()),
+                    (
+                        parent_id,
+                        "ingest",
+                        "quarantined",
+                        json.dumps(
+                            {"outcome": outcome, "workset_id": workset.get("workset_id")},
+                            sort_keys=True,
+                        ),
+                        _utc_now(),
+                    ),
                 )
             self._append_audit_event(
                 event_type="ingest",
@@ -850,13 +1004,21 @@ class WikiStore:
         current_refs = self._current_refs(project_root, manifest_obj)
         refs = dict(old_refs)
         refs.update(current_refs)
-        changed_sources = set(workset.get("changed_source_ids", ())) | set(workset.get("removed_source_ids", ()))
+        changed_sources = set(workset.get("changed_source_ids", ())) | set(
+            workset.get("removed_source_ids", ())
+        )
         for ref_id, ref in refs.items():
             source_id = str(ref.get("source_id", ""))
             if source_id in changed_sources and ref_id not in current_refs:
                 ref["resolvable"] = False
-        source_ref_to_source = {ref_id: str(ref.get("source_id", "")) for ref_id, ref in refs.items()}
-        stale = propagate_stale(list(old_constraints.values()), changed_sources, source_ref_to_source=source_ref_to_source)
+        source_ref_to_source = {
+            ref_id: str(ref.get("source_id", "")) for ref_id, ref in refs.items()
+        }
+        stale = propagate_stale(
+            list(old_constraints.values()),
+            changed_sources,
+            source_ref_to_source=source_ref_to_source,
+        )
         stale_by_id = {str(item["constraint_id"]): item for item in stale}
 
         rid = validate_revision_id(
@@ -878,8 +1040,14 @@ class WikiStore:
             item["page_refs"] = sorted(set(str(ref) for ref in item.get("page_refs", ())))
             item["conflicts_with"] = sorted(set(str(ref) for ref in item.get("conflicts_with", ())))
             proposals.append(item)
-        historical = [item for item in stale_by_id.values() if item.get("status") not in {"active", "conflicted"}]
-        merge_base = [item for item in stale_by_id.values() if item.get("status") in {"active", "conflicted"}]
+        historical = [
+            item
+            for item in stale_by_id.values()
+            if item.get("status") not in {"active", "conflicted"}
+        ]
+        merge_base = [
+            item for item in stale_by_id.values() if item.get("status") in {"active", "conflicted"}
+        ]
         constraints = merge_constraint_proposals(merge_base, proposals)
         constraints.extend(historical)
         constraint_by_id = {str(item["constraint_id"]): item for item in constraints}
@@ -915,32 +1083,50 @@ class WikiStore:
             body = self._required_body(str(change.get("markdown", "")))
             hint = self._frontmatter_hint(str(change.get("markdown", "")))
             front = dict(previous["frontmatter"]) if previous else {}
-            canonical_slug = str(front.get("canonical_slug") or hint.get("canonical_slug") or slugify(page_id))
+            canonical_slug = str(
+                front.get("canonical_slug") or hint.get("canonical_slug") or slugify(page_id)
+            )
             title = str(front.get("title") or hint.get("title") or canonical_slug)
             page_kind = str(front.get("page_kind") or hint.get("page_kind") or "topic")
             source_refs_used = [str(ref) for ref in change.get("source_refs_used", ())]
-            source_ids = sorted({str(refs[ref]["source_id"]) for ref in source_refs_used if ref in refs})
-            constraint_ids = sorted({item.group(1) for item in __import__("re").finditer(r"\[(constraint_[a-z0-9_:-]+)\]", body) if item.group(1) in constraint_by_id})
-            front.update({
-                "schema_version": "zscope.wiki-page-frontmatter.v1",
-                "page_id": page_id,
-                "page_kind": page_kind,
-                "canonical_slug": canonical_slug,
-                "title": title,
-                "project_id": manifest_obj.project_id,
-                "module_ids": list(front.get("module_ids", ())),
-                "subject_ids": list(front.get("subject_ids", ())),
-                "status": "active",
-                "source_ids": source_ids or list(front.get("source_ids", ())),
-                "constraint_ids": constraint_ids,
-                "depends_on": list(front.get("depends_on", ())),
-                "generated_language": "zh-CN",
-                "compiler_revision": rid,
-            })
+            source_ids = sorted(
+                {str(refs[ref]["source_id"]) for ref in source_refs_used if ref in refs}
+            )
+            constraint_ids = sorted(
+                {
+                    item.group(1)
+                    for item in __import__("re").finditer(r"\[(constraint_[a-z0-9_:-]+)\]", body)
+                    if item.group(1) in constraint_by_id
+                }
+            )
+            front.update(
+                {
+                    "schema_version": "zscope.wiki-page-frontmatter.v1",
+                    "page_id": page_id,
+                    "page_kind": page_kind,
+                    "canonical_slug": canonical_slug,
+                    "title": title,
+                    "project_id": manifest_obj.project_id,
+                    "module_ids": list(front.get("module_ids", ())),
+                    "subject_ids": list(front.get("subject_ids", ())),
+                    "status": "active",
+                    "source_ids": source_ids or list(front.get("source_ids", ())),
+                    "constraint_ids": constraint_ids,
+                    "depends_on": list(front.get("depends_on", ())),
+                    "generated_language": "zh-CN",
+                    "compiler_revision": rid,
+                }
+            )
             import hashlib
 
             front["content_digest"] = "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
-            rendered_pages[page_id] = {"page_id": page_id, "canonical_slug": canonical_slug, "frontmatter": front, "markdown": _frontmatter_text(front) + body, "content_digest": front["content_digest"]}
+            rendered_pages[page_id] = {
+                "page_id": page_id,
+                "canonical_slug": canonical_slug,
+                "frontmatter": front,
+                "markdown": _frontmatter_text(front) + body,
+                "content_digest": front["content_digest"],
+            }
             changed_page_ids.add(page_id)
 
         for retire in validated.get("retire_proposals", ()):
@@ -957,11 +1143,21 @@ class WikiStore:
         current_source_ids = {item.source_id for item in manifest_obj.accepted}
         for item in rendered_pages.values():
             front = dict(item["frontmatter"])
-            if front.get("status") == "active" and any(str(source_id) not in current_source_ids for source_id in front.get("source_ids", ())):
+            if front.get("status") == "active" and any(
+                str(source_id) not in current_source_ids
+                for source_id in front.get("source_ids", ())
+            ):
                 front["status"] = "stale"
             front["schema_version"] = "zscope.wiki-page-frontmatter.v1"
             front["project_id"] = manifest_obj.project_id
             front["compiler_revision"] = rid
+            try:
+                validate_instance(front, "zscope.wiki-page-frontmatter.v1")
+            except SchemaValidationError as exc:
+                raise WikiChangeSetApplyError(
+                    "invalid generated Wiki page frontmatter for "
+                    f"{item['page_id']}: " + "; ".join(exc.errors)
+                ) from exc
             body = self._body_from_markdown(str(item["markdown"])).lstrip("\r\n")
             item["frontmatter"] = front
             item["markdown"] = _frontmatter_text(front) + body
@@ -973,17 +1169,36 @@ class WikiStore:
             item["source_manifest_digest"] = manifest_obj.source_manifest_digest
             item["created_revision_id"] = rid
 
-        pages_list = sorted(rendered_pages.values(), key=lambda item: (str(item["canonical_slug"]), str(item["page_id"])))
+        pages_list = sorted(
+            rendered_pages.values(),
+            key=lambda item: (str(item["canonical_slug"]), str(item["page_id"])),
+        )
         constraints = sorted(constraint_by_id.values(), key=lambda item: str(item["constraint_id"]))
         edges_list = sorted(edges.values(), key=lambda item: str(item["edge_id"]))
-        page_meta = [{"page_id": item["page_id"], "canonical_slug": item["canonical_slug"], "content_digest": item["content_digest"]} for item in pages_list]
+        page_meta = [
+            {
+                "page_id": item["page_id"],
+                "canonical_slug": item["canonical_slug"],
+                "content_digest": item["content_digest"],
+            }
+            for item in pages_list
+        ]
         revision = {
             "schema_version": "zscope.wiki-revision.v1",
             "revision_id": rid,
             "parent_revision_id": parent_id,
             "project_id": manifest_obj.project_id,
             "source_manifest_digest": manifest_obj.source_manifest_digest,
-            "compiler": dict(validated.get("compiler", {"kind": "mixed", "identity": "zscope.wiki.changeset.v1", "prompt_version": None})),
+            "compiler": dict(
+                validated.get(
+                    "compiler",
+                    {
+                        "kind": "mixed",
+                        "identity": "zscope.wiki.changeset.v1",
+                        "prompt_version": None,
+                    },
+                )
+            ),
             "pages_digest": digest_json(page_meta),
             "constraints_digest": digest_json(constraints),
             "edges_digest": digest_json(edges_list),
@@ -1009,11 +1224,32 @@ class WikiStore:
             pages_list,
         )
         (revision_dir / "index.md").write_text(index_text, encoding="utf-8")
-        (revision_dir / "refs.json").write_text(json.dumps(sorted(refs.values(), key=lambda item: str(item["ref_id"])), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        (revision_dir / "source-manifest.json").write_text(json.dumps(manifest_obj.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        (revision_dir / "constraints.json").write_text(json.dumps(constraints, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        (revision_dir / "edges.json").write_text(json.dumps(edges_list, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        (revision_dir / "revision.json").write_text(json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (revision_dir / "refs.json").write_text(
+            json.dumps(
+                sorted(refs.values(), key=lambda item: str(item["ref_id"])),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (revision_dir / "source-manifest.json").write_text(
+            json.dumps(manifest_obj.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (revision_dir / "constraints.json").write_text(
+            json.dumps(constraints, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (revision_dir / "edges.json").write_text(
+            json.dumps(edges_list, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (revision_dir / "revision.json").write_text(
+            json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         final_dir = self.revisions_root / rid
         if final_dir.exists():
             import shutil
@@ -1021,33 +1257,145 @@ class WikiStore:
             shutil.rmtree(final_dir)
         os.replace(revision_dir, final_dir)
         with self.connection:
-            self.connection.execute("INSERT OR REPLACE INTO revisions VALUES (?, ?, ?, ?, ?)", (rid, parent_id, manifest_obj.project_id, manifest_obj.source_manifest_digest, json.dumps(revision, ensure_ascii=False, sort_keys=True)))
+            self.connection.execute(
+                "INSERT OR REPLACE INTO revisions VALUES (?, ?, ?, ?, ?)",
+                (
+                    rid,
+                    parent_id,
+                    manifest_obj.project_id,
+                    manifest_obj.source_manifest_digest,
+                    json.dumps(revision, ensure_ascii=False, sort_keys=True),
+                ),
+            )
             for table in ("pages", "document_refs", "constraints", "edges"):
                 self.connection.execute(f"DELETE FROM {table} WHERE revision_id=?", (rid,))
             for item in pages_list:
-                self.connection.execute("INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?)", (rid, item["page_id"], item["canonical_slug"], json.dumps(item["frontmatter"], ensure_ascii=False, sort_keys=True), item["markdown"], item["content_digest"]))
+                self.connection.execute(
+                    "INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        rid,
+                        item["page_id"],
+                        item["canonical_slug"],
+                        json.dumps(item["frontmatter"], ensure_ascii=False, sort_keys=True),
+                        item["markdown"],
+                        item["content_digest"],
+                    ),
+                )
             for item in refs.values():
-                self.connection.execute("INSERT INTO document_refs VALUES (?, ?, ?, ?)", (rid, item["ref_id"], item["source_id"], json.dumps(item, ensure_ascii=False, sort_keys=True)))
+                self.connection.execute(
+                    "INSERT INTO document_refs VALUES (?, ?, ?, ?)",
+                    (
+                        rid,
+                        item["ref_id"],
+                        item["source_id"],
+                        json.dumps(item, ensure_ascii=False, sort_keys=True),
+                    ),
+                )
             for item in constraints:
-                self.connection.execute("INSERT INTO constraints VALUES (?, ?, ?)", (rid, item["constraint_id"], json.dumps(item, ensure_ascii=False, sort_keys=True)))
+                self.connection.execute(
+                    "INSERT INTO constraints VALUES (?, ?, ?)",
+                    (
+                        rid,
+                        item["constraint_id"],
+                        json.dumps(item, ensure_ascii=False, sort_keys=True),
+                    ),
+                )
             for item in edges_list:
-                self.connection.execute("INSERT INTO edges VALUES (?, ?, ?)", (rid, item["edge_id"], json.dumps(item, ensure_ascii=False, sort_keys=True)))
-            self.connection.execute("INSERT INTO wiki_events(revision_id,event_type,status,payload_json,occurred_at) VALUES (?, ?, ?, ?, ?)", (rid, "publish", "succeeded", json.dumps({"outcome": outcome, "workset_id": workset.get("workset_id"), "changed_pages": len(changed_page_ids), "constraints_created": len(proposals)}, sort_keys=True), revision["created_at"]))
+                self.connection.execute(
+                    "INSERT INTO edges VALUES (?, ?, ?)",
+                    (rid, item["edge_id"], json.dumps(item, ensure_ascii=False, sort_keys=True)),
+                )
+
+        from ..lint import lint_revision
+
+        linted = lint_revision(self, rid)
+        if not linted.passed:
+            reason = "candidate revision lint failed: " + ", ".join(linted.errors[:8])
+            self._mark_revision_failed(rid, reason)
+            self._append_log(
+                revision,
+                len(pages_list),
+                len(refs),
+                outcome=outcome,
+                constraints_created=len(proposals),
+            )
+            raise WikiChangeSetApplyError(reason)
+
+        revision["lint"] = {
+            "status": "passed",
+            "errors": 0,
+            "warnings": len(linted.warnings),
+        }
+        revision_path = final_dir / "revision.json"
+        revision_path.write_text(
+            json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        with self.connection:
+            self.connection.execute(
+                "UPDATE revisions SET revision_json=? WHERE revision_id=?",
+                (json.dumps(revision, ensure_ascii=False, sort_keys=True), rid),
+            )
+            self.connection.execute(
+                "INSERT INTO wiki_events(revision_id,event_type,status,payload_json,occurred_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    rid,
+                    "publish",
+                    "succeeded",
+                    json.dumps(
+                        {
+                            "outcome": outcome,
+                            "workset_id": workset.get("workset_id"),
+                            "changed_pages": len(changed_page_ids),
+                            "constraints_created": len(proposals),
+                        },
+                        sort_keys=True,
+                    ),
+                    revision["created_at"],
+                ),
+            )
         try:
             self._publish_active(rid, manifest_obj.source_manifest_digest, revision["created_at"])
         except Exception as exc:
             self._mark_revision_failed(rid, str(exc))
+            self._append_log(
+                revision,
+                len(pages_list),
+                len(refs),
+                outcome=outcome,
+                constraints_created=len(proposals),
+            )
             raise WikiChangeSetApplyError("active pointer publish failed") from exc
         self._append_audit_event(
             event_type="publish",
             project_id=manifest_obj.project_id,
             status="succeeded",
-            payload={"outcome": outcome, "changed_pages": len(changed_page_ids), "constraints_created": len(proposals)},
+            payload={
+                "outcome": outcome,
+                "changed_pages": len(changed_page_ids),
+                "constraints_created": len(proposals),
+            },
             revision_id=rid,
             workset_id=str(workset.get("workset_id")) if workset.get("workset_id") else None,
         )
-        self._append_log(revision, len(pages_list), len(refs), outcome=outcome, constraints_created=len(proposals))
-        return WikiBuildResult(rid, parent_id, manifest_obj.source_manifest_digest, len(pages_list), len(refs), len(constraints), self.active_path, outcome=outcome, constraints_created=len(proposals))
+        self._append_log(
+            revision,
+            len(pages_list),
+            len(refs),
+            outcome=outcome,
+            constraints_created=len(proposals),
+        )
+        return WikiBuildResult(
+            rid,
+            parent_id,
+            manifest_obj.source_manifest_digest,
+            len(pages_list),
+            len(refs),
+            len(constraints),
+            self.active_path,
+            outcome=outcome,
+            constraints_created=len(proposals),
+        )
 
     def compile_and_apply(
         self,
@@ -1082,9 +1430,7 @@ class WikiStore:
         if not replay.passed:
             raise ValueError("invalid Wiki audit event chain: " + ", ".join(replay.errors))
         text = render_log_markdown(replay)
-        fd, temp_name = tempfile.mkstemp(
-            prefix="log.", suffix=".md", dir=str(self.state_root)
-        )
+        fd, temp_name = tempfile.mkstemp(prefix="log.", suffix=".md", dir=str(self.state_root))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(text)
@@ -1096,7 +1442,15 @@ class WikiStore:
                 os.unlink(temp_name)
         return replay.to_dict()
 
-    def _append_log(self, revision: Mapping[str, Any], page_count: int, ref_count: int, *, outcome: str = "background_only", constraints_created: int = 0) -> None:
+    def _append_log(
+        self,
+        revision: Mapping[str, Any],
+        page_count: int,
+        ref_count: int,
+        *,
+        outcome: str = "background_only",
+        constraints_created: int = 0,
+    ) -> None:
         # Compatibility shim for existing publication call sites.  log.md is
         # always rebuilt from the hash-chained program events.
         self.rebuild_log_from_events()
@@ -1109,7 +1463,9 @@ class WikiStore:
             raise ValueError(f"unknown Wiki revision: {revision_id}") from exc
         revision["active"] = True
         revision["created_at"] = _utc_now()
-        self._publish_active(revision_id, revision["source_manifest_digest"], revision["created_at"])
+        self._publish_active(
+            revision_id, revision["source_manifest_digest"], revision["created_at"]
+        )
         self._append_audit_event(
             event_type="rollback",
             project_id=str(revision.get("project_id") or "project"),
