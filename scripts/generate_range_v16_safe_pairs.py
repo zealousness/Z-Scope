@@ -122,6 +122,7 @@ _C11_KEYWORDS = {
 }
 _C_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 _REPAIRABLE_AUTHOR_VALIDATION_CLASSES = {
+    "independent_compile_failure",
     "decision_identity_mismatch",
     "fields_or_schema_invalid",
     "forbidden_c_facilities",
@@ -134,6 +135,9 @@ _REPAIRABLE_AUTHOR_VALIDATION_CLASSES = {
     "source_not_anonymous",
     "sources_identical",
 }
+
+_AUTHOR_SOURCE_FIELDS = ("vulnerable_source", "fixed_or_near_miss_source")
+_AUTHOR_COMPILER_ARGUMENTS = ("-std=c11", "-Werror", "-Wall", "-Wextra", "-c")
 
 
 def _json_dump(path: Path, value: Any) -> None:
@@ -341,7 +345,35 @@ def _repair_constraints(
     validation_class: str,
     forbidden_identifiers: set[str],
     rejected_author: Mapping[str, Any],
+    *,
+    validation_error: E0GovernanceError | None = None,
+    compiler: str | None = None,
 ) -> Mapping[str, Any]:
+    if validation_class == "independent_compile_failure":
+        failing_fields = (
+            list(validation_error.failing_source_fields)
+            if isinstance(validation_error, _SafePairCompilationError)
+            else list(_AUTHOR_SOURCE_FIELDS)
+        )
+        return {
+            "compiler_contract": {
+                "language": "c",
+                "standard": "c11",
+                "compiler": compiler or "cc",
+                "arguments": list(_AUTHOR_COMPILER_ARGUMENTS[1:]),
+            },
+            "failing_source_fields": failing_fields,
+            "required_postcondition": (
+                "both complete source fields compile independently with the frozen compiler "
+                "contract and zero warnings promoted to errors"
+            ),
+            "required_correction": (
+                "Apply the smallest source-only correction needed for every failing field to "
+                "compile cleanly. Remove or use unused declarations, preserve exactly one "
+                "reachable int main(void), and do not change identity fields, the adjudicated "
+                "invariant, or add facts beyond the frozen request."
+            ),
+        }
     if validation_class == "sources_identical":
         vulnerable = rejected_author.get("vulnerable_source")
         fixed = rejected_author.get("fixed_or_near_miss_source")
@@ -410,6 +442,58 @@ def _repair_constraints(
     }
 
 
+class _SafePairCompilationError(E0GovernanceError):
+    def __init__(self, failing_source_fields: Sequence[str]) -> None:
+        self.failing_source_fields = tuple(failing_source_fields)
+        super().__init__(
+            "safe-pair author independent compilation failed: "
+            + ",".join(self.failing_source_fields)
+        )
+
+
+def _compile_author_source_fields(
+    value: Mapping[str, Any],
+    *,
+    compiler: str,
+) -> tuple[str, ...]:
+    compiler_path = shutil.which(compiler)
+    if not compiler_path:
+        raise E0GovernanceError("safe-pair author compiler is unavailable")
+    failing: list[str] = []
+    for field in _AUTHOR_SOURCE_FIELDS:
+        source = value.get(field)
+        if not isinstance(source, str):
+            raise E0GovernanceError(f"safe-pair author {field} is invalid")
+        with tempfile.TemporaryDirectory(prefix="zscope-e0-pair-compile-") as raw_temp:
+            source_path = Path(raw_temp) / "case.c"
+            output_path = Path(raw_temp) / "case.o"
+            source_path.write_text(
+                source.replace("\r\n", "\n").replace("\r", "\n"),
+                encoding="utf-8",
+            )
+            try:
+                completed = subprocess.run(
+                    [
+                        str(compiler_path),
+                        *_AUTHOR_COMPILER_ARGUMENTS,
+                        str(source_path),
+                        "-o",
+                        str(output_path),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=30,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise E0GovernanceError("safe-pair author compiler execution failed") from exc
+            if completed.returncode != 0 or not output_path.is_file():
+                failing.append(field)
+    return tuple(failing)
+
+
 def validate_author_record(
     value: Mapping[str, Any],
     *,
@@ -417,6 +501,7 @@ def validate_author_record(
     packet_sha256: str,
     final_decision_sha256: str,
     forbidden_identifiers: set[str],
+    compiler: str | None = None,
 ) -> None:
     expected = set(_author_schema()["required"])
     if set(value) != expected or value.get("schema_version") != AUTHOR_SCHEMA_VERSION:
@@ -435,7 +520,7 @@ def validate_author_record(
     ):
         raise E0GovernanceError("safe-pair author invariant is missing")
     sources: list[str] = []
-    for field in ("vulnerable_source", "fixed_or_near_miss_source"):
+    for field in _AUTHOR_SOURCE_FIELDS:
         source = value.get(field)
         if (
             not isinstance(source, str)
@@ -455,6 +540,10 @@ def validate_author_record(
         sources.append(source.replace("\r\n", "\n").replace("\r", "\n"))
     if sources[0] == sources[1]:
         raise E0GovernanceError("safe-pair vulnerable and safe sources are identical")
+    if compiler is not None:
+        failing_fields = _compile_author_source_fields(value, compiler=compiler)
+        if failing_fields:
+            raise _SafePairCompilationError(failing_fields)
 
 
 def _extract(stdout: str) -> Mapping[str, Any]:
@@ -474,6 +563,7 @@ def _author_validation_class(error: E0GovernanceError) -> str:
         ("kind is invalid", "kind_invalid"),
         ("invariant is missing", "invariant_missing"),
         ("uses forbidden C facilities", "forbidden_c_facilities"),
+        ("independent compilation failed", "independent_compile_failure"),
         ("is not anonymous", "source_not_anonymous"),
         ("requires exactly one C11 main", "main_contract_invalid"),
         ("sources are identical", "sources_identical"),
@@ -717,6 +807,7 @@ def _validated_existing_author_pair(
     normalized_record: Mapping[str, Any],
     *,
     status: str,
+    compiler: str | None = None,
 ) -> dict[str, Any]:
     truth_id = str(normalized_record["truth_id"])
     author_dir = root / "authors"
@@ -743,6 +834,7 @@ def _validated_existing_author_pair(
         packet_sha256=str(normalized_record["packet_sha256"]),
         final_decision_sha256=str(normalized_record["final_decision_sha256"]),
         forbidden_identifiers=_source_identifiers(packet, truth_id),
+        compiler=compiler,
     )
     raw = _object(raw_path)
     _validate_raw_author_envelope(
@@ -768,6 +860,7 @@ def _author_one(
     *,
     output: Path,
     resume: bool,
+    compiler: str | None = None,
 ) -> dict[str, Any]:
     truth_id = str(normalized_record["truth_id"])
     decision = normalized_record["final_decision"]
@@ -783,6 +876,7 @@ def _author_one(
             packet,
             normalized_record,
             status="reused",
+            compiler=compiler,
         )
     else:
         codex = shutil.which("codex.cmd" if os.name == "nt" else "codex")
@@ -846,6 +940,7 @@ def _author_one(
                 packet_sha256=str(packet["packet_sha256"]),
                 final_decision_sha256=final_sha,
                 forbidden_identifiers=forbidden,
+                compiler=compiler,
             )
         except E0GovernanceError as error:
             validation_class = _author_validation_class(error)
@@ -892,6 +987,8 @@ def _author_one(
                             validation_class,
                             forbidden,
                             author,
+                            validation_error=error,
+                            compiler=compiler,
                         ),
                     },
                     ensure_ascii=False,
@@ -917,6 +1014,7 @@ def _author_one(
                     packet_sha256=str(packet["packet_sha256"]),
                     final_decision_sha256=final_sha,
                     forbidden_identifiers=forbidden,
+                    compiler=compiler,
                 )
             except E0GovernanceError as repair_error:
                 attempts.append(
@@ -988,6 +1086,7 @@ def _author_one(
         packet,
         normalized_record,
         status=status,
+        compiler=compiler,
     )
 
 
@@ -1205,6 +1304,7 @@ def build_author_checkpoint(args: argparse.Namespace) -> int:
     if not str(args.workflow_run_id).isdigit():
         raise E0GovernanceError("safe-pair checkpoint workflow run ID is invalid")
     retained = args.retained_dir.resolve(strict=True)
+    compiler = getattr(args, "compiler", None)
     output = args.output_dir.resolve()
     if output.exists():
         raise E0GovernanceError(f"safe-pair checkpoint output already exists: {output}")
@@ -1239,6 +1339,7 @@ def build_author_checkpoint(args: argparse.Namespace) -> int:
                 packet,
                 record,
                 status="reused",
+                compiler=compiler,
             )
         except (E0GovernanceError, OSError, json.JSONDecodeError) as exc:
             invalid.append({"truth_id": truth_id, "error_sha256": sha256_value(str(exc))})
@@ -1283,6 +1384,7 @@ def _validate_author_checkpoint(
     packet_dir: Path,
     packet_source_sha: str,
     workflow_run_id: str,
+    compiler: str | None = None,
 ) -> None:
     normalized = _object(normalized_path)
     validate_normalized_decisions(normalized)
@@ -1341,6 +1443,7 @@ def _validate_author_checkpoint(
             packet,
             normalized_record,
             status="reused",
+            compiler=compiler,
         )
         if actual != dict(checkpoint_record):
             raise E0GovernanceError("safe-pair checkpoint record binding is invalid")
@@ -1385,6 +1488,7 @@ def author_pairs(args: argparse.Namespace) -> int:
     normalized = _object(args.normalized_decisions)
     validate_normalized_decisions(normalized)
     packet_dir = args.packet_dir.resolve(strict=True)
+    compiler = getattr(args, "compiler", None)
     work = _confirmable_work(normalized, packet_dir=packet_dir)
     checkpoint_source_sha = getattr(args, "checkpoint_source_sha", None)
     checkpoint_workflow_run_id = getattr(args, "checkpoint_workflow_run_id", None)
@@ -1397,6 +1501,7 @@ def author_pairs(args: argparse.Namespace) -> int:
             packet_dir=packet_dir,
             packet_source_sha=str(checkpoint_source_sha),
             workflow_run_id=str(checkpoint_workflow_run_id),
+            compiler=compiler,
         )
         (output / "checkpoint-manifest.json").unlink()
     elif checkpoint_source_sha is not None or checkpoint_workflow_run_id is not None:
@@ -1413,6 +1518,7 @@ def author_pairs(args: argparse.Namespace) -> int:
                     record,
                     output=output,
                     resume=args.resume,
+                    compiler=compiler,
                 ): str(record["truth_id"])
                 for packet, record in batch
             }
@@ -1463,6 +1569,7 @@ def validate_author_run(
     normalized_path: Path,
     expected_records: Mapping[str, Mapping[str, Any]],
     packet_dir: Path,
+    compiler: str | None = None,
 ) -> Mapping[str, Mapping[str, Any]]:
     manifest = _object(author_root / "manifest.json")
     records = manifest.get("records")
@@ -1522,6 +1629,7 @@ def validate_author_run(
             packet,
             expected,
             status=str(record["status"]),
+            compiler=compiler,
         )
         if actual != dict(record):
             raise E0GovernanceError(f"safe-pair author artifact hash mismatch: {truth_id}")
@@ -1548,6 +1656,7 @@ def materialize_pairs(args: argparse.Namespace) -> int:
         normalized_path=args.normalized_decisions,
         expected_records=records,
         packet_dir=args.packet_dir,
+        compiler=args.compiler if args.compile else None,
     )
     output.mkdir(parents=True)
     for truth_id, record in sorted(records.items()):
@@ -1620,6 +1729,7 @@ def _parser() -> argparse.ArgumentParser:
     author.add_argument("--normalized-decisions", required=True, type=Path)
     author.add_argument("--output-dir", required=True, type=Path)
     author.add_argument("--workers", type=int, choices=range(1, 9), default=4)
+    author.add_argument("--compiler", choices=("cc", "gcc", "clang"), default="cc")
     author.add_argument("--resume", action="store_true")
     author.add_argument("--checkpoint-source-sha")
     author.add_argument("--checkpoint-workflow-run-id")
@@ -1632,6 +1742,7 @@ def _parser() -> argparse.ArgumentParser:
     checkpoint.add_argument("--packet-source-sha", required=True)
     checkpoint.add_argument("--retained-source-sha", required=True)
     checkpoint.add_argument("--workflow-run-id", required=True)
+    checkpoint.add_argument("--compiler", choices=("cc", "gcc", "clang"), default="cc")
     checkpoint.set_defaults(handler=build_author_checkpoint)
     materialize = sub.add_parser("materialize")
     materialize.add_argument("--packet-dir", required=True, type=Path)
