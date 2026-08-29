@@ -1564,10 +1564,8 @@ def build_author_checkpoint(args: argparse.Namespace) -> int:
     validate_normalized_decisions(normalized)
     normalized_sha256 = sha256_file(args.normalized_decisions)
     work = _confirmable_work(normalized, packet_dir=args.packet_dir.resolve(strict=True))
-    output.mkdir(parents=True)
-    (output / "authors").mkdir()
-    (output / "raw").mkdir()
     verified: list[dict[str, Any]] = []
+    verified_paths: list[tuple[Path, Path]] = []
     invalid: list[dict[str, str]] = []
     incomplete: list[dict[str, Any]] = []
     for packet, record in work:
@@ -1593,12 +1591,11 @@ def build_author_checkpoint(args: argparse.Namespace) -> int:
                 status="reused",
                 compiler=compiler,
             )
-        except (E0GovernanceError, OSError, json.JSONDecodeError) as exc:
+        except (E0GovernanceError, OSError, json.JSONDecodeError, UnicodeError) as exc:
             invalid.append({"truth_id": truth_id, "error_sha256": sha256_value(str(exc))})
             continue
-        shutil.copy2(author_path, output / "authors" / author_path.name)
-        shutil.copy2(raw_path, output / "raw" / raw_path.name)
         verified.append(verified_record)
+        verified_paths.append((author_path, raw_path))
     failure_records = _load_failure_manifest(
         retained / "failure-manifest.json",
         normalized_sha256=normalized_sha256,
@@ -1607,6 +1604,18 @@ def build_author_checkpoint(args: argparse.Namespace) -> int:
     verified.sort(key=lambda item: item["truth_id"])
     invalid.sort(key=lambda item: item["truth_id"])
     incomplete.sort(key=lambda item: item["truth_id"])
+    if getattr(args, "require_complete", False) and (
+        len(verified) != len(work) or invalid or incomplete or failure_records
+    ):
+        raise E0GovernanceError(
+            "safe-pair complete checkpoint requires every expected record to be verified"
+        )
+    output.mkdir(parents=True)
+    (output / "authors").mkdir()
+    (output / "raw").mkdir()
+    for author_path, raw_path in verified_paths:
+        shutil.copy2(author_path, output / "authors" / author_path.name)
+        shutil.copy2(raw_path, output / "raw" / raw_path.name)
     manifest = {
         "schema_version": AUTHOR_CHECKPOINT_SCHEMA_VERSION,
         "author_model": AUTHOR_MODEL,
@@ -1744,6 +1753,8 @@ def author_pairs(args: argparse.Namespace) -> int:
     work = _confirmable_work(normalized, packet_dir=packet_dir)
     checkpoint_source_sha = getattr(args, "checkpoint_source_sha", None)
     checkpoint_workflow_run_id = getattr(args, "checkpoint_workflow_run_id", None)
+    records: list[dict[str, Any]] = []
+    pending_work = work
     if args.resume:
         if checkpoint_source_sha is None or checkpoint_workflow_run_id is None:
             raise E0GovernanceError("safe-pair resume requires a bound checkpoint")
@@ -1755,12 +1766,36 @@ def author_pairs(args: argparse.Namespace) -> int:
             workflow_run_id=str(checkpoint_workflow_run_id),
             compiler=compiler,
         )
+        pending_work = []
+        for packet, record in work:
+            truth_id = str(record["truth_id"])
+            author_path = output / "authors" / f"{truth_id}.json"
+            raw_path = output / "raw" / f"{truth_id}.json"
+            author_present = author_path.exists() or author_path.is_symlink()
+            raw_present = raw_path.exists() or raw_path.is_symlink()
+            if not author_present and not raw_present:
+                pending_work.append((packet, record))
+                continue
+            if not author_path.is_file() or not raw_path.is_file():
+                raise E0GovernanceError(f"incomplete or unexpected safe-pair author: {truth_id}")
+            records.append(
+                _validated_existing_author_pair(
+                    output,
+                    packet,
+                    record,
+                    status="reused",
+                    compiler=compiler,
+                )
+            )
+            print(
+                f"safe-pair: {len(records)}/{len(work)} complete ({truth_id})",
+                flush=True,
+            )
         (output / "checkpoint-manifest.json").unlink()
     elif checkpoint_source_sha is not None or checkpoint_workflow_run_id is not None:
         raise E0GovernanceError("safe-pair checkpoint validation requires resume mode")
-    records: list[dict[str, Any]] = []
-    for offset in range(0, len(work), args.workers):
-        batch = work[offset : offset + args.workers]
+    for offset in range(0, len(pending_work), args.workers):
+        batch = pending_work[offset : offset + args.workers]
         failures: list[dict[str, Any]] = []
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
@@ -1794,11 +1829,13 @@ def author_pairs(args: argparse.Namespace) -> int:
                 verified_record_count=len(records),
                 failure_records=failures,
             )
-            first = sorted(failures, key=lambda item: item["truth_id"])[0]
+            failure_classes = Counter(str(item["failure_code"]) for item in failures)
+            projected_classes = ",".join(
+                f"{code}:{failure_classes[code]}" for code in sorted(failure_classes)
+            )
             raise E0GovernanceError(
                 "safe-pair author batch failed: "
-                f"failure_code={first['failure_code']}; truth_id={first['truth_id']}; "
-                f"failure_count={len(failures)}"
+                f"failure_classes={projected_classes}; failure_count={len(failures)}"
             )
     records.sort(key=lambda item: str(item["truth_id"]))
     _json_dump(
@@ -1980,7 +2017,7 @@ def _parser() -> argparse.ArgumentParser:
     author.add_argument("--packet-dir", required=True, type=Path)
     author.add_argument("--normalized-decisions", required=True, type=Path)
     author.add_argument("--output-dir", required=True, type=Path)
-    author.add_argument("--workers", type=int, choices=range(1, 9), default=4)
+    author.add_argument("--workers", type=int, choices=range(1, 9), default=8)
     author.add_argument("--compiler", choices=("cc", "gcc", "clang"), default="cc")
     author.add_argument("--resume", action="store_true")
     author.add_argument("--checkpoint-source-sha")
@@ -1995,6 +2032,7 @@ def _parser() -> argparse.ArgumentParser:
     checkpoint.add_argument("--retained-source-sha", required=True)
     checkpoint.add_argument("--workflow-run-id", required=True)
     checkpoint.add_argument("--compiler", choices=("cc", "gcc", "clang"), default="cc")
+    checkpoint.add_argument("--require-complete", action="store_true")
     checkpoint.set_defaults(handler=build_author_checkpoint)
     diagnose = sub.add_parser("diagnose-checkpoint")
     diagnose.add_argument("--checkpoint-dir", required=True, type=Path)

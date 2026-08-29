@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,6 +95,94 @@ def _decision(packet: dict) -> dict:
         },
         "reason_codes": ["TRIGGER_PRESENT", "SAFE_PAIR_REQUIRED"],
     }
+
+
+@pytest.mark.parametrize(
+    ("argv", "handler"),
+    (
+        (
+            [
+                "primary",
+                "--reviewer",
+                "fable",
+                "--packet-dir",
+                "packets",
+                "--output-dir",
+                "output",
+            ],
+            reviewer_runner.run_primary,
+        ),
+        (
+            [
+                "checkpoint",
+                "--reviewer",
+                "fable",
+                "--packet-dir",
+                "packets",
+                "--retained-dir",
+                "retained",
+                "--output-dir",
+                "output",
+                "--packet-source-sha",
+                "a" * 40,
+                "--retained-source-sha",
+                "b" * 40,
+                "--workflow-run-id",
+                "1",
+            ],
+            reviewer_runner.build_primary_checkpoint,
+        ),
+        (
+            [
+                "arbitrate",
+                "--packet-dir",
+                "packets",
+                "--fable-dir",
+                "fable",
+                "--deepseek-dir",
+                "deepseek",
+                "--output-dir",
+                "output",
+            ],
+            reviewer_runner.run_arbitration,
+        ),
+        (
+            [
+                "arbitration-checkpoint",
+                "--packet-dir",
+                "packets",
+                "--fable-dir",
+                "fable",
+                "--deepseek-dir",
+                "deepseek",
+                "--retained-dir",
+                "retained",
+                "--output-dir",
+                "output",
+                "--packet-source-sha",
+                "a" * 40,
+                "--retained-source-sha",
+                "b" * 40,
+                "--workflow-run-id",
+                "1",
+                "--shard-index",
+                "0",
+                "--shard-count",
+                "4",
+            ],
+            reviewer_runner.build_arbitration_checkpoint,
+        ),
+    ),
+)
+def test_e0_reviewer_formal_worker_defaults_are_eight(argv: list[str], handler: object) -> None:
+    args = reviewer_runner._parser().parse_args(argv)
+    assert args.workers == 8
+    assert args.handler is handler
+
+    one_worker = reviewer_runner._parser().parse_args([*argv, "--workers", "1"])
+    eight_workers = reviewer_runner._parser().parse_args([*argv, "--workers", "8"])
+    assert one_worker.workers == 1
+    assert eight_workers.workers == 8
 
 
 def test_confirmable_final_decision_requires_direct_trigger_evidence() -> None:
@@ -345,13 +434,13 @@ def test_review_provenance_separates_workflow_and_packet_commits() -> None:
 
 def test_protected_review_jobs_pin_reviewer_cli_versions() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
-    assert workflow.count("claude --version | awk '{print $1}'") == 3
-    assert workflow.count("codex --version") == 4
-    assert workflow.count("dsh --version") == 3
-    assert workflow.count("reviewer harness versions:") == 3
-    assert workflow.count('"2.1.233"') == 3
-    assert workflow.count(f'"codex-cli {reviewer_runner.CODEX_CLI_VERSION}"') == 4
-    assert workflow.count(f'"{reviewer_runner.DSH_VERSION}"') == 3
+    assert workflow.count("claude --version | awk '{print $1}'") == 4
+    assert workflow.count("codex --version") == 5
+    assert workflow.count("dsh --version") == 4
+    assert workflow.count("reviewer harness versions:") == 4
+    assert workflow.count('"2.1.233"') == 4
+    assert workflow.count(f'"codex-cli {reviewer_runner.CODEX_CLI_VERSION}"') == 5
+    assert workflow.count(f'"{reviewer_runner.DSH_VERSION}"') == 4
 
 
 def test_protected_review_gates_codex_calls_on_answer_free_readiness() -> None:
@@ -417,6 +506,13 @@ def test_safe_pair_diagnostic_workflow_is_exact_answer_free_and_zero_call() -> N
 
 def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
+    workflow_header = workflow.split("concurrency:", 1)[0]
+    assert sum(line.startswith("        required:") for line in workflow_header.splitlines()) == 25
+    assert "concurrency:\n  group: range-v16-independent-review" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert 'E0_MAX_CONCURRENT_CALLS: "8"' in workflow
+    assert workflow.count("max-parallel: 1") == 2
+    assert workflow.count('--workers "$E0_MAX_CONCURRENT_CALLS"') == 10
     assert "fable_checkpoint_run_id:" in workflow
     assert "fable_checkpoint_artifact_id:" in workflow
     assert "fable_checkpoint_source_sha:" in workflow
@@ -429,7 +525,11 @@ def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume()
     assert "${FABLE_CHECKPOINT_SOURCE_SHA:-$PACKET_SOURCE_SHA}" in workflow
     assert "${DEEPSEEK_CHECKPOINT_SOURCE_SHA:-$PACKET_SOURCE_SHA}" in workflow
     assert "scripts/run_e0_reviewers.py checkpoint" in workflow
-    assert "range-v16-primary-checkpoint-${{ matrix.reviewer }}" in workflow
+    primary_job = workflow.split("  primary:\n", 1)[1].split("  prepare_arbitration_reuse:\n", 1)[0]
+    assert (
+        "range-v16-primary-checkpoint-${{ matrix.reviewer }}-"
+        "${{ inputs.source_sha }}-attempt-${{ github.run_attempt }}" in primary_job
+    )
     assert "fable_primary_run_id:" in workflow
     assert "fable_primary_source_sha:" in workflow
     assert "deepseek_primary_run_id:" in workflow
@@ -437,18 +537,39 @@ def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume()
     assert "checkpoint and complete primary recovery are mutually exclusive" in workflow
     assert "checkpoint run ID and immutable artifact ID must be provided together" in workflow
     assert workflow.count("scripts/download_e0_checkpoint_artifact.py") == 2
+    assert workflow.count("--allow-attempt-suffix") == 2
     assert workflow.count("--artifact-id '${{ inputs.") == 2
     assert workflow.count("--expected-run-id '${{ inputs.") == 2
-    assert workflow.count("--expected-source-sha '${{ inputs.") == 2
-    assert workflow.count("--checkpoint-workflow-run-id") == 5
+    assert workflow.count("--expected-source-sha '${{ inputs.") == 3
+    assert workflow.count("--checkpoint-workflow-run-id") == 8
     assert "Restore exact complete primary artifact" in workflow
     assert '--expected-run-id "$primary_run_id"' in workflow
     assert '--expected-head-sha "$primary_source_sha"' in workflow
     assert 'artifact_name="range-v16-primary-$reviewer-$primary_source_sha"' in workflow
-    assert '--artifact "$artifact_name=retained-primary/$reviewer"' in workflow
+    assert "fable_primary_artifact_id:" in workflow
+    assert "fable_primary_artifact_digest:" in workflow
+    assert "deepseek_primary_artifact_id:" in workflow
+    assert "deepseek_primary_artifact_digest:" in workflow
+    assert "--expected-workflow-path '.github/workflows/range-v16-review.yml'" in workflow
+    assert '--expected-producer-job "$producer_job"' in workflow
+    assert (
+        '--exact-artifact "$artifact_name=retained-primary/$reviewer='
+        '$primary_artifact_id=$primary_artifact_digest"' in workflow
+    )
     assert "Revalidate complete primary artifact as a zero-call checkpoint" in workflow
     assert "--require-complete" in workflow
-    assert workflow.count("scripts/download_e0_run_artifacts.py") == 3
+    assert workflow.count("scripts/download_e0_run_artifacts.py") == 6
+    assert "id: current_primary_checkpoint" in primary_job
+    assert "Restore latest current-run primary checkpoint" in primary_job
+    assert (
+        "--optional-checkpoint-prefix 'range-v16-primary-checkpoint-"
+        "${{ matrix.reviewer }}-${{ inputs.source_sha }}="
+        "review-evidence/${{ matrix.reviewer }}'" in primary_job
+    )
+    assert 'if [[ "$CURRENT_PRIMARY_RESTORED" = true ]]; then' in primary_job
+    assert primary_job.index('if [[ "$CURRENT_PRIMARY_RESTORED" = true ]]; then') < (
+        primary_job.index('-n "$FABLE_CHECKPOINT_RUN_ID"')
+    )
 
     recovery = Path(".github/workflows/range-v16-review-recover.yml").read_text(encoding="utf-8")
     freeze_index = recovery.index("Freeze retained primary workspace before checkout")
@@ -460,33 +581,87 @@ def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume()
     assert "environment: sealed-benchmark" in recovery
     assert "clean: false" in recovery
     assert "scripts/run_e0_reviewers.py checkpoint" in recovery
+    assert "--workers 8" in recovery
+    assert "--workers 4" not in recovery
+    assert (
+        "range-v16-primary-checkpoint-${{ inputs.reviewer }}-${{ github.sha }}-"
+        "attempt-${{ github.run_attempt }}" in recovery
+    )
 
 
 def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
+    parsed = yaml.safe_load(workflow)
+    reuse_preflight = workflow.split("  prepare_arbitration_reuse:\n", 1)[1].split(
+        "  arbitrate:\n", 1
+    )[0]
     arbitration = workflow.split("  arbitrate:\n", 1)[1].split("  finalize:\n", 1)[0]
     assert "shard: [0, 1, 2, 3]" in workflow
     assert "id: arbitration_review" in workflow
     assert "--shard-index '${{ matrix.shard }}'" in workflow
     assert "--shard-count 4" in workflow
     assert "scripts/run_e0_reviewers.py arbitration-checkpoint" in workflow
+    assert "arbitration_reuse_run_id:" in workflow
+    assert "arbitration_reuse_source_sha:" in workflow
+    for shard in range(4):
+        assert f"arbitration_reuse_shard_{shard}_artifact_id:" in workflow
+        assert f"arbitration_reuse_shard_{shard}_artifact_digest:" in workflow
+    assert "validate optional cross-run arbitration reuse" in workflow
+    assert parsed["jobs"]["prepare_arbitration_reuse"].get("needs") is None
+    assert parsed["jobs"]["codex_readiness"]["needs"] == "prepare_arbitration_reuse"
+    assert (
+        "arbitration shard reuse requires exact complete reuse of both primaries" in reuse_preflight
+    )
+    assert "Restore and fully revalidate exact primary reuse inputs" in reuse_preflight
+    assert 'echo "exact_primary_count=$exact_primary_count"' in reuse_preflight
+    assert "if: steps.reuse_inputs.outputs.exact_primary_count != '0'" in reuse_preflight
+    assert 'if [[ -z "$primary_run_id" ]]; then' in reuse_preflight
+    assert "test \"$GITHUB_REF\" = 'refs/heads/main'" in reuse_preflight
+    assert 'allowed_prefix = "test/range/benchmark/v16/review-packets/"' in reuse_preflight
+    assert "untrusted review source changes" in reuse_preflight
+    assert reuse_preflight.count("scripts/run_e0_reviewers.py primary") == 1
+    assert '--checkpoint-workflow-run-id "$primary_run_id"' in reuse_preflight
+    assert "needs: [primary, prepare_arbitration_reuse]" in arbitration
+    assert "Download and fully revalidate all selected arbitration shards" in reuse_preflight
+    assert '--expected-producer-job "$producer_job"' in reuse_preflight
+    assert (
+        '"$artifact_name=retained-arbitration-shards/$shard='
+        '$artifact_id=$artifact_digest"' in reuse_preflight
+    )
+    assert "--require-complete" in reuse_preflight
+    for shard in range(4):
+        assert (
+            f"range-v16-arbitration-reuse-checkpoint-{shard}-${{{{ inputs.source_sha }}}}"
+            in reuse_preflight
+        )
+    current_checkpoint = arbitration.index(
+        "restored-checkpoint/codex-shard/checkpoint-manifest.json"
+    )
+    prepared_checkpoint = arbitration.index(
+        "restored-reuse-checkpoint/codex-shard/checkpoint-manifest.json"
+    )
+    assert current_checkpoint < prepared_checkpoint
+    assert (
+        "selected arbitration reuse checkpoint is missing after successful preflight" in arbitration
+    )
     assert "range-v16-arbitration-checkpoint-${{ matrix.shard }}" in workflow
     assert "range-v16-arbitration-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$SHARD_INDEX" in workflow
     assert "prior_attempt=$((GITHUB_RUN_ATTEMPT - 1))" in workflow
     assert "steps.arbitration_paths.outputs.output_dir" in workflow
-    assert "overwrite: true" in workflow
+    assert "-attempt-${{ github.run_attempt }}" in workflow
     assert "scripts/run_e0_reviewers.py merge-arbitration" in workflow
     assert "needs: [primary, arbitrate]" in workflow
     assert "Restore exact current-run arbitration inputs" in arbitration
     assert "scripts/download_e0_run_artifacts.py" in arbitration
     assert arbitration.count("--artifact '") == 2
-    assert arbitration.count("--optional-artifact '") == 1
+    assert arbitration.count("--optional-checkpoint-prefix '") == 2
     assert '--expected-run-id "$GITHUB_RUN_ID"' in arbitration
     assert '--expected-head-sha "$GITHUB_SHA"' in arbitration
+    assert 'if [[ "$REQUIRES_MODEL" = true ]]' in arbitration
     assert (
-        "if ! python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only; then"
-        in arbitration
+        "! python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only; then" in arbitration
     )
+    assert "requires_model=false" in arbitration
     assert (
         'mkdir -p "$CODEX_OUTPUT/decisions" "$CODEX_OUTPUT/raw" '
         '"$CODEX_OUTPUT/failures"' in arbitration
@@ -506,7 +681,7 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     assert '--expected-run-id "$GITHUB_RUN_ID"' in finalize
     assert '--expected-head-sha "$GITHUB_SHA"' in finalize
     assert finalize.count("--artifact '") == 6
-    assert finalize.count("--optional-checkpoint-artifact '") == 1
+    assert finalize.count("--optional-checkpoint-prefix '") == 1
     assert "actions/download-artifact@v8" not in finalize
     assert "id: pair_author_paths" in finalize
     assert "id: pair_author" in finalize
@@ -514,7 +689,16 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     assert "range-v16-pair-author-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" in finalize
     assert "scripts/generate_range_v16_safe_pairs.py checkpoint" in finalize
     assert '--checkpoint-workflow-run-id "$GITHUB_RUN_ID"' in finalize
-    assert "failure() && steps.pair_author.outcome == 'failure'" in finalize
+    assert (
+        "always() && (steps.pair_author.outcome == 'success' || "
+        "steps.pair_author.outcome == 'failure')" in finalize
+    )
+    assert "complete_args=(--require-complete)" in finalize
+    assert "continue-on-error: ${{ steps.pair_author.outcome == 'success' }}" in finalize
+    assert "diagnose-checkpoint" in finalize
+    assert 'echo "requires_model=$requires_model" >> "$GITHUB_OUTPUT"' in finalize
+    assert 'if [[ "$REQUIRES_MODEL" = true ]]; then' in finalize
+    assert '"${checkpoint_args[@]}" --require-complete' in finalize
     assert "range-v16-pair-author-checkpoint-${{ inputs.source_sha }}" in finalize
     assert "retained-pair-checkpoint/checkpoint-manifest.json" in finalize
     assert "retained_root=retained-pair-checkpoint" in finalize
@@ -523,7 +707,7 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
         'prior_root="$RUNNER_TEMP/range-v16-pair-author-$GITHUB_RUN_ID-$prior_attempt"'
     )
     assert "--resume" in finalize
-    assert "overwrite: true" in finalize
+    assert "overwrite: true" not in workflow
 
 
 def test_protected_review_artifact_uploads_use_bounded_retry_action() -> None:
@@ -531,7 +715,7 @@ def test_protected_review_artifact_uploads_use_bounded_retry_action() -> None:
     action_path = Path(".github/actions/upload-artifact-retry/action.yml")
     action = yaml.safe_load(action_path.read_text(encoding="utf-8"))
 
-    assert workflow.count("uses: ./.github/actions/upload-artifact-retry") == 8
+    assert workflow.count("uses: ./.github/actions/upload-artifact-retry") == 12
     assert "uses: actions/upload-artifact@v7" not in workflow
     assert action["runs"]["using"] == "composite"
     steps = action["runs"]["steps"]
@@ -2532,6 +2716,482 @@ def _review_pair(packet: dict, reviewer: str) -> tuple[dict, dict]:
     return decision, _review_raw(packet, reviewer, decision)
 
 
+def _write_review_packet_catalog(packet_dir: Path) -> list[dict]:
+    packet_dir.mkdir()
+    packets: list[dict] = []
+    for index in range(136):
+        packet = _packet()
+        truth_id = f"CASE-{index:03d}"
+        packet["packet_uid"] = f"range-v16:{truth_id}"
+        packet["truth_record"]["id"] = truth_id
+        unsigned = dict(packet)
+        unsigned.pop("packet_sha256")
+        packet["packet_sha256"] = sha256_value(unsigned)
+        reviewer_runner._json_dump(packet_dir / f"{truth_id}.json", packet)
+        packets.append(packet)
+    return packets
+
+
+def test_primary_batch_drains_eight_calls_and_stops_after_fixed_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet_dir = tmp_path / "packets"
+    output_dir = tmp_path / "output"
+    _write_review_packet_catalog(packet_dir)
+    barrier = threading.Barrier(8)
+    lock = threading.Lock()
+    called: list[str] = []
+    active = 0
+    max_active = 0
+
+    def fake_run_model(packet: dict, **_: object) -> tuple[dict, dict]:
+        nonlocal active, max_active
+        truth_id = packet["truth_record"]["id"]
+        with lock:
+            called.append(truth_id)
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            barrier.wait(timeout=10)
+            if truth_id == "CASE-003":
+                raise E0GovernanceError("private reviewer material must not escape")
+            return _review_pair(packet, "fable")
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(reviewer_runner, "_run_model", fake_run_model)
+    with pytest.raises(
+        ValueError,
+        match=r"^primary review batch failed; failure_count=1$",
+    ) as exc_info:
+        reviewer_runner.run_primary(
+            SimpleNamespace(
+                reviewer="fable",
+                packet_dir=packet_dir,
+                output_dir=output_dir,
+                workers=8,
+                resume=False,
+                checkpoint_source_sha=None,
+                checkpoint_workflow_run_id=None,
+            )
+        )
+
+    assert "private reviewer material" not in str(exc_info.value)
+    assert max_active == 8
+    assert sorted(called) == [f"CASE-{index:03d}" for index in range(8)]
+    assert len(list((output_dir / "decisions").glob("*.json"))) == 7
+    assert len(list((output_dir / "raw").glob("*.json"))) == 7
+    failure_markers = list((output_dir / "failures").glob("*.json"))
+    assert [path.name for path in failure_markers] == ["CASE-003.json"]
+    assert "private reviewer material" not in failure_markers[0].read_text(encoding="utf-8")
+    assert not (output_dir / "manifest.json").exists()
+
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    checkpoint_dir = tmp_path / "checkpoint"
+    assert (
+        reviewer_runner.build_primary_checkpoint(
+            SimpleNamespace(
+                reviewer="fable",
+                packet_dir=packet_dir,
+                retained_dir=output_dir,
+                output_dir=checkpoint_dir,
+                packet_source_sha="a" * 40,
+                retained_source_sha="a" * 40,
+                workflow_run_id="32523797644",
+                workers=8,
+                require_complete=False,
+            )
+        )
+        == 0
+    )
+    checkpoint_manifest = json.loads(
+        (checkpoint_dir / "checkpoint-manifest.json").read_text(encoding="utf-8")
+    )
+    assert checkpoint_manifest["verified_record_count"] == 7
+    assert checkpoint_manifest["failure_record_count"] == 1
+    assert checkpoint_manifest["first_unverified_batch_ids"] == [
+        "CASE-003",
+        *[f"CASE-{index:03d}" for index in range(8, 15)],
+    ]
+
+    resumed: list[str] = []
+    resume_barrier = threading.Barrier(8)
+    resume_lock = threading.Lock()
+    resume_active = 0
+    resume_max_active = 0
+    first_resume_batch = set(checkpoint_manifest["first_unverified_batch_ids"])
+
+    def resume_model(packet: dict, **_: object) -> tuple[dict, dict]:
+        nonlocal resume_active, resume_max_active
+        truth_id = packet["truth_record"]["id"]
+        with resume_lock:
+            resumed.append(truth_id)
+            resume_active += 1
+            resume_max_active = max(resume_max_active, resume_active)
+        try:
+            if truth_id in first_resume_batch:
+                resume_barrier.wait(timeout=10)
+            return _review_pair(packet, "fable")
+        finally:
+            with resume_lock:
+                resume_active -= 1
+
+    monkeypatch.setattr(reviewer_runner, "_run_model", resume_model)
+    assert (
+        reviewer_runner.run_primary(
+            SimpleNamespace(
+                reviewer="fable",
+                packet_dir=packet_dir,
+                output_dir=checkpoint_dir,
+                workers=8,
+                resume=True,
+                checkpoint_source_sha="a" * 40,
+                checkpoint_workflow_run_id="32523797644",
+            )
+        )
+        == 0
+    )
+    successful_ids = {f"CASE-{index:03d}" for index in range(8)} - {"CASE-003"}
+    assert successful_ids.isdisjoint(resumed)
+    assert set(resumed) == {f"CASE-{index:03d}" for index in range(136)} - successful_ids
+    assert set(resumed[:8]) == first_resume_batch
+    assert resume_max_active == 8
+
+
+def test_primary_workers_one_and_eight_produce_identical_sorted_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet_dir = tmp_path / "packets"
+    _write_review_packet_catalog(packet_dir)
+    current_workers = 1
+    completion_order: list[str] = []
+    barriers = [threading.Barrier(8) for _ in range(17)]
+    condition = threading.Condition()
+    reverse_turn = {batch: 7 for batch in range(17)}
+
+    def fake_run_model(packet: dict, **_: object) -> tuple[dict, dict]:
+        result = _review_pair(packet, "fable")
+        if current_workers == 8:
+            truth_id = packet["truth_record"]["id"]
+            index = int(truth_id.rsplit("-", 1)[1])
+            batch, position = divmod(index, 8)
+            barriers[batch].wait(timeout=10)
+            with condition:
+                assert condition.wait_for(
+                    lambda: reverse_turn[batch] == position,
+                    timeout=10,
+                )
+                completion_order.append(truth_id)
+                reverse_turn[batch] -= 1
+                condition.notify_all()
+        return result
+
+    monkeypatch.setattr(reviewer_runner, "_run_model", fake_run_model)
+    manifests = []
+    for workers in (1, 8):
+        current_workers = workers
+        output_dir = tmp_path / f"primary-{workers}"
+        assert (
+            reviewer_runner.run_primary(
+                SimpleNamespace(
+                    reviewer="fable",
+                    packet_dir=packet_dir,
+                    output_dir=output_dir,
+                    workers=workers,
+                    resume=False,
+                    checkpoint_source_sha=None,
+                    checkpoint_workflow_run_id=None,
+                )
+            )
+            == 0
+        )
+        manifests.append(json.loads((output_dir / "manifest.json").read_text(encoding="utf-8")))
+
+    assert manifests[0] == manifests[1]
+    truth_ids = [record["truth_id"] for record in manifests[1]["records"]]
+    assert truth_ids == sorted(truth_ids)
+    assert completion_order == [
+        f"CASE-{index:03d}"
+        for batch in range(17)
+        for index in range(batch * 8 + 7, batch * 8 - 1, -1)
+    ]
+
+
+def test_arbitration_batch_drains_eight_calls_and_stops_after_fixed_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet_dir = tmp_path / "packets"
+    fable_dir = tmp_path / "fable"
+    deepseek_dir = tmp_path / "deepseek"
+    for root in (packet_dir, fable_dir, deepseek_dir):
+        root.mkdir()
+    packets = []
+    for index in range(16):
+        packet = _packet()
+        truth_id = f"CASE-{index:03d}"
+        packet["packet_uid"] = f"range-v16:{truth_id}"
+        packet["truth_record"]["id"] = truth_id
+        unsigned = dict(packet)
+        unsigned.pop("packet_sha256")
+        packet["packet_sha256"] = sha256_value(unsigned)
+        packets.append(packet)
+    work = [(packet, packet["truth_record"]["id"], ({}, {})) for packet in packets]
+    monkeypatch.setattr(
+        reviewer_runner,
+        "_load_arbitration_plan",
+        lambda *_args, **_kwargs: (work, set(), set(), "a" * 64),
+    )
+    barrier = threading.Barrier(8)
+    lock = threading.Lock()
+    called: list[str] = []
+    active = 0
+    max_active = 0
+
+    def fake_run_model(packet: dict, **_: object) -> tuple[dict, dict]:
+        nonlocal active, max_active
+        truth_id = packet["truth_record"]["id"]
+        with lock:
+            called.append(truth_id)
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            barrier.wait(timeout=10)
+            if truth_id == "CASE-005":
+                raise E0GovernanceError("private arbitration material must not escape")
+            return _review_pair(packet, "opus")
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(reviewer_runner, "_run_model", fake_run_model)
+    output_dir = tmp_path / "output"
+    with pytest.raises(
+        ValueError,
+        match=r"^arbitration review batch failed; failure_count=1$",
+    ) as exc_info:
+        reviewer_runner.run_arbitration(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                fable_dir=fable_dir,
+                deepseek_dir=deepseek_dir,
+                output_dir=output_dir,
+                workers=8,
+                shard_index=0,
+                shard_count=1,
+                resume=False,
+                checkpoint_source_sha=None,
+                checkpoint_workflow_run_id=None,
+            )
+        )
+
+    assert "private arbitration material" not in str(exc_info.value)
+    assert max_active == 8
+    assert sorted(called) == [f"CASE-{index:03d}" for index in range(8)]
+    assert len(list((output_dir / "decisions").glob("*.json"))) == 7
+    assert len(list((output_dir / "raw").glob("*.json"))) == 7
+    failure_markers = list((output_dir / "failures").glob("*.json"))
+    assert [path.name for path in failure_markers] == ["CASE-005.json"]
+    assert "private arbitration material" not in failure_markers[0].read_text(encoding="utf-8")
+    assert not (output_dir / "manifest.json").exists()
+
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    checkpoint_dir = tmp_path / "checkpoint"
+    assert (
+        reviewer_runner.build_arbitration_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                fable_dir=fable_dir,
+                deepseek_dir=deepseek_dir,
+                retained_dir=output_dir,
+                output_dir=checkpoint_dir,
+                packet_source_sha="a" * 40,
+                retained_source_sha="a" * 40,
+                workflow_run_id="32523797644",
+                shard_index=0,
+                shard_count=1,
+                workers=8,
+                require_complete=False,
+            )
+        )
+        == 0
+    )
+    checkpoint_manifest = json.loads(
+        (checkpoint_dir / "checkpoint-manifest.json").read_text(encoding="utf-8")
+    )
+    assert checkpoint_manifest["verified_record_count"] == 7
+    assert checkpoint_manifest["failure_record_count"] == 1
+    first_resume_batch = set(checkpoint_manifest["first_unverified_batch_ids"])
+    assert first_resume_batch == {
+        "CASE-005",
+        *[f"CASE-{index:03d}" for index in range(8, 15)],
+    }
+
+    resumed: list[str] = []
+    resume_barrier = threading.Barrier(8)
+    resume_lock = threading.Lock()
+    resume_active = 0
+    resume_max_active = 0
+
+    def resume_model(packet: dict, **_: object) -> tuple[dict, dict]:
+        nonlocal resume_active, resume_max_active
+        truth_id = packet["truth_record"]["id"]
+        with resume_lock:
+            resumed.append(truth_id)
+            resume_active += 1
+            resume_max_active = max(resume_max_active, resume_active)
+        try:
+            if truth_id in first_resume_batch:
+                resume_barrier.wait(timeout=10)
+            return _review_pair(packet, "opus")
+        finally:
+            with resume_lock:
+                resume_active -= 1
+
+    monkeypatch.setattr(reviewer_runner, "_run_model", resume_model)
+    assert (
+        reviewer_runner.run_arbitration(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                fable_dir=fable_dir,
+                deepseek_dir=deepseek_dir,
+                output_dir=checkpoint_dir,
+                workers=8,
+                shard_index=0,
+                shard_count=1,
+                resume=True,
+                checkpoint_source_sha="a" * 40,
+                checkpoint_workflow_run_id="32523797644",
+            )
+        )
+        == 0
+    )
+    successful_ids = {f"CASE-{index:03d}" for index in range(8)} - {"CASE-005"}
+    assert successful_ids.isdisjoint(resumed)
+    assert set(resumed) == {f"CASE-{index:03d}" for index in range(16)} - successful_ids
+    assert set(resumed[:8]) == first_resume_batch
+    assert resume_max_active == 8
+
+
+def test_arbitration_workers_one_and_eight_produce_identical_sorted_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet_dir = tmp_path / "packets"
+    fable_dir = tmp_path / "fable"
+    deepseek_dir = tmp_path / "deepseek"
+    for root in (packet_dir, fable_dir, deepseek_dir):
+        root.mkdir()
+    packets = []
+    for index in range(16):
+        packet = _packet()
+        truth_id = f"CASE-{index:03d}"
+        packet["packet_uid"] = f"range-v16:{truth_id}"
+        packet["truth_record"]["id"] = truth_id
+        unsigned = dict(packet)
+        unsigned.pop("packet_sha256")
+        packet["packet_sha256"] = sha256_value(unsigned)
+        packets.append(packet)
+    work = [(packet, packet["truth_record"]["id"], ({}, {})) for packet in packets]
+    monkeypatch.setattr(
+        reviewer_runner,
+        "_load_arbitration_plan",
+        lambda *_args, **_kwargs: (work, set(), set(), "a" * 64),
+    )
+    current_workers = 1
+    completion_order: list[str] = []
+    barriers = [threading.Barrier(8) for _ in range(2)]
+    condition = threading.Condition()
+    reverse_turn = {batch: 7 for batch in range(2)}
+
+    def fake_run_model(packet: dict, **_: object) -> tuple[dict, dict]:
+        result = _review_pair(packet, "opus")
+        if current_workers == 8:
+            truth_id = packet["truth_record"]["id"]
+            index = int(truth_id.rsplit("-", 1)[1])
+            batch, position = divmod(index, 8)
+            barriers[batch].wait(timeout=10)
+            with condition:
+                assert condition.wait_for(
+                    lambda: reverse_turn[batch] == position,
+                    timeout=10,
+                )
+                completion_order.append(truth_id)
+                reverse_turn[batch] -= 1
+                condition.notify_all()
+        return result
+
+    monkeypatch.setattr(reviewer_runner, "_run_model", fake_run_model)
+    manifests = []
+    for workers in (1, 8):
+        current_workers = workers
+        output_dir = tmp_path / f"arbitration-{workers}"
+        assert (
+            reviewer_runner.run_arbitration(
+                SimpleNamespace(
+                    packet_dir=packet_dir,
+                    fable_dir=fable_dir,
+                    deepseek_dir=deepseek_dir,
+                    output_dir=output_dir,
+                    workers=workers,
+                    shard_index=0,
+                    shard_count=1,
+                    resume=False,
+                    checkpoint_source_sha=None,
+                    checkpoint_workflow_run_id=None,
+                )
+            )
+            == 0
+        )
+        manifests.append(json.loads((output_dir / "manifest.json").read_text(encoding="utf-8")))
+
+    assert manifests[0] == manifests[1]
+    truth_ids = [record["truth_id"] for record in manifests[1]["records"]]
+    assert truth_ids == sorted(truth_ids)
+    assert completion_order == [
+        f"CASE-{index:03d}"
+        for batch in range(2)
+        for index in range(batch * 8 + 7, batch * 8 - 1, -1)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_source_sha", "checkpoint_workflow_run_id"),
+    (("a" * 40, None), (None, "32523797644")),
+)
+def test_arbitration_resume_requires_paired_checkpoint_run_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_source_sha: str | None,
+    checkpoint_workflow_run_id: str | None,
+) -> None:
+    packet_dir = tmp_path / "packets"
+    fable_dir = tmp_path / "fable"
+    deepseek_dir = tmp_path / "deepseek"
+    for root in (packet_dir, fable_dir, deepseek_dir):
+        root.mkdir()
+    monkeypatch.setattr(
+        reviewer_runner,
+        "_load_arbitration_plan",
+        lambda *_args, **_kwargs: ([], set(), set(), "a" * 64),
+    )
+
+    with pytest.raises(ValueError, match="must be provided together"):
+        reviewer_runner.run_arbitration(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                fable_dir=fable_dir,
+                deepseek_dir=deepseek_dir,
+                output_dir=tmp_path / f"output-{checkpoint_workflow_run_id or 'source'}",
+                workers=8,
+                shard_index=0,
+                shard_count=1,
+                resume=True,
+                checkpoint_source_sha=checkpoint_source_sha,
+                checkpoint_workflow_run_id=checkpoint_workflow_run_id,
+            )
+        )
+
+
 def test_existing_fable_primary_accepts_only_exact_legacy_schema_command(
     tmp_path: Path,
 ) -> None:
@@ -2750,6 +3410,23 @@ def test_arbitration_checkpoint_revalidates_and_resumes_only_missing_pairs(
     reviewer_runner._json_dump(retained / "failures" / f"{third_id}.json", failure)
 
     monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    with pytest.raises(ValueError, match="not a complete verified shard"):
+        reviewer_runner.build_arbitration_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                fable_dir=fable_dir,
+                deepseek_dir=deepseek_dir,
+                retained_dir=retained,
+                output_dir=tmp_path / "incomplete-strict-checkpoint",
+                packet_source_sha="a" * 40,
+                retained_source_sha="b" * 40,
+                workflow_run_id="32523797644",
+                shard_index=shard_index,
+                shard_count=4,
+                workers=8,
+                require_complete=True,
+            )
+        )
     checkpoint = tmp_path / "checkpoint"
     assert (
         reviewer_runner.build_arbitration_checkpoint(
@@ -2780,11 +3457,22 @@ def test_arbitration_checkpoint_revalidates_and_resumes_only_missing_pairs(
     reviewer_runner._validate_arbitration_checkpoint(
         checkpoint,
         packet_source_sha="a" * 40,
+        expected_workflow_run_id="32523797644",
         work=work,
         plan_sha256=plan_sha256,
         shard_index=shard_index,
         shard_count=4,
     )
+    with pytest.raises(ValueError, match="checkpoint manifest is invalid"):
+        reviewer_runner._validate_arbitration_checkpoint(
+            checkpoint,
+            packet_source_sha="a" * 40,
+            expected_workflow_run_id="32523797645",
+            work=work,
+            plan_sha256=plan_sha256,
+            shard_index=shard_index,
+            shard_count=4,
+        )
     checkpoint_manifest["plan_sha256"] = "0" * 64
     checkpoint_manifest["content_sha256"] = reviewer_runner._checkpoint_manifest_content_sha256(
         checkpoint_manifest
@@ -2796,6 +3484,7 @@ def test_arbitration_checkpoint_revalidates_and_resumes_only_missing_pairs(
         reviewer_runner._validate_arbitration_checkpoint(
             checkpoint,
             packet_source_sha="a" * 40,
+            expected_workflow_run_id="32523797644",
             work=work,
             plan_sha256=plan_sha256,
             shard_index=shard_index,
@@ -2828,6 +3517,7 @@ def test_arbitration_checkpoint_revalidates_and_resumes_only_missing_pairs(
                 shard_count=4,
                 resume=True,
                 checkpoint_source_sha="a" * 40,
+                checkpoint_workflow_run_id="32523797644",
             )
         )
         == 0
@@ -2838,6 +3528,114 @@ def test_arbitration_checkpoint_revalidates_and_resumes_only_missing_pairs(
     final_manifest = json.loads((checkpoint / "manifest.json").read_text(encoding="utf-8"))
     status_by_id = {record["truth_id"]: record["status"] for record in final_manifest["records"]}
     assert status_by_id[first_id] == "reused"
+
+    formal_manifest_path = checkpoint / "manifest.json"
+    tampered_formal_manifest = deepcopy(final_manifest)
+    tampered_formal_manifest["plan_sha256"] = "0" * 64
+    reviewer_runner._json_dump(formal_manifest_path, tampered_formal_manifest)
+    with pytest.raises(ValueError, match="not a complete verified shard"):
+        reviewer_runner.build_arbitration_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                fable_dir=fable_dir,
+                deepseek_dir=deepseek_dir,
+                retained_dir=checkpoint,
+                output_dir=tmp_path / "tampered-plan-checkpoint",
+                packet_source_sha="a" * 40,
+                retained_source_sha="b" * 40,
+                workflow_run_id="32523797644",
+                shard_index=shard_index,
+                shard_count=4,
+                workers=8,
+                require_complete=True,
+            )
+        )
+    reviewer_runner._json_dump(formal_manifest_path, final_manifest)
+
+    primary_decision_path = fable_dir / "decisions" / f"{first_id}.json"
+    primary_raw_path = fable_dir / "raw" / f"{first_id}.json"
+    original_primary_decision = primary_decision_path.read_bytes()
+    original_primary_raw = primary_raw_path.read_bytes()
+    changed_primary = json.loads(original_primary_decision.decode("utf-8"))
+    changed_primary["confidence"] = 0.8 if changed_primary["confidence"] != 0.8 else 0.7
+    reviewer_runner._json_dump(primary_decision_path, changed_primary)
+    reviewer_runner._json_dump(
+        primary_raw_path,
+        _review_raw(first_packet, "fable", changed_primary),
+    )
+    try:
+        with pytest.raises(ValueError, match="not a complete verified shard"):
+            reviewer_runner.build_arbitration_checkpoint(
+                SimpleNamespace(
+                    packet_dir=packet_dir,
+                    fable_dir=fable_dir,
+                    deepseek_dir=deepseek_dir,
+                    retained_dir=checkpoint,
+                    output_dir=tmp_path / "changed-primary-checkpoint",
+                    packet_source_sha="a" * 40,
+                    retained_source_sha="b" * 40,
+                    workflow_run_id="32523797644",
+                    shard_index=shard_index,
+                    shard_count=4,
+                    workers=8,
+                    require_complete=True,
+                )
+            )
+    finally:
+        primary_decision_path.write_bytes(original_primary_decision)
+        primary_raw_path.write_bytes(original_primary_raw)
+
+    complete_checkpoint = tmp_path / "complete-checkpoint"
+    assert (
+        reviewer_runner.build_arbitration_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                fable_dir=fable_dir,
+                deepseek_dir=deepseek_dir,
+                retained_dir=checkpoint,
+                output_dir=complete_checkpoint,
+                packet_source_sha="a" * 40,
+                retained_source_sha="b" * 40,
+                workflow_run_id="32523797644",
+                shard_index=shard_index,
+                shard_count=4,
+                workers=8,
+                require_complete=True,
+            )
+        )
+        == 0
+    )
+    complete_manifest = json.loads(
+        (complete_checkpoint / "checkpoint-manifest.json").read_text(encoding="utf-8")
+    )
+    assert complete_manifest["verified_record_count"] == len(shard_work)
+    assert complete_manifest["first_unverified_batch_ids"] == []
+
+    def unexpected_model_call(*_: object, **__: object) -> tuple[dict, dict]:
+        pytest.fail("complete arbitration checkpoint resume must be zero-call")
+
+    monkeypatch.setattr(reviewer_runner, "_run_model", unexpected_model_call)
+    assert (
+        reviewer_runner.run_arbitration(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                fable_dir=fable_dir,
+                deepseek_dir=deepseek_dir,
+                output_dir=complete_checkpoint,
+                workers=8,
+                shard_index=shard_index,
+                shard_count=4,
+                resume=True,
+                checkpoint_source_sha="a" * 40,
+                checkpoint_workflow_run_id="32523797644",
+            )
+        )
+        == 0
+    )
+    resumed_manifest = json.loads(
+        (complete_checkpoint / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert {record["status"] for record in resumed_manifest["records"]} == {"reused"}
 
 
 def test_arbitration_checkpoint_preserves_preflight_failure_skeleton(
@@ -2901,6 +3699,7 @@ def test_arbitration_checkpoint_preserves_preflight_failure_skeleton(
     reviewer_runner._validate_arbitration_checkpoint(
         checkpoint,
         packet_source_sha="a" * 40,
+        expected_workflow_run_id="33030145550",
         work=work,
         plan_sha256=plan_sha256,
         shard_index=shard_index,

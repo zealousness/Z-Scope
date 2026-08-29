@@ -35,7 +35,15 @@ on:
         required: false
         default: ""
       fable_primary_source_sha:
-        description: Source SHA naming the complete Claude primary artifact (defaults to source_sha)
+        description: Source SHA naming the complete Claude primary artifact
+        required: false
+        default: ""
+      fable_primary_artifact_id:
+        description: Immutable artifact ID for the complete Claude primary artifact
+        required: false
+        default: ""
+      fable_primary_artifact_digest:
+        description: Externally bound sha256 digest for the complete Claude primary artifact
         required: false
         default: ""
       deepseek_primary_run_id:
@@ -43,9 +51,64 @@ on:
         required: false
         default: ""
       deepseek_primary_source_sha:
-        description: Source SHA naming the complete DeepSeek primary artifact (defaults to source_sha)
+        description: Source SHA naming the complete DeepSeek primary artifact
         required: false
         default: ""
+      deepseek_primary_artifact_id:
+        description: Immutable artifact ID for the complete DeepSeek primary artifact
+        required: false
+        default: ""
+      deepseek_primary_artifact_digest:
+        description: Externally bound sha256 digest for the complete DeepSeek primary artifact
+        required: false
+        default: ""
+      arbitration_reuse_run_id:
+        description: Optional protected review run containing completed arbitration shards
+        required: false
+        default: ""
+      arbitration_reuse_source_sha:
+        description: Source SHA bound by the optional arbitration shard artifacts
+        required: false
+        default: ""
+      arbitration_reuse_shard_0_artifact_id:
+        description: Immutable artifact ID for optional arbitration shard 0 reuse
+        required: false
+        default: ""
+      arbitration_reuse_shard_0_artifact_digest:
+        description: Externally bound sha256 digest for optional arbitration shard 0 reuse
+        required: false
+        default: ""
+      arbitration_reuse_shard_1_artifact_id:
+        description: Immutable artifact ID for optional arbitration shard 1 reuse
+        required: false
+        default: ""
+      arbitration_reuse_shard_1_artifact_digest:
+        description: Externally bound sha256 digest for optional arbitration shard 1 reuse
+        required: false
+        default: ""
+      arbitration_reuse_shard_2_artifact_id:
+        description: Immutable artifact ID for optional arbitration shard 2 reuse
+        required: false
+        default: ""
+      arbitration_reuse_shard_2_artifact_digest:
+        description: Externally bound sha256 digest for optional arbitration shard 2 reuse
+        required: false
+        default: ""
+      arbitration_reuse_shard_3_artifact_id:
+        description: Immutable artifact ID for optional arbitration shard 3 reuse
+        required: false
+        default: ""
+      arbitration_reuse_shard_3_artifact_digest:
+        description: Externally bound sha256 digest for optional arbitration shard 3 reuse
+        required: false
+        default: ""
+
+concurrency:
+  group: range-v16-independent-review
+  cancel-in-progress: false
+
+env:
+  E0_MAX_CONCURRENT_CALLS: "8"
 
 permissions:
   contents: read
@@ -54,6 +117,7 @@ permissions:
 jobs:
   codex_readiness:
     name: codex answer-free readiness
+    needs: prepare_arbitration_reuse
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 15
@@ -84,6 +148,7 @@ jobs:
     needs: codex_readiness
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           # Keep the fable machine slot/artifact name for protected-protocol compatibility.
@@ -149,8 +214,12 @@ jobs:
           DEEPSEEK_CHECKPOINT_SOURCE_SHA: ${{ inputs.deepseek_checkpoint_source_sha }}
           FABLE_PRIMARY_RUN_ID: ${{ inputs.fable_primary_run_id }}
           FABLE_PRIMARY_SOURCE_SHA: ${{ inputs.fable_primary_source_sha }}
+          FABLE_PRIMARY_ARTIFACT_ID: ${{ inputs.fable_primary_artifact_id }}
+          FABLE_PRIMARY_ARTIFACT_DIGEST: ${{ inputs.fable_primary_artifact_digest }}
           DEEPSEEK_PRIMARY_RUN_ID: ${{ inputs.deepseek_primary_run_id }}
           DEEPSEEK_PRIMARY_SOURCE_SHA: ${{ inputs.deepseek_primary_source_sha }}
+          DEEPSEEK_PRIMARY_ARTIFACT_ID: ${{ inputs.deepseek_primary_artifact_id }}
+          DEEPSEEK_PRIMARY_ARTIFACT_DIGEST: ${{ inputs.deepseek_primary_artifact_digest }}
         run: |
           set -euo pipefail
           if [[ '${{ matrix.reviewer }}' = fable ]]; then
@@ -159,12 +228,16 @@ jobs:
             checkpoint_source_sha="$FABLE_CHECKPOINT_SOURCE_SHA"
             primary_run_id="$FABLE_PRIMARY_RUN_ID"
             primary_source_sha="$FABLE_PRIMARY_SOURCE_SHA"
+            primary_artifact_id="$FABLE_PRIMARY_ARTIFACT_ID"
+            primary_artifact_digest="$FABLE_PRIMARY_ARTIFACT_DIGEST"
           else
             checkpoint_run_id="$DEEPSEEK_CHECKPOINT_RUN_ID"
             checkpoint_artifact_id="$DEEPSEEK_CHECKPOINT_ARTIFACT_ID"
             checkpoint_source_sha="$DEEPSEEK_CHECKPOINT_SOURCE_SHA"
             primary_run_id="$DEEPSEEK_PRIMARY_RUN_ID"
             primary_source_sha="$DEEPSEEK_PRIMARY_SOURCE_SHA"
+            primary_artifact_id="$DEEPSEEK_PRIMARY_ARTIFACT_ID"
+            primary_artifact_digest="$DEEPSEEK_PRIMARY_ARTIFACT_DIGEST"
           fi
           if [[ -n "$checkpoint_run_id" && -n "$primary_run_id" ]]; then
             echo "checkpoint and complete primary recovery are mutually exclusive" >&2
@@ -187,8 +260,49 @@ jobs:
             echo "complete primary source SHA requires a complete primary run ID" >&2
             exit 2
           fi
+          primary_recovery_fields=(
+            "$primary_run_id"
+            "$primary_source_sha"
+            "$primary_artifact_id"
+            "$primary_artifact_digest"
+          )
+          primary_recovery_nonempty=0
+          for value in "${primary_recovery_fields[@]}"; do
+            [[ -n "$value" ]] && primary_recovery_nonempty=$((primary_recovery_nonempty + 1))
+          done
+          if (( primary_recovery_nonempty != 0 && primary_recovery_nonempty != 4 )); then
+            echo "complete primary reuse requires run, source, immutable artifact ID, and digest" >&2
+            exit 2
+          fi
+          if [[ -n "$primary_artifact_id" && ! "$primary_artifact_id" =~ ^[0-9]+$ ]]; then
+            echo "complete primary artifact ID must be numeric" >&2
+            exit 2
+          fi
+          if [[ -n "$primary_artifact_digest" && ! "$primary_artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "complete primary artifact digest must be canonical sha256" >&2
+            exit 2
+          fi
+      - id: current_primary_checkpoint
+        name: Restore latest current-run primary checkpoint
+        if: github.run_attempt > 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 scripts/download_e0_run_artifacts.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$GITHUB_SHA" \
+            --optional-checkpoint-prefix 'range-v16-primary-checkpoint-${{ matrix.reviewer }}-${{ inputs.source_sha }}=review-evidence/${{ matrix.reviewer }}'
+          restored=false
+          if [[ -f 'review-evidence/${{ matrix.reviewer }}/checkpoint-manifest.json' ]]; then
+            restored=true
+          fi
+          echo "restored=$restored" >> "$GITHUB_OUTPUT"
       - name: Restore verified Fable checkpoint
-        if: matrix.reviewer == 'fable' && inputs.fable_checkpoint_run_id != ''
+        if: matrix.reviewer == 'fable' && inputs.fable_checkpoint_run_id != '' && steps.current_primary_checkpoint.outputs.restored != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
@@ -199,9 +313,10 @@ jobs:
             --expected-run-id '${{ inputs.fable_checkpoint_run_id }}' \
             --expected-source-sha '${{ inputs.fable_checkpoint_source_sha || inputs.source_sha }}' \
             --expected-name 'range-v16-primary-checkpoint-fable-${{ inputs.fable_checkpoint_source_sha || inputs.source_sha }}' \
+            --allow-attempt-suffix \
             --output-dir review-evidence/fable
       - name: Restore verified DeepSeek checkpoint
-        if: matrix.reviewer == 'deepseek' && inputs.deepseek_checkpoint_run_id != ''
+        if: matrix.reviewer == 'deepseek' && inputs.deepseek_checkpoint_run_id != '' && steps.current_primary_checkpoint.outputs.restored != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
@@ -212,36 +327,51 @@ jobs:
             --expected-run-id '${{ inputs.deepseek_checkpoint_run_id }}' \
             --expected-source-sha '${{ inputs.deepseek_checkpoint_source_sha || inputs.source_sha }}' \
             --expected-name 'range-v16-primary-checkpoint-deepseek-${{ inputs.deepseek_checkpoint_source_sha || inputs.source_sha }}' \
+            --allow-attempt-suffix \
             --output-dir review-evidence/deepseek
       - name: Restore exact complete primary artifact
-        if: ${{ (matrix.reviewer == 'fable' && inputs.fable_primary_run_id != '') || (matrix.reviewer == 'deepseek' && inputs.deepseek_primary_run_id != '') }}
+        if: ${{ steps.current_primary_checkpoint.outputs.restored != 'true' && ((matrix.reviewer == 'fable' && inputs.fable_primary_run_id != '') || (matrix.reviewer == 'deepseek' && inputs.deepseek_primary_run_id != '')) }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
           PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
           FABLE_PRIMARY_RUN_ID: ${{ inputs.fable_primary_run_id }}
           FABLE_PRIMARY_SOURCE_SHA: ${{ inputs.fable_primary_source_sha }}
+          FABLE_PRIMARY_ARTIFACT_ID: ${{ inputs.fable_primary_artifact_id }}
+          FABLE_PRIMARY_ARTIFACT_DIGEST: ${{ inputs.fable_primary_artifact_digest }}
           DEEPSEEK_PRIMARY_RUN_ID: ${{ inputs.deepseek_primary_run_id }}
           DEEPSEEK_PRIMARY_SOURCE_SHA: ${{ inputs.deepseek_primary_source_sha }}
+          DEEPSEEK_PRIMARY_ARTIFACT_ID: ${{ inputs.deepseek_primary_artifact_id }}
+          DEEPSEEK_PRIMARY_ARTIFACT_DIGEST: ${{ inputs.deepseek_primary_artifact_digest }}
         run: |
           set -euo pipefail
           umask 077
           reviewer='${{ matrix.reviewer }}'
           if [[ "$reviewer" = fable ]]; then
             primary_run_id="$FABLE_PRIMARY_RUN_ID"
-            primary_source_sha="${FABLE_PRIMARY_SOURCE_SHA:-$PACKET_SOURCE_SHA}"
+            primary_source_sha="$FABLE_PRIMARY_SOURCE_SHA"
+            primary_artifact_id="$FABLE_PRIMARY_ARTIFACT_ID"
+            primary_artifact_digest="$FABLE_PRIMARY_ARTIFACT_DIGEST"
+            producer_job='primary (claude-glm-5.3)'
           else
             primary_run_id="$DEEPSEEK_PRIMARY_RUN_ID"
-            primary_source_sha="${DEEPSEEK_PRIMARY_SOURCE_SHA:-$PACKET_SOURCE_SHA}"
+            primary_source_sha="$DEEPSEEK_PRIMARY_SOURCE_SHA"
+            primary_artifact_id="$DEEPSEEK_PRIMARY_ARTIFACT_ID"
+            primary_artifact_digest="$DEEPSEEK_PRIMARY_ARTIFACT_DIGEST"
+            producer_job='primary (deepseek-v4-pro)'
           fi
           artifact_name="range-v16-primary-$reviewer-$primary_source_sha"
           python3 scripts/download_e0_run_artifacts.py \
             --repository "$GITHUB_REPOSITORY" \
             --expected-run-id "$primary_run_id" \
             --expected-head-sha "$primary_source_sha" \
-            --artifact "$artifact_name=retained-primary/$reviewer"
+            --expected-workflow-path '.github/workflows/range-v16-review.yml' \
+            --expected-event workflow_dispatch \
+            --expected-head-branch main \
+            --expected-producer-job "$producer_job" \
+            --exact-artifact "$artifact_name=retained-primary/$reviewer=$primary_artifact_id=$primary_artifact_digest"
       - name: Revalidate complete primary artifact as a zero-call checkpoint
-        if: ${{ (matrix.reviewer == 'fable' && inputs.fable_primary_run_id != '') || (matrix.reviewer == 'deepseek' && inputs.deepseek_primary_run_id != '') }}
+        if: ${{ steps.current_primary_checkpoint.outputs.restored != 'true' && ((matrix.reviewer == 'fable' && inputs.fable_primary_run_id != '') || (matrix.reviewer == 'deepseek' && inputs.deepseek_primary_run_id != '')) }}
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
           PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
@@ -254,10 +384,10 @@ jobs:
           umask 077
           if [[ '${{ matrix.reviewer }}' = fable ]]; then
             primary_run_id="$FABLE_PRIMARY_RUN_ID"
-            primary_source_sha="${FABLE_PRIMARY_SOURCE_SHA:-$PACKET_SOURCE_SHA}"
+            primary_source_sha="$FABLE_PRIMARY_SOURCE_SHA"
           else
             primary_run_id="$DEEPSEEK_PRIMARY_RUN_ID"
-            primary_source_sha="${DEEPSEEK_PRIMARY_SOURCE_SHA:-$PACKET_SOURCE_SHA}"
+            primary_source_sha="$DEEPSEEK_PRIMARY_SOURCE_SHA"
           fi
           python3 scripts/run_e0_reviewers.py checkpoint \
             --reviewer '${{ matrix.reviewer }}' \
@@ -267,7 +397,7 @@ jobs:
             --packet-source-sha "$PACKET_SOURCE_SHA" \
             --retained-source-sha "$primary_source_sha" \
             --workflow-run-id "$primary_run_id" \
-            --workers 4 \
+            --workers "$E0_MAX_CONCURRENT_CALLS" \
             --require-complete
       - id: primary_review
         name: Run independent primary reviewer
@@ -280,10 +410,13 @@ jobs:
           FABLE_PRIMARY_RUN_ID: ${{ inputs.fable_primary_run_id }}
           DEEPSEEK_PRIMARY_RUN_ID: ${{ inputs.deepseek_primary_run_id }}
           PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+          CURRENT_PRIMARY_RESTORED: ${{ steps.current_primary_checkpoint.outputs.restored }}
         run: |
           umask 077
           checkpoint_args=()
-          if [[ '${{ matrix.reviewer }}' = fable && -n "$FABLE_CHECKPOINT_RUN_ID" ]]; then
+          if [[ "$CURRENT_PRIMARY_RESTORED" = true ]]; then
+            checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA" --checkpoint-workflow-run-id "$GITHUB_RUN_ID")
+          elif [[ '${{ matrix.reviewer }}' = fable && -n "$FABLE_CHECKPOINT_RUN_ID" ]]; then
             checkpoint_args=(--resume --checkpoint-source-sha "${FABLE_CHECKPOINT_SOURCE_SHA:-$PACKET_SOURCE_SHA}" --checkpoint-workflow-run-id "$FABLE_CHECKPOINT_RUN_ID")
           elif [[ '${{ matrix.reviewer }}' = fable && -n "$FABLE_PRIMARY_RUN_ID" ]]; then
             checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA" --checkpoint-workflow-run-id "$FABLE_PRIMARY_RUN_ID")
@@ -296,7 +429,7 @@ jobs:
             --reviewer '${{ matrix.reviewer }}' \
             --packet-dir test/range/benchmark/v16/review-packets \
             --output-dir 'review-evidence/${{ matrix.reviewer }}' \
-            --workers 4 \
+            --workers "$E0_MAX_CONCURRENT_CALLS" \
             "${checkpoint_args[@]}"
       - name: Build verified failure checkpoint
         if: ${{ failure() && steps.primary_review.outcome == 'failure' }}
@@ -312,12 +445,12 @@ jobs:
             --packet-source-sha '${{ inputs.source_sha }}' \
             --retained-source-sha '${{ inputs.source_sha }}' \
             --workflow-run-id '${{ github.run_id }}' \
-            --workers 4
+            --workers "$E0_MAX_CONCURRENT_CALLS"
       - name: Upload verified failure checkpoint
         if: ${{ failure() && steps.primary_review.outcome == 'failure' }}
         uses: ./.github/actions/upload-artifact-retry
         with:
-          name: range-v16-primary-checkpoint-${{ matrix.reviewer }}-${{ inputs.source_sha }}
+          name: range-v16-primary-checkpoint-${{ matrix.reviewer }}-${{ inputs.source_sha }}-attempt-${{ github.run_attempt }}
           path: review-checkpoint/${{ matrix.reviewer }}
           if-no-files-found: error
           retention-days: 7
@@ -327,11 +460,370 @@ jobs:
           path: review-evidence/${{ matrix.reviewer }}
           if-no-files-found: error
           retention-days: 90
+  prepare_arbitration_reuse:
+    name: validate optional cross-run arbitration reuse
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          clean: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Verify packet-only source commit and frozen harnesses
+        env:
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main'
+          python3 - <<'PY'
+          import os, subprocess
+          base = os.environ["GITHUB_SHA"]
+          source = os.environ["PACKET_SOURCE_SHA"]
+          rows = subprocess.run(
+              ["git", "diff", "--name-status", base, source],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.splitlines()
+          allowed_catalog = "test/range/benchmark/v16/review-packet-catalog.json"
+          allowed_prefix = "test/range/benchmark/v16/review-packets/"
+          invalid = []
+          for row in rows:
+              status, path = row.split("\t", 1)
+              if status not in {"A", "M"} or not (
+                  path == allowed_catalog
+                  or (path.startswith(allowed_prefix) and path.endswith(".json"))
+              ):
+                  invalid.append(row)
+          if invalid:
+              raise SystemExit("untrusted review source changes: " + ", ".join(invalid))
+          PY
+          claude_version="$(claude --version | awk '{print $1}')"
+          codex_version="$(codex --version)"
+          dsh_version="$(dsh --version)"
+          echo "reviewer harness versions: claude=$claude_version codex=$codex_version dsh=$dsh_version"
+          test "$claude_version" = "2.1.233"
+          test "$codex_version" = "codex-cli 0.144.4"
+          test "$dsh_version" = "0.1.0-rc.6"
+          test "$(git rev-parse HEAD)" = '${{ inputs.source_sha }}'
+      - id: reuse_inputs
+        name: Validate all optional arbitration shard reuse inputs
+        env:
+          FABLE_CHECKPOINT_RUN_ID: ${{ inputs.fable_checkpoint_run_id }}
+          FABLE_CHECKPOINT_ARTIFACT_ID: ${{ inputs.fable_checkpoint_artifact_id }}
+          FABLE_CHECKPOINT_SOURCE_SHA: ${{ inputs.fable_checkpoint_source_sha }}
+          DEEPSEEK_CHECKPOINT_RUN_ID: ${{ inputs.deepseek_checkpoint_run_id }}
+          DEEPSEEK_CHECKPOINT_ARTIFACT_ID: ${{ inputs.deepseek_checkpoint_artifact_id }}
+          DEEPSEEK_CHECKPOINT_SOURCE_SHA: ${{ inputs.deepseek_checkpoint_source_sha }}
+          FABLE_PRIMARY_RUN_ID: ${{ inputs.fable_primary_run_id }}
+          FABLE_PRIMARY_SOURCE_SHA: ${{ inputs.fable_primary_source_sha }}
+          FABLE_PRIMARY_ARTIFACT_ID: ${{ inputs.fable_primary_artifact_id }}
+          FABLE_PRIMARY_ARTIFACT_DIGEST: ${{ inputs.fable_primary_artifact_digest }}
+          DEEPSEEK_PRIMARY_RUN_ID: ${{ inputs.deepseek_primary_run_id }}
+          DEEPSEEK_PRIMARY_SOURCE_SHA: ${{ inputs.deepseek_primary_source_sha }}
+          DEEPSEEK_PRIMARY_ARTIFACT_ID: ${{ inputs.deepseek_primary_artifact_id }}
+          DEEPSEEK_PRIMARY_ARTIFACT_DIGEST: ${{ inputs.deepseek_primary_artifact_digest }}
+          REUSE_RUN_ID: ${{ inputs.arbitration_reuse_run_id }}
+          REUSE_SOURCE_SHA: ${{ inputs.arbitration_reuse_source_sha }}
+          SHARD_0_ID: ${{ inputs.arbitration_reuse_shard_0_artifact_id }}
+          SHARD_0_DIGEST: ${{ inputs.arbitration_reuse_shard_0_artifact_digest }}
+          SHARD_1_ID: ${{ inputs.arbitration_reuse_shard_1_artifact_id }}
+          SHARD_1_DIGEST: ${{ inputs.arbitration_reuse_shard_1_artifact_digest }}
+          SHARD_2_ID: ${{ inputs.arbitration_reuse_shard_2_artifact_id }}
+          SHARD_2_DIGEST: ${{ inputs.arbitration_reuse_shard_2_artifact_digest }}
+          SHARD_3_ID: ${{ inputs.arbitration_reuse_shard_3_artifact_id }}
+          SHARD_3_DIGEST: ${{ inputs.arbitration_reuse_shard_3_artifact_digest }}
+        run: |
+          set -euo pipefail
+          validate_primary_recovery() {
+            local checkpoint_run_id="$1"
+            local checkpoint_artifact_id="$2"
+            local checkpoint_source_sha="$3"
+            local primary_run_id="$4"
+            local primary_source_sha="$5"
+            local primary_artifact_id="$6"
+            local primary_artifact_digest="$7"
+            if [[ -n "$checkpoint_run_id" && -n "$primary_run_id" ]]; then
+              echo "checkpoint and complete primary recovery are mutually exclusive" >&2
+              exit 2
+            fi
+            if [[ -n "$checkpoint_source_sha" && -z "$checkpoint_run_id" ]]; then
+              echo "checkpoint source SHA requires a checkpoint run ID" >&2
+              exit 2
+            fi
+            if [[ -n "$checkpoint_run_id" && -z "$checkpoint_artifact_id" ]] || \
+               [[ -z "$checkpoint_run_id" && -n "$checkpoint_artifact_id" ]]; then
+              echo "checkpoint run ID and immutable artifact ID must be provided together" >&2
+              exit 2
+            fi
+            if [[ -n "$checkpoint_run_id" && ! "$checkpoint_run_id" =~ ^[0-9]+$ ]] || \
+               [[ -n "$checkpoint_artifact_id" && ! "$checkpoint_artifact_id" =~ ^[0-9]+$ ]]; then
+              echo "checkpoint run and artifact IDs must be numeric" >&2
+              exit 2
+            fi
+            if [[ -n "$checkpoint_source_sha" && ! "$checkpoint_source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "checkpoint source SHA must be canonical" >&2
+              exit 2
+            fi
+            local primary_fields=(
+              "$primary_run_id"
+              "$primary_source_sha"
+              "$primary_artifact_id"
+              "$primary_artifact_digest"
+            )
+            local primary_nonempty=0
+            local value
+            for value in "${primary_fields[@]}"; do
+              [[ -n "$value" ]] && primary_nonempty=$((primary_nonempty + 1))
+            done
+            if (( primary_nonempty != 0 && primary_nonempty != 4 )); then
+              echo "complete primary reuse requires run, source, immutable artifact ID, and digest" >&2
+              exit 2
+            fi
+            if [[ -n "$primary_run_id" && ! "$primary_run_id" =~ ^[0-9]+$ ]] || \
+               [[ -n "$primary_artifact_id" && ! "$primary_artifact_id" =~ ^[0-9]+$ ]]; then
+              echo "complete primary run and artifact IDs must be numeric" >&2
+              exit 2
+            fi
+            if [[ -n "$primary_source_sha" && ! "$primary_source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "complete primary source SHA must be canonical" >&2
+              exit 2
+            fi
+            if [[ -n "$primary_artifact_digest" && ! "$primary_artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "complete primary artifact digest must be canonical sha256" >&2
+              exit 2
+            fi
+          }
+          validate_primary_recovery \
+            "$FABLE_CHECKPOINT_RUN_ID" \
+            "$FABLE_CHECKPOINT_ARTIFACT_ID" \
+            "$FABLE_CHECKPOINT_SOURCE_SHA" \
+            "$FABLE_PRIMARY_RUN_ID" \
+            "$FABLE_PRIMARY_SOURCE_SHA" \
+            "$FABLE_PRIMARY_ARTIFACT_ID" \
+            "$FABLE_PRIMARY_ARTIFACT_DIGEST"
+          validate_primary_recovery \
+            "$DEEPSEEK_CHECKPOINT_RUN_ID" \
+            "$DEEPSEEK_CHECKPOINT_ARTIFACT_ID" \
+            "$DEEPSEEK_CHECKPOINT_SOURCE_SHA" \
+            "$DEEPSEEK_PRIMARY_RUN_ID" \
+            "$DEEPSEEK_PRIMARY_SOURCE_SHA" \
+            "$DEEPSEEK_PRIMARY_ARTIFACT_ID" \
+            "$DEEPSEEK_PRIMARY_ARTIFACT_DIGEST"
+          exact_primary_count=0
+          [[ -n "$FABLE_PRIMARY_RUN_ID" ]] && exact_primary_count=$((exact_primary_count + 1))
+          [[ -n "$DEEPSEEK_PRIMARY_RUN_ID" ]] && exact_primary_count=$((exact_primary_count + 1))
+          selected=0
+          for shard in 0 1 2 3; do
+            id_var="SHARD_${shard}_ID"
+            digest_var="SHARD_${shard}_DIGEST"
+            artifact_id="${!id_var}"
+            artifact_digest="${!digest_var}"
+            if [[ -n "$artifact_id" || -n "$artifact_digest" ]]; then
+              if [[ -z "$artifact_id" || -z "$artifact_digest" ]]; then
+                echo "arbitration shard reuse requires paired artifact ID and digest" >&2
+                exit 2
+              fi
+              [[ "$artifact_id" =~ ^[0-9]+$ ]] || {
+                echo "arbitration shard artifact ID must be numeric" >&2
+                exit 2
+              }
+              [[ "$artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+                echo "arbitration shard artifact digest must be canonical sha256" >&2
+                exit 2
+              }
+              selected=$((selected + 1))
+            fi
+          done
+          if (( selected > 0 )); then
+            [[ "$REUSE_RUN_ID" =~ ^[0-9]+$ ]] || {
+              echo "arbitration reuse run ID is required and must be numeric" >&2
+              exit 2
+            }
+            [[ "$REUSE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "arbitration reuse source SHA is required and must be canonical" >&2
+              exit 2
+            }
+            complete_primary_fields=(
+              "$FABLE_PRIMARY_RUN_ID"
+              "$FABLE_PRIMARY_SOURCE_SHA"
+              "$FABLE_PRIMARY_ARTIFACT_ID"
+              "$FABLE_PRIMARY_ARTIFACT_DIGEST"
+              "$DEEPSEEK_PRIMARY_RUN_ID"
+              "$DEEPSEEK_PRIMARY_SOURCE_SHA"
+              "$DEEPSEEK_PRIMARY_ARTIFACT_ID"
+              "$DEEPSEEK_PRIMARY_ARTIFACT_DIGEST"
+            )
+            for value in "${complete_primary_fields[@]}"; do
+              if [[ -z "$value" ]]; then
+                echo "arbitration shard reuse requires exact complete reuse of both primaries" >&2
+                exit 2
+              fi
+            done
+          elif [[ -n "$REUSE_RUN_ID" || -n "$REUSE_SOURCE_SHA" ]]; then
+            echo "arbitration reuse run/source requires at least one exact shard artifact" >&2
+            exit 2
+          fi
+          echo "exact_primary_count=$exact_primary_count" >> "$GITHUB_OUTPUT"
+          echo "selected_count=$selected" >> "$GITHUB_OUTPUT"
+      - name: Restore and fully revalidate exact primary reuse inputs
+        if: steps.reuse_inputs.outputs.exact_primary_count != '0'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+          FABLE_PRIMARY_RUN_ID: ${{ inputs.fable_primary_run_id }}
+          FABLE_PRIMARY_SOURCE_SHA: ${{ inputs.fable_primary_source_sha }}
+          FABLE_PRIMARY_ARTIFACT_ID: ${{ inputs.fable_primary_artifact_id }}
+          FABLE_PRIMARY_ARTIFACT_DIGEST: ${{ inputs.fable_primary_artifact_digest }}
+          DEEPSEEK_PRIMARY_RUN_ID: ${{ inputs.deepseek_primary_run_id }}
+          DEEPSEEK_PRIMARY_SOURCE_SHA: ${{ inputs.deepseek_primary_source_sha }}
+          DEEPSEEK_PRIMARY_ARTIFACT_ID: ${{ inputs.deepseek_primary_artifact_id }}
+          DEEPSEEK_PRIMARY_ARTIFACT_DIGEST: ${{ inputs.deepseek_primary_artifact_digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for reviewer in fable deepseek; do
+            if [[ "$reviewer" = fable ]]; then
+              primary_run_id="$FABLE_PRIMARY_RUN_ID"
+              primary_source_sha="$FABLE_PRIMARY_SOURCE_SHA"
+              primary_artifact_id="$FABLE_PRIMARY_ARTIFACT_ID"
+              primary_artifact_digest="$FABLE_PRIMARY_ARTIFACT_DIGEST"
+              producer_job='primary (claude-glm-5.3)'
+            else
+              primary_run_id="$DEEPSEEK_PRIMARY_RUN_ID"
+              primary_source_sha="$DEEPSEEK_PRIMARY_SOURCE_SHA"
+              primary_artifact_id="$DEEPSEEK_PRIMARY_ARTIFACT_ID"
+              primary_artifact_digest="$DEEPSEEK_PRIMARY_ARTIFACT_DIGEST"
+              producer_job='primary (deepseek-v4-pro)'
+            fi
+            if [[ -z "$primary_run_id" ]]; then
+              continue
+            fi
+            artifact_name="range-v16-primary-$reviewer-$primary_source_sha"
+            python3 scripts/download_e0_run_artifacts.py \
+              --repository "$GITHUB_REPOSITORY" \
+              --expected-run-id "$primary_run_id" \
+              --expected-head-sha "$primary_source_sha" \
+              --expected-workflow-path '.github/workflows/range-v16-review.yml' \
+              --expected-event workflow_dispatch \
+              --expected-head-branch main \
+              --expected-producer-job "$producer_job" \
+              --exact-artifact "$artifact_name=retained-primary/$reviewer=$primary_artifact_id=$primary_artifact_digest"
+            python3 scripts/run_e0_reviewers.py checkpoint \
+              --reviewer "$reviewer" \
+              --packet-dir test/range/benchmark/v16/review-packets \
+              --retained-dir "retained-primary/$reviewer" \
+              --output-dir "review-evidence/$reviewer" \
+              --packet-source-sha "$PACKET_SOURCE_SHA" \
+              --retained-source-sha "$primary_source_sha" \
+              --workflow-run-id "$primary_run_id" \
+              --workers "$E0_MAX_CONCURRENT_CALLS" \
+              --require-complete
+            python3 scripts/run_e0_reviewers.py primary \
+              --reviewer "$reviewer" \
+              --packet-dir test/range/benchmark/v16/review-packets \
+              --output-dir "review-evidence/$reviewer" \
+              --workers "$E0_MAX_CONCURRENT_CALLS" \
+              --resume \
+              --checkpoint-source-sha "$PACKET_SOURCE_SHA" \
+              --checkpoint-workflow-run-id "$primary_run_id"
+          done
+      - name: Download and fully revalidate all selected arbitration shards
+        if: steps.reuse_inputs.outputs.selected_count != '0'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
+          REUSE_RUN_ID: ${{ inputs.arbitration_reuse_run_id }}
+          REUSE_SOURCE_SHA: ${{ inputs.arbitration_reuse_source_sha }}
+          SHARD_0_ID: ${{ inputs.arbitration_reuse_shard_0_artifact_id }}
+          SHARD_0_DIGEST: ${{ inputs.arbitration_reuse_shard_0_artifact_digest }}
+          SHARD_1_ID: ${{ inputs.arbitration_reuse_shard_1_artifact_id }}
+          SHARD_1_DIGEST: ${{ inputs.arbitration_reuse_shard_1_artifact_digest }}
+          SHARD_2_ID: ${{ inputs.arbitration_reuse_shard_2_artifact_id }}
+          SHARD_2_DIGEST: ${{ inputs.arbitration_reuse_shard_2_artifact_digest }}
+          SHARD_3_ID: ${{ inputs.arbitration_reuse_shard_3_artifact_id }}
+          SHARD_3_DIGEST: ${{ inputs.arbitration_reuse_shard_3_artifact_digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for shard in 0 1 2 3; do
+            id_var="SHARD_${shard}_ID"
+            digest_var="SHARD_${shard}_DIGEST"
+            artifact_id="${!id_var}"
+            artifact_digest="${!digest_var}"
+            if [[ -z "$artifact_id" ]]; then
+              continue
+            fi
+            artifact_name="range-v16-arbitration-shard-$shard-$REUSE_SOURCE_SHA"
+            producer_job="codex arbitration (shard $shard)"
+            python3 scripts/download_e0_run_artifacts.py \
+              --repository "$GITHUB_REPOSITORY" \
+              --expected-run-id "$REUSE_RUN_ID" \
+              --expected-head-sha "$REUSE_SOURCE_SHA" \
+              --expected-workflow-path '.github/workflows/range-v16-review.yml' \
+              --expected-event workflow_dispatch \
+              --expected-head-branch main \
+              --expected-producer-job "$producer_job" \
+              --exact-artifact "$artifact_name=retained-arbitration-shards/$shard=$artifact_id=$artifact_digest"
+            python3 scripts/run_e0_reviewers.py arbitration-checkpoint \
+              --packet-dir test/range/benchmark/v16/review-packets \
+              --fable-dir review-evidence/fable \
+              --deepseek-dir review-evidence/deepseek \
+              --retained-dir "retained-arbitration-shards/$shard" \
+              --output-dir "prepared-arbitration-checkpoints/$shard" \
+              --packet-source-sha "$PACKET_SOURCE_SHA" \
+              --retained-source-sha "$REUSE_SOURCE_SHA" \
+              --workflow-run-id "$REUSE_RUN_ID" \
+              --shard-index "$shard" \
+              --shard-count 4 \
+              --workers "$E0_MAX_CONCURRENT_CALLS" \
+              --require-complete
+          done
+      - name: Upload prepared arbitration reuse checkpoint 0
+        if: inputs.arbitration_reuse_shard_0_artifact_id != ''
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: range-v16-arbitration-reuse-checkpoint-0-${{ inputs.source_sha }}-attempt-${{ github.run_attempt }}
+          path: prepared-arbitration-checkpoints/0
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload prepared arbitration reuse checkpoint 1
+        if: inputs.arbitration_reuse_shard_1_artifact_id != ''
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: range-v16-arbitration-reuse-checkpoint-1-${{ inputs.source_sha }}-attempt-${{ github.run_attempt }}
+          path: prepared-arbitration-checkpoints/1
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload prepared arbitration reuse checkpoint 2
+        if: inputs.arbitration_reuse_shard_2_artifact_id != ''
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: range-v16-arbitration-reuse-checkpoint-2-${{ inputs.source_sha }}-attempt-${{ github.run_attempt }}
+          path: prepared-arbitration-checkpoints/2
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload prepared arbitration reuse checkpoint 3
+        if: inputs.arbitration_reuse_shard_3_artifact_id != ''
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: range-v16-arbitration-reuse-checkpoint-3-${{ inputs.source_sha }}-attempt-${{ github.run_attempt }}
+          path: prepared-arbitration-checkpoints/3
+          if-no-files-found: error
+          retention-days: 7
   arbitrate:
     name: codex arbitration (shard ${{ matrix.shard }})
-    needs: primary
+    needs: [primary, prepare_arbitration_reuse]
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         shard: [0, 1, 2, 3]
     runs-on: [self-hosted, linux, x64, zscope-sealed]
@@ -392,10 +884,11 @@ jobs:
           artifact_args=(
             --artifact 'range-v16-primary-fable-${{ inputs.source_sha }}=review-evidence/fable'
             --artifact 'range-v16-primary-deepseek-${{ inputs.source_sha }}=review-evidence/deepseek'
+            --optional-checkpoint-prefix 'range-v16-arbitration-reuse-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}=restored-reuse-checkpoint/codex-shard'
           )
           if (( GITHUB_RUN_ATTEMPT > 1 )); then
             artifact_args+=(
-              --optional-artifact 'range-v16-arbitration-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}=restored-checkpoint/codex-shard'
+              --optional-checkpoint-prefix 'range-v16-arbitration-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}=restored-checkpoint/codex-shard'
             )
           fi
           python3 scripts/download_e0_run_artifacts.py \
@@ -409,16 +902,36 @@ jobs:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
           PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
           SHARD_INDEX: ${{ matrix.shard }}
+          REUSE_RUN_ID: ${{ inputs.arbitration_reuse_run_id }}
+          REUSE_SOURCE_SHA: ${{ inputs.arbitration_reuse_source_sha }}
+          SHARD_0_ID: ${{ inputs.arbitration_reuse_shard_0_artifact_id }}
+          SHARD_1_ID: ${{ inputs.arbitration_reuse_shard_1_artifact_id }}
+          SHARD_2_ID: ${{ inputs.arbitration_reuse_shard_2_artifact_id }}
+          SHARD_3_ID: ${{ inputs.arbitration_reuse_shard_3_artifact_id }}
         run: |
           set -euo pipefail
           umask 077
           current_dir="$RUNNER_TEMP/range-v16-arbitration-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$SHARD_INDEX"
           test ! -e "$current_dir"
           resume=false
+          checkpoint_run_id=""
+          requires_model=true
+          reuse_id_var="SHARD_${SHARD_INDEX}_ID"
+          selected_reuse_id="${!reuse_id_var}"
           if [[ -f restored-checkpoint/codex-shard/checkpoint-manifest.json ]]; then
             mkdir -p "$current_dir"
             cp -a restored-checkpoint/codex-shard/. "$current_dir/"
             resume=true
+            checkpoint_run_id="$GITHUB_RUN_ID"
+          elif [[ -f restored-reuse-checkpoint/codex-shard/checkpoint-manifest.json ]]; then
+            mkdir -p "$current_dir"
+            cp -a restored-reuse-checkpoint/codex-shard/. "$current_dir/"
+            resume=true
+            checkpoint_run_id="$REUSE_RUN_ID"
+            requires_model=false
+          elif [[ -n "$selected_reuse_id" ]]; then
+            echo "selected arbitration reuse checkpoint is missing after successful preflight" >&2
+            exit 2
           elif (( GITHUB_RUN_ATTEMPT > 1 )); then
             prior_attempt=$((GITHUB_RUN_ATTEMPT - 1))
             prior_dir="$RUNNER_TEMP/range-v16-arbitration-$GITHUB_RUN_ID-$prior_attempt-$SHARD_INDEX"
@@ -434,12 +947,15 @@ jobs:
                 --workflow-run-id "$GITHUB_RUN_ID" \
                 --shard-index "$SHARD_INDEX" \
                 --shard-count 4 \
-                --workers 1
+                --workers "$E0_MAX_CONCURRENT_CALLS"
               resume=true
+              checkpoint_run_id="$GITHUB_RUN_ID"
             fi
           fi
           echo "output_dir=$current_dir" >> "$GITHUB_OUTPUT"
           echo "resume=$resume" >> "$GITHUB_OUTPUT"
+          echo "checkpoint_run_id=$checkpoint_run_id" >> "$GITHUB_OUTPUT"
+          echo "requires_model=$requires_model" >> "$GITHUB_OUTPUT"
       - id: arbitration_review
         name: Run deterministic Codex mandatory and disagreement arbitration shard
         env:
@@ -448,16 +964,23 @@ jobs:
           PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
           CODEX_OUTPUT: ${{ steps.arbitration_paths.outputs.output_dir }}
           RESUME: ${{ steps.arbitration_paths.outputs.resume }}
+          CHECKPOINT_RUN_ID: ${{ steps.arbitration_paths.outputs.checkpoint_run_id }}
+          REQUIRES_MODEL: ${{ steps.arbitration_paths.outputs.requires_model }}
         run: |
           umask 077
-          if ! python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only; then
+          if [[ "$REQUIRES_MODEL" = true ]] && \
+            ! python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only; then
             mkdir -p "$CODEX_OUTPUT/decisions" "$CODEX_OUTPUT/raw" "$CODEX_OUTPUT/failures"
             echo "::error::codex_preflight_failed_before_arbitration"
             exit 2
           fi
           checkpoint_args=()
           if [[ "$RESUME" = true ]]; then
-            checkpoint_args=(--resume --checkpoint-source-sha "$PACKET_SOURCE_SHA")
+            checkpoint_args=(
+              --resume
+              --checkpoint-source-sha "$PACKET_SOURCE_SHA"
+              --checkpoint-workflow-run-id "$CHECKPOINT_RUN_ID"
+            )
           fi
           python3 scripts/run_e0_reviewers.py arbitrate \
             --packet-dir test/range/benchmark/v16/review-packets \
@@ -466,7 +989,7 @@ jobs:
             --output-dir "$CODEX_OUTPUT" \
             --shard-index '${{ matrix.shard }}' \
             --shard-count 4 \
-            --workers 1 \
+            --workers "$E0_MAX_CONCURRENT_CALLS" \
             "${checkpoint_args[@]}"
       - name: Build verified arbitration shard failure checkpoint
         if: ${{ failure() && steps.arbitration_review.outcome == 'failure' }}
@@ -485,15 +1008,14 @@ jobs:
             --workflow-run-id '${{ github.run_id }}' \
             --shard-index '${{ matrix.shard }}' \
             --shard-count 4 \
-            --workers 1
+            --workers "$E0_MAX_CONCURRENT_CALLS"
       - name: Upload verified arbitration shard failure checkpoint
         if: ${{ failure() && steps.arbitration_review.outcome == 'failure' }}
         uses: ./.github/actions/upload-artifact-retry
         with:
-          name: range-v16-arbitration-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}
+          name: range-v16-arbitration-checkpoint-${{ matrix.shard }}-${{ inputs.source_sha }}-attempt-${{ github.run_attempt }}
           path: review-checkpoint/codex-shard
           if-no-files-found: error
-          overwrite: true
           retention-days: 7
       - name: Upload completed arbitration shard
         uses: ./.github/actions/upload-artifact-retry
@@ -569,7 +1091,7 @@ jobs:
             --artifact 'range-v16-arbitration-shard-1-${{ inputs.source_sha }}=arbitration-shards/1' \
             --artifact 'range-v16-arbitration-shard-2-${{ inputs.source_sha }}=arbitration-shards/2' \
             --artifact 'range-v16-arbitration-shard-3-${{ inputs.source_sha }}=arbitration-shards/3' \
-            --optional-checkpoint-artifact 'range-v16-pair-author-checkpoint-${{ inputs.source_sha }}=retained-pair-checkpoint'
+            --optional-checkpoint-prefix 'range-v16-pair-author-checkpoint-${{ inputs.source_sha }}=retained-pair-checkpoint'
       - name: Merge and revalidate arbitration shards
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
@@ -632,6 +1154,7 @@ jobs:
             --review-provenance review-provenance/review-provenance.json \
             --output "$current_root/normalized-decisions.json"
           resume=false
+          requires_model=true
           retained_root=""
           if [[ -f retained-pair-checkpoint/checkpoint-manifest.json \
               && -d retained-pair-checkpoint/authors \
@@ -645,7 +1168,7 @@ jobs:
             fi
           fi
           if [[ -n "$retained_root" ]]; then
-            python3 scripts/generate_range_v16_safe_pairs.py checkpoint \
+            checkpoint_args=(
               --packet-dir test/range/benchmark/v16/review-packets \
               --normalized-decisions "$current_root/normalized-decisions.json" \
               --retained-dir "$retained_root" \
@@ -653,10 +1176,19 @@ jobs:
               --packet-source-sha "$PACKET_SOURCE_SHA" \
               --retained-source-sha "$PACKET_SOURCE_SHA" \
               --workflow-run-id "$GITHUB_RUN_ID"
+            )
+            if python3 scripts/generate_range_v16_safe_pairs.py checkpoint \
+              "${checkpoint_args[@]}" --require-complete; then
+              requires_model=false
+            else
+              python3 scripts/generate_range_v16_safe_pairs.py checkpoint \
+                "${checkpoint_args[@]}"
+            fi
             resume=true
           fi
           echo "root_dir=$current_root" >> "$GITHUB_OUTPUT"
           echo "resume=$resume" >> "$GITHUB_OUTPUT"
+          echo "requires_model=$requires_model" >> "$GITHUB_OUTPUT"
       - id: pair_author
         name: Author normalized safe pairs
         env:
@@ -665,10 +1197,13 @@ jobs:
           PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
           PAIR_ROOT: ${{ steps.pair_author_paths.outputs.root_dir }}
           RESUME: ${{ steps.pair_author_paths.outputs.resume }}
+          REQUIRES_MODEL: ${{ steps.pair_author_paths.outputs.requires_model }}
         run: |
           set -euo pipefail
           umask 077
-          python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only
+          if [[ "$REQUIRES_MODEL" = true ]]; then
+            python3 scripts/run_e0_reviewers.py codex-preflight --doctor-only
+          fi
           checkpoint_args=()
           if [[ "$RESUME" = true ]]; then
             checkpoint_args=(
@@ -681,20 +1216,25 @@ jobs:
             --packet-dir test/range/benchmark/v16/review-packets \
             --normalized-decisions "$PAIR_ROOT/normalized-decisions.json" \
             --output-dir "$PAIR_ROOT/author" \
-            --workers 4 \
+            --workers "$E0_MAX_CONCURRENT_CALLS" \
             "${checkpoint_args[@]}"
       - id: pair_author_checkpoint
-        name: Build verified safe-pair failure checkpoint
-        if: ${{ failure() && steps.pair_author.outcome == 'failure' }}
+        name: Build verified safe-pair recovery checkpoint
+        if: ${{ always() && (steps.pair_author.outcome == 'success' || steps.pair_author.outcome == 'failure') }}
         env:
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
           PACKET_SOURCE_SHA: ${{ inputs.source_sha }}
           PAIR_ROOT: ${{ steps.pair_author_paths.outputs.root_dir }}
+          PAIR_AUTHOR_OUTCOME: ${{ steps.pair_author.outcome }}
         run: |
           set -euo pipefail
           umask 077
           created=false
           if [[ -d "$PAIR_ROOT/author/authors" && -d "$PAIR_ROOT/author/raw" ]]; then
+            complete_args=()
+            if [[ "$PAIR_AUTHOR_OUTCOME" = success ]]; then
+              complete_args=(--require-complete)
+            fi
             python3 scripts/generate_range_v16_safe_pairs.py checkpoint \
               --packet-dir test/range/benchmark/v16/review-packets \
               --normalized-decisions "$PAIR_ROOT/normalized-decisions.json" \
@@ -702,18 +1242,33 @@ jobs:
               --output-dir review-checkpoint/safe-pair \
               --packet-source-sha "$PACKET_SOURCE_SHA" \
               --retained-source-sha "$PACKET_SOURCE_SHA" \
-              --workflow-run-id "$GITHUB_RUN_ID"
+              --workflow-run-id "$GITHUB_RUN_ID" \
+              "${complete_args[@]}"
             created=true
+          elif [[ "$PAIR_AUTHOR_OUTCOME" = success ]]; then
+            echo "successful safe-pair author did not produce a recoverable workspace" >&2
+            exit 2
           fi
           echo "created=$created" >> "$GITHUB_OUTPUT"
-      - name: Upload verified safe-pair failure checkpoint
-        if: ${{ failure() && steps.pair_author_checkpoint.outputs.created == 'true' }}
+      - name: Classify safe-pair author failure from verified checkpoint
+        if: ${{ always() && steps.pair_author.outcome == 'failure' && steps.pair_author_checkpoint.outputs.created == 'true' }}
+        env:
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_range_v16_safe_pairs.py diagnose-checkpoint \
+            --checkpoint-dir review-checkpoint/safe-pair \
+            --expected-source-sha '${{ inputs.source_sha }}' \
+            --expected-workflow-run-id "$GITHUB_RUN_ID" \
+            --output review-checkpoint/safe-pair-answer-free-diagnostic.json
+      - name: Upload verified safe-pair recovery checkpoint
+        if: ${{ always() && steps.pair_author_checkpoint.outputs.created == 'true' }}
+        continue-on-error: ${{ steps.pair_author.outcome == 'success' }}
         uses: ./.github/actions/upload-artifact-retry
         with:
-          name: range-v16-pair-author-checkpoint-${{ inputs.source_sha }}
+          name: range-v16-pair-author-checkpoint-${{ inputs.source_sha }}-attempt-${{ github.run_attempt }}
           path: review-checkpoint/safe-pair
           if-no-files-found: error
-          overwrite: true
           retention-days: 7
       - uses: ./.github/actions/upload-artifact-retry
         with:

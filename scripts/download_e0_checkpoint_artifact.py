@@ -85,15 +85,24 @@ def _validate_metadata(
     expected_run_id: str,
     expected_source_sha: str,
     expected_name: str,
+    allow_attempt_suffix: bool = False,
 ) -> str:
     workflow_run = metadata.get("workflow_run")
     expected_archive_url = (
         f"https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}/zip"
     )
     digest = metadata.get("digest")
+    artifact_name = metadata.get("name")
+    name_matches = artifact_name == expected_name
+    if allow_attempt_suffix and isinstance(artifact_name, str):
+        name_matches = (
+            name_matches
+            or re.fullmatch(rf"{re.escape(expected_name)}-attempt-[1-9][0-9]*", artifact_name)
+            is not None
+        )
     if (
         metadata.get("id") != artifact_id
-        or metadata.get("name") != expected_name
+        or not name_matches
         or metadata.get("expired") is not False
         or not isinstance(metadata.get("size_in_bytes"), int)
         or isinstance(metadata.get("size_in_bytes"), bool)
@@ -243,6 +252,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-run-id", required=True)
     parser.add_argument("--expected-source-sha", required=True)
     parser.add_argument("--expected-name", required=True)
+    parser.add_argument("--allow-attempt-suffix", action="store_true")
     parser.add_argument("--expected-digest")
     parser.add_argument("--output-dir", required=True, type=Path)
     return parser
@@ -278,6 +288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         expected_run_id=str(args.expected_run_id),
         expected_source_sha=args.expected_source_sha,
         expected_name=args.expected_name,
+        allow_attempt_suffix=args.allow_attempt_suffix,
     )
     if args.expected_digest is not None and expected_digest != args.expected_digest.removeprefix(
         "sha256:"

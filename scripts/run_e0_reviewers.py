@@ -3203,9 +3203,26 @@ def run_primary(args: argparse.Namespace) -> int:
         )
         (output / "checkpoint-manifest.json").unlink()
     records: list[dict[str, Any]] = []
-    completed_count = 0
-    for offset in range(0, len(packets), args.workers):
-        batch = packets[offset : offset + args.workers]
+    missing_packets: list[Mapping[str, Any]] = []
+    for packet in packets:
+        truth_id = _packet_id(packet)
+        decision_path = output / "decisions" / f"{truth_id}.json"
+        raw_path = output / "raw" / f"{truth_id}.json"
+        if decision_path.exists() or raw_path.exists():
+            records.append(
+                _run_primary_packet(
+                    packet,
+                    reviewer=args.reviewer,
+                    output=output,
+                    resume=args.resume,
+                )
+            )
+        else:
+            missing_packets.append(packet)
+    completed_count = len(records)
+    for offset in range(0, len(missing_packets), args.workers):
+        batch = missing_packets[offset : offset + args.workers]
+        failure_count = 0
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
                 executor.submit(
@@ -3219,12 +3236,19 @@ def run_primary(args: argparse.Namespace) -> int:
             }
             for future in as_completed(futures):
                 truth_id = futures[future]
-                records.append(future.result())
+                try:
+                    record = future.result()
+                except Exception:
+                    failure_count += 1
+                    continue
+                records.append(record)
                 completed_count += 1
                 print(
                     f"{args.reviewer}: {completed_count}/{len(packets)} complete ({truth_id})",
                     flush=True,
                 )
+        if failure_count:
+            raise E0GovernanceError(f"primary review batch failed; failure_count={failure_count}")
     records.sort(key=lambda value: str(value["truth_id"]))
     _json_dump(
         manifest_path,
@@ -3461,7 +3485,7 @@ def build_arbitration_checkpoint(args: argparse.Namespace) -> int:
 
     fable_dir = args.fable_dir.resolve(strict=True)
     deepseek_dir = args.deepseek_dir.resolve(strict=True)
-    work, _, _, plan_sha256 = _load_arbitration_plan(
+    work, disagreements, evidence_deficits, plan_sha256 = _load_arbitration_plan(
         args.packet_dir.resolve(),
         fable_dir=fable_dir,
         deepseek_dir=deepseek_dir,
@@ -3481,6 +3505,21 @@ def build_arbitration_checkpoint(args: argparse.Namespace) -> int:
     retained_raw = retained / "raw"
     if not retained_decisions.is_dir() or not retained_raw.is_dir():
         raise E0GovernanceError("retained arbitration review directories are unavailable")
+    if getattr(args, "require_complete", False):
+        try:
+            _validate_arbitration_shard(
+                retained,
+                work=work,
+                disagreements=disagreements,
+                evidence_deficits=evidence_deficits,
+                plan_sha256=plan_sha256,
+                shard_index=args.shard_index,
+                shard_count=args.shard_count,
+            )
+        except (E0GovernanceError, OSError, json.JSONDecodeError) as exc:
+            raise E0GovernanceError(
+                "retained arbitration artifact is not a complete verified shard"
+            ) from exc
     for root, label in ((retained_decisions, "decision"), (retained_raw, "raw")):
         extra = {path.stem for path in root.glob("*.json")} - planned_id_set
         if extra:
@@ -3573,6 +3612,15 @@ def build_arbitration_checkpoint(args: argparse.Namespace) -> int:
     missing_pair_count = (
         len(planned_ids) - len(verified_records) - len(invalid_records) - len(incomplete_records)
     )
+    if getattr(args, "require_complete", False) and (
+        len(verified_records) != len(planned_ids)
+        or invalid_records
+        or incomplete_records
+        or missing_pair_count
+        or failure_records
+        or unverified_ids
+    ):
+        raise E0GovernanceError("retained arbitration artifact is not a complete verified shard")
     manifest: dict[str, Any] = {
         "schema_version": ARBITRATION_CHECKPOINT_SCHEMA_VERSION,
         "reviewer": "opus",
@@ -3611,6 +3659,7 @@ def _validate_arbitration_checkpoint(
     root: Path,
     *,
     packet_source_sha: str,
+    expected_workflow_run_id: str,
     work: Sequence[tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]],
     plan_sha256: str,
     shard_index: int,
@@ -3637,6 +3686,7 @@ def _validate_arbitration_checkpoint(
         or manifest.get("packet_source_sha") != packet_source_sha
         or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("retained_source_sha") or ""))
         or not str(manifest.get("workflow_run_id") or "").isdigit()
+        or manifest.get("workflow_run_id") != expected_workflow_run_id
         or manifest.get("environment") != "sealed-benchmark"
         or manifest.get("shard_index") != shard_index
         or manifest.get("shard_count") != shard_count
@@ -3888,12 +3938,20 @@ def run_arbitration(args: argparse.Namespace) -> int:
         shard_count=shard_count,
     )
     checkpoint_source_sha = getattr(args, "checkpoint_source_sha", None)
+    checkpoint_workflow_run_id = getattr(args, "checkpoint_workflow_run_id", None)
+    if (checkpoint_source_sha is None) != (checkpoint_workflow_run_id is None):
+        raise E0GovernanceError(
+            "arbitration checkpoint source SHA and workflow run ID must be provided together"
+        )
+    if checkpoint_workflow_run_id is not None and not str(checkpoint_workflow_run_id).isdigit():
+        raise E0GovernanceError("arbitration checkpoint workflow run ID is invalid")
     if args.resume:
         if checkpoint_source_sha is None:
             raise E0GovernanceError("arbitration resume requires a bound checkpoint")
         _validate_arbitration_checkpoint(
             output,
             packet_source_sha=str(checkpoint_source_sha),
+            expected_workflow_run_id=str(checkpoint_workflow_run_id),
             work=work,
             plan_sha256=plan_sha256,
             shard_index=shard_index,
@@ -3903,9 +3961,28 @@ def run_arbitration(args: argparse.Namespace) -> int:
     elif checkpoint_source_sha is not None:
         raise E0GovernanceError("arbitration checkpoint validation requires resume mode")
     records: list[dict[str, Any]] = []
-    completed_count = 0
-    for offset in range(0, len(shard_work), args.workers):
-        batch = shard_work[offset : offset + args.workers]
+    missing_work: list[
+        tuple[Mapping[str, Any], str, tuple[Mapping[str, Any], Mapping[str, Any]]]
+    ] = []
+    for packet, truth_id, primary_decisions in shard_work:
+        decision_path = output / "decisions" / f"{truth_id}.json"
+        raw_path = output / "raw" / f"{truth_id}.json"
+        if decision_path.exists() or raw_path.exists():
+            records.append(
+                _run_arbitration_packet(
+                    packet,
+                    truth_id=truth_id,
+                    primary_decisions=primary_decisions,
+                    output=output,
+                    resume=args.resume,
+                )
+            )
+        else:
+            missing_work.append((packet, truth_id, primary_decisions))
+    completed_count = len(records)
+    for offset in range(0, len(missing_work), args.workers):
+        batch = missing_work[offset : offset + args.workers]
+        failure_count = 0
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
                 executor.submit(
@@ -3920,13 +3997,22 @@ def run_arbitration(args: argparse.Namespace) -> int:
             }
             for future in as_completed(futures):
                 truth_id = futures[future]
-                records.append(future.result())
+                try:
+                    record = future.result()
+                except Exception:
+                    failure_count += 1
+                    continue
+                records.append(record)
                 completed_count += 1
                 print(
                     f"opus shard {shard_index}: {completed_count}/{len(shard_work)} "
                     f"complete ({truth_id})",
                     flush=True,
                 )
+        if failure_count:
+            raise E0GovernanceError(
+                f"arbitration review batch failed; failure_count={failure_count}"
+            )
     reviewed = {str(record["truth_id"]) for record in records}
     planned_ids = [truth_id for _, truth_id, _ in shard_work]
     if reviewed != set(planned_ids):
@@ -4040,7 +4126,7 @@ def _parser() -> argparse.ArgumentParser:
     primary.add_argument("--reviewer", required=True, choices=("fable", "deepseek"))
     primary.add_argument("--packet-dir", required=True, type=Path)
     primary.add_argument("--output-dir", required=True, type=Path)
-    primary.add_argument("--workers", type=int, default=1, choices=range(1, 9))
+    primary.add_argument("--workers", type=int, default=8, choices=range(1, 9))
     primary.add_argument("--resume", action="store_true")
     primary.add_argument("--checkpoint-source-sha")
     primary.add_argument("--checkpoint-workflow-run-id")
@@ -4053,7 +4139,7 @@ def _parser() -> argparse.ArgumentParser:
     checkpoint.add_argument("--packet-source-sha", required=True)
     checkpoint.add_argument("--retained-source-sha", required=True)
     checkpoint.add_argument("--workflow-run-id", required=True)
-    checkpoint.add_argument("--workers", type=int, default=4, choices=range(1, 9))
+    checkpoint.add_argument("--workers", type=int, default=8, choices=range(1, 9))
     checkpoint.add_argument("--require-complete", action="store_true")
     checkpoint.set_defaults(handler=build_primary_checkpoint)
     arbitration = subparsers.add_parser("arbitrate")
@@ -4061,11 +4147,12 @@ def _parser() -> argparse.ArgumentParser:
     arbitration.add_argument("--fable-dir", required=True, type=Path)
     arbitration.add_argument("--deepseek-dir", required=True, type=Path)
     arbitration.add_argument("--output-dir", required=True, type=Path)
-    arbitration.add_argument("--workers", type=int, default=1, choices=range(1, 9))
+    arbitration.add_argument("--workers", type=int, default=8, choices=range(1, 9))
     arbitration.add_argument("--shard-index", type=int, default=0)
     arbitration.add_argument("--shard-count", type=int, default=1)
     arbitration.add_argument("--resume", action="store_true")
     arbitration.add_argument("--checkpoint-source-sha")
+    arbitration.add_argument("--checkpoint-workflow-run-id")
     arbitration.set_defaults(handler=run_arbitration)
     arbitration_checkpoint = subparsers.add_parser("arbitration-checkpoint")
     arbitration_checkpoint.add_argument("--packet-dir", required=True, type=Path)
@@ -4078,7 +4165,8 @@ def _parser() -> argparse.ArgumentParser:
     arbitration_checkpoint.add_argument("--workflow-run-id", required=True)
     arbitration_checkpoint.add_argument("--shard-index", required=True, type=int)
     arbitration_checkpoint.add_argument("--shard-count", required=True, type=int)
-    arbitration_checkpoint.add_argument("--workers", type=int, default=4, choices=range(1, 9))
+    arbitration_checkpoint.add_argument("--workers", type=int, default=8, choices=range(1, 9))
+    arbitration_checkpoint.add_argument("--require-complete", action="store_true")
     arbitration_checkpoint.set_defaults(handler=build_arbitration_checkpoint)
     merge_arbitration = subparsers.add_parser("merge-arbitration")
     merge_arbitration.add_argument("--packet-dir", required=True, type=Path)
