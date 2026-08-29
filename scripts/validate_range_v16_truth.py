@@ -93,6 +93,8 @@ TRUTH_ENTRY_ALLOWED_FIELDS = TRUTH_ENTRY_REQUIRED_FIELDS | frozenset(
 )
 ANCHOR_KINDS = frozenset({"primary", "secondary", "additional"})
 CLAUSE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+RANGE_FIXTURE_TEXT_SUFFIXES = frozenset({".c", ".h", ".ph"})
+RANGE_FIXTURE_TEXT_NAMES = frozenset({"CMakeLists.txt", "README.md"})
 
 
 def _canonical_path(value: Any, *, field: str) -> str:
@@ -152,11 +154,14 @@ def directory_manifest_sha(root: Path) -> str:
 
 
 def range_fixture_manifest_sha(root: Path) -> str:
-    """Hash only the answer-free Range scan-input allowlist.
+    """Hash only the answer-free Range scan-input allowlist as canonical LF text.
 
     Truth, scorer, review, build, and cache artifacts are deliberately outside
     this identity.  Including ``benchmark/v16`` would create a circular hash in
-    which writing Truth v16 invalidates its own fixture binding.
+    which writing Truth v16 invalidates its own fixture binding.  Git checkout
+    policy may expose the same tracked text as LF or CRLF, so record sizes and
+    hashes bind the LF-normalized bytes.  A lone carriage return is rejected
+    instead of being silently reinterpreted.
     """
 
     root = root.resolve(strict=True)
@@ -177,11 +182,29 @@ def range_fixture_manifest_sha(root: Path) -> str:
             current = current / part
             if current.is_symlink():
                 raise E0GovernanceError("Range fixture allowlist cannot traverse symlinks")
+        if (
+            path.name not in RANGE_FIXTURE_TEXT_NAMES
+            and path.suffix not in RANGE_FIXTURE_TEXT_SUFFIXES
+        ):
+            raise E0GovernanceError(
+                "Range fixture allowlist contains an unsupported text file type"
+            )
+        canonical = path.read_bytes().replace(b"\r\n", b"\n")
+        if b"\r" in canonical:
+            raise E0GovernanceError("Range fixture allowlist must use LF or CRLF text line endings")
+        if b"\x00" in canonical:
+            raise E0GovernanceError("Range fixture allowlist cannot contain NUL bytes")
+        try:
+            canonical.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise E0GovernanceError(
+                "Range fixture allowlist must contain valid UTF-8 text"
+            ) from exc
         records.append(
             {
                 "path": relative.as_posix(),
-                "size": path.stat().st_size,
-                "sha256": sha256_file(path),
+                "size": len(canonical),
+                "sha256": hashlib.sha256(canonical).hexdigest(),
             }
         )
     if not records:

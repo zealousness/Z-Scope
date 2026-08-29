@@ -133,4 +133,6 @@ def test_repository_markdown_encoding_configuration() -> None:
     assert "insert_final_newline = true" in editorconfig
 
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
-    assert "*.md text eol=lf" in attributes.splitlines()
+    lines = attributes.splitlines()
+    for pattern in ("*.md", "*.c", "*.h", "*.ph", "CMakeLists.txt"):
+        assert f"{pattern} text eol=lf" in lines
