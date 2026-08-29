@@ -390,6 +390,18 @@ def test_safe_pair_diagnostic_workflow_is_exact_answer_free_and_zero_call() -> N
     assert "checkpoint_artifact_digest:" in workflow
     assert "runs-on: [self-hosted, linux, x64, zscope-sealed]" in workflow
     assert "environment: sealed-benchmark" in workflow
+    job_definition = workflow[workflow.index("jobs:") : workflow.index("    steps:")]
+    assert "runner.temp" not in job_definition
+    diagnostic_root = (
+        "DIAGNOSTIC_ROOT: ${{ runner.temp }}/range-v16-pair-author-diagnostic-"
+        "${{ github.run_id }}-${{ github.run_attempt }}"
+    )
+    assert workflow.count(diagnostic_root) == 4
+    assert (
+        "path: ${{ runner.temp }}/range-v16-pair-author-diagnostic-"
+        "${{ github.run_id }}-${{ github.run_attempt }}/answer-free-diagnostic.json"
+        in workflow
+    )
     assert "scripts/download_e0_checkpoint_artifact.py" in workflow
     assert "--artifact-id '${{ inputs.checkpoint_artifact_id }}'" in workflow
     assert "--expected-digest '${{ inputs.checkpoint_artifact_digest }}'" in workflow
