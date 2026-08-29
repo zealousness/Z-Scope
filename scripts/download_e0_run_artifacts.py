@@ -126,6 +126,30 @@ def _parse_artifact_spec(value: str, *, workspace: Path) -> tuple[str, Path]:
     return name, output
 
 
+def _latest_nonexpired_optional(
+    matches: Sequence[Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    candidates: list[tuple[str, int, Mapping[str, object]]] = []
+    for artifact in matches:
+        artifact_id = artifact.get("id")
+        expired = artifact.get("expired")
+        created_at = artifact.get("created_at")
+        if (
+            not isinstance(artifact_id, int)
+            or isinstance(artifact_id, bool)
+            or artifact_id <= 0
+            or not isinstance(expired, bool)
+            or not isinstance(created_at, str)
+            or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", created_at) is None
+        ):
+            raise RunArtifactError("optional run artifact selection metadata is malformed")
+        if not expired:
+            candidates.append((created_at, artifact_id, artifact))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
 def _download_and_extract(
     *,
     repository: str,
@@ -249,10 +273,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         resolved[expected_name] = artifact_id
     for expected_name, _ in [*optional_specs, *optional_checkpoint_specs]:
         matches = [artifact for artifact in listed if artifact.get("name") == expected_name]
-        if len(matches) > 1:
-            raise RunArtifactError("optional immutable run artifact is not unique")
-        if matches:
-            artifact_id = matches[0].get("id")
+        selected = _latest_nonexpired_optional(matches)
+        if selected is not None:
+            artifact_id = selected.get("id")
             if not isinstance(artifact_id, int) or isinstance(artifact_id, bool):
                 raise RunArtifactError("optional immutable run artifact identity is invalid")
             resolved[expected_name] = artifact_id
