@@ -243,6 +243,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-run-id", required=True)
     parser.add_argument("--expected-source-sha", required=True)
     parser.add_argument("--expected-name", required=True)
+    parser.add_argument("--expected-digest")
     parser.add_argument("--output-dir", required=True, type=Path)
     return parser
 
@@ -260,6 +261,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise CheckpointArtifactError("GitHub artifact or run identity is invalid")
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_source_sha):
         raise CheckpointArtifactError("GitHub artifact source SHA is invalid")
+    if args.expected_digest is not None and not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", args.expected_digest
+    ):
+        raise CheckpointArtifactError("GitHub artifact expected digest is invalid")
 
     metadata_url = (
         f"https://api.github.com/repos/{args.repository}/actions/artifacts/{args.artifact_id}"
@@ -274,6 +279,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         expected_source_sha=args.expected_source_sha,
         expected_name=args.expected_name,
     )
+    if args.expected_digest is not None and expected_digest != args.expected_digest.removeprefix(
+        "sha256:"
+    ):
+        raise CheckpointArtifactError("GitHub checkpoint artifact digest binding mismatch")
     handle, archive_name = tempfile.mkstemp(prefix="e0-checkpoint-", suffix=".zip")
     os.close(handle)
     archive = Path(archive_name)
