@@ -204,7 +204,12 @@ def test_run_checkpoint_artifact_requires_checkpoint_manifest(
         "_list_run_artifacts",
         lambda **_kwargs: [
             {"id": ARTIFACT_ID, "name": ARTIFACT_NAME},
-            {"id": checkpoint_id, "name": checkpoint_name},
+            {
+                "id": checkpoint_id,
+                "name": checkpoint_name,
+                "expired": False,
+                "created_at": "2026-08-28T08:44:41Z",
+            },
         ],
     )
 
@@ -245,3 +250,73 @@ def test_run_checkpoint_artifact_requires_checkpoint_manifest(
     }
     assert (tmp_path / "required" / "manifest.json").is_file()
     assert (tmp_path / "retained-checkpoint" / "checkpoint-manifest.json").is_file()
+
+
+def test_run_checkpoint_artifact_selects_latest_nonexpired_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_name = f"range-v16-pair-author-checkpoint-{HEAD_SHA}"
+    first_id = ARTIFACT_ID + 1
+    latest_id = ARTIFACT_ID + 2
+    expired_id = ARTIFACT_ID + 3
+    downloads: list[int] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(
+        run_download,
+        "_list_run_artifacts",
+        lambda **_kwargs: [
+            {"id": ARTIFACT_ID, "name": ARTIFACT_NAME},
+            {
+                "id": first_id,
+                "name": checkpoint_name,
+                "expired": False,
+                "created_at": "2026-08-28T08:44:41Z",
+            },
+            {
+                "id": latest_id,
+                "name": checkpoint_name,
+                "expired": False,
+                "created_at": "2026-08-28T09:02:30Z",
+            },
+            {
+                "id": expired_id,
+                "name": checkpoint_name,
+                "expired": True,
+                "created_at": "2026-08-28T09:10:00Z",
+            },
+        ],
+    )
+
+    def download_and_extract(**kwargs: object) -> str:
+        output = kwargs["output"]
+        required_members = kwargs["required_members"]
+        assert isinstance(output, Path)
+        assert isinstance(required_members, tuple)
+        output.mkdir()
+        for member in required_members:
+            (output / member).write_text("{}", encoding="utf-8")
+        downloads.append(int(kwargs["artifact_id"]))
+        return "d" * 64
+
+    monkeypatch.setattr(run_download, "_download_and_extract", download_and_extract)
+
+    assert (
+        run_download.main(
+            [
+                "--repository",
+                REPOSITORY,
+                "--expected-run-id",
+                RUN_ID,
+                "--expected-head-sha",
+                HEAD_SHA,
+                "--artifact",
+                f"{ARTIFACT_NAME}=required",
+                "--optional-checkpoint-artifact",
+                f"{checkpoint_name}=retained-checkpoint",
+            ]
+        )
+        == 0
+    )
+    assert downloads == [ARTIFACT_ID, latest_id]
