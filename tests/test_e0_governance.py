@@ -378,6 +378,29 @@ def test_protected_review_workflow_canonicalizes_github_artifact_digest() -> Non
     )
 
 
+def test_safe_pair_diagnostic_workflow_is_exact_answer_free_and_zero_call() -> None:
+    workflow = Path(".github/workflows/range-v16-pair-author-diagnostic.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "workflow_dispatch:" in workflow
+    assert "review_run_id:" in workflow
+    assert "review_source_sha:" in workflow
+    assert "checkpoint_artifact_id:" in workflow
+    assert "checkpoint_artifact_digest:" in workflow
+    assert "runs-on: [self-hosted, linux, x64, zscope-sealed]" in workflow
+    assert "environment: sealed-benchmark" in workflow
+    assert "scripts/download_e0_checkpoint_artifact.py" in workflow
+    assert "--artifact-id '${{ inputs.checkpoint_artifact_id }}'" in workflow
+    assert "--expected-digest '${{ inputs.checkpoint_artifact_digest }}'" in workflow
+    assert "diagnose-checkpoint" in workflow
+    assert "Range v16 safe-pair author diagnostic" in workflow
+    assert "uses: ./.github/actions/upload-artifact-retry" in workflow
+    assert "CODEX_API_KEY" not in workflow
+    assert "run_e0_reviewers.py" not in workflow
+    assert " generate_range_v16_safe_pairs.py author" not in workflow
+
+
 def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume() -> None:
     workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
     assert "fable_checkpoint_run_id:" in workflow
