@@ -61,6 +61,7 @@ jobs:
             --expected-source-sha '${{ inputs.review_source_sha }}' \
             --expected-name 'range-v16-pair-author-checkpoint-${{ inputs.review_source_sha }}' \
             --expected-digest '${{ inputs.checkpoint_artifact_digest }}' \
+            --allow-attempt-suffix \
             --output-dir "$DIAGNOSTIC_ROOT/checkpoint"
       - id: diagnostic
         name: Emit fixed answer-free failure classification
@@ -77,50 +78,6 @@ jobs:
             --expected-source-sha "$REVIEW_SOURCE_SHA" \
             --expected-workflow-run-id "$REVIEW_RUN_ID" \
             --output "$DIAGNOSTIC_ROOT/answer-free-diagnostic.json"
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          root = Path(os.environ["DIAGNOSTIC_ROOT"])
-          value = json.loads((root / "answer-free-diagnostic.json").read_text(encoding="utf-8"))
-          rejection_codes = {
-              "checkpoint_failure_record_contract_invalid",
-              "checkpoint_failure_record_duplicate",
-              "checkpoint_incomplete_record_contract_invalid",
-              "checkpoint_invalid_record_contract_invalid",
-              "checkpoint_manifest_contract_invalid",
-              "checkpoint_manifest_unreadable",
-              "checkpoint_record_classes_overlap",
-              "checkpoint_verified_record_contract_invalid",
-              "checkpoint_without_diagnostic_signal",
-          }
-          if value.get("diagnostic_status") == "classified":
-              if value.get("diagnostic_failure_code") is not None:
-                  raise SystemExit("classified diagnostic has a rejection code")
-              classes = ",".join(
-                  f"{row['failure_code']}:{row['count']}"
-                  for row in value["failure_classes"]
-              ) or "none"
-              message = (
-                  f"diagnostic_status=classified; failure_classes={classes}; "
-                  f"invalid_records={value['invalid_record_count']}; "
-                  f"incomplete_records={value['incomplete_record_count']}"
-              )
-          elif value.get("diagnostic_status") == "rejected":
-              failure_code = value.get("diagnostic_failure_code")
-              if failure_code not in rejection_codes:
-                  raise SystemExit("diagnostic rejection code is not fixed")
-              message = (
-                  "diagnostic_status=rejected; "
-                  f"diagnostic_failure_code={failure_code}"
-              )
-          else:
-              raise SystemExit("diagnostic status is invalid")
-          print(f"::notice title=Range v16 safe-pair author diagnostic::{message}")
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
-              handle.write(f"classification={message}\n")
-          PY
       - id: upload_diagnostic
         name: Upload answer-free diagnostic
         uses: ./.github/actions/upload-artifact-retry

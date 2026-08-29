@@ -493,11 +493,10 @@ def test_safe_pair_diagnostic_workflow_is_exact_answer_free_and_zero_call() -> N
     assert "scripts/download_e0_checkpoint_artifact.py" in workflow
     assert "--artifact-id '${{ inputs.checkpoint_artifact_id }}'" in workflow
     assert "--expected-digest '${{ inputs.checkpoint_artifact_digest }}'" in workflow
+    assert "--allow-attempt-suffix" in workflow
     assert "diagnose-checkpoint" in workflow
-    assert "Range v16 safe-pair author diagnostic" in workflow
-    assert "diagnostic_status=classified" in workflow
-    assert "diagnostic_status=rejected" in workflow
-    assert "checkpoint_without_diagnostic_signal" in workflow
+    assert "::notice" not in workflow
+    assert "import json" not in workflow
     assert "uses: ./.github/actions/upload-artifact-retry" in workflow
     assert "CODEX_API_KEY" not in workflow
     assert "run_e0_reviewers.py" not in workflow
@@ -511,6 +510,7 @@ def test_protected_review_workflow_checkpoints_failures_and_revalidates_resume()
     assert "concurrency:\n  group: range-v16-independent-review" in workflow
     assert "cancel-in-progress: false" in workflow
     assert 'E0_MAX_CONCURRENT_CALLS: "8"' in workflow
+    assert 'E0_MAX_WORKFLOW_ATTEMPTS: "2"' in workflow
     assert workflow.count("max-parallel: 1") == 2
     assert workflow.count('--workers "$E0_MAX_CONCURRENT_CALLS"') == 10
     assert "fable_checkpoint_run_id:" in workflow
@@ -607,7 +607,8 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
         assert f"arbitration_reuse_shard_{shard}_artifact_id:" in workflow
         assert f"arbitration_reuse_shard_{shard}_artifact_digest:" in workflow
     assert "validate optional cross-run arbitration reuse" in workflow
-    assert parsed["jobs"]["prepare_arbitration_reuse"].get("needs") is None
+    assert parsed["jobs"]["attempt_budget"].get("needs") is None
+    assert parsed["jobs"]["prepare_arbitration_reuse"]["needs"] == "attempt_budget"
     assert parsed["jobs"]["codex_readiness"]["needs"] == "prepare_arbitration_reuse"
     assert (
         "arbitration shard reuse requires exact complete reuse of both primaries" in reuse_preflight
@@ -708,6 +709,24 @@ def test_protected_review_workflow_shards_and_checkpoints_arbitration() -> None:
     )
     assert "--resume" in finalize
     assert "overwrite: true" not in workflow
+
+
+def test_protected_review_attempt_budget_blocks_unbounded_reruns_before_model_calls() -> None:
+    workflow = Path(".github/workflows/range-v16-review.yml").read_text(encoding="utf-8")
+    parsed = yaml.safe_load(workflow)
+    budget = parsed["jobs"]["attempt_budget"]
+    budget_text = workflow.split("  attempt_budget:\n", 1)[1].split("  codex_readiness:\n", 1)[0]
+
+    assert parsed["env"]["E0_MAX_WORKFLOW_ATTEMPTS"] == "2"
+    assert budget["runs-on"] == ["self-hosted", "linux", "x64", "zscope-sealed"]
+    assert budget["timeout-minutes"] == 5
+    assert "GITHUB_RUN_ATTEMPT > E0_MAX_WORKFLOW_ATTEMPTS" in budget_text
+    assert "e0_review_attempt_budget_exhausted" in budget_text
+    assert "run_e0_reviewers.py" not in budget_text
+    assert "generate_range_v16_safe_pairs.py" not in budget_text
+    assert "CODEX_API_KEY" not in budget_text
+    assert parsed["jobs"]["prepare_arbitration_reuse"]["needs"] == "attempt_budget"
+    assert parsed["jobs"]["codex_readiness"]["needs"] == "prepare_arbitration_reuse"
 
 
 def test_protected_review_artifact_uploads_use_bounded_retry_action() -> None:

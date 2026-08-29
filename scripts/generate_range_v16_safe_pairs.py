@@ -1305,6 +1305,23 @@ def _checkpoint_manifest_content_sha256(value: Mapping[str, Any]) -> str:
     return str(sha256_value(unsigned))
 
 
+def _emit_author_diagnostic(message: str) -> None:
+    """Emit only the fixed answer-free diagnostic projection.
+
+    GitHub Actions consumers are required to monitor annotations instead of
+    job logs, so publish the same fixed projection as a notice when the
+    harness is running there.  ``message`` is constructed exclusively from
+    the closed failure-code vocabulary and integer counts below.
+    """
+
+    print(f"safe-pair answer-free diagnostic: {message}", flush=True)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(
+            f"::notice title=Range v16 safe-pair author diagnostic::{message}",
+            flush=True,
+        )
+
+
 def _write_author_diagnostic_rejection(
     output: Path,
     *,
@@ -1324,10 +1341,8 @@ def _write_author_diagnostic_rejection(
     }
     diagnostic["content_sha256"] = sha256_value(diagnostic)
     _json_dump(output, diagnostic)
-    print(
-        "safe-pair answer-free diagnostic: diagnostic_status=rejected; "
-        f"diagnostic_failure_code={failure_code}",
-        flush=True,
+    _emit_author_diagnostic(
+        "diagnostic_status=rejected; " f"diagnostic_failure_code={failure_code}"
     )
     return 0
 
@@ -1535,11 +1550,10 @@ def diagnose_author_checkpoint(args: argparse.Namespace) -> int:
         ",".join(f"{row['failure_code']}:{row['count']}" for row in diagnostic["failure_classes"])
         or "none"
     )
-    print(
-        "safe-pair answer-free diagnostic: "
-        f"failure_classes={classes}; invalid_records={len(invalid_ids)}; "
-        f"incomplete_records={len(incomplete_ids)}",
-        flush=True,
+    _emit_author_diagnostic(
+        f"diagnostic_status=classified; failure_classes={classes}; "
+        f"invalid_records={len(invalid_ids)}; "
+        f"incomplete_records={len(incomplete_ids)}"
     )
     return 0
 
