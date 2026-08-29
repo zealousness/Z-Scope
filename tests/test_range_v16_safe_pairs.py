@@ -11,7 +11,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.e0_review_governance import PACKET_SCHEMA_VERSION, sha256_file, sha256_value
+from scripts.e0_review_governance import (
+    E0GovernanceError,
+    PACKET_SCHEMA_VERSION,
+    sha256_file,
+    sha256_value,
+)
 from scripts.generate_range_v16_safe_pairs import (
     AUTHOR_CHECKPOINT_SCHEMA_VERSION,
     AUTHOR_DIAGNOSTIC_SCHEMA_VERSION,
@@ -20,9 +25,15 @@ from scripts.generate_range_v16_safe_pairs import (
     AUTHOR_REQUEST_SCHEMA_VERSION,
     AUTHOR_SCHEMA_VERSION,
     RAW_AUTHOR_SCHEMA_VERSION,
+    _REPAIRABLE_AUTHOR_VALIDATION_CLASSES,
     _author_one,
     _author_request,
     _author_schema,
+    _c_tokens,
+    _contract_repair_failure_message,
+    _contract_repair_failure_projection,
+    _has_preprocessor_directive,
+    _main_definition_count,
     _parser,
     _source_identifiers,
     _write_failure_manifest,
@@ -87,6 +98,7 @@ def _packet(record: dict) -> dict:
 
 
 def _author(record: dict) -> dict:
+    recommendation = record["final_decision"]["safe_pair_recommendation"]
     return {
         "schema_version": AUTHOR_SCHEMA_VERSION,
         "truth_id": record["truth_id"],
@@ -94,8 +106,8 @@ def _author(record: dict) -> dict:
         "final_decision_sha256": record["final_decision_sha256"],
         "author_role": "safe_pair_author",
         "author_model": AUTHOR_MODEL,
-        "kind": "fixed",
-        "invariant_summary": "A length must be checked before an indexed read.",
+        "kind": recommendation["kind"],
+        "invariant_summary": recommendation["invariant_summary"],
         "vulnerable_source": (
             "int read_item(const int *p, int n) { (void)n; return p[1]; }\n"
             "int main(void) { int a[1] = {0}; return read_item(a, 1); }\n"
@@ -104,6 +116,14 @@ def _author(record: dict) -> dict:
             "int read_item(const int *p, int n) { return n > 1 ? p[1] : 0; }\n"
             "int main(void) { int a[1] = {0}; return read_item(a, 1); }\n"
         ),
+    }
+
+
+def _recommendation_bindings(record: dict) -> dict[str, str]:
+    recommendation = record["final_decision"]["safe_pair_recommendation"]
+    return {
+        "expected_kind": str(recommendation["kind"]),
+        "expected_invariant_summary": str(recommendation["invariant_summary"]),
     }
 
 
@@ -116,6 +136,8 @@ def _raw_author(record: dict, author: dict) -> dict:
         truth_id=str(record["truth_id"]),
         packet_sha256=str(record["packet_sha256"]),
         final_decision_sha256=str(record["final_decision_sha256"]),
+        expected_kind=str(request["safe_pair_recommendation"]["kind"]),
+        expected_invariant_summary=str(request["safe_pair_recommendation"]["invariant_summary"]),
     )
     return {
         "schema_version": RAW_AUTHOR_SCHEMA_VERSION,
@@ -143,6 +165,62 @@ def _raw_author(record: dict, author: dict) -> dict:
         ],
         "accepted_attempt": 1,
     }
+
+
+def _answer_free_failure_record(*, truth_id: str, failure_code: str, error_sha256: str) -> dict:
+    return {
+        "truth_id": truth_id,
+        "failure_code": failure_code,
+        "error_sha256": error_sha256,
+        "initial_exit_code": None,
+        "initial_stdout_sha256": None,
+        "initial_stdout_retained": False,
+        "initial_stderr_sha256": None,
+        "retry_exit_code": None,
+        "retry_stdout_sha256": None,
+        "retry_stdout_retained": False,
+        "retry_stderr_sha256": None,
+        "answer_material_present": False,
+    }
+
+
+def _diagnostic_checkpoint_with_failure(
+    root: Path,
+    *,
+    failure_code: str,
+    error_sha256: str,
+) -> Path:
+    checkpoint = root / "checkpoint"
+    checkpoint.mkdir()
+    truth_id = "CASE-FAILURE-SECRET"
+    manifest = {
+        "schema_version": AUTHOR_CHECKPOINT_SCHEMA_VERSION,
+        "author_model": AUTHOR_MODEL,
+        "packet_source_sha": "a" * 40,
+        "retained_source_sha": "a" * 40,
+        "workflow_run_id": "33138014332",
+        "normalized_decisions_sha256": "b" * 64,
+        "expected_record_count": 1,
+        "verified_record_count": 0,
+        "verified_records": [],
+        "invalid_records": [],
+        "incomplete_records": [
+            {"truth_id": truth_id, "author_present": False, "raw_present": True}
+        ],
+        "failure_records": [
+            _answer_free_failure_record(
+                truth_id=truth_id,
+                failure_code=failure_code,
+                error_sha256=error_sha256,
+            )
+        ],
+        "checkpoint_contains_author_material": False,
+        "diagnostic_answer_material_present": False,
+        "requires_resume_revalidation": True,
+    }
+    manifest["content_sha256"] = sha256_value(manifest)
+    _dump(checkpoint / "checkpoint-manifest.json", manifest)
+    return checkpoint
 
 
 def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
@@ -212,6 +290,7 @@ def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
     assert diagnostic["failure_classes"] == [
         {"failure_code": "author_contract_failure", "count": 1}
     ]
+    assert diagnostic["contract_repair_classes"] == []
     assert diagnostic["verified_record_count"] == 1
     assert diagnostic["incomplete_record_count"] == 1
     assert diagnostic["failure_record_count"] == 1
@@ -224,12 +303,129 @@ def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
     assert (
         "::notice title=Range v16 safe-pair author diagnostic::"
         "diagnostic_status=classified; "
-        "failure_classes=author_contract_failure:1; invalid_records=0; "
+        "failure_classes=author_contract_failure:1; "
+        "contract_repair_classes=none; invalid_records=0; "
         "incomplete_records=1" in emitted
     )
     assert "CASE-FAILURE-SECRET" not in emitted
     assert "CASE-VERIFIED-SECRET" not in emitted
     assert "7" * 64 not in emitted
+
+
+def test_contract_repair_failure_projection_covers_the_finite_vocabulary() -> None:
+    expected_validation_classes = {
+        "independent_compile_failure",
+        "decision_identity_mismatch",
+        "fields_or_schema_invalid",
+        "forbidden_c_facilities",
+        "invariant_missing",
+        "kind_invalid",
+        "main_contract_invalid",
+        "model_identity_mismatch",
+        "packet_identity_mismatch",
+        "source_invalid",
+        "source_not_anonymous",
+        "sources_identical",
+    }
+    assert _REPAIRABLE_AUTHOR_VALIDATION_CLASSES == expected_validation_classes
+    projections: dict[str, tuple[str, str]] = {}
+    outcomes = {
+        "process_nonzero": expected_validation_classes,
+        "validation_exhausted": expected_validation_classes | {"unclassified_validation_failure"},
+    }
+    for repair_outcome, validation_classes in outcomes.items():
+        for validation_class in validation_classes:
+            digest = str(
+                sha256_value(_contract_repair_failure_message(repair_outcome, validation_class))
+            )
+            projection = (repair_outcome, validation_class)
+            assert digest not in projections
+            projections[digest] = projection
+            assert _contract_repair_failure_projection(digest) == projection
+
+    assert len(projections) == len(expected_validation_classes) * 2 + 1
+    assert _contract_repair_failure_projection("0" * 64) is None
+    assert _contract_repair_failure_projection(
+        str(sha256_value("safe-pair author contract repair failed: source_invalid"))
+    ) == ("process_nonzero", "source_invalid")
+    assert _contract_repair_failure_projection(
+        str(sha256_value("safe-pair author contract repair exhausted: forbidden_c_facilities"))
+    ) == ("validation_exhausted", "forbidden_c_facilities")
+
+
+def test_historical_contract_repair_checkpoint_projects_answer_free_subclass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    digest = str(sha256_value("safe-pair author contract repair exhausted: forbidden_c_facilities"))
+    checkpoint = _diagnostic_checkpoint_with_failure(
+        tmp_path,
+        failure_code="contract_repair_failure",
+        error_sha256=digest,
+    )
+    output = tmp_path / "diagnostic.json"
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    assert (
+        diagnose_author_checkpoint(
+            SimpleNamespace(
+                checkpoint_dir=checkpoint,
+                expected_source_sha="a" * 40,
+                expected_workflow_run_id="33138014332",
+                output=output,
+            )
+        )
+        == 0
+    )
+
+    diagnostic = json.loads(output.read_text(encoding="utf-8"))
+    assert diagnostic["schema_version"] == AUTHOR_DIAGNOSTIC_SCHEMA_VERSION
+    assert diagnostic["failure_classes"] == [
+        {"failure_code": "contract_repair_failure", "count": 1}
+    ]
+    assert diagnostic["contract_repair_classes"] == [
+        {
+            "repair_outcome": "validation_exhausted",
+            "validation_class": "forbidden_c_facilities",
+            "count": 1,
+        }
+    ]
+    serialized = json.dumps(diagnostic)
+    assert "CASE-FAILURE-SECRET" not in serialized
+    assert digest not in serialized
+    emitted = capsys.readouterr().out
+    assert "contract_repair_classes=" "validation_exhausted.forbidden_c_facilities:1" in emitted
+    assert "CASE-FAILURE-SECRET" not in emitted
+    assert digest not in emitted
+
+
+def test_unknown_contract_repair_failure_projection_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = _diagnostic_checkpoint_with_failure(
+        tmp_path,
+        failure_code="contract_repair_failure",
+        error_sha256="0" * 64,
+    )
+    output = tmp_path / "diagnostic.json"
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+
+    assert (
+        diagnose_author_checkpoint(
+            SimpleNamespace(
+                checkpoint_dir=checkpoint,
+                expected_source_sha="a" * 40,
+                expected_workflow_run_id="33138014332",
+                output=output,
+            )
+        )
+        == 0
+    )
+    diagnostic = json.loads(output.read_text(encoding="utf-8"))
+    assert diagnostic["diagnostic_status"] == "rejected"
+    assert diagnostic["diagnostic_failure_code"] == "checkpoint_failure_record_projection_invalid"
+    assert "CASE-FAILURE-SECRET" not in json.dumps(diagnostic)
+    assert "0" * 64 not in json.dumps(diagnostic)
 
 
 def test_safe_pair_checkpoint_diagnostic_projects_fixed_rejection(
@@ -363,6 +559,7 @@ def test_safe_pair_author_rejects_project_specific_identifiers() -> None:
         packet_sha256=record["packet_sha256"],
         final_decision_sha256=record["final_decision_sha256"],
         forbidden_identifiers={"project_specific_function", record["truth_id"]},
+        **_recommendation_bindings(record),
     )
     author["vulnerable_source"] += "int project_specific_function(void) { return 0; }\n"
     with pytest.raises(ValueError, match="not anonymous"):
@@ -372,6 +569,7 @@ def test_safe_pair_author_rejects_project_specific_identifiers() -> None:
             packet_sha256=record["packet_sha256"],
             final_decision_sha256=record["final_decision_sha256"],
             forbidden_identifiers={"project_specific_function", record["truth_id"]},
+            **_recommendation_bindings(record),
         )
 
     missing_main = _author(record)
@@ -383,7 +581,61 @@ def test_safe_pair_author_rejects_project_specific_identifiers() -> None:
             packet_sha256=record["packet_sha256"],
             final_decision_sha256=record["final_decision_sha256"],
             forbidden_identifiers=set(),
+            **_recommendation_bindings(record),
         )
+
+
+def test_safe_pair_main_contract_requires_a_real_definition() -> None:
+    assert _main_definition_count("int main ( void ) { return 0; }") == 1
+    assert _main_definition_count("/* int main(void) { */ int helper(void) { return 0; }") == 0
+    assert _main_definition_count("int main(void); int helper(void) { return 0; }") == 0
+    assert (
+        _main_definition_count("#define FAKE int main(void) {\nint helper(void) { return 0; }") == 0
+    )
+    assert (
+        _main_definition_count(
+            "#define FAKE \\\nint main(void) { return 1; }\n" "int helper(void) { return 0; }"
+        )
+        == 0
+    )
+    comment_prefixed = (
+        "/* marker */ #define FAKE int main(void) { return 1; }\n" "int helper(void) { return 0; }"
+    )
+    assert _has_preprocessor_directive(comment_prefixed)
+    assert _main_definition_count(comment_prefixed) == 0
+    assert _has_preprocessor_directive("%:define FAKE int main(void) { return 1; }")
+    assert _has_preprocessor_directive("??=define FAKE int main(void) { return 1; }")
+    assert _has_preprocessor_directive("\f#include <stddef.h>")
+    assert _has_preprocessor_directive("\v%:include <stddef.h>")
+    assert _has_preprocessor_directive("int value;\r#include <stddef.h>")
+    assert _has_preprocessor_directive("\ufeff#include <stddef.h>")
+    assert _has_preprocessor_directive("/\\\n* marker */ #include <stddef.h>")
+    assert _has_preprocessor_directive("??/\n??=include <stddef.h>")
+    assert not _has_preprocessor_directive('const char *value = "#if 0";')
+    assert not _has_preprocessor_directive("int value = '#';")
+    assert not _has_preprocessor_directive('const char *value = "%:include";')
+    assert not _has_preprocessor_directive('const char *value = "??=include";')
+    assert _main_definition_count("int main(void) { return 0; } int main(void) { return 1; }") == 2
+
+
+def test_safe_pair_source_projection_ignores_only_comments_and_whitespace() -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    author = _author(record)
+    author["fixed_or_near_miss_source"] = "/* cosmetic */\n" + author["vulnerable_source"].replace(
+        " ", "  "
+    )
+    with pytest.raises(ValueError, match="sources are identical"):
+        validate_author_record(
+            author,
+            truth_id=record["truth_id"],
+            packet_sha256=record["packet_sha256"],
+            final_decision_sha256=record["final_decision_sha256"],
+            forbidden_identifiers=set(),
+            **_recommendation_bindings(record),
+        )
+
+    assert _c_tokens('const char *value = "/*";') != _c_tokens('const char *value = "//";')
 
 
 def test_safe_pair_author_anonymity_matches_complete_c_identifiers() -> None:
@@ -402,6 +654,7 @@ def test_safe_pair_author_anonymity_matches_complete_c_identifiers() -> None:
         packet_sha256=record["packet_sha256"],
         final_decision_sha256=record["final_decision_sha256"],
         forbidden_identifiers={"project_entry", record["truth_id"]},
+        **_recommendation_bindings(record),
     )
 
     author["vulnerable_source"] += "int project_entry(void) { return 0; }\n"
@@ -412,6 +665,7 @@ def test_safe_pair_author_anonymity_matches_complete_c_identifiers() -> None:
             packet_sha256=record["packet_sha256"],
             final_decision_sha256=record["final_decision_sha256"],
             forbidden_identifiers={"project_entry", record["truth_id"]},
+            **_recommendation_bindings(record),
         )
 
 
@@ -429,11 +683,14 @@ def test_safe_pair_author_schema_enforces_complete_anonymity_catalog() -> None:
 def test_safe_pair_author_schema_binds_all_frozen_identity_fields() -> None:
     normalized = _confirmable_normalized()
     record = normalized["records"][0]
+    recommendation = record["final_decision"]["safe_pair_recommendation"]
     schema = _author_schema(
         {"project_entry", str(record["truth_id"])},
         truth_id=str(record["truth_id"]),
         packet_sha256=str(record["packet_sha256"]),
         final_decision_sha256=str(record["final_decision_sha256"]),
+        expected_kind=str(recommendation["kind"]),
+        expected_invariant_summary=str(recommendation["invariant_summary"]),
     )
     properties = schema["properties"]
     assert properties["truth_id"] == {"type": "string", "const": record["truth_id"]}
@@ -447,9 +704,19 @@ def test_safe_pair_author_schema_binds_all_frozen_identity_fields() -> None:
         "const": record["final_decision_sha256"],
         "pattern": "^[0-9a-f]{64}$",
     }
+    assert properties["kind"] == {
+        "type": "string",
+        "const": recommendation["kind"],
+    }
+    assert properties["invariant_summary"] == {
+        "type": "string",
+        "const": recommendation["invariant_summary"],
+    }
 
     with pytest.raises(ValueError, match="identity must be fully bound"):
         _author_schema({"project_entry"}, truth_id=str(record["truth_id"]))
+    with pytest.raises(ValueError, match="recommendation must be fully bound"):
+        _author_schema({"project_entry"}, expected_kind=str(recommendation["kind"]))
 
 
 def test_safe_pair_author_schema_types_all_const_and_enum_nodes() -> None:
@@ -564,6 +831,519 @@ def test_safe_pair_author_uses_one_bounded_contract_repair(
     ) == {record["truth_id"]: result}
 
 
+def test_safe_pair_missing_and_unexpected_fields_receive_complete_repair_feedback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["schema_version"] = "unsupported"
+    invalid.pop("kind")
+    invalid["unexpected"] = True
+    responses = [invalid, _author(record)]
+    prompts: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(responses.pop(0)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    assert (
+        _author_one(packet, record, output=tmp_path / "author", resume=False)["status"]
+        == "authored"
+    )
+    repair_request = json.loads(prompts[1].split("REPAIR_REQUEST:\n", 1)[1])
+    assert repair_request["deterministic_constraints"]["detected_validation_classes"] == [
+        "fields_or_schema_invalid",
+        "kind_invalid",
+    ]
+    fields = repair_request["deterministic_constraints"]["constraints_by_validation_class"][
+        "fields_or_schema_invalid"
+    ]
+    assert fields["missing_fields"] == ["kind"]
+    assert fields["unexpected_fields"] == ["unexpected"]
+    assert fields["schema_version_mismatch"] is True
+
+
+def test_safe_pair_author_binds_recommendation_and_repairs_both_mismatches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    recommendation = record["final_decision"]["safe_pair_recommendation"]
+    invalid = _author(record)
+    invalid["kind"] = "fixed" if recommendation["kind"] == "near_miss" else "near_miss"
+    invalid["invariant_summary"] = "A different but nonempty invariant."
+    responses = [invalid, _author(record)]
+    prompts: list[str] = []
+    schemas: list[dict] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        schemas.append(
+            json.loads(
+                (Path(str(kwargs["cwd"])) / "author-schema.json").read_text(encoding="utf-8")
+            )
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(responses.pop(0)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    result = _author_one(packet, record, output=tmp_path / "author", resume=False)
+
+    assert result["status"] == "authored"
+    assert len(prompts) == 2
+    assert schemas[0] == schemas[1]
+    assert schemas[0]["properties"]["kind"] == {
+        "type": "string",
+        "const": recommendation["kind"],
+    }
+    assert schemas[0]["properties"]["invariant_summary"] == {
+        "type": "string",
+        "const": recommendation["invariant_summary"],
+    }
+    repair_request = json.loads(prompts[1].split("REPAIR_REQUEST:\n", 1)[1])
+    constraints = repair_request["deterministic_constraints"]
+    assert constraints["detected_validation_classes"] == [
+        "kind_invalid",
+        "invariant_missing",
+    ]
+    assert set(constraints["constraints_by_validation_class"]) == {
+        "kind_invalid",
+        "invariant_missing",
+    }
+    raw = json.loads(
+        (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
+    )
+    assert raw["attempts"][0]["validation_class"] == "kind_invalid"
+    assert raw["attempts"][1]["validation_class"] is None
+
+
+def test_safe_pair_author_one_repair_receives_every_detected_contract_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["vulnerable_source"] = "#include <stddef.h>\n" + invalid["vulnerable_source"]
+    invalid["fixed_or_near_miss_source"] = invalid["vulnerable_source"]
+    repaired = _author(record)
+    responses = [invalid, repaired]
+    prompts: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(responses.pop(0)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    result = _author_one(packet, record, output=tmp_path / "author", resume=False)
+
+    assert result["status"] == "authored"
+    assert len(prompts) == 2
+    repair_request = json.loads(prompts[1].split("REPAIR_REQUEST:\n", 1)[1])
+    assert repair_request["validation_class"] == "forbidden_c_facilities"
+    constraints = repair_request["deterministic_constraints"]
+    assert constraints["detected_validation_classes"] == [
+        "forbidden_c_facilities",
+        "sources_identical",
+    ]
+    assert list(constraints["constraints_by_validation_class"]) == [
+        "forbidden_c_facilities",
+        "sources_identical",
+    ]
+    assert constraints["failing_source_fields"] == [
+        "vulnerable_source",
+        "fixed_or_near_miss_source",
+    ]
+    assert constraints["baseline_postconditions"] == {
+        "compiler_contract": {
+            "language": "c",
+            "standard": "c11",
+            "compiler": "cc",
+            "arguments": ["-Werror", "-Wall", "-Wextra", "-c"],
+        },
+        "source_fields": ["vulnerable_source", "fixed_or_near_miss_source"],
+        "each_source_has_exactly_one_main_definition": True,
+        "preprocessor_or_forbidden_facility_present": False,
+        "forbidden_identifier_matches_present": False,
+        "sources_have_distinct_comment_whitespace_free_token_projections": True,
+    }
+    assert (
+        constraints["constraints_by_validation_class"]["sources_identical"]["detected_condition"]
+        == "sources_equal_after_newline_normalization"
+    )
+    raw = json.loads(
+        (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").read_text(encoding="utf-8")
+    )
+    assert raw["schema_version"] == RAW_AUTHOR_SCHEMA_VERSION
+    assert raw["accepted_attempt"] == 2
+    assert raw["attempts"][0]["validation_class"] == "forbidden_c_facilities"
+    assert raw["attempts"][1]["validation_class"] is None
+
+
+def test_safe_pair_invalid_strings_still_report_safe_deterministic_latent_classes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    source = (
+        "#include <stddef.h>\n"
+        "int project_specific_function(void) { return 0; }\n"
+        "int main(void) { return 0; }\n\x00"
+    )
+    invalid["vulnerable_source"] = source
+    invalid["fixed_or_near_miss_source"] = source
+    responses = [invalid, _author(record)]
+    prompts: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(responses.pop(0)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    assert (
+        _author_one(packet, record, output=tmp_path / "author", resume=False)["status"]
+        == "authored"
+    )
+    assert len(prompts) == 2
+    repair_request = json.loads(prompts[1].split("REPAIR_REQUEST:\n", 1)[1])
+    assert repair_request["deterministic_constraints"]["detected_validation_classes"] == [
+        "source_invalid",
+        "forbidden_c_facilities",
+        "source_not_anonymous",
+        "sources_identical",
+    ]
+
+
+def test_safe_pair_repair_classes_preserve_validator_order_and_deduplicate_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["vulnerable_source"] = "int project_specific_function(int value) { return value; }\n"
+    invalid["fixed_or_near_miss_source"] = (
+        "int project_specific_function(int value) { return value + 1; }\n"
+    )
+    responses = [invalid, _author(record)]
+    prompts: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(responses.pop(0)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    assert (
+        _author_one(packet, record, output=tmp_path / "author", resume=False)["status"]
+        == "authored"
+    )
+
+    repair_request = json.loads(prompts[1].split("REPAIR_REQUEST:\n", 1)[1])
+    constraints = repair_request["deterministic_constraints"]
+    assert constraints["detected_validation_classes"] == [
+        "source_not_anonymous",
+        "main_contract_invalid",
+    ]
+    by_class = constraints["constraints_by_validation_class"]
+    assert set(by_class) == {"source_not_anonymous", "main_contract_invalid"}
+    assert set(by_class["source_not_anonymous"]["detected_conflicts_by_source_field"]) == {
+        "vulnerable_source",
+        "fixed_or_near_miss_source",
+    }
+    assert by_class["main_contract_invalid"]["detected_main_counts_by_source_field"] == {
+        "vulnerable_source": 0,
+        "fixed_or_near_miss_source": 0,
+    }
+
+
+def test_safe_pair_repair_plan_does_not_recompile_the_rejected_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["fixed_or_near_miss_source"] = invalid["vulnerable_source"]
+    repaired = _author(record)
+    responses = [invalid, repaired]
+    compiled_candidates: list[str] = []
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+
+    def fake_compile(value: dict, *, compiler: str) -> tuple[str, ...]:
+        del compiler
+        candidate = str(sha256_value(dict(value)))
+        compiled_candidates.append(candidate)
+        return (
+            ("fixed_or_near_miss_source",)
+            if value["vulnerable_source"] == value["fixed_or_near_miss_source"]
+            else ()
+        )
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._compile_author_source_fields",
+        fake_compile,
+    )
+
+    prompts: list[str] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        prompts.append(str(kwargs["input"]))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(responses.pop(0)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    assert (
+        _author_one(
+            packet,
+            record,
+            output=tmp_path / "author",
+            resume=False,
+            compiler="cc",
+        )["status"]
+        == "authored"
+    )
+
+    rejected_hash = str(sha256_value(invalid))
+    repaired_hash = str(sha256_value(repaired))
+    assert compiled_candidates.count(rejected_hash) == 1
+    assert compiled_candidates.count(repaired_hash) == 1
+    assert len(compiled_candidates) == 2
+    repair_request = json.loads(prompts[1].split("REPAIR_REQUEST:\n", 1)[1])
+    assert repair_request["deterministic_constraints"]["detected_validation_classes"] == [
+        "sources_identical",
+        "independent_compile_failure",
+    ]
+
+
+def test_safe_pair_forbidden_source_is_never_sent_to_the_compiler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    author = _author(record)
+    author["vulnerable_source"] = "#include <stddef.h>\n" + author["vulnerable_source"]
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._compile_author_source_fields",
+        lambda *_args, **_kwargs: pytest.fail("forbidden source must not reach the compiler"),
+    )
+
+    with pytest.raises(ValueError, match="forbidden C facilities"):
+        validate_author_record(
+            author,
+            truth_id=record["truth_id"],
+            packet_sha256=record["packet_sha256"],
+            final_decision_sha256=record["final_decision_sha256"],
+            forbidden_identifiers=set(),
+            compiler="cc",
+            **_recommendation_bindings(record),
+        )
+
+    digraph = _author(record)
+    digraph["vulnerable_source"] = "%:include <stddef.h>\nint main(void) { return 0; }\n"
+    with pytest.raises(ValueError, match="forbidden C facilities"):
+        validate_author_record(
+            digraph,
+            truth_id=record["truth_id"],
+            packet_sha256=record["packet_sha256"],
+            final_decision_sha256=record["final_decision_sha256"],
+            forbidden_identifiers=set(),
+            compiler="cc",
+            **_recommendation_bindings(record),
+        )
+
+    conditional = _author(record)
+    conditional["vulnerable_source"] = (
+        "#if 0\nint main(void) { return 0; }\n#endif\n" "int helper(void) { return 0; }\n"
+    )
+    with pytest.raises(ValueError, match="forbidden C facilities"):
+        validate_author_record(
+            conditional,
+            truth_id=record["truth_id"],
+            packet_sha256=record["packet_sha256"],
+            final_decision_sha256=record["final_decision_sha256"],
+            forbidden_identifiers=set(),
+            compiler="cc",
+            **_recommendation_bindings(record),
+        )
+
+
+@pytest.mark.parametrize(
+    "forbidden_source",
+    [
+        "\f#include <stddef.h>\nint main(void) { return 0; }\n",
+        "\v%:include <stddef.h>\nint main(void) { return 0; }\n",
+        "int value;\r#include <stddef.h>\rint main(void) { return value; }\r",
+        "\ufeff#include <stddef.h>\nint main(void) { return 0; }\n",
+        "/\\\n* marker */ #include <stddef.h>\nint main(void) { return 0; }\n",
+        "??/\n??=include <stddef.h>\nint main(void) { return 0; }\n",
+        '_Pragma("GCC diagnostic ignored \\"-Wall\\"")\nint main(void) { return 0; }\n',
+        'int main(void) { __asm__ volatile (""); return 0; }\n',
+        'int open(const char *, int); int main(void) { return open("x", 0); }\n',
+        "int socket(int, int, int); int main(void) { return socket(0, 0, 0); }\n",
+        'int system(const char *); int main(void) { return system("true"); }\n',
+        "extern int (*system)(void); int main(void) { return (system)(); }\n",
+        'int main(void) { return __builtin_printf("value"); }\n',
+        "long syscall(long); int main(void) { return (int)syscall(1); }\n",
+        'void perror(const char *); int main(void) { perror("x"); return 0; }\n',
+        'void *dlopen(const char *, int); int main(void) { return dlopen("x", 0) == 0; }\n',
+    ],
+)
+def test_safe_pair_extended_forbidden_facilities_never_reach_compiler(
+    forbidden_source: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    author = _author(record)
+    author["vulnerable_source"] = forbidden_source
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._compile_author_source_fields",
+        lambda *_args, **_kwargs: pytest.fail("forbidden source must not reach the compiler"),
+    )
+
+    with pytest.raises(ValueError, match="forbidden C facilities"):
+        validate_author_record(
+            author,
+            truth_id=record["truth_id"],
+            packet_sha256=record["packet_sha256"],
+            final_decision_sha256=record["final_decision_sha256"],
+            forbidden_identifiers=set(),
+            compiler="cc",
+            **_recommendation_bindings(record),
+        )
+
+
+def test_safe_pair_forbidden_names_in_comments_and_literals_are_not_calls() -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    author = _author(record)
+    author["vulnerable_source"] = (
+        "int helper(int value) { return value; }\n"
+        'int main(void) { const char *name = "socket("; /* open( */ '
+        "return helper(name[0]); }\n"
+    )
+    author["fixed_or_near_miss_source"] = (
+        "int helper(int value) { return value != 0; }\n"
+        'int main(void) { const char *name = "system("; /* fopen( */ '
+        "return helper(name[0]); }\n"
+    )
+
+    validate_author_record(
+        author,
+        truth_id=record["truth_id"],
+        packet_sha256=record["packet_sha256"],
+        final_decision_sha256=record["final_decision_sha256"],
+        forbidden_identifiers=set(),
+        **_recommendation_bindings(record),
+    )
+
+
+def test_safe_pair_compiler_infrastructure_failure_prevents_contract_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    packet = _packet(record)
+    invalid = _author(record)
+    invalid["fixed_or_near_miss_source"] = invalid["vulnerable_source"]
+    model_calls = 0
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._compile_author_source_fields",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            E0GovernanceError("safe-pair author compiler execution failed")
+        ),
+    )
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal model_calls
+        model_calls += 1
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(invalid),
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs.subprocess.run", fake_run)
+    with pytest.raises(ValueError, match="compiler execution failed"):
+        _author_one(
+            packet,
+            record,
+            output=tmp_path / "author",
+            resume=False,
+            compiler="cc",
+        )
+    assert model_calls == 1
+
+
 def test_safe_pair_author_compile_gate_does_not_expose_compiler_stderr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -600,6 +1380,7 @@ def test_safe_pair_author_compile_gate_does_not_expose_compiler_stderr(
             final_decision_sha256=str(record["final_decision_sha256"]),
             forbidden_identifiers=_source_identifiers(packet, str(record["truth_id"])),
             compiler="cc",
+            **_recommendation_bindings(record),
         )
 
     assert getattr(captured.value, "failing_source_fields") == ("fixed_or_near_miss_source",)
@@ -1598,8 +2379,8 @@ def test_safe_pair_author_identical_source_repair_gets_behavioral_constraints(
     constraints = repair_request["deterministic_constraints"]
     assert constraints["detected_condition"] == "sources_equal_after_newline_normalization"
     assert constraints["required_postcondition"] == (
-        "vulnerable_source and fixed_or_near_miss_source differ after normalizing CRLF and CR "
-        "newlines to LF"
+        "vulnerable_source and fixed_or_near_miss_source have different C token projections "
+        "after ignoring comments and whitespace"
     )
     assert "Rewrite only fixed_or_near_miss_source" in constraints["required_correction"]
     assert "safe_pair_recommendation" in constraints["required_correction"]
@@ -1702,6 +2483,53 @@ def test_materialize_pair_writes_only_bound_source_and_manifest(tmp_path: Path) 
 
     raw_path.write_text('{"tampered": true}\n', encoding="utf-8")
     with pytest.raises(ValueError, match="artifact hash mismatch"):
+        validate_author_run(
+            author_root=author_dir,
+            normalized_path=normalized_path,
+            expected_records={record["truth_id"]: record},
+            packet_dir=packet_dir,
+        )
+
+
+def test_safe_pair_run_rejects_enum_valid_recommendation_drift(tmp_path: Path) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    recommendation = record["final_decision"]["safe_pair_recommendation"]
+    normalized_path = tmp_path / "normalized.json"
+    packet_dir = tmp_path / "packets"
+    author_dir = tmp_path / "author"
+    _dump(normalized_path, normalized)
+    _dump(packet_dir / f"{record['truth_id']}.json", _packet(record))
+    author = _author(record)
+    author["kind"] = "fixed" if recommendation["kind"] == "near_miss" else "near_miss"
+    author["invariant_summary"] = "A different but nonempty invariant."
+    author_path = author_dir / "authors" / f"{record['truth_id']}.json"
+    raw_path = author_dir / "raw" / f"{record['truth_id']}.json"
+    _dump(author_path, author)
+    _dump(raw_path, _raw_author(record, author))
+    records = [
+        {
+            "truth_id": record["truth_id"],
+            "packet_sha256": record["packet_sha256"],
+            "final_decision_sha256": record["final_decision_sha256"],
+            "author_sha256": sha256_file(author_path),
+            "raw_sha256": sha256_file(raw_path),
+            "status": "authored",
+        }
+    ]
+    _dump(
+        author_dir / "manifest.json",
+        {
+            "schema_version": "zscope.range-v16-safe-pair-author-run.v1",
+            "author_model": AUTHOR_MODEL,
+            "record_count": 1,
+            "normalized_decisions_sha256": sha256_file(normalized_path),
+            "records": records,
+            "content_sha256": sha256_value(records),
+        },
+    )
+
+    with pytest.raises(ValueError, match="kind is invalid"):
         validate_author_run(
             author_root=author_dir,
             normalized_path=normalized_path,
