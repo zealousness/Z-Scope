@@ -17,6 +17,7 @@ HEAD_SHA = "a" * 40
 ARTIFACT_NAME = f"range-v16-arbitration-shard-0-{HEAD_SHA}"
 ARTIFACT_ID = 9564149118
 PRODUCER_JOB = "Arbitration review (0)"
+FINALIZE_PRODUCER_JOB = "codex arbitration finalize and safe-pair author"
 
 
 def _source_run() -> dict[str, object]:
@@ -490,6 +491,149 @@ def test_exact_artifact_main_validates_run_job_and_external_digest(
     )
     assert validations == ["run", "job"]
     assert (tmp_path / "external" / "manifest.json").is_file()
+
+
+def test_exact_artifact_required_members_follow_canonical_final_artifact_names() -> None:
+    assert run_download._required_members_for_exact_artifact(f"range-v16-reviewed-{HEAD_SHA}") == (
+        "review-bundle-manifest.json",
+    )
+    assert run_download._required_members_for_exact_artifact(
+        f"range-v16-review-provenance-{HEAD_SHA}"
+    ) == ("review-provenance.json",)
+    assert run_download._required_members_for_exact_artifact(
+        f"range-v16-pair-author-{HEAD_SHA}"
+    ) == ("normalized-decisions.json", "author/manifest.json")
+    assert run_download._required_members_for_exact_artifact(
+        f"range-v16-primary-fable-{HEAD_SHA}"
+    ) == ("manifest.json",)
+    assert run_download._required_members_for_exact_artifact(ARTIFACT_NAME) == ("manifest.json",)
+
+
+def test_exact_final_artifacts_share_finalize_producer_and_use_frozen_zip_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    digest = "e" * 64
+    exact_artifacts = (
+        (
+            f"range-v16-reviewed-{HEAD_SHA}",
+            "reviewed",
+            ARTIFACT_ID,
+            ("review-bundle-manifest.json",),
+        ),
+        (
+            f"range-v16-review-provenance-{HEAD_SHA}",
+            "provenance",
+            ARTIFACT_ID + 1,
+            ("review-provenance.json",),
+        ),
+        (
+            f"range-v16-pair-author-{HEAD_SHA}",
+            "pair-author",
+            ARTIFACT_ID + 2,
+            ("normalized-decisions.json", "author/manifest.json"),
+        ),
+    )
+    producer_validations: list[str] = []
+    restored: list[tuple[str, int, tuple[str, ...]]] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(run_download, "_fetch_and_validate_source_run", lambda **_kwargs: None)
+    producer_job = _producer_job()
+    producer_job["name"] = FINALIZE_PRODUCER_JOB
+    monkeypatch.setattr(run_download, "_list_run_jobs", lambda **_kwargs: [producer_job])
+
+    def validate_job(*_args: object, **kwargs: object) -> None:
+        producer_validations.append(str(kwargs["expected_name"]))
+
+    monkeypatch.setattr(run_download, "_validate_producer_job", validate_job)
+
+    def download_and_extract(**kwargs: object) -> str:
+        output = kwargs["output"]
+        required_members = kwargs["required_members"]
+        assert isinstance(output, Path)
+        assert isinstance(required_members, tuple)
+        output.mkdir()
+        for member in required_members:
+            path = output / member
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
+        restored.append(
+            (
+                str(kwargs["expected_name"]),
+                int(kwargs["artifact_id"]),
+                required_members,
+            )
+        )
+        return digest
+
+    monkeypatch.setattr(run_download, "_download_and_extract", download_and_extract)
+    argv = [
+        "--repository",
+        REPOSITORY,
+        "--expected-run-id",
+        RUN_ID,
+        "--expected-head-sha",
+        HEAD_SHA,
+        "--expected-workflow-path",
+        run_download.E0_REVIEW_WORKFLOW_PATH,
+        "--expected-event",
+        run_download.E0_REVIEW_EVENT,
+        "--expected-head-branch",
+        run_download.E0_REVIEW_HEAD_BRANCH,
+        "--expected-producer-job",
+        FINALIZE_PRODUCER_JOB,
+    ]
+    for name, output, artifact_id, _ in exact_artifacts:
+        argv.extend(
+            [
+                "--exact-artifact",
+                f"{name}={output}={artifact_id}=sha256:{digest}",
+            ]
+        )
+
+    assert run_download.main(argv) == 0
+    assert producer_validations == [FINALIZE_PRODUCER_JOB]
+    assert restored == [
+        (name, artifact_id, required_members)
+        for name, _, artifact_id, required_members in exact_artifacts
+    ]
+    for _, output, _, required_members in exact_artifacts:
+        for member in required_members:
+            assert (tmp_path / output / member).is_file()
+
+
+def test_exact_final_artifact_missing_frozen_zip_root_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact_name = f"range-v16-review-provenance-{HEAD_SHA}"
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w") as bundle:
+        bundle.writestr("manifest.json", "{}")
+    archive_bytes = archive_buffer.getvalue()
+    digest = hashlib.sha256(archive_bytes).hexdigest()
+    metadata = _artifact_metadata(digest=digest)
+    metadata["name"] = artifact_name
+    monkeypatch.setattr(run_download, "_fetch_metadata", lambda _url, *, token: metadata)
+
+    def download(_url: str, *, token: str, output: Path) -> str:
+        output.write_bytes(archive_bytes)
+        return digest
+
+    monkeypatch.setattr(run_download, "_download_archive", download)
+    with pytest.raises(ValueError, match="required archive member is missing"):
+        run_download._download_and_extract(
+            repository=REPOSITORY,
+            artifact_id=ARTIFACT_ID,
+            run_id=RUN_ID,
+            head_sha=HEAD_SHA,
+            expected_name=artifact_name,
+            token="secret",
+            output=tmp_path / "restored",
+            required_members=run_download._required_members_for_exact_artifact(artifact_name),
+            external_digest=digest,
+        )
+    assert not (tmp_path / "restored").exists()
 
 
 def test_exact_artifact_mode_rejects_incomplete_or_mixed_cli(
