@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-022",
+  "pair_uid": "range-v16-pair:ISSUE42-022",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every successful allocation retained only by the stack-local RuntimeTlscbInfo must be released before every return unless ownership is explicitly transferred.",
+  "review_decision_sha256": "d43be55ac26cf813e31cf907bbda5c47e3f47ce16c83fbd7c61f4d035353db43",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "6c43b809fab757fed4bbe373b5edca3ce8d65aa0203128a1d6ab04b8db7e61e1"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "72c5e6f1c93f184b95d2f86a22b3e715acf06eb9388a056b9c44c5281379d190"
+  },
+  "content_sha256": "097af128a2a390c4c0c55acdf1ce2e1d95f758eaacdf8140a1bb39a8a00e6543"
+}

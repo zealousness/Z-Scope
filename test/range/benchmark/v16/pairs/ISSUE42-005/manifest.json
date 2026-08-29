@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-005",
+  "pair_uid": "range-v16-pair:ISSUE42-005",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "g_runtime_pbuf_pool is either NULL or points to a live pool; the pool is not destroyed while active_tasks is positive, and no member is accessed after its owning pool is released or nulled.",
+  "review_decision_sha256": "2d933f417950265f5e130669c826ec4675d16310a07b218a8360673719ab9d7f",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "97e8a19369893919c04a05cf408d0dc8c4d1809caaf0559a990219f765b80d75"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "b6c8fd5e60c2ae48e2dee612c0fadf1a387e684e605c892be8d03ea31dadd07e"
+  },
+  "content_sha256": "6c678c49da6143d2a5420c9b78c305ed915f4655fede5d0a2e871089391745e9"
+}

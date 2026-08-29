@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-025",
+  "pair_uid": "range-v16-pair:ISSUE42-025",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "The identity-zero publication path must leave the selected slot in TASK_STATUS_NORMAL before _runtime_require_normal_process examines it.",
+  "review_decision_sha256": "67268c78bba4a3719b639bbf77e3376b77e56a0fa66883bdafc95a21ee75b09f",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "164986ea443d509b7dcf2e724864c1f489f48f5f1f159ebdde20b270bf3835c2"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "1db5261ca5a85c29a1242259fb94a91be72fe476162fa6c83bb5c431cf9c1b7b"
+  },
+  "content_sha256": "7ffe2040949dd13153ec7a6a3a4ab65d7ec777b2b6cf3ed7f579a60deffe0575"
+}

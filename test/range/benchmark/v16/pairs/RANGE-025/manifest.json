@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-025",
+  "pair_uid": "range-v16-pair:RANGE-025",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every path returning from _lifecycle_reload_config after LOCK(&g_config_lock) executes exactly one matching UNLOCK(&g_config_lock).",
+  "review_decision_sha256": "6d56bda6a078218af445b8a8e05ffe6bcad86c920a4f5d8871639ef859cd2d37",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "904b7e98569a2ad82bc3a1a2d1c2455eabacf2087bd05c24ce0ef7127aee55c2"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "f4478950f43c962ada8e44e12b40e5bbd132763f08bf78926c6835de59c65680"
+  },
+  "content_sha256": "57f4a39b4d047698123436eb0af575a8cd78e13a1ec519a737459da1a0a540d3"
+}

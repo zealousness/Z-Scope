@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-003",
+  "pair_uid": "range-v16-pair:ISSUE42-003",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "For len at least 17, return the lowest start-relative index from 0 through 7 where input[1+i] differs from input[9+i], independently of host byte order; preserve the existing zero result for invalid, short, or identical input.",
+  "review_decision_sha256": "8503ec9e31666181063bdca3f915216fe6d498da57152d0bf93cde4fa037a21e",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "5dc64af1a6aa51132369e589729ebbacbc08e4bf289e9b3681a694b2d2cc7aec"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "a9197729ebc29757ef1a326922e3657a32c6dbdaf29843a58fb7643c320f9677"
+  },
+  "content_sha256": "fad8e7b8fa23baab726ebed53d2bd5ae799ca1d46991b52d71e39cad97064f5d"
+}

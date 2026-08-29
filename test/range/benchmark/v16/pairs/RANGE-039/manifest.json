@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-039",
+  "pair_uid": "range-v16-pair:RANGE-039",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every heap-backed ControlSession unlinked from g_control_sessions is cleaned up exactly once after the list lock is released.",
+  "review_decision_sha256": "7db5cc22ea32ea6c9f6ad7bb5ec1c715b5f73c6f60c58c4ed935d7c5df5b6afd",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "d5a92946a68e0b0a38c990be1a638ad7cc0f30fbcb0d23d015b65201895c727c"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "7b560ec3a62703e12b0bd4b377fc48f48c4f800529dbed467c001a6e9752bfde"
+  },
+  "content_sha256": "998c874f1499e1f4bb75516a69b3836312a8433478f55e85ce4d895143066c05"
+}

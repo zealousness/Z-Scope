@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-032",
+  "pair_uid": "range-v16-pair:REAL-032",
+  "contract_kind": "public_api_contract",
+  "kind": "fixed",
+  "invariant_summary": "Before evaluating area + 1 as an allocation count, area must differ from UINT32_MAX so the unsigned element count cannot wrap to zero.",
+  "review_decision_sha256": "828abdb4ed870eebf9b3a2198ee19b4b9bdaee7428a3aa46a1a50d64134e1760",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "f892e35e2cf72d1d29e5642564a3a117cdaafa8ef1564106b3ba4d8b966f91c1"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "6c25b32f68e8ba2b4afb04a812f53157c270c792781a3d31526fabdba537cdf6"
+  },
+  "content_sha256": "46987d2a8e7b23a5e2017fda9a85280f81b827518b70c740a5571880f613361c"
+}

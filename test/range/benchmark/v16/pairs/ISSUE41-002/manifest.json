@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE41-002",
+  "pair_uid": "range-v16-pair:ISSUE41-002",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A declared frame length is accepted only when it is at least the header size, does not exceed wire_len, and yields a body length no greater than out_len before memcpy executes.",
+  "review_decision_sha256": "5a5bedf4bf3e71cd443c9f780ffa812318a72cf296fd2160e1e0ffd6ae406d97",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "4603bebf0b3014db28270764c4d27d7b6f7e7b6d2b0a7c6e0f39adb9e6fa9874"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "264150aa278b352e50f319604a2261f6ef04434d0cd2b8b14cbda6376251b1f0"
+  },
+  "content_sha256": "4c56272cdf8e78600ace4351d282296ce1d271c51ecff956ddd76428aefab2a3"
+}

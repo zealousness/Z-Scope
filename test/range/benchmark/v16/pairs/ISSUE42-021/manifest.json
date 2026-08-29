@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-021",
+  "pair_uid": "range-v16-pair:ISSUE42-021",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "The same lock must serialize the duplicate-name lookup and insertion so that at most one RuntimeMemzone with a given name is present in g_runtime_memzones.",
+  "review_decision_sha256": "6950f31e191d6ef248bea201ae7c22d0e6740a274378202c2cc9e5cca3451ede",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "b02abfa5887215de7c7a17e37971dd957e7a387120a2dfaa35e3ce44e947e4c5"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "dc84db322d5e3bb249e53e77739d7a4791388b97f5c4ec5e79d620424401de1d"
+  },
+  "content_sha256": "79bd57235bf7fc82672a82eecff9eeed57b98129de0495027365536dc108c169"
+}

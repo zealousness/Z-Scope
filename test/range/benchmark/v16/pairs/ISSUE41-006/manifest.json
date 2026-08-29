@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE41-006",
+  "pair_uid": "range-v16-pair:ISSUE41-006",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every object obtained by `_peer_prepare_retry_context` is explicitly released on every subsequent exit, and no local pointer is read before receiving a defined value.",
+  "review_decision_sha256": "9d1645ec771aac859e94406b065d27cfa9f8ec6e2bef431409d62f797de6b693",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "983ff309b326a79b2080928871b4386a8f9760e98555d3675ad4f114b13da4f8"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "3919fbbc91779ea7c4e867680005378b7bf41e0f244e84ce87c609ec663f4bed"
+  },
+  "content_sha256": "e7cd55b7c2e63915335382261bc9b74cc58617665cb9b5f088b1787a7a775890"
+}

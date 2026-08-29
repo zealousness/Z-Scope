@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-044",
+  "pair_uid": "range-v16-pair:RANGE-044",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A successfully closed pipe is detached from the scheduler list before its next pointer is poisoned, so the closed node cannot introduce a reachable self-cycle.",
+  "review_decision_sha256": "a57415a54766a6d46b550fdc436b64a2005f5dcc800faf0a4207912fadfe9cbc",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "7900b01e34081e4d37a1095cd888952d62a6d2010650754a90d9ea0474ef304d"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "ec6efece24b7d06c15b50f240f3b4e9850c1dea30746e3a6fa80838e4d473caf"
+  },
+  "content_sha256": "7e1d73a058a09135450f4cd87f5885e85ace058a2a637cee312fa03e0572d8a1"
+}

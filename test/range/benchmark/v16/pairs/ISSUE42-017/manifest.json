@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-017",
+  "pair_uid": "range-v16-pair:ISSUE42-017",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A caller may modify a slot's identity fields only when its CAS successfully transitions that slot from TASK_STATUS_COMPLETED to TASK_STATUS_RUNNING; a failed claim must leave those fields unchanged.",
+  "review_decision_sha256": "6b87641cada94b6a4afcb69eb9a4384f858a72a1f232fbd47c5249f5cd0ff10c",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "c67fa9440c385d07306a5958c6748aa2d46dd74c80e2e2cade98b50c45e5525d"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "6d17d347cfc5239f01966144bb2f4defc71e6c0253e3c37f8c5b42ebc9322da3"
+  },
+  "content_sha256": "3cdc20b6e375045e4265d17d01b10e2ffc4b5d20257c4002b03ab809b6fc6668"
+}

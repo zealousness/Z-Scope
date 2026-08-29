@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-019",
+  "pair_uid": "range-v16-pair:RANGE-019",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "An entry becomes reachable from g_lifecycle.entries only after its value and state are fully initialized, and any initialization failure leaves the global list unchanged.",
+  "review_decision_sha256": "eaf897f8c4ff1c93ad87a3570327d1c5de7b63569079c7d37ddf442a6cc151be",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "8f97d188897380c82d50f47be2ad32013c2c079b029693a9cd0489f4d542374b"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "e6f7d09f6086f11ce9115957826164f5767f94271bbb338b5d07a5f3cb609631"
+  },
+  "content_sha256": "e0a1caa9e506a06e7fb740b5e6962a272799ab8e6231d79306d6085f5f749c23"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-040",
+  "pair_uid": "range-v16-pair:RANGE-040",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Each mutex successfully initialized in a TopicSubscription must be destroyed exactly once, after the node is no longer reachable and before its storage is freed.",
+  "review_decision_sha256": "a7297df7f8aaa4d98727921203e6703439f968072962a691f9f993a7bddbb747",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "8d38db50f8f628fa082e0018c139de0674d2bef1e85eebaafd9e8642f18268de"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "d8c8fd0e0b1b38a992593ced8956332ee29be883809b02f6aed3c157f5f9f3aa"
+  },
+  "content_sha256": "c6c316e070037fb87588eb625bcf0648027bd763382e717747be89e36b1482ef"
+}

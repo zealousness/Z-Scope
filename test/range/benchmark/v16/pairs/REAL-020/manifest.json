@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-020",
+  "pair_uid": "range-v16-pair:REAL-020",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every path satisfying the function's explicit probe-failure predicate must return a nonzero status; 0 is reserved for ordinary successful completion.",
+  "review_decision_sha256": "2f9a43a062957eef897d2265a3cea58471e6a503d758d00b409bcdc23cc7503d",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "592c6a08f7c5ac1301cad3851fc33e586ca91c9c3af9feba264f7d5c5dea49ea"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "d092d09eea9e8920853f117cde41bcbb657dda937369f3abec4c9787138c183d"
+  },
+  "content_sha256": "a4b1c0d8b9ac38ce3020158c14af09264f3633172c705ca3b02f739bf4b3158a"
+}

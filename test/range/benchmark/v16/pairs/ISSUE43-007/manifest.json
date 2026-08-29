@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE43-007",
+  "pair_uid": "range-v16-pair:ISSUE43-007",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A pair-local maximum must bound batch_size before its value is used to compute the allocator request.",
+  "review_decision_sha256": "04fbaa85a7214eaece4f433650e9296d163aa1b9b863e2b0a85ee21439ff19e7",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "895f2c285070098cac2701c3d3f8753c45521c94496ec990f7bd49428b2031f6"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "246e1942c44d6c5488a30e416b4f2a744ebccc5b5d1ecbbfd2d3d76573ec4f9f"
+  },
+  "content_sha256": "b276f83f21e85e5d804c691eef7117a2586e1d0468a4f61eca05465d05353e24"
+}

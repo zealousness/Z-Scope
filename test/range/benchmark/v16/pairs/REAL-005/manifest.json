@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-005",
+  "pair_uid": "range-v16-pair:REAL-005",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Before discarding a locally owned ServiceNode without transferring ownership, release its non-NULL payload, name, and wrapper allocations.",
+  "review_decision_sha256": "638bd09f0de4316681ccb7523f898336536cae4ecf4ddae950baa61e4f2f79d0",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "e9d8b17ffc62cd70d50edb9a7f3ecbc1c2a7b84e8db968269a6ec04b7796c7fe"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "1489351c2d37f7908b6eb0c88d8f5485f04553b49a67edb09b8caaddd3708dfc"
+  },
+  "content_sha256": "e929c18a91ad838dae384082d0ff748383ea81574eab17e1348dfe5fb8466f53"
+}

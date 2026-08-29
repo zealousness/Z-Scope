@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-021",
+  "pair_uid": "range-v16-pair:RANGE-021",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Lookup, ref_count mutation, zero decision, and removal from the model's keyed registry are one transaction under g_lifecycle.lock; after unlocking, code uses only copied results or exclusively detached state and never dereferences a still-shared entry pointer.",
+  "review_decision_sha256": "e2ad01a7db022135901dbe2fb9e495c4ac5b6bb0a58fe1e3378d767c02b508db",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "e085423cea1076af5e5f6d7f0c1f517df4a07e788a451fdde0f6d7ea65a2a4ad"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "6ff4de7519a862d1ee21ad688a988f0d5940c07c0123baf44d557de65a8cb9e0"
+  },
+  "content_sha256": "437d1de62ecfaca148aa03de4c071ed3886eefed0a3bb3d24e0fee4d8a512d44"
+}

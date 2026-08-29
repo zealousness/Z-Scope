@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-042",
+  "pair_uid": "range-v16-pair:RANGE-042",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Before a closed node's next field is repurposed as a self-reference, the scheduler link that made the node reachable must be replaced with its former successor.",
+  "review_decision_sha256": "c1417aab8ddf7a6bcd3b83f92722b6bcf20c8c4855d0c63c1b30a905053c180a",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "f84027abbaa60d038872958aa712e790f65a0ea3ca848917162e66ba51aa8f17"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "4bd011754730a251e11bbaac611f1bd54ed51528db709a92dcc35d7249150011"
+  },
+  "content_sha256": "480ff7923cd6ee52369c1bcd1ad936dd166d034f449f3ffb06be4ade2a7f8460"
+}

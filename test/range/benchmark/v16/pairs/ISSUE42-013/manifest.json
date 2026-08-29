@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-013",
+  "pair_uid": "range-v16-pair:ISSUE42-013",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "The occupancy decision for a registry slot and every mutation selected by that decision execute within one g_runtime_fixpool_lock critical region.",
+  "review_decision_sha256": "32c683fae242c692266974bbd67248f31dd1aa27420ee58e80fb79bfcad36c7f",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "d5fd3abb698d91a49157f4246a5e1d43d08a0944e8d83b3cc9ea6a1b2dd34b61"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "eddcae6bbea3848d8e7366760cc8b87013bdfb8e41f875aba2bf60ae41931060"
+  },
+  "content_sha256": "06d19f9b4c18c9f01e63c3ab59ca59d7f291fffd985b553c6ed4e066f010a46e"
+}

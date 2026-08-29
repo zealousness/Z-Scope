@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE41-009",
+  "pair_uid": "range-v16-pair:ISSUE41-009",
+  "contract_kind": "concrete_trigger",
+  "kind": "near_miss",
+  "invariant_summary": "A broker-linked resource with outstanding references must remain allocated; any terminal release must unlink the resource before freeing its tag and storage.",
+  "review_decision_sha256": "61ef04b431e193428b73ee2fec3e3ff6b6a6f6e7e9f433b3cf0c27b3f0077bab",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "4ebd5b0d10a148e83c4922a7aaabae87403aad0e77bf22ec98af7e9e33c507e0"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "b1b6bcc1f633e3a04c1ef57b0a475dd0c0e8c9f88199f878c022ed2d4d529eed"
+  },
+  "content_sha256": "d64d2d9101734496d4999055f7b569926a90a53ab334777a97a7da05beab93d2"
+}

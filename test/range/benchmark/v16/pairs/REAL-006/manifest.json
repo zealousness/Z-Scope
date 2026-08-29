@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-006",
+  "pair_uid": "range-v16-pair:REAL-006",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "On activation failure, every separately allocated child still owned through node->children is released exactly once before the parent node is freed.",
+  "review_decision_sha256": "4847ba11b965df2fd15c991b347da338b1f44f2a3553b625a8c7cb6772b01971",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "f2853610c4075809d3e8348f9b61c458071377d511675960695f1a971bed9710"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "126655224dcd92b2eaba00d238907616d5d10cd806a3a64cc8b64322a7f291d5"
+  },
+  "content_sha256": "e3e244fd40f346bc65662b9f22cd56e25dc737af2da098b51acd06bf6d20c97a"
+}

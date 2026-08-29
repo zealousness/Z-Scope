@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE43-014",
+  "pair_uid": "range-v16-pair:ISSUE43-014",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Each invocation must validate a finite segment-count limit before opening handles and must explicitly release every successfully opened handle before freeing its table or returning.",
+  "review_decision_sha256": "79545925a2d459aaaa9cf8f4f349a252cff35a8b2f1c3b992ec97bc263e6f1a4",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "c6672ea06aa345bbe5b77a336611c4dc4ce39cc78f013aea4f87b7fc3e2a5ec6"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "a8cd1d49e3c7dd6f1a47efb568ba66bd84ee24b1409003ca68aba142d5039d99"
+  },
+  "content_sha256": "d540f7c27d216c753f953d25e779960179ccecde61212723de53b24ea3a4b83a"
+}

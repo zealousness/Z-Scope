@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-010",
+  "pair_uid": "range-v16-pair:ISSUE42-010",
+  "contract_kind": "public_api_contract",
+  "kind": "fixed",
+  "invariant_summary": "Every remain_node[i] write must satisfy i < RUNTIME_AVAILABLE_LIST_LIMIT.",
+  "review_decision_sha256": "11debb424d7d0cc56e89ae975185899035dc2c82120eabe5a9dd92aa7c25c8c1",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "6b50aee9336670dd5fcc4d4b1836b8441212eada51b16c80840a57b62376e427"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "03f71ac8653f3497a4830d1aea2303ef3530447ce60346377caa9c9bca6304c8"
+  },
+  "content_sha256": "2ae05b869f26ed7351c5e02598466e6feaab1b24206379d5d783f692183a718b"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-019",
+  "pair_uid": "range-v16-pair:REAL-019",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A header receive loop must either make byte-count progress or terminate with an error; a nonproductive receive result must not cause unbounded retry.",
+  "review_decision_sha256": "3eb94c35f16bb78e9a94f20aa9b1ea46b0a80ec86724f619ac321da6783d9147",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "30c4a858cfa5303939908d29ddc1e782fabcea5ab156483c79880cf7deff0b97"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "43bbf5d1c19b327bf716b6248bdb5c0434ac6e59dda12e0ece0f7cf3d59ccee5"
+  },
+  "content_sha256": "9d502c3b0694baa115266c84c92a44d9addc972c2486417229ea787159b2972f"
+}
