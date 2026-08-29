@@ -171,7 +171,13 @@ def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
         "verified_record_count": 1,
         "verified_records": [{"truth_id": "CASE-VERIFIED-SECRET"}],
         "invalid_records": [],
-        "incomplete_records": [],
+        "incomplete_records": [
+            {
+                "truth_id": "CASE-FAILURE-SECRET",
+                "author_present": False,
+                "raw_present": True,
+            }
+        ],
         "failure_records": [failure_record],
         "checkpoint_contains_author_material": True,
         "diagnostic_answer_material_present": False,
@@ -202,6 +208,7 @@ def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
         {"failure_code": "author_contract_failure", "count": 1}
     ]
     assert diagnostic["verified_record_count"] == 1
+    assert diagnostic["incomplete_record_count"] == 1
     assert diagnostic["failure_record_count"] == 1
     assert diagnostic["diagnostic_answer_material_present"] is False
     serialized = json.dumps(diagnostic)
