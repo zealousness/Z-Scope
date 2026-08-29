@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-022",
+  "pair_uid": "range-v16-pair:REAL-022",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "If the fcntl failure branch is taken, _runtime_switch_io_mode returns -1 with g_service_registry.state equal to its entry value.",
+  "review_decision_sha256": "6ab38db7475b924d3ac149501e06e04a3a12a45d26a009d2d77ac5d7a4885e05",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "2dd0087d3d5305dea2f23c601e6e12bf12e0506e1a5ea5c7aa6a8509c289e04e"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "f0195a696d9b450f0fdadc221da65f58044714e5dfae4042b0bbaf156ae43df9"
+  },
+  "content_sha256": "8297bc9b24a653d8ff95180c214d4ecd335704183a88e00c1a3c9723b2b8eb7c"
+}

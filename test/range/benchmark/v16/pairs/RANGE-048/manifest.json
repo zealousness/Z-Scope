@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-048",
+  "pair_uid": "range-v16-pair:RANGE-048",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every access made by _lifecycle_update_counter_slot to g_lifecycle_counter_slot, including acquisition of the returned value, is protected by g_lifecycle_counter_lock on every target architecture.",
+  "review_decision_sha256": "8563abd8ce8d49c0cddc738a5e1959b15469cb66ef372d994f001e0fdd8dbdf3",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "ae9cafb5473865e2dbe2236c4472c88d77dea475f8f7365037b6a902efbc9253"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "a192dfa01d8822220340d9b7c5a49a80c66d6d105f0488fbe46dafadad966129"
+  },
+  "content_sha256": "774b97fd08da3f7cb18d2ee5ac57722b729b717192a9bfecfd82d1c5f945cb00"
+}

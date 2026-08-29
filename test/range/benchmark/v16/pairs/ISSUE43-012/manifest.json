@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE43-012",
+  "pair_uid": "range-v16-pair:ISSUE43-012",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A field handed to another thread must not retain a non-NULL pointer after the referenced allocation has been freed.",
+  "review_decision_sha256": "eec8e81aef5546f0be86a4df906881d1f6671f984eb735f75cfb5b17bf0f8077",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "7abe123432fce49789d5e923ccd9be81f79cbc18e19bbe9fc286bc8379476ba0"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "67850580f8b731ff39c5a57df5c80e5399d846c2fef4ce72bc597584a7ae6715"
+  },
+  "content_sha256": "fe117004e8d41f1497523ed1e4bc472476ed18905b83f74bd0a9e99d8beaa54e"
+}

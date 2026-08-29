@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-029",
+  "pair_uid": "range-v16-pair:REAL-029",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A descriptor must remain open while it is passed to _net_recv_data, and the global watched-descriptor slot must not retain its value after that descriptor is closed.",
+  "review_decision_sha256": "e0114929ac546cf992ad8d4639aca6ccc6fe3eeee6f64b3c246fb73dcef420a6",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "d9760e90b6d8f9e0b36af858b8678dc83c261342b9efbeb28e9f6d2a0bf7b718"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "50fd75814e2877175b828c88706c0032c77ea85506b6b6992a6d5f90e52c1927"
+  },
+  "content_sha256": "3e868dbd37ef9261130cad99c890dc69e2d597a6915f232af60fe858bde084f5"
+}

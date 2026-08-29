@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE43-006",
+  "pair_uid": "range-v16-pair:ISSUE43-006",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "The pointer passed to free must be the unchanged base pointer returned by _safe_malloc, never an interior pointer derived from it.",
+  "review_decision_sha256": "9f368a68aa29affb443175b18bc8eec0a55186adddbf50f13f382cbad0af07d6",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "8da6272b6e483dcfa73c5a4742eb30f14b65a4a800eee820c626a0c08a3250c3"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "d9a491b1aa585bbc97580171935ad198da413fbdf50e2a7d6bde4d489071ad31"
+  },
+  "content_sha256": "bfad297aa638ba3875acda61c8a110ae48e57f7e1f4dd1f623ce940a2d10990f"
+}

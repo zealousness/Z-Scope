@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-009",
+  "pair_uid": "range-v16-pair:ISSUE42-009",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "The pending-state test, transition to pending, and shared-list insertion are serialized by the same lock, so at most one batch is enqueued for a clear-to-pending transition.",
+  "review_decision_sha256": "afc0280a31c1ade7d30cf8414f360f7422a167237d88af32327e9059a3c75574",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "06dd214759c506dfc31a04e3e0cf65e3656c116e25330857d9893f7a28712e95"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "3be0de8ae8e3fa5bd4d6c0193937ba70e9d7ac404ca8a829fc266a88f7c0e8ae"
+  },
+  "content_sha256": "6fdf0ef3f35ed8db157a422e7114b78686e5b91eec11218d164b8671d5cdd0ad"
+}

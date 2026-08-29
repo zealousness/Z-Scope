@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE43-001",
+  "pair_uid": "range-v16-pair:ISSUE43-001",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every indexed write to segments must use an index strictly less than RUNTIME_STREAM_SEGMENT_LIMIT, regardless of the wire-declared segment_count.",
+  "review_decision_sha256": "b0fa505ce615de1a42c027f4bed33a6aed314ac0bfba64e55c87ac8a1ec97a0f",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "6255fe27879af3405ee917312bb4b7817c4c356b276e1258713ecfe7a39f15bb"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "0033fce9ea87d853414c5abbdffa8123a998092da1e2f26d033fdf8ae1280ea7"
+  },
+  "content_sha256": "7f48d59f70499583d7de8b944a482bcbbf35f46b86fc0558bc9369e10f9d124a"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE43-015",
+  "pair_uid": "range-v16-pair:ISSUE43-015",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every descriptor successfully opened by _runtime_stream_open_journal is closed on every return path.",
+  "review_decision_sha256": "b47f665c70aa09178a44dac0c5b344d2963b7155191fd641454398cc96c5b561",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "79d08d3de5505ed7ef718386cac70f0f068cfee269ad3bf627f80f9386c5672c"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "33eb912476e8fe398a091d7365d9d4bdbeaa5c8f9c89e790bf7ab893ca4f7caa"
+  },
+  "content_sha256": "d441cc79e1d3824588f06b43e4ce89683c4cbecfca36888f4c5187669342d043"
+}

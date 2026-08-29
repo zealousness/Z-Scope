@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-045",
+  "pair_uid": "range-v16-pair:RANGE-045",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Deleting an OSNode must release each ProcNode reachable from proc_head and each child's proc_name exactly once before releasing the OSNode.",
+  "review_decision_sha256": "8bbda354e1593c3388690329ec100f2ca4390086355165d62f8e374730c0655f",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "ebd2c019a2a1c405553defa9d3d6a9094a67c8c7a148604e2ea1d30d1f9d19dd"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "79fdaab18df2e8aff5dba9323909c345d5d7b1abeb7b0beae720e7c47851b3e1"
+  },
+  "content_sha256": "cd3ed42b8c6090e288d314a77bc68aaa60af8ea523adb0e10b3f6a70315b040a"
+}

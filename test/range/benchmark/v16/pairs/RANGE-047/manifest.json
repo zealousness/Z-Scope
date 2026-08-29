@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-047",
+  "pair_uid": "range-v16-pair:RANGE-047",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A node reachable through the tree or duplicate list must remain allocated until all such links are removed.",
+  "review_decision_sha256": "a81f47758f433b127cc2f449b1971f10fb12288f3196703af366126815ff3d12",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "218a6305f3bbbe03d8438a1ecd90da335716577bd6f1577910541afabe54f01e"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "2c4a3d7ef631ed5050b76efe36faeebcdaa61932c4b4cb5b9c9c328b56d9f667"
+  },
+  "content_sha256": "e6ac2dab6799fc6b2afa1d2c48ce171ea8141641b5d98111fdfb3176bdaecefc"
+}

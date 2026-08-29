@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-034",
+  "pair_uid": "range-v16-pair:RANGE-034",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Read the four identifier bytes at packet + 1 without dereferencing a uint32_t pointer whose alignment has not been established.",
+  "review_decision_sha256": "5e046ca1f1ed05b9871313bf1507c6cf36279ce183322a396bb1fe2b3ac62d26",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "18b3bb037e7beb3f1b52dfaa012ddd09f05592bea49f7fc28f506cf2ab6a9b3e"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "65fe01b292f83c8a118212567583bf9b74e36e2a1255bd1c31ce2c928308e5fe"
+  },
+  "content_sha256": "423418f23f99fe81c1f7306c623afb104a7827947620a97d1771af982233ee1f"
+}

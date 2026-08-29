@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-011",
+  "pair_uid": "range-v16-pair:ISSUE42-011",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "The pair isolates whether the file_size-versus-map_size rejection applies to character-device modes while preserving behavior for every non-character mode.",
+  "review_decision_sha256": "c770155dd44ba6212677933e79b66fe65a7505ea85da1883aa87409b2f5ccb55",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "e13765c18f2bbf112b68aa3bdbb72de91425c7802b1d847059da9ccb21a52ed3"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "6a41d83eb0b7cdc587db677833bec5ed17f9095c1b4c90606742f9946ad6e256"
+  },
+  "content_sha256": "6018110be04e7a83c1521f5f7f3c2c5ac94efa627a505982ba1cb763bdef6d6c"
+}

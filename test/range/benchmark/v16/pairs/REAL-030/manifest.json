@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-030",
+  "pair_uid": "range-v16-pair:REAL-030",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every accepted route key must have the same byte representation at lookup and insertion; keys that cannot be represented in the 31-character node-key limit must be rejected rather than truncated or collapsed.",
+  "review_decision_sha256": "eabf18519e762340fb1f8b5b09c04078d1156a78b97b13f917e3027508fd6cf5",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "2c78b4335d06fb111debe95a018a317e34da7c7bc198bd8fc3a8dee9521bb500"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "ff9563dba9f60b7a8a101ccdbbdd4b5d4b0e0a70d89cc687d5e6b728a6b8899d"
+  },
+  "content_sha256": "99619d25445584fe5db0298673e55cb14207413610dfb6242d80cda6affc8fdd"
+}

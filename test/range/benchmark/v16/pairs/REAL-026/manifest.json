@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-026",
+  "pair_uid": "range-v16-pair:REAL-026",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Storage passed as a worker-thread argument must remain valid until that worker has finished using it.",
+  "review_decision_sha256": "fcab51410b687eecda27ed0482b1857f32a06ea0e37f17b03596931d018aba1b",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "83e5aa2e1e335d7af8192159db7b0078acb6de1cf4321959f5c5c55613f99ef6"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "3001154a3596828bc557bfeda3cd900c2373d61ce680012be6ea0d404771551b"
+  },
+  "content_sha256": "78dbbe3dd6a75721fa690f7ab95eb511609413a86eef04c106dea3032fd89f61"
+}

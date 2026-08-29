@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-010",
+  "pair_uid": "range-v16-pair:REAL-010",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A four-byte value beginning at byte offset 1 may be decoded only after validating at least 1 + sizeof(uint32_t) bytes and through an alignment-independent copy.",
+  "review_decision_sha256": "e03cbd0e60ee48ecad47adb982e21b50b45f19b0eda7949a85e2cf9ae4f64a06",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "f8cda83a42d603c70da06aa8edeede1141bccba1e106bbbb42d07542ba4c11bb"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "1bfa7a9ed7ee5ec0de6e98c208d0632d054f396e8ead03a87edd1ec1f81c6f01"
+  },
+  "content_sha256": "655048a911da00ad442e2ac603f15f412515c2a5e7e8089de130e164f456b4b8"
+}

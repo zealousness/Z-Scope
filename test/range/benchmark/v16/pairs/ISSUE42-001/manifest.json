@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE42-001",
+  "pair_uid": "range-v16-pair:ISSUE42-001",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "The value passed to _runtime_schedule_sleep_window must be the nonnegative count stored in g_runtime_sleep.packet_count, not the binary g_runtime_sleep.work_count returned as a busy-work indicator.",
+  "review_decision_sha256": "316263f45aeae2444ae39685818164ee652ee366f2270e7f7993d883cb46a8fc",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "0efc315a3471f5cd9a6a8797a7c42c725b68f7334b8988cb8837a41f42a0ba4e"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "7421d700250eaf8ce3299f3c7c07f91e413e76e2d824e7e527998328aa6db9a8"
+  },
+  "content_sha256": "8fd3663114b585ec2a22924080906ee9fa624fd9f6823954226fd0d6a5cde556"
+}

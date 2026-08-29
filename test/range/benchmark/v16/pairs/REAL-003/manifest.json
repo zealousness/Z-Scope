@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-003",
+  "pair_uid": "range-v16-pair:REAL-003",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "The payload owned by the local node is released at most once on every reachable exit path.",
+  "review_decision_sha256": "c9e77deb8b50180879a13ccab724983a237d84e4d05d2aff6ad7776ef2b75ffd",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "5572aa14437135443e8d9f4b3c1181c2f2db2f42eddcddd79267460824093690"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "180e9f80dff484f284fc78a5044783d5913caa6db36093116cf08ee4dcbd90f1"
+  },
+  "content_sha256": "982291d241a0443ac8227aef371d2a9fbaf9827d3959ec1c1c68891a82302382"
+}

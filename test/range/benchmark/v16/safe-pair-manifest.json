@@ -1,0 +1,495 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair-index.v1",
+  "record_count": 61,
+  "records": [
+    {
+      "truth_id": "ISSUE41-001",
+      "pair_uid": "range-v16-pair:ISSUE41-001",
+      "manifest_sha256": "eb76e48931e7bee76ab46656c3e585b54678c6309efc99c3c652abf7ee59ed42",
+      "vulnerable_sha256": "5de9bfa0aee02f48c7e7c7d4b870e71e167edb031862b66e22a49184672310b9",
+      "fixed_or_near_miss_sha256": "71ab6ca328c440f8301bf8ee0afab912fb1d16b98173b4a0245b784094a35285",
+      "content_sha256": "03f8f7a323b9a31cc4956aa965c0d06390b12c15cffe12cbaddef15485f8304f"
+    },
+    {
+      "truth_id": "ISSUE41-002",
+      "pair_uid": "range-v16-pair:ISSUE41-002",
+      "manifest_sha256": "01d01937fa717fb0391616ef87c10895349d3357c547f93c68eeed6c68f273bd",
+      "vulnerable_sha256": "4603bebf0b3014db28270764c4d27d7b6f7e7b6d2b0a7c6e0f39adb9e6fa9874",
+      "fixed_or_near_miss_sha256": "264150aa278b352e50f319604a2261f6ef04434d0cd2b8b14cbda6376251b1f0",
+      "content_sha256": "4c56272cdf8e78600ace4351d282296ce1d271c51ecff956ddd76428aefab2a3"
+    },
+    {
+      "truth_id": "ISSUE41-003",
+      "pair_uid": "range-v16-pair:ISSUE41-003",
+      "manifest_sha256": "f4abfeec1f5903ea5fb4ca6aff3f312e991e916b3d18f9baa11edb3350243daf",
+      "vulnerable_sha256": "36368ea41f11411a122c077ffa748aa71d512d35b9d78a09aa43b3c832d3e02d",
+      "fixed_or_near_miss_sha256": "a086317a15da9afa9f081a47b13357d10ece4b1b1db064f7b5cacad4997e0013",
+      "content_sha256": "94eb5d2d4dfe045821cd150a63000938d0fc84a239c9b8cad76427645a5a595d"
+    },
+    {
+      "truth_id": "ISSUE41-005",
+      "pair_uid": "range-v16-pair:ISSUE41-005",
+      "manifest_sha256": "bce96db65e766846e0354cfedda7336122ee151ec7b0dda2a2f0c0e60c972cd0",
+      "vulnerable_sha256": "75007b48812bce0a6d51dcb3d35b1f293a2ff8c94745246b85335eced618c217",
+      "fixed_or_near_miss_sha256": "cc4e53eed01d5ccc72d9fbceaff136202f6d20e96cea5c217128f53958e79897",
+      "content_sha256": "41b2ced7675c157e0ed007d490b39d47b53a240d359b5d71add318ab104e4c02"
+    },
+    {
+      "truth_id": "ISSUE41-006",
+      "pair_uid": "range-v16-pair:ISSUE41-006",
+      "manifest_sha256": "985d6a4668d6e0e1152814f676de4ec652e0f5bce897fc9666dc40e6906e3c28",
+      "vulnerable_sha256": "983ff309b326a79b2080928871b4386a8f9760e98555d3675ad4f114b13da4f8",
+      "fixed_or_near_miss_sha256": "3919fbbc91779ea7c4e867680005378b7bf41e0f244e84ce87c609ec663f4bed",
+      "content_sha256": "e7cd55b7c2e63915335382261bc9b74cc58617665cb9b5f088b1787a7a775890"
+    },
+    {
+      "truth_id": "ISSUE41-008",
+      "pair_uid": "range-v16-pair:ISSUE41-008",
+      "manifest_sha256": "bc54f0f2fb2198ec08c8fcec01563014f186d90728c975b40d1c9408796129db",
+      "vulnerable_sha256": "c2b8ba6529beefd9049c51fc757433e786514f7c32e1e549710033ebcfc21d0e",
+      "fixed_or_near_miss_sha256": "fac018e5aad1599f49d392f8446bcf964bbcd6b8444e49544da8c30dca1b6dca",
+      "content_sha256": "b263624d7ec60fb9c0921999213c8c8b2abd48429cc58f95ebda037ec6027d07"
+    },
+    {
+      "truth_id": "ISSUE41-009",
+      "pair_uid": "range-v16-pair:ISSUE41-009",
+      "manifest_sha256": "7145f24e5402a14206d6cfa51f963939fce4017694dd181204521ae6a981df6d",
+      "vulnerable_sha256": "4ebd5b0d10a148e83c4922a7aaabae87403aad0e77bf22ec98af7e9e33c507e0",
+      "fixed_or_near_miss_sha256": "b1b6bcc1f633e3a04c1ef57b0a475dd0c0e8c9f88199f878c022ed2d4d529eed",
+      "content_sha256": "d64d2d9101734496d4999055f7b569926a90a53ab334777a97a7da05beab93d2"
+    },
+    {
+      "truth_id": "ISSUE42-001",
+      "pair_uid": "range-v16-pair:ISSUE42-001",
+      "manifest_sha256": "1c5f9ab9ce8fd5552f9cf9dbe0dfd0ee9891a36e10f56e7052e5212a527d9b1b",
+      "vulnerable_sha256": "0efc315a3471f5cd9a6a8797a7c42c725b68f7334b8988cb8837a41f42a0ba4e",
+      "fixed_or_near_miss_sha256": "7421d700250eaf8ce3299f3c7c07f91e413e76e2d824e7e527998328aa6db9a8",
+      "content_sha256": "8fd3663114b585ec2a22924080906ee9fa624fd9f6823954226fd0d6a5cde556"
+    },
+    {
+      "truth_id": "ISSUE42-003",
+      "pair_uid": "range-v16-pair:ISSUE42-003",
+      "manifest_sha256": "a1a616dc0de2c7811b589ecc24c3bf7d91ff392978a1c9c1ee70e48b0be9f057",
+      "vulnerable_sha256": "5dc64af1a6aa51132369e589729ebbacbc08e4bf289e9b3681a694b2d2cc7aec",
+      "fixed_or_near_miss_sha256": "a9197729ebc29757ef1a326922e3657a32c6dbdaf29843a58fb7643c320f9677",
+      "content_sha256": "fad8e7b8fa23baab726ebed53d2bd5ae799ca1d46991b52d71e39cad97064f5d"
+    },
+    {
+      "truth_id": "ISSUE42-004",
+      "pair_uid": "range-v16-pair:ISSUE42-004",
+      "manifest_sha256": "e812ebd94f635070f1332543e7ebf947c52c16e1d5fa5b42e9ba659e11b45d40",
+      "vulnerable_sha256": "fc5f66d0c80f341c6ba90d49091a2eb910982ed83db73f8db576b9a656b8678e",
+      "fixed_or_near_miss_sha256": "94019bd6039b13426d0eef56f148a2f079ebdbbee2e28d4a1179f81a07f2148b",
+      "content_sha256": "7a16c03e44ae1302971e43491b92841c17e574b7e5cf3316cf75218851e6f7ec"
+    },
+    {
+      "truth_id": "ISSUE42-005",
+      "pair_uid": "range-v16-pair:ISSUE42-005",
+      "manifest_sha256": "535f9fc88c56421d06e3b2df140539ac2d3fea8015c567a276b3fcd233f96e03",
+      "vulnerable_sha256": "97e8a19369893919c04a05cf408d0dc8c4d1809caaf0559a990219f765b80d75",
+      "fixed_or_near_miss_sha256": "b6c8fd5e60c2ae48e2dee612c0fadf1a387e684e605c892be8d03ea31dadd07e",
+      "content_sha256": "6c678c49da6143d2a5420c9b78c305ed915f4655fede5d0a2e871089391745e9"
+    },
+    {
+      "truth_id": "ISSUE42-009",
+      "pair_uid": "range-v16-pair:ISSUE42-009",
+      "manifest_sha256": "5d67aedb2f6167cfe9d43dcabd53e45647b14c4f06a16354c26001b019a858da",
+      "vulnerable_sha256": "06dd214759c506dfc31a04e3e0cf65e3656c116e25330857d9893f7a28712e95",
+      "fixed_or_near_miss_sha256": "3be0de8ae8e3fa5bd4d6c0193937ba70e9d7ac404ca8a829fc266a88f7c0e8ae",
+      "content_sha256": "6fdf0ef3f35ed8db157a422e7114b78686e5b91eec11218d164b8671d5cdd0ad"
+    },
+    {
+      "truth_id": "ISSUE42-010",
+      "pair_uid": "range-v16-pair:ISSUE42-010",
+      "manifest_sha256": "3babcae15e7c124ffb199f6b2c9eb15463d76ed44ec01feda76e2975f37f5a41",
+      "vulnerable_sha256": "6b50aee9336670dd5fcc4d4b1836b8441212eada51b16c80840a57b62376e427",
+      "fixed_or_near_miss_sha256": "03f71ac8653f3497a4830d1aea2303ef3530447ce60346377caa9c9bca6304c8",
+      "content_sha256": "2ae05b869f26ed7351c5e02598466e6feaab1b24206379d5d783f692183a718b"
+    },
+    {
+      "truth_id": "ISSUE42-011",
+      "pair_uid": "range-v16-pair:ISSUE42-011",
+      "manifest_sha256": "17a47a8cb0ed3d74de59e1a8ac0fa0f113d88082b4ca4069be9fb59575810020",
+      "vulnerable_sha256": "e13765c18f2bbf112b68aa3bdbb72de91425c7802b1d847059da9ccb21a52ed3",
+      "fixed_or_near_miss_sha256": "6a41d83eb0b7cdc587db677833bec5ed17f9095c1b4c90606742f9946ad6e256",
+      "content_sha256": "6018110be04e7a83c1521f5f7f3c2c5ac94efa627a505982ba1cb763bdef6d6c"
+    },
+    {
+      "truth_id": "ISSUE42-013",
+      "pair_uid": "range-v16-pair:ISSUE42-013",
+      "manifest_sha256": "38c97b82fc608b18c51f15fd881720247c8637baac80327d1c87b76e453fccd0",
+      "vulnerable_sha256": "d5fd3abb698d91a49157f4246a5e1d43d08a0944e8d83b3cc9ea6a1b2dd34b61",
+      "fixed_or_near_miss_sha256": "eddcae6bbea3848d8e7366760cc8b87013bdfb8e41f875aba2bf60ae41931060",
+      "content_sha256": "06d19f9b4c18c9f01e63c3ab59ca59d7f291fffd985b553c6ed4e066f010a46e"
+    },
+    {
+      "truth_id": "ISSUE42-017",
+      "pair_uid": "range-v16-pair:ISSUE42-017",
+      "manifest_sha256": "3c90fa8add1abf504fce44b6fd1dd291d855c2088c6767c796bd485b7f7a7ffa",
+      "vulnerable_sha256": "c67fa9440c385d07306a5958c6748aa2d46dd74c80e2e2cade98b50c45e5525d",
+      "fixed_or_near_miss_sha256": "6d17d347cfc5239f01966144bb2f4defc71e6c0253e3c37f8c5b42ebc9322da3",
+      "content_sha256": "3cdc20b6e375045e4265d17d01b10e2ffc4b5d20257c4002b03ab809b6fc6668"
+    },
+    {
+      "truth_id": "ISSUE42-021",
+      "pair_uid": "range-v16-pair:ISSUE42-021",
+      "manifest_sha256": "9c689536731b9e2c7ae0b9686e6231034b7be143916c13952c7866f090d13c40",
+      "vulnerable_sha256": "b02abfa5887215de7c7a17e37971dd957e7a387120a2dfaa35e3ce44e947e4c5",
+      "fixed_or_near_miss_sha256": "dc84db322d5e3bb249e53e77739d7a4791388b97f5c4ec5e79d620424401de1d",
+      "content_sha256": "79bd57235bf7fc82672a82eecff9eeed57b98129de0495027365536dc108c169"
+    },
+    {
+      "truth_id": "ISSUE42-022",
+      "pair_uid": "range-v16-pair:ISSUE42-022",
+      "manifest_sha256": "d0d7d9904aaf2a4c42a4b4d36cdc9d09d72256056a02caf9ae28e2cfa916fd57",
+      "vulnerable_sha256": "6c43b809fab757fed4bbe373b5edca3ce8d65aa0203128a1d6ab04b8db7e61e1",
+      "fixed_or_near_miss_sha256": "72c5e6f1c93f184b95d2f86a22b3e715acf06eb9388a056b9c44c5281379d190",
+      "content_sha256": "097af128a2a390c4c0c55acdf1ce2e1d95f758eaacdf8140a1bb39a8a00e6543"
+    },
+    {
+      "truth_id": "ISSUE42-024",
+      "pair_uid": "range-v16-pair:ISSUE42-024",
+      "manifest_sha256": "6a85d17150a54bbe0b2e7cdcf8dbbd036384b7d5e8ab4ef905e00aa071686954",
+      "vulnerable_sha256": "65f3287ed22e1559a177394b1921e2f8a3ed9a354a88f5401cbd500b9c3d511b",
+      "fixed_or_near_miss_sha256": "9966b733bb07cc2a30e7600dbb8741b452feedf04d884280b5c0ad11b5583533",
+      "content_sha256": "0d6e18278373444479b9ca475437dcb10b175427a1bcd6c8a6c91ad03a77d189"
+    },
+    {
+      "truth_id": "ISSUE42-025",
+      "pair_uid": "range-v16-pair:ISSUE42-025",
+      "manifest_sha256": "ec8412023e9dd0a8dc34a07ab070b0c27d21fc12da84ebea1c0bdac0f4ab5a54",
+      "vulnerable_sha256": "164986ea443d509b7dcf2e724864c1f489f48f5f1f159ebdde20b270bf3835c2",
+      "fixed_or_near_miss_sha256": "1db5261ca5a85c29a1242259fb94a91be72fe476162fa6c83bb5c431cf9c1b7b",
+      "content_sha256": "7ffe2040949dd13153ec7a6a3a4ab65d7ec777b2b6cf3ed7f579a60deffe0575"
+    },
+    {
+      "truth_id": "ISSUE42-029",
+      "pair_uid": "range-v16-pair:ISSUE42-029",
+      "manifest_sha256": "883968fbf7a600e416194f0e8b19146dcf126dbe536e5b4292b2deb1678b32a6",
+      "vulnerable_sha256": "35844522dc9898159309cdfbe3eec35dcc3141fa6086ca41cba36d53e5597f3d",
+      "fixed_or_near_miss_sha256": "bd20e38f86f7c714b1ac278a388057c5c7965bdab9eac720c094fb82a138be8d",
+      "content_sha256": "40423c6cc964c724eef9103ca42c518477165c4313e2b20cdfa14d6779775a88"
+    },
+    {
+      "truth_id": "ISSUE43-001",
+      "pair_uid": "range-v16-pair:ISSUE43-001",
+      "manifest_sha256": "5d895476460be9f39d42d50c1441fcf08c05d4d2c4b8724c27ae6c4f5718e0a4",
+      "vulnerable_sha256": "6255fe27879af3405ee917312bb4b7817c4c356b276e1258713ecfe7a39f15bb",
+      "fixed_or_near_miss_sha256": "0033fce9ea87d853414c5abbdffa8123a998092da1e2f26d033fdf8ae1280ea7",
+      "content_sha256": "7f48d59f70499583d7de8b944a482bcbbf35f46b86fc0558bc9369e10f9d124a"
+    },
+    {
+      "truth_id": "ISSUE43-006",
+      "pair_uid": "range-v16-pair:ISSUE43-006",
+      "manifest_sha256": "b66149d2fd006c8ac7aa5e581a91e77cc52763e5ba6e94c114e5bdfc2639c3ac",
+      "vulnerable_sha256": "8da6272b6e483dcfa73c5a4742eb30f14b65a4a800eee820c626a0c08a3250c3",
+      "fixed_or_near_miss_sha256": "d9a491b1aa585bbc97580171935ad198da413fbdf50e2a7d6bde4d489071ad31",
+      "content_sha256": "bfad297aa638ba3875acda61c8a110ae48e57f7e1f4dd1f623ce940a2d10990f"
+    },
+    {
+      "truth_id": "ISSUE43-007",
+      "pair_uid": "range-v16-pair:ISSUE43-007",
+      "manifest_sha256": "12209dc22132101f198af9a9d65e2d0077d75d54189515910dfea4cc9d6f5a92",
+      "vulnerable_sha256": "895f2c285070098cac2701c3d3f8753c45521c94496ec990f7bd49428b2031f6",
+      "fixed_or_near_miss_sha256": "246e1942c44d6c5488a30e416b4f2a744ebccc5b5d1ecbbfd2d3d76573ec4f9f",
+      "content_sha256": "b276f83f21e85e5d804c691eef7117a2586e1d0468a4f61eca05465d05353e24"
+    },
+    {
+      "truth_id": "ISSUE43-011",
+      "pair_uid": "range-v16-pair:ISSUE43-011",
+      "manifest_sha256": "b2c5cdc826c625237e61c4cdee9a795880ef152722a8c984a31886eeec1572b7",
+      "vulnerable_sha256": "b50645cb1885be0a396951c2a149e8d8aaa93628fa19f7fbfd0a9f4950343b84",
+      "fixed_or_near_miss_sha256": "3e2e4c440abee61d1e426887aa7c9ad6573e5c3fe56e733c850ac8186eaf9f98",
+      "content_sha256": "fcecb75a59f99e74d09e081c899c4c9c4c1f07072402117537aba1a47a2a57b3"
+    },
+    {
+      "truth_id": "ISSUE43-012",
+      "pair_uid": "range-v16-pair:ISSUE43-012",
+      "manifest_sha256": "621c57673853773085be22443c620bc9dcad2c350a4810a246bfba65d25f3241",
+      "vulnerable_sha256": "7abe123432fce49789d5e923ccd9be81f79cbc18e19bbe9fc286bc8379476ba0",
+      "fixed_or_near_miss_sha256": "67850580f8b731ff39c5a57df5c80e5399d846c2fef4ce72bc597584a7ae6715",
+      "content_sha256": "fe117004e8d41f1497523ed1e4bc472476ed18905b83f74bd0a9e99d8beaa54e"
+    },
+    {
+      "truth_id": "ISSUE43-014",
+      "pair_uid": "range-v16-pair:ISSUE43-014",
+      "manifest_sha256": "3a7ac53203cd274894a6be9d5fe1536c5e1d2f430ff48dab72995ca96b6e02ac",
+      "vulnerable_sha256": "c6672ea06aa345bbe5b77a336611c4dc4ce39cc78f013aea4f87b7fc3e2a5ec6",
+      "fixed_or_near_miss_sha256": "a8cd1d49e3c7dd6f1a47efb568ba66bd84ee24b1409003ca68aba142d5039d99",
+      "content_sha256": "d540f7c27d216c753f953d25e779960179ccecde61212723de53b24ea3a4b83a"
+    },
+    {
+      "truth_id": "ISSUE43-015",
+      "pair_uid": "range-v16-pair:ISSUE43-015",
+      "manifest_sha256": "660269f35d18347361db2b08c1f417276a47fbc082a8643020edfa81b1965aa4",
+      "vulnerable_sha256": "79d08d3de5505ed7ef718386cac70f0f068cfee269ad3bf627f80f9386c5672c",
+      "fixed_or_near_miss_sha256": "33eb912476e8fe398a091d7365d9d4bdbeaa5c8f9c89e790bf7ab893ca4f7caa",
+      "content_sha256": "d441cc79e1d3824588f06b43e4ce89683c4cbecfca36888f4c5187669342d043"
+    },
+    {
+      "truth_id": "RANGE-006",
+      "pair_uid": "range-v16-pair:RANGE-006",
+      "manifest_sha256": "c7dfd6865d203552895d3dbda6c0b447b1aae2ee2aa78cc796245a97f1e6554f",
+      "vulnerable_sha256": "0bb7e049ad6746b1e889ee24f67f9e4337d279884970daca171f92ffeed4e030",
+      "fixed_or_near_miss_sha256": "63c61d99a63d2f4de44153a4f84279f39133475b27e2b74ec9187478fdf2af74",
+      "content_sha256": "a5d5aaa1197cd33251ea6683d0edf97422ab7616f0a98947701e6748de6550f4"
+    },
+    {
+      "truth_id": "RANGE-018",
+      "pair_uid": "range-v16-pair:RANGE-018",
+      "manifest_sha256": "892825f684b446e6fbfb63de3cfa477e5fac32fc056badcadf82800abbe15a20",
+      "vulnerable_sha256": "e2279f3fcd5cc46171516a2608ed537b4e2dd734300eca62313ad0153bf21d4b",
+      "fixed_or_near_miss_sha256": "77898774ce0b6ec0d9a8c90ac2eff0f89e3f4e0f7ffa613bc7ac1f207f97af80",
+      "content_sha256": "f4b2f910e18e2a1e51ee0d9da959bc7b969c149b22e609c814002d5dd862aa48"
+    },
+    {
+      "truth_id": "RANGE-019",
+      "pair_uid": "range-v16-pair:RANGE-019",
+      "manifest_sha256": "887b5f0754a7e6c776c4980a1b1efa66c39437997a93c83dab80c2ee1eb8a1ff",
+      "vulnerable_sha256": "8f97d188897380c82d50f47be2ad32013c2c079b029693a9cd0489f4d542374b",
+      "fixed_or_near_miss_sha256": "e6f7d09f6086f11ce9115957826164f5767f94271bbb338b5d07a5f3cb609631",
+      "content_sha256": "e0a1caa9e506a06e7fb740b5e6962a272799ab8e6231d79306d6085f5f749c23"
+    },
+    {
+      "truth_id": "RANGE-021",
+      "pair_uid": "range-v16-pair:RANGE-021",
+      "manifest_sha256": "f7b086f1be6391322af9dbaeebd486ccb9c7d4d333b16d20aa8579eb5e87c58c",
+      "vulnerable_sha256": "e085423cea1076af5e5f6d7f0c1f517df4a07e788a451fdde0f6d7ea65a2a4ad",
+      "fixed_or_near_miss_sha256": "6ff4de7519a862d1ee21ad688a988f0d5940c07c0123baf44d557de65a8cb9e0",
+      "content_sha256": "437d1de62ecfaca148aa03de4c071ed3886eefed0a3bb3d24e0fee4d8a512d44"
+    },
+    {
+      "truth_id": "RANGE-024",
+      "pair_uid": "range-v16-pair:RANGE-024",
+      "manifest_sha256": "c1061fca4ff43471f8bb633d782c5e40b9a9e8e13028b7b8ad13cb133ee82712",
+      "vulnerable_sha256": "bf8ac379884bc135d8084fac8656c59d5a94d260071543182aac8256deec20c0",
+      "fixed_or_near_miss_sha256": "d1a9680ab7249acf09ac4b352e892eaa3eded94bd2a533476934cd8cda4701de",
+      "content_sha256": "c8116da8c4ff8478960f6f5f6eb1e98108b6030d3efe369dc90afe3263c046c2"
+    },
+    {
+      "truth_id": "RANGE-025",
+      "pair_uid": "range-v16-pair:RANGE-025",
+      "manifest_sha256": "4926858949b0a0cca974f7f3d52e86efb063bd608809a53983bf5cad0ed2da4b",
+      "vulnerable_sha256": "904b7e98569a2ad82bc3a1a2d1c2455eabacf2087bd05c24ce0ef7127aee55c2",
+      "fixed_or_near_miss_sha256": "f4478950f43c962ada8e44e12b40e5bbd132763f08bf78926c6835de59c65680",
+      "content_sha256": "57f4a39b4d047698123436eb0af575a8cd78e13a1ec519a737459da1a0a540d3"
+    },
+    {
+      "truth_id": "RANGE-030",
+      "pair_uid": "range-v16-pair:RANGE-030",
+      "manifest_sha256": "03c162e054953b4e51a34fe3ec5e7934c023f6c972083579327723c21523f62c",
+      "vulnerable_sha256": "a534ca3bec6fd3603d1cfe612438519ed55ad51f63527866f762becbb43adf7f",
+      "fixed_or_near_miss_sha256": "872e1fa345d68bfe44f364302370a723919cf3a2a09b9963d6234bc1f9e566d2",
+      "content_sha256": "f68ee7bf46299b00e8de32d1dcb4cf4722f58abc11cf5858617d7d3e3f3888b9"
+    },
+    {
+      "truth_id": "RANGE-032",
+      "pair_uid": "range-v16-pair:RANGE-032",
+      "manifest_sha256": "74ddf41f65cc865a66cf02ac590d5147a7cfbc7d8c9043db683425f7912e7bdd",
+      "vulnerable_sha256": "24fd640395410787b13852277cb678764cd515d61bda985051a4aaf53917cb03",
+      "fixed_or_near_miss_sha256": "83d1462ed1105cf330933458182b5eb7778b71caa52fee1d999c06f110dd721a",
+      "content_sha256": "7a5510f2360977ee9c4fd2e94e78fe3b836486373797a8bd5a80545a02dc14b2"
+    },
+    {
+      "truth_id": "RANGE-034",
+      "pair_uid": "range-v16-pair:RANGE-034",
+      "manifest_sha256": "a91b22e73c48cb7486aadb9c3a6a95b41c4565060549ce26e0d49fd3a23f4f39",
+      "vulnerable_sha256": "18b3bb037e7beb3f1b52dfaa012ddd09f05592bea49f7fc28f506cf2ab6a9b3e",
+      "fixed_or_near_miss_sha256": "65fe01b292f83c8a118212567583bf9b74e36e2a1255bd1c31ce2c928308e5fe",
+      "content_sha256": "423418f23f99fe81c1f7306c623afb104a7827947620a97d1771af982233ee1f"
+    },
+    {
+      "truth_id": "RANGE-039",
+      "pair_uid": "range-v16-pair:RANGE-039",
+      "manifest_sha256": "f533b42ad45f65b95ec7dcd133d7a67f9fc37889ff9dfdee3c6cc66b81ece8a4",
+      "vulnerable_sha256": "d5a92946a68e0b0a38c990be1a638ad7cc0f30fbcb0d23d015b65201895c727c",
+      "fixed_or_near_miss_sha256": "7b560ec3a62703e12b0bd4b377fc48f48c4f800529dbed467c001a6e9752bfde",
+      "content_sha256": "998c874f1499e1f4bb75516a69b3836312a8433478f55e85ce4d895143066c05"
+    },
+    {
+      "truth_id": "RANGE-040",
+      "pair_uid": "range-v16-pair:RANGE-040",
+      "manifest_sha256": "469c2277c933db4d0d1f7237aa267e9be50461f18d8aedc54e11f350550e632a",
+      "vulnerable_sha256": "8d38db50f8f628fa082e0018c139de0674d2bef1e85eebaafd9e8642f18268de",
+      "fixed_or_near_miss_sha256": "d8c8fd0e0b1b38a992593ced8956332ee29be883809b02f6aed3c157f5f9f3aa",
+      "content_sha256": "c6c316e070037fb87588eb625bcf0648027bd763382e717747be89e36b1482ef"
+    },
+    {
+      "truth_id": "RANGE-041",
+      "pair_uid": "range-v16-pair:RANGE-041",
+      "manifest_sha256": "f47871b77683faaee8e857e86fb8fa34b30737560b98ceeb955264c5b424555f",
+      "vulnerable_sha256": "97b2cfb0ed2ef7bd57805370cd0b67afcc680e6cf87145213e9996cb45310ec4",
+      "fixed_or_near_miss_sha256": "bb568ff307e78c65631f008a269d3ae246dfc88198909b342f791b56a1878151",
+      "content_sha256": "f53fbdd4af3fa9de8a7e6f1963f1360584b0a9efc57c95757382a39d1e8086c1"
+    },
+    {
+      "truth_id": "RANGE-042",
+      "pair_uid": "range-v16-pair:RANGE-042",
+      "manifest_sha256": "14737e27b90156cc49ddcc139655f0f7c5528d284e71cf130b4430db1258bf34",
+      "vulnerable_sha256": "f84027abbaa60d038872958aa712e790f65a0ea3ca848917162e66ba51aa8f17",
+      "fixed_or_near_miss_sha256": "4bd011754730a251e11bbaac611f1bd54ed51528db709a92dcc35d7249150011",
+      "content_sha256": "480ff7923cd6ee52369c1bcd1ad936dd166d034f449f3ffb06be4ade2a7f8460"
+    },
+    {
+      "truth_id": "RANGE-044",
+      "pair_uid": "range-v16-pair:RANGE-044",
+      "manifest_sha256": "442775952ce910a62bf30febe10c34822854a733e086283a11c6c729df66d7a2",
+      "vulnerable_sha256": "7900b01e34081e4d37a1095cd888952d62a6d2010650754a90d9ea0474ef304d",
+      "fixed_or_near_miss_sha256": "ec6efece24b7d06c15b50f240f3b4e9850c1dea30746e3a6fa80838e4d473caf",
+      "content_sha256": "7e1d73a058a09135450f4cd87f5885e85ace058a2a637cee312fa03e0572d8a1"
+    },
+    {
+      "truth_id": "RANGE-045",
+      "pair_uid": "range-v16-pair:RANGE-045",
+      "manifest_sha256": "400b034b1472df302dc8b6c6a524ca5d42a562b5e2b2ec967ac9e6dfed943680",
+      "vulnerable_sha256": "ebd2c019a2a1c405553defa9d3d6a9094a67c8c7a148604e2ea1d30d1f9d19dd",
+      "fixed_or_near_miss_sha256": "79fdaab18df2e8aff5dba9323909c345d5d7b1abeb7b0beae720e7c47851b3e1",
+      "content_sha256": "cd3ed42b8c6090e288d314a77bc68aaa60af8ea523adb0e10b3f6a70315b040a"
+    },
+    {
+      "truth_id": "RANGE-046",
+      "pair_uid": "range-v16-pair:RANGE-046",
+      "manifest_sha256": "c1f842a0c4b743cf7ae8e28216facb70f9dae5a1be5193231bd5f932abac96d2",
+      "vulnerable_sha256": "48ab6781f589bc07644110fe1503b70822eb9c8c585976333c717ce63d3d4beb",
+      "fixed_or_near_miss_sha256": "14314ece99052057318afb75bc395ba2aa1c85152b7f1fade87905fb50ca18f1",
+      "content_sha256": "72304004978071e803e7892c1242a72332bc602d84a05f6a7cdaf7b5c7bf9406"
+    },
+    {
+      "truth_id": "RANGE-047",
+      "pair_uid": "range-v16-pair:RANGE-047",
+      "manifest_sha256": "f328b492bf0063ed06014528337692210888f73c9b741981bed2b89980f92145",
+      "vulnerable_sha256": "218a6305f3bbbe03d8438a1ecd90da335716577bd6f1577910541afabe54f01e",
+      "fixed_or_near_miss_sha256": "2c4a3d7ef631ed5050b76efe36faeebcdaa61932c4b4cb5b9c9c328b56d9f667",
+      "content_sha256": "e6ac2dab6799fc6b2afa1d2c48ce171ea8141641b5d98111fdfb3176bdaecefc"
+    },
+    {
+      "truth_id": "RANGE-048",
+      "pair_uid": "range-v16-pair:RANGE-048",
+      "manifest_sha256": "23966cb23c3b72305b4894ec9212415033ede06df3221cffba741985e962ff8e",
+      "vulnerable_sha256": "ae9cafb5473865e2dbe2236c4472c88d77dea475f8f7365037b6a902efbc9253",
+      "fixed_or_near_miss_sha256": "a192dfa01d8822220340d9b7c5a49a80c66d6d105f0488fbe46dafadad966129",
+      "content_sha256": "774b97fd08da3f7cb18d2ee5ac57722b729b717192a9bfecfd82d1c5f945cb00"
+    },
+    {
+      "truth_id": "REAL-003",
+      "pair_uid": "range-v16-pair:REAL-003",
+      "manifest_sha256": "d40bf653f106c2a6a387e7f6a1fe5e86a8da4138b873d890a7f256dddf721591",
+      "vulnerable_sha256": "5572aa14437135443e8d9f4b3c1181c2f2db2f42eddcddd79267460824093690",
+      "fixed_or_near_miss_sha256": "180e9f80dff484f284fc78a5044783d5913caa6db36093116cf08ee4dcbd90f1",
+      "content_sha256": "982291d241a0443ac8227aef371d2a9fbaf9827d3959ec1c1c68891a82302382"
+    },
+    {
+      "truth_id": "REAL-004",
+      "pair_uid": "range-v16-pair:REAL-004",
+      "manifest_sha256": "ab6a1d544848912a2c9a7244f3ba7b12b5d7fe6b19c1e8d42cd76c7110b4791d",
+      "vulnerable_sha256": "cf25068eeebd23359ea0fa0a2447d422199c3f25265f3e6e68c1c52109497743",
+      "fixed_or_near_miss_sha256": "d092806e60ec15a2385d17a4ab3203182807a707158c1499ae6cc4a782dbfb7e",
+      "content_sha256": "bb1f3e29ce5b15217d76cb95a512a7b684deb54b1f1f8e640a16030716d70857"
+    },
+    {
+      "truth_id": "REAL-005",
+      "pair_uid": "range-v16-pair:REAL-005",
+      "manifest_sha256": "f088cf60e7b74a28c3f1708f4d08c41faa909d202d67811e98f1f781bf9248b6",
+      "vulnerable_sha256": "e9d8b17ffc62cd70d50edb9a7f3ecbc1c2a7b84e8db968269a6ec04b7796c7fe",
+      "fixed_or_near_miss_sha256": "1489351c2d37f7908b6eb0c88d8f5485f04553b49a67edb09b8caaddd3708dfc",
+      "content_sha256": "e929c18a91ad838dae384082d0ff748383ea81574eab17e1348dfe5fb8466f53"
+    },
+    {
+      "truth_id": "REAL-006",
+      "pair_uid": "range-v16-pair:REAL-006",
+      "manifest_sha256": "cbe448532e734640da4ea8721aec09a86f52bf69869331e90a8a410fe38d99b2",
+      "vulnerable_sha256": "f2853610c4075809d3e8348f9b61c458071377d511675960695f1a971bed9710",
+      "fixed_or_near_miss_sha256": "126655224dcd92b2eaba00d238907616d5d10cd806a3a64cc8b64322a7f291d5",
+      "content_sha256": "e3e244fd40f346bc65662b9f22cd56e25dc737af2da098b51acd06bf6d20c97a"
+    },
+    {
+      "truth_id": "REAL-010",
+      "pair_uid": "range-v16-pair:REAL-010",
+      "manifest_sha256": "2ee5842740bc0a300d08f38ce48ca323da581ee51fcbaa4abbdbc003643a73f9",
+      "vulnerable_sha256": "f8cda83a42d603c70da06aa8edeede1141bccba1e106bbbb42d07542ba4c11bb",
+      "fixed_or_near_miss_sha256": "1bfa7a9ed7ee5ec0de6e98c208d0632d054f396e8ead03a87edd1ec1f81c6f01",
+      "content_sha256": "655048a911da00ad442e2ac603f15f412515c2a5e7e8089de130e164f456b4b8"
+    },
+    {
+      "truth_id": "REAL-013",
+      "pair_uid": "range-v16-pair:REAL-013",
+      "manifest_sha256": "34e693e32c48ed953374c82b7288ad32a673d505d71ae6e2888bcd88a8d2ecf8",
+      "vulnerable_sha256": "bf1638f7cca7d53f519fa08095890d212c8ba36e790c200593265f34f838f76d",
+      "fixed_or_near_miss_sha256": "a7ed67b3fadeeca7c9a89a4f1ab989d8a6fe1c2333a62e1df84439e8637b4851",
+      "content_sha256": "1dc818e21cf55e29f39b838232f87530372d80056d91c237c2d34c28bbfbbf5d"
+    },
+    {
+      "truth_id": "REAL-019",
+      "pair_uid": "range-v16-pair:REAL-019",
+      "manifest_sha256": "1773ec73b72f98a212987853b0e93d0678b41c00504a6e336451539c676361dd",
+      "vulnerable_sha256": "30c4a858cfa5303939908d29ddc1e782fabcea5ab156483c79880cf7deff0b97",
+      "fixed_or_near_miss_sha256": "43bbf5d1c19b327bf716b6248bdb5c0434ac6e59dda12e0ece0f7cf3d59ccee5",
+      "content_sha256": "9d502c3b0694baa115266c84c92a44d9addc972c2486417229ea787159b2972f"
+    },
+    {
+      "truth_id": "REAL-020",
+      "pair_uid": "range-v16-pair:REAL-020",
+      "manifest_sha256": "46bab9126b8d7df8c5d983e4ac0c690839a13ad6d027e833b2f3453ce59ef334",
+      "vulnerable_sha256": "592c6a08f7c5ac1301cad3851fc33e586ca91c9c3af9feba264f7d5c5dea49ea",
+      "fixed_or_near_miss_sha256": "d092d09eea9e8920853f117cde41bcbb657dda937369f3abec4c9787138c183d",
+      "content_sha256": "a4b1c0d8b9ac38ce3020158c14af09264f3633172c705ca3b02f739bf4b3158a"
+    },
+    {
+      "truth_id": "REAL-022",
+      "pair_uid": "range-v16-pair:REAL-022",
+      "manifest_sha256": "0402b0d7bb24643c2e7df12a5b6a102d10fff2a8370aa392eb96ab1c477eb8a4",
+      "vulnerable_sha256": "2dd0087d3d5305dea2f23c601e6e12bf12e0506e1a5ea5c7aa6a8509c289e04e",
+      "fixed_or_near_miss_sha256": "f0195a696d9b450f0fdadc221da65f58044714e5dfae4042b0bbaf156ae43df9",
+      "content_sha256": "8297bc9b24a653d8ff95180c214d4ecd335704183a88e00c1a3c9723b2b8eb7c"
+    },
+    {
+      "truth_id": "REAL-023",
+      "pair_uid": "range-v16-pair:REAL-023",
+      "manifest_sha256": "3c637687c493e8c44e3236d0baf4842eaa0fb8c4fcaa8c99ee04535ab88776ed",
+      "vulnerable_sha256": "c452483e94fc4cee1a7412271d56ef866d5cef9d62bf011b51645e9f575a1bd9",
+      "fixed_or_near_miss_sha256": "22f0afe9aab2b23996769a6eb798f71b2e46e6fd57d7839c52e2987052fe782a",
+      "content_sha256": "8324d1a6c7c0462f489318283b87574c04d9f8d2a41509bcb75c603956af7ec9"
+    },
+    {
+      "truth_id": "REAL-025",
+      "pair_uid": "range-v16-pair:REAL-025",
+      "manifest_sha256": "a4332f934b0efe764e9a459e6c2d0fd0c6f9c6529126fab346b5c37605e9bcc7",
+      "vulnerable_sha256": "22703075ee97d0ebbef4f5d9870214ea51808ad2149923d9b408d89ba63bc9b8",
+      "fixed_or_near_miss_sha256": "cf3bd0c8b9850b7ef35d3a85cee2e5302e692d2ac4532b085c219b474cea9515",
+      "content_sha256": "062f6bbc8e3768a6338e738008343fc869813d8b210a63763806407eeebf79d0"
+    },
+    {
+      "truth_id": "REAL-026",
+      "pair_uid": "range-v16-pair:REAL-026",
+      "manifest_sha256": "246da525989ce057b262caaf004994dc5051535c1f8194f2f35c0c2cb6225ca8",
+      "vulnerable_sha256": "83e5aa2e1e335d7af8192159db7b0078acb6de1cf4321959f5c5c55613f99ef6",
+      "fixed_or_near_miss_sha256": "3001154a3596828bc557bfeda3cd900c2373d61ce680012be6ea0d404771551b",
+      "content_sha256": "78dbbe3dd6a75721fa690f7ab95eb511609413a86eef04c106dea3032fd89f61"
+    },
+    {
+      "truth_id": "REAL-029",
+      "pair_uid": "range-v16-pair:REAL-029",
+      "manifest_sha256": "793d8296d911534d3e9b26a91c7601ec8728c839d8754692218057c2fa7008a0",
+      "vulnerable_sha256": "d9760e90b6d8f9e0b36af858b8678dc83c261342b9efbeb28e9f6d2a0bf7b718",
+      "fixed_or_near_miss_sha256": "50fd75814e2877175b828c88706c0032c77ea85506b6b6992a6d5f90e52c1927",
+      "content_sha256": "3e868dbd37ef9261130cad99c890dc69e2d597a6915f232af60fe858bde084f5"
+    },
+    {
+      "truth_id": "REAL-030",
+      "pair_uid": "range-v16-pair:REAL-030",
+      "manifest_sha256": "4f5528fb56faceabd9a885df5bf89e44c63f143eda5c0cb96f03ab6a0281dc04",
+      "vulnerable_sha256": "2c78b4335d06fb111debe95a018a317e34da7c7bc198bd8fc3a8dee9521bb500",
+      "fixed_or_near_miss_sha256": "ff9563dba9f60b7a8a101ccdbbdd4b5d4b0e0a70d89cc687d5e6b728a6b8899d",
+      "content_sha256": "99619d25445584fe5db0298673e55cb14207413610dfb6242d80cda6affc8fdd"
+    },
+    {
+      "truth_id": "REAL-032",
+      "pair_uid": "range-v16-pair:REAL-032",
+      "manifest_sha256": "67da70abde0037989244bbd4c3ba2f00b8bab6ae9a840d990c4b73812ea2078c",
+      "vulnerable_sha256": "f892e35e2cf72d1d29e5642564a3a117cdaafa8ef1564106b3ba4d8b966f91c1",
+      "fixed_or_near_miss_sha256": "6c25b32f68e8ba2b4afb04a812f53157c270c792781a3d31526fabdba537cdf6",
+      "content_sha256": "46987d2a8e7b23a5e2017fda9a85280f81b827518b70c740a5571880f613361c"
+    }
+  ],
+  "content_sha256": "520c3f84e652cf5485951e992fe7d3e67df4deb2b4689a2840a33dd63d52243d"
+}

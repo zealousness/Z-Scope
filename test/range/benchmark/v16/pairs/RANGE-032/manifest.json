@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-032",
+  "pair_uid": "range-v16-pair:RANGE-032",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "free() may receive only the base address of a live heap allocation; a slice pointer derived from a caller-owned buffer must not be deallocated.",
+  "review_decision_sha256": "e9d032d68f0572bcbf55fa6f447bd16bc4e36cd59be255e09f0a804ea1235850",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "24fd640395410787b13852277cb678764cd515d61bda985051a4aaf53917cb03"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "83d1462ed1105cf330933458182b5eb7778b71caa52fee1d999c06f110dd721a"
+  },
+  "content_sha256": "7a5510f2360977ee9c4fd2e94e78fe3b836486373797a8bd5a80545a02dc14b2"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-046",
+  "pair_uid": "range-v16-pair:RANGE-046",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every accepted route_key is stored without truncation, keeping lookup and storage representations identical so a repeated sequential upsert reaches the existing-node update branch.",
+  "review_decision_sha256": "b89d34bbd44bd089219ea80154729f52023d7217c1192da907d419664bf5b0bb",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "48ab6781f589bc07644110fe1503b70822eb9c8c585976333c717ce63d3d4beb"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "14314ece99052057318afb75bc395ba2aa1c85152b7f1fade87905fb50ca18f1"
+  },
+  "content_sha256": "72304004978071e803e7892c1242a72332bc602d84a05f6a7cdaf7b5c7bf9406"
+}

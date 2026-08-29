@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-025",
+  "pair_uid": "range-v16-pair:REAL-025",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A caller-supplied callback must not execute while g_service_registry.lock is held; the pair makes no broader claim about callback behavior, node lifetime, or deployment concurrency.",
+  "review_decision_sha256": "ed75de06591e5e9aaf918cc72889b916336492d85f03fcd24ca031b4a31ad184",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "22703075ee97d0ebbef4f5d9870214ea51808ad2149923d9b408d89ba63bc9b8"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "cf3bd0c8b9850b7ef35d3a85cee2e5302e692d2ac4532b085c219b474cea9515"
+  },
+  "content_sha256": "062f6bbc8e3768a6338e738008343fc869813d8b210a63763806407eeebf79d0"
+}

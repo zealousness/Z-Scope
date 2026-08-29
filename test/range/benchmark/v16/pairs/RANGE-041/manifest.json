@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-041",
+  "pair_uid": "range-v16-pair:RANGE-041",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every path acquiring both locks must acquire g_pipe_scheduler.sched_lock before pipe->ctrl_lock and release them in reverse order.",
+  "review_decision_sha256": "bd873655bae44d28fa9d4df9431b599823c684bf05bcb0222af6ab9254638b1c",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "97b2cfb0ed2ef7bd57805370cd0b67afcc680e6cf87145213e9996cb45310ec4"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "bb568ff307e78c65631f008a269d3ae246dfc88198909b342f791b56a1878151"
+  },
+  "content_sha256": "f53fbdd4af3fa9de8a7e6f1963f1360584b0a9efc57c95757382a39d1e8086c1"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-004",
+  "pair_uid": "range-v16-pair:REAL-004",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every exit after a successful _service_alloc_node must release the same owned set—node->payload, node->name, and node—exactly once after the registry-removal sequence.",
+  "review_decision_sha256": "81602d3e347f8d97a78b1ef93776121c4df634e6aa8ae03b575d0d2c1ca03d3d",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "cf25068eeebd23359ea0fa0a2447d422199c3f25265f3e6e68c1c52109497743"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "d092806e60ec15a2385d17a4ab3203182807a707158c1499ae6cc4a782dbfb7e"
+  },
+  "content_sha256": "bb1f3e29ce5b15217d76cb95a512a7b684deb54b1f1f8e640a16030716d70857"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-030",
+  "pair_uid": "range-v16-pair:RANGE-030",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every explicit store to the 32-element topic array must use an index from 0 through 31.",
+  "review_decision_sha256": "1592a5bd55bbfd291e5c11e72a7c5c1bf7365c6d755f75702c84e9182b7a2fc2",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "a534ca3bec6fd3603d1cfe612438519ed55ad51f63527866f762becbb43adf7f"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "872e1fa345d68bfe44f364302370a723919cf3a2a09b9963d6234bc1f9e566d2"
+  },
+  "content_sha256": "f68ee7bf46299b00e8de32d1dcb4cf4722f58abc11cf5858617d7d3e3f3888b9"
+}

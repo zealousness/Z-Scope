@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "REAL-023",
+  "pair_uid": "range-v16-pair:REAL-023",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "Every return reached after LOCK on g_service_aux_lock must execute exactly one matching UNLOCK first.",
+  "review_decision_sha256": "3ba5405779d5a37d79ed2cd6bef10bad0d3f3dc70a3f000ee3ca5477c82c05bf",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "c452483e94fc4cee1a7412271d56ef866d5cef9d62bf011b51645e9f575a1bd9"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "22f0afe9aab2b23996769a6eb798f71b2e46e6fd57d7839c52e2987052fe782a"
+  },
+  "content_sha256": "8324d1a6c7c0462f489318283b87574c04d9f8d2a41509bcb75c603956af7ec9"
+}

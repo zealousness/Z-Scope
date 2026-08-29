@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE43-011",
+  "pair_uid": "range-v16-pair:ISSUE43-011",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "cursor must reference valid storage on every control-flow path before cursor[0] is read.",
+  "review_decision_sha256": "20f6be8d37846275a59d905984cae3cbe972ef438caee09588faa90c0c89a977",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "b50645cb1885be0a396951c2a149e8d8aaa93628fa19f7fbfd0a9f4950343b84"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "3e2e4c440abee61d1e426887aa7c9ad6573e5c3fe56e733c850ac8186eaf9f98"
+  },
+  "content_sha256": "fcecb75a59f99e74d09e081c899c4c9c4c1f07072402117537aba1a47a2a57b3"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE41-001",
+  "pair_uid": "range-v16-pair:ISSUE41-001",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "PEER_LABEL_CACHE_LIMIT must be at least PEER_SPEC_MAX_ELEMENTS multiplied by PEER_ELEMENT_INFO_SIZE so every count permitted by the element-count condition is also permitted by the byte-limit condition.",
+  "review_decision_sha256": "87e0f356987c6b89230e7d7883533964b25b31b42044509133f31668203eb4d7",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "5de9bfa0aee02f48c7e7c7d4b870e71e167edb031862b66e22a49184672310b9"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "71ab6ca328c440f8301bf8ee0afab912fb1d16b98173b4a0245b784094a35285"
+  },
+  "content_sha256": "03f8f7a323b9a31cc4956aa965c0d06390b12c15cffe12cbaddef15485f8304f"
+}

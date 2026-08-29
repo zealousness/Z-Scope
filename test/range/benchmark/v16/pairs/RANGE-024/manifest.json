@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "RANGE-024",
+  "pair_uid": "range-v16-pair:RANGE-024",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "The FlushJob passed to the detached worker must remain valid until the worker completes every access to it.",
+  "review_decision_sha256": "2605274c7c49b9873f906d9d6a35d80a0259b5b789e4bec2e9015484aca35b47",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "bf8ac379884bc135d8084fac8656c59d5a94d260071543182aac8256deec20c0"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "d1a9680ab7249acf09ac4b352e892eaa3eded94bd2a533476934cd8cda4701de"
+  },
+  "content_sha256": "c8116da8c4ff8478960f6f5f6eb1e98108b6030d3efe369dc90afe3263c046c2"
+}

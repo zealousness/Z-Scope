@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.range-v16-safe-pair.v1",
+  "truth_id": "ISSUE41-008",
+  "pair_uid": "range-v16-pair:ISSUE41-008",
+  "contract_kind": "concrete_trigger",
+  "kind": "fixed",
+  "invariant_summary": "A version-zero report must be rejected, and the RPC dispatch path must stop before descriptor bridging, export, or session publication whenever version-window validation rejects the report.",
+  "review_decision_sha256": "8107e22ec6e82ada9ad23fbdf59397f6b137add0d834abf3b2f65cd76fe25ead",
+  "compiler_contract": {
+    "language": "c",
+    "standard": "c11",
+    "compiler": "cc",
+    "arguments": []
+  },
+  "vulnerable": {
+    "path": "vulnerable/case.c",
+    "sha256": "c2b8ba6529beefd9049c51fc757433e786514f7c32e1e549710033ebcfc21d0e"
+  },
+  "fixed_or_near_miss": {
+    "path": "fixed_or_near_miss/case.c",
+    "sha256": "fac018e5aad1599f49d392f8446bcf964bbcd6b8444e49544da8c30dca1b6dca"
+  },
+  "content_sha256": "b263624d7ec60fb9c0921999213c8c8b2abd48429cc58f95ebda037ec6027d07"
+}
