@@ -146,7 +146,7 @@ def _raw_author(record: dict, author: dict) -> dict:
 
 
 def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
@@ -191,6 +191,7 @@ def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
     _dump(checkpoint / "checkpoint-manifest.json", manifest)
     output = tmp_path / "diagnostic.json"
     monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
 
     assert (
         diagnose_author_checkpoint(
@@ -219,10 +220,20 @@ def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
     assert "CASE-FAILURE-SECRET" not in serialized
     assert "CASE-VERIFIED-SECRET" not in serialized
     assert "7" * 64 not in serialized
+    emitted = capsys.readouterr().out
+    assert (
+        "::notice title=Range v16 safe-pair author diagnostic::"
+        "diagnostic_status=classified; "
+        "failure_classes=author_contract_failure:1; invalid_records=0; "
+        "incomplete_records=1" in emitted
+    )
+    assert "CASE-FAILURE-SECRET" not in emitted
+    assert "CASE-VERIFIED-SECRET" not in emitted
+    assert "7" * 64 not in emitted
 
 
 def test_safe_pair_checkpoint_diagnostic_projects_fixed_rejection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
@@ -247,6 +258,7 @@ def test_safe_pair_checkpoint_diagnostic_projects_fixed_rejection(
     _dump(checkpoint / "checkpoint-manifest.json", manifest)
     output = tmp_path / "diagnostic.json"
     monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
 
     assert (
         diagnose_author_checkpoint(
@@ -271,6 +283,13 @@ def test_safe_pair_checkpoint_diagnostic_projects_fixed_rejection(
         "content_sha256": diagnostic["content_sha256"],
     }
     assert "CASE-VERIFIED-SECRET" not in json.dumps(diagnostic)
+    emitted = capsys.readouterr().out
+    assert (
+        "::notice title=Range v16 safe-pair author diagnostic::"
+        "diagnostic_status=rejected; "
+        "diagnostic_failure_code=checkpoint_without_diagnostic_signal" in emitted
+    )
+    assert "CASE-VERIFIED-SECRET" not in emitted
 
 
 def test_safe_pair_checkpoint_diagnostic_cannot_write_into_checkpoint(

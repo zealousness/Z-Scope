@@ -109,12 +109,27 @@ concurrency:
 
 env:
   E0_MAX_CONCURRENT_CALLS: "8"
+  E0_MAX_WORKFLOW_ATTEMPTS: "2"
 
 permissions:
   contents: read
   actions: read
 
 jobs:
+  attempt_budget:
+    name: enforce bounded review attempts
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    timeout-minutes: 5
+    steps:
+      - name: Reject attempts beyond the fixed recovery budget
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          test "$E0_MAX_WORKFLOW_ATTEMPTS" = "2"
+          if (( GITHUB_RUN_ATTEMPT > E0_MAX_WORKFLOW_ATTEMPTS )); then
+            echo "::error title=Range v16 review attempt budget::e0_review_attempt_budget_exhausted"
+            exit 2
+          fi
   codex_readiness:
     name: codex answer-free readiness
     needs: prepare_arbitration_reuse
@@ -462,6 +477,7 @@ jobs:
           retention-days: 90
   prepare_arbitration_reuse:
     name: validate optional cross-run arbitration reuse
+    needs: attempt_budget
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 180
