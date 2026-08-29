@@ -52,11 +52,12 @@ AUTHOR_REQUEST_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-request.v1"
 RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v5"
 AUTHOR_FAILURE_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-failure.v1"
 AUTHOR_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-checkpoint.v1"
-AUTHOR_DIAGNOSTIC_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-diagnostic.v2"
+AUTHOR_DIAGNOSTIC_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-diagnostic.v3"
 AUTHOR_MODEL = CODEX_MODEL_IDENTITY
 _AUTHOR_DIAGNOSTIC_REJECTION_CODES = {
     "checkpoint_failure_record_contract_invalid",
     "checkpoint_failure_record_duplicate",
+    "checkpoint_failure_record_projection_invalid",
     "checkpoint_incomplete_record_contract_invalid",
     "checkpoint_invalid_record_contract_invalid",
     "checkpoint_manifest_contract_invalid",
@@ -65,9 +66,158 @@ _AUTHOR_DIAGNOSTIC_REJECTION_CODES = {
     "checkpoint_verified_record_contract_invalid",
     "checkpoint_without_diagnostic_signal",
 }
-_FORBIDDEN_SOURCE = re.compile(
-    r"(?i)(?:#\s*(?:include|pragma)|\b(?:system|popen|fork|exec[a-z]*|__asm__|asm)\s*\()"
-)
+_FORBIDDEN_LANGUAGE_TOKENS = frozenset({"_Pragma", "__asm", "__asm__", "asm"})
+_FORBIDDEN_EXTERNAL_CALLS_BY_CLASS = {
+    "process_execution_api": frozenset(
+        {
+            "_Exit",
+            "abort",
+            "clone",
+            "dlclose",
+            "dlerror",
+            "dlopen",
+            "dlsym",
+            "execl",
+            "execle",
+            "execlp",
+            "execv",
+            "execve",
+            "execveat",
+            "execvp",
+            "execvpe",
+            "exit",
+            "fork",
+            "kill",
+            "pclose",
+            "popen",
+            "posix_spawn",
+            "posix_spawnp",
+            "pthread_create",
+            "quick_exit",
+            "raise",
+            "system",
+            "syscall",
+            "vfork",
+            "wait",
+            "waitid",
+            "waitpid",
+        }
+    ),
+    "network_api": frozenset(
+        {
+            "accept",
+            "accept4",
+            "epoll_create",
+            "epoll_create1",
+            "epoll_ctl",
+            "epoll_wait",
+            "bind",
+            "connect",
+            "freeaddrinfo",
+            "getaddrinfo",
+            "gethostbyname",
+            "getnameinfo",
+            "getsockname",
+            "getsockopt",
+            "listen",
+            "poll",
+            "ppoll",
+            "recv",
+            "recvfrom",
+            "recvmsg",
+            "send",
+            "sendmsg",
+            "sendto",
+            "select",
+            "setsockopt",
+            "shutdown",
+            "socket",
+            "socketpair",
+        }
+    ),
+    "file_or_stream_io_api": frozenset(
+        {
+            "chmod",
+            "chown",
+            "clearerr",
+            "close",
+            "closedir",
+            "creat",
+            "dup",
+            "dup2",
+            "dup3",
+            "dprintf",
+            "fclose",
+            "fcntl",
+            "fdopen",
+            "fflush",
+            "fgetc",
+            "fgets",
+            "fgetpos",
+            "fileno",
+            "fopen",
+            "fprintf",
+            "fputc",
+            "fputs",
+            "fread",
+            "freopen",
+            "fscanf",
+            "fseek",
+            "fsetpos",
+            "fstat",
+            "ftell",
+            "ftruncate",
+            "fwrite",
+            "getc",
+            "getchar",
+            "ioctl",
+            "link",
+            "lseek",
+            "lstat",
+            "mkdir",
+            "mkstemp",
+            "open",
+            "openat",
+            "opendir",
+            "perror",
+            "pipe",
+            "pipe2",
+            "pread",
+            "printf",
+            "putc",
+            "putchar",
+            "puts",
+            "pwrite",
+            "read",
+            "readdir",
+            "remove",
+            "rename",
+            "rewind",
+            "rmdir",
+            "scanf",
+            "setbuf",
+            "setvbuf",
+            "snprintf",
+            "sprintf",
+            "sscanf",
+            "stat",
+            "symlink",
+            "tmpfile",
+            "tmpnam",
+            "truncate",
+            "ungetc",
+            "unlink",
+            "write",
+            "vfprintf",
+            "vfscanf",
+            "vprintf",
+            "vscanf",
+            "vsnprintf",
+            "vsprintf",
+            "vsscanf",
+        }
+    ),
+}
 _GENERIC_C_CALLS = {
     "_Alignof",
     "_Static_assert",
@@ -134,6 +284,14 @@ _C11_KEYWORDS = {
     "while",
 }
 _C_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+_C_LEXEME = re.compile(
+    r"(?P<comment>//[^\r\n]*|/\*.*?\*/)"
+    r'|(?P<string>"(?:\\.|[^"\\])*")'
+    r"|(?P<char>'(?:\\.|[^'\\])*')"
+    r"|(?P<token>[A-Za-z_]\w*|0[xX][0-9A-Fa-f]+|\d+(?:\.\d*)?(?:[eE][+-]?\d+)?[A-Za-z]*|"
+    r">>=|<<=|\+\+|--|->|&&|\|\||<=|>=|==|!=|<<|>>|[^\s])",
+    re.DOTALL,
+)
 _REPAIRABLE_AUTHOR_VALIDATION_CLASSES = {
     "independent_compile_failure",
     "decision_identity_mismatch",
@@ -148,9 +306,165 @@ _REPAIRABLE_AUTHOR_VALIDATION_CLASSES = {
     "source_not_anonymous",
     "sources_identical",
 }
+_CONTRACT_REPAIR_FAILURE_V1_VALIDATION_CLASSES = frozenset(
+    {
+        "independent_compile_failure",
+        "decision_identity_mismatch",
+        "fields_or_schema_invalid",
+        "forbidden_c_facilities",
+        "invariant_missing",
+        "kind_invalid",
+        "main_contract_invalid",
+        "model_identity_mismatch",
+        "packet_identity_mismatch",
+        "source_invalid",
+        "source_not_anonymous",
+        "sources_identical",
+    }
+)
 
 _AUTHOR_SOURCE_FIELDS = ("vulnerable_source", "fixed_or_near_miss_source")
 _AUTHOR_COMPILER_ARGUMENTS = ("-std=c11", "-Werror", "-Wall", "-Wextra", "-c")
+_C_TRIGRAPHS = {
+    "??=": "#",
+    "??/": "\\",
+    "??'": "^",
+    "??(": "[",
+    "??)": "]",
+    "??!": "|",
+    "??<": "{",
+    "??>": "}",
+    "??-": "~",
+}
+
+
+def _c_phase2_source(source: str) -> str:
+    translated = source.removeprefix("\ufeff")
+    for trigraph, replacement in _C_TRIGRAPHS.items():
+        translated = translated.replace(trigraph, replacement)
+    spliced = re.sub(r"\\(?:\r\n|\n|\r)", "", translated)
+    return spliced.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _c_tokens(source: str) -> tuple[str, ...]:
+    source = _c_phase2_source(source)
+    return tuple(
+        match.group(0) for match in _C_LEXEME.finditer(source) if match.lastgroup != "comment"
+    )
+
+
+def _comments_as_whitespace(source: str) -> str:
+    source = _c_phase2_source(source)
+    projected: list[str] = []
+    cursor = 0
+    for match in _C_LEXEME.finditer(source):
+        projected.append(source[cursor : match.start()])
+        token = match.group(0)
+        if match.lastgroup == "comment":
+            projected.append(
+                "".join(character if character in "\r\n" else " " for character in token)
+            )
+        else:
+            projected.append(token)
+        cursor = match.end()
+    projected.append(source[cursor:])
+    return "".join(projected)
+
+
+def _has_preprocessor_directive(source: str) -> bool:
+    return re.search(r"(?m)^[ \t\f\v]*(?:#|%:)", _comments_as_whitespace(source)) is not None
+
+
+def _forbidden_language_tokens(source: str) -> tuple[str, ...]:
+    tokens = set(_c_tokens(source))
+    return tuple(sorted(tokens & _FORBIDDEN_LANGUAGE_TOKENS))
+
+
+def _forbidden_external_api_identifiers(source: str) -> dict[str, list[str]]:
+    tokens = _c_tokens(source)
+    identifiers = {token for token in tokens if _C_IDENTIFIER.fullmatch(token)}
+    detected: dict[str, list[str]] = {}
+    for facility_class, names in _FORBIDDEN_EXTERNAL_CALLS_BY_CLASS.items():
+        matches = {
+            identifier
+            for identifier in identifiers
+            if identifier in names
+            or (
+                identifier.startswith("__builtin_")
+                and identifier.removeprefix("__builtin_") in names
+            )
+        }
+        if matches:
+            detected[facility_class] = sorted(matches)
+    return detected
+
+
+def _uses_forbidden_c_facilities(source: str) -> bool:
+    return bool(
+        _has_preprocessor_directive(source)
+        or _forbidden_language_tokens(source)
+        or _forbidden_external_api_identifiers(source)
+    )
+
+
+def _without_preprocessor_directives(source: str) -> str:
+    projected: list[str] = []
+    in_directive = False
+    for line in _comments_as_whitespace(source).splitlines(keepends=True):
+        if not in_directive and line.lstrip().startswith(("#", "%:", "??=")):
+            in_directive = True
+        if not in_directive:
+            projected.append(line)
+            continue
+        projected.append("\n" if line.endswith(("\n", "\r")) else "")
+        in_directive = line.rstrip("\r\n").endswith("\\")
+    return "".join(projected)
+
+
+def _main_definition_count(source: str) -> int:
+    tokens = _c_tokens(_without_preprocessor_directives(source))
+    signature = ("int", "main", "(", "void", ")", "{")
+    width = len(signature)
+    return sum(
+        tokens[index : index + width] == signature for index in range(len(tokens) - width + 1)
+    )
+
+
+def _contract_repair_failure_message(repair_outcome: str, validation_class: str) -> str:
+    allowed_classes = set(_CONTRACT_REPAIR_FAILURE_V1_VALIDATION_CLASSES)
+    if repair_outcome == "process_nonzero":
+        prefix = "safe-pair author contract repair failed: "
+    elif repair_outcome == "validation_exhausted":
+        prefix = "safe-pair author contract repair exhausted: "
+        allowed_classes.add("unclassified_validation_failure")
+    else:
+        raise E0GovernanceError("safe-pair repair outcome is invalid")
+    if validation_class not in allowed_classes:
+        raise E0GovernanceError("safe-pair repair validation class is invalid")
+    return prefix + validation_class
+
+
+def _contract_repair_failure_projection(error_sha256: str) -> tuple[str, str] | None:
+    """Project a bound fixed-message digest without reading author material."""
+
+    candidates: dict[str, tuple[str, str]] = {}
+    outcomes = (
+        ("process_nonzero", _CONTRACT_REPAIR_FAILURE_V1_VALIDATION_CLASSES),
+        (
+            "validation_exhausted",
+            _CONTRACT_REPAIR_FAILURE_V1_VALIDATION_CLASSES | {"unclassified_validation_failure"},
+        ),
+    )
+    for repair_outcome, validation_classes in outcomes:
+        for validation_class in sorted(validation_classes):
+            projection = (repair_outcome, validation_class)
+            digest = str(
+                sha256_value(_contract_repair_failure_message(repair_outcome, validation_class))
+            )
+            if digest in candidates and candidates[digest] != projection:
+                raise E0GovernanceError("safe-pair repair diagnostic vocabulary is ambiguous")
+            candidates[digest] = projection
+    return candidates.get(error_sha256)
 
 
 def _json_dump(path: Path, value: Any) -> None:
@@ -214,12 +528,21 @@ def _author_schema(
     truth_id: str | None = None,
     packet_sha256: str | None = None,
     final_decision_sha256: str | None = None,
+    expected_kind: str | None = None,
+    expected_invariant_summary: str | None = None,
 ) -> dict[str, Any]:
     identity_values = (truth_id, packet_sha256, final_decision_sha256)
     if any(value is not None for value in identity_values) and not all(
         isinstance(value, str) and value for value in identity_values
     ):
         raise ValueError("safe-pair author schema identity must be fully bound")
+    recommendation_values = (expected_kind, expected_invariant_summary)
+    if any(value is not None for value in recommendation_values) and not (
+        expected_kind in {"fixed", "near_miss"}
+        and isinstance(expected_invariant_summary, str)
+        and expected_invariant_summary.strip()
+    ):
+        raise ValueError("safe-pair author schema recommendation must be fully bound")
     source_pattern = _source_anonymity_pattern(forbidden_identifiers or set())
     truth_id_schema: dict[str, Any] = {"type": "string", "minLength": 1}
     packet_sha256_schema: dict[str, Any] = {
@@ -241,6 +564,17 @@ def _author_schema(
             "type": "string",
             "const": final_decision_sha256,
             "pattern": "^[0-9a-f]{64}$",
+        }
+    kind_schema: dict[str, Any] = {
+        "type": "string",
+        "enum": ["fixed", "near_miss"],
+    }
+    invariant_schema: dict[str, Any] = {"type": "string", "minLength": 1}
+    if expected_kind is not None:
+        kind_schema = {"type": "string", "const": expected_kind}
+        invariant_schema = {
+            "type": "string",
+            "const": expected_invariant_summary,
         }
     return {
         "type": "object",
@@ -264,8 +598,8 @@ def _author_schema(
             "final_decision_sha256": final_decision_sha256_schema,
             "author_role": {"type": "string", "const": "safe_pair_author"},
             "author_model": {"type": "string", "const": AUTHOR_MODEL},
-            "kind": {"type": "string", "enum": ["fixed", "near_miss"]},
-            "invariant_summary": {"type": "string", "minLength": 1},
+            "kind": kind_schema,
+            "invariant_summary": invariant_schema,
             "vulnerable_source": {
                 "type": "string",
                 "minLength": 1,
@@ -330,6 +664,26 @@ def _author_request(
     }
 
 
+def _frozen_author_recommendation(
+    normalized_record: Mapping[str, Any],
+) -> tuple[str, str]:
+    decision = normalized_record.get("final_decision")
+    recommendation = (
+        decision.get("safe_pair_recommendation") if isinstance(decision, Mapping) else None
+    )
+    if not isinstance(recommendation, Mapping):
+        raise E0GovernanceError("safe-pair recommendation is invalid")
+    kind = recommendation.get("kind")
+    invariant_summary = recommendation.get("invariant_summary")
+    if (
+        kind not in {"fixed", "near_miss"}
+        or not isinstance(invariant_summary, str)
+        or not invariant_summary.strip()
+    ):
+        raise E0GovernanceError("safe-pair recommendation contract is invalid")
+    return str(kind), invariant_summary
+
+
 def _forbidden_identifier_matches(
     source: str,
     forbidden_identifiers: set[str],
@@ -361,7 +715,129 @@ def _repair_constraints(
     *,
     validation_error: E0GovernanceError | None = None,
     compiler: str | None = None,
+    expected_identity: Mapping[str, str] | None = None,
 ) -> Mapping[str, Any]:
+    if validation_class == "fields_or_schema_invalid":
+        required_fields = set(_author_schema()["required"])
+        actual_fields = set(rejected_author)
+        return {
+            "required_schema_version": AUTHOR_SCHEMA_VERSION,
+            "required_fields": sorted(required_fields),
+            "missing_fields": sorted(required_fields - actual_fields),
+            "unexpected_fields": sorted(actual_fields - required_fields),
+            "schema_version_mismatch": (
+                rejected_author.get("schema_version") != AUTHOR_SCHEMA_VERSION
+            ),
+            "required_postcondition": (
+                "the repaired object has exactly the required fields and schema version"
+            ),
+        }
+    if validation_class in {
+        "packet_identity_mismatch",
+        "decision_identity_mismatch",
+        "model_identity_mismatch",
+    }:
+        expected = {
+            "author_role": "safe_pair_author",
+            "author_model": AUTHOR_MODEL,
+            **dict(expected_identity or {}),
+        }
+        fields_by_class = {
+            "packet_identity_mismatch": ("truth_id", "packet_sha256"),
+            "decision_identity_mismatch": ("final_decision_sha256",),
+            "model_identity_mismatch": ("author_role", "author_model"),
+        }
+        compared_fields = fields_by_class[validation_class]
+        return {
+            "mismatched_identity_fields": [
+                field
+                for field in compared_fields
+                if field in expected and rejected_author.get(field) != expected[field]
+            ],
+            "required_postcondition": (
+                "all identity fields exactly match the frozen request and output schema"
+            ),
+        }
+    if validation_class == "kind_invalid":
+        return {
+            "allowed_values": ["fixed", "near_miss"],
+            "required_value_source": "request.safe_pair_recommendation.kind",
+            "required_postcondition": (
+                "kind exactly matches the frozen recommendation in the request"
+            ),
+        }
+    if validation_class == "invariant_missing":
+        return {
+            "required_value_source": "request.safe_pair_recommendation.invariant_summary",
+            "required_postcondition": (
+                "invariant_summary exactly matches the frozen recommendation in the request"
+            ),
+        }
+    if validation_class == "source_invalid":
+        invalid_fields = []
+        for field in _AUTHOR_SOURCE_FIELDS:
+            source = rejected_author.get(field)
+            if (
+                not isinstance(source, str)
+                or not source.strip()
+                or len(source) > 32768
+                or "\x00" in source
+            ):
+                invalid_fields.append(field)
+        return {
+            "invalid_source_fields": invalid_fields,
+            "required_postcondition": (
+                "both source fields are nonempty complete C11 translation units of at most "
+                "32768 characters with no NUL bytes"
+            ),
+        }
+    if validation_class == "forbidden_c_facilities":
+        failing_fields = [
+            field
+            for field in _AUTHOR_SOURCE_FIELDS
+            if isinstance(rejected_author.get(field), str)
+            and _uses_forbidden_c_facilities(str(rejected_author[field]))
+        ]
+        detected_api_identifiers = {
+            field: _forbidden_external_api_identifiers(str(rejected_author[field]))
+            for field in failing_fields
+            if _forbidden_external_api_identifiers(str(rejected_author[field]))
+        }
+        detected_language_tokens = {
+            field: list(_forbidden_language_tokens(str(rejected_author[field])))
+            for field in failing_fields
+            if _forbidden_language_tokens(str(rejected_author[field]))
+        }
+        return {
+            "failing_source_fields": failing_fields,
+            "forbidden_facility_classes": [
+                "preprocessor_directive",
+                "process_execution_api",
+                "network_api",
+                "file_or_stream_io_api",
+                "inline_assembly",
+                "pragma_operator",
+            ],
+            "detected_external_api_identifiers_by_source_field": detected_api_identifiers,
+            "detected_language_tokens_by_source_field": detected_language_tokens,
+            "required_postcondition": (
+                "both source fields use none of the frozen forbidden C facility classes"
+            ),
+        }
+    if validation_class == "main_contract_invalid":
+        main_counts = {}
+        for field in _AUTHOR_SOURCE_FIELDS:
+            source = rejected_author.get(field)
+            if isinstance(source, str):
+                count = _main_definition_count(source)
+                if count != 1:
+                    main_counts[field] = count
+        return {
+            "detected_main_counts_by_source_field": main_counts,
+            "required_postcondition": (
+                "each source field contains exactly one int main(void) definition"
+            ),
+        }
     if validation_class == "independent_compile_failure":
         failing_fields = (
             list(validation_error.failing_source_fields)
@@ -396,23 +872,32 @@ def _repair_constraints(
             and vulnerable.replace("\r\n", "\n").replace("\r", "\n")
             == fixed.replace("\r\n", "\n").replace("\r", "\n")
         )
+        token_projection_equal = (
+            isinstance(vulnerable, str)
+            and isinstance(fixed, str)
+            and _c_tokens(vulnerable) == _c_tokens(fixed)
+        )
         return {
             "detected_condition": (
                 "sources_equal_after_newline_normalization"
                 if normalized_equal
-                else "sources_reported_identical_by_validator"
+                else (
+                    "sources_equal_after_comment_whitespace_token_projection"
+                    if token_projection_equal
+                    else "sources_reported_identical_by_validator"
+                )
             ),
             "required_postcondition": (
-                "vulnerable_source and fixed_or_near_miss_source differ after normalizing "
-                "CRLF and CR newlines to LF"
+                "vulnerable_source and fixed_or_near_miss_source have different C token "
+                "projections after ignoring comments and whitespace"
             ),
             "required_correction": (
                 "Keep vulnerable_source as the minimal violating baseline. Rewrite only "
                 "fixed_or_near_miss_source so it applies exactly the frozen request's "
                 "safe_pair_recommendation to the same minimal setup. The difference must "
-                "change the reviewed behavior; comments, formatting, identifier renaming, "
-                "or unreachable code alone do not satisfy this correction. Do not alter "
-                "identity fields or add facts beyond the frozen request."
+                "change the reviewed behavior; comments or formatting alone do not satisfy "
+                "this correction. Do not alter identity fields or add facts beyond the frozen "
+                "request."
             ),
         }
     if validation_class != "source_not_anonymous":
@@ -507,6 +992,82 @@ def _compile_author_source_fields(
     return tuple(failing)
 
 
+def _author_validation_errors(
+    value: Mapping[str, Any],
+    *,
+    truth_id: str,
+    packet_sha256: str,
+    final_decision_sha256: str,
+    forbidden_identifiers: set[str],
+    compiler: str | None = None,
+    expected_kind: str,
+    expected_invariant_summary: str,
+) -> tuple[E0GovernanceError, ...]:
+    """Collect every currently detectable contract error in validator order."""
+
+    errors: list[E0GovernanceError] = []
+    expected = set(_author_schema()["required"])
+    if set(value) != expected or value.get("schema_version") != AUTHOR_SCHEMA_VERSION:
+        errors.append(E0GovernanceError("safe-pair author fields or schema are invalid"))
+    if value.get("truth_id") != truth_id or value.get("packet_sha256") != packet_sha256:
+        errors.append(E0GovernanceError("safe-pair author packet identity mismatch"))
+    if value.get("final_decision_sha256") != final_decision_sha256:
+        errors.append(E0GovernanceError("safe-pair author decision identity mismatch"))
+    if value.get("author_role") != "safe_pair_author" or value.get("author_model") != AUTHOR_MODEL:
+        errors.append(E0GovernanceError("safe-pair author model identity mismatch"))
+    if value.get("kind") not in {"fixed", "near_miss"} or value.get("kind") != expected_kind:
+        errors.append(E0GovernanceError("safe-pair author kind is invalid"))
+    if (
+        not isinstance(value.get("invariant_summary"), str)
+        or not value["invariant_summary"].strip()
+        or value.get("invariant_summary") != expected_invariant_summary
+    ):
+        errors.append(E0GovernanceError("safe-pair author invariant is missing or mismatched"))
+
+    string_sources: dict[str, str] = {}
+    precompile_safe = True
+    for field in _AUTHOR_SOURCE_FIELDS:
+        source = value.get(field)
+        if not isinstance(source, str):
+            errors.append(E0GovernanceError(f"safe-pair author {field} is invalid"))
+            precompile_safe = False
+            continue
+        string_sources[field] = source.replace("\r\n", "\n").replace("\r", "\n")
+        if not source.strip() or len(source) > 32768 or "\x00" in source:
+            errors.append(E0GovernanceError(f"safe-pair author {field} is invalid"))
+            precompile_safe = False
+        if _uses_forbidden_c_facilities(source):
+            errors.append(
+                E0GovernanceError(f"safe-pair author {field} uses forbidden C facilities")
+            )
+            precompile_safe = False
+        matches = _forbidden_identifier_matches(source, forbidden_identifiers)
+        if matches:
+            identifier = next(iter(matches))
+            errors.append(
+                E0GovernanceError(f"safe-pair author {field} is not anonymous: {identifier}")
+            )
+        if _main_definition_count(source) != 1:
+            errors.append(
+                E0GovernanceError(f"safe-pair author {field} requires exactly one C11 main")
+            )
+
+    if len(string_sources) == len(_AUTHOR_SOURCE_FIELDS) and _c_tokens(
+        string_sources[_AUTHOR_SOURCE_FIELDS[0]]
+    ) == _c_tokens(string_sources[_AUTHOR_SOURCE_FIELDS[1]]):
+        errors.append(E0GovernanceError("safe-pair vulnerable and safe sources are identical"))
+
+    if (
+        compiler is not None
+        and precompile_safe
+        and len(string_sources) == len(_AUTHOR_SOURCE_FIELDS)
+    ):
+        failing_fields = _compile_author_source_fields(value, compiler=compiler)
+        if failing_fields:
+            errors.append(_SafePairCompilationError(failing_fields))
+    return tuple(errors)
+
+
 def validate_author_record(
     value: Mapping[str, Any],
     *,
@@ -515,53 +1076,26 @@ def validate_author_record(
     final_decision_sha256: str,
     forbidden_identifiers: set[str],
     compiler: str | None = None,
+    expected_kind: str,
+    expected_invariant_summary: str,
 ) -> None:
-    expected = set(_author_schema()["required"])
-    if set(value) != expected or value.get("schema_version") != AUTHOR_SCHEMA_VERSION:
-        raise E0GovernanceError("safe-pair author fields or schema are invalid")
-    if value.get("truth_id") != truth_id or value.get("packet_sha256") != packet_sha256:
-        raise E0GovernanceError("safe-pair author packet identity mismatch")
-    if value.get("final_decision_sha256") != final_decision_sha256:
-        raise E0GovernanceError("safe-pair author decision identity mismatch")
-    if value.get("author_role") != "safe_pair_author" or value.get("author_model") != AUTHOR_MODEL:
-        raise E0GovernanceError("safe-pair author model identity mismatch")
-    if value.get("kind") not in {"fixed", "near_miss"}:
-        raise E0GovernanceError("safe-pair author kind is invalid")
-    if (
-        not isinstance(value.get("invariant_summary"), str)
-        or not value["invariant_summary"].strip()
-    ):
-        raise E0GovernanceError("safe-pair author invariant is missing")
-    sources: list[str] = []
-    for field in _AUTHOR_SOURCE_FIELDS:
-        source = value.get(field)
-        if (
-            not isinstance(source, str)
-            or not source.strip()
-            or len(source) > 32768
-            or "\x00" in source
-        ):
-            raise E0GovernanceError(f"safe-pair author {field} is invalid")
-        if _FORBIDDEN_SOURCE.search(source):
-            raise E0GovernanceError(f"safe-pair author {field} uses forbidden C facilities")
-        matches = _forbidden_identifier_matches(source, forbidden_identifiers)
-        if matches:
-            identifier = next(iter(matches))
-            raise E0GovernanceError(f"safe-pair author {field} is not anonymous: {identifier}")
-        if len(re.findall(r"\bint\s+main\s*\(\s*void\s*\)", source)) != 1:
-            raise E0GovernanceError(f"safe-pair author {field} requires exactly one C11 main")
-        sources.append(source.replace("\r\n", "\n").replace("\r", "\n"))
-    if sources[0] == sources[1]:
-        raise E0GovernanceError("safe-pair vulnerable and safe sources are identical")
-    if compiler is not None:
-        failing_fields = _compile_author_source_fields(value, compiler=compiler)
-        if failing_fields:
-            raise _SafePairCompilationError(failing_fields)
+    errors = _author_validation_errors(
+        value,
+        truth_id=truth_id,
+        packet_sha256=packet_sha256,
+        final_decision_sha256=final_decision_sha256,
+        forbidden_identifiers=forbidden_identifiers,
+        compiler=compiler,
+        expected_kind=expected_kind,
+        expected_invariant_summary=expected_invariant_summary,
+    )
+    if errors:
+        raise errors[0]
 
 
 def _extract(stdout: str) -> Mapping[str, Any]:
     value = json.loads(stdout)
-    if isinstance(value, Mapping) and set(_author_schema()["required"]).issubset(value):
+    if isinstance(value, Mapping):
         return dict(value)
     raise E0GovernanceError("Codex did not return a safe-pair author object")
 
@@ -586,6 +1120,65 @@ def _author_validation_class(error: E0GovernanceError) -> str:
         if fragment in message:
             return validation_class
     return "unclassified_validation_failure"
+
+
+def _author_repair_plan(
+    value: Mapping[str, Any],
+    *,
+    primary_validation_class: str,
+    validation_errors: Sequence[E0GovernanceError],
+    expected_identity: Mapping[str, str],
+    forbidden_identifiers: set[str],
+    compiler: str | None = None,
+) -> dict[str, Any]:
+    if (
+        not validation_errors
+        or _author_validation_class(validation_errors[0]) != primary_validation_class
+    ):
+        raise E0GovernanceError("safe-pair author repair plan is inconsistent")
+
+    detected_classes: list[str] = []
+    first_errors: dict[str, E0GovernanceError] = {}
+    for error in validation_errors:
+        validation_class = _author_validation_class(error)
+        if validation_class not in _REPAIRABLE_AUTHOR_VALIDATION_CLASSES:
+            raise error
+        if validation_class not in first_errors:
+            detected_classes.append(validation_class)
+            first_errors[validation_class] = error
+    if not detected_classes or detected_classes[0] != primary_validation_class:
+        raise E0GovernanceError("safe-pair author repair plan is invalid")
+
+    constraints_by_class = {
+        validation_class: dict(
+            _repair_constraints(
+                validation_class,
+                forbidden_identifiers,
+                value,
+                validation_error=first_errors[validation_class],
+                compiler=compiler,
+                expected_identity=expected_identity,
+            )
+        )
+        for validation_class in detected_classes
+    }
+    plan = dict(constraints_by_class[primary_validation_class])
+    plan["detected_validation_classes"] = detected_classes
+    plan["constraints_by_validation_class"] = constraints_by_class
+    plan["baseline_postconditions"] = {
+        "compiler_contract": {
+            "language": "c",
+            "standard": "c11",
+            "compiler": compiler or "cc",
+            "arguments": list(_AUTHOR_COMPILER_ARGUMENTS[1:]),
+        },
+        "source_fields": list(_AUTHOR_SOURCE_FIELDS),
+        "each_source_has_exactly_one_main_definition": True,
+        "preprocessor_or_forbidden_facility_present": False,
+        "forbidden_identifier_matches_present": False,
+        "sources_have_distinct_comment_whitespace_free_token_projections": True,
+    }
+    return plan
 
 
 def _run_author_command(
@@ -726,11 +1319,14 @@ def _validate_raw_author_envelope(
     normalized_record: Mapping[str, Any],
 ) -> None:
     forbidden = _source_identifiers(packet, truth_id)
+    expected_kind, expected_invariant_summary = _frozen_author_recommendation(normalized_record)
     expected_author_schema = _author_schema(
         forbidden,
         truth_id=truth_id,
         packet_sha256=str(normalized_record["packet_sha256"]),
         final_decision_sha256=str(normalized_record["final_decision_sha256"]),
+        expected_kind=expected_kind,
+        expected_invariant_summary=expected_invariant_summary,
     )
     expected_output_schema = _codex_transport_schema(expected_author_schema)
     expected_author_request = _author_request(packet, normalized_record)
@@ -782,7 +1378,7 @@ def _validate_raw_author_envelope(
     ):
         raise E0GovernanceError(f"safe-pair raw author attempts are invalid: {truth_id}")
     for index, attempt in enumerate(attempts, start=1):
-        expected_kind = "initial" if index == 1 else "contract_repair"
+        expected_attempt_kind = "initial" if index == 1 else "contract_repair"
         validation_class = attempt.get("validation_class") if isinstance(attempt, Mapping) else None
         expected_validation = index < len(attempts)
         if (
@@ -797,7 +1393,7 @@ def _validate_raw_author_envelope(
                 "validation_class",
             }
             or attempt.get("attempt") != index
-            or attempt.get("kind") != expected_kind
+            or attempt.get("kind") != expected_attempt_kind
             or attempt.get("exit_code") != 0
             or not isinstance(attempt.get("stdout"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", str(attempt.get("stderr_sha256") or ""))
@@ -823,6 +1419,7 @@ def _validated_existing_author_pair(
     compiler: str | None = None,
 ) -> dict[str, Any]:
     truth_id = str(normalized_record["truth_id"])
+    expected_kind, expected_invariant_summary = _frozen_author_recommendation(normalized_record)
     author_dir = root / "authors"
     raw_dir = root / "raw"
     author_candidate = author_dir / f"{truth_id}.json"
@@ -848,6 +1445,8 @@ def _validated_existing_author_pair(
         final_decision_sha256=str(normalized_record["final_decision_sha256"]),
         forbidden_identifiers=_source_identifiers(packet, truth_id),
         compiler=compiler,
+        expected_kind=expected_kind,
+        expected_invariant_summary=expected_invariant_summary,
     )
     raw = _object(raw_path)
     _validate_raw_author_envelope(
@@ -881,6 +1480,7 @@ def _author_one(
     author_path = output / "authors" / f"{truth_id}.json"
     raw_path = output / "raw" / f"{truth_id}.json"
     forbidden = _source_identifiers(packet, truth_id)
+    expected_kind, expected_invariant_summary = _frozen_author_recommendation(normalized_record)
     if author_path.exists() or raw_path.exists():
         if not resume or not author_path.is_file() or not raw_path.is_file():
             raise E0GovernanceError(f"incomplete or unexpected safe-pair author: {truth_id}")
@@ -901,8 +1501,8 @@ def _author_one(
             "minimal anonymous vulnerable/fixed-or-near-miss C11 pair only from the frozen, "
             "already-adjudicated contract below. Do not reconsider or change the decision, "
             "provide exploitation guidance, or introduce any real target details. Each source "
-            "must be an inert, local-only standalone translation unit, use no includes, pragmas, "
-            "assembly, process/network/file APIs, original function names, truth IDs, or "
+            "must be an inert, local-only standalone translation unit, use no preprocessor "
+            "directives, assembly, process/network/file APIs, original function names, truth IDs, or "
             "project-specific identifiers. Use generic names. Both sides must compile with "
             "-std=c11 -Wall -Wextra -Werror; express only the reviewed invariant and include "
             "int main(void). Return exactly the JSON schema. REQUEST:\n"
@@ -913,6 +1513,8 @@ def _author_one(
             truth_id=truth_id,
             packet_sha256=str(packet["packet_sha256"]),
             final_decision_sha256=final_sha,
+            expected_kind=expected_kind,
+            expected_invariant_summary=expected_invariant_summary,
         )
         output_schema = _codex_transport_schema(contract_schema)
         command = [
@@ -946,15 +1548,19 @@ def _author_one(
         assert_no_hidden_reasoning_output(completed.stdout)
         author = dict(_extract(completed.stdout))
         attempts: list[dict[str, Any]] = []
+        validation_errors = _author_validation_errors(
+            author,
+            truth_id=truth_id,
+            packet_sha256=str(packet["packet_sha256"]),
+            final_decision_sha256=final_sha,
+            forbidden_identifiers=forbidden,
+            compiler=compiler,
+            expected_kind=expected_kind,
+            expected_invariant_summary=expected_invariant_summary,
+        )
         try:
-            validate_author_record(
-                author,
-                truth_id=truth_id,
-                packet_sha256=str(packet["packet_sha256"]),
-                final_decision_sha256=final_sha,
-                forbidden_identifiers=forbidden,
-                compiler=compiler,
-            )
+            if validation_errors:
+                raise validation_errors[0]
         except E0GovernanceError as error:
             validation_class = _author_validation_class(error)
             if validation_class not in _REPAIRABLE_AUTHOR_VALIDATION_CLASSES:
@@ -982,27 +1588,35 @@ def _author_one(
                     transport_retry=transport_retry,
                 ),
             )
+            repair_constraints = _author_repair_plan(
+                author,
+                primary_validation_class=validation_class,
+                validation_errors=validation_errors,
+                expected_identity={
+                    "truth_id": truth_id,
+                    "packet_sha256": str(packet["packet_sha256"]),
+                    "final_decision_sha256": final_sha,
+                },
+                forbidden_identifiers=forbidden,
+                compiler=compiler,
+            )
             repair_prompt = (
                 "Repair only the rejected safe-pair author object below. The adjudicated "
                 "decision and the schema, packet, decision, role, and model identity fields "
                 "are immutable. Do not add facts or reconsider the decision. Apply the "
-                "smallest complete correction for the supplied validation class. Each source "
-                "must remain a standalone C11 translation unit and must use no includes, "
-                "pragmas, assembly, process/network/file APIs, original function names, truth "
-                "IDs, or project-specific identifiers. Return exactly the JSON schema. "
+                "smallest complete correction for every supplied detected validation class. "
+                "Each source must remain a standalone C11 translation unit and must use no "
+                "preprocessor directives, assembly, process/network/file APIs, original function "
+                "names, truth IDs, or project-specific identifiers. Each source must contain "
+                "exactly one int main(void) definition and compile independently with "
+                "-std=c11 -Wall -Wextra -Werror. Return exactly the JSON schema. "
                 "REPAIR_REQUEST:\n"
                 + json.dumps(
                     {
                         "request": request,
                         "rejected_author": author,
                         "validation_class": validation_class,
-                        "deterministic_constraints": _repair_constraints(
-                            validation_class,
-                            forbidden,
-                            author,
-                            validation_error=error,
-                            compiler=compiler,
-                        ),
+                        "deterministic_constraints": repair_constraints,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -1016,7 +1630,7 @@ def _author_one(
             )
             if repaired.returncode != 0:
                 raise E0GovernanceError(
-                    f"safe-pair author contract repair failed: {validation_class}"
+                    _contract_repair_failure_message("process_nonzero", validation_class)
                 )
             assert_no_hidden_reasoning_output(repaired.stdout)
             repaired_author = dict(_extract(repaired.stdout))
@@ -1028,6 +1642,8 @@ def _author_one(
                     final_decision_sha256=final_sha,
                     forbidden_identifiers=forbidden,
                     compiler=compiler,
+                    expected_kind=expected_kind,
+                    expected_invariant_summary=expected_invariant_summary,
                 )
             except E0GovernanceError as repair_error:
                 attempts.append(
@@ -1054,8 +1670,10 @@ def _author_one(
                     ),
                 )
                 raise E0GovernanceError(
-                    "safe-pair author contract repair exhausted: "
-                    + _author_validation_class(repair_error)
+                    _contract_repair_failure_message(
+                        "validation_exhausted",
+                        _author_validation_class(repair_error),
+                    )
                 ) from repair_error
             attempts.append(
                 _raw_attempt(
@@ -1099,7 +1717,7 @@ def _author_one(
         packet,
         normalized_record,
         status=status,
-        compiler=compiler,
+        compiler=None,
     )
 
 
@@ -1486,6 +2104,7 @@ def diagnose_author_checkpoint(args: argparse.Namespace) -> int:
 
     failure_ids: set[str] = set()
     failure_counts: Counter[str] = Counter()
+    contract_repair_counts: Counter[tuple[str, str]] = Counter()
     for record in failures:
         try:
             _validate_failure_record(record)
@@ -1505,7 +2124,18 @@ def diagnose_author_checkpoint(args: argparse.Namespace) -> int:
                 failure_code="checkpoint_failure_record_duplicate",
             )
         failure_ids.add(truth_id)
-        failure_counts[str(record["failure_code"])] += 1
+        failure_code = str(record["failure_code"])
+        failure_counts[failure_code] += 1
+        if failure_code == "contract_repair_failure":
+            projection = _contract_repair_failure_projection(str(record["error_sha256"]))
+            if projection is None:
+                return _write_author_diagnostic_rejection(
+                    output,
+                    source_sha=source_sha,
+                    workflow_run_id=workflow_run_id,
+                    failure_code="checkpoint_failure_record_projection_invalid",
+                )
+            contract_repair_counts[projection] += 1
 
     if not failure_counts and not invalid_ids and not incomplete_ids:
         return _write_author_diagnostic_rejection(
@@ -1542,6 +2172,14 @@ def diagnose_author_checkpoint(args: argparse.Namespace) -> int:
         "failure_classes": [
             {"failure_code": code, "count": failure_counts[code]} for code in sorted(failure_counts)
         ],
+        "contract_repair_classes": [
+            {
+                "repair_outcome": repair_outcome,
+                "validation_class": validation_class,
+                "count": contract_repair_counts[(repair_outcome, validation_class)],
+            }
+            for repair_outcome, validation_class in sorted(contract_repair_counts)
+        ],
         "diagnostic_answer_material_present": False,
     }
     diagnostic["content_sha256"] = sha256_value(diagnostic)
@@ -1550,8 +2188,16 @@ def diagnose_author_checkpoint(args: argparse.Namespace) -> int:
         ",".join(f"{row['failure_code']}:{row['count']}" for row in diagnostic["failure_classes"])
         or "none"
     )
+    contract_repair_classes = (
+        ",".join(
+            f"{row['repair_outcome']}.{row['validation_class']}:{row['count']}"
+            for row in diagnostic["contract_repair_classes"]
+        )
+        or "none"
+    )
     _emit_author_diagnostic(
         f"diagnostic_status=classified; failure_classes={classes}; "
+        f"contract_repair_classes={contract_repair_classes}; "
         f"invalid_records={len(invalid_ids)}; "
         f"incomplete_records={len(incomplete_ids)}"
     )
@@ -1966,12 +2612,15 @@ def materialize_pairs(args: argparse.Namespace) -> int:
         author_path = author_root / "authors" / f"{truth_id}.json"
         author = _object(author_path)
         packet = _object(args.packet_dir.resolve(strict=True) / f"{truth_id}.json")
+        expected_kind, expected_invariant_summary = _frozen_author_recommendation(record)
         validate_author_record(
             author,
             truth_id=truth_id,
             packet_sha256=str(record["packet_sha256"]),
             final_decision_sha256=str(record["final_decision_sha256"]),
             forbidden_identifiers=_source_identifiers(packet, truth_id),
+            expected_kind=expected_kind,
+            expected_invariant_summary=expected_invariant_summary,
         )
         pair_root = output / truth_id
         vulnerable_path = pair_root / "vulnerable" / "case.c"
