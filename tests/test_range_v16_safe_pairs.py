@@ -196,6 +196,8 @@ def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
 
     diagnostic = json.loads(output.read_text(encoding="utf-8"))
     assert diagnostic["schema_version"] == AUTHOR_DIAGNOSTIC_SCHEMA_VERSION
+    assert diagnostic["diagnostic_status"] == "classified"
+    assert diagnostic["diagnostic_failure_code"] is None
     assert diagnostic["failure_classes"] == [
         {"failure_code": "author_contract_failure", "count": 1}
     ]
@@ -206,6 +208,58 @@ def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
     assert "CASE-FAILURE-SECRET" not in serialized
     assert "CASE-VERIFIED-SECRET" not in serialized
     assert "7" * 64 not in serialized
+
+
+def test_safe_pair_checkpoint_diagnostic_projects_fixed_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    manifest = {
+        "schema_version": AUTHOR_CHECKPOINT_SCHEMA_VERSION,
+        "author_model": AUTHOR_MODEL,
+        "packet_source_sha": "a" * 40,
+        "retained_source_sha": "a" * 40,
+        "workflow_run_id": "33138014332",
+        "normalized_decisions_sha256": "b" * 64,
+        "expected_record_count": 1,
+        "verified_record_count": 1,
+        "verified_records": [{"truth_id": "CASE-VERIFIED-SECRET"}],
+        "invalid_records": [],
+        "incomplete_records": [],
+        "failure_records": [],
+        "checkpoint_contains_author_material": True,
+        "diagnostic_answer_material_present": False,
+        "requires_resume_revalidation": True,
+    }
+    manifest["content_sha256"] = sha256_value(manifest)
+    _dump(checkpoint / "checkpoint-manifest.json", manifest)
+    output = tmp_path / "diagnostic.json"
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+
+    assert (
+        diagnose_author_checkpoint(
+            SimpleNamespace(
+                checkpoint_dir=checkpoint,
+                expected_source_sha="a" * 40,
+                expected_workflow_run_id="33138014332",
+                output=output,
+            )
+        )
+        == 0
+    )
+
+    diagnostic = json.loads(output.read_text(encoding="utf-8"))
+    assert diagnostic == {
+        "schema_version": AUTHOR_DIAGNOSTIC_SCHEMA_VERSION,
+        "diagnostic_status": "rejected",
+        "diagnostic_failure_code": "checkpoint_without_diagnostic_signal",
+        "checkpoint_workflow_run_id": "33138014332",
+        "checkpoint_packet_source_sha": "a" * 40,
+        "diagnostic_answer_material_present": False,
+        "content_sha256": diagnostic["content_sha256"],
+    }
+    assert "CASE-VERIFIED-SECRET" not in json.dumps(diagnostic)
 
 
 def test_safe_pair_checkpoint_diagnostic_cannot_write_into_checkpoint(
