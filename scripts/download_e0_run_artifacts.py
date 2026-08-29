@@ -40,11 +40,32 @@ RETRY_DELAYS_SECONDS = (0.0, 1.0, 3.0, 7.0)
 E0_REVIEW_WORKFLOW_PATH = ".github/workflows/range-v16-review.yml"
 E0_REVIEW_EVENT = "workflow_dispatch"
 E0_REVIEW_HEAD_BRANCH = "main"
+_EXACT_REQUIRED_MEMBERS_BY_NAME = (
+    (
+        re.compile(r"range-v16-reviewed-[0-9a-f]{40}"),
+        ("review-bundle-manifest.json",),
+    ),
+    (
+        re.compile(r"range-v16-review-provenance-[0-9a-f]{40}"),
+        ("review-provenance.json",),
+    ),
+    (
+        re.compile(r"range-v16-pair-author-[0-9a-f]{40}"),
+        ("normalized-decisions.json", "author/manifest.json"),
+    ),
+)
 _T = TypeVar("_T")
 
 
 class RunArtifactError(CheckpointArtifactError):
     """Raised when exact same-run artifact restoration cannot be proven safe."""
+
+
+def _required_members_for_exact_artifact(name: str) -> tuple[str, ...]:
+    for pattern, required_members in _EXACT_REQUIRED_MEMBERS_BY_NAME:
+        if pattern.fullmatch(name) is not None:
+            return required_members
+    return ("manifest.json",)
 
 
 def _retry_transport(operation: Callable[[], _T], *, failure: str) -> _T:
@@ -542,7 +563,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             (
                 name,
                 output,
-                (("checkpoint-manifest.json",) if name in checkpoint_names else ("manifest.json",)),
+                (
+                    ("checkpoint-manifest.json",)
+                    if name in checkpoint_names
+                    else (
+                        _required_members_for_exact_artifact(name)
+                        if exact_mode
+                        else ("manifest.json",)
+                    )
+                ),
             )
             for name, output in specs
             if name in resolved
