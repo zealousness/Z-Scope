@@ -10,10 +10,14 @@ from pathlib import Path
 import pytest
 
 from scripts.e0_review_governance import sha256_file, sha256_value
-from scripts.generate_range_v16_truth import _validate_review_bundle
+from scripts.generate_range_v16_truth import (
+    _validate_review_bundle,
+    main as generate_truth_main,
+)
 from scripts.validate_range_v16_truth import (
     NORMALIZED_SCHEMA_VERSION,
     compile_pair_manifest,
+    main as validate_truth_main,
     range_fixture_manifest_sha,
     validate_normalized_decisions,
     validate_pair_index,
@@ -562,3 +566,144 @@ def test_range_fixture_hash_excludes_truth_and_build_artifacts(tmp_path: Path) -
 
     (root / "src" / "case.c").write_text("int changed;\n", encoding="utf-8")
     assert range_fixture_manifest_sha(root) != before
+
+
+def test_range_fixture_hash_canonicalizes_checkout_line_endings(tmp_path: Path) -> None:
+    lf_root = tmp_path / "lf" / "range"
+    crlf_root = tmp_path / "crlf" / "range"
+    for root, newline in ((lf_root, b"\n"), (crlf_root, b"\r\n")):
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "case.c").write_bytes(newline.join((b"int first;", b"int second;", b"")))
+
+    assert range_fixture_manifest_sha(lf_root) == range_fixture_manifest_sha(crlf_root)
+
+
+def test_range_fixture_hash_rejects_lone_carriage_returns(tmp_path: Path) -> None:
+    root = tmp_path / "range"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "case.c").write_bytes(b"int first;\rint second;\n")
+
+    with pytest.raises(ValueError, match="must use LF or CRLF text line endings"):
+        range_fixture_manifest_sha(root)
+
+
+@pytest.mark.parametrize(
+    ("relative", "content", "message"),
+    (
+        ("src/case.bin", b"not approved\n", "unsupported text file type"),
+        ("src/case.c", b"int value;\x00\n", "cannot contain NUL bytes"),
+        ("src/case.c", b"int value; /* \xff */\n", "must contain valid UTF-8 text"),
+    ),
+)
+def test_range_fixture_hash_rejects_non_text_allowlist_inputs(
+    tmp_path: Path,
+    relative: str,
+    content: bytes,
+    message: str,
+) -> None:
+    root = tmp_path / "range"
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(content)
+
+    with pytest.raises(ValueError, match=message):
+        range_fixture_manifest_sha(root)
+
+
+def test_truth_build_and_validation_are_checkout_line_ending_invariant(
+    tmp_path: Path,
+) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    source_fixture = repository / "test" / "range"
+    fixture_roots = {
+        "lf": tmp_path / "fixture-lf",
+        "crlf": tmp_path / "fixture-crlf",
+    }
+    relative_paths: list[Path] = []
+    for directory_name in ("src", "include", "internal"):
+        relative_paths.extend(
+            path.relative_to(source_fixture)
+            for path in (source_fixture / directory_name).rglob("*")
+            if path.is_file()
+        )
+    relative_paths.extend((Path("CMakeLists.txt"), Path("README.md")))
+
+    for style, fixture_root in fixture_roots.items():
+        for relative in relative_paths:
+            canonical = (source_fixture / relative).read_bytes().replace(b"\r\n", b"\n")
+            assert b"\r" not in canonical
+            target = fixture_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(canonical if style == "lf" else canonical.replace(b"\n", b"\r\n"))
+
+    outputs: dict[str, dict[str, Path]] = {}
+    for style, fixture_root in fixture_roots.items():
+        output_root = tmp_path / f"output-{style}"
+        output_root.mkdir()
+        output = {
+            "truth": output_root / "ground_truth.json",
+            "pairs": output_root / "safe-pair-manifest.json",
+            "manifest": output_root / "truth-manifest.json",
+        }
+        assert (
+            generate_truth_main(
+                [
+                    "build",
+                    "--truth-v15",
+                    str(source_fixture / "benchmark" / "ground_truth.json"),
+                    "--normalized-decisions",
+                    str(
+                        source_fixture
+                        / "benchmark"
+                        / "v16"
+                        / "reviews"
+                        / "normalized-decisions.json"
+                    ),
+                    "--pair-root",
+                    str(source_fixture / "benchmark" / "v16" / "pairs"),
+                    "--fixture-root",
+                    str(fixture_root),
+                    "--taxonomy",
+                    str(repository / "zscope" / "benchmarking" / "defect-taxonomy.v1.json"),
+                    "--output",
+                    str(output["truth"]),
+                    "--pair-index-output",
+                    str(output["pairs"]),
+                    "--truth-manifest-output",
+                    str(output["manifest"]),
+                ]
+            )
+            == 0
+        )
+        assert (
+            validate_truth_main(
+                [
+                    "--truth",
+                    str(output["truth"]),
+                    "--pair-root",
+                    str(source_fixture / "benchmark" / "v16" / "pairs"),
+                    "--truth-manifest",
+                    str(output["manifest"]),
+                    "--normalized-decisions",
+                    str(
+                        source_fixture
+                        / "benchmark"
+                        / "v16"
+                        / "reviews"
+                        / "normalized-decisions.json"
+                    ),
+                    "--pair-index",
+                    str(output["pairs"]),
+                    "--taxonomy",
+                    str(repository / "zscope" / "benchmarking" / "defect-taxonomy.v1.json"),
+                    "--fixture-root",
+                    str(fixture_root),
+                ]
+            )
+            == 0
+        )
+        outputs[style] = output
+
+    for name in ("truth", "pairs", "manifest"):
+        assert outputs["lf"][name].stat().st_size == outputs["crlf"][name].stat().st_size, name
+        assert sha256_file(outputs["lf"][name]) == sha256_file(outputs["crlf"][name]), name
