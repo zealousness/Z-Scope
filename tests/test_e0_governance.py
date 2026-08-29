@@ -399,14 +399,16 @@ def test_safe_pair_diagnostic_workflow_is_exact_answer_free_and_zero_call() -> N
     assert workflow.count(diagnostic_root) == 4
     assert (
         "path: ${{ runner.temp }}/range-v16-pair-author-diagnostic-"
-        "${{ github.run_id }}-${{ github.run_attempt }}/answer-free-diagnostic.json"
-        in workflow
+        "${{ github.run_id }}-${{ github.run_attempt }}/answer-free-diagnostic.json" in workflow
     )
     assert "scripts/download_e0_checkpoint_artifact.py" in workflow
     assert "--artifact-id '${{ inputs.checkpoint_artifact_id }}'" in workflow
     assert "--expected-digest '${{ inputs.checkpoint_artifact_digest }}'" in workflow
     assert "diagnose-checkpoint" in workflow
     assert "Range v16 safe-pair author diagnostic" in workflow
+    assert "diagnostic_status=classified" in workflow
+    assert "diagnostic_status=rejected" in workflow
+    assert "checkpoint_without_diagnostic_signal" in workflow
     assert "uses: ./.github/actions/upload-artifact-retry" in workflow
     assert "CODEX_API_KEY" not in workflow
     assert "run_e0_reviewers.py" not in workflow
