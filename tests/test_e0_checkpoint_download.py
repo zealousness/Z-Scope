@@ -35,7 +35,7 @@ def _metadata() -> dict:
     }
 
 
-def _validate(metadata: dict) -> str:
+def _validate(metadata: dict, *, allow_attempt_suffix: bool = False) -> str:
     return checkpoint_download._validate_metadata(
         metadata,
         repository=REPOSITORY,
@@ -43,6 +43,7 @@ def _validate(metadata: dict) -> str:
         expected_run_id=RUN_ID,
         expected_source_sha=SOURCE_SHA,
         expected_name=NAME,
+        allow_attempt_suffix=allow_attempt_suffix,
     )
 
 
@@ -65,6 +66,41 @@ def test_checkpoint_artifact_metadata_binds_exact_immutable_identity() -> None:
         metadata["workflow_run"][field] = value
         with pytest.raises(ValueError, match="metadata is unbound"):
             _validate(metadata)
+
+
+def test_checkpoint_artifact_attempt_suffix_requires_explicit_opt_in() -> None:
+    metadata = _metadata()
+    metadata["name"] = f"{NAME}-attempt-1"
+    with pytest.raises(ValueError, match="metadata is unbound"):
+        _validate(metadata)
+    assert _validate(metadata, allow_attempt_suffix=True) == "a" * 64
+
+
+@pytest.mark.parametrize("attempt", ("1", "9", "123"))
+def test_checkpoint_artifact_accepts_only_canonical_attempt_suffix(attempt: str) -> None:
+    metadata = _metadata()
+    metadata["name"] = f"{NAME}-attempt-{attempt}"
+    assert _validate(metadata, allow_attempt_suffix=True) == "a" * 64
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    (
+        f"{NAME}-attempt-0",
+        f"{NAME}-attempt-01",
+        f"{NAME}-attempt--1",
+        f"{NAME}-attempt-1-extra",
+        f"wrong-{NAME}-attempt-1",
+        f"{NAME}-other-attempt-1",
+    ),
+)
+def test_checkpoint_artifact_rejects_noncanonical_or_wrong_base_attempt_name(
+    artifact_name: str,
+) -> None:
+    metadata = _metadata()
+    metadata["name"] = artifact_name
+    with pytest.raises(ValueError, match="metadata is unbound"):
+        _validate(metadata, allow_attempt_suffix=True)
 
 
 def test_checkpoint_download_binds_caller_expected_digest(
@@ -97,6 +133,55 @@ def test_checkpoint_download_binds_caller_expected_digest(
                 str(tmp_path / "output"),
             ]
         )
+
+
+def test_checkpoint_download_cli_opt_in_accepts_canonical_attempt_suffix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    metadata = _metadata()
+    metadata["name"] = f"{NAME}-attempt-7"
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(
+        checkpoint_download,
+        "_fetch_metadata",
+        lambda *_args, **_kwargs: metadata,
+    )
+
+    def download(_url: str, *, token: str, output: Path) -> str:
+        output.write_bytes(b"bound archive")
+        return "a" * 64
+
+    def extract(_archive: Path, *, output: Path) -> None:
+        output.mkdir()
+        (output / "checkpoint-manifest.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(checkpoint_download, "_download_archive", download)
+    monkeypatch.setattr(checkpoint_download, "_extract_archive", extract)
+    output = tmp_path / "output"
+    assert (
+        checkpoint_download.main(
+            [
+                "--repository",
+                REPOSITORY,
+                "--artifact-id",
+                str(ARTIFACT_ID),
+                "--expected-run-id",
+                RUN_ID,
+                "--expected-source-sha",
+                SOURCE_SHA,
+                "--expected-name",
+                NAME,
+                "--expected-digest",
+                f"sha256:{'a' * 64}",
+                "--allow-attempt-suffix",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert (output / "checkpoint-manifest.json").is_file()
 
 
 def test_checkpoint_archive_extracts_only_safe_bound_tree(tmp_path: Path) -> None:

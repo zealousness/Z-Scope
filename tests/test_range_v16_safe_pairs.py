@@ -4,6 +4,8 @@ import hashlib
 import json
 import re
 import subprocess
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +23,9 @@ from scripts.generate_range_v16_safe_pairs import (
     _author_one,
     _author_request,
     _author_schema,
+    _parser,
     _source_identifiers,
+    _write_failure_manifest,
     author_pairs,
     build_author_checkpoint,
     diagnose_author_checkpoint,
@@ -739,16 +743,20 @@ def test_safe_pair_author_transport_retry_is_bounded_and_answer_free(
     assert not (tmp_path / "author" / "raw" / f"{record['truth_id']}.json").exists()
 
 
-def test_safe_pair_batch_collects_completed_futures_before_failing(
+def test_safe_pair_eight_worker_batch_collects_completed_futures_before_failing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     normalized_path = tmp_path / "normalized.json"
     _dump(normalized_path, {"records": []})
     work = [
         ({"packet_sha256": str(index) * 64}, {"truth_id": f"T-{index:03d}"})
-        for index in range(1, 5)
+        for index in range(1, 13)
     ]
     calls: list[str] = []
+    barrier = threading.Barrier(8)
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
 
     monkeypatch.setattr(
         "scripts.generate_range_v16_safe_pairs.validate_normalized_decisions",
@@ -764,33 +772,534 @@ def test_safe_pair_batch_collects_completed_futures_before_failing(
         record: dict,
         **_: object,
     ) -> dict:
+        nonlocal active, max_active
         truth_id = record["truth_id"]
-        calls.append(truth_id)
-        if truth_id == "T-001":
-            raise ValueError("synthetic failure")
-        return {"truth_id": truth_id}
+        with lock:
+            calls.append(truth_id)
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            barrier.wait(timeout=5)
+            if truth_id == "T-001":
+                raise ValueError("synthetic failure")
+            return {"truth_id": truth_id}
+        finally:
+            with lock:
+                active -= 1
 
     monkeypatch.setattr("scripts.generate_range_v16_safe_pairs._author_one", fake_author)
     args = SimpleNamespace(
         output_dir=tmp_path / "author",
         normalized_decisions=normalized_path,
         packet_dir=tmp_path,
-        workers=4,
+        workers=8,
         resume=False,
         checkpoint_source_sha=None,
         checkpoint_workflow_run_id=None,
     )
-    with pytest.raises(ValueError, match="failure_count=1"):
+    with pytest.raises(ValueError, match="failure_count=1") as exc_info:
         author_pairs(args)
 
-    assert sorted(calls) == ["T-001", "T-002", "T-003", "T-004"]
+    assert sorted(calls) == [f"T-{index:03d}" for index in range(1, 9)]
+    assert max_active == 8
+    assert "failure_classes=author_harness_failure:1" in str(exc_info.value)
+    assert "T-001" not in str(exc_info.value)
     failure = json.loads(
         (tmp_path / "author" / "failure-manifest.json").read_text(encoding="utf-8")
     )
     assert failure["schema_version"] == AUTHOR_FAILURE_SCHEMA_VERSION
-    assert failure["verified_record_count"] == 3
+    assert failure["verified_record_count"] == 7
     assert failure["failure_record_count"] == 1
     assert failure["failure_records"][0]["answer_material_present"] is False
+
+
+def test_safe_pair_failure_checkpoint_resume_compacts_only_missing_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized_path = tmp_path / "normalized.json"
+    _dump(normalized_path, {"records": []})
+    work = [
+        (
+            {"packet_sha256": f"{index:064x}"},
+            {
+                "truth_id": f"T-{index:03d}",
+                "packet_sha256": f"{index:064x}",
+                "final_decision_sha256": f"{index + 100:064x}",
+            },
+        )
+        for index in range(1, 17)
+    ]
+    retained = tmp_path / "retained"
+    checkpoint = tmp_path / "checkpoint"
+    source_sha = "a" * 40
+    run_id = "33228930421"
+    phase = "initial"
+    calls: dict[str, list[str]] = {"initial": [], "resume": []}
+    initial_barrier = threading.Barrier(8)
+    resume_barrier = threading.Barrier(8)
+    lock = threading.Lock()
+    resume_active = 0
+    resume_max_active = 0
+    first_resume_batch = {"T-001", *(f"T-{index:03d}" for index in range(9, 16))}
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.validate_normalized_decisions",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._confirmable_work",
+        lambda *_, **__: work,
+    )
+
+    def fake_validated_existing(
+        root: Path,
+        packet: dict,
+        record: dict,
+        *,
+        status: str,
+        **_: object,
+    ) -> dict:
+        truth_id = record["truth_id"]
+        author_path = root / "authors" / f"{truth_id}.json"
+        raw_path = root / "raw" / f"{truth_id}.json"
+        if not author_path.is_file() or not raw_path.is_file():
+            raise ValueError(f"invalid existing pair: {truth_id}")
+        return {
+            "truth_id": truth_id,
+            "packet_sha256": packet["packet_sha256"],
+            "final_decision_sha256": record["final_decision_sha256"],
+            "author_sha256": sha256_file(author_path),
+            "raw_sha256": sha256_file(raw_path),
+            "status": status,
+        }
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._validated_existing_author_pair",
+        fake_validated_existing,
+    )
+
+    def fake_author(
+        packet: dict,
+        record: dict,
+        *,
+        output: Path,
+        **_: object,
+    ) -> dict:
+        nonlocal resume_active, resume_max_active
+        truth_id = record["truth_id"]
+        with lock:
+            calls[phase].append(truth_id)
+            if phase == "resume":
+                resume_active += 1
+                resume_max_active = max(resume_max_active, resume_active)
+        try:
+            if phase == "initial":
+                initial_barrier.wait(timeout=5)
+                if truth_id == "T-001":
+                    raise ValueError("synthetic failure")
+            elif truth_id in first_resume_batch:
+                resume_barrier.wait(timeout=5)
+            _dump(output / "authors" / f"{truth_id}.json", {"truth_id": truth_id})
+            _dump(output / "raw" / f"{truth_id}.json", {"truth_id": truth_id})
+            return fake_validated_existing(
+                output,
+                packet,
+                record,
+                status="authored",
+            )
+        finally:
+            if phase == "resume":
+                with lock:
+                    resume_active -= 1
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs._author_one", fake_author)
+
+    with pytest.raises(ValueError, match="failure_count=1"):
+        author_pairs(
+            SimpleNamespace(
+                output_dir=retained,
+                normalized_decisions=normalized_path,
+                packet_dir=tmp_path,
+                workers=8,
+                resume=False,
+                checkpoint_source_sha=None,
+                checkpoint_workflow_run_id=None,
+            )
+        )
+    assert sorted(calls["initial"]) == [f"T-{index:03d}" for index in range(1, 9)]
+
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    assert (
+        build_author_checkpoint(
+            SimpleNamespace(
+                packet_dir=tmp_path,
+                normalized_decisions=normalized_path,
+                retained_dir=retained,
+                output_dir=checkpoint,
+                packet_source_sha=source_sha,
+                retained_source_sha=source_sha,
+                workflow_run_id=run_id,
+                require_complete=False,
+            )
+        )
+        == 0
+    )
+    checkpoint_manifest = json.loads(
+        (checkpoint / "checkpoint-manifest.json").read_text(encoding="utf-8")
+    )
+    assert checkpoint_manifest["verified_record_count"] == 7
+    assert checkpoint_manifest["failure_records"][0]["truth_id"] == "T-001"
+
+    phase = "resume"
+    assert (
+        author_pairs(
+            SimpleNamespace(
+                output_dir=checkpoint,
+                normalized_decisions=normalized_path,
+                packet_dir=tmp_path,
+                workers=8,
+                resume=True,
+                checkpoint_source_sha=source_sha,
+                checkpoint_workflow_run_id=run_id,
+            )
+        )
+        == 0
+    )
+
+    assert set(calls["resume"]) == first_resume_batch | {"T-016"}
+    assert not set(calls["resume"]) & {f"T-{index:03d}" for index in range(2, 9)}
+    assert resume_max_active == 8
+    completed = json.loads((checkpoint / "manifest.json").read_text(encoding="utf-8"))
+    assert [record["truth_id"] for record in completed["records"]] == [
+        f"T-{index:03d}" for index in range(1, 17)
+    ]
+    assert {
+        record["truth_id"] for record in completed["records"] if record["status"] == "reused"
+    } == {f"T-{index:03d}" for index in range(2, 9)}
+    assert {
+        record["truth_id"] for record in completed["records"] if record["status"] == "authored"
+    } == first_resume_batch | {"T-016"}
+
+
+@pytest.mark.parametrize("existing_state", ["incomplete", "invalid"])
+def test_safe_pair_resume_rejects_bad_existing_pair_before_model_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    existing_state: str,
+) -> None:
+    normalized_path = tmp_path / "normalized.json"
+    _dump(normalized_path, {"records": []})
+    output = tmp_path / "checkpoint"
+    _dump(output / "checkpoint-manifest.json", {})
+    _dump(output / "authors" / "T-001.json", {"truth_id": "T-001"})
+    if existing_state == "invalid":
+        _dump(output / "raw" / "T-001.json", {"truth_id": "T-001"})
+    work = [
+        ({"packet_sha256": f"{index:064x}"}, {"truth_id": f"T-{index:03d}"})
+        for index in range(1, 10)
+    ]
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.validate_normalized_decisions",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._confirmable_work",
+        lambda *_, **__: work,
+    )
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._validate_author_checkpoint",
+        lambda *_, **__: None,
+    )
+    if existing_state == "invalid":
+        monkeypatch.setattr(
+            "scripts.generate_range_v16_safe_pairs._validated_existing_author_pair",
+            lambda *_, **__: (_ for _ in ()).throw(ValueError("invalid existing pair")),
+        )
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._author_one",
+        lambda *_, **__: pytest.fail("bad existing pairs must fail before model calls"),
+    )
+
+    expected = "incomplete or unexpected" if existing_state == "incomplete" else "invalid existing"
+    with pytest.raises(ValueError, match=expected):
+        author_pairs(
+            SimpleNamespace(
+                output_dir=output,
+                normalized_decisions=normalized_path,
+                packet_dir=tmp_path,
+                workers=8,
+                resume=True,
+                checkpoint_source_sha="a" * 40,
+                checkpoint_workflow_run_id="33228930421",
+            )
+        )
+    assert (output / "checkpoint-manifest.json").is_file()
+
+
+def test_safe_pair_workers_one_and_eight_match_after_out_of_order_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized_path = tmp_path / "normalized.json"
+    _dump(normalized_path, {"records": []})
+    work = [
+        ({"packet_sha256": f"{index:064x}"}, {"truth_id": f"T-{index:03d}"})
+        for index in range(1, 17)
+    ]
+    barrier = threading.Barrier(8)
+    lock = threading.Lock()
+    run_workers = 1
+    completion_orders: dict[int, list[str]] = {1: [], 8: []}
+
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs.validate_normalized_decisions",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        "scripts.generate_range_v16_safe_pairs._confirmable_work",
+        lambda *_, **__: work,
+    )
+
+    def fake_author(
+        packet: dict,
+        record: dict,
+        **_: object,
+    ) -> dict:
+        truth_id = record["truth_id"]
+        if run_workers == 8:
+            barrier.wait(timeout=5)
+            index = int(truth_id.rsplit("-", 1)[1])
+            time.sleep((8 - (index % 8)) * 0.001)
+        with lock:
+            completion_orders[run_workers].append(truth_id)
+        return {
+            "truth_id": truth_id,
+            "packet_sha256": packet["packet_sha256"],
+            "status": "reviewed",
+        }
+
+    monkeypatch.setattr("scripts.generate_range_v16_safe_pairs._author_one", fake_author)
+    manifests: list[dict] = []
+    for workers in (1, 8):
+        run_workers = workers
+        output = tmp_path / f"author-{workers}"
+        assert (
+            author_pairs(
+                SimpleNamespace(
+                    output_dir=output,
+                    normalized_decisions=normalized_path,
+                    packet_dir=tmp_path,
+                    workers=workers,
+                    resume=False,
+                    checkpoint_source_sha=None,
+                    checkpoint_workflow_run_id=None,
+                )
+            )
+            == 0
+        )
+        manifests.append(json.loads((output / "manifest.json").read_text(encoding="utf-8")))
+
+    expected_ids = [f"T-{index:03d}" for index in range(1, 17)]
+    assert completion_orders[1] == expected_ids
+    assert completion_orders[8] != expected_ids
+    assert manifests[0] == manifests[1]
+    assert [record["truth_id"] for record in manifests[1]["records"]] == expected_ids
+
+
+def test_safe_pair_author_cli_defaults_to_eight_workers(tmp_path: Path) -> None:
+    args = _parser().parse_args(
+        [
+            "author",
+            "--packet-dir",
+            str(tmp_path / "packets"),
+            "--normalized-decisions",
+            str(tmp_path / "normalized.json"),
+            "--output-dir",
+            str(tmp_path / "author"),
+        ]
+    )
+
+    assert args.workers == 8
+
+
+def test_safe_pair_complete_checkpoint_requires_all_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    normalized_path = tmp_path / "normalized.json"
+    packet_dir = tmp_path / "packets"
+    retained = tmp_path / "retained"
+    checkpoint = tmp_path / "checkpoint"
+    _dump(normalized_path, normalized)
+    _dump(packet_dir / f"{record['truth_id']}.json", _packet(record))
+    author = _author(record)
+    _dump(retained / "authors" / f"{record['truth_id']}.json", author)
+    _dump(retained / "raw" / f"{record['truth_id']}.json", _raw_author(record, author))
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    source_sha = "a" * 40
+
+    assert (
+        build_author_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                normalized_decisions=normalized_path,
+                retained_dir=retained,
+                output_dir=checkpoint,
+                packet_source_sha=source_sha,
+                retained_source_sha=source_sha,
+                workflow_run_id="33228930421",
+                require_complete=True,
+            )
+        )
+        == 0
+    )
+    manifest = json.loads((checkpoint / "checkpoint-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["verified_record_count"] == manifest["expected_record_count"] == 1
+    assert manifest["invalid_records"] == []
+    assert manifest["incomplete_records"] == []
+    assert manifest["failure_records"] == []
+
+
+def test_safe_pair_complete_checkpoint_rejects_failure_residual(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    normalized_path = tmp_path / "normalized.json"
+    packet_dir = tmp_path / "packets"
+    retained = tmp_path / "retained"
+    checkpoint = tmp_path / "checkpoint"
+    _dump(normalized_path, normalized)
+    _dump(packet_dir / f"{record['truth_id']}.json", _packet(record))
+    author = _author(record)
+    _dump(retained / "authors" / f"{record['truth_id']}.json", author)
+    _dump(retained / "raw" / f"{record['truth_id']}.json", _raw_author(record, author))
+    _write_failure_manifest(
+        retained,
+        normalized_sha256=sha256_file(normalized_path),
+        expected_record_count=1,
+        verified_record_count=1,
+        failure_records=[
+            {
+                "truth_id": record["truth_id"],
+                "failure_code": "author_contract_failure",
+                "error_sha256": "7" * 64,
+                "initial_exit_code": None,
+                "initial_stdout_sha256": None,
+                "initial_stdout_retained": False,
+                "initial_stderr_sha256": None,
+                "retry_exit_code": None,
+                "retry_stdout_sha256": None,
+                "retry_stdout_retained": False,
+                "retry_stderr_sha256": None,
+                "answer_material_present": False,
+            }
+        ],
+    )
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    source_sha = "a" * 40
+
+    with pytest.raises(
+        ValueError,
+        match="complete checkpoint requires every expected record to be verified",
+    ):
+        build_author_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                normalized_decisions=normalized_path,
+                retained_dir=retained,
+                output_dir=checkpoint,
+                packet_source_sha=source_sha,
+                retained_source_sha=source_sha,
+                workflow_run_id="33228930421",
+                require_complete=True,
+            )
+        )
+
+    assert not checkpoint.exists()
+
+
+@pytest.mark.parametrize("retained_state", ["missing", "incomplete", "invalid"])
+def test_safe_pair_complete_checkpoint_rejects_nonverified_records_without_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    retained_state: str,
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    normalized_path = tmp_path / "normalized.json"
+    packet_dir = tmp_path / "packets"
+    retained = tmp_path / "retained"
+    checkpoint = tmp_path / "checkpoint"
+    _dump(normalized_path, normalized)
+    _dump(packet_dir / f"{record['truth_id']}.json", _packet(record))
+    (retained / "authors").mkdir(parents=True)
+    (retained / "raw").mkdir()
+    if retained_state in {"incomplete", "invalid"}:
+        author = _author(record)
+        if retained_state == "invalid":
+            author["packet_sha256"] = "f" * 64
+        _dump(retained / "authors" / f"{record['truth_id']}.json", author)
+    if retained_state == "invalid":
+        _dump(retained / "raw" / f"{record['truth_id']}.json", _raw_author(record, author))
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    source_sha = "a" * 40
+
+    with pytest.raises(
+        ValueError,
+        match="complete checkpoint requires every expected record to be verified",
+    ):
+        build_author_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                normalized_decisions=normalized_path,
+                retained_dir=retained,
+                output_dir=checkpoint,
+                packet_source_sha=source_sha,
+                retained_source_sha=source_sha,
+                workflow_run_id="33228930421",
+                require_complete=True,
+            )
+        )
+
+    assert not checkpoint.exists()
+
+
+def test_safe_pair_checkpoint_allows_partial_without_complete_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normalized = _confirmable_normalized()
+    record = normalized["records"][0]
+    normalized_path = tmp_path / "normalized.json"
+    packet_dir = tmp_path / "packets"
+    retained = tmp_path / "retained"
+    checkpoint = tmp_path / "checkpoint"
+    _dump(normalized_path, normalized)
+    _dump(packet_dir / f"{record['truth_id']}.json", _packet(record))
+    (retained / "authors").mkdir(parents=True)
+    (retained / "raw").mkdir()
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    source_sha = "a" * 40
+
+    assert (
+        build_author_checkpoint(
+            SimpleNamespace(
+                packet_dir=packet_dir,
+                normalized_decisions=normalized_path,
+                retained_dir=retained,
+                output_dir=checkpoint,
+                packet_source_sha=source_sha,
+                retained_source_sha=source_sha,
+                workflow_run_id="33228930421",
+            )
+        )
+        == 0
+    )
+    manifest = json.loads((checkpoint / "checkpoint-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["expected_record_count"] == 1
+    assert manifest["verified_record_count"] == 0
+    assert manifest["checkpoint_contains_author_material"] is False
 
 
 def test_safe_pair_checkpoint_revalidates_and_resumes_without_model_calls(
