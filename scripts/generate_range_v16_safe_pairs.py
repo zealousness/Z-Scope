@@ -1504,8 +1504,6 @@ def diagnose_author_checkpoint(args: argparse.Namespace) -> int:
         or verified_ids & incomplete_ids
         or verified_ids & failure_ids
         or invalid_ids & incomplete_ids
-        or invalid_ids & failure_ids
-        or incomplete_ids & failure_ids
     ):
         return _write_author_diagnostic_rejection(
             output,
