@@ -1,13 +1,13 @@
 {
   "schema_version": "zscope.range-v16-truth-manifest.v1",
-  "truth_sha256": "c946f4f6a49c22e5dbdc02db6966486b56f477d264ac57f352a16cfcd743cb7f",
-  "truth_contract_manifest_sha256": "c1dcee7b15ee62031e5e31b304cd79c860711e364e5e0355ff5f7d3ae3d1be47",
+  "truth_sha256": "87aa63508ddfe13c1eb411ff8f421b995c110efb9fdbf040497c1fe5b5a3f9e1",
+  "truth_contract_manifest_sha256": "1f0f535d6931cb2f7aea793bac6bb77e5828088d5f02eaa5cbc1cb4ccde5c4bd",
   "source_v15_sha256": "25010ae890001afe1e8c49fbc227058bdf88ed70c76b10ac43ab41c253bb1739",
   "normalized_decisions_sha256": "afc09428d97065787d53d547d9382be14621b19dc929abf4fc92a638708ffc54",
   "review_bundle_sha256": "721ecd82df395cfcb5c8b1bb2d80af6b8a60dc1162045bc59043fa9ed0237c81",
   "packet_catalog_sha256": "6ea86f6a0b69abff35c615dc658d5788f36b825a33631827f3428d112c022f04",
   "taxonomy_sha256": "a3646064902f86d28ae49ca7a5ef58254f53027d8b0a27fda7d3fbc209b72537",
-  "fixture_tree_sha256": "dd2a15958cdb0d75905467cd5daaaf9de05ca158d418e3cdf6b993ec9963268c",
+  "fixture_tree_sha256": "3ebec058fb1165a868ebebeae3508e6db913c0524928b0b720c967c3e7e30efd",
   "safe_pair_index_sha256": "484ca41d6782c8964448720741eb9254d8defedd36c1b56584129930b4cf7461",
   "counts_by_kind": {
     "concrete_trigger": 59,
@@ -17,5 +17,5 @@
   },
   "v15_v16_directly_comparable": false,
   "v4_v5_directly_comparable": false,
-  "content_sha256": "d502b06278275b9d150cde8345efc0f1596f3058ec9be4c36eed466cd887c5a9"
+  "content_sha256": "2d7a9528c93f177d710e81e008b56c1caa2257b1e980377df2d8fd96b4a7a4de"
 }
