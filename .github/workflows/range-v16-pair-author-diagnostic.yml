@@ -26,8 +26,6 @@ jobs:
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 15
-    env:
-      DIAGNOSTIC_ROOT: ${{ runner.temp }}/range-v16-pair-author-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -36,6 +34,8 @@ jobs:
         with:
           python-version: "3.13"
       - name: Verify protected diagnostic identity
+        env:
+          DIAGNOSTIC_ROOT: ${{ runner.temp }}/range-v16-pair-author-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = 'refs/heads/main'
@@ -48,6 +48,7 @@ jobs:
           mkdir -p "$DIAGNOSTIC_ROOT"
       - name: Restore exact immutable safe-pair checkpoint
         env:
+          DIAGNOSTIC_ROOT: ${{ runner.temp }}/range-v16-pair-author-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           GITHUB_TOKEN: ${{ github.token }}
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
         run: |
@@ -64,6 +65,7 @@ jobs:
       - id: diagnostic
         name: Emit fixed answer-free failure classification
         env:
+          DIAGNOSTIC_ROOT: ${{ runner.temp }}/range-v16-pair-author-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
           REVIEW_RUN_ID: ${{ inputs.review_run_id }}
           REVIEW_SOURCE_SHA: ${{ inputs.review_source_sha }}
@@ -99,11 +101,13 @@ jobs:
         uses: ./.github/actions/upload-artifact-retry
         with:
           name: range-v16-pair-author-diagnostic-${{ inputs.review_source_sha }}
-          path: ${{ env.DIAGNOSTIC_ROOT }}/answer-free-diagnostic.json
+          path: ${{ runner.temp }}/range-v16-pair-author-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}/answer-free-diagnostic.json
           if-no-files-found: error
           retention-days: 30
       - name: Clean protected diagnostic workspace
         if: ${{ always() }}
+        env:
+          DIAGNOSTIC_ROOT: ${{ runner.temp }}/range-v16-pair-author-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           case "$DIAGNOSTIC_ROOT" in
