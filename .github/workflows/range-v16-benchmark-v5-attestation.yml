@@ -31,75 +31,93 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.truth_commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - name: Verify component ancestry and protected review run
+      - name: Verify component ancestry and protected review lineage
+        id: review_lineage
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          E0_REPOSITORY: ${{ github.repository }}
           REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+          REVIEW_SOURCE_SHA: ${{ inputs.review_source_sha }}
+          TRUTH_COMMIT: ${{ inputs.truth_commit }}
+          GOVERNANCE_COMMIT: ${{ inputs.governance_commit }}
+          SCORER_COMMIT: ${{ inputs.scorer_commit }}
+          WORKFLOW_HEAD_SHA: ${{ github.sha }}
+          WORKFLOW_HEAD_BRANCH: ${{ github.ref_name }}
         run: |
-          test "$(git rev-parse HEAD)" = '${{ inputs.truth_commit }}'
-          git merge-base --is-ancestor '${{ inputs.governance_commit }}' HEAD
-          git merge-base --is-ancestor '${{ inputs.scorer_commit }}' HEAD
-          git diff --exit-code '${{ inputs.review_source_sha }}' HEAD -- \
-            test/range/benchmark/v16/review-packet-catalog.json \
-            test/range/benchmark/v16/review-packets
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .event)" = "workflow_dispatch"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .conclusion)" = "success"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" --jq .path)" = ".github/workflows/range-v16-review.yml"
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-reviewed-${{ inputs.review_source_sha }}
-          path: protected-review-evidence
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.review_run_id }}
-          digest-mismatch: error
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-pair-author-${{ inputs.review_source_sha }}
-          path: protected-pair-author
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.review_run_id }}
-          digest-mismatch: error
-      - uses: actions/download-artifact@v8
-        with:
-          name: range-v16-review-provenance-${{ inputs.review_source_sha }}
-          path: protected-review-provenance
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.review_run_id }}
-          digest-mismatch: error
+          python3 scripts/verify_e0_attestation_preflight.py \
+            --repository "$E0_REPOSITORY" \
+            --workflow-run-id "$REVIEW_RUN_ID" \
+            --review-source-sha "$REVIEW_SOURCE_SHA" \
+            --truth-commit "$TRUTH_COMMIT" \
+            --governance-commit "$GOVERNANCE_COMMIT" \
+            --scorer-commit "$SCORER_COMMIT" \
+            --workflow-head-sha "$WORKFLOW_HEAD_SHA" \
+            --workflow-head-branch "$WORKFLOW_HEAD_BRANCH" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Checkout frozen Truth v16 commit
+        env:
+          TRUTH_COMMIT: ${{ inputs.truth_commit }}
+        run: |
+          if ! git -c advice.detachedHead=false checkout --detach --quiet \
+            "$TRUTH_COMMIT" >/dev/null 2>&1; then
+            echo "::error title=E0 attestation preflight::preflight_failure=truth_checkout_failed; count=1"
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD 2>/dev/null)" != "$TRUTH_COMMIT" ]; then
+            echo "::error title=E0 attestation preflight::preflight_failure=truth_checkout_mismatch; count=1"
+            exit 1
+          fi
+      - name: Restore exact protected review artifacts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_E0_REVIEW_ENVIRONMENT: sealed-benchmark
+          E0_REPOSITORY: ${{ github.repository }}
+          REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+          REVIEW_SOURCE_SHA: ${{ inputs.review_source_sha }}
+          REVIEW_ARTIFACT_ID: ${{ steps.review_lineage.outputs.review_artifact_id }}
+          REVIEW_ARTIFACT_DIGEST: ${{ steps.review_lineage.outputs.review_artifact_digest }}
+          PROVENANCE_ARTIFACT_ID: ${{ steps.review_lineage.outputs.review_provenance_artifact_id }}
+          PROVENANCE_ARTIFACT_DIGEST: ${{ steps.review_lineage.outputs.review_provenance_artifact_digest }}
+          PAIR_ARTIFACT_ID: ${{ steps.review_lineage.outputs.pair_author_artifact_id }}
+          PAIR_ARTIFACT_DIGEST: ${{ steps.review_lineage.outputs.pair_author_artifact_digest }}
+        run: |
+          if ! python3 scripts/download_e0_run_artifacts.py \
+            --repository "$E0_REPOSITORY" \
+            --expected-run-id "$REVIEW_RUN_ID" \
+            --expected-head-sha "$REVIEW_SOURCE_SHA" \
+            --expected-workflow-path ".github/workflows/range-v16-review.yml" \
+            --expected-event "workflow_dispatch" \
+            --expected-head-branch "main" \
+            --expected-producer-job "codex arbitration finalize and safe-pair author" \
+            --exact-artifact "range-v16-reviewed-${REVIEW_SOURCE_SHA}=protected-review-evidence=${REVIEW_ARTIFACT_ID}=${REVIEW_ARTIFACT_DIGEST}" \
+            --exact-artifact "range-v16-review-provenance-${REVIEW_SOURCE_SHA}=protected-review-provenance=${PROVENANCE_ARTIFACT_ID}=${PROVENANCE_ARTIFACT_DIGEST}" \
+            --exact-artifact "range-v16-pair-author-${REVIEW_SOURCE_SHA}=protected-pair-author=${PAIR_ARTIFACT_ID}=${PAIR_ARTIFACT_DIGEST}" \
+            >/dev/null 2>&1; then
+            echo "::error title=E0 attestation artifact restore::preflight_failure=artifact_restore_failed; count=1"
+            exit 1
+          fi
       - name: Validate Truth v16, Benchmark v5, pairs, and answer isolation
         id: validate_e0
         env:
-          GH_TOKEN: ${{ github.token }}
           REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+          REVIEW_SOURCE_SHA: ${{ inputs.review_source_sha }}
+          REVIEW_WORKFLOW_HEAD_SHA: ${{ steps.review_lineage.outputs.review_workflow_head_sha }}
+          REVIEW_ARTIFACT_DIGEST: ${{ steps.review_lineage.outputs.review_artifact_digest }}
         run: |
           python3 -m pip install --require-hashes -r requirements/constraints/py313.txt
           python3 -m pip install --no-deps -e .
-          REVIEW_ARTIFACT_DIGEST="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts" \
-            --jq '.artifacts[] | select(.name == "range-v16-reviewed-${{ inputs.review_source_sha }}") | .digest')"
-          test -n "$REVIEW_ARTIFACT_DIGEST"
-          PAIR_AUTHOR_ARTIFACT_DIGEST="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}/artifacts" \
-            --jq '.artifacts[] | select(.name == "range-v16-pair-author-${{ inputs.review_source_sha }}") | .digest')"
-          test -n "$PAIR_AUTHOR_ARTIFACT_DIGEST"
-          REVIEW_WORKFLOW_HEAD_SHA="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${REVIEW_RUN_ID}" \
-            --jq '.head_sha')"
-          test -n "$REVIEW_WORKFLOW_HEAD_SHA"
-          echo "pair_author_artifact_digest=$PAIR_AUTHOR_ARTIFACT_DIGEST" >> "$GITHUB_OUTPUT"
           python3 scripts/verify_e0_review_provenance.py \
             --provenance protected-review-provenance/review-provenance.json \
-            --workflow-run-id '${{ inputs.review_run_id }}' \
+            --workflow-run-id "$REVIEW_RUN_ID" \
             --workflow-head-sha "$REVIEW_WORKFLOW_HEAD_SHA" \
-            --packet-source-sha '${{ inputs.review_source_sha }}' \
+            --packet-source-sha "$REVIEW_SOURCE_SHA" \
             --artifact-digest "$REVIEW_ARTIFACT_DIGEST"
           mkdir -p reconstructed-review
           python3 scripts/generate_range_v16_truth.py normalize \
@@ -155,19 +173,23 @@ jobs:
       - name: Issue protected E0 attestation
         env:
           Z_SCOPE_ATTESTATION_ENVIRONMENT: sealed-benchmark
+          GOVERNANCE_COMMIT: ${{ inputs.governance_commit }}
+          SCORER_COMMIT: ${{ inputs.scorer_commit }}
+          TRUTH_COMMIT: ${{ inputs.truth_commit }}
+          PAIR_AUTHOR_ARTIFACT_DIGEST: ${{ steps.review_lineage.outputs.pair_author_artifact_digest }}
         run: |
           mkdir -p release-evidence
           python3 scripts/build_e0_attestation.py \
-            --governance-commit '${{ inputs.governance_commit }}' \
-            --scorer-commit '${{ inputs.scorer_commit }}' \
-            --truth-commit '${{ inputs.truth_commit }}' \
+            --governance-commit "$GOVERNANCE_COMMIT" \
+            --scorer-commit "$SCORER_COMMIT" \
+            --truth-commit "$TRUTH_COMMIT" \
             --truth test/range/benchmark/v16/ground_truth.json \
             --truth-manifest test/range/benchmark/v16/truth-manifest.json \
             --source-truth-v15 test/range/benchmark/ground_truth.json \
             --review-packet-catalog test/range/benchmark/v16/review-packet-catalog.json \
             --normalized-decisions test/range/benchmark/v16/reviews/normalized-decisions.json \
             --safe-pair-author-manifest protected-pair-author/author/manifest.json \
-            --safe-pair-author-artifact-digest '${{ steps.validate_e0.outputs.pair_author_artifact_digest }}' \
+            --safe-pair-author-artifact-digest "$PAIR_AUTHOR_ARTIFACT_DIGEST" \
             --review-bundle protected-review-evidence/review-bundle-manifest.json \
             --review-provenance protected-review-provenance/review-provenance.json \
             --safe-pair-manifest test/range/benchmark/v16/safe-pair-manifest.json \
