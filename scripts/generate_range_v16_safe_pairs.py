@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -51,6 +52,7 @@ AUTHOR_REQUEST_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-request.v1"
 RAW_AUTHOR_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-raw.v5"
 AUTHOR_FAILURE_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-failure.v1"
 AUTHOR_CHECKPOINT_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-checkpoint.v1"
+AUTHOR_DIAGNOSTIC_SCHEMA_VERSION = "zscope.range-v16-safe-pair-author-diagnostic.v1"
 AUTHOR_MODEL = CODEX_MODEL_IDENTITY
 _FORBIDDEN_SOURCE = re.compile(
     r"(?i)(?:#\s*(?:include|pragma)|\b(?:system|popen|fork|exec[a-z]*|__asm__|asm)\s*\()"
@@ -1292,6 +1294,162 @@ def _checkpoint_manifest_content_sha256(value: Mapping[str, Any]) -> str:
     return str(sha256_value(unsigned))
 
 
+def diagnose_author_checkpoint(args: argparse.Namespace) -> int:
+    """Project a verified checkpoint into fixed answer-free diagnostics only."""
+
+    if os.environ.get("Z_SCOPE_E0_REVIEW_ENVIRONMENT") != "sealed-benchmark":
+        raise E0GovernanceError("safe-pair diagnosis requires sealed-benchmark environment")
+    source_sha = str(args.expected_source_sha)
+    workflow_run_id = str(args.expected_workflow_run_id)
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise E0GovernanceError("safe-pair diagnostic source SHA is invalid")
+    if not workflow_run_id.isdigit():
+        raise E0GovernanceError("safe-pair diagnostic workflow run ID is invalid")
+
+    root = args.checkpoint_dir.resolve(strict=True)
+    output = args.output.resolve()
+    try:
+        output.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise E0GovernanceError("safe-pair diagnostic output cannot modify the checkpoint")
+    if output.exists():
+        raise E0GovernanceError("safe-pair diagnostic output already exists")
+    manifest = _object(root / "checkpoint-manifest.json")
+    fields = {
+        "schema_version",
+        "author_model",
+        "packet_source_sha",
+        "retained_source_sha",
+        "workflow_run_id",
+        "normalized_decisions_sha256",
+        "expected_record_count",
+        "verified_record_count",
+        "verified_records",
+        "invalid_records",
+        "incomplete_records",
+        "failure_records",
+        "checkpoint_contains_author_material",
+        "diagnostic_answer_material_present",
+        "requires_resume_revalidation",
+        "content_sha256",
+    }
+    verified = manifest.get("verified_records")
+    invalid = manifest.get("invalid_records")
+    incomplete = manifest.get("incomplete_records")
+    failures = manifest.get("failure_records")
+    if (
+        set(manifest) != fields
+        or manifest.get("schema_version") != AUTHOR_CHECKPOINT_SCHEMA_VERSION
+        or manifest.get("author_model") != AUTHOR_MODEL
+        or manifest.get("packet_source_sha") != source_sha
+        or manifest.get("retained_source_sha") != source_sha
+        or manifest.get("workflow_run_id") != workflow_run_id
+        or not isinstance(manifest.get("expected_record_count"), int)
+        or isinstance(manifest.get("expected_record_count"), bool)
+        or int(manifest["expected_record_count"]) <= 0
+        or not isinstance(verified, list)
+        or manifest.get("verified_record_count") != len(verified)
+        or not isinstance(invalid, list)
+        or not isinstance(incomplete, list)
+        or not isinstance(failures, list)
+        or manifest.get("checkpoint_contains_author_material") is not bool(verified)
+        or manifest.get("diagnostic_answer_material_present") is not False
+        or manifest.get("requires_resume_revalidation") is not True
+        or manifest.get("content_sha256") != _checkpoint_manifest_content_sha256(manifest)
+    ):
+        raise E0GovernanceError("safe-pair diagnostic checkpoint manifest is invalid")
+
+    verified_ids: set[str] = set()
+    for record in verified:
+        if not isinstance(record, Mapping) or not isinstance(record.get("truth_id"), str):
+            raise E0GovernanceError("safe-pair diagnostic verified record is invalid")
+        truth_id = str(record["truth_id"])
+        if not truth_id or truth_id in verified_ids:
+            raise E0GovernanceError("safe-pair diagnostic verified identity is invalid")
+        verified_ids.add(truth_id)
+
+    invalid_ids: set[str] = set()
+    for record in invalid:
+        if (
+            not isinstance(record, Mapping)
+            or set(record) != {"truth_id", "error_sha256"}
+            or not isinstance(record.get("truth_id"), str)
+            or not record["truth_id"]
+            or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("error_sha256") or ""))
+            or str(record["truth_id"]) in invalid_ids
+        ):
+            raise E0GovernanceError("safe-pair diagnostic invalid record is invalid")
+        invalid_ids.add(str(record["truth_id"]))
+
+    incomplete_ids: set[str] = set()
+    for record in incomplete:
+        if (
+            not isinstance(record, Mapping)
+            or set(record) != {"truth_id", "author_present", "raw_present"}
+            or not isinstance(record.get("truth_id"), str)
+            or not record["truth_id"]
+            or not isinstance(record.get("author_present"), bool)
+            or not isinstance(record.get("raw_present"), bool)
+            or record["author_present"] == record["raw_present"]
+            or str(record["truth_id"]) in incomplete_ids
+        ):
+            raise E0GovernanceError("safe-pair diagnostic incomplete record is invalid")
+        incomplete_ids.add(str(record["truth_id"]))
+
+    failure_ids: set[str] = set()
+    failure_counts: Counter[str] = Counter()
+    for record in failures:
+        _validate_failure_record(record)
+        truth_id = str(record["truth_id"])
+        if truth_id in failure_ids:
+            raise E0GovernanceError("safe-pair diagnostic failure record is duplicated")
+        failure_ids.add(truth_id)
+        failure_counts[str(record["failure_code"])] += 1
+
+    if not failure_counts and not invalid_ids and not incomplete_ids:
+        raise E0GovernanceError("safe-pair checkpoint has no answer-free diagnostic signal")
+    if (
+        verified_ids & invalid_ids
+        or verified_ids & incomplete_ids
+        or verified_ids & failure_ids
+        or invalid_ids & incomplete_ids
+        or invalid_ids & failure_ids
+        or incomplete_ids & failure_ids
+    ):
+        raise E0GovernanceError("safe-pair diagnostic record classes overlap")
+
+    diagnostic: dict[str, Any] = {
+        "schema_version": AUTHOR_DIAGNOSTIC_SCHEMA_VERSION,
+        "checkpoint_workflow_run_id": workflow_run_id,
+        "checkpoint_packet_source_sha": source_sha,
+        "checkpoint_content_sha256": manifest["content_sha256"],
+        "expected_record_count": manifest["expected_record_count"],
+        "verified_record_count": len(verified_ids),
+        "invalid_record_count": len(invalid_ids),
+        "incomplete_record_count": len(incomplete_ids),
+        "failure_record_count": sum(failure_counts.values()),
+        "failure_classes": [
+            {"failure_code": code, "count": failure_counts[code]} for code in sorted(failure_counts)
+        ],
+        "diagnostic_answer_material_present": False,
+    }
+    diagnostic["content_sha256"] = sha256_value(diagnostic)
+    _json_dump(output, diagnostic)
+    classes = (
+        ",".join(f"{row['failure_code']}:{row['count']}" for row in diagnostic["failure_classes"])
+        or "none"
+    )
+    print(
+        "safe-pair answer-free diagnostic: "
+        f"failure_classes={classes}; invalid_records={len(invalid_ids)}; "
+        f"incomplete_records={len(incomplete_ids)}",
+        flush=True,
+    )
+    return 0
+
+
 def build_author_checkpoint(args: argparse.Namespace) -> int:
     if os.environ.get("Z_SCOPE_E0_REVIEW_ENVIRONMENT") != "sealed-benchmark":
         raise E0GovernanceError("safe-pair checkpoint requires sealed-benchmark environment")
@@ -1744,6 +1902,12 @@ def _parser() -> argparse.ArgumentParser:
     checkpoint.add_argument("--workflow-run-id", required=True)
     checkpoint.add_argument("--compiler", choices=("cc", "gcc", "clang"), default="cc")
     checkpoint.set_defaults(handler=build_author_checkpoint)
+    diagnose = sub.add_parser("diagnose-checkpoint")
+    diagnose.add_argument("--checkpoint-dir", required=True, type=Path)
+    diagnose.add_argument("--expected-source-sha", required=True)
+    diagnose.add_argument("--expected-workflow-run-id", required=True)
+    diagnose.add_argument("--output", required=True, type=Path)
+    diagnose.set_defaults(handler=diagnose_author_checkpoint)
     materialize = sub.add_parser("materialize")
     materialize.add_argument("--packet-dir", required=True, type=Path)
     materialize.add_argument("--normalized-decisions", required=True, type=Path)

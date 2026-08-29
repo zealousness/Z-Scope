@@ -12,6 +12,7 @@ import pytest
 from scripts.e0_review_governance import PACKET_SCHEMA_VERSION, sha256_file, sha256_value
 from scripts.generate_range_v16_safe_pairs import (
     AUTHOR_CHECKPOINT_SCHEMA_VERSION,
+    AUTHOR_DIAGNOSTIC_SCHEMA_VERSION,
     AUTHOR_FAILURE_SCHEMA_VERSION,
     AUTHOR_MODEL,
     AUTHOR_REQUEST_SCHEMA_VERSION,
@@ -23,6 +24,7 @@ from scripts.generate_range_v16_safe_pairs import (
     _source_identifiers,
     author_pairs,
     build_author_checkpoint,
+    diagnose_author_checkpoint,
     materialize_pairs,
     validate_author_run,
     validate_author_record,
@@ -137,6 +139,91 @@ def _raw_author(record: dict, author: dict) -> dict:
         ],
         "accepted_attempt": 1,
     }
+
+
+def test_safe_pair_checkpoint_diagnostic_projects_only_fixed_classes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    failure_record = {
+        "truth_id": "CASE-FAILURE-SECRET",
+        "failure_code": "author_contract_failure",
+        "error_sha256": "7" * 64,
+        "initial_exit_code": None,
+        "initial_stdout_sha256": None,
+        "initial_stdout_retained": False,
+        "initial_stderr_sha256": None,
+        "retry_exit_code": None,
+        "retry_stdout_sha256": None,
+        "retry_stdout_retained": False,
+        "retry_stderr_sha256": None,
+        "answer_material_present": False,
+    }
+    manifest = {
+        "schema_version": AUTHOR_CHECKPOINT_SCHEMA_VERSION,
+        "author_model": AUTHOR_MODEL,
+        "packet_source_sha": "a" * 40,
+        "retained_source_sha": "a" * 40,
+        "workflow_run_id": "33138014332",
+        "normalized_decisions_sha256": "b" * 64,
+        "expected_record_count": 136,
+        "verified_record_count": 1,
+        "verified_records": [{"truth_id": "CASE-VERIFIED-SECRET"}],
+        "invalid_records": [],
+        "incomplete_records": [],
+        "failure_records": [failure_record],
+        "checkpoint_contains_author_material": True,
+        "diagnostic_answer_material_present": False,
+        "requires_resume_revalidation": True,
+    }
+    manifest["content_sha256"] = sha256_value(manifest)
+    _dump(checkpoint / "checkpoint-manifest.json", manifest)
+    output = tmp_path / "diagnostic.json"
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+
+    assert (
+        diagnose_author_checkpoint(
+            SimpleNamespace(
+                checkpoint_dir=checkpoint,
+                expected_source_sha="a" * 40,
+                expected_workflow_run_id="33138014332",
+                output=output,
+            )
+        )
+        == 0
+    )
+
+    diagnostic = json.loads(output.read_text(encoding="utf-8"))
+    assert diagnostic["schema_version"] == AUTHOR_DIAGNOSTIC_SCHEMA_VERSION
+    assert diagnostic["failure_classes"] == [
+        {"failure_code": "author_contract_failure", "count": 1}
+    ]
+    assert diagnostic["verified_record_count"] == 1
+    assert diagnostic["failure_record_count"] == 1
+    assert diagnostic["diagnostic_answer_material_present"] is False
+    serialized = json.dumps(diagnostic)
+    assert "CASE-FAILURE-SECRET" not in serialized
+    assert "CASE-VERIFIED-SECRET" not in serialized
+    assert "7" * 64 not in serialized
+
+
+def test_safe_pair_checkpoint_diagnostic_cannot_write_into_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+
+    with pytest.raises(ValueError, match="cannot modify the checkpoint"):
+        diagnose_author_checkpoint(
+            SimpleNamespace(
+                checkpoint_dir=checkpoint,
+                expected_source_sha="a" * 40,
+                expected_workflow_run_id="33138014332",
+                output=checkpoint / "diagnostic.json",
+            )
+        )
 
 
 def test_safe_pair_codex_schema_preserves_strict_local_contract() -> None:

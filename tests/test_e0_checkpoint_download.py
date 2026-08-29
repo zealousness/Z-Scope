@@ -67,6 +67,38 @@ def test_checkpoint_artifact_metadata_binds_exact_immutable_identity() -> None:
             _validate(metadata)
 
 
+def test_checkpoint_download_binds_caller_expected_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("Z_SCOPE_E0_REVIEW_ENVIRONMENT", "sealed-benchmark")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setattr(
+        checkpoint_download,
+        "_fetch_metadata",
+        lambda *_args, **_kwargs: _metadata(),
+    )
+
+    with pytest.raises(ValueError, match="digest binding mismatch"):
+        checkpoint_download.main(
+            [
+                "--repository",
+                REPOSITORY,
+                "--artifact-id",
+                str(ARTIFACT_ID),
+                "--expected-run-id",
+                RUN_ID,
+                "--expected-source-sha",
+                SOURCE_SHA,
+                "--expected-name",
+                NAME,
+                "--expected-digest",
+                f"sha256:{'b' * 64}",
+                "--output-dir",
+                str(tmp_path / "output"),
+            ]
+        )
+
+
 def test_checkpoint_archive_extracts_only_safe_bound_tree(tmp_path: Path) -> None:
     archive = tmp_path / "checkpoint.zip"
     output = tmp_path / "output"
