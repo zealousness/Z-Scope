@@ -59,10 +59,10 @@ jobs:
             --packet-source-sha "$GITHUB_SHA" \
             --retained-source-sha '${{ inputs.retained_source_sha }}' \
             --workflow-run-id "$GITHUB_RUN_ID" \
-            --workers 4
+            --workers 8
       - uses: actions/upload-artifact@v7
         with:
-          name: range-v16-primary-checkpoint-${{ inputs.reviewer }}-${{ github.sha }}
+          name: range-v16-primary-checkpoint-${{ inputs.reviewer }}-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/e0-recovered-${{ inputs.reviewer }}
           if-no-files-found: error
           retention-days: 7
