@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/p6-repair-receipt-v1.json",
+  "title": "Z-SCOPE P6 answer-free repair receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "failed_attempt_id",
+    "control_plane_commit",
+    "failure_diagnostic_sha256",
+    "checkpoint_sha256",
+    "frozen_failure_artifact_sha256",
+    "answer_free_reproduction_sha256",
+    "repair_pr_number",
+    "repair_merge_sha",
+    "invalidated_from_stage",
+    "invalidated_stages",
+    "new_attempt_id",
+    "selected_producer_attempt_id",
+    "selected_producer_schema_version",
+    "selected_producer_artifact_sha256",
+    "formal_evidence",
+    "release_eligible"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "zscope.p6-repair-receipt.v1"
+    },
+    "failed_attempt_id": {
+      "$ref": "#/$defs/attempt_id"
+    },
+    "control_plane_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "failure_diagnostic_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "checkpoint_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "frozen_failure_artifact_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "answer_free_reproduction_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "repair_pr_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "repair_merge_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "invalidated_from_stage": {
+      "$ref": "#/$defs/execution_stage"
+    },
+    "invalidated_stages": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/execution_stage"
+      }
+    },
+    "new_attempt_id": {
+      "$ref": "#/$defs/attempt_id"
+    },
+    "selected_producer_attempt_id": {
+      "$ref": "#/$defs/attempt_id"
+    },
+    "selected_producer_schema_version": {
+      "type": "string",
+      "const": "zscope.p6-stage-artifact.v1"
+    },
+    "selected_producer_artifact_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "formal_evidence": {
+      "type": "boolean",
+      "const": false
+    },
+    "release_eligible": {
+      "type": "boolean",
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^p6-[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "execution_stage": {
+      "type": "string",
+      "enum": [
+        "entry",
+        "provider_probe",
+        "toolchain_oci_preflight",
+        "policy_replay",
+        "certificate_reverify",
+        "anonymous_qualification",
+        "safe_pair_validation",
+        "evidence_action_canary",
+        "cold_fast",
+        "cold_balanced",
+        "cold_deep",
+        "conservation",
+        "qualification_seal",
+        "product_architecture_review",
+        "proof_security_review",
+        "independent_benchmark_review",
+        "final_evidence_seal",
+        "evidence_pr"
+      ]
+    }
+  }
+}

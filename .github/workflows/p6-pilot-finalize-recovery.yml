@@ -1,0 +1,188 @@
+name: P6 Zero-Call Finalize Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Exact successful complete-checkpoint producer run ID
+        required: true
+      source_run_attempt:
+        description: Exact successful complete-checkpoint producer attempt
+        required: true
+      source_control_plane_commit:
+        description: Immutable control-plane commit bound by the source checkpoint
+        required: true
+      recovery_control_plane_commit:
+        description: Current protected-main control plane executing zero-call recovery
+        required: true
+      candidate_sha:
+        description: Exact candidate commit bound by the source checkpoint
+        required: true
+      checkpoint_artifact_id:
+        description: Exact complete-checkpoint artifact ID
+        required: true
+      checkpoint_artifact_digest:
+        description: Exact external 64-hex artifact SHA-256
+        required: true
+
+concurrency:
+  group: p6-pilot-validation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: control
+
+env:
+  P6_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+  P6_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+  P6_SOURCE_CONTROL_PLANE_COMMIT: ${{ inputs.source_control_plane_commit }}
+  P6_RECOVERY_CONTROL_PLANE_COMMIT: ${{ inputs.recovery_control_plane_commit }}
+  P6_CANDIDATE_COMMIT: ${{ inputs.candidate_sha }}
+  P6_CHECKPOINT_ARTIFACT_ID: ${{ inputs.checkpoint_artifact_id }}
+  P6_CHECKPOINT_ARTIFACT_DIGEST: ${{ inputs.checkpoint_artifact_digest }}
+  PYTHONPATH: ${{ github.workspace }}/control
+
+jobs:
+  finalize:
+    name: zero-call finalize exact prior checkpoint
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    steps:
+      - name: Validate immutable recovery identities before checkout
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          [[ "$P6_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$P6_SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$P6_SOURCE_CONTROL_PLANE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$P6_RECOVERY_CONTROL_PLANE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$P6_CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$P6_CHECKPOINT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$P6_CHECKPOINT_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$P6_RECOVERY_CONTROL_PLANE_COMMIT"
+      - name: Checkout immutable control plane only
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_RECOVERY_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact complete checkpoint from the protected source attempt
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          unset Z_SCOPE_API_KEY Z_SCOPE_P6_API_KEY_FILE ANTHROPIC_API_KEY DEEPSEEK_API_KEY OPENAI_API_KEY
+          unset ANTHROPIC_BASE_URL DEEPSEEK_BASE_URL OPENAI_BASE_URL Z_SCOPE_LLM_BASE_URL Z_SCOPE_LLM_MODEL
+          test "$(git rev-parse HEAD)" = "$P6_RECOVERY_CONTROL_PLANE_COMMIT"
+          git cat-file -e "${P6_SOURCE_CONTROL_PLANE_COMMIT}^{commit}"
+          git merge-base --is-ancestor "$P6_SOURCE_CONTROL_PLANE_COMMIT" "$P6_RECOVERY_CONTROL_PLANE_COMMIT"
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$P6_SOURCE_RUN_ID" \
+            --run-attempt "$P6_SOURCE_RUN_ATTEMPT" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --current-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --allow-prior-complete-checkpoint \
+            --control-plane-commit "$P6_SOURCE_CONTROL_PLANE_COMMIT" \
+            --current-control-plane-commit "$P6_RECOVERY_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'seal complete reviewed P6 checkpoint' \
+            --artifact-id "$P6_CHECKPOINT_ARTIFACT_ID" \
+            --artifact-name "p6-complete-checkpoint-${P6_SOURCE_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${P6_SOURCE_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$P6_CHECKPOINT_ARTIFACT_DIGEST" \
+            --required-member checkpoint.json \
+            --required-member stage-artifacts/final_evidence_seal.json \
+            --required-member payload/entry-evidence.json \
+            --required-member payload/provider-probe.json \
+            --required-member payload/toolchain-evidence.json \
+            --required-member payload/qualification.json \
+            --required-member payload/p6-independent-reviews.json \
+            --required-member payload/final-evidence-manifest.json \
+            --required-member payload/reviews/product-architecture/decision.json \
+            --required-member payload/reviews/proof-security/decision.json \
+            --required-member payload/reviews/independent-benchmark/decision.json \
+            --output-dir restored/checkpoint
+      - name: Strict byte-exact finalization with source-attempt lineage
+        run: |
+          set -euo pipefail
+          unset Z_SCOPE_API_KEY Z_SCOPE_P6_API_KEY_FILE ANTHROPIC_API_KEY DEEPSEEK_API_KEY OPENAI_API_KEY
+          unset ANTHROPIC_BASE_URL DEEPSEEK_BASE_URL OPENAI_BASE_URL Z_SCOPE_LLM_BASE_URL Z_SCOPE_LLM_MODEL
+          mapfile -t evidence_lineage < <(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          checkpoint = load_json_strict(Path("restored/checkpoint/checkpoint.json"))
+          entry = load_json_strict(Path("restored/checkpoint/payload/entry-evidence.json"))
+          probe = load_json_strict(Path("restored/checkpoint/payload/provider-probe.json"))
+          toolchain = load_json_strict(Path("restored/checkpoint/payload/toolchain-evidence.json"))
+          print(checkpoint["attempt_id"])
+          print(checkpoint["candidate_sha256"])
+          print(checkpoint["policy_sha256"])
+          print(checkpoint["plan_sha256"])
+          print(entry["evidence_sha256"])
+          print(toolchain["runtime_source_sha256"])
+          print(probe["provider_identity_sha256"])
+          print(toolchain["oci_execution_sha256"])
+          print(checkpoint["cold_cache_identities"]["fast"]["identity_sha256"])
+          print(checkpoint["cold_cache_identities"]["balanced"]["identity_sha256"])
+          print(checkpoint["cold_cache_identities"]["deep"]["identity_sha256"])
+          PY
+          )
+          test "${#evidence_lineage[@]}" = 11
+          attempt_id="${evidence_lineage[0]}"
+          candidate_sha="${evidence_lineage[1]}"
+          policy_sha="${evidence_lineage[2]}"
+          plan_sha="${evidence_lineage[3]}"
+          input_sha="${evidence_lineage[4]}"
+          runtime_sha="${evidence_lineage[5]}"
+          provider_sha="${evidence_lineage[6]}"
+          oci_sha="${evidence_lineage[7]}"
+          fast_cache="${evidence_lineage[8]}"
+          balanced_cache="${evidence_lineage[9]}"
+          deep_cache="${evidence_lineage[10]}"
+          test "$candidate_sha" = "$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          python3 scripts/p6_pilot_protocol.py finalize-checkpoint \
+            --checkpoint restored/checkpoint/checkpoint.json \
+            --artifact-root restored/checkpoint/stage-artifacts \
+            --run-dir restored/checkpoint \
+            --payload restored/checkpoint/payload/final-evidence-manifest.json \
+            --workflow-run-id "$P6_SOURCE_RUN_ID" \
+            --workflow-run-attempt "$P6_SOURCE_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_SOURCE_CONTROL_PLANE_COMMIT" \
+            --attempt-id "$attempt_id" \
+            --candidate-sha256 "$candidate_sha" --policy-sha256 "$policy_sha" \
+            --plan-sha256 "$plan_sha" --input-sha256 "$input_sha" \
+            --runtime-sha256 "$runtime_sha" --provider-sha256 "$provider_sha" \
+            --oci-sha256 "$oci_sha" --fast-cache-sha256 "$fast_cache" \
+            --balanced-cache-sha256 "$balanced_cache" --deep-cache-sha256 "$deep_cache" \
+            --output final-evidence-manifest.json >/dev/null 2>&1
+          mkdir -p non-release-evidence
+          cp final-evidence-manifest.json non-release-evidence/final-evidence-manifest.json
+          cp -R restored/checkpoint non-release-evidence/complete-checkpoint
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: non-release-evidence
+          stage: artifact_seal
+          require-key: "false"
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: non_release_artifact
+        with:
+          name: p6-non-release-evidence-source-${{ env.P6_SOURCE_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ env.P6_SOURCE_RUN_ID }}-${{ env.P6_SOURCE_RUN_ATTEMPT }}-recovery-${{ env.P6_RECOVERY_CONTROL_PLANE_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: control/non-release-evidence
+      - name: Report fixed non-release recovery outcome
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.non_release_artifact.outputs.artifact-id }}'
+          test -n '${{ steps.non_release_artifact.outputs.artifact-digest }}'
+          echo 'P6 zero-call recovery complete: formal_benchmark=false; release_eligible=false'

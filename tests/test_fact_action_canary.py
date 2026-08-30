@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts.prepare_v3_action_canary import _inside, _select_currently_eligible
+from scripts.prepare_v3_action_canary import (
+    _inside,
+    _sealed_source_tree_sha256,
+    _select_currently_eligible,
+)
 from scripts.prepare_v3_action_canary import _sha as canary_sha
 from scripts.run_v3_action_canary import _verify_preflight
 from zscope.orchestration.decision_trace import DecisionTraceError
@@ -62,6 +66,27 @@ def test_canary_source_lookup_is_answer_free_and_confined(tmp_path: Path) -> Non
     (forbidden / "answer.c").write_text("int answer;\n", encoding="utf-8")
     with pytest.raises(DecisionTraceError, match="answer-bearing source path"):
         _inside(source_root, "ground_truth/answer.c")
+
+
+def test_canary_sealed_source_tree_binds_all_bytes_and_rejects_links(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "sealed-source"
+    source_root.mkdir()
+    source = source_root / "source.c"
+    source.write_text("int value = 1;\n", encoding="utf-8")
+    first = _sealed_source_tree_sha256(source_root)
+
+    source.write_text("int value = 2;\n", encoding="utf-8")
+    assert _sealed_source_tree_sha256(source_root) != first
+
+    link = source_root / "linked.c"
+    try:
+        link.symlink_to(source)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable")
+    with pytest.raises(DecisionTraceError, match="contains a symlink"):
+        _sealed_source_tree_sha256(source_root)
 
 
 def test_model_canary_requires_externally_bound_zero_model_preflight(

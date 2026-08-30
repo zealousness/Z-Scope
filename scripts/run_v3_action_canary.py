@@ -31,6 +31,7 @@ from scripts.prepare_v3_action_canary import (
     _location,
     _model_input,
     _select_currently_eligible,
+    _sealed_source_tree_sha256,
     _sha,
     _v3_records,
 )
@@ -245,6 +246,10 @@ def run_canary(
         source_file = _inside(source_root, str(relative))
         if hashlib.sha256(source_file.read_bytes()).hexdigest() != str(expected):
             raise DecisionTraceError(f"source file changed after preflight: {relative}")
+    if _sealed_source_tree_sha256(source_root) != str(
+        preflight.get("sealed_source_tree_sha256") or ""
+    ):
+        raise DecisionTraceError("source tree changed after the sealed preflight")
 
     client, usage_ledger, profile = _client(config)
     results: list[Dict[str, Any]] = []
@@ -393,7 +398,15 @@ def run_canary(
         client.close()
 
     provider_usage = client.usage_snapshot()
-    usage_snapshot = usage_ledger.snapshot(include_events=False)
+    usage_snapshot_with_events = usage_ledger.snapshot(include_events=True)
+    usage_events = usage_snapshot_with_events.pop("events", [])
+    usage_snapshot = usage_snapshot_with_events
+    usage_attribution = usage_snapshot.get("usage_attribution")
+    usage_totals = (
+        usage_attribution.get("totals") if isinstance(usage_attribution, Mapping) else None
+    )
+    if not isinstance(usage_totals, Mapping) or not isinstance(usage_events, list):
+        raise DecisionTraceError("V3 action canary usage ledger is incomplete")
     current_tokens = sum(int(value["total_tokens"]) for value in results)
     comparable_rows = [value for value in results if int(value["historical_v3_tokens"]) > 0]
     historical_tokens = sum(int(value["historical_v3_tokens"]) for value in comparable_rows)
@@ -402,11 +415,100 @@ def run_canary(
     comparable_reduction = (
         1.0 - (comparable_current_tokens / historical_tokens) if historical_tokens else None
     )
+    successful_events = [
+        event
+        for event in usage_events
+        if isinstance(event, Mapping) and event.get("outcome") == "success"
+    ]
+    requested_model_count = sum(
+        event.get("requested_model") == "GLM-5.2" for event in successful_events
+    )
+    response_model_count = sum(
+        event.get("provider_response_model") == "GLM-5.2" for event in successful_events
+    )
+    physical_calls = int(usage_totals.get("request_count") or 0)
+    provider_reported_calls = int(usage_totals.get("provider_reported_calls") or 0)
+    estimated_calls = int(usage_totals.get("estimated_or_conservative_calls") or 0)
+    selected_count = len(results)
+    cluster_token_count = sum(int(value["total_tokens"]) for value in results)
+    ledger_token_count = int(usage_totals.get("total_tokens") or 0)
+    provider_token_count = int(provider_usage.get("total_tokens") or 0)
+    cluster_tool_count = sum(int(value["tool_call_count"]) for value in results)
+    ledger_tool_count = int(usage_totals.get("tool_call_count") or 0)
+    unique_traces = len({str(value["validation_cluster_uid"]) for value in results})
+    unique_findings = len({str(value["candidate_uid"]) for value in results})
+    terminal_count = sum(
+        value.get("model_success") is True and bool(str(value.get("stop_reason") or ""))
+        for value in results
+    )
+    dimensions = {
+        "token": {
+            "numerator": provider_token_count,
+            "denominator": ledger_token_count,
+            "conserved": provider_token_count == ledger_token_count == cluster_token_count,
+        },
+        "tool": {
+            "numerator": cluster_tool_count,
+            "denominator": ledger_tool_count,
+            "conserved": cluster_tool_count == ledger_tool_count,
+        },
+        "trace": {
+            "numerator": unique_traces,
+            "denominator": selected_count,
+            "conserved": unique_traces == selected_count,
+        },
+        "finding": {
+            "numerator": unique_findings,
+            "denominator": selected_count,
+            "conserved": unique_findings == selected_count,
+        },
+        "terminal": {
+            "numerator": terminal_count,
+            "denominator": selected_count,
+            "conserved": terminal_count == selected_count,
+        },
+    }
+    provider_coverage = provider_reported_calls / physical_calls if physical_calls else 0.0
+    requested_coverage = requested_model_count / physical_calls if physical_calls else 0.0
+    response_coverage = response_model_count / physical_calls if physical_calls else 0.0
+    usage_conservation = {
+        "physical_call_count": physical_calls,
+        "provider_reported_call_count": provider_reported_calls,
+        "estimated_call_count": estimated_calls,
+        "provider_usage_coverage": provider_coverage,
+        "requested_model": "GLM-5.2",
+        "requested_model_coverage": requested_coverage,
+        "response_model": "GLM-5.2",
+        "response_model_coverage": response_coverage,
+        "queue_empty": int(usage_snapshot.get("active_reservation_count") or 0) == 0,
+        "dimensions": dimensions,
+    }
+    model_identity_counts = {
+        "successful_call_count": len(successful_events),
+        "requested_glm_5_2_count": requested_model_count,
+        "response_glm_5_2_count": response_model_count,
+    }
+    usage_conservation_passed = bool(
+        physical_calls >= 1
+        and int(usage_totals.get("successful_calls") or 0) == physical_calls
+        and int(usage_totals.get("denied_requests") or 0) == 0
+        and int(usage_totals.get("failed_or_unknown_calls") or 0) == 0
+        and int(usage_totals.get("budget_violation_count") or 0) == 0
+        and int(provider_usage.get("successful_calls") or 0) == physical_calls
+        and int(provider_usage.get("provider_reported_calls") or 0) == physical_calls
+        and int(provider_usage.get("estimated_calls") or 0) == 0
+        and provider_coverage == 1.0
+        and requested_coverage == 1.0
+        and response_coverage == 1.0
+        and usage_conservation["queue_empty"] is True
+        and all(row["conserved"] is True for row in dimensions.values())
+    )
     passed = bool(
         len(results) >= 3
         and closing >= 3
         and protocol_error_count == 0
         and float(provider_usage.get("provider_usage_coverage") or 0.0) == 1.0
+        and usage_conservation_passed
         and comparable_reduction is not None
         and comparable_reduction >= 0.5
     )
@@ -428,6 +530,8 @@ def run_canary(
         "comparable_token_reduction": comparable_reduction,
         "provider_usage": provider_usage,
         "usage_ledger": usage_snapshot,
+        "usage_conservation": usage_conservation,
+        "model_identity_counts": model_identity_counts,
         "model_canary_passed": passed,
         "truth_inputs": 0,
         "clusters": results,

@@ -1,0 +1,95 @@
+name: Classify one P6 producer outcome
+description: Export one fixed typed failure class/count without reading logs or stderr.
+inputs:
+  status:
+    description: GitHub job status observed by an always step
+    required: true
+  execution-stage:
+    description: Exact P6 execution stage owned by the producer
+    required: true
+  default-class:
+    description: Fixed fallback class used when no trusted marker exists
+    required: true
+  marker:
+    description: Optional fixed JSON marker under RUNNER_TEMP
+    required: false
+    default: ""
+outputs:
+  failure-class:
+    value: ${{ steps.classify.outputs.failure_class }}
+  failure-count:
+    value: ${{ steps.classify.outputs.failure_count }}
+runs:
+  using: composite
+  steps:
+    - id: classify
+      shell: bash
+      working-directory: ${{ github.workspace }}/control
+      env:
+        P6_PRODUCER_STATUS: ${{ inputs.status }}
+        P6_PRODUCER_STAGE: ${{ inputs.execution-stage }}
+        P6_PRODUCER_DEFAULT_CLASS: ${{ inputs.default-class }}
+        P6_PRODUCER_MARKER: ${{ inputs.marker }}
+      run: |
+        set -euo pipefail
+        if ! python3 - <<'PY' >/dev/null 2>&1
+        import os
+        from pathlib import Path
+
+        from zscope.benchmarking.p6_protocol import load_json_strict, validate_stage_result
+
+        status = os.environ["P6_PRODUCER_STATUS"]
+        stage = os.environ["P6_PRODUCER_STAGE"]
+        failure_class = os.environ["P6_PRODUCER_DEFAULT_CLASS"]
+        failure_count = 1
+        marker_value = os.environ.get("P6_PRODUCER_MARKER", "").strip()
+        marker = Path(marker_value) if marker_value else None
+        if marker is not None:
+            runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve()
+            lexical = Path(os.path.abspath(marker))
+            try:
+                lexical.relative_to(runner_temp)
+            except ValueError:
+                raise SystemExit(2)
+            if lexical.exists():
+                if lexical.is_symlink() or not lexical.is_file() or lexical.stat().st_size > 1024:
+                    raise SystemExit(2)
+                value = load_json_strict(lexical)
+                if not isinstance(value, dict) or set(value) != {"failure_class", "failure_count"}:
+                    raise SystemExit(2)
+                failure_class = value["failure_class"]
+                failure_count = value["failure_count"]
+                lexical.unlink()
+        if status == "success":
+            if marker is not None and marker.exists():
+                raise SystemExit(2)
+            failure_class = ""
+            failure_count = 0
+        elif status == "cancelled":
+            failure_class = "internal_failure"
+            failure_count = 1
+        elif status != "failure":
+            raise SystemExit(2)
+        if failure_class:
+            validate_stage_result(
+                {
+                    "schema_version": "zscope.p6-stage-result.v1",
+                    "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+                    "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                    "attempt_id": os.environ["P6_ATTEMPT_ID"],
+                    "control_plane_commit": os.environ["P6_CONTROL_PLANE_COMMIT"],
+                    "stage": stage,
+                    "status": "failed",
+                    "failure_class": failure_class,
+                    "failure_count": failure_count,
+                    "binding_sha256": "0" * 64,
+                }
+            )
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+            handle.write(f"failure_class={failure_class}\n")
+            handle.write(f"failure_count={failure_count}\n")
+        PY
+        then
+          echo '::error::stage=artifact_seal; class=internal_failure:1; count=1'
+          exit 2
+        fi

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import platform
 import re
 import shutil
+import stat
 import statistics
 import itertools
 import subprocess
 import sys
 import tempfile
+import tarfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,11 +35,28 @@ from zscope.benchmarking.isolation import (
     RootlessOciExecutor,
     oci_capability,
     require_release_isolation,
+    sealed_runtime_source_sha256,
 )
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
+from zscope.benchmarking.p6_protocol import P6ProtocolError, validate_usage_conservation
+from zscope.benchmarking.provider_runtime import (
+    P6_API_KEY_ENVIRONMENT_KEY,
+    P6_PROVIDER_FAILURE_FILENAME,
+    PROVIDER_FAILURE_CLASSES,
+    PROVIDER_BASE_URL_ENVIRONMENT_KEY,
+    PROVIDER_MODEL_ENVIRONMENT_KEY,
+    ProviderRuntimeContract,
+    ProviderRuntimeError,
+    load_p6_provider_failure_marker,
+    load_explicit_api_key_file,
+    reject_conflicting_provider_identity_environment,
+    require_p6_provider_contract,
+    required_environment_keys,
+)
 from zscope.benchmarking.replay_bundle import write_validator_replay_bundle
 from zscope.config.config import ConfigLoader
 from zscope.framework.llm_usage import (
+    LEGACY_USAGE_EVENT_SCHEMA_VERSION,
     TOKEN_USAGE_STAGES,
     USAGE_ATTRIBUTION_SCHEMA_VERSION,
     USAGE_EVENT_SCHEMA_VERSION,
@@ -58,13 +78,76 @@ TRUTH_ENVIRONMENT_KEYS = {
     "Z_SCOPE_GROUND_TRUTH",
     "GROUND_TRUTH_PATH",
 }
+P6_CANDIDATE_COMMIT_ENVIRONMENT_KEY = "Z_SCOPE_P6_CANDIDATE_COMMIT"
 C_GATES = dict(DEFAULT_BENCHMARK_POLICY.range_gates)
 C_SEALED_GATES = dict(DEFAULT_BENCHMARK_POLICY.sealed_delta_gates)
 _OCI_EXECUTOR_FACTORY = RootlessOciExecutor
+_P6_RUNTIME_BOOTSTRAP = (
+    "import runpy,sys;"
+    "sys.path.insert(0,'/zscope-runtime');"
+    "module=sys.argv.pop(1);"
+    "runpy.run_module(module,run_name='__main__')"
+)
+
+
+def _container_scan_argv(container_python: str, *, mode: str) -> list[str]:
+    return [
+        container_python,
+        *(
+            ("-c", _P6_RUNTIME_BOOTSTRAP, "zscope.cli.cli")
+            if mode == "pilot"
+            else ("-m", "zscope.cli.cli")
+        ),
+        "-c",
+        "/zscope-input/zscope.execution.yaml",
+        "--verbose",
+        *(("--p6-pilot",) if mode == "pilot" else ()),
+    ]
 
 
 class BenchmarkError(RuntimeError):
     """Raised when a benchmark invariant is not satisfied."""
+
+    def __init__(self, message: str, *, failure_class: Optional[str] = None) -> None:
+        self.failure_class = failure_class
+        super().__init__(message)
+
+
+def _p6_failure(failure_class: str, *, message: Optional[str] = None) -> BenchmarkError:
+    """Construct an explicitly typed P6 boundary failure."""
+
+    return BenchmarkError(message or failure_class, failure_class=failure_class)
+
+
+def _provider_runtime_failure_class(
+    error: ProviderRuntimeError,
+    *,
+    default: str,
+) -> str:
+    """Read only the typed attribute; provider exception text is never parsed."""
+
+    failure_class = error.failure_class
+    if failure_class in PROVIDER_FAILURE_CLASSES | {"provider_identity_override_attempt"}:
+        return str(failure_class)
+    return default
+
+
+def _p6_scan_provider_failure_class(
+    marker_path: Path,
+    *,
+    return_code: int,
+) -> Optional[str]:
+    """Validate the fixed scanner side channel without reading process output."""
+
+    if not marker_path.exists() and not marker_path.is_symlink():
+        return None
+    try:
+        marker = load_p6_provider_failure_marker(marker_path)
+    except ProviderRuntimeError as exc:
+        raise _p6_failure("oci_isolation_violation") from exc
+    if return_code != 2:
+        raise _p6_failure("oci_isolation_violation")
+    return str(marker["failure_class"])
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -117,6 +200,172 @@ SPECS = {
 
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def prepare_p6_runtime_source(
+    destination: Path,
+    *,
+    source_root: Optional[Path] = None,
+    git_revision: Optional[str] = None,
+) -> str:
+    """Copy the complete candidate ``zscope`` package into a sealed tree.
+
+    The copied tree deliberately excludes only interpreter caches.  Prompts,
+    rule catalogs, schemas, policies, and every other runtime asset remain
+    included and are bound by one canonical all-file digest.
+    """
+
+    target = Path(destination).resolve()
+    if target.exists():
+        raise _p6_failure(
+            "input_binding_failure",
+            message="p6_runtime_source_invalid",
+        )
+    target.mkdir(parents=True, mode=0o700)
+    if source_root is None:
+        try:
+            revision = str(
+                git_revision
+                or subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(repository_root()),
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+            )
+            if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+                raise _p6_failure(
+                    "input_binding_failure",
+                    message="p6_runtime_source_invalid",
+                )
+            object_type = subprocess.check_output(
+                ["git", "cat-file", "-t", revision],
+                cwd=str(repository_root()),
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            resolved_commit = subprocess.check_output(
+                ["git", "rev-parse", "--verify", f"{revision}^{{commit}}"],
+                cwd=str(repository_root()),
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            if object_type != "commit" or resolved_commit != revision:
+                raise _p6_failure(
+                    "input_binding_failure",
+                    message="p6_runtime_source_invalid",
+                )
+            archived = subprocess.run(
+                ["git", "archive", "--format=tar", revision, "--", "zscope"],
+                cwd=str(repository_root()),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if archived.returncode != 0 or len(archived.stdout) > 128 * 1024 * 1024:
+                raise _p6_failure(
+                    "input_binding_failure",
+                    message="p6_runtime_source_invalid",
+                )
+            total_size = 0
+            with tarfile.open(fileobj=io.BytesIO(archived.stdout), mode="r:") as archive:
+                for member in archive.getmembers():
+                    parts = Path(member.name).parts
+                    if (
+                        not parts
+                        or parts[0] != "zscope"
+                        or any(part in {"", ".", ".."} for part in parts)
+                        or member.issym()
+                        or member.islnk()
+                    ):
+                        raise _p6_failure(
+                            "input_binding_failure",
+                            message="p6_runtime_source_invalid",
+                        )
+                    relative = Path(*parts[1:])
+                    if member.isdir():
+                        if relative.parts:
+                            (target / relative).mkdir(parents=True, exist_ok=True)
+                        continue
+                    if not member.isreg() or not relative.parts:
+                        raise _p6_failure(
+                            "input_binding_failure",
+                            message="p6_runtime_source_invalid",
+                        )
+                    source_handle = archive.extractfile(member)
+                    if source_handle is None:
+                        raise _p6_failure(
+                            "input_binding_failure",
+                            message="p6_runtime_source_invalid",
+                        )
+                    payload = source_handle.read(64 * 1024 * 1024 + 1)
+                    total_size += len(payload)
+                    if len(payload) != member.size or total_size > 64 * 1024 * 1024:
+                        raise _p6_failure(
+                            "input_binding_failure",
+                            message="p6_runtime_source_invalid",
+                        )
+                    copied = target / relative
+                    copied.parent.mkdir(parents=True, exist_ok=True)
+                    copied.write_bytes(payload)
+        except (OSError, subprocess.SubprocessError, tarfile.TarError) as exc:
+            raise _p6_failure(
+                "input_binding_failure",
+                message="p6_runtime_source_invalid",
+            ) from exc
+    else:
+        source = Path(source_root).resolve()
+        if not source.is_dir() or not (source / "__init__.py").is_file():
+            raise _p6_failure(
+                "input_binding_failure",
+                message="p6_runtime_source_invalid",
+            )
+        try:
+            for path in sorted(
+                source.rglob("*"), key=lambda item: item.relative_to(source).as_posix()
+            ):
+                relative = path.relative_to(source)
+                metadata = path.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise _p6_failure(
+                        "input_binding_failure",
+                        message="p6_runtime_source_invalid",
+                    )
+                if stat.S_ISDIR(metadata.st_mode):
+                    if "__pycache__" not in relative.parts:
+                        (target / relative).mkdir(parents=True, exist_ok=True)
+                    continue
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise _p6_failure(
+                        "input_binding_failure",
+                        message="p6_runtime_source_invalid",
+                    )
+                if "__pycache__" in relative.parts or path.suffix.lower() in {".pyc", ".pyo"}:
+                    continue
+                copied = target / relative
+                copied.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, copied)
+        except OSError as exc:
+            raise _p6_failure(
+                "input_binding_failure",
+                message="p6_runtime_source_invalid",
+            ) from exc
+    try:
+        return sealed_runtime_source_sha256(target)
+    except (OSError, BenchmarkIsolationError) as exc:
+        raise _p6_failure(
+            "input_binding_failure",
+            message="p6_runtime_source_invalid",
+        ) from exc
+
+
+def _p6_provider_contract_for_execution(
+    execution_config: Path, *, source_config: Path
+) -> ProviderRuntimeContract:
+    """Validate an execution config while retaining the frozen provider identity."""
+
+    require_p6_provider_contract(execution_config)
+    return require_p6_provider_contract(source_config)
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -191,7 +440,10 @@ def _sanitized_java_entries(source: Path) -> Dict[str, Any]:
 
 def scan_input_manifest(root: Path) -> Dict[str, Any]:
     files = []
-    for path in sorted((item for item in root.rglob("*") if item.is_file()), key=str):
+    entries = sorted(root.rglob("*"), key=str)
+    if any(path.is_symlink() for path in entries):
+        raise BenchmarkError("scan input contains a symbolic link")
+    for path in (item for item in entries if item.is_file()):
         relative = path.relative_to(root).as_posix()
         files.append(
             {
@@ -217,6 +469,12 @@ def copy_scan_input(source: Path, destination: Path, language: str) -> Dict[str,
         raise BenchmarkError(f"scan input already exists: {destination}")
     destination.mkdir(parents=True)
     for path in _fixture_source_files(source, language):
+        if path.is_symlink():
+            raise BenchmarkError("fixture scan input contains a symbolic link")
+        try:
+            path.resolve().relative_to(source)
+        except ValueError as exc:
+            raise BenchmarkError("fixture scan input escapes its root") from exc
         relative = path.relative_to(source)
         if not _allowed_fixture_file(language, relative):
             continue
@@ -378,19 +636,35 @@ def _write_container_execution_config(source: Path, destination: Path) -> None:
     )
 
 
-def _validate_config(path: Path, *, smoke: bool) -> Any:
-    keys = {
-        "Z_SCOPE_LLM_BASE_URL": os.environ.get(
-            "Z_SCOPE_LLM_BASE_URL", "https://benchmark.invalid/v1"
-        ),
-        "Z_SCOPE_LLM_MODEL": os.environ.get("Z_SCOPE_LLM_MODEL", "benchmark-smoke"),
-        "Z_SCOPE_API_KEY": os.environ.get("Z_SCOPE_API_KEY", "benchmark-smoke-no-network"),
-    }
-    old = {key: os.environ.get(key) for key in keys}
+def _validation_environment_value(key: str, environment: Mapping[str, str]) -> str:
+    if key == P6_API_KEY_ENVIRONMENT_KEY or key.endswith("API_KEY"):
+        return "benchmark-validation-no-network"
+    if key == PROVIDER_BASE_URL_ENVIRONMENT_KEY:
+        return str(environment.get(key) or "https://benchmark.invalid/v1")
+    if key == PROVIDER_MODEL_ENVIRONMENT_KEY:
+        return str(environment.get(key) or "benchmark-smoke")
+    return str(environment.get(key) or "benchmark-validation")
+
+
+def _validate_config(
+    path: Path,
+    *,
+    smoke: bool,
+    environment: Optional[Mapping[str, str]] = None,
+) -> Any:
+    source_environment = environment if environment is not None else os.environ
+    referenced = required_environment_keys(path)
+    missing = [key for key in referenced if not str(source_environment.get(key) or "").strip()]
+    if missing and not smoke:
+        raise BenchmarkError(
+            "missing required benchmark environment: " + ", ".join(missing),
+            failure_class="provider_credentials_unavailable",
+        )
+    keys = {key: _validation_environment_value(key, source_environment) for key in referenced}
+    old = {key: os.environ.get(key) for key in referenced}
     try:
         for key, value in keys.items():
-            if smoke or not os.environ.get(key):
-                os.environ[key] = value
+            os.environ[key] = value
         return ConfigLoader.load(str(path))
     finally:
         for key, old_value in old.items():
@@ -437,14 +711,17 @@ def _tool_health(spec: BenchmarkSpec) -> Dict[str, Any]:
     return {"checks": checks, "ok": all(item["ok"] for item in checks)}
 
 
-def _require_llm_environment() -> None:
-    missing = [
-        key
-        for key in ("Z_SCOPE_LLM_BASE_URL", "Z_SCOPE_LLM_MODEL", "Z_SCOPE_API_KEY")
-        if not os.environ.get(key, "").strip()
-    ]
+def _require_llm_environment(
+    required_keys: Sequence[str],
+    environment: Optional[Mapping[str, str]] = None,
+) -> None:
+    source = environment if environment is not None else os.environ
+    missing = [key for key in required_keys if not str(source.get(key) or "").strip()]
     if missing:
-        raise BenchmarkError("missing required benchmark environment: " + ", ".join(missing))
+        raise BenchmarkError(
+            "missing required benchmark environment: " + ", ".join(missing),
+            failure_class="provider_credentials_unavailable",
+        )
 
 
 def _build_fixture(spec: BenchmarkSpec, scan_root: Path, run_dir: Path) -> float:
@@ -913,7 +1190,7 @@ _USAGE_EVENT_FORBIDDEN_KEYS = frozenset(
         "user_prompt",
     }
 )
-_USAGE_EVENT_FIELDS = frozenset(
+_USAGE_EVENT_FIELDS_V1 = frozenset(
     {
         "schema_version",
         "sequence",
@@ -948,6 +1225,9 @@ _USAGE_EVENT_FIELDS = frozenset(
         "duration_ms",
     }
 )
+_USAGE_EVENT_FIELDS_V2 = _USAGE_EVENT_FIELDS_V1.union(
+    {"requested_model", "provider_response_model"}
+)
 _USAGE_ATTRIBUTION_FIELDS = frozenset(
     {
         "schema_version",
@@ -977,6 +1257,8 @@ _USAGE_EVENT_STRING_FIELDS = frozenset(
         "outcome",
         "budget_stage",
         "model",
+        "requested_model",
+        "provider_response_model",
         "reason",
         "finish_reason",
     }
@@ -1068,11 +1350,22 @@ def _validate_usage_event_v1(raw: Mapping[str, Any], *, line_number: int) -> int
             "LLM usage events must not retain prompts, responses, or reasoning: "
             + ", ".join(sorted(forbidden))
         )
-    _require_exact_usage_fields(raw, expected=_USAGE_EVENT_FIELDS, context=context)
-    if raw["schema_version"] != USAGE_EVENT_SCHEMA_VERSION:
+    schema_version = raw.get("schema_version")
+    expected_fields = (
+        _USAGE_EVENT_FIELDS_V1
+        if schema_version == LEGACY_USAGE_EVENT_SCHEMA_VERSION
+        else _USAGE_EVENT_FIELDS_V2
+    )
+    _require_exact_usage_fields(raw, expected=expected_fields, context=context)
+    if schema_version not in {
+        LEGACY_USAGE_EVENT_SCHEMA_VERSION,
+        USAGE_EVENT_SCHEMA_VERSION,
+    }:
         raise BenchmarkError(f"{context} has unsupported schema_version {raw['schema_version']!r}")
 
     for field in _USAGE_EVENT_STRING_FIELDS:
+        if field not in raw:
+            continue
         if not isinstance(raw[field], str):
             raise BenchmarkError(f"{context} field {field} must be a string")
     for field in _USAGE_EVENT_BOOLEAN_FIELDS:
@@ -1090,6 +1383,8 @@ def _validate_usage_event_v1(raw: Mapping[str, Any], *, line_number: int) -> int
         raise BenchmarkError(f"{context} has no call_id")
     if not raw["outcome"]:
         raise BenchmarkError(f"{context} has no outcome")
+    if schema_version == USAGE_EVENT_SCHEMA_VERSION and raw["model"] != raw["requested_model"]:
+        raise BenchmarkError(f"{context} model does not match requested_model")
 
     attribution = raw["attribution"]
     if not isinstance(attribution, dict):
@@ -1173,6 +1468,138 @@ def _read_usage_events_jsonl(path: Path) -> List[Dict[str, Any]]:
 def _read_archived_usage_events(run_dir: Path) -> Optional[List[Dict[str, Any]]]:
     path = run_dir / _USAGE_EVENTS_ARCHIVE_NAME
     return _read_usage_events_jsonl(path) if path.is_file() else None
+
+
+def _provider_model_identity_metrics(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    expected_model: str,
+) -> Dict[str, Any]:
+    """Aggregate response identity without substituting the requested model."""
+
+    successful = [row for row in rows if row.get("outcome") == "success"]
+    requested_mismatch = 0
+    missing = 0
+    mismatch = 0
+    present = 0
+    for row in successful:
+        requested = str(row.get("requested_model") or row.get("model") or "").strip()
+        response_model = str(row.get("provider_response_model") or "").strip()
+        if requested != expected_model:
+            requested_mismatch += 1
+        if not response_model:
+            missing += 1
+            continue
+        present += 1
+        if response_model != expected_model:
+            mismatch += 1
+    count = len(successful)
+    return {
+        "provider_response_model_coverage": round(present / count if count else 0.0, 6),
+        "provider_response_model_missing_count": missing,
+        "provider_response_model_mismatch_count": mismatch,
+        "requested_model_mismatch_count": requested_mismatch,
+        "provider_response_model_successful_call_count": count,
+    }
+
+
+def _p6_usage_conservation(
+    *,
+    report: Mapping[str, Any],
+    score: Mapping[str, Any],
+    usage_rows: Sequence[Mapping[str, Any]],
+    model_identity: Mapping[str, Any],
+    decision_trace_artifact: Optional[Mapping[str, Any]],
+    expected_model: str,
+) -> Dict[str, Any]:
+    """Build the answer-free P6 physical conservation projection.
+
+    Every numerator and denominator is obtained independently: persisted
+    response events versus the ledger, archived traces versus report clusters,
+    terminal records versus report clusters, and projected finding roots versus
+    the manifest declaration.  No Truth or expected result participates.
+    """
+
+    usage = _as_dict(score.get("usage_accounting"))
+    totals = _as_dict(usage.get("totals"))
+    physical_calls = int(usage.get("call_count") or 0)
+    provider_calls = int(usage.get("provider_reported_call_count") or 0)
+    explicit_estimated = int(totals.get("estimated_or_conservative_calls") or 0)
+    estimated_calls = max(explicit_estimated, physical_calls - provider_calls)
+    successful_calls = int(model_identity.get("provider_response_model_successful_call_count") or 0)
+    requested_mismatches = int(model_identity.get("requested_model_mismatch_count") or 0)
+
+    report_clusters: set[str] = set()
+    finding_roots: set[str] = set()
+    for collection_name in ("issues", "issues_with_needs_review", "candidate_terminal_states"):
+        collection = report.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        for raw in collection:
+            if not isinstance(raw, Mapping):
+                continue
+            cluster_uid = str(raw.get("validation_cluster_uid") or "")
+            if cluster_uid:
+                report_clusters.add(cluster_uid)
+            if collection_name != "candidate_terminal_states":
+                root_uid = str(raw.get("finding_root_uid") or "")
+                if root_uid:
+                    finding_roots.add(root_uid)
+
+    terminal_clusters = {
+        str(raw.get("validation_cluster_uid") or "")
+        for raw in report.get("candidate_terminal_states") or []
+        if isinstance(raw, Mapping)
+        and str(raw.get("validation_cluster_uid") or "")
+        and str(raw.get("terminal_event_uid") or "")
+        and str(raw.get("terminal_authority") or "")
+    }
+    manifest = _as_dict(report.get("run_manifest"))
+    trace_count = int(_as_dict(decision_trace_artifact).get("trace_count") or 0)
+    manifest_root_count = int(manifest.get("finding_root_count") or 0)
+    row_tokens = sum(int(row.get("total_tokens") or 0) for row in usage_rows)
+    row_tools = sum(int(row.get("tool_call_count") or 0) for row in usage_rows)
+
+    def dimension(numerator: int, denominator: int, *, complete: bool = True) -> Dict[str, Any]:
+        return {
+            "numerator": numerator,
+            "denominator": denominator,
+            "conserved": complete and numerator == denominator,
+        }
+
+    return {
+        "physical_call_count": physical_calls,
+        "provider_reported_call_count": provider_calls,
+        "estimated_call_count": estimated_calls,
+        "provider_usage_coverage": float(usage.get("provider_usage_coverage") or 0.0),
+        "requested_model": expected_model,
+        "requested_model_coverage": round(
+            (
+                (successful_calls - requested_mismatches) / successful_calls
+                if successful_calls
+                else 0.0
+            ),
+            6,
+        ),
+        "response_model": expected_model,
+        "response_model_coverage": float(
+            model_identity.get("provider_response_model_coverage") or 0.0
+        ),
+        "queue_empty": score.get("queue_empty") is True,
+        "dimensions": {
+            "token": dimension(int(totals.get("total_tokens") or 0), row_tokens),
+            "tool": dimension(int(totals.get("tool_call_count") or 0), row_tools),
+            "trace": dimension(
+                trace_count,
+                len(report_clusters),
+                complete=bool(
+                    decision_trace_artifact and decision_trace_artifact.get("complete") is True
+                ),
+            ),
+            "finding": dimension(manifest_root_count, len(finding_roots)),
+            "terminal": dimension(len(terminal_clusters), len(report_clusters)),
+        },
+    }
 
 
 def _usage_events_source_path(report: Mapping[str, Any], scan_root: Path) -> Optional[Path]:
@@ -1564,60 +1991,143 @@ def _run_trial_in_workspace(
     mode: str,
     workspace: Path,
     scan_depth: str = "fast",
+    credential_environment: Optional[Mapping[str, str]] = None,
+    candidate_revision: Optional[str] = None,
 ) -> Dict[str, Any]:
     started = time.monotonic()
     scan_root = workspace / "scan-input"
     cache = workspace / "cache"
+    cache_existed_before_run = cache.exists()
     cache.mkdir(parents=True)
+    cache_empty_at_start = not cache_existed_before_run and not any(cache.iterdir())
+    if mode == "pilot" and not cache_empty_at_start:
+        raise _p6_failure("cold_cache_not_isolated")
+    runtime_source: Optional[Path] = None
+    runtime_source_sha256 = ""
+    if mode == "pilot":
+        if candidate_revision is None or re.fullmatch(r"[0-9a-f]{40}", candidate_revision) is None:
+            raise _p6_failure("input_binding_failure")
+        runtime_source = workspace / "runtime-source" / "zscope"
+        runtime_source_sha256 = prepare_p6_runtime_source(
+            runtime_source,
+            git_revision=candidate_revision,
+        )
     input_manifest = copy_scan_input(spec.fixture_root, scan_root, spec.language)
     _json_dump(run_dir / "input-manifest.json", input_manifest)
     execution_root = scan_root
     oci_output: Optional[Path] = None
-    if mode == "formal":
+    if mode in {"formal", "pilot"}:
         execution_root = cache / "project"
         shutil.copytree(scan_root, execution_root)
         oci_output = workspace / "oci-output"
         oci_output.mkdir()
     config_path = run_dir / "zscope.execution.yaml"
     _write_execution_config(spec, execution_root, config_path, scan_depth=scan_depth)
-    effective = _validate_config(config_path, smoke=False)
     environment = _benchmark_environment()
+    if credential_environment is not None:
+        # The runner-level locator is consumed here and must never become part
+        # of the scanner/OCI child environment.  Only the validated key mapping
+        # crosses that process boundary.
+        environment.pop("Z_SCOPE_P6_API_KEY_FILE", None)
+        for key in credential_environment:
+            environment.pop(key, None)
+        environment.update({str(key): str(value) for key, value in credential_environment.items()})
+    cold_cache_evidence: Optional[Dict[str, Any]] = None
+    if mode == "pilot":
+        workflow_run_id = str(environment.get("GITHUB_RUN_ID") or "").strip()
+        workflow_run_attempt = str(environment.get("GITHUB_RUN_ATTEMPT") or "").strip()
+        if re.fullmatch(r"[1-9][0-9]*", workflow_run_id) and re.fullmatch(
+            r"[1-9][0-9]*", workflow_run_attempt
+        ):
+            cache_identity_material = f"{workflow_run_id}:{workflow_run_attempt}:{scan_depth}"
+        else:
+            cache_identity_material = f"local:{workspace.name}:{scan_depth}"
+        cold_cache_evidence = {
+            "identity_sha256": hashlib.sha256(cache_identity_material.encode("utf-8")).hexdigest(),
+            "empty_at_start": cache_empty_at_start,
+            "reused": False,
+        }
+    effective = _validate_config(config_path, smoke=False, environment=environment)
+    try:
+        if mode == "pilot":
+            # The provider identity is the frozen, source-controlled contract.
+            # Per-depth execution configs intentionally differ (for example,
+            # ``scan.depth`` and isolated project paths), so hashing those files
+            # as the provider identity would make fast/balanced/deep appear to
+            # use three different providers.  Validate every generated config
+            # against the exact P6 contract, but retain the source contract as
+            # the stable provider provenance.
+            provider_contract = _p6_provider_contract_for_execution(
+                config_path, source_config=spec.config_path
+            )
+        else:
+            provider_contract = ProviderRuntimeContract.from_effective_config(
+                effective,
+                config_path=config_path,
+            )
+        reject_conflicting_provider_identity_environment(provider_contract, environment)
+    except ProviderRuntimeError as exc:
+        if mode == "pilot":
+            failure_class = _provider_runtime_failure_class(
+                exc,
+                default="provider_identity_mismatch",
+            )
+            raise BenchmarkError(failure_class, failure_class=failure_class) from exc
+        raise BenchmarkError(str(exc)) from exc
     environment["Z_SCOPE_BENCHMARK_LANGUAGE"] = spec.language
     environment["Z_SCOPE_BENCHMARK_SOURCE"] = str(execution_root)
     environment["Z_SCOPE_BENCHMARK_CACHE"] = str(cache)
     python = sys.executable
     isolation_capability: Dict[str, Any]
     health: Dict[str, Any]
-    if mode == "formal":
+    if mode in {"formal", "pilot"}:
         assert oci_output is not None
         container_config = scan_root / "zscope.execution.yaml"
         _write_container_execution_config(config_path, container_config)
+        try:
+            if mode == "pilot":
+                provider_contract = _p6_provider_contract_for_execution(
+                    container_config, source_config=spec.config_path
+                )
+            else:
+                provider_contract = ProviderRuntimeContract.from_effective_config(
+                    effective,
+                    config_path=container_config,
+                )
+            reject_conflicting_provider_identity_environment(provider_contract, environment)
+        except ProviderRuntimeError as exc:
+            if mode == "pilot":
+                failure_class = _provider_runtime_failure_class(
+                    exc,
+                    default="provider_identity_mismatch",
+                )
+                raise BenchmarkError(failure_class, failure_class=failure_class) from exc
+            raise BenchmarkError(str(exc)) from exc
         input_manifest = scan_input_manifest(scan_root)
         _json_dump(run_dir / "input-manifest.json", input_manifest)
         container_python = environment.get("Z_SCOPE_BENCHMARK_OCI_PYTHON", "python3").strip()
         health_argv = [
             container_python,
-            "-m",
-            "zscope.cli.doctor",
+            *(
+                ("-c", _P6_RUNTIME_BOOTSTRAP, "zscope.cli.doctor")
+                if mode == "pilot"
+                else ("-m", "zscope.cli.doctor")
+            ),
             "--config",
             "/zscope-input/zscope.execution.yaml",
         ]
         build_index_argv = [
             container_python,
-            "-m",
-            "zscope.cli.cli",
+            *(
+                ("-c", _P6_RUNTIME_BOOTSTRAP, "zscope.cli.cli")
+                if mode == "pilot"
+                else ("-m", "zscope.cli.cli")
+            ),
             "-c",
             "/zscope-input/zscope.execution.yaml",
             "--build-index",
         ]
-        scan_argv = [
-            container_python,
-            "-m",
-            "zscope.cli.cli",
-            "-c",
-            "/zscope-input/zscope.execution.yaml",
-            "--verbose",
-        ]
+        scan_argv = _container_scan_argv(container_python, mode=mode)
         try:
             executor = _OCI_EXECUTOR_FACTORY(
                 runtime=environment.get("Z_SCOPE_BENCHMARK_OCI_RUNTIME", ""),
@@ -1626,6 +2136,8 @@ def _run_trial_in_workspace(
                 artifact_output=oci_output,
                 cache_output=cache,
                 environment=environment,
+                provider_contract=provider_contract,
+                runtime_source=runtime_source,
             )
             executor.preflight()
             required_phases: list[str] = []
@@ -1640,7 +2152,10 @@ def _run_trial_in_workspace(
                     "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
                 ]
                 executor.execute_phase(
-                    "build-configure", configure_argv, log_path=run_dir / "configure.log"
+                    "build-configure",
+                    configure_argv,
+                    log_path=run_dir / "configure.log",
+                    provider_credentials=mode != "pilot",
                 )
                 required_phases.append("build-configure")
                 build_argv = [
@@ -1659,17 +2174,33 @@ def _run_trial_in_workspace(
                     "-DskipTests",
                     "package",
                 ]
-            executor.execute_phase("build", build_argv, log_path=run_dir / "build.log")
+            executor.execute_phase(
+                "build",
+                build_argv,
+                log_path=run_dir / "build.log",
+                provider_credentials=mode != "pilot",
+            )
             required_phases.append("build")
             build_seconds = time.monotonic() - build_started
             health_result = executor.execute_phase(
-                "health", health_argv, log_path=run_dir / "health.log"
+                "health",
+                health_argv,
+                log_path=run_dir / "health.log",
+                provider_credentials=mode != "pilot",
             )
             required_phases.append("health")
             index_result = executor.execute_phase(
-                "index", build_index_argv, log_path=run_dir / "index.log"
+                "index",
+                build_index_argv,
+                log_path=run_dir / "index.log",
+                provider_credentials=mode != "pilot",
             )
             required_phases.append("index")
+            provider_failure_marker = oci_output / P6_PROVIDER_FAILURE_FILENAME
+            if mode == "pilot" and (
+                provider_failure_marker.exists() or provider_failure_marker.is_symlink()
+            ):
+                raise _p6_failure("oci_isolation_violation")
             scan_result = executor.execute_phase(
                 "scan",
                 scan_argv,
@@ -1678,9 +2209,27 @@ def _run_trial_in_workspace(
                 # partial scan.  Archive and score that artifact so the
                 # benchmark policy can fail the quality gate explicitly.
                 accepted_returncodes=(0, 1, 2),
+                provider_credentials=True,
             )
             required_phases.append("scan")
+            if mode == "pilot":
+                scan_failure_class = _p6_scan_provider_failure_class(
+                    provider_failure_marker,
+                    return_code=scan_result.return_code,
+                )
+            else:
+                scan_failure_class = None
+            if scan_failure_class is not None:
+                raise BenchmarkError(
+                    scan_failure_class,
+                    failure_class=scan_failure_class,
+                )
             isolation_capability = executor.execution_evidence(required_phases=required_phases)
+            if mode == "pilot" and (
+                isolation_capability.get("runtime_source_mounted") is not True
+                or isolation_capability.get("runtime_source_sha256") != runtime_source_sha256
+            ):
+                raise BenchmarkIsolationError("P6 runtime source binding is invalid")
             require_release_isolation(
                 required=True,
                 capability=isolation_capability,
@@ -1688,6 +2237,8 @@ def _run_trial_in_workspace(
                 truth_paths=(spec.truth_path,),
             )
         except BenchmarkIsolationError as exc:
+            if mode == "pilot":
+                raise _p6_failure("oci_isolation_violation") from exc
             raise BenchmarkError(str(exc)) from exc
         health = {
             "checks": [
@@ -1787,7 +2338,9 @@ def _run_trial_in_workspace(
     if scan_input_manifest(archived_scan_root) != input_manifest:
         raise BenchmarkError("archived scan input does not match the sealed input manifest")
     truth_environment = dict(environment)
-    for key in ("Z_SCOPE_API_KEY", "Z_SCOPE_LLM_BASE_URL", "Z_SCOPE_LLM_MODEL"):
+    for key in set(provider_contract.required_environment_keys).union(
+        {PROVIDER_BASE_URL_ENVIRONMENT_KEY, PROVIDER_MODEL_ENVIRONMENT_KEY}
+    ):
         truth_environment.pop(key, None)
     truth_environment["Z_SCOPE_BENCHMARK_TRUTH"] = str(spec.truth_path.resolve())
     score_path = run_dir / "score.json"
@@ -1809,6 +2362,12 @@ def _run_trial_in_workspace(
     )
     phase_seconds["total"] = time.monotonic() - started
     score = _load_json_object(score_path)
+    usage_rows = _read_archived_usage_events(run_dir) or []
+    model_identity = _provider_model_identity_metrics(
+        usage_rows,
+        expected_model=provider_contract.model,
+    )
+    score.update(model_identity)
     score.setdefault("scan_wall_seconds", round(phase_seconds["scan"], 6))
     score["wall_seconds"] = score["scan_wall_seconds"]
     score["end_to_end_wall_seconds"] = round(phase_seconds["total"], 6)
@@ -1831,11 +2390,35 @@ def _run_trial_in_workspace(
     telemetry["validation_llm_profile"] = validation_profile
     telemetry["validation_endpoint_max_inflight"] = validation_llm.base_url_max_concurrent_requests
     score["performance_telemetry"] = telemetry
+    report = _load_json_object(report_path)
+    if mode == "pilot":
+        score["p6_conservation"] = _p6_usage_conservation(
+            report=report,
+            score=score,
+            usage_rows=usage_rows,
+            model_identity=model_identity,
+            decision_trace_artifact=decision_trace_artifact,
+            expected_model=provider_contract.model,
+        )
     _json_dump(score_path, score)
     gate_failures = _gate_c(score, scan_depth=scan_depth) if spec.language == "c_cpp" else []
+    if mode == "pilot" and (
+        model_identity["provider_response_model_coverage"] != 1.0
+        or model_identity["provider_response_model_missing_count"] != 0
+        or model_identity["provider_response_model_mismatch_count"] != 0
+        or model_identity["requested_model_mismatch_count"] != 0
+        or model_identity["provider_response_model_successful_call_count"] < 1
+    ):
+        gate_failures.append("provider_identity_mismatch")
+    if mode == "pilot":
+        try:
+            validate_usage_conservation(
+                _as_dict(score.get("p6_conservation")), require_model_calls=True
+            )
+        except P6ProtocolError:
+            gate_failures.append("accounting_conservation_failure")
     gate_failures.extend(_truth_matcher_gate_failures(mode, score))
     sealed_failures = _gate_c_sealed(score) if spec.language == "c_cpp" else []
-    report = _load_json_object(report_path)
     report_ablation = _as_dict(_as_dict(report.get("metadata")).get("benchmark_ablation"))
     if report_ablation:
         gate_failures.append("semantic/discovery ablation artifacts are not release eligible")
@@ -1858,6 +2441,7 @@ def _run_trial_in_workspace(
     summary_payload = {
         "run": run_number,
         "completed": True,
+        "formal_benchmark": mode == "formal",
         "release_eligible": _run_release_eligible(mode, score, gate_failures),
         "queue_empty": bool(score.get("queue_empty")),
         "gate_failures": gate_failures,
@@ -1901,6 +2485,7 @@ def _run_trial_in_workspace(
             "storage_class": _workspace_storage_class(workspace),
             "artifact_exported": True,
         },
+        **({"cold_cache": cold_cache_evidence} if cold_cache_evidence is not None else {}),
         "benchmark_policy": DEFAULT_BENCHMARK_POLICY.as_dict(),
         "isolation": {
             **isolation_capability,
@@ -1914,9 +2499,15 @@ def _run_trial_in_workspace(
         },
         "provenance": {
             **_report_provenance(report),
+            **(
+                {"candidate_commit": candidate_revision}
+                if mode == "pilot" and candidate_revision is not None
+                else {}
+            ),
             "runtime_spec_sha256": effective.runtime_provenance.sha256,
             "rule_catalog_sha256": effective.rule_catalog_provenance.catalog_sha256,
             "effective_rules_sha256": effective.rule_catalog_provenance.effective_sha256,
+            "provider_runtime": provider_contract.as_dict(),
         },
     }
     _json_dump(run_dir / "summary.json", summary_payload)
@@ -1930,24 +2521,91 @@ def _run_trial(
     *,
     mode: str,
     scan_depth: str = "fast",
+    credential_environment: Optional[Mapping[str, str]] = None,
+    candidate_revision: Optional[str] = None,
 ) -> Dict[str, Any]:
     parent = _benchmark_work_parent(spec.language)
     workspace = Path(
         tempfile.mkdtemp(prefix=f"zscope-benchmark-{spec.language}-{run_number:02d}-", dir=parent)
     )
     try:
-        return _run_trial_in_workspace(
-            spec,
-            run_dir,
-            run_number,
-            mode=mode,
-            workspace=workspace,
-            scan_depth=scan_depth,
-        )
+        kwargs: Dict[str, Any] = {
+            "mode": mode,
+            "workspace": workspace,
+            "scan_depth": scan_depth,
+        }
+        if credential_environment is not None:
+            kwargs["credential_environment"] = credential_environment
+        if candidate_revision is not None:
+            kwargs["candidate_revision"] = candidate_revision
+        return _run_trial_in_workspace(spec, run_dir, run_number, **kwargs)
     finally:
         if not (run_dir / "summary.json").is_file():
-            _archive_interrupted_diagnostics(workspace, run_dir)
+            if mode == "pilot":
+                _archive_pilot_interrupted_diagnostics(workspace, run_dir)
+            else:
+                _archive_interrupted_diagnostics(workspace, run_dir)
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _archive_pilot_interrupted_diagnostics(
+    workspace: Path,
+    run_dir: Path,
+) -> Optional[Dict[str, Any]]:
+    """Archive only aggregate, answer-free accounting for an interrupted P6 pilot."""
+
+    sources: List[Path] = []
+    for project_root in (workspace / "scan-input", workspace / "cache" / "project"):
+        trace_root = project_root / ".zscope_snapshots"
+        if not trace_root.is_dir() or trace_root.is_symlink():
+            continue
+        sources.extend(
+            path
+            for path in sorted(trace_root.glob("llm_usage_events_*.jsonl"))
+            if path.is_file() and not path.is_symlink()
+        )
+    if not sources:
+        return None
+    event_count = 0
+    successful_count = 0
+    failed_count = 0
+    provider_reported_count = 0
+    response_model_present_count = 0
+    invalid_file_count = 0
+    file_hashes: List[str] = []
+    for source in sources:
+        file_hashes.append(_sha256_file(source))
+        try:
+            rows = _read_usage_events_jsonl(source)
+        except BenchmarkError:
+            invalid_file_count += 1
+            continue
+        event_count += len(rows)
+        successful_count += sum(row.get("outcome") == "success" for row in rows)
+        failed_count += sum(row.get("outcome") != "success" for row in rows)
+        provider_reported_count += sum(row.get("provider_reported") is True for row in rows)
+        response_model_present_count += sum(
+            bool(str(row.get("provider_response_model") or "").strip())
+            for row in rows
+            if row.get("outcome") == "success"
+        )
+    payload = {
+        "schema_version": "zscope.p6-interrupted-diagnostics.v1",
+        "formal_evidence": False,
+        "release_eligible": False,
+        "reason": "pilot_interrupted_or_failed",
+        "event_file_count": len(sources),
+        "event_file_sha256s": sorted(file_hashes),
+        "invalid_event_file_count": invalid_file_count,
+        "event_count": event_count,
+        "successful_call_count": successful_count,
+        "failed_or_unknown_call_count": failed_count,
+        "provider_reported_call_count": provider_reported_count,
+        "provider_response_model_present_count": response_model_present_count,
+        "answer_material_present": False,
+    }
+    _json_dump(run_dir / "interrupted-diagnostics.json", payload)
+    return payload
 
 
 def _archive_interrupted_diagnostics(workspace: Path, run_dir: Path) -> Optional[Dict[str, Any]]:
@@ -2014,14 +2672,25 @@ def _archive_interrupted_diagnostics(workspace: Path, run_dir: Path) -> Optional
     return payload
 
 
-def _git_identity() -> Tuple[str, str]:
+def _git_identity(revision: Optional[str] = None) -> Tuple[str, str]:
     try:
+        selected = str(revision or "HEAD")
+        if revision is not None and re.fullmatch(r"[0-9a-f]{40}", selected) is None:
+            return "unknown", "unknown"
         sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=str(repository_root()), text=True
+            ["git", "rev-parse", "--verify", f"{selected}^{{commit}}"],
+            cwd=str(repository_root()),
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
         tree = subprocess.check_output(
-            ["git", "rev-parse", "HEAD^{tree}"], cwd=str(repository_root()), text=True
+            ["git", "rev-parse", f"{sha}^{{tree}}"],
+            cwd=str(repository_root()),
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
+        if revision is not None and sha != selected:
+            return "unknown", "unknown"
         return sha, tree
     except (OSError, subprocess.CalledProcessError):
         return "unknown", "unknown"
@@ -2033,8 +2702,9 @@ def _aggregate(
     mode: str,
     *,
     scan_depth: str = "fast",
+    git_revision: Optional[str] = None,
 ) -> Dict[str, Any]:
-    git_sha, git_tree = _git_identity()
+    git_sha, git_tree = _git_identity(git_revision)
     numeric_keys = sorted(
         {
             key
@@ -2109,6 +2779,7 @@ def _aggregate(
         "schema_version": FORMAL_SCHEMA_VERSION,
         "language": "cpp" if spec.language == "c_cpp" else "java",
         "mode": mode,
+        "formal_benchmark": formal,
         "scan_depth": scan_depth,
         # This artifact attests the Range formal gate only. Product/default
         # release additionally consumes an independent balanced attestation.
@@ -2302,7 +2973,7 @@ def benchmark_plan(
         "scan_input": preview_scan_input(spec.fixture_root, language),
         "isolation": {
             **isolation,
-            "required": mode == "formal",
+            "required": mode in {"formal", "pilot"},
             "fail_closed": True,
             "scanner_cwd": "/zscope-input",
             "allowed_mount_purposes": ["scan_input", "artifact_output", "cache"],
@@ -2327,28 +2998,69 @@ def run_benchmark(
 ) -> Dict[str, Any]:
     if language not in SPECS:
         raise BenchmarkError(f"unsupported language: {language}")
-    if mode not in {"smoke", "trial", "formal"}:
+    if mode not in {"smoke", "trial", "formal", "pilot"}:
         raise BenchmarkError(f"unsupported mode: {mode}")
+    if mode == "pilot" and language != "c_cpp":
+        raise BenchmarkError("pilot mode is restricted to the C/C++ Range benchmark")
     if scan_depth not in {"fast", "balanced", "deep"}:
         raise BenchmarkError("scan depth must be fast, balanced, or deep")
     run_count = 1 if mode != "formal" else (runs or MIN_FORMAL_RUNS)
     if mode == "trial" and runs not in {None, 1}:
         raise BenchmarkError("trial mode always runs exactly one cold scan")
+    if mode == "pilot" and runs not in {None, 1}:
+        raise BenchmarkError("pilot mode always runs exactly one cold scan")
     if mode == "formal" and run_count < MIN_FORMAL_RUNS:
         raise BenchmarkError("formal release benchmarks require at least five cold trials")
     if mode == "smoke" and runs not in {None, 1}:
         raise BenchmarkError("smoke mode runs once")
     spec = SPECS[language]
+    if mode == "pilot":
+        try:
+            pilot_contract = require_p6_provider_contract(spec.config_path)
+            reject_conflicting_provider_identity_environment(pilot_contract, os.environ)
+        except ProviderRuntimeError as exc:
+            failure_class = _provider_runtime_failure_class(
+                exc,
+                default="provider_identity_mismatch",
+            )
+            raise BenchmarkError(failure_class, failure_class=failure_class) from exc
     plan = benchmark_plan(language, mode, run_count, scan_depth=scan_depth)
     if dry_run:
         return {"dry_run": True, **plan}
-    if mode == "formal":
+    if mode in {"formal", "pilot"}:
         capability = oci_capability(
             runtime=os.environ.get("Z_SCOPE_BENCHMARK_OCI_RUNTIME", ""),
             image=os.environ.get("Z_SCOPE_BENCHMARK_OCI_IMAGE", ""),
         )
         if not capability.get("available"):
+            if mode == "pilot":
+                raise _p6_failure("oci_capability_failed")
             raise BenchmarkError("; ".join(capability.get("errors") or []))
+    credential_environment: Optional[Dict[str, str]] = None
+    candidate_revision: Optional[str] = None
+    if mode == "pilot":
+        candidate_revision = os.environ.get(P6_CANDIDATE_COMMIT_ENVIRONMENT_KEY, "").strip()
+        if re.fullmatch(r"[0-9a-f]{40}", candidate_revision) is None:
+            raise _p6_failure("input_binding_failure")
+        credential_path_value = os.environ.get("Z_SCOPE_P6_API_KEY_FILE", "").strip()
+        if not credential_path_value:
+            raise BenchmarkError(
+                "provider_credentials_unavailable",
+                failure_class="provider_credentials_unavailable",
+            )
+        credential_path = Path(credential_path_value)
+        if not credential_path.is_absolute():
+            raise BenchmarkError(
+                "provider_credentials_unavailable",
+                failure_class="provider_credentials_unavailable",
+            )
+        try:
+            credential_environment = load_explicit_api_key_file(credential_path)
+        except ProviderRuntimeError as exc:
+            raise BenchmarkError(
+                "provider_credentials_unavailable",
+                failure_class="provider_credentials_unavailable",
+            ) from exc
     destination = (output or _default_output(language, mode)).resolve()
     destination.mkdir(parents=True, exist_ok=False)
     _validate_truth(spec.truth_path)
@@ -2384,15 +3096,47 @@ def run_benchmark(
         raise BenchmarkError(
             "C/C++ trial and all formal benchmarks require Linux (Windows must use WSL2)"
         )
-    _require_llm_environment()
-    summaries = []
-    for index in range(1, run_count + 1):
-        run_dir = destination / f"run-{index:02d}"
-        run_dir.mkdir()
-        summaries.append(_run_trial(spec, run_dir, index, mode=mode, scan_depth=scan_depth))
-    aggregate = _aggregate(spec, summaries, mode, scan_depth=scan_depth)
-    if mode == "trial":
+    required_keys = required_environment_keys(spec.config_path)
+    required_source = dict(os.environ)
+    if credential_environment is not None:
+        required_source.pop(P6_API_KEY_ENVIRONMENT_KEY, None)
+        required_source.update(credential_environment)
+    try:
+        try:
+            _require_llm_environment(required_keys, required_source)
+        finally:
+            if credential_environment is not None:
+                for key in credential_environment:
+                    required_source.pop(key, None)
+        summaries = []
+        for index in range(1, run_count + 1):
+            run_dir = destination / f"run-{index:02d}"
+            run_dir.mkdir()
+            summaries.append(
+                _run_trial(
+                    spec,
+                    run_dir,
+                    index,
+                    mode=mode,
+                    scan_depth=scan_depth,
+                    credential_environment=credential_environment,
+                    candidate_revision=candidate_revision,
+                )
+            )
+    finally:
+        if credential_environment is not None:
+            credential_environment.clear()
+    aggregate = _aggregate(
+        spec,
+        summaries,
+        mode,
+        scan_depth=scan_depth,
+        git_revision=candidate_revision if mode == "pilot" else None,
+    )
+    if mode in {"trial", "pilot"}:
         aggregate["release_eligible"] = False
+    if mode == "pilot":
+        aggregate["formal_benchmark"] = False
     _json_dump(destination / "aggregate.json", aggregate)
     if mode == "formal" and not aggregate["passed"]:
         raise BenchmarkError("formal benchmark gates failed")

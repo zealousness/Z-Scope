@@ -38,6 +38,7 @@ from zscope.benchmarking.protocol import (
     _select_max_weight_pairs,
 )
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
+from zscope.benchmarking.isolation import ISOLATION_SCHEMA_VERSION
 from zscope.benchmarking.attestation import (
     ATTESTATION_SCHEMA_VERSION,
     finalize_balanced_attestation,
@@ -1324,6 +1325,7 @@ def _release_summary(
             "chain_sha256": "a" * 64,
         },
         "isolation": {
+            "schema_version": ISOLATION_SCHEMA_VERSION,
             "mode": "oci",
             "runtime": "podman",
             "runtime_path": "/usr/bin/podman",
@@ -1339,6 +1341,9 @@ def _release_summary(
             "mounts_verified": True,
             "security_verified": True,
             "network_restriction_verified": True,
+            "proxy_credential_metadata_safe": True,
+            "provider_identity_sha256": "5" * 64,
+            "endpoint_origin": "https://models.internal:443",
             "network_mode": "model-endpoint-only",
             "network_policy_sha256": "6" * 64,
             "image": "registry.example/zscope@sha256:" + "a" * 64,
@@ -1372,7 +1377,14 @@ def _release_summary(
                     "network_peers_verified": True,
                     "network_contract_verified": True,
                     "proxy_verified": True,
+                    "proxy_credential_metadata_safe": True,
+                    "provider_identity_sha256": "5" * 64,
                     "scanner_labels_verified": True,
+                    "scanner_provider_environment_verified": True,
+                    "scanner_provider_environment_keys": ["Z_SCOPE_API_KEY"],
+                    "stdout_persisted": False,
+                    "stderr_persisted": False,
+                    "cancellation_cleanup_guard_verified": True,
                     "image_verified": True,
                     "unexpected_mount_count": 0,
                     "container_inspect_sha256": "7" * 64,
