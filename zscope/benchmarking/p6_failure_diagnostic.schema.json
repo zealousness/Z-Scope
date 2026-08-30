@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/p6-failure-diagnostic-v1.json",
+  "title": "Z-SCOPE P6 answer-free failure diagnostic",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workflow_run_id",
+    "workflow_run_attempt",
+    "attempt_id",
+    "control_plane_commit",
+    "stage",
+    "failure_class",
+    "failure_count",
+    "total_count",
+    "checkpoint_sha256",
+    "binding_sha256",
+    "formal_evidence",
+    "release_eligible"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "zscope.p6-failure-diagnostic.v1"
+    },
+    "workflow_run_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "workflow_run_attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^p6-[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "control_plane_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "entry_input",
+        "provider",
+        "toolchain_oci_cache",
+        "candidates",
+        "security_spec",
+        "planner_hunter",
+        "evidence_action",
+        "proof_provider_checker",
+        "terminal_authority",
+        "report_finding",
+        "usage_trace",
+        "artifact_seal",
+        "independent_review"
+      ]
+    },
+    "failure_class": {
+      "type": "string",
+      "enum": [
+        "entry_e0_unattested",
+        "input_binding_failure",
+        "provider_credentials_unavailable",
+        "provider_identity_mismatch",
+        "provider_identity_override_attempt",
+        "provider_transport_exhausted",
+        "provider_protocol_incompatible",
+        "provider_usage_unverifiable",
+        "toolchain_preflight_failed",
+        "oci_capability_failed",
+        "oci_isolation_violation",
+        "cold_cache_not_isolated",
+        "replay_input_binding_invalid",
+        "certificate_reverify_failure",
+        "replay_nondeterministic",
+        "anonymous_qualification_failed",
+        "eligible_stage_not_entered",
+        "evidence_action_not_consumed",
+        "terminal_state_inconsistent",
+        "post_proof_call",
+        "silent_rejection_without_proof",
+        "safe_pair_false_confirmation",
+        "coverage_gap_zero_unit",
+        "quality_no_progress_gate_failed",
+        "queue_not_drained",
+        "accounting_conservation_failure",
+        "component_metrics_incomplete",
+        "artifact_upload_transport_failed",
+        "artifact_integrity_failure",
+        "review_transport_failed",
+        "review_binding_invalid",
+        "review_blocker",
+        "internal_failure"
+      ]
+    },
+    "failure_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "total_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "checkpoint_sha256": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "binding_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "formal_evidence": {
+      "type": "boolean",
+      "const": false
+    },
+    "release_eligible": {
+      "type": "boolean",
+      "const": false
+    }
+  }
+}

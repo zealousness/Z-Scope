@@ -66,7 +66,7 @@ Z-SCOPE 是面向 Java 与 C/C++ 项目的 AI 静态分析平台。典型数据�
    - 原生 Linux 运行 `zscope-benchmark`；Windows 上的 C/C++ 命令由该前端自动重启到 WSL。
    - 不得用原生 Windows Python 或 Windows 构建工具形成正式结果。
    - 执行 trial/formal 前先在实际运行的 Linux/WSL 用户态确认 `cmake`、`gcc`、`clang`、`clangd`、`gclang`、`get-bc`、`llvm-link`、`llvm-nm`、`wpa`、`saber` 均可由 `PATH` 解析，并用 `ldd` 确认 `wpa`/`saber` 没有缺失共享库。
-   - trial/formal 必须显式提供 `Z_SCOPE_LLM_BASE_URL`、`Z_SCOPE_LLM_MODEL`、`Z_SCOPE_API_KEY`；benchmark 不会自动读取 `test/range/zscope.local.env`。Windows 前端只转发当前 Windows 进程中已经设置的变量。
+   - C/C++ Range 的 Base URL/model 由 `test/range/zscope.benchmark.yaml` 冻结，trial/formal 只需显式提供 `Z_SCOPE_API_KEY`；P6 pilot 只接受绝对路径 `Z_SCOPE_P6_API_KEY_FILE` 指向的严格 one-key 私有文件。benchmark 不会自动读取 `test/range/zscope.local.env`，Windows 前端只转发配置实际引用且当前进程中已设置的 provider 变量。
    - WSL 中的 Python 环境必须已经安装当前 Z-SCOPE（推荐在 WSL 虚拟环境中执行 `python3 -m pip install -e .`），不能依赖 Windows Python 或仅依赖源码 checkout 恰好位于当前目录。
    - 完整安装、环境变量和 preflight 命令以 [`docs/range-benchmark.md`](docs/range-benchmark.md) 的“环境与门禁”为准；不要在工具缺失、SVF 动态库加载失败或 backend 降级后继续形成正式结论。
 3. 扫描阶段不得把 `GROUND_TRUTH.md` 或 `benchmark/ground_truth.json` 放入 Z-SCOPE/LLM 分析上下文；ground truth 只能用于入口覆盖预检和扫描完成后的独立评分。

@@ -1,0 +1,3314 @@
+name: P6 Non-Release Cold Pilot Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      control_plane_commit:
+        description: Exact protected main commit containing the immutable P6 control plane
+        required: true
+      candidate_sha:
+        description: Exact main commit to validate as the non-release P6 candidate
+        required: true
+
+concurrency:
+  group: p6-pilot-validation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: control
+
+env:
+  P6_MAX_CONCURRENT_CALLS: "8"
+  P6_ATTEMPT_ID: p6-${{ github.run_id }}-${{ github.run_attempt }}
+  P6_CONTROL_PLANE_COMMIT: ${{ inputs.control_plane_commit }}
+  P6_CANDIDATE_COMMIT: ${{ inputs.candidate_sha }}
+  P6_CONTROL_ROOT: ${{ github.workspace }}/control
+  P6_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+  PYTHONPATH: ${{ github.workspace }}/control
+
+jobs:
+  entry:
+    name: P6 entry and provider identity
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.authority.outputs.failure_class }}
+      failure_count: ${{ steps.authority.outputs.failure_count }}
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 15
+    steps:
+      - name: Validate immutable dispatcher identities before checkout
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          [[ "$P6_CONTROL_PLANE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$P6_CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$P6_CONTROL_PLANE_COMMIT" = "$GITHUB_SHA"
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Remove exact-label stale P6 scanners before any secret is loaded
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_oci_cleanup.py \
+            --runtime "$Z_SCOPE_BENCHMARK_OCI_RUNTIME" \
+            --mode stale --repository "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi
+      - name: Verify protected entry and immutable non-release request
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$P6_CONTROL_PLANE_COMMIT"
+          test "$P6_CANDIDATE_COMMIT" = "$P6_CONTROL_PLANE_COMMIT"
+          test "$(git rev-parse HEAD)" = "$P6_CONTROL_PLANE_COMMIT"
+          test "$(git -C "$P6_CANDIDATE_ROOT" rev-parse HEAD)" = "$P6_CANDIDATE_COMMIT"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')"
+          git merge-base --is-ancestor "$P6_CANDIDATE_COMMIT" origin/main
+          for protected_path in \
+            .github/actions/setup-p6-python \
+            .github/actions/classify-p6-job-failure \
+            .github/actions/validate-p6-artifact \
+            .github/workflows/p6-pilot-validation.yml \
+            .github/workflows/p6-pilot-finalize-recovery.yml \
+            scripts/download_p6_run_artifact.py \
+            scripts/p6_pilot_protocol.py \
+            scripts/project_p6_entry_lineage.py \
+            scripts/run_p6_cold_producer.py \
+            scripts/run_p6_policy_replay.py \
+            scripts/validate_p6_artifact_tree.py \
+            docs/design/zscope-2.0-security-architecture/acceptance/p6-entry-gate.json \
+            test/range/zscope.benchmark.yaml \
+            test/range/benchmark/v16/review-packets \
+            test/range/benchmark/v16/review-packet-catalog.json \
+            test/range/benchmark/v16/reviews/normalized-decisions.json \
+            test/range/benchmark/v16/ground_truth.json \
+            test/range/benchmark/v16/truth-manifest.json \
+            scripts/score_range_v5.py \
+            zscope/benchmarking/p6_protocol.py \
+            zscope/benchmarking/p6_review.py \
+            zscope/benchmarking/provider_runtime.py \
+            zscope/benchmarking/runner.py \
+            zscope/benchmarking/isolation.py \
+            zscope/cli/benchmark.py; do
+            control_object="$(git rev-parse "${P6_CONTROL_PLANE_COMMIT}:${protected_path}")"
+            candidate_object="$(git rev-parse "${P6_CANDIDATE_COMMIT}:${protected_path}")"
+            test "$control_object" = "$candidate_object"
+          done
+          test "$P6_MAX_CONCURRENT_CALLS" = 8
+          python3 scripts/check_zscope_2_design_evidence.py
+          python3 - <<'PY'
+          import yaml
+          from zscope.benchmarking.p6_protocol import require_pilot_request
+          from zscope.benchmarking.provider_runtime import ProviderRuntimeContract
+          require_pilot_request(language="c_cpp", mode="pilot", runs=1)
+          contract = ProviderRuntimeContract.from_config_file(
+              __import__("pathlib").Path("test/range/zscope.benchmark.yaml")
+          )
+          assert contract.base_url == "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1"
+          assert contract.model == "GLM-5.2"
+          assert contract.required_environment_keys == ("Z_SCOPE_API_KEY",)
+          config = yaml.safe_load(__import__("pathlib").Path("test/range/zscope.benchmark.yaml").read_text(encoding="utf-8"))
+          assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 8
+          assert config["concurrency"]["llm_max_inflight"] == 8
+          PY
+      - name: Verify runner-owned secret and frozen-input authority before any model call
+        id: authority
+        run: |
+          set -euo pipefail
+          validate_authority() {
+          set -euo pipefail
+          : "${Z_SCOPE_P6_API_KEY_FILE:?sealed runner must configure the key-file path}"
+          : "${Z_SCOPE_P6_FROZEN_TRACE_ROOT:?sealed runner must configure the trace root}"
+          : "${Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256:?sealed runner must configure the trace digest}"
+          : "${Z_SCOPE_P6_CANARY_SOURCE_ROOT:?sealed runner must configure the canary source root}"
+          : "${Z_SCOPE_P6_CANARY_SOURCE_TREE_SHA256:?sealed runner must configure the canary tree digest}"
+          : "${Z_SCOPE_P6_CANARY_COMPILE_COMMANDS:?sealed runner must configure compile_commands}"
+          : "${Z_SCOPE_P6_CANARY_COMPILE_COMMANDS_SHA256:?sealed runner must configure the compile_commands digest}"
+          : "${Z_SCOPE_P6_QUALIFICATION_HARNESS:?sealed runner must configure the qualification harness}"
+          : "${Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256:?sealed runner must configure the harness digest}"
+          : "${Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE:?sealed runner must configure the hidden bundle}"
+          : "${Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE_SHA256:?sealed runner must configure the hidden bundle digest}"
+          : "${Z_SCOPE_P6_SAFE_PAIR_BUNDLE:?sealed runner must configure the safe-pair bundle}"
+          : "${Z_SCOPE_P6_SAFE_PAIR_BUNDLE_SHA256:?sealed runner must configure the safe-pair digest}"
+          test -n "${Z_SCOPE_P6_API_KEY_FILE:-}"
+          case "$Z_SCOPE_P6_API_KEY_FILE" in /*) ;; *) exit 2 ;; esac
+          test -f "$Z_SCOPE_P6_API_KEY_FILE"
+          test ! -L "$Z_SCOPE_P6_API_KEY_FILE"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.provider_runtime import load_explicit_api_key_file
+          assert set(load_explicit_api_key_file(Path(os.environ["Z_SCOPE_P6_API_KEY_FILE"]))) == {
+              "Z_SCOPE_API_KEY"
+          }
+          PY
+          for value in \
+            "$Z_SCOPE_P6_FROZEN_TRACE_ROOT" \
+            "$Z_SCOPE_P6_CANARY_SOURCE_ROOT" \
+            "$Z_SCOPE_P6_CANARY_COMPILE_COMMANDS" \
+            "$Z_SCOPE_P6_QUALIFICATION_HARNESS" \
+            "$Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE" \
+            "$Z_SCOPE_P6_SAFE_PAIR_BUNDLE"; do
+            case "$value" in /*) ;; *) exit 2 ;; esac
+            test ! -L "$value"
+          done
+          test -d "$Z_SCOPE_P6_FROZEN_TRACE_ROOT"
+          test -d "$Z_SCOPE_P6_CANARY_SOURCE_ROOT"
+          test -f "$Z_SCOPE_P6_CANARY_COMPILE_COMMANDS"
+          test -f "$Z_SCOPE_P6_QUALIFICATION_HARNESS"
+          test -x "$Z_SCOPE_P6_QUALIFICATION_HARNESS"
+          test -f "$Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE"
+          test -f "$Z_SCOPE_P6_SAFE_PAIR_BUNDLE"
+          test "$(sha256sum "$Z_SCOPE_P6_FROZEN_TRACE_ROOT/decision_trace_manifest.json" | awk '{print $1}')" = "$Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256"
+          test "$(sha256sum "$Z_SCOPE_P6_CANARY_COMPILE_COMMANDS" | awk '{print $1}')" = "$Z_SCOPE_P6_CANARY_COMPILE_COMMANDS_SHA256"
+          test "$(sha256sum "$Z_SCOPE_P6_QUALIFICATION_HARNESS" | awk '{print $1}')" = "$Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"
+          test "$(sha256sum "$Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE" | awk '{print $1}')" = "$Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE_SHA256"
+          test "$(sha256sum "$Z_SCOPE_P6_SAFE_PAIR_BUNDLE" | awk '{print $1}')" = "$Z_SCOPE_P6_SAFE_PAIR_BUNDLE_SHA256"
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["Z_SCOPE_P6_CANARY_SOURCE_ROOT"])
+          digest = hashlib.sha256()
+          for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+              if path.is_symlink() or not path.is_file():
+                  if path.is_symlink():
+                      raise SystemExit(2)
+                  continue
+              relative = path.relative_to(root).as_posix().encode("utf-8")
+              payload = path.read_bytes()
+              digest.update(len(relative).to_bytes(8, "big"))
+              digest.update(relative)
+              digest.update(len(payload).to_bytes(8, "big"))
+              digest.update(payload)
+          if digest.hexdigest() != os.environ["Z_SCOPE_P6_CANARY_SOURCE_TREE_SHA256"]:
+              raise SystemExit(2)
+          PY
+          }
+          if ! validate_authority >/dev/null 2>&1; then
+            echo 'failure_class=input_binding_failure' >> "$GITHUB_OUTPUT"
+            echo 'failure_count=1' >> "$GITHUB_OUTPUT"
+            echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
+            exit 2
+          fi
+          echo 'failure_class=' >> "$GITHUB_OUTPUT"
+          echo 'failure_count=0' >> "$GITHUB_OUTPUT"
+      - name: Seal answer-free entry evidence
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          from scripts.project_p6_entry_lineage import project_gate_lineage
+          from zscope.benchmarking.p6_protocol import canonical_sha256, load_json_strict, sha256_file
+          from zscope.benchmarking.provider_runtime import ProviderRuntimeContract
+
+          candidate = os.environ["P6_CANDIDATE_COMMIT"]
+          contract = ProviderRuntimeContract.from_config_file(
+              Path("test/range/zscope.benchmark.yaml")
+          )
+          gate_path = Path(
+              "docs/design/zscope-2.0-security-architecture/acceptance/p6-entry-gate.json"
+          )
+          gate = load_json_strict(gate_path)
+          if not isinstance(gate, dict):
+              raise SystemExit(2)
+          e0_lineage = project_gate_lineage(
+              gate, gate_file_sha256=sha256_file(gate_path)
+          )
+          payload = {
+              "schema_version": "zscope.p6-entry-evidence.v1",
+              "workflow_path": ".github/workflows/p6-pilot-validation.yml",
+              "control_plane_commit": os.environ["P6_CONTROL_PLANE_COMMIT"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "attempt_id": os.environ["P6_ATTEMPT_ID"],
+              "candidate_git_sha": candidate,
+              "candidate_git_tree": subprocess.run(
+                  ["git", "rev-parse", "HEAD^{tree}"],
+                  cwd=os.environ["P6_CANDIDATE_ROOT"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+                  encoding="utf-8",
+              ).stdout.strip(),
+              "candidate_sha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+              "provider_contract_sha256": contract.identity_sha256,
+              "p6_entry_gate_file_sha256": e0_lineage["entry_gate_file_sha256"],
+              "p6_entry_gate_content_sha256": e0_lineage["entry_gate_content_sha256"],
+              "e0_lineage": e0_lineage,
+              "trace_manifest_sha256": os.environ["Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256"],
+              "canary_tree_sha256": os.environ["Z_SCOPE_P6_CANARY_SOURCE_TREE_SHA256"],
+              "compile_commands_sha256": os.environ["Z_SCOPE_P6_CANARY_COMPILE_COMMANDS_SHA256"],
+              "qualification_harness_sha256": os.environ["Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"],
+              "hidden_bundle_sha256": os.environ["Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE_SHA256"],
+              "safe_pair_bundle_sha256": os.environ["Z_SCOPE_P6_SAFE_PAIR_BUNDLE_SHA256"],
+              "formal_evidence": False,
+              "release_eligible": False,
+          }
+          payload["evidence_sha256"] = canonical_sha256(payload)
+          Path("entry-evidence.json").write_text(
+              json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          python3 scripts/p6_pilot_protocol.py validate-answer-free \
+            --input entry-evidence.json >/dev/null
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: entry-evidence.json
+          stage: entry_input
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-entry-evidence-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/entry-evidence.json
+
+  provider_probe:
+    name: source-free GLM-5.2 provider probe
+    needs: entry
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.probe.outputs.failure_class }}
+      failure_count: ${{ steps.probe.outputs.failure_count }}
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 15
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Execute one constant source-free request
+        id: probe
+        run: |
+          set -euo pipefail
+          if ! python3 - <<'PY' >/dev/null 2>&1
+          import json
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict, validate_provider_probe
+          from zscope.benchmarking.provider_runtime import (
+              ProviderProbeError,
+              require_p6_provider_contract,
+              run_p6_provider_probe,
+          )
+          allowed = {
+              "provider_credentials_unavailable",
+              "provider_identity_mismatch",
+              "provider_identity_override_attempt",
+              "provider_transport_exhausted",
+              "provider_protocol_incompatible",
+              "provider_usage_unverifiable",
+          }
+          try:
+              value = run_p6_provider_probe(Path("test/range/zscope.benchmark.yaml"))
+          except ProviderProbeError as exc:
+              failure_class = exc.failure_class if exc.failure_class in allowed else "internal_failure"
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+                  handle.write(f"failure_class={failure_class}\n")
+                  handle.write("failure_count=1\n")
+              raise SystemExit(2)
+          validate_provider_probe(value)
+          contract = require_p6_provider_contract(Path("test/range/zscope.benchmark.yaml"))
+          assert value["provider_identity_sha256"] == contract.identity_sha256
+          assert value["config_sha256"] == contract.config_sha256
+          assert value["model"] == contract.model == "GLM-5.2"
+          Path("provider-probe.json").write_text(
+              json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          restored = load_json_strict(Path("provider-probe.json"))
+          assert restored == value
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write("failure_class=\n")
+              handle.write("failure_count=0\n")
+          PY
+          then
+            failure_class="$(sed -n 's/^failure_class=//p' "$GITHUB_OUTPUT" | tail -n 1)"
+            case "$failure_class" in
+              provider_credentials_unavailable|provider_identity_mismatch|provider_identity_override_attempt|provider_transport_exhausted|provider_protocol_incompatible|provider_usage_unverifiable) ;;
+              *) failure_class=internal_failure ;;
+            esac
+            echo "::error::stage=provider; class=${failure_class}:1; count=1"
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: provider-probe.json
+          stage: provider
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-provider-probe-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/provider-probe.json
+
+  toolchain_oci:
+    name: toolchain OCI and cold-cache preflight
+    needs: provider_probe
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Verify complete Linux toolchain and rootless digest-pinned OCI
+        run: |
+          set -euo pipefail
+          for tool in cmake gcc clang clangd gclang get-bc llvm-link llvm-nm wpa saber cc; do
+            command -v "$tool" >/dev/null
+          done
+          ! ldd "$(command -v wpa)" | grep -q 'not found'
+          ! ldd "$(command -v saber)" | grep -q 'not found'
+          synthetic_root="$(mktemp -d)"
+          trap 'rm -rf -- "$synthetic_root"' EXIT
+          printf '%s\n' 'int main(void) { return 0; }' > "$synthetic_root/probe.c"
+          if ! cc -std=c11 -Werror -Wall -Wextra -c "$synthetic_root/probe.c" \
+            -o "$synthetic_root/probe.o" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=toolchain_preflight_failed:1; count=1'
+            exit 2
+          fi
+          if ! python3 - <<'PY' >/dev/null 2>&1
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          from zscope.benchmarking.isolation import (
+              RootlessOciExecutor,
+              validate_oci_execution_evidence,
+          )
+          from zscope.benchmarking.p6_protocol import canonical_sha256
+          from zscope.benchmarking.provider_runtime import (
+              ProviderRuntimeContract,
+              load_explicit_api_key_file,
+          )
+          from zscope.benchmarking.runner import prepare_p6_runtime_source
+
+          runtime = os.environ.get("Z_SCOPE_BENCHMARK_OCI_RUNTIME", "")
+          image = os.environ.get("Z_SCOPE_BENCHMARK_OCI_IMAGE", "")
+          if image.count("@sha256:") != 1:
+              raise SystemExit(2)
+          contract = ProviderRuntimeContract.from_config_file(
+              Path("test/range/zscope.benchmark.yaml")
+          )
+          key_environment = load_explicit_api_key_file(
+              Path(os.environ["Z_SCOPE_P6_API_KEY_FILE"])
+          )
+          policy_environment = dict(key_environment)
+          for name in (
+              "Z_SCOPE_BENCHMARK_OCI_NETWORK",
+              "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER",
+          ):
+              value = os.environ.get(name, "").strip()
+              if not value:
+                  raise SystemExit(2)
+              policy_environment[name] = value
+          with tempfile.TemporaryDirectory(prefix="zscope-p6-oci-") as raw:
+              root = Path(raw)
+              scan_input, artifact_output, cache_output = (
+                  root / "input", root / "output", root / "cache"
+              )
+              runtime_source = root / "runtime-source" / "zscope"
+              for target in (scan_input, artifact_output, cache_output):
+                  target.mkdir(parents=True)
+              runtime_source_sha256 = prepare_p6_runtime_source(
+                  runtime_source, git_revision=os.environ["P6_CANDIDATE_COMMIT"]
+              )
+              executor = RootlessOciExecutor(
+                  runtime=runtime,
+                  image=image,
+                  scan_input=scan_input,
+                  artifact_output=artifact_output,
+                  cache_output=cache_output,
+                  runtime_source=runtime_source,
+                  environment=policy_environment,
+                  provider_contract=contract,
+              )
+              executor.preflight()
+              executor.execute_phase(
+                  "preflight",
+                  (
+                      "python3",
+                      "-c",
+                      "import sys;sys.path.insert(0,'/zscope-runtime');import zscope;"
+                      "assert str(zscope.__file__).startswith('/zscope-runtime/zscope/');"
+                      "assert zscope.__file__ is not None",
+                  ),
+                  log_path=root / "discarded-preflight.log",
+                  accepted_returncodes=(0,),
+                  provider_credentials=False,
+              )
+              phase_log = load_json_strict(root / "discarded-preflight.log")
+              if phase_log != {
+                  "schema_version": "zscope.oci-phase-log.v1",
+                  "phase": "preflight",
+                  "outcome": "completed",
+                  "return_code": 0,
+                  "return_code_accepted": True,
+                  "stdout_persisted": False,
+                  "stderr_persisted": False,
+              }:
+                  raise SystemExit(2)
+              execution = executor.execution_evidence(required_phases=("preflight",))
+              if validate_oci_execution_evidence(execution):
+                  raise SystemExit(2)
+              if (
+                  execution.get("runtime_source_mounted") is not True
+                  or execution.get("runtime_source_sha256") != runtime_source_sha256
+              ):
+                  raise SystemExit(2)
+              candidate = os.environ["P6_CANDIDATE_COMMIT"]
+              candidate_tree = subprocess.run(
+                  ["git", "rev-parse", "HEAD^{tree}"],
+                  cwd=os.environ["P6_CANDIDATE_ROOT"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+                  encoding="utf-8",
+              ).stdout.strip()
+              draft = {
+                  "schema_version": "zscope.p6-toolchain-oci-evidence.v1",
+                  "workflow_path": ".github/workflows/p6-pilot-validation.yml",
+                  "control_plane_commit": os.environ["P6_CONTROL_PLANE_COMMIT"],
+                  "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+                  "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                  "attempt_id": os.environ["P6_ATTEMPT_ID"],
+                  "candidate_sha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+                  "candidate_git_sha": candidate,
+                  "candidate_git_tree": candidate_tree,
+                  "image_ref": image,
+                  "image_digest": image.rsplit("@", 1)[1],
+                  "image_id": execution["image_id"],
+                  "runtime_source_sha256": runtime_source_sha256,
+                  "oci_execution_sha256": canonical_sha256(execution),
+                  "rootless_verified": execution["rootless_verified"] is True,
+                  "image_digest_verified": execution["image_digest_verified"] is True,
+                  "mounts_verified": execution["mounts_verified"] is True,
+                  "network_restriction_verified": execution["network_restriction_verified"] is True,
+                  "runtime_source_mounted": execution["runtime_source_mounted"] is True,
+                  "formal_evidence": False,
+                  "release_eligible": False,
+              }
+              Path("toolchain-draft.json").write_text(
+                  json.dumps(draft, sort_keys=True, separators=(",", ":")) + "\n",
+                  encoding="utf-8",
+              )
+          PY
+          then
+            echo '::error::stage=toolchain_oci_cache; class=oci_capability_failed:1; count=1'
+            exit 2
+          fi
+          if ! python3 scripts/p6_pilot_protocol.py seal-toolchain-evidence \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --candidate-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --draft toolchain-draft.json --output toolchain-evidence.json >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: toolchain-evidence.json
+          stage: toolchain_oci_cache
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-toolchain-oci-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/toolchain-evidence.json
+      - name: Remove exact current-attempt P6 scanners
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_oci_cleanup.py \
+            --runtime "$Z_SCOPE_BENCHMARK_OCI_RUNTIME" --mode current \
+            --repository "$GITHUB_REPOSITORY" --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi
+
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: toolchain_oci_preflight
+          default-class: oci_capability_failed
+
+  policy_replay:
+    name: P6 frozen policy replay
+    needs: toolchain_oci
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Fail closed unless the frozen replay input is exact
+        run: |
+          set -euo pipefail
+          case "$Z_SCOPE_P6_FROZEN_TRACE_ROOT" in /*) ;; *) exit 2 ;; esac
+          test -d "$Z_SCOPE_P6_FROZEN_TRACE_ROOT"
+          test ! -L "$Z_SCOPE_P6_FROZEN_TRACE_ROOT"
+          test "$(sha256sum "$Z_SCOPE_P6_FROZEN_TRACE_ROOT/decision_trace_manifest.json" | awk '{print $1}')" = "$Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256"
+      - name: Replay the frozen policy with zero model calls
+        run: |
+          set -euo pipefail
+          if ! python3 -m pytest -q \
+            tests/test_p1_frozen_replay.py \
+            tests/test_candidate_outcome_replay.py \
+            tests/test_validator_replay.py >/dev/null 2>&1; then
+            echo '::error::stage=proof_provider_checker; class=replay_nondeterministic:1; count=1'
+            exit 2
+          fi
+          if ! env -u Z_SCOPE_API_KEY -u Z_SCOPE_P6_API_KEY_FILE \
+            -u ANTHROPIC_API_KEY -u DEEPSEEK_API_KEY -u OPENAI_API_KEY \
+            python3 scripts/run_p6_policy_replay.py \
+              --trace-root "$Z_SCOPE_P6_FROZEN_TRACE_ROOT" \
+              --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+              --candidate-commit "$P6_CANDIDATE_COMMIT" \
+              --workflow-run-id "$GITHUB_RUN_ID" \
+              --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --output policy-replay.json >/dev/null 2>&1; then
+            echo '::error::stage=proof_provider_checker; class=replay_nondeterministic:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: policy-replay.json
+          stage: policy_replay
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-policy-replay-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/policy-replay.json
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: policy_replay
+          default-class: replay_nondeterministic
+
+  certificate_reverify:
+    name: P6 certificate reverify
+    needs: policy_replay
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore the exact policy-replay producer
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          POLICY_ID: ${{ needs.policy_replay.outputs.artifact_id }}
+          POLICY_DIGEST: ${{ needs.policy_replay.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$POLICY_ID" =~ ^[0-9]+$ ]]
+          [[ "$POLICY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 frozen policy replay' --artifact-id "$POLICY_ID" \
+            --artifact-name "p6-policy-replay-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$POLICY_DIGEST" --required-member policy-replay.json \
+            --output-dir restored/policy
+      - name: Reverify frozen certificates with zero model calls
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$Z_SCOPE_P6_FROZEN_TRACE_ROOT/decision_trace_manifest.json" | awk '{print $1}')" = "$Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256"
+          if ! python3 -m pytest -q tests/test_proof_kernel.py tests/test_p2_proof_lifecycle.py >/dev/null 2>&1; then
+            echo '::error::stage=proof_provider_checker; class=certificate_reverify_failure:1; count=1'
+            exit 2
+          fi
+          if ! python3 scripts/reverify_v3_trace.py --trace-root "$Z_SCOPE_P6_FROZEN_TRACE_ROOT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output v3-reverify.json >/dev/null 2>&1; then
+            echo '::error::stage=proof_provider_checker; class=certificate_reverify_failure:1; count=1'
+            exit 2
+          fi
+          readarray -t manifest_hashes < <(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          value = load_json_strict(Path("restored/policy/policy-replay.json"))
+          print(value["trace_manifest_sha256"])
+          print(value["trace_manifest_file_sha256"])
+          PY
+          )
+          test "${manifest_hashes[1]}" = "$Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256"
+          if ! python3 scripts/p6_pilot_protocol.py seal-offline-stage \
+            --stage reverify --suite-file scripts/reverify_v3_trace.py \
+            --suite-file v3-reverify.json --receipt v3-reverify.json \
+            --receipt-sha256 "$(sha256sum v3-reverify.json | awk '{print $1}')" \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --trace-manifest-sha256 "${manifest_hashes[0]}" \
+            --trace-manifest-file-sha256 "${manifest_hashes[1]}" \
+            --output offline-reverify.json >/dev/null 2>&1; then
+            echo '::error::stage=artifact_seal; class=artifact_integrity_failure:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: offline-reverify.json
+          stage: certificate_reverify
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-certificate-reverify-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/offline-reverify.json
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: certificate_reverify
+          default-class: certificate_reverify_failure
+
+  anonymous_qualification:
+    name: P6 anonymous qualification
+    needs: [certificate_reverify, toolchain_oci]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 180
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact toolchain evidence for the qualification receipt
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Execute frozen hidden-holdout harness against the current candidate
+        run: |
+          set -euo pipefail
+          QUALIFICATION_HARNESS="$Z_SCOPE_P6_QUALIFICATION_HARNESS"
+          HIDDEN_BUNDLE="$Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE"
+          HIDDEN_BUNDLE_SHA="$Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE_SHA256"
+          if ! python3 -m pytest -q \
+            tests/test_p2_proof_corpus.py \
+            tests/test_p3_security_spec_qualification.py \
+            tests/test_p4_hypothesis_qualification.py \
+            tests/test_p5_runtime_authority.py >/dev/null 2>&1; then
+            echo '::error::stage=candidates; class=anonymous_qualification_failed:1; count=1'
+            exit 2
+          fi
+          test "$(sha256sum "$QUALIFICATION_HARNESS" | awk '{print $1}')" = "$Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"
+          if ! python3 - "$QUALIFICATION_HARNESS" "$HIDDEN_BUNDLE" "$HIDDEN_BUNDLE_SHA" <<'PY' >/dev/null 2>&1
+          import os, subprocess, sys
+          from pathlib import Path
+          from zscope.benchmarking.provider_runtime import load_explicit_api_key_file
+          allowed = {
+              "PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR",
+              "LD_LIBRARY_PATH", "P6_CANDIDATE_COMMIT", "P6_ATTEMPT_ID",
+              "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+              "P6_MAX_CONCURRENT_CALLS",
+              "Z_SCOPE_BENCHMARK_OCI_RUNTIME", "Z_SCOPE_BENCHMARK_OCI_IMAGE",
+              "Z_SCOPE_BENCHMARK_OCI_NETWORK",
+              "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER",
+          }
+          child = {name: value for name, value in os.environ.items() if name in allowed}
+          key_file = os.environ["Z_SCOPE_P6_API_KEY_FILE"]
+          child.update(load_explicit_api_key_file(Path(key_file)))
+          command = [
+              sys.argv[1], "hidden-holdout", "--candidate", child["P6_CANDIDATE_COMMIT"],
+              "--workflow-run-id", child["GITHUB_RUN_ID"],
+              "--workflow-run-attempt", child["GITHUB_RUN_ATTEMPT"],
+              "--attempt-id", os.environ["P6_ATTEMPT_ID"],
+              "--control-plane-commit", os.environ["P6_CONTROL_PLANE_COMMIT"],
+              "--harness-sha256", os.environ["Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"],
+              "--workers", child["P6_MAX_CONCURRENT_CALLS"],
+              "--provider-model", "GLM-5.2", "--input", sys.argv[2],
+              "--input-sha256", sys.argv[3], "--output", "hidden-holdout-receipt.json",
+          ]
+          completed = subprocess.run(
+              command, env=child, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+              check=False,
+          )
+          raise SystemExit(completed.returncode)
+          PY
+          then
+            echo '::error::stage=candidates; class=anonymous_qualification_failed:1; count=1'
+            exit 2
+          fi
+          if ! python3 scripts/p6_pilot_protocol.py seal-offline-stage \
+            --stage hidden_holdout --suite-file hidden-holdout-receipt.json \
+            --receipt hidden-holdout-receipt.json \
+            --receipt-sha256 "$(sha256sum hidden-holdout-receipt.json | awk '{print $1}')" \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --harness-sha256 "$Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256" \
+            --qualification-input-sha256 "$Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE_SHA256" \
+            --toolchain-evidence restored/toolchain/toolchain-evidence.json \
+            --toolchain-evidence-sha256 "$(sha256sum restored/toolchain/toolchain-evidence.json | awk '{print $1}')" \
+            --output offline-hidden-holdout.json >/dev/null 2>&1; then
+            echo '::error::stage=usage_trace; class=accounting_conservation_failure:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: offline-hidden-holdout.json
+          stage: candidates
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-anonymous-qualification-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/offline-hidden-holdout.json
+      - name: Remove exact current-attempt P6 scanners
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_oci_cleanup.py \
+            --runtime "$Z_SCOPE_BENCHMARK_OCI_RUNTIME" --mode current \
+            --repository "$GITHUB_REPOSITORY" --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi
+
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: anonymous_qualification
+          default-class: anonymous_qualification_failed
+
+  safe_pair_validation:
+    name: P6 safe-pair validation
+    needs: [anonymous_qualification, toolchain_oci]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 180
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact toolchain evidence for the qualification receipt
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Execute frozen safe-pair dual-scan harness against the current candidate
+        run: |
+          set -euo pipefail
+          QUALIFICATION_HARNESS="$Z_SCOPE_P6_QUALIFICATION_HARNESS"
+          SAFE_BUNDLE="$Z_SCOPE_P6_SAFE_PAIR_BUNDLE"
+          SAFE_BUNDLE_SHA="$Z_SCOPE_P6_SAFE_PAIR_BUNDLE_SHA256"
+          if ! python3 -m pytest -q \
+            tests/test_range_v16_safe_pairs.py \
+            tests/test_fact_action_canary.py \
+            tests/test_validator_evidence_slice.py >/dev/null 2>&1; then
+            echo '::error::stage=terminal_authority; class=safe_pair_false_confirmation:1; count=1'
+            exit 2
+          fi
+          test "$(sha256sum "$QUALIFICATION_HARNESS" | awk '{print $1}')" = "$Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"
+          if ! python3 - "$QUALIFICATION_HARNESS" "$SAFE_BUNDLE" "$SAFE_BUNDLE_SHA" <<'PY' >/dev/null 2>&1
+          import os, subprocess, sys
+          from pathlib import Path
+          from zscope.benchmarking.provider_runtime import load_explicit_api_key_file
+          allowed = {
+              "PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR",
+              "LD_LIBRARY_PATH", "P6_CANDIDATE_COMMIT", "P6_ATTEMPT_ID",
+              "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+              "P6_MAX_CONCURRENT_CALLS",
+              "Z_SCOPE_BENCHMARK_OCI_RUNTIME", "Z_SCOPE_BENCHMARK_OCI_IMAGE",
+              "Z_SCOPE_BENCHMARK_OCI_NETWORK",
+              "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER",
+          }
+          child = {name: value for name, value in os.environ.items() if name in allowed}
+          key_file = os.environ["Z_SCOPE_P6_API_KEY_FILE"]
+          child.update(load_explicit_api_key_file(Path(key_file)))
+          command = [
+              sys.argv[1], "safe-pair-dual-scan", "--candidate", child["P6_CANDIDATE_COMMIT"],
+              "--workflow-run-id", child["GITHUB_RUN_ID"],
+              "--workflow-run-attempt", child["GITHUB_RUN_ATTEMPT"],
+              "--attempt-id", os.environ["P6_ATTEMPT_ID"],
+              "--control-plane-commit", os.environ["P6_CONTROL_PLANE_COMMIT"],
+              "--harness-sha256", os.environ["Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"],
+              "--workers", child["P6_MAX_CONCURRENT_CALLS"],
+              "--provider-model", "GLM-5.2", "--input", sys.argv[2],
+              "--input-sha256", sys.argv[3], "--output", "safe-pair-receipt.json",
+          ]
+          completed = subprocess.run(
+              command, env=child, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+              check=False,
+          )
+          raise SystemExit(completed.returncode)
+          PY
+          then
+            echo '::error::stage=terminal_authority; class=safe_pair_false_confirmation:1; count=1'
+            exit 2
+          fi
+          if ! python3 scripts/p6_pilot_protocol.py seal-offline-stage \
+            --stage safe_pair --suite-file safe-pair-receipt.json \
+            --receipt safe-pair-receipt.json \
+            --receipt-sha256 "$(sha256sum safe-pair-receipt.json | awk '{print $1}')" \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --harness-sha256 "$Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256" \
+            --qualification-input-sha256 "$Z_SCOPE_P6_SAFE_PAIR_BUNDLE_SHA256" \
+            --toolchain-evidence restored/toolchain/toolchain-evidence.json \
+            --toolchain-evidence-sha256 "$(sha256sum restored/toolchain/toolchain-evidence.json | awk '{print $1}')" \
+            --output offline-safe-pair.json >/dev/null 2>&1; then
+            echo '::error::stage=usage_trace; class=accounting_conservation_failure:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: offline-safe-pair.json
+          stage: terminal_authority
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-safe-pair-validation-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/offline-safe-pair.json
+      - name: Remove exact current-attempt P6 scanners
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_oci_cleanup.py \
+            --runtime "$Z_SCOPE_BENCHMARK_OCI_RUNTIME" --mode current \
+            --repository "$GITHUB_REPOSITORY" --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi
+
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: safe_pair_validation
+          default-class: safe_pair_false_confirmation
+
+  evidence_action_canary:
+    name: P6 EvidenceAction canary
+    needs: [safe_pair_validation, toolchain_oci]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 180
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact toolchain evidence for the qualification receipt
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Prepare answer-free EvidenceAction input and invoke the sealed candidate harness
+        run: |
+          set -euo pipefail
+          TRACE_ROOT="$Z_SCOPE_P6_FROZEN_TRACE_ROOT"
+          CANARY_SOURCE="$Z_SCOPE_P6_CANARY_SOURCE_ROOT"
+          COMPILE_COMMANDS="$Z_SCOPE_P6_CANARY_COMPILE_COMMANDS"
+          if ! python3 - <<'PY' >/dev/null 2>&1
+          import hashlib
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["Z_SCOPE_P6_CANARY_SOURCE_ROOT"])
+          snapshot = Path("sealed-canary-source")
+          if snapshot.exists() or snapshot.is_symlink():
+              raise SystemExit(2)
+          snapshot.mkdir(mode=0o700)
+          digest = hashlib.sha256()
+          for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+              if path.is_symlink():
+                  raise SystemExit(2)
+              if not path.is_file():
+                  continue
+              relative_path = path.relative_to(root)
+              relative = relative_path.as_posix().encode("utf-8")
+              payload = path.read_bytes()
+              digest.update(len(relative).to_bytes(8, "big"))
+              digest.update(relative)
+              digest.update(len(payload).to_bytes(8, "big"))
+              digest.update(payload)
+              target = snapshot / relative_path
+              target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+              target.write_bytes(payload)
+          if digest.hexdigest() != os.environ["Z_SCOPE_P6_CANARY_SOURCE_TREE_SHA256"]:
+              raise SystemExit(2)
+          PY
+          then
+            echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
+            exit 2
+          fi
+          CANARY_SOURCE="$PWD/sealed-canary-source"
+          if ! python3 scripts/prepare_v3_action_canary.py --trace-root "$TRACE_ROOT" \
+            --source-root "$CANARY_SOURCE" --compile-commands "$COMPILE_COMMANDS" \
+            --output v3-canary-preflight.json >/dev/null 2>&1; then
+            echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
+            exit 2
+          fi
+          preflight_sha="$(python3 -c 'from pathlib import Path; from zscope.benchmarking.p6_protocol import load_json_strict; print(load_json_strict(Path("v3-canary-preflight.json"))["artifact_sha256"])')"
+          test "$(sha256sum "$Z_SCOPE_P6_QUALIFICATION_HARNESS" | awk '{print $1}')" = "$Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"
+          if ! python3 - "$preflight_sha" "$TRACE_ROOT" "$CANARY_SOURCE" "$COMPILE_COMMANDS" <<'PY' >/dev/null 2>&1
+          import os, subprocess, sys
+          from pathlib import Path
+          from zscope.benchmarking.provider_runtime import load_explicit_api_key_file
+          allowed = {
+              "PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR",
+              "LD_LIBRARY_PATH", "P6_CANDIDATE_COMMIT", "P6_ATTEMPT_ID",
+              "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+              "P6_MAX_CONCURRENT_CALLS",
+              "Z_SCOPE_BENCHMARK_OCI_RUNTIME", "Z_SCOPE_BENCHMARK_OCI_IMAGE",
+              "Z_SCOPE_BENCHMARK_OCI_NETWORK",
+              "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER",
+          }
+          env = {name: value for name, value in os.environ.items() if name in allowed}
+          key_file = os.environ["Z_SCOPE_P6_API_KEY_FILE"]
+          env.update(load_explicit_api_key_file(Path(key_file)))
+          command = [
+              os.environ["Z_SCOPE_P6_QUALIFICATION_HARNESS"],
+              "evidence-action-canary",
+              "--candidate", env["P6_CANDIDATE_COMMIT"],
+              "--workflow-run-id", env["GITHUB_RUN_ID"],
+              "--workflow-run-attempt", env["GITHUB_RUN_ATTEMPT"],
+              "--attempt-id", os.environ["P6_ATTEMPT_ID"],
+              "--control-plane-commit", os.environ["P6_CONTROL_PLANE_COMMIT"],
+              "--harness-sha256", os.environ["Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"],
+              "--workers", env["P6_MAX_CONCURRENT_CALLS"],
+              "--provider-model", "GLM-5.2",
+              "--preflight", "v3-canary-preflight.json",
+              "--expected-preflight-sha256", sys.argv[1],
+              "--trace-root", sys.argv[2], "--source-root", sys.argv[3],
+              "--compile-commands", sys.argv[4],
+              "--trace-manifest-sha256", os.environ["Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256"],
+              "--source-tree-sha256", os.environ["Z_SCOPE_P6_CANARY_SOURCE_TREE_SHA256"],
+              "--compile-commands-sha256", os.environ["Z_SCOPE_P6_CANARY_COMPILE_COMMANDS_SHA256"],
+              "--output", "v3-model-canary.json",
+          ]
+          raise SystemExit(
+              subprocess.run(
+                  command, env=env, stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL, check=False,
+              ).returncode
+          )
+          PY
+          then
+            echo '::error::stage=evidence_action; class=evidence_action_not_consumed:1; count=1'
+            exit 2
+          fi
+          if ! python3 scripts/p6_pilot_protocol.py seal-offline-stage \
+            --stage canary --suite-file v3-model-canary.json \
+            --receipt v3-model-canary.json \
+            --receipt-sha256 "$(sha256sum v3-model-canary.json | awk '{print $1}')" \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --harness-sha256 "$Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256" \
+            --qualification-input-sha256 "$preflight_sha" \
+            --toolchain-evidence restored/toolchain/toolchain-evidence.json \
+            --toolchain-evidence-sha256 "$(sha256sum restored/toolchain/toolchain-evidence.json | awk '{print $1}')" \
+            --output offline-canary.json >/dev/null 2>&1; then
+            echo '::error::stage=usage_trace; class=accounting_conservation_failure:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: offline-canary.json
+          stage: evidence_action
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-evidence-action-canary-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/offline-canary.json
+      - name: Remove exact current-attempt P6 scanners
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_oci_cleanup.py \
+            --runtime "$Z_SCOPE_BENCHMARK_OCI_RUNTIME" --mode current \
+            --repository "$GITHUB_REPOSITORY" --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi
+
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: evidence_action_canary
+          default-class: evidence_action_not_consumed
+
+  offline_qualification:
+    name: seal P6 offline evidence
+    needs: [toolchain_oci, policy_replay, certificate_reverify, anonymous_qualification, safe_pair_validation, evidence_action_canary]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact per-stage offline artifacts
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          POLICY_ID: ${{ needs.policy_replay.outputs.artifact_id }}
+          POLICY_DIGEST: ${{ needs.policy_replay.outputs.artifact_digest }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+          REVERIFY_ID: ${{ needs.certificate_reverify.outputs.artifact_id }}
+          REVERIFY_DIGEST: ${{ needs.certificate_reverify.outputs.artifact_digest }}
+          HIDDEN_ID: ${{ needs.anonymous_qualification.outputs.artifact_id }}
+          HIDDEN_DIGEST: ${{ needs.anonymous_qualification.outputs.artifact_digest }}
+          SAFE_ID: ${{ needs.safe_pair_validation.outputs.artifact_id }}
+          SAFE_DIGEST: ${{ needs.safe_pair_validation.outputs.artifact_digest }}
+          CANARY_ID: ${{ needs.evidence_action_canary.outputs.artifact_id }}
+          CANARY_DIGEST: ${{ needs.evidence_action_canary.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          for value in "$POLICY_ID" "$TOOLCHAIN_ID" "$REVERIFY_ID" "$HIDDEN_ID" "$SAFE_ID" "$CANARY_ID"; do [[ "$value" =~ ^[0-9]+$ ]]; done
+          for value in "$POLICY_DIGEST" "$TOOLCHAIN_DIGEST" "$REVERIFY_DIGEST" "$HIDDEN_DIGEST" "$SAFE_DIGEST" "$CANARY_DIGEST"; do [[ "$value" =~ ^[0-9a-f]{64}$ ]]; done
+          restore() {
+            local job="$1" id="$2" name="$3" digest="$4" member="$5" target="$6"
+            python3 scripts/download_p6_run_artifact.py \
+              --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+              --candidate-commit "$P6_CANDIDATE_COMMIT" \
+              --producer-job "$job" --artifact-id "$id" --artifact-name "$name" \
+              --artifact-digest "sha256:$digest" --required-member "$member" \
+              --output-dir "$target"
+          }
+          restore 'P6 frozen policy replay' "$POLICY_ID" "p6-policy-replay-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$POLICY_DIGEST" policy-replay.json restored/policy
+          restore 'toolchain OCI and cold-cache preflight' "$TOOLCHAIN_ID" "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$TOOLCHAIN_DIGEST" toolchain-evidence.json restored/toolchain
+          restore 'P6 certificate reverify' "$REVERIFY_ID" "p6-certificate-reverify-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$REVERIFY_DIGEST" offline-reverify.json restored/reverify
+          restore 'P6 anonymous qualification' "$HIDDEN_ID" "p6-anonymous-qualification-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$HIDDEN_DIGEST" offline-hidden-holdout.json restored/hidden
+          restore 'P6 safe-pair validation' "$SAFE_ID" "p6-safe-pair-validation-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$SAFE_DIGEST" offline-safe-pair.json restored/safe
+          restore 'P6 EvidenceAction canary' "$CANARY_ID" "p6-evidence-action-canary-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$CANARY_DIGEST" offline-canary.json restored/canary
+      - name: Seal answer-free offline evidence marker
+        run: |
+          set -euo pipefail
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          policy_sha="$(sha256sum zscope/benchmarking/benchmark_policy.v2.json | awk '{print $1}')"
+          policy_replay_sha="$(sha256sum restored/policy/policy-replay.json | awk '{print $1}')"
+          toolchain_sha="$(sha256sum restored/toolchain/toolchain-evidence.json | awk '{print $1}')"
+          reverify_sha="$(sha256sum restored/reverify/offline-reverify.json | awk '{print $1}')"
+          hidden_sha="$(sha256sum restored/hidden/offline-hidden-holdout.json | awk '{print $1}')"
+          safe_sha="$(sha256sum restored/safe/offline-safe-pair.json | awk '{print $1}')"
+          canary_sha="$(sha256sum restored/canary/offline-canary.json | awk '{print $1}')"
+          if ! python3 scripts/p6_pilot_protocol.py seal-offline-evidence \
+            --candidate-sha256 "$candidate_sha" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --policy-sha256 "$policy_sha" \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --harness-sha256 "$Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256" \
+            --toolchain-evidence restored/toolchain/toolchain-evidence.json --toolchain-evidence-sha256 "$toolchain_sha" \
+            --trace-manifest-file-sha256 "$Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256" \
+            --policy-replay-artifact restored/policy/policy-replay.json --policy-replay-sha256 "$policy_replay_sha" \
+            --reverify-artifact restored/reverify/offline-reverify.json --reverify-sha256 "$reverify_sha" \
+            --hidden-holdout-artifact restored/hidden/offline-hidden-holdout.json --hidden-holdout-sha256 "$hidden_sha" \
+            --safe-pair-artifact restored/safe/offline-safe-pair.json --safe-pair-sha256 "$safe_sha" \
+            --canary-artifact restored/canary/offline-canary.json --canary-sha256 "$canary_sha" \
+            --output offline-evidence.json >/dev/null 2>&1; then
+            echo '::error::stage=artifact_seal; class=artifact_integrity_failure:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: offline-evidence.json
+          stage: usage_trace
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-offline-evidence-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/offline-evidence.json
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: cold_fast
+          default-class: internal_failure
+
+  cold_fast:
+    name: one isolated cold fast pilot
+    needs: [offline_qualification, toolchain_oci]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact same-run toolchain evidence
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Execute fast from a new empty cache root
+        run: |
+          set -euo pipefail
+          export Z_SCOPE_P6_CANDIDATE_COMMIT="$P6_CANDIDATE_COMMIT"
+          export Z_SCOPE_BENCHMARK_WORK_ROOT="$RUNNER_TEMP/p6-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-fast"
+          test ! -e "$Z_SCOPE_BENCHMARK_WORK_ROOT"
+          mkdir -m 700 "$Z_SCOPE_BENCHMARK_WORK_ROOT"
+          if ! python3 scripts/run_p6_cold_producer.py --scan-depth fast \
+            --output p6-fast --failure-marker "$RUNNER_TEMP/p6-cold-fast-failure.json" \
+            >/dev/null 2>&1; then
+            exit 2
+          fi
+          toolchain_sha="$(sha256sum restored/toolchain/toolchain-evidence.json | awk '{print $1}')"
+          if ! python3 scripts/p6_pilot_protocol.py project-depth \
+            --aggregate p6-fast/aggregate.json --scan-depth fast \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --expected-git-sha "$P6_CANDIDATE_COMMIT" \
+            --expected-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --toolchain-evidence restored/toolchain/toolchain-evidence.json \
+            --toolchain-evidence-sha256 "$toolchain_sha" \
+            --output p6-fast-projection.json >/dev/null 2>&1; then
+            echo '::error::stage=artifact_seal; class=artifact_integrity_failure:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: p6-fast-projection.json
+          stage: artifact_seal
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-cold-fast-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/p6-fast-projection.json
+      - name: Remove exact current-attempt P6 scanners
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_oci_cleanup.py \
+            --runtime "$Z_SCOPE_BENCHMARK_OCI_RUNTIME" --mode current \
+            --repository "$GITHUB_REPOSITORY" --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi
+
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: cold_fast
+          default-class: quality_no_progress_gate_failed
+          marker: ${{ runner.temp }}/p6-cold-fast-failure.json
+
+  cold_balanced:
+    name: one isolated cold balanced pilot
+    needs: [cold_fast, toolchain_oci]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact same-run toolchain evidence
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Execute balanced from a new empty cache root
+        run: |
+          set -euo pipefail
+          export Z_SCOPE_P6_CANDIDATE_COMMIT="$P6_CANDIDATE_COMMIT"
+          export Z_SCOPE_BENCHMARK_WORK_ROOT="$RUNNER_TEMP/p6-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-balanced"
+          test ! -e "$Z_SCOPE_BENCHMARK_WORK_ROOT"
+          mkdir -m 700 "$Z_SCOPE_BENCHMARK_WORK_ROOT"
+          if ! python3 scripts/run_p6_cold_producer.py --scan-depth balanced \
+            --output p6-balanced --failure-marker "$RUNNER_TEMP/p6-cold-balanced-failure.json" \
+            >/dev/null 2>&1; then
+            exit 2
+          fi
+          toolchain_sha="$(sha256sum restored/toolchain/toolchain-evidence.json | awk '{print $1}')"
+          if ! python3 scripts/p6_pilot_protocol.py project-depth \
+            --aggregate p6-balanced/aggregate.json --scan-depth balanced \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --expected-git-sha "$P6_CANDIDATE_COMMIT" \
+            --expected-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --toolchain-evidence restored/toolchain/toolchain-evidence.json \
+            --toolchain-evidence-sha256 "$toolchain_sha" \
+            --output p6-balanced-projection.json >/dev/null 2>&1; then
+            echo '::error::stage=artifact_seal; class=artifact_integrity_failure:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: p6-balanced-projection.json
+          stage: artifact_seal
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-cold-balanced-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/p6-balanced-projection.json
+      - name: Remove exact current-attempt P6 scanners
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_oci_cleanup.py \
+            --runtime "$Z_SCOPE_BENCHMARK_OCI_RUNTIME" --mode current \
+            --repository "$GITHUB_REPOSITORY" --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi
+
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: cold_balanced
+          default-class: quality_no_progress_gate_failed
+          marker: ${{ runner.temp }}/p6-cold-balanced-failure.json
+
+  cold_deep:
+    name: one isolated cold deep pilot
+    needs: [cold_balanced, toolchain_oci]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact same-run toolchain evidence
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Execute deep from a new empty cache root
+        run: |
+          set -euo pipefail
+          export Z_SCOPE_P6_CANDIDATE_COMMIT="$P6_CANDIDATE_COMMIT"
+          export Z_SCOPE_BENCHMARK_WORK_ROOT="$RUNNER_TEMP/p6-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-deep"
+          test ! -e "$Z_SCOPE_BENCHMARK_WORK_ROOT"
+          mkdir -m 700 "$Z_SCOPE_BENCHMARK_WORK_ROOT"
+          if ! python3 scripts/run_p6_cold_producer.py --scan-depth deep \
+            --output p6-deep --failure-marker "$RUNNER_TEMP/p6-cold-deep-failure.json" \
+            >/dev/null 2>&1; then
+            exit 2
+          fi
+          toolchain_sha="$(sha256sum restored/toolchain/toolchain-evidence.json | awk '{print $1}')"
+          if ! python3 scripts/p6_pilot_protocol.py project-depth \
+            --aggregate p6-deep/aggregate.json --scan-depth deep \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --expected-git-sha "$P6_CANDIDATE_COMMIT" \
+            --expected-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --toolchain-evidence restored/toolchain/toolchain-evidence.json \
+            --toolchain-evidence-sha256 "$toolchain_sha" \
+            --output p6-deep-projection.json >/dev/null 2>&1; then
+            echo '::error::stage=artifact_seal; class=artifact_integrity_failure:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: p6-deep-projection.json
+          stage: artifact_seal
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-cold-deep-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/p6-deep-projection.json
+      - name: Remove exact current-attempt P6 scanners
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_oci_cleanup.py \
+            --runtime "$Z_SCOPE_BENCHMARK_OCI_RUNTIME" --mode current \
+            --repository "$GITHUB_REPOSITORY" --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi
+
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: cold_deep
+          default-class: quality_no_progress_gate_failed
+          marker: ${{ runner.temp }}/p6-cold-deep-failure.json
+
+  qualification_seal:
+    name: conservation and qualification seal
+    needs: [provider_probe, toolchain_oci, offline_qualification, cold_fast, cold_balanced, cold_deep]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact same-run artifacts with metadata digest and safe-ZIP validation
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          PROVIDER_ID: ${{ needs.provider_probe.outputs.artifact_id }}
+          PROVIDER_DIGEST: ${{ needs.provider_probe.outputs.artifact_digest }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+          OFFLINE_ID: ${{ needs.offline_qualification.outputs.artifact_id }}
+          OFFLINE_DIGEST: ${{ needs.offline_qualification.outputs.artifact_digest }}
+          FAST_ID: ${{ needs.cold_fast.outputs.artifact_id }}
+          FAST_DIGEST: ${{ needs.cold_fast.outputs.artifact_digest }}
+          BALANCED_ID: ${{ needs.cold_balanced.outputs.artifact_id }}
+          BALANCED_DIGEST: ${{ needs.cold_balanced.outputs.artifact_digest }}
+          DEEP_ID: ${{ needs.cold_deep.outputs.artifact_id }}
+          DEEP_DIGEST: ${{ needs.cold_deep.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          for value in "$PROVIDER_ID" "$TOOLCHAIN_ID" "$OFFLINE_ID" "$FAST_ID" "$BALANCED_ID" "$DEEP_ID"; do
+            [[ "$value" =~ ^[0-9]+$ ]]
+          done
+          for value in "$PROVIDER_DIGEST" "$TOOLCHAIN_DIGEST" "$OFFLINE_DIGEST" "$FAST_DIGEST" "$BALANCED_DIGEST" "$DEEP_DIGEST"; do
+            [[ "$value" =~ ^[0-9a-f]{64}$ ]]
+          done
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'source-free GLM-5.2 provider probe' --artifact-id "$PROVIDER_ID" \
+            --artifact-name "p6-provider-probe-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$PROVIDER_DIGEST" --required-member provider-probe.json \
+            --output-dir restored/provider
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'seal P6 offline evidence' \
+            --artifact-id "$OFFLINE_ID" --artifact-name "p6-offline-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$OFFLINE_DIGEST" --required-member offline-evidence.json \
+            --output-dir restored/offline
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'one isolated cold fast pilot' --artifact-id "$FAST_ID" \
+            --artifact-name "p6-cold-fast-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$FAST_DIGEST" --required-member p6-fast-projection.json \
+            --output-dir restored/fast
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'one isolated cold balanced pilot' --artifact-id "$BALANCED_ID" \
+            --artifact-name "p6-cold-balanced-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$BALANCED_DIGEST" --required-member p6-balanced-projection.json \
+            --output-dir restored/balanced
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'one isolated cold deep pilot' --artifact-id "$DEEP_ID" \
+            --artifact-name "p6-cold-deep-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$DEEP_DIGEST" --required-member p6-deep-projection.json \
+            --output-dir restored/deep
+      - name: Revalidate conservation and select one producer per depth
+        run: |
+          set -euo pipefail
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          policy_sha="$(sha256sum zscope/benchmarking/benchmark_policy.v2.json | awk '{print $1}')"
+          provider_probe_sha="$(sha256sum restored/provider/provider-probe.json | awk '{print $1}')"
+          offline_sha="$(sha256sum restored/offline/offline-evidence.json | awk '{print $1}')"
+          toolchain_sha="$(sha256sum restored/toolchain/toolchain-evidence.json | awk '{print $1}')"
+          fast_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:fast" | sha256sum | awk '{print $1}')"
+          balanced_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:balanced" | sha256sum | awk '{print $1}')"
+          deep_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:deep" | sha256sum | awk '{print $1}')"
+          python3 scripts/p6_pilot_protocol.py seal-qualification \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --fast restored/fast/p6-fast-projection.json \
+            --balanced restored/balanced/p6-balanced-projection.json \
+            --deep restored/deep/p6-deep-projection.json \
+            --fast-cache-sha256 "$fast_cache" \
+            --balanced-cache-sha256 "$balanced_cache" \
+            --deep-cache-sha256 "$deep_cache" \
+            --candidate-sha256 "$candidate_sha" \
+            --policy-sha256 "$policy_sha" \
+            --provider-probe restored/provider/provider-probe.json \
+            --provider-probe-sha256 "$provider_probe_sha" \
+            --offline-evidence restored/offline/offline-evidence.json \
+            --offline-evidence-sha256 "$offline_sha" \
+            --toolchain-evidence restored/toolchain/toolchain-evidence.json \
+            --toolchain-evidence-sha256 "$toolchain_sha" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --output qualification.json
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: qualification.json
+          stage: artifact_seal
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-qualification-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/qualification.json
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: qualification_seal
+          default-class: accounting_conservation_failure
+
+  product_architecture_review:
+    name: independent product architecture review
+    needs: [qualification_seal, entry]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore the exact qualification artifact
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.qualification_seal.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.qualification_seal.outputs.artifact_digest }}
+          ENTRY_ID: ${{ needs.entry.outputs.artifact_id }}
+          ENTRY_DIGEST: ${{ needs.entry.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ENTRY_ID" =~ ^[0-9]+$ ]]
+          [[ "$ENTRY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'conservation and qualification seal' --artifact-id "$ARTIFACT_ID" \
+            --artifact-name "p6-qualification-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$ARTIFACT_DIGEST" --required-member qualification.json \
+            --output-dir packet/evidence
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 entry and provider identity' --artifact-id "$ENTRY_ID" \
+            --artifact-name "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$ENTRY_DIGEST" --required-member entry-evidence.json \
+            --output-dir packet/entry
+      - name: Build the product-architecture packet without reviewer credentials
+        run: |
+          set -euo pipefail
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          policy_sha="$(sha256sum zscope/benchmarking/benchmark_policy.v2.json | awk '{print $1}')"
+          qualification_sha="$(python3 -c 'from pathlib import Path; from zscope.benchmarking.p6_protocol import load_json_strict; print(load_json_strict(Path("packet/evidence/qualification.json"))["qualification_sha256"])')"
+          python3 scripts/project_p6_entry_lineage.py \
+            --entry-evidence packet/entry/entry-evidence.json \
+            --output packet/evidence/e0-lineage.json >/dev/null
+          evidence_root_sha="$(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import canonical_sha256, load_json_strict
+          qualification = load_json_strict(Path("packet/evidence/qualification.json"))
+          lineage = load_json_strict(Path("packet/evidence/e0-lineage.json"))
+          print(canonical_sha256({
+              "qualification_sha256": qualification["qualification_sha256"],
+              "e0_lineage_artifact_sha256": lineage["artifact_sha256"],
+          }))
+          PY
+          )"
+          python3 -m zscope.benchmarking.p6_review project-role-evidence \
+            --qualification packet/evidence/qualification.json --role product_architecture \
+            --output packet/evidence/product-architecture.json
+          python3 -m zscope.benchmarking.p6_review build-review-material \
+            --candidate-root "$P6_CANDIDATE_ROOT" --role product_architecture \
+            --output packet/evidence/review-material-manifest.json
+          python3 scripts/p6_pilot_protocol.py build-review-packet \
+            --role product_architecture --candidate-sha256 "$candidate_sha" \
+            --policy-sha256 "$policy_sha" --qualification-sha256 "$qualification_sha" \
+            --evidence-root-sha256 "$evidence_root_sha" \
+            --artifact evidence/product-architecture.json=packet/evidence/product-architecture.json \
+            --artifact evidence/e0-lineage.json=packet/evidence/e0-lineage.json \
+            --artifact evidence/review-material-manifest.json=packet/evidence/review-material-manifest.json \
+            --output packet/packet.json
+      - name: Invoke exact Claude Code 2.1.233 glm-5.3 high identity
+        run: |
+          set -euo pipefail
+          if ! python3 - <<'PY' >/dev/null 2>&1
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_review import run_reviewer
+          run_reviewer(
+              role="product_architecture", packet_path=Path("packet/packet.json"),
+              output_dir=Path("review"),
+              material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
+          )
+          PY
+          then
+            echo '::error::stage=independent_review; class=review_blocker:1; count=1'
+            exit 2
+          fi
+      - name: Validate the product-architecture output without reviewer credentials
+        run: |
+          set -euo pipefail
+          if ! python3 - <<'PY' >/dev/null 2>&1
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_review import validate_review_artifact
+          validate_review_artifact(
+              output_dir=Path("review"), packet_path=Path("packet/packet.json"),
+              role="product_architecture",
+              material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
+          )
+          PY
+          then
+            echo '::error::stage=independent_review; class=review_binding_invalid:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-review-product-architecture-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: |
+            control/packet/packet.json
+            control/packet/evidence/product-architecture.json
+            control/packet/evidence/e0-lineage.json
+            control/packet/evidence/review-material-manifest.json
+            control/review
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: product_architecture_review
+          default-class: review_binding_invalid
+
+  proof_security_review:
+    name: independent proof security review
+    needs: [product_architecture_review, qualification_seal, entry]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore the exact qualification artifact
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.qualification_seal.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.qualification_seal.outputs.artifact_digest }}
+          ENTRY_ID: ${{ needs.entry.outputs.artifact_id }}
+          ENTRY_DIGEST: ${{ needs.entry.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ENTRY_ID" =~ ^[0-9]+$ ]]
+          [[ "$ENTRY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'conservation and qualification seal' --artifact-id "$ARTIFACT_ID" \
+            --artifact-name "p6-qualification-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$ARTIFACT_DIGEST" --required-member qualification.json \
+            --output-dir packet/evidence
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 entry and provider identity' --artifact-id "$ENTRY_ID" \
+            --artifact-name "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$ENTRY_DIGEST" --required-member entry-evidence.json \
+            --output-dir packet/entry
+      - name: Build the proof-security packet without reviewer credentials
+        run: |
+          set -euo pipefail
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          policy_sha="$(sha256sum zscope/benchmarking/benchmark_policy.v2.json | awk '{print $1}')"
+          qualification_sha="$(python3 -c 'from pathlib import Path; from zscope.benchmarking.p6_protocol import load_json_strict; print(load_json_strict(Path("packet/evidence/qualification.json"))["qualification_sha256"])')"
+          python3 scripts/project_p6_entry_lineage.py \
+            --entry-evidence packet/entry/entry-evidence.json \
+            --output packet/evidence/e0-lineage.json >/dev/null
+          evidence_root_sha="$(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import canonical_sha256, load_json_strict
+          qualification = load_json_strict(Path("packet/evidence/qualification.json"))
+          lineage = load_json_strict(Path("packet/evidence/e0-lineage.json"))
+          print(canonical_sha256({
+              "qualification_sha256": qualification["qualification_sha256"],
+              "e0_lineage_artifact_sha256": lineage["artifact_sha256"],
+          }))
+          PY
+          )"
+          python3 -m zscope.benchmarking.p6_review project-role-evidence \
+            --qualification packet/evidence/qualification.json --role proof_security \
+            --output packet/evidence/proof-security.json
+          python3 -m zscope.benchmarking.p6_review build-review-material \
+            --candidate-root "$P6_CANDIDATE_ROOT" --role proof_security \
+            --output packet/evidence/review-material-manifest.json
+          python3 scripts/p6_pilot_protocol.py build-review-packet \
+            --role proof_security --candidate-sha256 "$candidate_sha" \
+            --policy-sha256 "$policy_sha" --qualification-sha256 "$qualification_sha" \
+            --evidence-root-sha256 "$evidence_root_sha" \
+            --artifact evidence/proof-security.json=packet/evidence/proof-security.json \
+            --artifact evidence/e0-lineage.json=packet/evidence/e0-lineage.json \
+            --artifact evidence/review-material-manifest.json=packet/evidence/review-material-manifest.json \
+            --output packet/packet.json
+      - name: Invoke exact DSH 0.1.0-rc.6 DeepSeek v4 Pro max identity
+        run: |
+          set -euo pipefail
+          if ! python3 - <<'PY' >/dev/null 2>&1
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_review import run_reviewer
+          run_reviewer(
+              role="proof_security", packet_path=Path("packet/packet.json"),
+              output_dir=Path("review"),
+              material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
+          )
+          PY
+          then
+            echo '::error::stage=independent_review; class=review_blocker:1; count=1'
+            exit 2
+          fi
+      - name: Validate the proof-security output without reviewer credentials
+        run: |
+          set -euo pipefail
+          if ! python3 - <<'PY' >/dev/null 2>&1
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_review import validate_review_artifact
+          validate_review_artifact(
+              output_dir=Path("review"), packet_path=Path("packet/packet.json"),
+              role="proof_security",
+              material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
+          )
+          PY
+          then
+            echo '::error::stage=independent_review; class=review_binding_invalid:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-review-proof-security-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: |
+            control/packet/packet.json
+            control/packet/evidence/proof-security.json
+            control/packet/evidence/e0-lineage.json
+            control/packet/evidence/review-material-manifest.json
+            control/review
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: proof_security_review
+          default-class: review_binding_invalid
+
+  independent_benchmark_review:
+    name: independent benchmark review
+    needs: [proof_security_review, qualification_seal, entry]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 720
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore the exact qualification artifact
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.qualification_seal.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.qualification_seal.outputs.artifact_digest }}
+          ENTRY_ID: ${{ needs.entry.outputs.artifact_id }}
+          ENTRY_DIGEST: ${{ needs.entry.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ENTRY_ID" =~ ^[0-9]+$ ]]
+          [[ "$ENTRY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'conservation and qualification seal' --artifact-id "$ARTIFACT_ID" \
+            --artifact-name "p6-qualification-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$ARTIFACT_DIGEST" --required-member qualification.json \
+            --output-dir packet/evidence
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 entry and provider identity' --artifact-id "$ENTRY_ID" \
+            --artifact-name "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$ENTRY_DIGEST" --required-member entry-evidence.json \
+            --output-dir packet/entry
+      - name: Build the independent-benchmark packet without reviewer credentials
+        run: |
+          set -euo pipefail
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          policy_sha="$(sha256sum zscope/benchmarking/benchmark_policy.v2.json | awk '{print $1}')"
+          qualification_sha="$(python3 -c 'from pathlib import Path; from zscope.benchmarking.p6_protocol import load_json_strict; print(load_json_strict(Path("packet/evidence/qualification.json"))["qualification_sha256"])')"
+          python3 scripts/project_p6_entry_lineage.py \
+            --entry-evidence packet/entry/entry-evidence.json \
+            --output packet/evidence/e0-lineage.json >/dev/null
+          evidence_root_sha="$(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import canonical_sha256, load_json_strict
+          qualification = load_json_strict(Path("packet/evidence/qualification.json"))
+          lineage = load_json_strict(Path("packet/evidence/e0-lineage.json"))
+          print(canonical_sha256({
+              "qualification_sha256": qualification["qualification_sha256"],
+              "e0_lineage_artifact_sha256": lineage["artifact_sha256"],
+          }))
+          PY
+          )"
+          python3 -m zscope.benchmarking.p6_review project-role-evidence \
+            --qualification packet/evidence/qualification.json --role independent_benchmark \
+            --output packet/evidence/independent-benchmark.json
+          python3 -m zscope.benchmarking.p6_review build-review-material \
+            --candidate-root "$P6_CANDIDATE_ROOT" --role independent_benchmark \
+            --output packet/evidence/review-material-manifest.json
+          python3 scripts/p6_pilot_protocol.py build-review-packet \
+            --role independent_benchmark --candidate-sha256 "$candidate_sha" \
+            --policy-sha256 "$policy_sha" --qualification-sha256 "$qualification_sha" \
+            --evidence-root-sha256 "$evidence_root_sha" \
+            --artifact evidence/independent-benchmark.json=packet/evidence/independent-benchmark.json \
+            --artifact evidence/e0-lineage.json=packet/evidence/e0-lineage.json \
+            --artifact evidence/review-material-manifest.json=packet/evidence/review-material-manifest.json \
+            --output packet/packet.json
+      - name: Invoke exact Codex CLI 0.144.4 GPT-5.6-Sol xhigh identity
+        run: |
+          set -euo pipefail
+          if ! python3 - <<'PY' >/dev/null 2>&1
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_review import run_reviewer
+          run_reviewer(
+              role="independent_benchmark", packet_path=Path("packet/packet.json"),
+              output_dir=Path("review"),
+              material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
+          )
+          PY
+          then
+            echo '::error::stage=independent_review; class=review_blocker:1; count=1'
+            exit 2
+          fi
+      - name: Validate the independent-benchmark output without reviewer credentials
+        run: |
+          set -euo pipefail
+          if ! python3 - <<'PY' >/dev/null 2>&1
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_review import validate_review_artifact
+          validate_review_artifact(
+              output_dir=Path("review"), packet_path=Path("packet/packet.json"),
+              role="independent_benchmark",
+              material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
+          )
+          PY
+          then
+            echo '::error::stage=independent_review; class=review_binding_invalid:1; count=1'
+            exit 2
+          fi
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-review-independent-benchmark-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: |
+            control/packet/packet.json
+            control/packet/evidence/independent-benchmark.json
+            control/packet/evidence/e0-lineage.json
+            control/packet/evidence/review-material-manifest.json
+            control/review
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: independent_benchmark_review
+          default-class: review_binding_invalid
+
+  final_evidence_seal:
+    name: seal complete reviewed P6 checkpoint
+    needs: [entry, provider_probe, toolchain_oci, policy_replay, certificate_reverify, anonymous_qualification, safe_pair_validation, evidence_action_canary, offline_qualification, cold_fast, cold_balanced, cold_deep, qualification_seal, product_architecture_review, proof_security_review, independent_benchmark_review]
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore exact qualification and independent-review artifacts
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          ENTRY_ID: ${{ needs.entry.outputs.artifact_id }}
+          ENTRY_DIGEST: ${{ needs.entry.outputs.artifact_digest }}
+          PROVIDER_ID: ${{ needs.provider_probe.outputs.artifact_id }}
+          PROVIDER_DIGEST: ${{ needs.provider_probe.outputs.artifact_digest }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+          POLICY_ID: ${{ needs.policy_replay.outputs.artifact_id }}
+          POLICY_DIGEST: ${{ needs.policy_replay.outputs.artifact_digest }}
+          REVERIFY_ID: ${{ needs.certificate_reverify.outputs.artifact_id }}
+          REVERIFY_DIGEST: ${{ needs.certificate_reverify.outputs.artifact_digest }}
+          HIDDEN_ID: ${{ needs.anonymous_qualification.outputs.artifact_id }}
+          HIDDEN_DIGEST: ${{ needs.anonymous_qualification.outputs.artifact_digest }}
+          SAFE_ID: ${{ needs.safe_pair_validation.outputs.artifact_id }}
+          SAFE_DIGEST: ${{ needs.safe_pair_validation.outputs.artifact_digest }}
+          CANARY_ID: ${{ needs.evidence_action_canary.outputs.artifact_id }}
+          CANARY_DIGEST: ${{ needs.evidence_action_canary.outputs.artifact_digest }}
+          OFFLINE_ID: ${{ needs.offline_qualification.outputs.artifact_id }}
+          OFFLINE_DIGEST: ${{ needs.offline_qualification.outputs.artifact_digest }}
+          FAST_ID: ${{ needs.cold_fast.outputs.artifact_id }}
+          FAST_DIGEST: ${{ needs.cold_fast.outputs.artifact_digest }}
+          BALANCED_ID: ${{ needs.cold_balanced.outputs.artifact_id }}
+          BALANCED_DIGEST: ${{ needs.cold_balanced.outputs.artifact_digest }}
+          DEEP_ID: ${{ needs.cold_deep.outputs.artifact_id }}
+          DEEP_DIGEST: ${{ needs.cold_deep.outputs.artifact_digest }}
+          QUALIFICATION_ID: ${{ needs.qualification_seal.outputs.artifact_id }}
+          QUALIFICATION_DIGEST: ${{ needs.qualification_seal.outputs.artifact_digest }}
+          PRODUCT_ID: ${{ needs.product_architecture_review.outputs.artifact_id }}
+          PRODUCT_DIGEST: ${{ needs.product_architecture_review.outputs.artifact_digest }}
+          PROOF_ID: ${{ needs.proof_security_review.outputs.artifact_id }}
+          PROOF_DIGEST: ${{ needs.proof_security_review.outputs.artifact_digest }}
+          BENCHMARK_ID: ${{ needs.independent_benchmark_review.outputs.artifact_id }}
+          BENCHMARK_DIGEST: ${{ needs.independent_benchmark_review.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          for value in "$ENTRY_ID" "$PROVIDER_ID" "$TOOLCHAIN_ID" "$POLICY_ID" "$REVERIFY_ID" "$HIDDEN_ID" "$SAFE_ID" "$CANARY_ID" "$OFFLINE_ID" "$FAST_ID" "$BALANCED_ID" "$DEEP_ID" "$QUALIFICATION_ID" "$PRODUCT_ID" "$PROOF_ID" "$BENCHMARK_ID"; do [[ "$value" =~ ^[0-9]+$ ]]; done
+          for value in "$ENTRY_DIGEST" "$PROVIDER_DIGEST" "$TOOLCHAIN_DIGEST" "$POLICY_DIGEST" "$REVERIFY_DIGEST" "$HIDDEN_DIGEST" "$SAFE_DIGEST" "$CANARY_DIGEST" "$OFFLINE_DIGEST" "$FAST_DIGEST" "$BALANCED_DIGEST" "$DEEP_DIGEST" "$QUALIFICATION_DIGEST" "$PRODUCT_DIGEST" "$PROOF_DIGEST" "$BENCHMARK_DIGEST"; do [[ "$value" =~ ^[0-9a-f]{64}$ ]]; done
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 entry and provider identity' --artifact-id "$ENTRY_ID" \
+            --artifact-name "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$ENTRY_DIGEST" --required-member entry-evidence.json \
+            --output-dir restored/entry
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'source-free GLM-5.2 provider probe' --artifact-id "$PROVIDER_ID" \
+            --artifact-name "p6-provider-probe-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$PROVIDER_DIGEST" --required-member provider-probe.json \
+            --output-dir restored/provider
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 frozen policy replay' --artifact-id "$POLICY_ID" \
+            --artifact-name "p6-policy-replay-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$POLICY_DIGEST" --required-member policy-replay.json --output-dir restored/policy
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 certificate reverify' --artifact-id "$REVERIFY_ID" \
+            --artifact-name "p6-certificate-reverify-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$REVERIFY_DIGEST" --required-member offline-reverify.json --output-dir restored/reverify
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 anonymous qualification' --artifact-id "$HIDDEN_ID" \
+            --artifact-name "p6-anonymous-qualification-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$HIDDEN_DIGEST" --required-member offline-hidden-holdout.json --output-dir restored/hidden
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 safe-pair validation' --artifact-id "$SAFE_ID" \
+            --artifact-name "p6-safe-pair-validation-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$SAFE_DIGEST" --required-member offline-safe-pair.json --output-dir restored/safe
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'P6 EvidenceAction canary' --artifact-id "$CANARY_ID" \
+            --artifact-name "p6-evidence-action-canary-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$CANARY_DIGEST" --required-member offline-canary.json --output-dir restored/canary
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'seal P6 offline evidence' \
+            --artifact-id "$OFFLINE_ID" --artifact-name "p6-offline-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$OFFLINE_DIGEST" --required-member offline-evidence.json \
+            --output-dir restored/offline
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'one isolated cold fast pilot' --artifact-id "$FAST_ID" \
+            --artifact-name "p6-cold-fast-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$FAST_DIGEST" --required-member p6-fast-projection.json \
+            --output-dir restored/fast
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'one isolated cold balanced pilot' --artifact-id "$BALANCED_ID" \
+            --artifact-name "p6-cold-balanced-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$BALANCED_DIGEST" --required-member p6-balanced-projection.json \
+            --output-dir restored/balanced
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'one isolated cold deep pilot' --artifact-id "$DEEP_ID" \
+            --artifact-name "p6-cold-deep-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$DEEP_DIGEST" --required-member p6-deep-projection.json \
+            --output-dir restored/deep
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'conservation and qualification seal' --artifact-id "$QUALIFICATION_ID" \
+            --artifact-name "p6-qualification-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$QUALIFICATION_DIGEST" --required-member qualification.json \
+            --output-dir restored/qualification
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'independent product architecture review' --artifact-id "$PRODUCT_ID" \
+            --artifact-name "p6-review-product-architecture-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$PRODUCT_DIGEST" --required-member packet/packet.json \
+            --required-member review/decision.json --required-member review/raw-envelope.json \
+            --output-dir restored/reviews/product-architecture
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'independent proof security review' --artifact-id "$PROOF_ID" \
+            --artifact-name "p6-review-proof-security-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$PROOF_DIGEST" --required-member packet/packet.json \
+            --required-member review/decision.json --required-member review/raw-envelope.json \
+            --output-dir restored/reviews/proof-security
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'independent benchmark review' --artifact-id "$BENCHMARK_ID" \
+            --artifact-name "p6-review-independent-benchmark-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$BENCHMARK_DIGEST" --required-member packet/packet.json \
+            --required-member review/decision.json --required-member review/raw-envelope.json \
+            --output-dir restored/reviews/independent-benchmark
+      - name: Strictly aggregate all three independent zero-blocker decisions
+        run: |
+          set -euo pipefail
+          python3 scripts/p6_pilot_protocol.py aggregate-reviews \
+            --product-architecture-packet restored/reviews/product-architecture/packet/packet.json \
+            --product-architecture-output restored/reviews/product-architecture/review \
+            --proof-security-packet restored/reviews/proof-security/packet/packet.json \
+            --proof-security-output restored/reviews/proof-security/review \
+            --independent-benchmark-packet restored/reviews/independent-benchmark/packet/packet.json \
+            --independent-benchmark-output restored/reviews/independent-benchmark/review \
+            --output p6-independent-reviews.json
+      - name: Seal a complete same-attempt checkpoint before formal publication
+        run: |
+          set -euo pipefail
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          policy_sha="$(sha256sum zscope/benchmarking/benchmark_policy.v2.json | awk '{print $1}')"
+          plan_sha="$(sha256sum .github/workflows/p6-pilot-validation.yml | awk '{print $1}')"
+          mapfile -t evidence_lineage < <(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          entry = load_json_strict(Path("restored/entry/entry-evidence.json"))
+          probe = load_json_strict(Path("restored/provider/provider-probe.json"))
+          toolchain = load_json_strict(Path("restored/toolchain/toolchain-evidence.json"))
+          print(entry["evidence_sha256"])
+          print(toolchain["runtime_source_sha256"])
+          print(probe["provider_identity_sha256"])
+          print(toolchain["oci_execution_sha256"])
+          PY
+          )
+          test "${#evidence_lineage[@]}" = 4
+          input_sha="${evidence_lineage[0]}"
+          runtime_sha="${evidence_lineage[1]}"
+          provider_sha="${evidence_lineage[2]}"
+          oci_sha="${evidence_lineage[3]}"
+          fast_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:fast" | sha256sum | awk '{print $1}')"
+          balanced_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:balanced" | sha256sum | awk '{print $1}')"
+          deep_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:deep" | sha256sum | awk '{print $1}')"
+          lineage_args=(
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT"
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT"
+            --attempt-id "$P6_ATTEMPT_ID" --candidate-sha256 "$candidate_sha"
+            --policy-sha256 "$policy_sha" --plan-sha256 "$plan_sha" --input-sha256 "$input_sha"
+            --runtime-sha256 "$runtime_sha" --provider-sha256 "$provider_sha" --oci-sha256 "$oci_sha"
+            --fast-cache-sha256 "$fast_cache" --balanced-cache-sha256 "$balanced_cache"
+            --deep-cache-sha256 "$deep_cache"
+          )
+          entry_payload="$(sha256sum restored/entry/entry-evidence.json | awk '{print $1}')"
+          provider_payload="$(sha256sum restored/provider/provider-probe.json | awk '{print $1}')"
+          toolchain_payload="$(sha256sum restored/toolchain/toolchain-evidence.json | awk '{print $1}')"
+          policy_payload="$(sha256sum restored/policy/policy-replay.json | awk '{print $1}')"
+          reverify_payload="$(sha256sum restored/reverify/offline-reverify.json | awk '{print $1}')"
+          hidden_payload="$(sha256sum restored/hidden/offline-hidden-holdout.json | awk '{print $1}')"
+          safe_payload="$(sha256sum restored/safe/offline-safe-pair.json | awk '{print $1}')"
+          canary_payload="$(sha256sum restored/canary/offline-canary.json | awk '{print $1}')"
+          fast_payload="$(sha256sum restored/fast/p6-fast-projection.json | awk '{print $1}')"
+          balanced_payload="$(sha256sum restored/balanced/p6-balanced-projection.json | awk '{print $1}')"
+          deep_payload="$(sha256sum restored/deep/p6-deep-projection.json | awk '{print $1}')"
+          qualification_payload="$(sha256sum restored/qualification/qualification.json | awk '{print $1}')"
+          product_payload="$(sha256sum restored/reviews/product-architecture/review/decision.json | awk '{print $1}')"
+          proof_payload="$(sha256sum restored/reviews/proof-security/review/decision.json | awk '{print $1}')"
+          benchmark_payload="$(sha256sum restored/reviews/independent-benchmark/review/decision.json | awk '{print $1}')"
+          mkdir -p checkpoint-run/stage-artifacts checkpoint-run/payload/reviews/product-architecture checkpoint-run/payload/reviews/proof-security checkpoint-run/payload/reviews/independent-benchmark
+          cp restored/entry/entry-evidence.json checkpoint-run/payload/entry-evidence.json
+          cp restored/provider/provider-probe.json checkpoint-run/payload/provider-probe.json
+          cp restored/toolchain/toolchain-evidence.json checkpoint-run/payload/toolchain-evidence.json
+          cp restored/policy/policy-replay.json checkpoint-run/payload/policy-replay.json
+          cp restored/reverify/offline-reverify.json checkpoint-run/payload/offline-reverify.json
+          cp restored/hidden/offline-hidden-holdout.json checkpoint-run/payload/offline-hidden-holdout.json
+          cp restored/safe/offline-safe-pair.json checkpoint-run/payload/offline-safe-pair.json
+          cp restored/canary/offline-canary.json checkpoint-run/payload/offline-canary.json
+          cp restored/offline/offline-evidence.json checkpoint-run/payload/offline-evidence.json
+          cp restored/fast/p6-fast-projection.json checkpoint-run/payload/p6-fast-projection.json
+          cp restored/balanced/p6-balanced-projection.json checkpoint-run/payload/p6-balanced-projection.json
+          cp restored/deep/p6-deep-projection.json checkpoint-run/payload/p6-deep-projection.json
+          cp restored/qualification/qualification.json checkpoint-run/payload/qualification.json
+          cp restored/reviews/product-architecture/packet/packet.json checkpoint-run/payload/reviews/product-architecture/packet.json
+          cp restored/reviews/product-architecture/review/decision.json checkpoint-run/payload/reviews/product-architecture/decision.json
+          cp restored/reviews/product-architecture/review/raw-envelope.json checkpoint-run/payload/reviews/product-architecture/raw-envelope.json
+          cp restored/reviews/proof-security/packet/packet.json checkpoint-run/payload/reviews/proof-security/packet.json
+          cp restored/reviews/proof-security/review/decision.json checkpoint-run/payload/reviews/proof-security/decision.json
+          cp restored/reviews/proof-security/review/raw-envelope.json checkpoint-run/payload/reviews/proof-security/raw-envelope.json
+          cp restored/reviews/independent-benchmark/packet/packet.json checkpoint-run/payload/reviews/independent-benchmark/packet.json
+          cp restored/reviews/independent-benchmark/review/decision.json checkpoint-run/payload/reviews/independent-benchmark/decision.json
+          cp restored/reviews/independent-benchmark/review/raw-envelope.json checkpoint-run/payload/reviews/independent-benchmark/raw-envelope.json
+          cp p6-independent-reviews.json checkpoint-run/payload/p6-independent-reviews.json
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_review import validate_review_artifact
+          for role, directory in (
+              ("product_architecture", "product-architecture"),
+              ("proof_security", "proof-security"),
+              ("independent_benchmark", "independent-benchmark"),
+          ):
+              root = Path("checkpoint-run/payload/reviews") / directory
+              validate_review_artifact(
+                  output_dir=root,
+                  packet_path=root / "packet.json",
+                  role=role,
+                  material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
+              )
+          PY
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          value = load_json_strict(Path("checkpoint-run/payload/qualification.json"))
+          payload = {
+              "schema_version": "zscope.p6-conservation-evidence.v1",
+              "control_plane_commit": value["control_plane_commit"],
+              "usage_conservation": value["usage_conservation"],
+              "formal_benchmark": False,
+              "release_eligible": False,
+          }
+          Path("checkpoint-run/payload/conservation.json").write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+          PY
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import canonical_sha256
+          root = Path("checkpoint-run/payload")
+          rows = []
+          for path in sorted(root.rglob("*.json"), key=lambda item: item.relative_to(root).as_posix()):
+              relative = path.relative_to(root).as_posix()
+              if relative == "final-evidence-manifest.json":
+                  continue
+              rows.append({"path": relative, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+          stages = ["entry", "provider_probe", "toolchain_oci_preflight", "policy_replay", "certificate_reverify", "anonymous_qualification", "safe_pair_validation", "evidence_action_canary", "cold_fast", "cold_balanced", "cold_deep", "conservation", "qualification_seal", "product_architecture_review", "proof_security_review", "independent_benchmark_review", "final_evidence_seal"]
+          payload = {
+              "schema_version": "zscope.p6-final-evidence-manifest.v1",
+              "control_plane_commit": os.environ["P6_CONTROL_PLANE_COMMIT"],
+              "candidate_git_sha": os.environ["P6_CANDIDATE_COMMIT"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "attempt_id": os.environ["P6_ATTEMPT_ID"],
+              "artifacts": rows,
+              "phase_status": {stage: "completed" for stage in stages},
+              "formal_benchmark": False,
+              "release_eligible": False,
+          }
+          payload["evidence_sha256"] = canonical_sha256(payload)
+          (root / "final-evidence-manifest.json").write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+          PY
+          conservation_payload="$(sha256sum checkpoint-run/payload/conservation.json | awk '{print $1}')"
+          final_payload="$(sha256sum checkpoint-run/payload/final-evidence-manifest.json | awk '{print $1}')"
+          stages=(entry provider_probe toolchain_oci_preflight policy_replay certificate_reverify anonymous_qualification safe_pair_validation evidence_action_canary cold_fast cold_balanced cold_deep conservation qualification_seal product_architecture_review proof_security_review independent_benchmark_review final_evidence_seal)
+          payloads=(
+            "$entry_payload" "$provider_payload" "$toolchain_payload"
+            "$policy_payload" "$reverify_payload" "$hidden_payload"
+            "$safe_payload" "$canary_payload" "$fast_payload"
+            "$balanced_payload" "$deep_payload" "$conservation_payload"
+            "$qualification_payload" "$product_payload" "$proof_payload" "$benchmark_payload"
+            "$final_payload"
+          )
+          while IFS= read -r -d '' artifact; do
+            python3 scripts/p6_pilot_protocol.py validate-answer-free --input "$artifact" >/dev/null
+          done < <(find checkpoint-run/payload -type f -name '*.json' \
+            -not -path '*/reviews/*' -print0)
+          for index in "${!stages[@]}"; do
+            stage="${stages[$index]}"
+            binding="$(python3 scripts/p6_pilot_protocol.py seal-stage-artifact \
+              "${lineage_args[@]}" --stage "$stage" --payload-sha256 "${payloads[$index]}" \
+              --output "checkpoint-run/stage-artifacts/${stage}.json")"
+            python3 scripts/p6_pilot_protocol.py record-stage \
+              --run-dir checkpoint-run --workflow-run-id "$GITHUB_RUN_ID" \
+              --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" --attempt-id "$P6_ATTEMPT_ID" \
+              --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+              --stage "$stage" --status completed --binding-sha256 "$binding" >/dev/null
+          done
+          python3 scripts/p6_pilot_protocol.py checkpoint \
+            --run-dir checkpoint-run --output checkpoint-run/checkpoint.json \
+            "${lineage_args[@]}" >/dev/null
+          python3 scripts/p6_pilot_protocol.py validate-checkpoint \
+            --checkpoint checkpoint-run/checkpoint.json \
+            --artifact-root checkpoint-run/stage-artifacts \
+            --run-dir checkpoint-run >/dev/null
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: checkpoint-run
+          stage: artifact_seal
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-complete-checkpoint-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/checkpoint-run
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: final_evidence_seal
+          default-class: artifact_integrity_failure
+
+  finalize:
+    name: zero-call finalize reviewed P6 evidence
+    needs: final_evidence_seal
+    outputs:
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore the exact complete checkpoint
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECKPOINT_ID: ${{ needs.final_evidence_seal.outputs.artifact_id }}
+          CHECKPOINT_DIGEST: ${{ needs.final_evidence_seal.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$CHECKPOINT_ID" =~ ^[0-9]+$ ]]
+          [[ "$CHECKPOINT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'seal complete reviewed P6 checkpoint' --artifact-id "$CHECKPOINT_ID" \
+            --artifact-name "p6-complete-checkpoint-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$CHECKPOINT_DIGEST" \
+            --required-member checkpoint.json \
+            --required-member stage-artifacts/final_evidence_seal.json \
+            --required-member payload/entry-evidence.json \
+            --required-member payload/provider-probe.json \
+            --required-member payload/toolchain-evidence.json \
+            --required-member payload/qualification.json \
+            --required-member payload/p6-independent-reviews.json \
+            --required-member payload/final-evidence-manifest.json \
+            --required-member payload/reviews/product-architecture/decision.json \
+            --required-member payload/reviews/proof-security/decision.json \
+            --required-member payload/reviews/independent-benchmark/decision.json \
+            --output-dir restored/checkpoint
+      - name: Byte-exact zero-call finalization
+        run: |
+          set -euo pipefail
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          policy_sha="$(sha256sum zscope/benchmarking/benchmark_policy.v2.json | awk '{print $1}')"
+          plan_sha="$(sha256sum .github/workflows/p6-pilot-validation.yml | awk '{print $1}')"
+          mapfile -t evidence_lineage < <(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          entry = load_json_strict(Path("restored/checkpoint/payload/entry-evidence.json"))
+          probe = load_json_strict(Path("restored/checkpoint/payload/provider-probe.json"))
+          toolchain = load_json_strict(Path("restored/checkpoint/payload/toolchain-evidence.json"))
+          print(entry["evidence_sha256"])
+          print(toolchain["runtime_source_sha256"])
+          print(probe["provider_identity_sha256"])
+          print(toolchain["oci_execution_sha256"])
+          PY
+          )
+          test "${#evidence_lineage[@]}" = 4
+          input_sha="${evidence_lineage[0]}"
+          runtime_sha="${evidence_lineage[1]}"
+          provider_sha="${evidence_lineage[2]}"
+          oci_sha="${evidence_lineage[3]}"
+          fast_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:fast" | sha256sum | awk '{print $1}')"
+          balanced_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:balanced" | sha256sum | awk '{print $1}')"
+          deep_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:deep" | sha256sum | awk '{print $1}')"
+          python3 scripts/p6_pilot_protocol.py finalize-checkpoint \
+            --checkpoint restored/checkpoint/checkpoint.json \
+            --artifact-root restored/checkpoint/stage-artifacts \
+            --run-dir restored/checkpoint \
+            --payload restored/checkpoint/payload/final-evidence-manifest.json \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --attempt-id "$P6_ATTEMPT_ID" --candidate-sha256 "$candidate_sha" \
+            --policy-sha256 "$policy_sha" --plan-sha256 "$plan_sha" --input-sha256 "$input_sha" \
+            --runtime-sha256 "$runtime_sha" --provider-sha256 "$provider_sha" --oci-sha256 "$oci_sha" \
+            --fast-cache-sha256 "$fast_cache" --balanced-cache-sha256 "$balanced_cache" \
+            --deep-cache-sha256 "$deep_cache" \
+            --output final-evidence-manifest.json >/dev/null
+          mkdir -p non-release-evidence
+          cp final-evidence-manifest.json non-release-evidence/final-evidence-manifest.json
+          cp -R restored/checkpoint non-release-evidence/complete-checkpoint
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: non-release-evidence
+          stage: artifact_seal
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: non_release_artifact
+        with:
+          name: p6-non-release-evidence-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: control/non-release-evidence
+      - name: Report immutable non-release artifact identity
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.non_release_artifact.outputs.artifact-id }}'
+          test -n '${{ steps.non_release_artifact.outputs.artifact-digest }}'
+          echo 'P6 pilot complete: formal_benchmark=false; release_eligible=false'
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: evidence_pr
+          default-class: artifact_upload_transport_failed
+
+  failure_evidence:
+    name: immutable answer-free failure diagnostic and partial checkpoint
+    needs:
+      - entry
+      - provider_probe
+      - toolchain_oci
+      - policy_replay
+      - certificate_reverify
+      - anonymous_qualification
+      - safe_pair_validation
+      - evidence_action_canary
+      - offline_qualification
+      - cold_fast
+      - cold_balanced
+      - cold_deep
+      - qualification_seal
+      - product_architecture_review
+      - proof_security_review
+      - independent_benchmark_review
+      - final_evidence_seal
+      - finalize
+    if: ${{ always() && needs.finalize.result != 'success' }}
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate only when completed reviewer artifacts may be restored
+        if: ${{ needs.entry.result == 'success' }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Select the first failed job boundary without reading logs
+        id: boundary
+        env:
+          ENTRY_RESULT: ${{ needs.entry.result }}
+          ENTRY_FAILURE_CLASS: ${{ needs.entry.outputs.failure_class }}
+          ENTRY_FAILURE_COUNT: ${{ needs.entry.outputs.failure_count }}
+          PROVIDER_RESULT: ${{ needs.provider_probe.result }}
+          PROVIDER_FAILURE_CLASS: ${{ needs.provider_probe.outputs.failure_class }}
+          PROVIDER_FAILURE_COUNT: ${{ needs.provider_probe.outputs.failure_count }}
+          TOOLCHAIN_RESULT: ${{ needs.toolchain_oci.result }}
+          TOOLCHAIN_FAILURE_CLASS: ${{ needs.toolchain_oci.outputs.failure_class }}
+          TOOLCHAIN_FAILURE_COUNT: ${{ needs.toolchain_oci.outputs.failure_count }}
+          POLICY_RESULT: ${{ needs.policy_replay.result }}
+          POLICY_FAILURE_CLASS: ${{ needs.policy_replay.outputs.failure_class }}
+          POLICY_FAILURE_COUNT: ${{ needs.policy_replay.outputs.failure_count }}
+          REVERIFY_RESULT: ${{ needs.certificate_reverify.result }}
+          REVERIFY_FAILURE_CLASS: ${{ needs.certificate_reverify.outputs.failure_class }}
+          REVERIFY_FAILURE_COUNT: ${{ needs.certificate_reverify.outputs.failure_count }}
+          ANONYMOUS_RESULT: ${{ needs.anonymous_qualification.result }}
+          ANONYMOUS_FAILURE_CLASS: ${{ needs.anonymous_qualification.outputs.failure_class }}
+          ANONYMOUS_FAILURE_COUNT: ${{ needs.anonymous_qualification.outputs.failure_count }}
+          SAFE_PAIR_RESULT: ${{ needs.safe_pair_validation.result }}
+          SAFE_PAIR_FAILURE_CLASS: ${{ needs.safe_pair_validation.outputs.failure_class }}
+          SAFE_PAIR_FAILURE_COUNT: ${{ needs.safe_pair_validation.outputs.failure_count }}
+          CANARY_RESULT: ${{ needs.evidence_action_canary.result }}
+          CANARY_FAILURE_CLASS: ${{ needs.evidence_action_canary.outputs.failure_class }}
+          CANARY_FAILURE_COUNT: ${{ needs.evidence_action_canary.outputs.failure_count }}
+          OFFLINE_RESULT: ${{ needs.offline_qualification.result }}
+          OFFLINE_FAILURE_CLASS: ${{ needs.offline_qualification.outputs.failure_class }}
+          OFFLINE_FAILURE_COUNT: ${{ needs.offline_qualification.outputs.failure_count }}
+          FAST_RESULT: ${{ needs.cold_fast.result }}
+          FAST_FAILURE_CLASS: ${{ needs.cold_fast.outputs.failure_class }}
+          FAST_FAILURE_COUNT: ${{ needs.cold_fast.outputs.failure_count }}
+          BALANCED_RESULT: ${{ needs.cold_balanced.result }}
+          BALANCED_FAILURE_CLASS: ${{ needs.cold_balanced.outputs.failure_class }}
+          BALANCED_FAILURE_COUNT: ${{ needs.cold_balanced.outputs.failure_count }}
+          DEEP_RESULT: ${{ needs.cold_deep.result }}
+          DEEP_FAILURE_CLASS: ${{ needs.cold_deep.outputs.failure_class }}
+          DEEP_FAILURE_COUNT: ${{ needs.cold_deep.outputs.failure_count }}
+          SEAL_RESULT: ${{ needs.qualification_seal.result }}
+          SEAL_FAILURE_CLASS: ${{ needs.qualification_seal.outputs.failure_class }}
+          SEAL_FAILURE_COUNT: ${{ needs.qualification_seal.outputs.failure_count }}
+          PRODUCT_RESULT: ${{ needs.product_architecture_review.result }}
+          PRODUCT_FAILURE_CLASS: ${{ needs.product_architecture_review.outputs.failure_class }}
+          PRODUCT_FAILURE_COUNT: ${{ needs.product_architecture_review.outputs.failure_count }}
+          PROOF_RESULT: ${{ needs.proof_security_review.result }}
+          PROOF_FAILURE_CLASS: ${{ needs.proof_security_review.outputs.failure_class }}
+          PROOF_FAILURE_COUNT: ${{ needs.proof_security_review.outputs.failure_count }}
+          BENCHMARK_RESULT: ${{ needs.independent_benchmark_review.result }}
+          BENCHMARK_FAILURE_CLASS: ${{ needs.independent_benchmark_review.outputs.failure_class }}
+          BENCHMARK_FAILURE_COUNT: ${{ needs.independent_benchmark_review.outputs.failure_count }}
+          FINAL_SEAL_RESULT: ${{ needs.final_evidence_seal.result }}
+          FINAL_SEAL_FAILURE_CLASS: ${{ needs.final_evidence_seal.outputs.failure_class }}
+          FINAL_SEAL_FAILURE_COUNT: ${{ needs.final_evidence_seal.outputs.failure_count }}
+          FINALIZE_RESULT: ${{ needs.finalize.result }}
+          FINALIZE_FAILURE_CLASS: ${{ needs.finalize.outputs.failure_class }}
+          FINALIZE_FAILURE_COUNT: ${{ needs.finalize.outputs.failure_count }}
+        run: |
+          set -euo pipefail
+          stage=
+          failure_class=
+          failure_count=1
+          while IFS=: read -r result candidate reported fallback reported_count; do
+            if [[ "$result" = failure || "$result" = cancelled ]]; then
+              stage="$candidate"
+              if [[ "$result" = cancelled ]]; then
+                failure_class=internal_failure
+                failure_count=1
+              else
+                failure_class="${reported:-$fallback}"
+                failure_count="${reported_count:-1}"
+              fi
+              break
+            fi
+          done <<EOF
+          $ENTRY_RESULT:entry:$ENTRY_FAILURE_CLASS:entry_e0_unattested:$ENTRY_FAILURE_COUNT
+          $PROVIDER_RESULT:provider_probe:$PROVIDER_FAILURE_CLASS:provider_protocol_incompatible:$PROVIDER_FAILURE_COUNT
+          $TOOLCHAIN_RESULT:toolchain_oci_preflight:$TOOLCHAIN_FAILURE_CLASS:oci_capability_failed:$TOOLCHAIN_FAILURE_COUNT
+          $POLICY_RESULT:policy_replay:$POLICY_FAILURE_CLASS:replay_nondeterministic:$POLICY_FAILURE_COUNT
+          $REVERIFY_RESULT:certificate_reverify:$REVERIFY_FAILURE_CLASS:certificate_reverify_failure:$REVERIFY_FAILURE_COUNT
+          $ANONYMOUS_RESULT:anonymous_qualification:$ANONYMOUS_FAILURE_CLASS:anonymous_qualification_failed:$ANONYMOUS_FAILURE_COUNT
+          $SAFE_PAIR_RESULT:safe_pair_validation:$SAFE_PAIR_FAILURE_CLASS:safe_pair_false_confirmation:$SAFE_PAIR_FAILURE_COUNT
+          $CANARY_RESULT:evidence_action_canary:$CANARY_FAILURE_CLASS:evidence_action_not_consumed:$CANARY_FAILURE_COUNT
+          $OFFLINE_RESULT:cold_fast:$OFFLINE_FAILURE_CLASS:internal_failure:$OFFLINE_FAILURE_COUNT
+          $FAST_RESULT:cold_fast:$FAST_FAILURE_CLASS:quality_no_progress_gate_failed:$FAST_FAILURE_COUNT
+          $BALANCED_RESULT:cold_balanced:$BALANCED_FAILURE_CLASS:quality_no_progress_gate_failed:$BALANCED_FAILURE_COUNT
+          $DEEP_RESULT:cold_deep:$DEEP_FAILURE_CLASS:quality_no_progress_gate_failed:$DEEP_FAILURE_COUNT
+          $SEAL_RESULT:qualification_seal:$SEAL_FAILURE_CLASS:accounting_conservation_failure:$SEAL_FAILURE_COUNT
+          $PRODUCT_RESULT:product_architecture_review:$PRODUCT_FAILURE_CLASS:review_binding_invalid:$PRODUCT_FAILURE_COUNT
+          $PROOF_RESULT:proof_security_review:$PROOF_FAILURE_CLASS:review_binding_invalid:$PROOF_FAILURE_COUNT
+          $BENCHMARK_RESULT:independent_benchmark_review:$BENCHMARK_FAILURE_CLASS:review_binding_invalid:$BENCHMARK_FAILURE_COUNT
+          $FINAL_SEAL_RESULT:final_evidence_seal:$FINAL_SEAL_FAILURE_CLASS:artifact_integrity_failure:$FINAL_SEAL_FAILURE_COUNT
+          $FINALIZE_RESULT:evidence_pr:$FINALIZE_FAILURE_CLASS:artifact_upload_transport_failed:$FINALIZE_FAILURE_COUNT
+          EOF
+          test -n "$stage"
+          test -n "$failure_class"
+          if [[ ! "$failure_class" =~ ^[a-z][a-z0-9_]+$ || ! "$failure_count" =~ ^[1-9][0-9]*$ ]] || \
+            ! SELECTED_STAGE="$stage" SELECTED_CLASS="$failure_class" SELECTED_COUNT="$failure_count" \
+              python3 - <<'PY' >/dev/null 2>&1
+          import os
+          from zscope.benchmarking.p6_protocol import validate_stage_result
+          validate_stage_result({
+              "schema_version": "zscope.p6-stage-result.v1",
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "attempt_id": os.environ["P6_ATTEMPT_ID"],
+              "control_plane_commit": os.environ["P6_CONTROL_PLANE_COMMIT"],
+              "stage": os.environ["SELECTED_STAGE"],
+              "status": "failed",
+              "failure_class": os.environ["SELECTED_CLASS"],
+              "failure_count": int(os.environ["SELECTED_COUNT"]),
+              "binding_sha256": "0" * 64,
+          })
+          PY
+          then
+            failure_class=internal_failure
+            failure_count=1
+          fi
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+          echo "failure_class=$failure_class" >> "$GITHUB_OUTPUT"
+          echo "failure_count=$failure_count" >> "$GITHUB_OUTPUT"
+      - name: Restore the exact longest continuous successful producer prefix
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          ENTRY_RESULT: ${{ needs.entry.result }}
+          ENTRY_ID: ${{ needs.entry.outputs.artifact_id }}
+          ENTRY_DIGEST: ${{ needs.entry.outputs.artifact_digest }}
+          PROVIDER_RESULT: ${{ needs.provider_probe.result }}
+          PROVIDER_ID: ${{ needs.provider_probe.outputs.artifact_id }}
+          PROVIDER_DIGEST: ${{ needs.provider_probe.outputs.artifact_digest }}
+          TOOLCHAIN_RESULT: ${{ needs.toolchain_oci.result }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+          POLICY_RESULT: ${{ needs.policy_replay.result }}
+          POLICY_ID: ${{ needs.policy_replay.outputs.artifact_id }}
+          POLICY_DIGEST: ${{ needs.policy_replay.outputs.artifact_digest }}
+          REVERIFY_RESULT: ${{ needs.certificate_reverify.result }}
+          REVERIFY_ID: ${{ needs.certificate_reverify.outputs.artifact_id }}
+          REVERIFY_DIGEST: ${{ needs.certificate_reverify.outputs.artifact_digest }}
+          ANONYMOUS_RESULT: ${{ needs.anonymous_qualification.result }}
+          ANONYMOUS_ID: ${{ needs.anonymous_qualification.outputs.artifact_id }}
+          ANONYMOUS_DIGEST: ${{ needs.anonymous_qualification.outputs.artifact_digest }}
+          SAFE_RESULT: ${{ needs.safe_pair_validation.result }}
+          SAFE_ID: ${{ needs.safe_pair_validation.outputs.artifact_id }}
+          SAFE_DIGEST: ${{ needs.safe_pair_validation.outputs.artifact_digest }}
+          CANARY_RESULT: ${{ needs.evidence_action_canary.result }}
+          CANARY_ID: ${{ needs.evidence_action_canary.outputs.artifact_id }}
+          CANARY_DIGEST: ${{ needs.evidence_action_canary.outputs.artifact_digest }}
+          FAST_RESULT: ${{ needs.cold_fast.result }}
+          FAST_ID: ${{ needs.cold_fast.outputs.artifact_id }}
+          FAST_DIGEST: ${{ needs.cold_fast.outputs.artifact_digest }}
+          BALANCED_RESULT: ${{ needs.cold_balanced.result }}
+          BALANCED_ID: ${{ needs.cold_balanced.outputs.artifact_id }}
+          BALANCED_DIGEST: ${{ needs.cold_balanced.outputs.artifact_digest }}
+          DEEP_RESULT: ${{ needs.cold_deep.result }}
+          DEEP_ID: ${{ needs.cold_deep.outputs.artifact_id }}
+          DEEP_DIGEST: ${{ needs.cold_deep.outputs.artifact_digest }}
+          QUALIFICATION_RESULT: ${{ needs.qualification_seal.result }}
+          QUALIFICATION_ID: ${{ needs.qualification_seal.outputs.artifact_id }}
+          QUALIFICATION_DIGEST: ${{ needs.qualification_seal.outputs.artifact_digest }}
+          PRODUCT_RESULT: ${{ needs.product_architecture_review.result }}
+          PRODUCT_ID: ${{ needs.product_architecture_review.outputs.artifact_id }}
+          PRODUCT_DIGEST: ${{ needs.product_architecture_review.outputs.artifact_digest }}
+          PROOF_RESULT: ${{ needs.proof_security_review.result }}
+          PROOF_ID: ${{ needs.proof_security_review.outputs.artifact_id }}
+          PROOF_DIGEST: ${{ needs.proof_security_review.outputs.artifact_digest }}
+          BENCHMARK_RESULT: ${{ needs.independent_benchmark_review.result }}
+          BENCHMARK_ID: ${{ needs.independent_benchmark_review.outputs.artifact_id }}
+          BENCHMARK_DIGEST: ${{ needs.independent_benchmark_review.outputs.artifact_digest }}
+          FINAL_SEAL_RESULT: ${{ needs.final_evidence_seal.result }}
+          FINAL_SEAL_ID: ${{ needs.final_evidence_seal.outputs.artifact_id }}
+          FINAL_SEAL_DIGEST: ${{ needs.final_evidence_seal.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p failure-evidence/restored
+          restore() {
+            local job="$1" id="$2" name="$3" digest="$4" member="$5" target="$6"
+            [[ "$id" =~ ^[0-9]+$ ]]
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            python3 scripts/download_p6_run_artifact.py \
+              --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+              --candidate-commit "$P6_CANDIDATE_COMMIT" \
+              --producer-job "$job" --artifact-id "$id" --artifact-name "$name" \
+              --artifact-digest "sha256:$digest" --required-member "$member" \
+              --output-dir "$target"
+          }
+          prefix_open=true
+          restore_prefix() {
+            local result="$1" stage="$2" job="$3" id="$4" name="$5" digest="$6" member="$7" target="$8"
+            if [[ "$prefix_open" != true ]]; then return 0; fi
+            if [[ "$result" != success ]]; then prefix_open=false; return 0; fi
+            restore "$job" "$id" "$name" "$digest" "$member" "$target"
+            printf '%s\n' "$stage" >> failure-evidence/prefix-stages.txt
+          }
+          restore_prefix "$ENTRY_RESULT" entry 'P6 entry and provider identity' "$ENTRY_ID" \
+            "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$ENTRY_DIGEST" entry-evidence.json failure-evidence/restored/entry
+          restore_prefix "$PROVIDER_RESULT" provider_probe 'source-free GLM-5.2 provider probe' "$PROVIDER_ID" \
+            "p6-provider-probe-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$PROVIDER_DIGEST" provider-probe.json failure-evidence/restored/provider
+          restore_prefix "$TOOLCHAIN_RESULT" toolchain_oci_preflight 'toolchain OCI and cold-cache preflight' "$TOOLCHAIN_ID" \
+            "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$TOOLCHAIN_DIGEST" toolchain-evidence.json failure-evidence/restored/toolchain
+          restore_prefix "$POLICY_RESULT" policy_replay 'P6 frozen policy replay' "$POLICY_ID" \
+            "p6-policy-replay-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$POLICY_DIGEST" policy-replay.json failure-evidence/restored/policy
+          restore_prefix "$REVERIFY_RESULT" certificate_reverify 'P6 certificate reverify' "$REVERIFY_ID" \
+            "p6-certificate-reverify-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$REVERIFY_DIGEST" offline-reverify.json failure-evidence/restored/reverify
+          restore_prefix "$ANONYMOUS_RESULT" anonymous_qualification 'P6 anonymous qualification' "$ANONYMOUS_ID" \
+            "p6-anonymous-qualification-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$ANONYMOUS_DIGEST" offline-hidden-holdout.json failure-evidence/restored/hidden
+          restore_prefix "$SAFE_RESULT" safe_pair_validation 'P6 safe-pair validation' "$SAFE_ID" \
+            "p6-safe-pair-validation-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$SAFE_DIGEST" offline-safe-pair.json failure-evidence/restored/safe
+          restore_prefix "$CANARY_RESULT" evidence_action_canary 'P6 EvidenceAction canary' "$CANARY_ID" \
+            "p6-evidence-action-canary-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$CANARY_DIGEST" offline-canary.json failure-evidence/restored/canary
+          restore_prefix "$FAST_RESULT" cold_fast 'one isolated cold fast pilot' "$FAST_ID" \
+            "p6-cold-fast-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$FAST_DIGEST" p6-fast-projection.json failure-evidence/restored/fast
+          restore_prefix "$BALANCED_RESULT" cold_balanced 'one isolated cold balanced pilot' "$BALANCED_ID" \
+            "p6-cold-balanced-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$BALANCED_DIGEST" p6-balanced-projection.json failure-evidence/restored/balanced
+          restore_prefix "$DEEP_RESULT" cold_deep 'one isolated cold deep pilot' "$DEEP_ID" \
+            "p6-cold-deep-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$DEEP_DIGEST" p6-deep-projection.json failure-evidence/restored/deep
+          if [[ "$prefix_open" = true ]]; then
+            if [[ "$QUALIFICATION_RESULT" = success ]]; then
+              restore 'conservation and qualification seal' "$QUALIFICATION_ID" \
+                "p6-qualification-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$QUALIFICATION_DIGEST" qualification.json failure-evidence/restored/qualification
+              printf '%s\n' conservation qualification_seal >> failure-evidence/prefix-stages.txt
+            else
+              prefix_open=false
+            fi
+          fi
+          restore_prefix "$PRODUCT_RESULT" product_architecture_review 'independent product architecture review' "$PRODUCT_ID" \
+            "p6-review-product-architecture-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$PRODUCT_DIGEST" review/decision.json failure-evidence/restored/product
+          restore_prefix "$PROOF_RESULT" proof_security_review 'independent proof security review' "$PROOF_ID" \
+            "p6-review-proof-security-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$PROOF_DIGEST" review/decision.json failure-evidence/restored/proof
+          restore_prefix "$BENCHMARK_RESULT" independent_benchmark_review 'independent benchmark review' "$BENCHMARK_ID" \
+            "p6-review-independent-benchmark-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$BENCHMARK_DIGEST" review/decision.json failure-evidence/restored/benchmark
+          if [[ "$prefix_open" = true && "$FINAL_SEAL_RESULT" = success ]]; then
+            restore 'seal complete reviewed P6 checkpoint' "$FINAL_SEAL_ID" \
+              "p6-complete-checkpoint-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$FINAL_SEAL_DIGEST" checkpoint.json failure-evidence/complete-checkpoint
+            printf '%s\n' final_evidence_seal >> failure-evidence/prefix-stages.txt
+          fi
+      - name: Emit typed diagnostic and an exact non-finalizable checkpoint when possible
+        env:
+          FAILURE_EXECUTION_STAGE: ${{ steps.boundary.outputs.stage }}
+          FAILURE_CLASS: ${{ steps.boundary.outputs.failure_class }}
+          FAILURE_COUNT: ${{ steps.boundary.outputs.failure_count }}
+        run: |
+          set -euo pipefail
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          policy_sha="$(sha256sum zscope/benchmarking/benchmark_policy.v2.json | awk '{print $1}')"
+          plan_sha="$(sha256sum .github/workflows/p6-pilot-validation.yml | awk '{print $1}')"
+          fast_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:fast" | sha256sum | awk '{print $1}')"
+          balanced_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:balanced" | sha256sum | awk '{print $1}')"
+          deep_cache="$(printf %s "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:deep" | sha256sum | awk '{print $1}')"
+          mkdir -p failure-evidence/diagnostic-run
+          checkpoint_args=()
+          if [[ -f failure-evidence/complete-checkpoint/checkpoint.json ]]; then
+            python3 scripts/p6_pilot_protocol.py validate-checkpoint \
+              --checkpoint failure-evidence/complete-checkpoint/checkpoint.json \
+              --artifact-root failure-evidence/complete-checkpoint/stage-artifacts \
+              --run-dir failure-evidence/complete-checkpoint >/dev/null
+            checkpoint_args=(--checkpoint failure-evidence/complete-checkpoint/checkpoint.json \
+              --checkpoint-artifact-root failure-evidence/complete-checkpoint/stage-artifacts)
+          elif [[ -f failure-evidence/restored/entry/entry-evidence.json && \
+                -f failure-evidence/restored/provider/provider-probe.json && \
+                -f failure-evidence/restored/toolchain/toolchain-evidence.json ]]; then
+            mapfile -t evidence_lineage < <(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          entry = load_json_strict(Path("failure-evidence/restored/entry/entry-evidence.json"))
+          provider = load_json_strict(Path("failure-evidence/restored/provider/provider-probe.json"))
+          toolchain = load_json_strict(Path("failure-evidence/restored/toolchain/toolchain-evidence.json"))
+          print(entry["evidence_sha256"])
+          print(toolchain["runtime_source_sha256"])
+          print(provider["provider_identity_sha256"])
+          print(toolchain["oci_execution_sha256"])
+          PY
+            )
+            test "${#evidence_lineage[@]}" = 4
+            input_sha="${evidence_lineage[0]}"
+            runtime_sha="${evidence_lineage[1]}"
+            provider_sha="${evidence_lineage[2]}"
+            oci_sha="${evidence_lineage[3]}"
+            lineage_args=(
+              --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT"
+              --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" --attempt-id "$P6_ATTEMPT_ID"
+              --candidate-sha256 "$candidate_sha" --policy-sha256 "$policy_sha"
+              --plan-sha256 "$plan_sha" --input-sha256 "$input_sha"
+              --runtime-sha256 "$runtime_sha" --provider-sha256 "$provider_sha" --oci-sha256 "$oci_sha"
+              --fast-cache-sha256 "$fast_cache" --balanced-cache-sha256 "$balanced_cache"
+              --deep-cache-sha256 "$deep_cache"
+            )
+            python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from scripts.project_p6_entry_lineage import project_entry_lineage
+          from zscope.benchmarking.p6_protocol import (
+              P6_CHECKPOINT_STAGE_ORDER,
+              load_json_strict,
+              sha256_file,
+              validate_depth_projection,
+              validate_provider_probe,
+              validate_toolchain_evidence,
+          )
+
+          restored = Path("failure-evidence/restored")
+          entry_path = restored / "entry/entry-evidence.json"
+          entry = load_json_strict(entry_path)
+          project_entry_lineage(entry, artifact_sha256=sha256_file(entry_path))
+          provider = load_json_strict(restored / "provider/provider-probe.json")
+          validate_provider_probe(provider)
+          toolchain = load_json_strict(restored / "toolchain/toolchain-evidence.json")
+          validate_toolchain_evidence(
+              toolchain,
+              expected_run_id=os.environ["GITHUB_RUN_ID"],
+              expected_run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              expected_attempt_id=os.environ["P6_ATTEMPT_ID"],
+              expected_control_plane_commit=os.environ["P6_CONTROL_PLANE_COMMIT"],
+              expected_git_sha=os.environ["P6_CANDIDATE_COMMIT"],
+          )
+          stages = Path("failure-evidence/prefix-stages.txt").read_text(
+              encoding="utf-8"
+          ).splitlines()
+          if stages != list(P6_CHECKPOINT_STAGE_ORDER[: len(stages)]):
+              raise SystemExit(2)
+          for depth in ("fast", "balanced", "deep"):
+              path = restored / depth / f"p6-{depth}-projection.json"
+              if path.is_file():
+                  value = load_json_strict(path)
+                  validate_depth_projection(value, scan_depth=depth)
+          PY
+            if grep -qx qualification_seal failure-evidence/prefix-stages.txt; then
+              python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          value = load_json_strict(Path("failure-evidence/restored/qualification/qualification.json"))
+          payload = {
+              "schema_version": "zscope.p6-conservation-evidence.v1",
+              "control_plane_commit": value["control_plane_commit"],
+              "usage_conservation": value["usage_conservation"],
+              "formal_benchmark": False,
+              "release_eligible": False,
+          }
+          Path("failure-evidence/restored/qualification/conservation.json").write_text(
+              json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+            fi
+            for role_dir in product proof benchmark; do
+              if [[ -f "failure-evidence/restored/${role_dir}/review/decision.json" ]]; then
+                ROLE_DIR="$role_dir" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_review import validate_review_artifact
+          directory = os.environ["ROLE_DIR"]
+          role = {
+              "product": "product_architecture",
+              "proof": "proof_security",
+              "benchmark": "independent_benchmark",
+          }[directory]
+          root = Path("failure-evidence/restored") / directory
+          validate_review_artifact(
+              output_dir=root / "review",
+              packet_path=root / "packet/packet.json",
+              role=role,
+              material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
+          )
+          PY
+              fi
+            done
+            mkdir -p failure-evidence/checkpoint-run/stage-artifacts
+            mapfile -t stages < failure-evidence/prefix-stages.txt
+            payload_path() {
+              case "$1" in
+                entry) echo failure-evidence/restored/entry/entry-evidence.json ;;
+                provider_probe) echo failure-evidence/restored/provider/provider-probe.json ;;
+                toolchain_oci_preflight) echo failure-evidence/restored/toolchain/toolchain-evidence.json ;;
+                policy_replay) echo failure-evidence/restored/policy/policy-replay.json ;;
+                certificate_reverify) echo failure-evidence/restored/reverify/offline-reverify.json ;;
+                anonymous_qualification) echo failure-evidence/restored/hidden/offline-hidden-holdout.json ;;
+                safe_pair_validation) echo failure-evidence/restored/safe/offline-safe-pair.json ;;
+                evidence_action_canary) echo failure-evidence/restored/canary/offline-canary.json ;;
+                cold_fast) echo failure-evidence/restored/fast/p6-fast-projection.json ;;
+                cold_balanced) echo failure-evidence/restored/balanced/p6-balanced-projection.json ;;
+                cold_deep) echo failure-evidence/restored/deep/p6-deep-projection.json ;;
+                conservation) echo failure-evidence/restored/qualification/conservation.json ;;
+                qualification_seal) echo failure-evidence/restored/qualification/qualification.json ;;
+                product_architecture_review) echo failure-evidence/restored/product/review/decision.json ;;
+                proof_security_review) echo failure-evidence/restored/proof/review/decision.json ;;
+                independent_benchmark_review) echo failure-evidence/restored/benchmark/review/decision.json ;;
+                *) return 2 ;;
+              esac
+            }
+            for index in "${!stages[@]}"; do
+              stage="${stages[$index]}"
+              payload="$(payload_path "$stage")"
+              test -f "$payload"
+              if [[ "$stage" != *_review ]]; then
+                python3 scripts/p6_pilot_protocol.py validate-answer-free --input "$payload" >/dev/null
+              fi
+              payload_sha="$(sha256sum "$payload" | awk '{print $1}')"
+              binding="$(python3 scripts/p6_pilot_protocol.py seal-stage-artifact \
+                "${lineage_args[@]}" --stage "$stage" --payload-sha256 "$payload_sha" \
+                --output "failure-evidence/checkpoint-run/stage-artifacts/${stage}.json")"
+              python3 scripts/p6_pilot_protocol.py record-stage \
+                --run-dir failure-evidence/checkpoint-run --workflow-run-id "$GITHUB_RUN_ID" \
+                --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" --attempt-id "$P6_ATTEMPT_ID" \
+                --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+                --stage "$stage" --status completed --binding-sha256 "$binding" >/dev/null
+            done
+            python3 scripts/p6_pilot_protocol.py checkpoint \
+              --run-dir failure-evidence/checkpoint-run --output failure-evidence/checkpoint.json \
+              "${lineage_args[@]}" >/dev/null
+            checkpoint_args=(--checkpoint failure-evidence/checkpoint.json \
+              --checkpoint-artifact-root failure-evidence/checkpoint-run/stage-artifacts)
+          fi
+          python3 scripts/p6_pilot_protocol.py emit-workflow-failure \
+            --run-dir failure-evidence/diagnostic-run --output failure-evidence/diagnostic.json \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --attempt-id "$P6_ATTEMPT_ID" --stage "$FAILURE_EXECUTION_STAGE" \
+            --status failed --failure-class "$FAILURE_CLASS" --failure-count "$FAILURE_COUNT" \
+            --binding-sha256 "$candidate_sha" "${checkpoint_args[@]}"
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: failure-evidence/diagnostic.json
+          stage: artifact_seal
+          require-key: "false"
+      - name: Strictly validate the optional exact partial checkpoint
+        run: |
+          set -euo pipefail
+          if [[ -f failure-evidence/checkpoint.json ]]; then
+            python3 scripts/p6_pilot_protocol.py validate-checkpoint \
+              --checkpoint failure-evidence/checkpoint.json \
+              --artifact-root failure-evidence/checkpoint-run/stage-artifacts \
+              --run-dir failure-evidence/checkpoint-run >/dev/null
+          fi
+      - uses: ./control/.github/actions/upload-artifact-retry
+        with:
+          name: p6-failure-evidence-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: control/failure-evidence
+
+  cleanup_p6_oci:
+    name: exact-label terminal P6 scanner cleanup
+    needs:
+      - toolchain_oci
+      - anonymous_qualification
+      - safe_pair_validation
+      - evidence_action_canary
+      - cold_fast
+      - cold_balanced
+      - cold_deep
+      - finalize
+      - failure_evidence
+    if: ${{ always() }}
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 15
+    steps:
+      - name: Checkout immutable control plane only
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Remove only exact current-attempt P6 scanner containers
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_oci_cleanup.py \
+            --runtime "$Z_SCOPE_BENCHMARK_OCI_RUNTIME" --mode current \
+            --repository "$GITHUB_REPOSITORY" --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" >/dev/null 2>&1; then
+            echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
+            exit 2
+          fi

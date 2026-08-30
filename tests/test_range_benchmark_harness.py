@@ -219,11 +219,12 @@ def test_no_database_fallback_is_honest_direct_identity_check(
     assert result["missing_truth_entry"]
 
 
-def test_range_benchmark_is_provider_neutral_auto_unified() -> None:
+def test_range_benchmark_has_frozen_glm_5_2_provider_and_auto_unified() -> None:
     config = BENCHMARK_CONFIG_PATH.read_text(encoding="utf-8")
 
-    assert "${Z_SCOPE_LLM_BASE_URL}" in config
-    assert "${Z_SCOPE_LLM_MODEL}" in config
+    assert "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1" in config
+    assert 'models: ["GLM-5.2"]' in config
+    assert "${Z_SCOPE_API_KEY}" in config
     assert "config_version: 2" in config
     assert "backend: unified" in config
     assert "entry_discovery:\n    enabled: true" in config
