@@ -10,12 +10,17 @@
 - Truth v16/Benchmark v5独立轨完成门禁。
 - OCI、provider usage和cold cache能力通过preflight。
 
-## 当前进入准备
+## 当前进入状态
 
-[`p6-entry-preflight.json`](../acceptance/p6-entry-preflight.json)绑定到clean main树，记录了
-rootless Podman实际inspect、精确内部网络、只读根文件系统、capability drop、独立cold cache
-marker以及不含源码和Benchmark数据的provider usage探针。上述三项本地能力均已通过，但E0仍缺少
-受保护工作流provenance和attestation；因此P6继续为`pending`，不得执行cold fast、balanced或deep。
+[`p6-entry-gate.json`](../acceptance/p6-entry-gate.json)精确绑定成功的Range v16独立审核
+run `33247814685`及其reviewed、provenance和pair artifacts，并绑定成功的Benchmark v5
+attestation run `33257971124`与Truth commit `3e05889ba5773d8fc8c7e22ae9b75dcfe43e05c4`。
+该gate同时验证governance/scorer commit均为Truth祖先，且review packet catalog与packet目录从
+review source到Truth commit未改变。E0因此标记为`complete`，P6在同一治理转换中标记为
+`in_progress`；这只授权后续non-release cold pilot协议工作，不表示pilot已经运行或形成发布资格。
+
+旧[`p6-entry-preflight.json`](../acceptance/p6-entry-preflight.json)继续以原字节保留为GLM-5.1
+能力探针的历史blocked snapshot。它不被覆盖，也不再作为当前provider或P6进入证明。
 
 ## 执行顺序
 

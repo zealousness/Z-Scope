@@ -37,7 +37,7 @@
     "phases/P3-security-spec-mining-and-review.md": "4eb9fa3c8163571bae0143ac50d1f5115329096ce70c15c92c843c8f48663205",
     "phases/P4-hypothesis-driven-hunting.md": "ed77aed8a01443699828fecaed9ddc818564556de21cf6af5d2e9ea791d2ba93",
     "phases/P5-runtime-cutover.md": "ec36ad15fda5495a8e7217ec83fd26a07855073a2795c5246c9f2cea6d72b583",
-    "phases/P6-pilot-validation.md": "330c43128f4a66a4734583194df0351f2779ee06a06cd87b5ba4c2837432f12e",
+    "phases/P6-pilot-validation.md": "59a32daba5bc4c660b9c801289edfb1348b7d439c2e849a7d1926d6bf64b1bcc",
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "3a48044dc7f68832fcb33431f8ee7c0e5c163d79bbaf34c994e0db37f3c428f3",
     "acceptance/runtime-reachability-manifest.json": "f8ac37ede0af7ef15aeb4a5aae30005ad83f51e9bc0cc6525530ed2a69761409",
@@ -46,6 +46,7 @@
     "acceptance/p4-qualification-manifest.json": "4521fb25f21678d8028cc80f08c0bb5bbcd8430bb720a72272967da08cb55500",
     "acceptance/p5-qualification-manifest.json": "168f78950dcfcb40a9e633c59f287a2a3d113b2df7cb03fb7cc1c91d9a99a9ee",
     "acceptance/p6-entry-preflight.json": "2052ff51f955265ef4373581217e8c37254bb729edce18ef2af565cf1898a0ad",
+    "acceptance/p6-entry-gate.json": "4f2cd5d4bd8afb03596040461c2fce42f649c8c29fd02d8571174b19153547b8",
     "acceptance/baseline-artifact-manifest.json": "0e96b854c81e299f48b4bff7e687b1f6504ebb059114c853c844179473bc3d50",
     "acceptance/p0-execution-preflight.json": "4415c2d2e0b9d277dd5d922b3694920c26ec06b1f361949fdb4e2dbc9d355e7b",
     "acceptance/p0-cold-baseline-summary.json": "ebd95c07957e3f0a4bef7c446f2e079caebfad1d6395e45ed4cc1b06476a3b49",
@@ -104,8 +105,8 @@
     "P3": "complete",
     "P4": "complete",
     "P5": "complete",
-    "E0": "pending",
-    "P6": "pending",
+    "E0": "complete",
+    "P6": "in_progress",
     "P7": "pending"
   },
   "review_roles": {

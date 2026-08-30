@@ -24,6 +24,15 @@ P2_REVIEW_ROLES = ("proof_security",)
 P3_REVIEW_ROLES = ("product_architecture", "proof_security")
 P4_REVIEW_ROLES = ("product_architecture", "proof_security")
 P5_REVIEW_ROLES = ("product_architecture", "proof_security")
+P6_ENTRY_GATE = DESIGN_RELATIVE_ROOT / "acceptance/p6-entry-gate.json"
+P6_ENTRY_REVIEW_SOURCE = "b839d7e63145d126f610094ae1998e7fa68df706"
+P6_ENTRY_TRUTH_COMMIT = "3e05889ba5773d8fc8c7e22ae9b75dcfe43e05c4"
+P6_ENTRY_GOVERNANCE_COMMIT = "c4d9dc9b1bd066548c4108b31e9a829abfe24497"
+P6_ENTRY_SCORER_COMMIT = "6ad0ba64247de56a497135e8daf7aac988da715d"
+P6_ENTRY_REVIEW_PACKET_PATHS = (
+    "test/range/benchmark/v16/review-packet-catalog.json",
+    "test/range/benchmark/v16/review-packets",
+)
 DESIGN_STATUSES = (
     "draft",
     "reviewed",
@@ -824,6 +833,8 @@ def validate_phase_gates(
         for phase in ("P1", "P2", "P3", "P4", "P5", "E0")
     ):
         errors.append("P6 requires P1-P5 and E0 complete")
+    if raw_manifest_phases.get("E0") == "complete" and raw_manifest_phases.get("P6") == "pending":
+        errors.append("E0 completion and P6 entry must be recorded atomically")
     if (
         raw_manifest_phases.get("P7") in {"in_progress", "complete"}
         and raw_manifest_phases.get("P6") != "complete"
@@ -861,7 +872,7 @@ def validate_phase_gates(
 
 
 def validate_p6_entry_preflight(preflight: Mapping[str, Any]) -> list[str]:
-    """Validate the fail-closed P6 capability snapshot without granting entry."""
+    """Validate the historical fail-closed capability snapshot without granting entry."""
 
     errors: list[str] = []
     expected_fields = {
@@ -969,6 +980,239 @@ def validate_p6_entry_preflight(preflight: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+def validate_p6_entry_gate(
+    gate: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    evidence_index: Mapping[str, Any],
+    *,
+    repo_root: Path | None = None,
+    verify_git: bool = False,
+) -> list[str]:
+    """Validate the protected E0 lineage and atomic P6 phase-entry transition."""
+
+    errors: list[str] = []
+    expected_fields = {
+        "schema_version",
+        "captured_at",
+        "repository",
+        "phase_transition",
+        "e0_review",
+        "e0_attestation",
+        "ancestry",
+        "review_packets",
+        "historical_preflight",
+        "entry_authorization",
+        "content_sha256",
+    }
+    if set(gate) != expected_fields:
+        return ["P6 entry gate fields do not match the v1 contract"]
+    if gate.get("schema_version") != "zscope.p6-entry-gate.v1":
+        errors.append("P6 entry gate schema_version is invalid")
+    if gate.get("repository") != "zealousness/Z-Scope":
+        errors.append("P6 entry gate repository identity is invalid")
+
+    expected_transition = {
+        "previous": {"E0": "pending", "P6": "pending"},
+        "current": {"E0": "complete", "P6": "in_progress"},
+        "atomic": True,
+    }
+    if gate.get("phase_transition") != expected_transition:
+        errors.append("P6 entry gate phase transition is not the frozen atomic transition")
+
+    expected_review = {
+        "workflow_path": ".github/workflows/range-v16-review.yml",
+        "event": "workflow_dispatch",
+        "branch": "main",
+        "run_id": "33247814685",
+        "source_sha": P6_ENTRY_REVIEW_SOURCE,
+        "status": "completed",
+        "conclusion": "success",
+        "producer_job": "codex arbitration finalize and safe-pair author",
+        "producer_job_conclusion": "success",
+        "artifacts": {
+            "reviewed": {
+                "name": f"range-v16-reviewed-{P6_ENTRY_REVIEW_SOURCE}",
+                "id": "9713663607",
+                "digest": "sha256:359c82a57abc7ed4fb638e081385804db558574fc4010eebaa7bbd77d824bccb",
+                "expired": False,
+            },
+            "provenance": {
+                "name": f"range-v16-review-provenance-{P6_ENTRY_REVIEW_SOURCE}",
+                "id": "9713664518",
+                "digest": "sha256:c7cfe85c3f37db97007f07ec8ad74b50537ae77db0ffa8e84ad61aaac6a45d3a",
+                "expired": False,
+            },
+            "pair": {
+                "name": f"range-v16-pair-author-{P6_ENTRY_REVIEW_SOURCE}",
+                "id": "9713987274",
+                "digest": "sha256:6024264e49cda3a8b497b8e22320f922b16572749410b3bc5b23ac21d543b537",
+                "expired": False,
+            },
+        },
+    }
+    if gate.get("e0_review") != expected_review:
+        errors.append("P6 entry gate protected review binding is invalid")
+
+    expected_attestation = {
+        "workflow_path": ".github/workflows/range-v16-benchmark-v5-attestation.yml",
+        "event": "workflow_dispatch",
+        "branch": "main",
+        "run_id": "33257971124",
+        "head_sha": P6_ENTRY_TRUTH_COMMIT,
+        "status": "completed",
+        "conclusion": "success",
+        "job": "attest",
+        "job_conclusion": "success",
+        "environment": "sealed-benchmark",
+        "artifact": {
+            "name": f"e0-range-v16-benchmark-v5-{P6_ENTRY_TRUTH_COMMIT}",
+            "id": "9716404772",
+            "digest": "sha256:351fa8c326aa665a1ba00d705f34476a4ffd75debf6387b0d7985bfef348d1de",
+            "expired": False,
+        },
+        "component_commits": {
+            "governance": P6_ENTRY_GOVERNANCE_COMMIT,
+            "scorer": P6_ENTRY_SCORER_COMMIT,
+            "truth": P6_ENTRY_TRUTH_COMMIT,
+        },
+    }
+    if gate.get("e0_attestation") != expected_attestation:
+        errors.append("P6 entry gate protected attestation binding is invalid")
+
+    expected_ancestry = {
+        "governance_is_ancestor_of_truth": True,
+        "scorer_is_ancestor_of_truth": True,
+    }
+    if gate.get("ancestry") != expected_ancestry:
+        errors.append("P6 entry gate component ancestry claims are incomplete")
+
+    expected_packets = {
+        "review_source_sha": P6_ENTRY_REVIEW_SOURCE,
+        "truth_commit": P6_ENTRY_TRUTH_COMMIT,
+        "paths": list(P6_ENTRY_REVIEW_PACKET_PATHS),
+        "source_packet_tree_git_sha1": "31034bd42054e28cbaa0ae7b1d1eb033cf243cd4",
+        "truth_packet_tree_git_sha1": "31034bd42054e28cbaa0ae7b1d1eb033cf243cd4",
+        "source_catalog_blob_git_sha1": "2da54076b7caae63ed1d8c974cc262d8bcdafacb",
+        "truth_catalog_blob_git_sha1": "2da54076b7caae63ed1d8c974cc262d8bcdafacb",
+        "catalog_sha256": "6ea86f6a0b69abff35c615dc658d5788f36b825a33631827f3428d112c022f04",
+        "unchanged": True,
+    }
+    if gate.get("review_packets") != expected_packets:
+        errors.append("P6 entry gate review packet binding is invalid")
+
+    expected_historical_preflight = {
+        "path": (
+            "docs/design/zscope-2.0-security-architecture/acceptance/" "p6-entry-preflight.json"
+        ),
+        "sha256": "2052ff51f955265ef4373581217e8c37254bb729edce18ef2af565cf1898a0ad",
+        "provider_model": "glm-5.1",
+        "entry_readiness": "blocked",
+        "preserved": True,
+        "authorizes_current_entry": False,
+    }
+    if gate.get("historical_preflight") != expected_historical_preflight:
+        errors.append("P6 entry gate historical preflight binding is invalid")
+
+    expected_authorization = {
+        "p1_p5_complete": True,
+        "e0_complete": True,
+        "p6_status": "in_progress",
+        "cold_pilot_started": False,
+        "formal_benchmark": False,
+        "release_eligible": False,
+    }
+    if gate.get("entry_authorization") != expected_authorization:
+        errors.append("P6 entry authorization exceeds the non-release entry boundary")
+
+    manifest_phases = manifest.get("phase_status")
+    evidence_phases = evidence_index.get("phases")
+    indexed_phases = (
+        {
+            str(row.get("phase")): row.get("status")
+            for row in evidence_phases
+            if isinstance(row, Mapping)
+        }
+        if isinstance(evidence_phases, list)
+        else {}
+    )
+    if not isinstance(manifest_phases, Mapping) or (
+        manifest_phases.get("E0") != "complete"
+        or manifest_phases.get("P6") != "in_progress"
+        or indexed_phases.get("E0") != "complete"
+        or indexed_phases.get("P6") != "in_progress"
+    ):
+        errors.append("P6 entry gate is not atomically reflected in both phase manifests")
+
+    unsigned = dict(gate)
+    supplied_hash = str(unsigned.pop("content_sha256", ""))
+    canonical = json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if supplied_hash != hashlib.sha256(canonical).hexdigest():
+        errors.append("P6 entry gate content hash mismatch")
+
+    if repo_root is not None:
+        preflight_path = resolve_repository_path(
+            repo_root, str(expected_historical_preflight["path"])
+        )
+        if not preflight_path.is_file() or sha256_file(preflight_path) != str(
+            expected_historical_preflight["sha256"]
+        ):
+            errors.append("P6 historical GLM-5.1 preflight snapshot changed")
+
+    if verify_git and repo_root is not None:
+        expected_trees = {
+            P6_ENTRY_REVIEW_SOURCE: "8653c791ba05d64b98299637211169408896bff9",
+            P6_ENTRY_TRUTH_COMMIT: "bc271406fd4a1a3781842e952de5a5ddb1ab833f",
+        }
+        for commit, expected_tree in expected_trees.items():
+            if _git_tree(repo_root, commit) != expected_tree:
+                errors.append(f"P6 entry Git tree binding is invalid for {commit}")
+        for component in (P6_ENTRY_GOVERNANCE_COMMIT, P6_ENTRY_SCORER_COMMIT):
+            completed = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", component, P6_ENTRY_TRUTH_COMMIT],
+                cwd=repo_root,
+                check=False,
+                capture_output=True,
+            )
+            if completed.returncode != 0:
+                errors.append(f"P6 entry component is not an ancestor of Truth: {component}")
+        changed_packets = _git_text(
+            repo_root,
+            "diff",
+            "--name-only",
+            P6_ENTRY_REVIEW_SOURCE,
+            P6_ENTRY_TRUTH_COMMIT,
+            "--",
+            *P6_ENTRY_REVIEW_PACKET_PATHS,
+        )
+        if changed_packets is None or changed_packets.strip():
+            errors.append("P6 entry review packets changed after the protected review source")
+        git_objects = {
+            f"{P6_ENTRY_REVIEW_SOURCE}:test/range/benchmark/v16/review-packets": (
+                "31034bd42054e28cbaa0ae7b1d1eb033cf243cd4"
+            ),
+            f"{P6_ENTRY_TRUTH_COMMIT}:test/range/benchmark/v16/review-packets": (
+                "31034bd42054e28cbaa0ae7b1d1eb033cf243cd4"
+            ),
+            f"{P6_ENTRY_REVIEW_SOURCE}:test/range/benchmark/v16/review-packet-catalog.json": (
+                "2da54076b7caae63ed1d8c974cc262d8bcdafacb"
+            ),
+            f"{P6_ENTRY_TRUTH_COMMIT}:test/range/benchmark/v16/review-packet-catalog.json": (
+                "2da54076b7caae63ed1d8c974cc262d8bcdafacb"
+            ),
+        }
+        for revision, expected_object in git_objects.items():
+            actual = _git_text(repo_root, "rev-parse", revision)
+            if actual is None or actual.strip() != expected_object:
+                errors.append(f"P6 entry review packet Git object mismatch: {revision}")
+    return errors
+
+
 def validate_design_evidence(
     repo_root: Path,
     *,
@@ -1048,6 +1292,19 @@ def validate_design_evidence(
                 report.error("P6 entry preflight candidate commit is unavailable in Git")
             elif actual_tree != candidate_tree:
                 report.error("P6 entry preflight candidate tree mismatch")
+
+    p6_entry_gate_path = resolve_repository_path(repo_root, P6_ENTRY_GATE.as_posix())
+    p6_entry_gate = _read_governance_json(p6_entry_gate_path, report)
+    if isinstance(p6_entry_gate, dict):
+        report.errors.extend(
+            validate_p6_entry_gate(
+                p6_entry_gate,
+                manifest,
+                evidence_index,
+                repo_root=repo_root,
+                verify_git=verify_git,
+            )
+        )
 
     formal = manifest.get("formal_reviews")
     require_formal_approval = manifest.get("status") in ACTIVE_AFTER_REVIEW or (

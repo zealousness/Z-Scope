@@ -1,4 +1,5 @@
 import copy
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from scripts.check_zscope_2_design_evidence import (
     validate_p3_review_documents,
     validate_p4_review_documents,
     validate_p6_entry_preflight,
+    validate_p6_entry_gate,
     validate_phase_gates,
 )
 
@@ -260,14 +262,31 @@ def test_p6_cannot_start_before_e0_and_all_product_phases_complete() -> None:
     manifest, evidence, _ = _design_documents()
     mutated_manifest = copy.deepcopy(manifest)
     mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["phase_status"]["E0"] = "pending"
     mutated_manifest["phase_status"]["P6"] = "in_progress"
     for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "E0":
+            phase["status"] = "pending"
         if phase["phase"] == "P6":
             phase["status"] = "in_progress"
 
     errors = validate_phase_gates(mutated_manifest, mutated_evidence)
 
     assert "P6 requires P1-P5 and E0 complete" in errors
+
+
+def test_e0_completion_and_p6_entry_are_one_atomic_phase_transition() -> None:
+    manifest, evidence, _ = _design_documents()
+    mutated_manifest = copy.deepcopy(manifest)
+    mutated_evidence = copy.deepcopy(evidence)
+    mutated_manifest["phase_status"]["P6"] = "pending"
+    for phase in mutated_evidence["phases"]:
+        if phase["phase"] == "P6":
+            phase["status"] = "pending"
+
+    errors = validate_phase_gates(mutated_manifest, mutated_evidence)
+
+    assert "E0 completion and P6 entry must be recorded atomically" in errors
 
 
 def test_p7_cannot_start_before_p6_completion() -> None:
@@ -307,6 +326,60 @@ def test_p6_entry_preflight_cannot_claim_e0_or_phase_entry() -> None:
     assert "P6 entry preflight must preserve the pending phase state" in errors
     assert "P6 entry preflight must remain blocked until E0 completes" in errors
     assert "P6 entry governance must preserve the protected E0 blocker" in errors
+
+
+def test_current_p6_entry_gate_binds_exact_e0_lineage_and_git_history() -> None:
+    manifest, evidence, _ = _design_documents()
+    gate = load_json(DESIGN_ROOT / "acceptance" / "p6-entry-gate.json")
+
+    errors = validate_p6_entry_gate(
+        gate,
+        manifest,
+        evidence,
+        repo_root=ROOT,
+        verify_git=True,
+    )
+
+    assert errors == []
+
+
+def test_p6_entry_gate_rejects_artifact_drift_and_non_atomic_status() -> None:
+    manifest, evidence, _ = _design_documents()
+    gate = load_json(DESIGN_ROOT / "acceptance" / "p6-entry-gate.json")
+    mutated_gate = copy.deepcopy(gate)
+    mutated_gate["e0_review"]["artifacts"]["reviewed"]["id"] = "9713663608"
+    mutated_manifest = copy.deepcopy(manifest)
+    mutated_manifest["phase_status"]["P6"] = "pending"
+
+    errors = validate_p6_entry_gate(
+        mutated_gate,
+        mutated_manifest,
+        evidence,
+        repo_root=ROOT,
+    )
+
+    assert "P6 entry gate protected review binding is invalid" in errors
+    assert "P6 entry gate is not atomically reflected in both phase manifests" in errors
+    assert "P6 entry gate content hash mismatch" in errors
+
+
+def test_p6_entry_gate_preserves_glm_5_1_preflight_as_historical_snapshot() -> None:
+    gate = load_json(DESIGN_ROOT / "acceptance" / "p6-entry-gate.json")
+    preflight_path = ROOT / gate["historical_preflight"]["path"]
+
+    actual = hashlib.sha256(preflight_path.read_bytes()).hexdigest()
+
+    assert gate["historical_preflight"] == {
+        "path": (
+            "docs/design/zscope-2.0-security-architecture/acceptance/" "p6-entry-preflight.json"
+        ),
+        "sha256": "2052ff51f955265ef4373581217e8c37254bb729edce18ef2af565cf1898a0ad",
+        "provider_model": "glm-5.1",
+        "entry_readiness": "blocked",
+        "preserved": True,
+        "authorizes_current_entry": False,
+    }
+    assert actual == gate["historical_preflight"]["sha256"]
 
 
 def test_p2_final_review_rejects_entry_scope_or_blockers() -> None:
