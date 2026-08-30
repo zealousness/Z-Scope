@@ -49,6 +49,34 @@ from .llm_usage import (
 logger = logging.getLogger(__name__)
 
 
+PROVIDER_FAILURE_CLASSES = frozenset(
+    {
+        "provider_credentials_unavailable",
+        "provider_transport_exhausted",
+        "provider_usage_unverifiable",
+        "provider_identity_mismatch",
+        "provider_protocol_incompatible",
+    }
+)
+
+
+class ProviderFailureError(RuntimeError):
+    """Public, body-free provider failure for control-plane classification.
+
+    ``failure_class`` is the only diagnostic detail exposed by this exception.
+    The message is deliberately constant so logging the exception cannot retain
+    an endpoint, HTTP status, provider body, model output, or credential.
+    """
+
+    MESSAGE = "provider request failed"
+
+    def __init__(self, failure_class: str) -> None:
+        if failure_class not in PROVIDER_FAILURE_CLASSES:
+            raise ValueError("unsupported provider failure class")
+        self.failure_class = failure_class
+        super().__init__(self.MESSAGE)
+
+
 @dataclass
 class _BaseUrlState:
     url: str
@@ -83,6 +111,55 @@ class _UsageTelemetryState:
     estimated_calls: int = 0
     provider_reported_calls: int = 0
     successful_call_durations_seconds: List[float] = field(default_factory=list)
+
+
+class _ProviderCallError(RuntimeError):
+    """Typed provider failure that never retains response or exception bodies."""
+
+    def __init__(self, failure_class: str, *, status: Optional[int] = None) -> None:
+        self.failure_class = failure_class
+        self.status = status
+        super().__init__(failure_class)
+
+
+def _public_provider_failure_class(reason: str) -> str:
+    """Map a private body-free reason to the fixed public P6 taxonomy."""
+
+    if reason == "provider_http_auth_error":
+        return "provider_credentials_unavailable"
+    if reason in {
+        "provider_http_rate_limited",
+        "provider_http_server_error",
+    } or reason.startswith("provider_transport_"):
+        return "provider_transport_exhausted"
+    if reason == "provider_protocol_usage_unverifiable":
+        return "provider_usage_unverifiable"
+    if reason in {
+        "provider_protocol_model_mismatch",
+        "provider_protocol_model_drift",
+    }:
+        return "provider_identity_mismatch"
+    if reason.startswith("provider_protocol_") or reason in {
+        "provider_http_client_error",
+        "provider_http_unexpected_status",
+    }:
+        return "provider_protocol_incompatible"
+    return "provider_transport_exhausted"
+
+
+class _DuplicateProviderJsonKeyError(ValueError):
+    """Internal marker for ambiguous provider-controlled JSON objects."""
+
+
+def _reject_duplicate_provider_json_keys(
+    pairs: Sequence[tuple[str, Any]],
+) -> Dict[str, Any]:
+    value: Dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _DuplicateProviderJsonKeyError("duplicate provider JSON key")
+        value[key] = item
+    return value
 
 
 _ENDPOINT_CAPACITY_CONDITION = threading.Condition()
@@ -163,6 +240,7 @@ class LLMClient:
         base_url_max_concurrent_requests: Optional[int] = None,
         global_max_concurrent_requests: int = DEFAULT_GLOBAL_MAX_INFLIGHT,
         supports_structured_output: bool = False,
+        require_exact_response_model: bool = False,
         token_usage_ledger: Optional[ScanTokenUsageLedger] = None,
         llm_ref: str = "",
     ):
@@ -188,6 +266,7 @@ class LLMClient:
         self.retry_until_available = bool(retry_until_available)
         self.max_tokens = max_tokens
         self.supports_structured_output = bool(supports_structured_output)
+        self.require_exact_response_model = bool(require_exact_response_model)
         self.token_usage_ledger = token_usage_ledger
         self.llm_ref = str(llm_ref or "")
         self.base_url_rate_limit_per_minute = max(0, int(base_url_rate_limit_per_minute or 0))
@@ -417,6 +496,7 @@ class LLMClient:
         tool_call_count: int = 0,
         new_fact_count: int = 0,
         duration_ms: int = 0,
+        provider_response_model: str = "",
     ) -> Optional[Dict[str, Any]]:
         manager = self.token_usage_ledger
         if manager is None or reservation is None:
@@ -430,7 +510,22 @@ class LLMClient:
             completion_tokens=completion,
             total_tokens=total,
             provider_reported=not bool(usage.get("estimated", True)),
-            finish_reason=finish_reason,
+            # Provider-controlled metadata is archived with the accounting
+            # ledger.  Keep it on a fixed enum so an arbitrary response value
+            # can never become an artifact/log side channel.
+            finish_reason=(
+                finish_reason
+                if finish_reason
+                in {
+                    "stop",
+                    "length",
+                    "tool_calls",
+                    "function_call",
+                    "content_filter",
+                    "error",
+                }
+                else "other"
+            ),
             cached_prompt_tokens=self._usage_value(usage.get("cached_prompt_tokens")),
             reasoning_tokens=self._usage_value(usage.get("reasoning_tokens")),
             retry=retry,
@@ -438,15 +533,66 @@ class LLMClient:
             tool_call_count=tool_call_count,
             new_fact_count=new_fact_count,
             duration_ms=duration_ms,
+            provider_response_model=provider_response_model,
         )
         return event.to_dict()
 
-    @classmethod
-    def _normalized_provider_usage(cls, value: Any) -> Dict[str, Any]:
+    def _normalized_provider_usage(self, value: Any) -> Dict[str, Any]:
         """Normalize OpenAI-compatible usage variants without retaining content."""
 
         if not isinstance(value, Mapping):
+            if self.require_exact_response_model:
+                raise _ProviderCallError("provider_protocol_usage_unverifiable")
             return {}
+
+        if self.require_exact_response_model:
+            prompt = value.get("prompt_tokens")
+            completion = value.get("completion_tokens")
+            total = value.get("total_tokens")
+            if any(
+                isinstance(item, bool) or not isinstance(item, int) or item < 0
+                for item in (prompt, completion, total)
+            ):
+                raise _ProviderCallError("provider_protocol_usage_unverifiable")
+            assert isinstance(prompt, int)
+            assert isinstance(completion, int)
+            assert isinstance(total, int)
+            if total != prompt + completion:
+                raise _ProviderCallError("provider_protocol_usage_unverifiable")
+
+            def optional_count(item: Any) -> int:
+                return (
+                    int(item)
+                    if isinstance(item, int) and not isinstance(item, bool) and item >= 0
+                    else 0
+                )
+
+            prompt_details = value.get("prompt_tokens_details")
+            completion_details = value.get("completion_tokens_details")
+            return {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": total,
+                "cached_prompt_tokens": optional_count(
+                    value.get("cached_prompt_tokens")
+                    if value.get("cached_prompt_tokens") is not None
+                    else (
+                        prompt_details.get("cached_tokens")
+                        if isinstance(prompt_details, Mapping)
+                        else None
+                    )
+                ),
+                "reasoning_tokens": optional_count(
+                    value.get("reasoning_tokens")
+                    if value.get("reasoning_tokens") is not None
+                    else (
+                        completion_details.get("reasoning_tokens")
+                        if isinstance(completion_details, Mapping)
+                        else None
+                    )
+                ),
+                "estimated": False,
+            }
 
         def first_number(*values: Any) -> Optional[int]:
             for candidate in values:
@@ -930,17 +1076,45 @@ class LLMClient:
 
     def _recover_from_local_fd_exhaustion(
         self,
-        error: BaseException,
+        _error: BaseException,
         cooldown_seconds: float,
     ) -> None:
         logger.warning(
             "Local file descriptor exhaustion while calling LLM; closing current "
-            "thread HTTP session and cooling all base_urls for %.1fs: %s",
+            "thread HTTP session and cooling all base_urls for %.1fs",
             cooldown_seconds,
-            error,
         )
         self.close_thread_session()
         self._mark_all_base_urls_cooldown(cooldown_seconds)
+
+    @staticmethod
+    def _http_failure_class(status: int) -> str:
+        if status in {401, 403}:
+            return "provider_http_auth_error"
+        if status == 429:
+            return "provider_http_rate_limited"
+        if 500 <= status <= 599:
+            return "provider_http_server_error"
+        if 400 <= status <= 499:
+            return "provider_http_client_error"
+        return "provider_http_unexpected_status"
+
+    @classmethod
+    def _provider_failure_class(cls, error: BaseException) -> str:
+        if isinstance(error, _ProviderCallError):
+            return error.failure_class
+        if cls._is_too_many_open_files(error):
+            return "provider_transport_local_resource_exhausted"
+        overload = cls._endpoint_overload_reason(error)
+        if overload == "timeout":
+            return "provider_transport_timeout"
+        if overload == "ssl_error":
+            return "provider_transport_tls_error"
+        if overload == "connection_error":
+            return "provider_transport_connection_error"
+        if isinstance(error, (json.JSONDecodeError, UnicodeError, ValueError, TypeError)):
+            return "provider_protocol_error"
+        return "provider_transport_error"
 
     def chat_completion(
         self,
@@ -1015,6 +1189,7 @@ class LLMClient:
                 usage_reservation: Optional[TokenUsageReservation] = None
                 usage_settled = False
                 request_started: Optional[float] = None
+                usage_failure_class = "provider_request_failed"
                 retry_call, repair_call, new_fact_count = self._usage_call_flags(
                     attempt=attempt,
                     trace_label=trace_label,
@@ -1042,12 +1217,20 @@ class LLMClient:
 
                     if self._transport == "curl":
                         request_started = time.monotonic()
-                        assembled_message, finish_reason, provider_usage = (
-                            self._curl_chat_completion(
-                                url,
-                                attempt_payload,
-                            )
+                        (
+                            assembled_message,
+                            finish_reason,
+                            provider_usage,
+                            provider_response_model,
+                        ) = self._curl_chat_completion(
+                            url,
+                            attempt_payload,
                         )
+                        self._validate_provider_response_model(
+                            requested_model=model,
+                            response_model=provider_response_model,
+                        )
+                        self._validate_provider_finish_reason(finish_reason)
                         prompt_tokens = LLMClient.estimate_tokens(messages)
                         completion_tokens = LLMClient.estimate_tokens([assembled_message])
                         usage: Dict[str, Any] = {
@@ -1075,6 +1258,7 @@ class LLMClient:
                             tool_call_count=tool_call_count,
                             new_fact_count=new_fact_count,
                             duration_ms=max(0, int(round(duration_seconds * 1000))),
+                            provider_response_model=provider_response_model,
                         )
                         usage_settled = usage_reservation is not None
                         if usage_event is not None:
@@ -1110,7 +1294,8 @@ class LLMClient:
                                     "finish_reason": finish_reason,
                                 }
                             ],
-                            "model": model,
+                            "model": provider_response_model,
+                            "requested_model": model,
                             "usage": usage,
                         }
 
@@ -1125,13 +1310,25 @@ class LLMClient:
                             )
                     request_started = time.monotonic()
                     response = self._session_for_thread().post(
-                        url, json=attempt_payload, timeout=request_timeout, stream=True
+                        url,
+                        json=attempt_payload,
+                        timeout=request_timeout,
+                        stream=True,
+                        allow_redirects=False,
                     )
 
                     if response.status_code == 200:
-                        assembled_message, finish_reason, provider_usage = (
-                            self._assemble_chat_response_with_usage(response)
+                        (
+                            assembled_message,
+                            finish_reason,
+                            provider_usage,
+                            provider_response_model,
+                        ) = self._assemble_chat_response_with_usage(response)
+                        self._validate_provider_response_model(
+                            requested_model=model,
+                            response_model=provider_response_model,
                         )
+                        self._validate_provider_finish_reason(finish_reason)
 
                         # Estimate single API call cost and log prominently
                         prompt_tokens = LLMClient.estimate_tokens(messages)
@@ -1161,6 +1358,7 @@ class LLMClient:
                             tool_call_count=tool_call_count,
                             new_fact_count=new_fact_count,
                             duration_ms=max(0, int(round(duration_seconds * 1000))),
+                            provider_response_model=provider_response_model,
                         )
                         usage_settled = usage_reservation is not None
                         if usage_event is not None:
@@ -1195,25 +1393,27 @@ class LLMClient:
                             "choices": [
                                 {"message": assembled_message, "finish_reason": finish_reason}
                             ],
-                            "model": model,
+                            "model": provider_response_model,
+                            "requested_model": model,
                             "usage": usage,
                         }
 
-                    error_msg = f"HTTP {response.status_code}: {response.text}"
+                    failure_class = self._http_failure_class(response.status_code)
                     transient_http_error = (
                         response.status_code >= 500 or response.status_code == 429
                     )
                     logger.warning(
-                        "Model %s via %s failed (attempt %d/%s): %s",
+                        "Model %s via %s failed (class=%s, status=%d, attempt=%d/%s)",
                         model,
                         endpoint.url,
+                        failure_class,
+                        response.status_code,
                         attempt,
                         (
                             "unbounded"
                             if (self.retry_until_available and transient_http_error)
                             else str(total_attempts)
                         ),
-                        error_msg,
                     )
 
                     if transient_http_error:
@@ -1234,7 +1434,8 @@ class LLMClient:
                             endpoint.url,
                             wait_time,
                         )
-                        last_error = error_msg
+                        usage_failure_class = failure_class
+                        last_error = failure_class
                         continue
                     elif (
                         response.status_code == 401
@@ -1250,7 +1451,8 @@ class LLMClient:
                         wait_time = self.TRANSIENT_AUTH_RETRY_DELAY_SECONDS
                         self._mark_base_url_cooldown(endpoint, wait_time)
                         post_attempt_delay = wait_time
-                        last_error = error_msg
+                        usage_failure_class = failure_class
+                        last_error = failure_class
                         logger.warning(
                             "Endpoint %s returned an isolated HTTP 401 after prior "
                             "successful authentication; retrying once after %.1fs",
@@ -1259,7 +1461,8 @@ class LLMClient:
                         )
                         continue
                     else:
-                        last_error = error_msg
+                        usage_failure_class = failure_class
+                        last_error = failure_class
                         break  # Try next model
 
                 except Exception as e:
@@ -1285,35 +1488,32 @@ class LLMClient:
                         self.retry_until_available and retry_transient
                     )
                     post_attempt_delay = 0.0 if is_last else wait_time
-                    if is_last:
-                        logger.warning(
-                            "Model %s via %s request error (attempt %d/%d, final): %s",
-                            model,
-                            endpoint.url,
-                            attempt,
-                            total_attempts,
-                            e,
-                        )
-                    else:
-                        logger.warning(
-                            "Model %s via %s request error "
-                            "(attempt %d/%s, retrying after %.1fs): %s",
-                            model,
-                            endpoint.url,
-                            attempt,
-                            (
-                                "unbounded"
-                                if (
-                                    self.retry_until_available
-                                    and retry_transient
-                                    and attempt >= total_attempts
-                                )
-                                else str(total_attempts)
-                            ),
-                            wait_time,
-                            e,
-                        )
-                    last_error = str(e)
+                    failure_class = self._provider_failure_class(e)
+                    usage_failure_class = failure_class
+                    if self.require_exact_response_model and failure_class.startswith(
+                        "provider_protocol_"
+                    ):
+                        post_attempt_delay = 0.0
+                        last_error = failure_class
+                        break
+                    logger.warning(
+                        "Model %s via %s request failed " "(class=%s, attempt=%d/%s, final=%s)",
+                        model,
+                        endpoint.url,
+                        failure_class,
+                        attempt,
+                        (
+                            "unbounded"
+                            if (
+                                self.retry_until_available
+                                and retry_transient
+                                and attempt >= total_attempts
+                            )
+                            else str(total_attempts)
+                        ),
+                        is_last,
+                    )
+                    last_error = failure_class
                     continue
                 finally:
                     if usage_reservation is not None and not usage_settled:
@@ -1328,7 +1528,7 @@ class LLMClient:
                             )
                             manager.forfeit(
                                 usage_reservation,
-                                reason=(str(last_error or "provider_request_failed")[:500]),
+                                reason=usage_failure_class,
                                 retry=retry_call,
                                 repair=repair_call,
                                 duration_ms=duration_ms,
@@ -1351,13 +1551,15 @@ class LLMClient:
 
             logger.info(f"Falling back from model {model}...")
 
-        raise Exception(f"All models failed. Last error: {last_error}")
+        raise ProviderFailureError(
+            _public_provider_failure_class(last_error or "provider_request_failed")
+        )
 
     def _curl_chat_completion(
         self,
         url: str,
         payload: Dict[str, Any],
-    ) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+    ) -> tuple[Dict[str, Any], str, Dict[str, Any], str]:
         """Send a chat completion request through curl.
 
         This is intentionally opt-in via ``Z_SCOPE_LLM_TRANSPORT=curl``. It is
@@ -1403,38 +1605,104 @@ class LLMClient:
             except OSError:
                 logger.debug("Failed to remove temporary curl config", exc_info=True)
         stdout = proc.stdout.decode("utf-8", errors="replace")
-        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
         if status_marker not in stdout:
-            detail = stderr or stdout[-500:] or f"curl exited with {proc.returncode}"
-            raise RuntimeError(f"curl transport did not return an HTTP status: {detail}")
+            raise _ProviderCallError("provider_transport_missing_http_status")
         body, raw_status = stdout.rsplit(status_marker, 1)
         try:
             status = int(raw_status.strip()[-3:])
         except ValueError as exc:
-            raise RuntimeError(
-                f"curl transport returned invalid HTTP status: {raw_status!r}"
-            ) from exc
+            raise _ProviderCallError("provider_transport_invalid_http_status") from exc
         if proc.returncode != 0:
-            detail = stderr or body[-500:] or f"curl exited with {proc.returncode}"
-            raise RuntimeError(f"curl transport failed: {detail}")
+            raise _ProviderCallError("provider_transport_error", status=status)
         if status != 200:
-            raise RuntimeError(f"HTTP {status}: {body[:2000]}")
+            raise _ProviderCallError(self._http_failure_class(status), status=status)
         try:
-            data = json.loads(body)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"curl transport returned non-JSON response: {body[:1000]}") from exc
+            data = json.loads(
+                body,
+                object_pairs_hook=_reject_duplicate_provider_json_keys,
+            )
+        except (json.JSONDecodeError, _DuplicateProviderJsonKeyError) as exc:
+            raise _ProviderCallError("provider_protocol_non_json") from exc
+        if not isinstance(data, dict):
+            raise _ProviderCallError("provider_protocol_invalid_response")
         choices = data.get("choices") or []
         if not choices:
-            raise RuntimeError(f"curl transport response missing choices: {body[:1000]}")
+            raise _ProviderCallError("provider_protocol_missing_choices")
+        if self.require_exact_response_model and (
+            not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict)
+        ):
+            raise _ProviderCallError("provider_protocol_invalid_response")
         choice = choices[0] if isinstance(choices[0], dict) else {}
-        message = choice.get("message") or {}
+        raw_message = choice.get("message")
+        if self.require_exact_response_model and not isinstance(raw_message, dict):
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        message = raw_message or {}
         if not isinstance(message, dict):
             message = {"role": "assistant", "content": str(message)}
+        if self.require_exact_response_model:
+            self._validate_strict_provider_message(message, streaming=False)
         message.setdefault("role", "assistant")
         message.setdefault("content", "")
-        finish_reason = str(choice.get("finish_reason") or "stop")
-        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-        return message, finish_reason, dict(usage)
+        raw_finish_reason = choice.get("finish_reason")
+        if self.require_exact_response_model and (
+            not isinstance(raw_finish_reason, str) or not raw_finish_reason
+        ):
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        finish_reason = str(raw_finish_reason or "stop")
+        raw_usage = data.get("usage")
+        usage: Dict[str, Any] = dict(raw_usage) if isinstance(raw_usage, dict) else {}
+        raw_provider_response_model = data.get("model")
+        provider_response_model = (
+            raw_provider_response_model if isinstance(raw_provider_response_model, str) else ""
+        )
+        return message, finish_reason, usage, provider_response_model
+
+    def _validate_provider_response_model(
+        self, *, requested_model: str, response_model: str
+    ) -> None:
+        if self.require_exact_response_model and response_model != requested_model:
+            raise _ProviderCallError("provider_protocol_model_mismatch")
+
+    def _validate_provider_finish_reason(self, finish_reason: str) -> None:
+        if self.require_exact_response_model and finish_reason not in {
+            "stop",
+            "tool_calls",
+            "function_call",
+        }:
+            raise _ProviderCallError("provider_protocol_invalid_response")
+
+    def _validate_strict_provider_message(
+        self,
+        message: Mapping[str, Any],
+        *,
+        streaming: bool,
+    ) -> None:
+        """Reject ambiguous provider-controlled message shapes in P6 strict mode."""
+
+        role = message.get("role")
+        if role is not None and role != "assistant":
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        if not streaming and role != "assistant":
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        tool_calls = message.get("tool_calls")
+        if tool_calls is None:
+            return
+        if not isinstance(tool_calls, list):
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, Mapping):
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            function = tool_call.get("function")
+            if function is not None and not isinstance(function, Mapping):
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            if isinstance(function, Mapping):
+                for field in ("name", "arguments"):
+                    item = function.get(field)
+                    if item is not None and not isinstance(item, str):
+                        raise _ProviderCallError("provider_protocol_invalid_response")
 
     def _write_curl_config(
         self,
@@ -1502,20 +1770,23 @@ class LLMClient:
 
     def _assemble_chat_response(self, response: requests.Response) -> tuple[Dict[str, Any], str]:
         """Assemble either SSE chunks or a plain JSON chat completion response."""
-        message, finish_reason, _usage = self._assemble_chat_response_with_usage(response)
+        message, finish_reason, _usage, _model = self._assemble_chat_response_with_usage(response)
         return message, finish_reason
 
     def _assemble_chat_response_with_usage(
         self,
         response: requests.Response,
-    ) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+    ) -> tuple[Dict[str, Any], str, Dict[str, Any], str]:
         """Assemble a response and retain only provider token-accounting fields."""
 
         content_pieces: List[str] = []
         reasoning_pieces: List[str] = []
         tool_calls_map: Dict[Any, Dict[str, Any]] = {}
         finish_reason = "stop"
+        finish_reason_seen = False
         provider_usage: Dict[str, Any] = {}
+        provider_response_model = ""
+        provider_usage_seen = False
 
         # A stream that continues to yield valid provider chunks is healthy.
         # Do not turn request elapsed time into a local analysis budget; the
@@ -1527,19 +1798,55 @@ class LLMClient:
             max_stream_seconds=stream_deadline,
             max_idle_valid_chunk_seconds=self.timeout,
         ):
+            raw_chunk_model = chunk.get("model")
+            if self.require_exact_response_model and (
+                not isinstance(raw_chunk_model, str) or not raw_chunk_model
+            ):
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            chunk_model = raw_chunk_model if isinstance(raw_chunk_model, str) else ""
+            if chunk_model:
+                if provider_response_model and chunk_model != provider_response_model:
+                    raise _ProviderCallError("provider_protocol_model_drift")
+                provider_response_model = chunk_model
             chunk_usage = chunk.get("usage")
+            if (
+                self.require_exact_response_model
+                and "usage" in chunk
+                and not isinstance(chunk_usage, dict)
+            ):
+                raise _ProviderCallError("provider_protocol_usage_unverifiable")
             if isinstance(chunk_usage, dict):
+                if self.require_exact_response_model and provider_usage_seen:
+                    raise _ProviderCallError("provider_protocol_usage_unverifiable")
+                provider_usage_seen = True
                 provider_usage.update(chunk_usage)
             choices = chunk.get("choices", [])
             if not choices:
                 continue
+            if self.require_exact_response_model and (
+                not isinstance(choices, list)
+                or len(choices) != 1
+                or not isinstance(choices[0], dict)
+            ):
+                raise _ProviderCallError("provider_protocol_invalid_response")
 
             choice = choices[0]
-            message_delta = choice.get("delta")
+            raw_delta = choice.get("delta")
+            raw_message = choice.get("message")
+            if self.require_exact_response_model and (
+                ("delta" in choice and not isinstance(raw_delta, dict))
+                or ("message" in choice and not isinstance(raw_message, dict))
+            ):
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            message_delta = raw_delta
             if not isinstance(message_delta, dict) or not message_delta:
-                message_delta = choice.get("message", {})
+                message_delta = raw_message or {}
+            if self.require_exact_response_model and not isinstance(message_delta, dict):
+                raise _ProviderCallError("provider_protocol_invalid_response")
             if not isinstance(message_delta, dict):
                 message_delta = {}
+            if self.require_exact_response_model:
+                self._validate_strict_provider_message(message_delta, streaming=True)
 
             content = message_delta.get("content")
             if content:
@@ -1555,8 +1862,19 @@ class LLMClient:
                     if isinstance(tool_call, dict):
                         self._merge_tool_call(tool_calls_map, tool_call, fallback_index)
 
-            if choice.get("finish_reason"):
+            if choice.get("finish_reason") is not None:
+                if self.require_exact_response_model and finish_reason_seen:
+                    raise _ProviderCallError("provider_protocol_invalid_response")
                 finish_reason = choice["finish_reason"]
+                finish_reason_seen = True
+
+        if self.require_exact_response_model:
+            if not finish_reason_seen or finish_reason not in {
+                "stop",
+                "tool_calls",
+                "function_call",
+            }:
+                raise _ProviderCallError("provider_protocol_invalid_response")
 
         assembled_message: Dict[str, Any] = {"role": "assistant"}
         if content_pieces:
@@ -1571,10 +1889,10 @@ class LLMClient:
         if reasoning_pieces:
             assembled_message["reasoning_content"] = "".join(reasoning_pieces)
 
-        return assembled_message, finish_reason, provider_usage
+        return assembled_message, finish_reason, provider_usage, provider_response_model
 
-    @staticmethod
     def _iter_chat_chunks(
+        self,
         response: requests.Response,
         *,
         max_stream_seconds: Optional[float] = None,
@@ -1612,20 +1930,36 @@ class LLMClient:
                         f"for {max_idle_valid_chunk_seconds:.0f}s"
                     )
                 continue
-            if decoded_line.startswith("data:"):
+            if decoded_line.startswith(":"):
+                continue
+            is_data_line = decoded_line.startswith("data:")
+            if self.require_exact_response_model and not is_data_line:
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            if is_data_line:
                 decoded_line = decoded_line[len("data:") :].strip()
             if decoded_line == "[DONE]":
                 break
             if not decoded_line.startswith("{"):
+                if self.require_exact_response_model:
+                    raise _ProviderCallError("provider_protocol_invalid_response")
                 continue
             try:
-                chunk = json.loads(decoded_line)
-            except json.JSONDecodeError:
-                logger.debug("Ignoring malformed chat completion line: %s", decoded_line[:200])
+                chunk = json.loads(
+                    decoded_line,
+                    object_pairs_hook=_reject_duplicate_provider_json_keys,
+                )
+            except _DuplicateProviderJsonKeyError as exc:
+                raise _ProviderCallError("provider_protocol_invalid_response") from exc
+            except json.JSONDecodeError as exc:
+                if self.require_exact_response_model:
+                    raise _ProviderCallError("provider_protocol_invalid_response") from exc
+                logger.debug("Ignoring malformed chat completion line")
                 continue
             if isinstance(chunk, dict):
                 last_valid_chunk_at = time.monotonic()
                 yield chunk
+            elif self.require_exact_response_model:
+                raise _ProviderCallError("provider_protocol_invalid_response")
 
     @staticmethod
     def _merge_tool_call(
