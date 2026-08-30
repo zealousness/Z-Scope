@@ -433,6 +433,7 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
         "max_retries",
         "retry_until_available",
         "supports_structured_output",
+        "require_exact_response_model",
     }
     for name, value in data.items():
         if not isinstance(name, str) or not name.strip():
@@ -476,6 +477,10 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
             supports_structured_output=_boolean(
                 profile.get("supports_structured_output", False),
                 f"{profile_path}.supports_structured_output",
+            ),
+            require_exact_response_model=_boolean(
+                profile.get("require_exact_response_model", False),
+                f"{profile_path}.require_exact_response_model",
             ),
         )
     return result

@@ -11,18 +11,41 @@ import requests
 
 from zscope.config.config import ConfigLoader
 from zscope.framework import llm_client as llm_client_module
-from zscope.framework.llm_client import LLMClient
+from zscope.framework.llm_client import LLMClient, ProviderFailureError
+from zscope.framework.llm_usage import ScanTokenUsageLedger
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, text="ok", headers=None):
+    def __init__(
+        self,
+        status_code=200,
+        text="ok",
+        headers=None,
+        model="unit-model",
+        finish_reason="stop",
+    ):
         self.status_code = status_code
         self.text = text
         self.headers = headers or {}
+        self.model = model
+        self.finish_reason = finish_reason
         self.closed = False
 
     def iter_lines(self):
-        yield (b'data: {"choices":[{"delta":{"content":"ok"},' b'"finish_reason":"stop"}]}')
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "model": self.model,
+                    "choices": [
+                        {
+                            "delta": {"content": "ok"},
+                            "finish_reason": self.finish_reason,
+                        }
+                    ],
+                }
+            )
+        ).encode("utf-8")
         yield b"data: [DONE]"
 
     def close(self):
@@ -71,9 +94,11 @@ def test_streaming_requests_explicitly_request_terminal_provider_usage(monkeypat
         models=["unit-model"],
     )
     payloads = []
+    redirect_flags = []
 
     def fake_post(_url, **kwargs):
         payloads.append(kwargs["json"])
+        redirect_flags.append(kwargs["allow_redirects"])
         return _FakeResponse()
 
     monkeypatch.setattr(client.session, "post", fake_post)
@@ -82,6 +107,394 @@ def test_streaming_requests_explicitly_request_terminal_provider_usage(monkeypat
 
     assert payloads[0]["stream"] is True
     assert payloads[0]["stream_options"] == {"include_usage": True}
+    assert redirect_flags == [False]
+
+
+class _StrictUsageResponse(_FakeResponse):
+    def __init__(self, *, model="unit-model", usage=None):
+        super().__init__(model=model)
+        self.usage = usage
+
+    def iter_lines(self):
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "model": self.model,
+                    "usage": self.usage,
+                    "choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}],
+                }
+            )
+        ).encode("utf-8")
+        yield b"data: [DONE]"
+
+
+def test_strict_provider_accepts_only_exact_model_and_conserved_integer_usage(
+    monkeypatch,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    monkeypatch.setattr(
+        client.session,
+        "post",
+        lambda *_args, **_kwargs: _StrictUsageResponse(
+            usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
+        ),
+    )
+
+    response = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert response["model"] == "unit-model"
+    assert response["usage"]["estimated"] is False
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["provider_reported"] is True
+    assert event["provider_response_model"] == "unit-model"
+
+
+@pytest.mark.parametrize(
+    ("model", "usage", "failure_class"),
+    [
+        (
+            " unit-model ",
+            {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+            "provider_identity_mismatch",
+        ),
+        ("unit-model", {"prompt_tokens": 2}, "provider_usage_unverifiable"),
+        (
+            "unit-model",
+            {"prompt_tokens": 2.0, "completion_tokens": 3, "total_tokens": 5},
+            "provider_usage_unverifiable",
+        ),
+        (
+            "unit-model",
+            {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 6},
+            "provider_usage_unverifiable",
+        ),
+    ],
+)
+def test_strict_provider_rejects_identity_or_usage_before_returning_model_output(
+    monkeypatch, model, usage, failure_class
+) -> None:
+    canary = "P6_STRICT_OUTPUT_CANARY"
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    response = _StrictUsageResponse(model=model, usage=usage)
+    response.iter_lines = lambda: iter(
+        [
+            (
+                "data: "
+                + json.dumps(
+                    {
+                        "model": model,
+                        "usage": usage,
+                        "choices": [
+                            {
+                                "delta": {"content": canary},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    }
+                )
+            ).encode("utf-8"),
+            b"data: [DONE]",
+        ]
+    )
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert raised.value.failure_class == failure_class
+    assert str(raised.value) == ProviderFailureError.MESSAGE
+    assert canary not in str(raised.value)
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["outcome"] != "success"
+
+
+def test_strict_provider_rejects_duplicate_streaming_json_keys(monkeypatch) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    response = _StrictUsageResponse()
+    response.iter_lines = lambda: iter(
+        [
+            b'data: {"model":"unit-model","model":"alias-model","choices":[]}',
+            b"data: [DONE]",
+        ]
+    )
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["outcome"] != "success"
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        [b'data: {"model":"unit-model",'],
+        [b"event: message"],
+        [
+            b'data: {"model":7,"choices":[]}',
+            b'data: {"model":"unit-model","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+        ],
+        [
+            b'data: {"model":"unit-model","usage":"unknown","choices":[]}',
+            b'data: {"model":"unit-model","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+        ],
+        [
+            b'data: {"model":"unit-model","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"choices":[{"delta":"invalid","finish_reason":"stop"}]}',
+        ],
+        [
+            b'data: {"model":"unit-model","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"choices":[{"delta":{"content":"one"},"finish_reason":"stop"}]}',
+            b'data: {"model":"unit-model","choices":[{"delta":{"content":"two"},"finish_reason":"stop"}]}',
+        ],
+    ],
+)
+def test_strict_provider_rejects_ambiguous_stream_protocol(monkeypatch, lines) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    response = _StrictUsageResponse()
+    response.iter_lines = lambda: iter([*lines, b"data: [DONE]"])
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert raised.value.failure_class in {
+        "provider_protocol_incompatible",
+        "provider_usage_unverifiable",
+    }
+    assert ledger.snapshot(include_events=True)["events"][0]["outcome"] != "success"
+
+
+def test_strict_provider_allows_sse_comment_keepalive(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ScanTokenUsageLedger(depth="fast"),
+    )
+    response = _StrictUsageResponse(
+        usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    )
+    original_lines = list(response.iter_lines())
+    response.iter_lines = lambda: iter([b": keepalive", *original_lines])
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    result = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert result["model"] == "unit-model"
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        [
+            {
+                "model": "unit-model",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "choices": [],
+            },
+            {
+                "model": "unit-model",
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+                "choices": [],
+            },
+        ],
+        [
+            {
+                "model": "unit-model",
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+                "choices": [{"delta": {"content": "ignored"}, "finish_reason": "length"}],
+            }
+        ],
+    ],
+)
+def test_strict_provider_rejects_usage_drift_or_nonterminal_finish_reason(
+    monkeypatch, lines
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    response = _StrictUsageResponse()
+    response.iter_lines = lambda: iter(
+        [
+            *(f"data: {json.dumps(line)}".encode("utf-8") for line in lines),
+            b"data: [DONE]",
+        ]
+    )
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert raised.value.failure_class in {
+        "provider_protocol_incompatible",
+        "provider_usage_unverifiable",
+    }
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["outcome"] != "success"
+
+
+@pytest.mark.parametrize(
+    ("response_model", "expected_response_model"),
+    [("unit-model", "unit-model"), ("alias-model", "alias-model"), ("", "")],
+)
+def test_streaming_usage_event_binds_provider_response_model_without_fallback(
+    monkeypatch,
+    response_model,
+    expected_response_model,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="http://identity.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        token_usage_ledger=ledger,
+    )
+    monkeypatch.setattr(
+        client.session,
+        "post",
+        lambda *_args, **_kwargs: _FakeResponse(model=response_model),
+    )
+
+    response = client.chat_completion([{"role": "user", "content": "hello"}])
+    event = ledger.snapshot(include_events=True)["events"][0]
+
+    assert response["requested_model"] == "unit-model"
+    assert response["model"] == expected_response_model
+    assert event["model"] == "unit-model"
+    assert event["requested_model"] == "unit-model"
+    assert event["provider_response_model"] == expected_response_model
+
+
+def test_streaming_usage_event_reduces_provider_finish_reason_to_fixed_enum(monkeypatch) -> None:
+    canary = "P6_PROVIDER_FINISH_REASON_CANARY"
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="http://identity.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        token_usage_ledger=ledger,
+    )
+    monkeypatch.setattr(
+        client.session,
+        "post",
+        lambda *_args, **_kwargs: _FakeResponse(finish_reason=canary),
+    )
+
+    response = client.chat_completion([{"role": "user", "content": "hello"}])
+    event = ledger.snapshot(include_events=True)["events"][0]
+
+    assert response["choices"][0]["finish_reason"] == canary
+    assert event["finish_reason"] == "other"
+    assert canary not in json.dumps(event)
+
+
+def test_http_failure_never_logs_or_accounts_provider_body(monkeypatch, caplog) -> None:
+    secret_canary = "P6_SECRET_MODEL_OUTPUT_CANARY"
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="http://safe-errors.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        token_usage_ledger=ledger,
+    )
+    monkeypatch.setattr(
+        client.session,
+        "post",
+        lambda *_args, **_kwargs: _FakeResponse(status_code=400, text=secret_canary),
+    )
+
+    with pytest.raises(ProviderFailureError) as error:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert error.value.failure_class == "provider_protocol_incompatible"
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["reason"] == "provider_http_client_error"
+    assert secret_canary not in str(error.value)
+    assert secret_canary not in caplog.text
+    assert secret_canary not in json.dumps(event)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_class"),
+    [
+        (401, "provider_credentials_unavailable"),
+        (403, "provider_credentials_unavailable"),
+        (429, "provider_transport_exhausted"),
+        (500, "provider_transport_exhausted"),
+        (503, "provider_transport_exhausted"),
+        (requests.exceptions.Timeout("private timeout detail"), "provider_transport_exhausted"),
+    ],
+)
+def test_provider_failures_expose_only_the_fixed_typed_class(
+    monkeypatch,
+    failure,
+    expected_class,
+) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="https://typed-errors.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+    )
+
+    def fail(*_args, **_kwargs):
+        if isinstance(failure, BaseException):
+            raise failure
+        return _FakeResponse(status_code=failure, text="private provider response")
+
+    monkeypatch.setattr(client.session, "post", fail)
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert raised.value.failure_class == expected_class
+    assert str(raised.value) == ProviderFailureError.MESSAGE
+    assert "private" not in str(raised.value)
 
 
 def test_llm_client_falls_back_to_another_base_url_after_rate_limit(monkeypatch) -> None:
@@ -233,9 +646,10 @@ def test_llm_client_does_not_retry_first_401_without_prior_success(monkeypatch) 
 
     monkeypatch.setattr(client.session, "post", fake_post)
 
-    with pytest.raises(Exception, match="HTTP 401"):
+    with pytest.raises(ProviderFailureError) as raised:
         client.chat_completion([{"role": "user", "content": "hello"}])
 
+    assert raised.value.failure_class == "provider_credentials_unavailable"
     assert len(calls) == 1
 
 
@@ -260,9 +674,10 @@ def test_llm_client_retries_repeated_401_only_once(monkeypatch) -> None:
     monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
 
     client.chat_completion([{"role": "user", "content": "seed success"}])
-    with pytest.raises(Exception, match="HTTP 401"):
+    with pytest.raises(ProviderFailureError) as raised:
         client.chat_completion([{"role": "user", "content": "hello"}])
 
+    assert raised.value.failure_class == "provider_credentials_unavailable"
     assert len(calls) == 3
 
 
@@ -385,9 +800,10 @@ def test_llm_client_transport_disconnect_triggers_aimd_and_cooldown(
     )
     started_at = time.monotonic()
 
-    with pytest.raises(Exception, match="All models failed"):
+    with pytest.raises(ProviderFailureError) as raised:
         client.chat_completion([{"role": "user", "content": "hello"}])
 
+    assert raised.value.failure_class == "provider_transport_exhausted"
     snapshot = client.endpoint_capacity_snapshot()[shared_url]
     assert calls == 1
     assert snapshot["max_concurrent_requests"] == 2
@@ -465,6 +881,7 @@ def test_llm_client_usage_snapshot_tracks_provider_coverage_and_survives_failure
                 "completion_tokens": 5,
                 "total_tokens": 22,
             },
+            "unit-model",
         ),
     )
 
@@ -504,9 +921,10 @@ def test_llm_client_usage_snapshot_tracks_provider_coverage_and_survives_failure
         "zscope.framework.llm_client.random.uniform",
         lambda _a, _b: 0.0,
     )
-    with pytest.raises(Exception, match="All models failed"):
+    with pytest.raises(ProviderFailureError) as raised:
         client.chat_completion([{"role": "user", "content": "fail now"}])
 
+    assert raised.value.failure_class == "provider_transport_exhausted"
     client.close()
     assert client.usage_snapshot() == snapshot_after_success
 
