@@ -16,6 +16,7 @@ from zscope.core.validation.pipeline import ValidationPipeline
 from zscope.core.validation.runner import ValidationResultCache, ValidationRunner
 from zscope.core.validation.function_ir import FunctionIRGraph
 from zscope.framework.base import AgentResponse
+from zscope.framework.llm_client import ProviderFailureError
 from zscope.orchestration.scheduler import ScanScheduler
 
 
@@ -250,6 +251,81 @@ def _executable_path_issue(**overrides):
     return issue
 
 
+def _resource_function_ir_graph(*, cleanup: bool) -> dict:
+    statements = ["p = malloc(8)"]
+    calls = [{"callee": "malloc", "line": 4}]
+    if cleanup:
+        statements.append("free(p)")
+        calls.append({"callee": "free", "line": 5})
+    graph = FunctionIRGraph.from_clang_evidence(
+        {
+            "clang_path": "clang",
+            "code_snapshot_sha256": "d" * 64,
+            "cfg_dump": {
+                "summary": {
+                    "parse_ok": True,
+                    "function": "resource_target",
+                    "function_section_unique": True,
+                    "entry_blocks": ["B1"],
+                    "exit_blocks": ["B0"],
+                    "blocks": [
+                        {
+                            "id": "B1",
+                            "label": "(ENTRY)",
+                            "successors": ["B0"],
+                            "predecessors": [],
+                            "statements": statements,
+                        },
+                        {
+                            "id": "B0",
+                            "label": "(EXIT)",
+                            "successors": [],
+                            "predecessors": ["B1"],
+                            "statements": [],
+                        },
+                    ],
+                }
+            },
+            "ast_dump": {"summary": {"target_function": {"call_exprs": calls}}},
+        },
+        function="resource_target",
+        file="src/resource.c",
+    )
+    assert graph is not None
+    return graph.to_dict()
+
+
+def _resource_proof_issue(*, cleanup: bool) -> dict:
+    return _issue(
+        id="ISSUE_RESOURCE_PROOF",
+        candidate_uid="CAND_RESOURCE_PROOF",
+        validation_cluster_uid="VAL_RESOURCE_PROOF",
+        function="resource_target",
+        file="src/resource.c",
+        location="src/resource.c:4",
+        category="memory_leak",
+        resource_identity="p",
+        function_ir_graph=_resource_function_ir_graph(cleanup=cleanup),
+        security_obligation={
+            "obligation_uid": "OBL_RESOURCE_PROOF",
+            "defect_family": "resource_leak",
+            "subject_uid": "p",
+            "decision_region_uid": "REGION_RESOURCE_PROOF",
+            "required_fact_kinds": ["event:acquire", "event:exit"],
+        },
+        obligation_required_fact_kinds=["event:acquire", "event:exit"],
+        decision_fact_slice={
+            "fact_uids": ["FACT_ACQUIRE", "FACT_EXIT"],
+            "dependency_code_hashes": ["resource-code-sha"],
+            "missing_fact_kinds": [],
+            "coverage": "complete",
+            "facts": [],
+        },
+        decision_fact_coverage="complete",
+        missing_fact_kinds=[],
+    )
+
+
 def test_validation_runner_cache_key_uses_stable_evidence_fingerprint_without_candidate_id() -> (
     None
 ):
@@ -273,6 +349,36 @@ def test_validation_runner_cache_key_uses_stable_evidence_fingerprint_without_ca
     key = runner._validator_cache_key(item)
 
     assert key
+
+
+def test_missing_cleanup_closes_through_strict_checker_without_model() -> None:
+    agent = FakeValidatorAgent([])
+    issue = _resource_proof_issue(cleanup=False)
+    state = _state(issue)
+
+    _runner(agent).run(state)
+
+    assert agent.inputs == []
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["validation_status"] == "validated"
+    assert issue["terminal_authority"] == "zscope.proof-checker"
+    assert issue["proof_kernel_decision"]["requested_fact_kinds"] == ["cleanup_coverage"]
+    assert issue["proof_kernel_decision"]["missing_fact_kinds"] == []
+
+
+def test_complete_cleanup_rejects_through_strict_checker_without_model() -> None:
+    agent = FakeValidatorAgent([])
+    issue = _resource_proof_issue(cleanup=True)
+    state = _state(issue)
+
+    _runner(agent).run(state)
+
+    assert agent.inputs == []
+    assert issue["candidate_disposition"] == "rejected_with_proof"
+    assert issue["validation_status"] == "rejected"
+    assert issue["terminal_authority"] == "zscope.proof-checker"
+    assert issue["proof_kernel_decision"]["requested_fact_kinds"] == ["cleanup_coverage"]
+    assert issue["proof_kernel_decision"]["missing_fact_kinds"] == []
 
 
 def test_validation_runner_cache_key_rejects_weak_fingerprint_without_candidate_id() -> None:
@@ -1475,6 +1581,33 @@ def test_validation_runner_parallel_workers_preserve_order_and_token_totals() ->
     assert state["total_cumulative_completion_tokens"] == 15
     assert state["total_cumulative_total_tokens"] == 75
     assert all(thread_name.startswith("zscope-validator") for thread_name, _issue_id in calls)
+
+
+def test_parallel_validation_propagates_typed_systemic_provider_failure() -> None:
+    class FailingProviderValidator:
+        def run(self, _input_data):
+            raise ProviderFailureError("provider_protocol_incompatible")
+
+    issues = [
+        _issue(
+            id=f"ISSUE_PROVIDER_{index}",
+            location=f"src/provider_{index}.c:{index + 1}",
+            dedup_key=f"provider-validation-{index}",
+        )
+        for index in range(2)
+    ]
+    state = _state(issues[0])
+    state["pending_new_issues"] = issues
+    runner = _runner(
+        None,
+        proof_engine_agent_factory=lambda *args, **kwargs: FailingProviderValidator(),
+    )
+
+    with pytest.raises(ProviderFailureError) as raised:
+        runner.run(state)
+
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    assert state["pending_new_issues"] == issues
 
 
 def test_validation_deadline_is_a_soft_budget_and_retains_late_result() -> None:

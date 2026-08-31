@@ -35,7 +35,10 @@ REQUIRED_SCHEMAS = {
     "security-hypothesis-v2.schema.json",
 }
 REQUIRED_PROMPT = "zscope/agents/hypothesis_hunter/AGENT.md"
-REQUIRED_QUALIFICATION = PREFIX + "qualification/qualification-artifact.json"
+REQUIRED_QUALIFICATIONS = {
+    PREFIX + "qualification/qualification-artifact.json",
+    PREFIX + "qualification/qualification-artifact.v2.json",
+}
 FORBIDDEN_IMPORTS = (
     "zscope.benchmarking",
     "zscope.core.validation.runner",
@@ -57,8 +60,10 @@ def wheel_errors(path: Path) -> list[str]:
     errors = [f"wheel missing P4 module: {name}" for name in sorted(REQUIRED_MODULES - names)]
     if REQUIRED_PROMPT not in names:
         errors.append("wheel missing Hypothesis Hunter prompt")
-    if REQUIRED_QUALIFICATION not in names:
-        errors.append("wheel missing P4 qualification artifact")
+    errors.extend(
+        f"wheel missing P4 qualification artifact: {name}"
+        for name in sorted(REQUIRED_QUALIFICATIONS - names)
+    )
     schema_prefix = PREFIX + "schemas/"
     present = {name.removeprefix(schema_prefix) for name in names if name.startswith(schema_prefix)}
     errors.extend(f"wheel missing P4 schema: {name}" for name in sorted(REQUIRED_SCHEMAS - present))

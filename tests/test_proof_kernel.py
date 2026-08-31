@@ -215,8 +215,8 @@ def test_registry_freezes_non_executable_facts_and_role_polarity_matrix() -> Non
         "ownership_transfer",
         "caller_contract",
         "object_identity",
-        "value_range",
     }
+    assert "value_range" not in NON_EXECUTABLE_PREDICATES
     assert POLARITY_ROLE_TERMINAL_MATRIX[("confirmation", "supports")] == "confirmation"
     assert POLARITY_ROLE_TERMINAL_MATRIX[("counterproof", "refutes")] == "counterproof"
 

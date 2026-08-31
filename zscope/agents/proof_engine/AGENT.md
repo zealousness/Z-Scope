@@ -23,7 +23,9 @@ result.
 For `zscope.validator-protocol.v3` initial and evidence-recheck passes, use only
 the supplied canonical slice. If one decisive fact is absent, return exactly
 one `missing_fact_request` whose kind is allowed by that slice. Do not request
-the same fact twice.
+the same fact twice. A non-null `missing_fact_request` is valid only with
+`verdict=uncertain` and `stop_reason=missing_fact`; otherwise the request must
+be null and the stop reason must not be `missing_fact`.
 
 During `investigation_synthesis`, select only system-provided EvidenceAction
 IDs. Their predicate, subject, decision region, parameters, code snapshot,

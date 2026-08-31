@@ -442,6 +442,8 @@ class ScanTokenUsageLedger:
         self._persisted_event_count = 0
         self._event_sink_error = ""
         self._aggregator = LLMUsageEventAggregator()
+        self._rejected_before_model_count = 0
+        self._rejected_before_model_reasons: Dict[str, int] = {}
 
     def reserve(
         self,
@@ -557,6 +559,35 @@ class ScanTokenUsageLedger:
             repair=repair,
             duration_ms=duration_ms,
         )
+
+    def reject_before_model(
+        self,
+        reservation: TokenUsageReservation,
+        *,
+        reason: str,
+    ) -> None:
+        """Release a request that the provider explicitly rejected pre-model.
+
+        A concrete HTTP rejection such as 400, 401, or 429 proves that the
+        request did not produce a model completion.  Retried requests retain
+        a fixed-class transport counter, while only the subsequent accepted
+        request becomes a physical model-usage event.  Ambiguous disconnects
+        and server failures must continue through :meth:`forfeit`.
+        """
+
+        fixed_reason = _clean(reason) or "provider_request_rejected"
+        with self._lock:
+            active = self._reservations.pop(reservation.reservation_id, None)
+            if active is None:
+                raise ValueError(
+                    f"unknown or already settled reservation {reservation.reservation_id}"
+                )
+            self._reserved_tokens -= active.reserved_total_tokens
+            self._stage_reserved_tokens[active.budget_stage] -= active.reserved_total_tokens
+            self._rejected_before_model_count += 1
+            self._rejected_before_model_reasons[fixed_reason] = (
+                self._rejected_before_model_reasons.get(fixed_reason, 0) + 1
+            )
 
     def snapshot(self, *, include_events: bool = False) -> Dict[str, Any]:
         with self._lock:
@@ -704,6 +735,10 @@ class ScanTokenUsageLedger:
             ),
             "event_persistence_enabled": self._event_sink_path is not None,
             "persisted_event_count": self._persisted_event_count,
+            "rejected_before_model_count": self._rejected_before_model_count,
+            "rejected_before_model_reasons": dict(
+                sorted(self._rejected_before_model_reasons.items())
+            ),
             "telemetry_complete": not self._event_sink_error
             and (self._event_sink_path is None or self._persisted_event_count == len(self._events)),
             "telemetry_error": self._event_sink_error,

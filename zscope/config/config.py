@@ -199,6 +199,7 @@ class LLMConfig:
     base_url_rate_limit_per_minute: Optional[int] = None
     base_url_max_concurrent_requests: Optional[int] = None
     models: List[str] = field(default_factory=list)
+    response_model_map: Dict[str, str] = field(default_factory=dict)
     max_tokens: int = 4096
     timeout: Optional[float] = 120.0
     max_retries: int = 2
@@ -209,6 +210,11 @@ class LLMConfig:
     def __post_init__(self) -> None:
         self.base_urls = _normalize_llm_base_urls(self.base_urls or self.base_url)
         self.base_url = self.base_urls[0]
+        self.response_model_map = {
+            str(requested).strip(): str(response).strip()
+            for requested, response in self.response_model_map.items()
+            if str(requested).strip() and str(response).strip()
+        }
         self.base_url_rate_limit_per_minute = _optional_positive_int(
             self.base_url_rate_limit_per_minute,
             None,

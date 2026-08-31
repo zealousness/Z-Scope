@@ -147,6 +147,118 @@ def _single_block_graph(statements, calls) -> FunctionIRGraph:
     return graph
 
 
+def _signed_length_graph(*, guarded: bool = False) -> FunctionIRGraph:
+    target = {
+        "parameters": [{"name": "fd", "type": "int", "line": 10}],
+        "call_assignments": [
+            {
+                "target": "n",
+                "callee": "recv",
+                "line": 12,
+                "result_type": "ssize_t",
+            }
+        ],
+        "call_exprs": [
+            {
+                "callee": "recv",
+                "line": 12,
+                "result_type": "ssize_t",
+                "argument_types": ["int"],
+                "argument_refs": [["fd"]],
+                "argument_ref_types": [{"fd": "int"}],
+            },
+            {
+                "callee": "memcpy",
+                "line": 14,
+                "result_type": "void *",
+                "argument_types": ["void *", "const void *", "size_t"],
+                "argument_refs": [["dst"], ["src"], ["n"]],
+                "argument_ref_types": [
+                    {"dst": "void *"},
+                    {"src": "const void *"},
+                    {"n": "ssize_t"},
+                ],
+            },
+        ],
+        "conversions": [
+            {
+                "cast_kind": "ImplicitCastExpr",
+                "line": 14,
+                "source_type": "ssize_t",
+                "target_type": "size_t",
+                "refs": ["n"],
+            }
+        ],
+        "terminating_guards": (
+            [
+                {
+                    "line": 13,
+                    "comparisons": [
+                        {
+                            "opcode": "<",
+                            "lhs_refs": ["n"],
+                            "rhs_refs": [],
+                            "lhs_integer_literals": [],
+                            "rhs_integer_literals": ["0"],
+                        }
+                    ],
+                    "terminates_then_branch": True,
+                }
+            ]
+            if guarded
+            else []
+        ),
+        "binary_ops": [],
+        "value_fact_coverage_complete": True,
+    }
+    evidence = {
+        "code_snapshot_sha256": "e" * 64,
+        "cfg_dump": {
+            "summary": {
+                "parse_ok": True,
+                "function": "copy_received",
+                "function_section_unique": True,
+                "entry_blocks": ["B2"],
+                "exit_blocks": ["B0"],
+                "blocks": [
+                    {
+                        "id": "B2",
+                        "label": "(ENTRY)",
+                        "successors": ["B1"],
+                        "predecessors": [],
+                        "statements": [],
+                    },
+                    {
+                        "id": "B1",
+                        "label": "",
+                        "successors": ["B0"],
+                        "predecessors": ["B2"],
+                        "statements": [
+                            "n = recv(fd, src, cap, 0)",
+                            "memcpy(dst, src, n)",
+                        ],
+                    },
+                    {
+                        "id": "B0",
+                        "label": "(EXIT)",
+                        "successors": [],
+                        "predecessors": ["B1"],
+                        "statements": [],
+                    },
+                ],
+            }
+        },
+        "ast_dump": {"summary": {"parse_ok": True, "target_function": target}},
+    }
+    graph = FunctionIRGraph.from_clang_evidence(
+        evidence,
+        function="copy_received",
+        file="src/copy_received.c",
+    )
+    assert graph is not None
+    return graph
+
+
 def _minimal_clang_evidence(function: str = "target"):
     return {
         "clang_path": "clang",
@@ -179,6 +291,26 @@ def _minimal_clang_evidence(function: str = "target"):
         },
         "ast_dump": {"summary": {"target_function": {"call_exprs": []}}},
     }
+
+
+def _missing_exit_clang_graph() -> FunctionIRGraph:
+    evidence = _minimal_clang_evidence()
+    evidence["cfg_dump"]["summary"]["blocks"] = [
+        {
+            "id": "B1",
+            "label": "(ENTRY)",
+            "successors": [],
+            "predecessors": [],
+            "statements": ["consume(shared)"],
+        }
+    ]
+    graph = FunctionIRGraph.from_clang_evidence(
+        evidence,
+        function="target",
+        file="src/anonymous.c",
+    )
+    assert graph is not None
+    return graph
 
 
 def test_function_ir_resolves_file_from_location_and_builds_single_flight(monkeypatch) -> None:
@@ -214,6 +346,49 @@ def test_function_ir_resolves_file_from_location_and_builds_single_flight(monkey
     assert len({graph.ir_sha256 for graph in graphs if graph is not None}) == 1
 
 
+def test_function_ir_serializes_distinct_clang_builds_across_services(monkeypatch) -> None:
+    services = [FunctionIRFactService(None, enabled=True) for _ in range(2)]
+    active = 0
+    peak = 0
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def collect(**kwargs):
+        nonlocal active, peak, calls
+        with calls_lock:
+            active += 1
+            calls += 1
+            peak = max(peak, active)
+        time.sleep(0.03)
+        with calls_lock:
+            active -= 1
+        return _minimal_clang_evidence(str(kwargs["func_name"]))
+
+    for service in services:
+        monkeypatch.setattr(service._clang, "collect_for_function", collect)
+
+    issues = [
+        {
+            "function": f"target_{index}",
+            "file": f"src/anonymous_{index}.c",
+            "line": 17,
+        }
+        for index in range(8)
+    ]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        graphs = list(
+            executor.map(
+                lambda indexed: services[indexed[0] % len(services)].graph(indexed[1], {}),
+                enumerate(issues),
+            )
+        )
+
+    assert calls == len(issues)
+    assert peak == 1
+    assert all(graph is not None and graph.coverage_complete for graph in graphs)
+
+
 def test_function_ir_capability_reports_specific_build_failure(monkeypatch) -> None:
     service = FunctionIRFactService(None, enabled=True)
     monkeypatch.setattr(
@@ -237,6 +412,34 @@ def test_function_ir_capability_reports_specific_build_failure(monkeypatch) -> N
 
     assert capabilities[0].executable_for_subject_region is False
     assert capabilities[0].unavailable_reason == "function_ir_compile_command_not_found"
+
+
+def test_function_ir_missing_exit_is_not_an_executable_proof_capability() -> None:
+    graph = _missing_exit_clang_graph()
+    issue = _issue(function_ir_graph=graph.to_dict())
+    service = FunctionIRFactService(None, enabled=False)
+
+    capabilities = service.capabilities(issue, {}, ["lockset"])
+
+    assert graph.coverage_complete is False
+    assert service.actions(issue, {}, ["lockset"]) == ()
+    assert capabilities[0].executable_for_subject_region is False
+    assert capabilities[0].unavailable_reason == "function_ir_cfg_incomplete"
+
+
+def test_function_ir_incomplete_graph_rejects_stale_action_without_provider_call() -> None:
+    complete_graph = _clang_graph()
+    incomplete_graph = _missing_exit_clang_graph()
+    complete_issue = _issue(function_ir_graph=complete_graph.to_dict())
+    incomplete_issue = _issue(function_ir_graph=incomplete_graph.to_dict())
+    service = FunctionIRFactService(None, enabled=False)
+    action = service.actions(complete_issue, {}, ["lockset"])[0]
+
+    result = service.execute(action, incomplete_issue, {})
+
+    assert result.status == "unknown"
+    assert result.reason_code == "function_ir_cfg_incomplete"
+    assert result.proof_artifacts is None
 
 
 def test_cfg_join_uses_must_intersection_and_does_not_merge_branch_lock() -> None:
@@ -469,6 +672,146 @@ def test_certificate_backed_decision_proof_rejects_tampering() -> None:
     assert deterministic_decision_proof(issue, outcome="confirm") is not None
     proof["verification_certificate"]["coverage"] = "partial"
     assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_function_ir_path_existence_is_not_a_terminal_confirmation() -> None:
+    graph = _clang_graph(branch_release=False)
+    issue = _issue(function_ir_graph=graph.to_dict())
+    service = FunctionIRFactService(None, enabled=False)
+    action = service.actions(issue, {}, ["source_sink_reachability"])[0]
+
+    result = service.execute(action, issue, {})
+
+    assert result.fact is not None
+    assert result.fact["value"]["path_exists"] is True
+    assert "deterministic_proof" not in result.fact
+    assert result.proof_artifacts is None
+
+
+def test_function_ir_signed_length_flow_has_strict_confirmation_artifact() -> None:
+    graph = _signed_length_graph()
+    issue = _issue(
+        function="copy_received",
+        file="src/copy_received.c",
+        function_ir_graph=graph.to_dict(),
+        subject_uid="n",
+        source={"callee": "recv", "line": 12},
+        sink={"callee": "memcpy", "line": 14},
+        security_obligation={
+            "obligation_uid": "OBL_SIGNED_LENGTH",
+            "subject_uid": "n",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["value_range"],
+        },
+    )
+    service = FunctionIRFactService(None, enabled=False)
+
+    actions = service.actions(issue, {}, ["value_range"])
+    assert len(actions) == 1
+    result = service.execute(actions[0], issue, {})
+
+    assert result.status == "verified_true"
+    assert result.fact is not None
+    assert result.fact["value"]["range_violation"] is True
+    assert result.fact["deterministic_proof"]["proof_kind"] == (
+        "signed_value_reaches_unsigned_sink"
+    )
+    assert result.proof_artifacts is not None
+    checked = result.proof_artifacts["proof_check_result"]
+    assert checked["status"] == "accepted", checked
+    assert checked["terminal_contribution"] == "confirmation"
+
+
+def test_function_ir_signed_length_flow_with_terminating_guard_is_not_executable() -> None:
+    graph = _signed_length_graph(guarded=True)
+    issue = _issue(
+        function="copy_received",
+        file="src/copy_received.c",
+        function_ir_graph=graph.to_dict(),
+        subject_uid="n",
+        source={"callee": "recv", "line": 12},
+        sink={"callee": "memcpy", "line": 14},
+        security_obligation={
+            "obligation_uid": "OBL_GUARDED_LENGTH",
+            "subject_uid": "n",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["value_range"],
+        },
+    )
+
+    assert FunctionIRFactService(None, enabled=False).actions(issue, {}, ["value_range"]) == ()
+
+
+def test_function_ir_missing_cleanup_has_strict_confirmation_artifact() -> None:
+    graph = _clang_graph(branch_release=False)
+    raw = graph.to_dict()
+    for event in raw["events"]:
+        if event["callee"] == "sink":
+            event["kind"] = "return"
+            event["callee"] = ""
+            event["subject_symbols"] = []
+    raw.pop("ir_sha256")
+    raw["ir_sha256"] = hashlib.sha256(
+        json.dumps(
+            raw,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    issue = _issue(
+        function_ir_graph=raw,
+        security_obligation={
+            "obligation_uid": "OBL_CLEANUP_STRICT",
+            "subject_uid": "p",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["cleanup_coverage"],
+        },
+    )
+    service = FunctionIRFactService(None, enabled=False)
+    action = service.actions(issue, {}, ["cleanup_coverage"])[0]
+
+    result = service.execute(action, issue, {})
+
+    assert result.fact is not None
+    assert result.fact["deterministic_proof"]["proof_kind"] == "missing_cleanup_path"
+    assert result.proof_artifacts is not None
+    checked = result.proof_artifacts["proof_check_result"]
+    assert checked["status"] == "accepted"
+    assert checked["terminal_contribution"] == "confirmation"
+
+
+def test_function_ir_complete_cleanup_has_strict_counterproof_artifact() -> None:
+    graph = _single_block_graph(
+        ["p = malloc(8)", "free(p)"],
+        [
+            {"callee": "malloc", "line": 4},
+            {"callee": "free", "line": 5},
+        ],
+    )
+    issue = _issue(
+        function="single_block",
+        file="src/generic.c",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_CLEANUP_COMPLETE",
+            "subject_uid": "p",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["cleanup_coverage"],
+        },
+    )
+    service = FunctionIRFactService(None, enabled=False)
+    action = service.actions(issue, {}, ["cleanup_coverage"])[0]
+
+    result = service.execute(action, issue, {})
+
+    assert result.fact is not None
+    assert result.fact["deterministic_proof"]["proof_kind"] == "ownership_cleanup_complete"
+    assert result.proof_artifacts is not None
+    checked = result.proof_artifacts["proof_check_result"]
+    assert checked["status"] == "accepted"
+    assert checked["terminal_contribution"] == "counterproof"
 
 
 def test_cleanup_certificate_enumerates_all_exits_and_reports_uncovered_path() -> None:

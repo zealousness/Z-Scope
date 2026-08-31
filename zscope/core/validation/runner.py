@@ -24,7 +24,7 @@ from ...common.cancellation import (
 )
 from ...common.issue_identity import canonical_issue_key, deduplicate_issues
 from ...config.function_entry import FunctionEntry
-from ...framework.llm_client import LLMClient
+from ...framework.llm_client import LLMClient, ProviderFailureError
 from ...orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
 from ...orchestration.decision_trace import ensure_decision_trace_store
 from ...orchestration.candidate_envelope import (
@@ -568,6 +568,10 @@ class ValidationRunner:
                         try:
                             results[item.index] = future.result()
                         except CancellationError:
+                            hard_cancelled = True
+                            self._cancel_validation_futures(pending)
+                            raise
+                        except ProviderFailureError:
                             hard_cancelled = True
                             self._cancel_validation_futures(pending)
                             raise

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -33,7 +34,8 @@ class HypothesisHunterRuntime:
         *,
         risk_threshold: int,
         max_units: int | None = None,
-        prompt_revision: str = "hypothesis-hunter.v2",
+        max_concurrent_calls: int = 8,
+        prompt_revision: str = "hypothesis-hunter.v3",
         model_profile: str = "analysis",
     ) -> None:
         self.store = store
@@ -43,6 +45,7 @@ class HypothesisHunterRuntime:
         )
         self.prompt_revision = str(prompt_revision)
         self.model_profile = str(model_profile)
+        self.max_concurrent_calls = max(1, min(8, int(max_concurrent_calls)))
         self.engine = ProofKernelEngine()
 
     def run(
@@ -67,9 +70,13 @@ class HypothesisHunterRuntime:
         hypotheses: list[dict[str, Any]] = []
         observations: list[dict[str, Any]] = []
         proof_decisions: list[dict[str, Any]] = []
+        function_names = {
+            value.function_uid: value.function_name for value in semantic_map.functions
+        }
         llm_calls = 0
         cache_hits = 0
         coverage_status_counts = {"complete": 0, "partial": 0, "failed": 0}
+        prepared: list[dict[str, Any]] = []
 
         for hunt in planned:
             unit = dict(hunt.audit_unit)
@@ -125,27 +132,68 @@ class HypothesisHunterRuntime:
                     cache_hits += 1
                 else:
                     report = None
-            if report is None and report_runner is not None:
+            prepared.append(
+                {
+                    "unit": unit,
+                    "offers": offers,
+                    "offer_refs": offer_refs,
+                    "projection": projection,
+                    "projection_ref": projection_ref,
+                    "cache_key": cache_key,
+                    "report": report,
+                    "cache_hit": report is not None,
+                }
+            )
+
+        selected_report_runner = report_runner
+        pending = [
+            (index, value) for index, value in enumerate(prepared) if value["report"] is None
+        ]
+        if pending and selected_report_runner is not None:
+
+            def run_report(value: Mapping[str, Any]) -> Any:
+                unit = value["unit"]
                 with llm_usage_attribution_scope(
                     stage="active_discovery",
                     agent="hypothesis_hunter",
                     audit_unit_uid=str(unit["audit_unit_uid"]),
                     call_kind="hypothesis_selection",
                 ):
-                    response = report_runner(projection, unit, offers)
-                llm_calls += 1
-                if isinstance(response, AgentResponse):
-                    report = dict(response.data) if response.success else None
-                elif isinstance(response, Mapping):
-                    report = dict(response)
+                    return selected_report_runner(value["projection"], unit, value["offers"])
+
+            llm_calls = len(pending)
+            worker_count = min(self.max_concurrent_calls, len(pending))
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="zscope-hypothesis-hunter",
+            ) as executor:
+                futures = {executor.submit(run_report, value): index for index, value in pending}
+                for future in as_completed(futures):
+                    index = futures[future]
+                    try:
+                        response = future.result()
+                    except Exception:
+                        # A provider/transport failure belongs to exactly this
+                        # audit unit.  The exception body must never enter an
+                        # answer-free artifact or suppress sibling results.
+                        prepared[index]["report"] = None
+                        continue
+                    prepared[index]["report"] = self._report_from_response(response)
+
+        for value in prepared:
+            unit = value["unit"]
+            offers = value["offers"]
+            offer_refs = value["offer_refs"]
+            projection_ref = value["projection_ref"]
+            cache_key = value["cache_key"]
+            report = value["report"]
+            if report is not None:
+                valid, _ = validate_hunt_report(report, audit_unit=unit, offers=offers)
+                if valid:
+                    if not value["cache_hit"]:
+                        self.store.save_cached_report(cache_key, report)
                 else:
                     report = None
-                if report is not None:
-                    valid, _ = validate_hunt_report(report, audit_unit=unit, offers=offers)
-                    if valid:
-                        self.store.save_cached_report(cache_key, report)
-                    else:
-                        report = None
             if report is None:
                 coverage_status_counts["failed"] += 1
                 observation = self._observation(unit, "hunter_report_unavailable_or_invalid")
@@ -201,7 +249,13 @@ class HypothesisHunterRuntime:
                     obligation=offer["proof_obligation"],
                     selected_action_uids=hypothesis["evidence_action_uids"],
                 )
-                issue = self._live_issue(hypothesis, offer=offer, proof=asdict(proof))
+                function_uid = str((hypothesis.get("location") or {}).get("function_uid") or "")
+                issue = self._live_issue(
+                    hypothesis,
+                    offer=offer,
+                    proof=asdict(proof),
+                    function_name=function_names.get(function_uid, ""),
+                )
                 registration = candidate_registrar.register_issues(
                     (issue,),
                     source="hypothesis_hunter",
@@ -246,6 +300,13 @@ class HypothesisHunterRuntime:
             "hypothesis_count": len(hypotheses),
             "observation_count": len(observations),
             "proof_decision_count": len(proof_decisions),
+            "registered_candidate_count": len(
+                {
+                    candidate_uid
+                    for value in proof_decisions
+                    for candidate_uid in value.get("registered_candidate_uids") or []
+                }
+            ),
             "llm_call_count": llm_calls,
             "cache_hit_count": cache_hits,
             "planner_diagnostic_count": len(self.planner.diagnostics),
@@ -272,6 +333,14 @@ class HypothesisHunterRuntime:
             "coverage_summary": coverage_summary,
             "planner_diagnostics": list(self.planner.diagnostics),
         }
+
+    @staticmethod
+    def _report_from_response(response: Any) -> dict[str, Any] | None:
+        if isinstance(response, AgentResponse):
+            return dict(response.data) if response.success else None
+        if isinstance(response, Mapping):
+            return dict(response)
+        return None
 
     def _cache_key(
         self,
@@ -317,6 +386,7 @@ class HypothesisHunterRuntime:
         *,
         offer: Mapping[str, Any],
         proof: Mapping[str, Any],
+        function_name: str = "",
     ) -> dict[str, Any]:
         location = hypothesis.get("location") or {}
         return {
@@ -324,7 +394,7 @@ class HypothesisHunterRuntime:
             "category": str(hypothesis["defect_family"]),
             "defect_class": str(hypothesis["defect_family"]),
             "description": "Bounded security hypothesis queued for Proof Engine validation.",
-            "function": str(location.get("function_uid") or ""),
+            "function": str(function_name or location.get("function_uid") or ""),
             "file": str(location.get("file") or ""),
             "line": int(location.get("start_line") or 0),
             "location": dict(location),

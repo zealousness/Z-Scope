@@ -390,7 +390,7 @@ def qualify() -> dict[str, Any]:
         metamorphic_groups.setdefault(key, set()).add((predicate, value["proof_shadow_decision"]))
     metamorphic_consistent = all(len(values) == 1 for values in metamorphic_groups.values())
     body = {
-        "schema_version": "zscope.p4-hypothesis-qualification.v1",
+        "schema_version": "zscope.p4-hypothesis-qualification.v2",
         "source_corpus_sha256": content_sha256(source),
         "expected_results_sha256": content_sha256(expected),
         "case_count": len(cases),
@@ -435,12 +435,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="compare the replay result with the packaged frozen qualification artifact",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="write the deterministic successor qualification artifact",
+    )
     args = parser.parse_args(argv)
     result = qualify()
     if args.check:
         frozen_path = (
             ROOT
-            / "zscope/orchestration/hypothesis_hunter/qualification/qualification-artifact.json"
+            / "zscope/orchestration/hypothesis_hunter/qualification/qualification-artifact.v2.json"
         )
         frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
         if frozen != result:
@@ -453,6 +458,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"near_miss_false={result['near_miss_false_acceptance_count']} "
             f"safe_false={result['safe_false_acceptance_count']}"
         )
+        return 0
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        print(result["content_sha256"])
         return 0
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
     return 0

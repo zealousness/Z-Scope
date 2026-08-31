@@ -158,6 +158,133 @@ def test_strict_provider_accepts_only_exact_model_and_conserved_integer_usage(
     assert event["provider_response_model"] == "unit-model"
 
 
+def test_strict_provider_accepts_only_the_frozen_canonical_response_model(
+    monkeypatch,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["request-alias"],
+        response_model_map={"request-alias": "canonical-response"},
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    monkeypatch.setattr(
+        client.session,
+        "post",
+        lambda *_args, **_kwargs: _StrictUsageResponse(
+            model="canonical-response",
+            usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        ),
+    )
+
+    response = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert response["model"] == "canonical-response"
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["requested_model"] == "request-alias"
+    assert event["provider_response_model"] == "canonical-response"
+
+
+def test_strict_provider_accepts_the_exact_requested_alias_from_a_mapped_gateway(
+    monkeypatch,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["request-alias"],
+        response_model_map={"request-alias": "canonical-response"},
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    monkeypatch.setattr(
+        client.session,
+        "post",
+        lambda *_args, **_kwargs: _StrictUsageResponse(
+            model="request-alias",
+            usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        ),
+    )
+
+    response = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert response["model"] == "request-alias"
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["provider_response_model"] == "request-alias"
+
+
+def test_strict_provider_accepts_only_identical_duplicate_usage_chunks(monkeypatch) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    usage = {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
+    first_usage = {**usage, "completion_tokens_details": {"reasoning_tokens": 1}}
+    second_usage = {**usage, "completion_tokens_details": {"reasoning_tokens": 2}}
+    response = _StrictUsageResponse(model="unit-model", usage=usage)
+    response.iter_lines = lambda: iter(
+        [
+            (
+                "data: "
+                + json.dumps(
+                    {
+                        "model": "unit-model",
+                        "usage": first_usage,
+                        "choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}],
+                    }
+                )
+            ).encode("utf-8"),
+            (
+                "data: " + json.dumps({"model": "unit-model", "usage": second_usage, "choices": []})
+            ).encode("utf-8"),
+            b"data: [DONE]",
+        ]
+    )
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    result = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert result["usage"]["estimated"] is False
+    assert ledger.snapshot(include_events=True)["events"][0]["provider_reported"] is True
+
+
+def test_strict_provider_accepts_null_usage_placeholders_before_terminal_usage(
+    monkeypatch,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    response = _StrictUsageResponse()
+    response.iter_lines = lambda: iter(
+        [
+            b'data: {"model":"unit-model","usage":null,"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+            b'data: {"model":"unit-model","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"choices":[]}',
+            b"data: [DONE]",
+        ]
+    )
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    result = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert result["usage"]["estimated"] is False
+    assert ledger.snapshot(include_events=True)["events"][0]["provider_reported"] is True
+
+
 @pytest.mark.parametrize(
     ("model", "usage", "failure_class"),
     [
@@ -679,6 +806,109 @@ def test_llm_client_retries_repeated_401_only_once(monkeypatch) -> None:
 
     assert raised.value.failure_class == "provider_credentials_unavailable"
     assert len(calls) == 3
+
+
+def test_llm_client_retries_isolated_400_once_after_prior_success(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://client-response.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+    )
+    statuses = [200, 400, 200]
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs["json"]))
+        return _FakeResponse(status_code=statuses[len(calls) - 1], text="private")
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+    client.chat_completion([{"role": "user", "content": "seed success"}])
+    recovered = client.chat_completion([{"role": "user", "content": "same request"}])
+
+    assert recovered["choices"][0]["message"]["content"] == "ok"
+    assert len(calls) == 3
+    assert calls[1][1] == calls[2][1]
+
+
+def test_llm_client_retries_repeated_400_only_once(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://client-response.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+    )
+    statuses = [200, 400, 400, 200]
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        return _FakeResponse(status_code=statuses[len(calls) - 1], text="private")
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+    client.chat_completion([{"role": "user", "content": "seed success"}])
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "same request"}])
+
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    assert len(calls) == 3
+
+
+def test_llm_client_retries_first_400_once_without_prior_success(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://client-response.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+    )
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        return _FakeResponse(status_code=400, text="private")
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+
+    with pytest.raises(ProviderFailureError):
+        client.chat_completion([{"role": "user", "content": "invalid first request"}])
+
+    assert len(calls) == 2
+
+
+def test_first_400_then_success_preserves_exact_payload_and_usage_conservation(
+    monkeypatch,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    client = LLMClient(
+        api_key="test",
+        base_url="http://client-response.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        token_usage_ledger=ledger,
+    )
+    statuses = [400, 200]
+    payloads = []
+
+    def fake_post(_url, **kwargs):
+        payloads.append(kwargs["json"])
+        return _FakeResponse(status_code=statuses[len(payloads) - 1], text="private")
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+    result = client.chat_completion([{"role": "user", "content": "same request"}])
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert payloads[0] == payloads[1]
+    snapshot = ledger.snapshot(include_events=True)
+    assert snapshot["event_count"] == 1
+    assert snapshot["events"][0]["outcome"] == "success"
+    assert snapshot["rejected_before_model_count"] == 1
+    assert snapshot["rejected_before_model_reasons"] == {"provider_http_client_error": 1}
 
 
 def test_llm_client_closes_current_thread_session(monkeypatch) -> None:

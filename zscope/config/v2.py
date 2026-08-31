@@ -425,6 +425,7 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
     allowed = {
         "base_urls",
         "models",
+        "response_model_map",
         "api_key",
         "base_url_rate_limit_per_minute",
         "base_url_max_concurrent_requests",
@@ -445,6 +446,22 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
             profile.get("base_urls"), f"{profile_path}.base_urls", allow_empty=False
         )
         models = _string_list(profile.get("models"), f"{profile_path}.models", allow_empty=False)
+        raw_response_model_map = _mapping(
+            profile.get("response_model_map"), f"{profile_path}.response_model_map"
+        )
+        response_model_map = {
+            requested: _string(
+                response,
+                f"{profile_path}.response_model_map.{requested}",
+            )
+            for requested, response in raw_response_model_map.items()
+        }
+        unknown_response_models = set(response_model_map) - set(models)
+        if unknown_response_models:
+            names = ", ".join(sorted(unknown_response_models))
+            raise ValueError(
+                f"{profile_path}.response_model_map contains unconfigured model(s): {names}"
+            )
         api_key = _string(profile.get("api_key"), f"{profile_path}.api_key")
 
         rate_limit = profile.get("base_url_rate_limit_per_minute")
@@ -465,6 +482,7 @@ def _parse_llms(raw: Any) -> Dict[str, LLMConfig]:
             base_url_rate_limit_per_minute=rate_limit,
             base_url_max_concurrent_requests=endpoint_limit,
             models=models,
+            response_model_map=response_model_map,
             max_tokens=_positive_int(profile.get("max_tokens", 4096), f"{profile_path}.max_tokens"),
             timeout=_positive_number_or_none(
                 profile.get("timeout", 120), f"{profile_path}.timeout"
