@@ -167,7 +167,11 @@ def test_every_job_binds_hash_locked_python_to_current_checkout() -> None:
     setup = Path(".github/actions/setup-p6-python/action.yml").read_text(encoding="utf-8")
     assert "--require-hashes" in setup
     assert "requirements/constraints/py313.txt" in setup
-    assert "--no-deps" in setup and "--no-build-isolation" in setup
+    assert "--no-deps" not in setup and "--no-build-isolation" not in setup
+    assert "P6_SETUP_CHECKOUT_ROOT" in setup
+    assert 'PYTHONPATH="$checkout_root"' in setup
+    assert "zscope.__file__" in setup
+    assert "-e ." not in setup
     assert "steps.setup-python.outputs.python-path" in setup
     assert "RUNNER_TOOL_CACHE" in setup
     assert "LD_LIBRARY_PATH" in setup
