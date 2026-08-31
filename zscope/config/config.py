@@ -204,6 +204,7 @@ class LLMConfig:
     max_retries: int = 2
     retry_until_available: bool = False
     supports_structured_output: bool = False
+    require_exact_response_model: bool = False
 
     def __post_init__(self) -> None:
         self.base_urls = _normalize_llm_base_urls(self.base_urls or self.base_url)

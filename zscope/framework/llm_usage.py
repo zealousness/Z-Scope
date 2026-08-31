@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Union
 
 
-USAGE_EVENT_SCHEMA_VERSION = "zscope.llm-usage-event.v1"
+LEGACY_USAGE_EVENT_SCHEMA_VERSION = "zscope.llm-usage-event.v1"
+USAGE_EVENT_SCHEMA_VERSION = "zscope.llm-usage-event.v2"
 USAGE_ATTRIBUTION_SCHEMA_VERSION = "zscope.llm-usage-attribution.v1"
 TOKEN_USAGE_SCHEMA_VERSION = "zscope.scan-token-usage.v1"
 TOKEN_USAGE_STAGES = (
@@ -267,6 +268,12 @@ class LLMUsageEvent:
     tool_call_count: int = 0
     new_fact_count: int = 0
     duration_ms: int = 0
+    # ``model`` remains the requested-model compatibility alias used by v1
+    # consumers.  v2 binds both sides of the physical provider exchange and
+    # deliberately leaves the response identity empty when the provider omits
+    # it; callers must never substitute the requested model.
+    requested_model: str = ""
+    provider_response_model: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         attribution = self.attribution.to_dict()
@@ -297,6 +304,8 @@ class LLMUsageEvent:
             "attribution": attribution,
             "budget_stage": self.budget_stage,
             "model": _clean(self.model),
+            "requested_model": _clean(self.requested_model or self.model),
+            "provider_response_model": _clean(self.provider_response_model),
             "reason": _clean(self.reason, limit=500),
             "finish_reason": _clean(self.finish_reason),
             # cached_prompt_tokens is a subset of prompt_tokens and
@@ -482,6 +491,7 @@ class ScanTokenUsageLedger:
         tool_call_count: int = 0,
         new_fact_count: int = 0,
         duration_ms: int = 0,
+        provider_response_model: str = "",
     ) -> LLMUsageEvent:
         prompt = _token_count(prompt_tokens)
         completion = _token_count(completion_tokens)
@@ -510,6 +520,8 @@ class ScanTokenUsageLedger:
                 attribution=active.attribution,
                 budget_stage=active.budget_stage,
                 model=active.model,
+                requested_model=active.model,
+                provider_response_model=_clean(provider_response_model),
                 reason=reason,
                 finish_reason=_clean(finish_reason),
                 cached_prompt_tokens=min(prompt, _token_count(cached_prompt_tokens)),
