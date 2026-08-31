@@ -32,6 +32,7 @@ _LEGACY_LLM_KEYS = {
     "max_concurrent_requests",
     "model",
     "models",
+    "response_model_map",
     "temperature",
     "max_tokens",
     "timeout",
@@ -249,6 +250,7 @@ def _migrate_llm_profile(raw: Any, path: str, warnings: List[str]) -> Dict[str, 
         "retry_until_available": data.get("retry_until_available"),
         "supports_structured_output": data.get("supports_structured_output"),
         "require_exact_response_model": data.get("require_exact_response_model"),
+        "response_model_map": data.get("response_model_map"),
     }
     for key in (
         "base_url_rate_limit_per_minute",

@@ -53,6 +53,8 @@ class HypothesisProofCatalog:
             revision_uid="REV_" + graph.code_snapshot_sha256[:32],
         )
         predicate_id, parameters = self._predicate_and_parameters(graph, record, event)
+        if not predicate_id:
+            return ()
         spec = PREDICATE_REGISTRY.get(predicate_id)
         if spec is None or set(parameters) != set(spec.parameter_keys):
             return ()
@@ -60,6 +62,9 @@ class HypothesisProofCatalog:
         region_uid = str(identity.get("decision_region_uid") or "")
         if not subject_uid or not region_uid:
             return ()
+        terminal_capable = (
+            event.family == "resource_lifecycle" and predicate_id == "cleanup_covers_all_exits"
+        )
         clause = build_proof_clause(
             role="confirmation",
             provider_family=spec.provider_family,
@@ -69,21 +74,50 @@ class HypothesisProofCatalog:
             expected_value=self._unsafe_expected_value(predicate_id),
             parameters=parameters,
         )
+        # Most semantic-map events identify a useful investigation point, but
+        # their currently executable predicate is not itself a sufficient
+        # vulnerability proof.  For example, CFG reachability does not prove
+        # missing bounds enforcement and external parameter binding does not
+        # prove an authorization bypass.  Keep the system-owned action in the
+        # catalog for the Hunter, while an explicit open clause prevents that
+        # fact from acquiring terminal authority.  A complete resource CFG
+        # with an uncovered acquired resource is the one presently supported
+        # sufficient confirmation shape.
+        open_clauses: tuple[Mapping[str, Any], ...] = ()
+        if not terminal_capable:
+            open_clauses = (
+                build_proof_clause(
+                    role="open",
+                    provider_family=spec.provider_family,
+                    predicate_id=spec.predicate_id,
+                    fact_kind=spec.fact_kind,
+                    quantifier=spec.quantifier,
+                    expected_value=self._unsafe_expected_value(predicate_id),
+                    parameters=parameters,
+                ),
+            )
+        defect_family = (
+            "resource_leak"
+            if terminal_capable
+            else str(identity.get("defect_family") or self._defect_family(event))
+        )
         obligation = build_proof_obligation(
             validation_cluster_uid="HCLUSTER_"
             + _sha([record.function_uid, event.event_id, predicate_id])[:32],
-            defect_family=str(identity.get("defect_family") or self._defect_family(event)),
+            defect_family=defect_family,
             subject_uid=subject_uid,
             decision_region_uid=region_uid,
             confirmation_clauses=(clause,),
             counterproof_clauses=(),
-            open_clauses=(),
+            open_clauses=open_clauses,
             dependency_hashes=proof_ir["dependency_hashes"],
         )
         actions = self.engine.action_catalog(proof_ir=proof_ir, obligation=obligation)
         if not actions:
             return ()
         location_statement = self._target_statement(graph, event)
+        if location_statement is None:
+            return ()
         location_line = max(1, int(event.line or location_statement.source_line or 1))
         source_ref: str | None = None
         sink_ref: str | None = None
@@ -97,7 +131,7 @@ class HypothesisProofCatalog:
             {
                 "subject_uid": subject_uid,
                 "decision_region_uid": region_uid,
-                "defect_family": str(identity.get("defect_family") or self._defect_family(event)),
+                "defect_family": defect_family,
                 "dependency_hashes": list(proof_ir["dependency_hashes"]),
                 "location": {
                     "file": record.file_path,
@@ -120,7 +154,7 @@ class HypothesisProofCatalog:
         )
 
     @staticmethod
-    def _target_statement(graph: FunctionIRGraph, event: SecurityEvent) -> Any:
+    def _target_statement(graph: FunctionIRGraph, event: SecurityEvent) -> Any | None:
         matching = [
             value
             for value in graph.events
@@ -132,9 +166,7 @@ class HypothesisProofCatalog:
             if statement is not None:
                 return statement
         statements = [value for block in graph.blocks for value in block.statements]
-        if not statements:
-            raise ValueError("proof_graph_has_no_statement_location")
-        return statements[0]
+        return statements[0] if statements else None
 
     @classmethod
     def _predicate_and_parameters(
@@ -144,6 +176,8 @@ class HypothesisProofCatalog:
         event: SecurityEvent,
     ) -> tuple[str, dict[str, str]]:
         target = cls._target_statement(graph, event)
+        if target is None:
+            return "", {}
         if event.family == "callback_concurrency":
             locks = [
                 symbol

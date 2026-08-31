@@ -100,13 +100,31 @@ class AttackSurfacePlanner:
                 if defect_family is None:
                     continue
                 provisional = self._provisional_identity(semantic_map, record, event, defect_family)
-                bundles = (
-                    list(proof_bundle_provider(record, event, provisional))
-                    if proof_bundle_provider is not None
-                    else []
-                )
+                try:
+                    bundles = (
+                        list(proof_bundle_provider(record, event, provisional))
+                        if proof_bundle_provider is not None
+                        else []
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    # One malformed or currently unexecutable FunctionIR proof
+                    # offer is an audit-unit boundary, not permission to drop
+                    # every remaining Hunter unit.  Keep the public diagnostic
+                    # answer-free: the exception body may contain backend or
+                    # source-derived material.
+                    bundles = []
+                    self.diagnostics.append(
+                        {
+                            "localized_coverage_key_uid": str(
+                                provisional.get("decision_region_uid") or ""
+                            ),
+                            "reason_code": "PROOF_BUNDLE_PROVIDER_REJECTED",
+                            "failure_class": type(exc).__name__,
+                        }
+                    )
                 identities = bundles or [provisional]
                 for identity in identities:
+                    offer_defect_family = str(identity.get("defect_family") or defect_family)
                     subject_uid = str(identity.get("subject_uid") or provisional["subject_uid"])
                     region_uid = str(
                         identity.get("decision_region_uid") or provisional["decision_region_uid"]
@@ -197,7 +215,7 @@ class AttackSurfacePlanner:
                             offers.append(
                                 build_hypothesis_offer(
                                     audit_unit_uid=str(unit["audit_unit_uid"]),
-                                    defect_family=defect_family,
+                                    defect_family=offer_defect_family,
                                     subject_uid=subject_uid,
                                     decision_region_uid=region_uid,
                                     location=identity["location"],
@@ -221,7 +239,7 @@ class AttackSurfacePlanner:
                                 {
                                     "localized_coverage_key_uid": local_uid,
                                     "reason_code": "PROOF_OFFER_REJECTED",
-                                    "detail": f"{type(exc).__name__}: {exc}"[:300],
+                                    "failure_class": type(exc).__name__,
                                 }
                             )
                     seen_roots.add(investigation_root)

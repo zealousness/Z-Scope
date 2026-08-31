@@ -20,9 +20,10 @@ from ...common.validator_protocol import (
     ValidatorResultV3,
     parse_validator_result_v3,
     validator_result_schema_v3,
+    validator_result_v3_failure_class,
 )
 from ...framework.base import AgentResponse
-from ...framework.llm_client import LLMClient
+from ...framework.llm_client import LLMClient, ProviderFailureError
 from ...tools.policy import ToolPolicy
 
 
@@ -104,6 +105,10 @@ class ProofEngineAgent(JsonToolAgent):
                 f"new_fact_count={new_fact_count}"
             ),
             max_tokens=8192,
+            candidate_uid=candidate_uid,
+            cluster_uid=cluster_uid,
+            expected_pass=expected_pass,
+            allowed_refs=allowed_refs,
         )
         if response is None or result is None:
             self._finalize_metadata(metadata)
@@ -114,7 +119,7 @@ class ProofEngineAgent(JsonToolAgent):
                 metadata=metadata,
             )
         self._merge_direct_metadata(metadata, response, messages, result)
-        parsed = self._extract_v3_result(
+        parsed, failure_class = self._extract_v3_result(
             result,
             candidate_uid=candidate_uid,
             cluster_uid=cluster_uid,
@@ -122,6 +127,59 @@ class ProofEngineAgent(JsonToolAgent):
             allowed_refs=allowed_refs,
         )
         finish_reason = str(result.get("finish_reason") or "")
+        if parsed is None and finish_reason != "length":
+            metadata["validator_repair_attempted"] = 1
+            repair_messages = [
+                *messages,
+                {
+                    "role": "user",
+                    "content": (
+                        "The prior response failed the fixed ValidatorResult v3 contract "
+                        f"with class={failure_class}. Regenerate from the same frozen input. "
+                        "Return every required schema field exactly once, no additional fields, "
+                        "and obey all const, enum, evidence-reference, and cross-field bindings. "
+                        "Do not repeat or discuss the prior response."
+                    ),
+                },
+            ]
+            repair_response, repair_result = self._direct_v3_completion(
+                repair_messages,
+                trace_label=(
+                    f"proof_engine_v3; pass={expected_pass}; "
+                    "call_kind=contract_regeneration; "
+                    f"candidate_uid={candidate_uid[:120]}; "
+                    f"validation_cluster_uid={cluster_uid[:120]}; "
+                    f"failure_class={failure_class}"
+                ),
+                max_tokens=8192,
+                candidate_uid=candidate_uid,
+                cluster_uid=cluster_uid,
+                expected_pass=expected_pass,
+                allowed_refs=allowed_refs,
+            )
+            if repair_response is not None and repair_result is not None:
+                self._merge_direct_metadata(
+                    metadata,
+                    repair_response,
+                    repair_messages,
+                    repair_result,
+                )
+                repaired, repair_failure_class = self._extract_v3_result(
+                    repair_result,
+                    candidate_uid=candidate_uid,
+                    cluster_uid=cluster_uid,
+                    expected_pass=expected_pass,
+                    allowed_refs=allowed_refs,
+                )
+                if repaired is not None:
+                    parsed = repaired
+                    response = repair_response
+                    result = repair_result
+                    finish_reason = str(repair_result.get("finish_reason") or "")
+                    failure_class = "none"
+                    metadata["validator_repair_accepted"] = 1
+                else:
+                    failure_class = repair_failure_class
         if parsed is None:
             stop_reason = "output_truncated" if finish_reason == "length" else "malformed_output"
             parsed = self._v3_uncertain_result(
@@ -137,6 +195,8 @@ class ProofEngineAgent(JsonToolAgent):
             )
             metadata["validator_protocol_exhausted"] = 1
             metadata["validator_stop_reason"] = stop_reason.upper()
+            metadata["validator_contract_failure_class"] = failure_class
+            metadata["validator_contract_failure_count"] = 1
         metadata["validator_protocol"] = VALIDATOR_PROTOCOL_V3
         metadata["validator_pass"] = expected_pass
         metadata["finish_reason"] = finish_reason
@@ -193,7 +253,12 @@ class ProofEngineAgent(JsonToolAgent):
         catalog = evidence_slice.get("evidence_ref_catalog")
         allowed_refs = set(catalog) if isinstance(catalog, dict) else set()
         iteration_limit = max(1, min(50, int(max_iterations or 50)))
-        spec = self._validation_json_output_spec_v3()
+        spec = self._validation_json_output_spec_v3(
+            candidate_uid=candidate_uid,
+            cluster_uid=cluster_uid,
+            expected_pass="investigation_synthesis",
+            allowed_refs=sorted(allowed_refs),
+        )
         terminal_schema = self._final_json_tool_schema(spec)
         action_tool_name = "execute_proof_evidence_action"
         action_tool_schema = {
@@ -412,13 +477,16 @@ class ProofEngineAgent(JsonToolAgent):
                 "validator_no_new_evidence_fact_stop": no_progress_stop,
             }
         )
-        parsed = self._extract_v3_result(
+        parsed, failure_class = self._extract_v3_result(
             result,
             candidate_uid=candidate_uid,
             cluster_uid=cluster_uid,
             expected_pass="investigation_synthesis",
             allowed_refs=sorted(allowed_refs),
         )
+        if parsed is None:
+            metadata["validator_contract_failure_class"] = failure_class
+            metadata["validator_contract_failure_count"] = 1
         self._finalize_metadata(metadata)
         if parsed is None:
             parsed = self._v3_uncertain_result(
@@ -464,7 +532,10 @@ class ProofEngineAgent(JsonToolAgent):
         return (
             f"Proof Engine v3 pass={validation_pass}. Use only the frozen evidence slice. "
             "Do not invent facts, references, candidate IDs, or terminal authority. Return "
-            f"exactly one object matching schema_version={VALIDATOR_RESULT_VERSION}.\n\n"
+            f"exactly one object matching schema_version={VALIDATOR_RESULT_VERSION}. "
+            "Cross-field coherence is mandatory: when missing_fact_request is an object, "
+            "verdict must be uncertain and stop_reason must be missing_fact; otherwise "
+            "missing_fact_request must be null and stop_reason must not be missing_fact.\n\n"
             + json.dumps(evidence_slice, ensure_ascii=False, separators=(",", ":"))
         )
 
@@ -474,11 +545,20 @@ class ProofEngineAgent(JsonToolAgent):
         *,
         trace_label: str,
         max_tokens: int,
+        candidate_uid: str,
+        cluster_uid: str,
+        expected_pass: str,
+        allowed_refs: Iterable[str],
     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         chat_completion = getattr(self.llm_client, "chat_completion", None)
         if not callable(chat_completion):
             return None, None
-        spec = self._validation_json_output_spec_v3()
+        spec = self._validation_json_output_spec_v3(
+            candidate_uid=candidate_uid,
+            cluster_uid=cluster_uid,
+            expected_pass=expected_pass,
+            allowed_refs=allowed_refs,
+        )
         response_format = (
             self._json_response_format(spec)
             if bool(getattr(self.llm_client, "supports_structured_output", False))
@@ -502,6 +582,8 @@ class ProofEngineAgent(JsonToolAgent):
             }
         try:
             response = chat_completion(messages, **kwargs)
+        except ProviderFailureError:
+            raise
         except Exception as exc:
             logger.warning("Proof Engine v3 direct completion failed: %s", exc)
             return None, None
@@ -528,9 +610,9 @@ class ProofEngineAgent(JsonToolAgent):
         cluster_uid: str,
         expected_pass: str,
         allowed_refs: List[str],
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
         if "terminal_tool_valid" in result and result.get("terminal_tool_valid") is not True:
-            return None
+            return None, "terminal_tool_invalid"
         values: List[Any] = []
         payload = result.get("terminal_tool_payload")
         if result.get("terminal_tool_valid") is True and isinstance(payload, dict):
@@ -550,6 +632,7 @@ class ProofEngineAgent(JsonToolAgent):
                 texts.append(str(message.get("content") or ""))
         for text in (value for value in texts if value):
             values.extend(extract_json_blocks(text))
+        failure_class = "structured_payload_missing"
         for value in values:
             parsed = parse_validator_result_v3(
                 value,
@@ -559,8 +642,16 @@ class ProofEngineAgent(JsonToolAgent):
                 allowed_evidence_refs=allowed_refs,
             )
             if parsed is not None:
-                return parsed.to_dict()
-        return None
+                return parsed.to_dict(), "none"
+            if failure_class == "structured_payload_missing":
+                failure_class = validator_result_v3_failure_class(
+                    value,
+                    candidate_uid=candidate_uid,
+                    validation_cluster_uid=cluster_uid,
+                    expected_pass=expected_pass,
+                    allowed_evidence_refs=allowed_refs,
+                )
+        return None, failure_class
 
     @staticmethod
     def _v3_uncertain_result(
@@ -586,13 +677,34 @@ class ProofEngineAgent(JsonToolAgent):
         ).to_dict()
 
     @classmethod
-    def _validation_json_output_spec_v3(cls) -> JsonOutputSpec:
+    def _validation_json_output_spec_v3(
+        cls,
+        *,
+        candidate_uid: str = "",
+        cluster_uid: str = "",
+        expected_pass: str = "",
+        allowed_refs: Optional[Iterable[str]] = None,
+    ) -> JsonOutputSpec:
         return JsonOutputSpec(
             type_name="validator_result_v3",
-            schema=validator_result_schema_v3(),
+            schema=validator_result_schema_v3(
+                candidate_uid=candidate_uid,
+                validation_cluster_uid=cluster_uid,
+                expected_pass=expected_pass,
+                allowed_evidence_refs=allowed_refs,
+            ),
             final_tool_name="emit_validator_result_v3",
             final_tool_description="Emit the strict evidence-only ValidatorResult v3 object.",
-            validator=lambda data: parse_validator_result_v3(data) is not None,
+            validator=lambda data: (
+                parse_validator_result_v3(
+                    data,
+                    candidate_uid=candidate_uid,
+                    validation_cluster_uid=cluster_uid,
+                    expected_pass=expected_pass,
+                    allowed_evidence_refs=allowed_refs,
+                )
+                is not None
+            ),
             metadata_prefix="validator",
         )
 
@@ -607,18 +719,24 @@ class ProofEngineAgent(JsonToolAgent):
         usage = usage if isinstance(usage, Mapping) else {}
         prompt = int(usage.get("prompt_tokens", 0) or 0)
         completion = int(usage.get("completion_tokens", 0) or 0)
-        metadata.update(
-            {
-                "context_tokens": LLMClient.estimate_tokens(messages),
-                "cumulative_prompt_tokens": prompt,
-                "cumulative_completion_tokens": completion,
-                "cumulative_total_tokens": prompt + completion,
-                "iterations": 1,
-                "validator_api_call_count": 1,
-                "validator_turn_count": 1,
-                "finish_reason": str(result.get("finish_reason") or ""),
-            }
+        metadata["context_tokens"] = int(metadata.get("context_tokens", 0) or 0) + int(
+            LLMClient.estimate_tokens(messages)
         )
+        metadata["cumulative_prompt_tokens"] = (
+            int(metadata.get("cumulative_prompt_tokens", 0) or 0) + prompt
+        )
+        metadata["cumulative_completion_tokens"] = (
+            int(metadata.get("cumulative_completion_tokens", 0) or 0) + completion
+        )
+        metadata["cumulative_total_tokens"] = (
+            int(metadata.get("cumulative_total_tokens", 0) or 0) + prompt + completion
+        )
+        metadata["iterations"] = int(metadata.get("iterations", 0) or 0) + 1
+        metadata["validator_api_call_count"] = (
+            int(metadata.get("validator_api_call_count", 0) or 0) + 1
+        )
+        metadata["validator_turn_count"] = int(metadata.get("validator_turn_count", 0) or 0) + 1
+        metadata["finish_reason"] = str(result.get("finish_reason") or "")
 
     @staticmethod
     def _merge_conversation_metadata(metadata: Dict[str, Any], result: Mapping[str, Any]) -> None:

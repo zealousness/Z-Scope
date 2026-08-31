@@ -1768,6 +1768,97 @@ def test_required_fact_resolution_closes_all_obligation_kinds_before_v2() -> Non
     assert len(issue["decision_fact_slice"]["facts"]) == 3
 
 
+def test_low_level_obligation_labels_select_only_their_semantic_predicate() -> None:
+    cases = [
+        (["event:shared_state_access", "lockset"], ("lockset",)),
+        (["event:acquire", "event:exit"], ("cleanup_coverage",)),
+        (["source", "sink"], ("source_sink_reachability",)),
+        (["guard"], ("guard_dominance",)),
+    ]
+
+    for required, expected in cases:
+        issue = {
+            "security_obligation": {"required_fact_kinds": required},
+            "decision_fact_slice": {
+                "fact_uids": ["FACT_SOURCE_DERIVED"],
+                "dependency_code_hashes": ["code-sha"],
+                "missing_fact_kinds": [],
+                "coverage": "complete",
+                "facts": [],
+            },
+        }
+
+        assert (
+            EvidenceCompletionQueue.required_resolution_fact_kinds(issue, {"verdict": "uncertain"})
+            == expected
+        )
+
+
+def test_explicit_semantic_obligation_clauses_remain_conjunctive() -> None:
+    issue = {
+        "security_obligation": {
+            "required_fact_kinds": [
+                "cleanup_coverage",
+                "ownership_transfer",
+                "caller_contract",
+            ]
+        }
+    }
+
+    assert EvidenceCompletionQueue.required_resolution_fact_kinds(
+        issue, {"verdict": "uncertain"}
+    ) == ("cleanup_coverage", "ownership_transfer", "caller_contract")
+
+
+def test_memory_safety_source_sink_labels_require_value_relation_not_path_only() -> None:
+    issue = {
+        "defect_class": "heap_overflow",
+        "security_obligation": {"required_fact_kinds": ["source", "sink"]},
+    }
+
+    assert EvidenceCompletionQueue.required_resolution_fact_kinds(
+        issue, {"verdict": "uncertain"}
+    ) == ("value_range",)
+
+
+def test_untrusted_sink_labels_require_source_controllability_not_path_only() -> None:
+    issue = {
+        "defect_class": "command_injection",
+        "security_obligation": {"required_fact_kinds": ["source", "sink"]},
+    }
+
+    assert EvidenceCompletionQueue.required_resolution_fact_kinds(
+        issue, {"verdict": "uncertain"}
+    ) == ("source_controllability",)
+
+
+def test_legacy_memory_path_projection_is_replaced_by_value_relation() -> None:
+    issue = {
+        "defect_class": "integer_overflow",
+        "missing_fact_kinds": ["source_sink_reachability"],
+        "decision_fact_slice": {
+            "missing_fact_kinds": ["source_sink_reachability"],
+        },
+    }
+
+    assert EvidenceCompletionQueue.required_resolution_fact_kinds(
+        issue, {"verdict": "uncertain"}
+    ) == ("value_range",)
+
+
+def test_legacy_untrusted_path_projection_is_replaced_by_source_contract() -> None:
+    issue = {
+        "defect_class": "format_string",
+        "security_obligation": {
+            "required_fact_kinds": ["source_sink_reachability"],
+        },
+    }
+
+    assert EvidenceCompletionQueue.required_resolution_fact_kinds(
+        issue, {"verdict": "uncertain"}
+    ) == ("source_controllability",)
+
+
 def test_completed_local_fact_normalizes_event_alias_in_decision_slice() -> None:
     issue = {
         "missing_fact_kinds": ["event:acquire", "ownership_transfer"],

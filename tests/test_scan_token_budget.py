@@ -72,6 +72,22 @@ def test_unknown_provider_usage_is_conservatively_measured_not_denied() -> None:
     assert following.completion_token_limit == 2_000_000
 
 
+def test_explicit_pre_model_rejection_releases_without_fabricating_usage() -> None:
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    reservation = ledger.reserve(100, 300)
+
+    ledger.reject_before_model(reservation, reason="provider_http_client_error")
+
+    snapshot = ledger.snapshot(include_events=True)
+    assert snapshot["consumed_tokens"] == 0
+    assert snapshot["reserved_tokens"] == 0
+    assert snapshot["active_reservation_count"] == 0
+    assert snapshot["event_count"] == 0
+    assert snapshot["events"] == []
+    assert snapshot["rejected_before_model_count"] == 1
+    assert snapshot["rejected_before_model_reasons"] == {"provider_http_client_error": 1}
+
+
 def test_usage_jsonl_contains_no_prompt_or_response_bodies() -> None:
     ledger = ScanTokenUsageLedger(depth="balanced")
     reservation = ledger.reserve(

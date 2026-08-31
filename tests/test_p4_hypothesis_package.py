@@ -5,7 +5,7 @@ from scripts.check_p4_hypothesis_package import (
     PREFIX,
     REQUIRED_MODULES,
     REQUIRED_PROMPT,
-    REQUIRED_QUALIFICATION,
+    REQUIRED_QUALIFICATIONS,
     REQUIRED_SCHEMAS,
     wheel_errors,
 )
@@ -23,7 +23,8 @@ def _wheel(path: Path, *, omit_schema: bool = False, forbidden_import: str = "")
                 continue
             archive.writestr(PREFIX + "schemas/" + name, "{}")
         archive.writestr(REQUIRED_PROMPT, "---\nname: hypothesis_hunter\n---\n")
-        archive.writestr(REQUIRED_QUALIFICATION, "{}")
+        for qualification in REQUIRED_QUALIFICATIONS:
+            archive.writestr(qualification, "{}")
 
 
 def test_p4_wheel_gate_accepts_complete_package(tmp_path: Path) -> None:

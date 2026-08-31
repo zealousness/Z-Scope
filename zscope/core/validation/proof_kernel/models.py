@@ -222,6 +222,19 @@ def function_summary_from_graph(
         }
         for event in graph.events
     ]
+    typed_ast_summaries = [
+        {
+            "summary_kind": "typed_ast_value_coverage",
+            "complete": graph.ast_value_coverage_complete,
+        },
+        *[
+            {
+                "summary_kind": "typed_ast_value_fact",
+                **dict(value),
+            }
+            for value in graph.ast_value_facts
+        ],
+    ]
     payload = {
         "schema_version": FUNCTION_SECURITY_SUMMARY_VERSION,
         "protocol_revision": PROTOCOL_REVISION,
@@ -234,7 +247,10 @@ def function_summary_from_graph(
         "cfg_edges": edges,
         "events": events,
         "type_layouts": [dict(value) for value in type_layouts],
-        "wrapper_summaries": [dict(value) for value in wrapper_summaries],
+        "wrapper_summaries": [
+            *typed_ast_summaries,
+            *[dict(value) for value in wrapper_summaries],
+        ],
         "coverage": {"complete": not unresolved, "unresolved_reasons": unresolved},
         "code_sha256": graph.code_snapshot_sha256,
         "backend_sha256": graph.backend_sha256,
