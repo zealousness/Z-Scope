@@ -15,8 +15,8 @@
     {"phase": "P3", "status": "complete", "entry_gate": "P2 contracts stable and SecuritySpec DSL/state/reviewer policy frozen", "exit_gate": "spec blind qualification, read-only review center and shadow gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P4", "status": "complete", "entry_gate": "P2 and P3 usable in shadow", "exit_gate": "candidate-blind qualification, shadow isolation and dual review gates pass", "review_roles": ["product_architecture", "proof_security"]},
     {"phase": "P5", "status": "complete", "entry_gate": "P2-P4 pass and P4 rollback wheel plus replay/authority contracts are frozen", "exit_gate": "all public paths cut over, legacy runtime absent, real-project qualification passes and dual review approves one candidate tree", "review_roles": ["product_architecture", "proof_security"]},
-    {"phase": "E0", "status": "pending", "entry_gate": "P0 design approved", "exit_gate": "truth v16 and benchmark v5 independently attested", "review_roles": ["independent_benchmark"]},
-    {"phase": "P6", "status": "pending", "entry_gate": "P1-P5 and E0 complete", "exit_gate": "offline replay and cold pilot invariants pass", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
+    {"phase": "E0", "status": "complete", "entry_gate": "P0 design approved", "exit_gate": "truth v16 and benchmark v5 independently attested", "review_roles": ["independent_benchmark"]},
+    {"phase": "P6", "status": "in_progress", "entry_gate": "P1-P5 and E0 complete", "exit_gate": "offline replay and cold pilot invariants pass", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]},
     {"phase": "P7", "status": "pending", "entry_gate": "P6 complete", "exit_gate": "formal, external, sealed and shadow gates pass", "review_roles": ["product_architecture", "proof_security", "independent_benchmark"]}
   ],
   "evidence": [
@@ -1315,6 +1315,82 @@
         ]
       },
       "notes": "All locally executable P6 capability preflights passed, but the protected E0 dependency remains unsatisfied; P6 stays pending and no cold pilot was started."
+    },
+    {
+      "evidence_uid": "E0-RANGE-V16-BENCHMARK-V5-ATTESTATION",
+      "phase": "E0",
+      "kind": "protected_attestation",
+      "status": "passed",
+      "implementation_commit": "3e05889ba5773d8fc8c7e22ae9b75dcfe43e05c4",
+      "implementation_tree": "bc271406fd4a1a3781842e952de5a5ddb1ab833f",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p6-entry-gate.json",
+          "sha256": "4f2cd5d4bd8afb03596040461c2fce42f649c8c29fd02d8571174b19153547b8"
+        }
+      ],
+      "review_status": "approved",
+      "reviewed_by": [
+        "protected-range-v16-review/33247814685",
+        "sealed-benchmark-attestation/33257971124"
+      ],
+      "verification": {
+        "environment": {
+          "repository": "zealousness/Z-Scope",
+          "review_workflow": ".github/workflows/range-v16-review.yml",
+          "attestation_workflow": ".github/workflows/range-v16-benchmark-v5-attestation.yml",
+          "review_source": "b839d7e63145d126f610094ae1998e7fa68df706",
+          "truth_head": "3e05889ba5773d8fc8c7e22ae9b75dcfe43e05c4"
+        },
+        "commands": [
+          {"command": "structured GitHub metadata verification for review run 33247814685 and exact non-expired artifact IDs/digests", "status": "passed"},
+          {"command": "structured GitHub metadata verification for attestation run 33257971124 and exact non-expired artifact ID/digest", "status": "passed"},
+          {"command": "git merge-base --is-ancestor <governance/scorer> 3e05889ba5773d8fc8c7e22ae9b75dcfe43e05c4", "status": "passed"},
+          {"command": "git diff --quiet b839d7e63145d126f610094ae1998e7fa68df706 3e05889ba5773d8fc8c7e22ae9b75dcfe43e05c4 -- review-packet-catalog and review-packets", "status": "passed"}
+        ],
+        "limitations": [
+          "The entry record binds protected workflow metadata and immutable artifact identities; it does not copy review prose, generated pair source or Truth contents into governance evidence.",
+          "E0 completion authorizes P6 entry only and is not a P6 cold-pilot or release attestation."
+        ]
+      },
+      "notes": "Protected Range v16 review and Benchmark v5 attestation completed successfully with exact source, Truth, artifact, ancestry and unchanged review-packet bindings."
+    },
+    {
+      "evidence_uid": "P6-ATOMIC-ENTRY-GATE",
+      "phase": "P6",
+      "kind": "entry_gate",
+      "status": "passed",
+      "implementation_commit": "3e05889ba5773d8fc8c7e22ae9b75dcfe43e05c4",
+      "implementation_tree": "bc271406fd4a1a3781842e952de5a5ddb1ab833f",
+      "artifacts": [
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p6-entry-gate.json",
+          "sha256": "4f2cd5d4bd8afb03596040461c2fce42f649c8c29fd02d8571174b19153547b8"
+        },
+        {
+          "path": "docs/design/zscope-2.0-security-architecture/acceptance/p6-entry-preflight.json",
+          "sha256": "2052ff51f955265ef4373581217e8c37254bb729edce18ef2af565cf1898a0ad"
+        }
+      ],
+      "review_status": "pending",
+      "reviewed_by": [],
+      "verification": {
+        "environment": {
+          "transition": "E0 pending/P6 pending -> E0 complete/P6 in_progress",
+          "entry_scope": "non-release P6 protocol work only",
+          "cold_pilot_started": "false"
+        },
+        "commands": [
+          {"command": "python scripts/check_zscope_2_design_evidence.py", "status": "passed"},
+          {"command": "python -m pytest -q tests/test_zscope_2_design_evidence.py", "status": "passed"}
+        ],
+        "limitations": [
+          "This deterministic gate has not been counted as one of the three independent P6 exit reviews.",
+          "No pilot scan, provider call, five-run benchmark, formal result or release eligibility is claimed.",
+          "The GLM-5.1 preflight is retained byte-for-byte only as a historical blocked snapshot and does not authorize the current provider."
+        ]
+      },
+      "notes": "E0 completion and P6 entry are one fail-closed governance transition; later P6 protocol and pilot evidence remain required."
     }
   ]
 }
