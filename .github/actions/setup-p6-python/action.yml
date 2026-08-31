@@ -1,5 +1,5 @@
 name: Bind P6 Python to the immutable control-plane checkout
-description: Install the hash-locked Python 3.13 runtime and an explicit trusted checkout without dependency drift.
+description: Install hash-locked Python 3.13 dependencies and bind the explicit trusted checkout without build drift.
 
 inputs:
   checkout-path:
@@ -33,19 +33,34 @@ runs:
         printf 'LD_LIBRARY_PATH=%s\n' "$bound_library_path" >> "$GITHUB_ENV" || fail_binding
         export LD_LIBRARY_PATH="$bound_library_path"
         "$python_executable" --version >/dev/null 2>&1 || fail_binding
-    - name: Install hash-locked dependencies and current checkout
+    - name: Install hash-locked dependencies and bind the current checkout
       shell: bash
       working-directory: ${{ github.workspace }}/${{ inputs.checkout-path }}
       run: |
         set -euo pipefail
-        python_executable="$(realpath -e '${{ steps.setup-python.outputs.python-path }}')"
+        fail_binding() {
+          echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
+          exit 2
+        }
+        python_executable="$(realpath -e '${{ steps.setup-python.outputs.python-path }}' 2>/dev/null)" || fail_binding
         if ! "$python_executable" -m pip install --disable-pip-version-check --require-hashes \
           -r requirements/constraints/py313.txt >/dev/null 2>&1; then
-          echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
-          exit 2
+          fail_binding
         fi
-        if ! "$python_executable" -m pip install --disable-pip-version-check --no-deps \
-          --no-build-isolation -e . >/dev/null 2>&1; then
-          echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
-          exit 2
+        checkout_root="$(realpath -e "$GITHUB_WORKSPACE/${{ inputs.checkout-path }}" 2>/dev/null)" || fail_binding
+        workspace_root="$(realpath -e "$GITHUB_WORKSPACE" 2>/dev/null)" || fail_binding
+        if [[ "$checkout_root" != "$workspace_root"/* ]] || ! \
+          P6_SETUP_CHECKOUT_ROOT="$checkout_root" PYTHONPATH="$checkout_root" \
+          "$python_executable" - <<'PY' >/dev/null 2>&1
+        import os
+        from pathlib import Path
+        import zscope
+
+        expected = Path(os.environ["P6_SETUP_CHECKOUT_ROOT"]).resolve() / "zscope/__init__.py"
+        actual = Path(zscope.__file__ or "").resolve()
+        if actual != expected or not actual.is_file():
+            raise SystemExit(2)
+        PY
+        then
+          fail_binding
         fi
