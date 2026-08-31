@@ -44,6 +44,7 @@ runs:
         failure_count = 1
         marker_value = os.environ.get("P6_PRODUCER_MARKER", "").strip()
         marker = Path(marker_value) if marker_value else None
+        marker_was_present = False
         if marker is not None:
             runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve()
             lexical = Path(os.path.abspath(marker))
@@ -52,6 +53,7 @@ runs:
             except ValueError:
                 raise SystemExit(2)
             if lexical.exists():
+                marker_was_present = True
                 if lexical.is_symlink() or not lexical.is_file() or lexical.stat().st_size > 1024:
                     raise SystemExit(2)
                 value = load_json_strict(lexical)
@@ -61,7 +63,7 @@ runs:
                 failure_count = value["failure_count"]
                 lexical.unlink()
         if status == "success":
-            if marker is not None and marker.exists():
+            if marker_was_present:
                 raise SystemExit(2)
             failure_class = ""
             failure_count = 0
