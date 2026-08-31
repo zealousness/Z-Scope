@@ -37,7 +37,7 @@ def _record(truth_id: str, kind: str, line: int) -> dict:
         ],
         "review_artifacts": {
             "fable_sha256": "1" * 64,
-            "glm_sha256": "2" * 64,
+            "deepseek_sha256": "2" * 64,
             "normalized_sha256": "3" * 64,
         },
         "safe_pair": (

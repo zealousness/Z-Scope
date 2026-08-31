@@ -30,12 +30,13 @@ from zscope.framework.provider_failure_marker import (
 )
 
 
-PROVIDER_RUNTIME_CONTRACT_VERSION = "zscope.provider-runtime-contract.v1"
+PROVIDER_RUNTIME_CONTRACT_VERSION = "zscope.provider-runtime-contract.v2"
 P6_API_KEY_ENVIRONMENT_KEY = "Z_SCOPE_API_KEY"
 PROVIDER_BASE_URL_ENVIRONMENT_KEY = "Z_SCOPE_LLM_BASE_URL"
 PROVIDER_MODEL_ENVIRONMENT_KEY = "Z_SCOPE_LLM_MODEL"
 P6_PROVIDER_BASE_URL = "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1"
-P6_PROVIDER_MODEL = "GLM-5.2"
+P6_PROVIDER_MODEL = "deepseek-v4-flash"
+P6_PROVIDER_RESPONSE_MODEL = "deepseek-v4-flash-ga-260731"
 P6_MAX_CONCURRENT_CALLS = 8
 
 _ENV_REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -206,10 +207,10 @@ def _file_sha256(path: Path) -> str:
 def _file_snapshot_changed(before: Any, after: Any) -> bool:
     """Return whether a no-follow file changed across two observations.
 
-    Device and inode alone are insufficient because an unlink followed by an
-    immediate create may reuse the inode. Size and nanosecond timestamps close
-    that replacement window; the post-read comparison still detects mutation
-    of an already-open file.
+    Device/inode alone is insufficient on Linux because an unlink followed by
+    an immediate create may reuse the inode. Size and nanosecond timestamps
+    close that replacement window while the post-read comparison still
+    detects mutation of an already-open file.
     """
 
     return any(
@@ -302,10 +303,20 @@ class ProviderRuntimeContract:
 
     base_url: str
     model: str
+    response_model: str
     config_sha256: str
     required_environment_keys: tuple[str, ...]
     identity_sha256: str
     schema_version: str = PROVIDER_RUNTIME_CONTRACT_VERSION
+
+    @property
+    def accepted_response_models(self) -> tuple[str, ...]:
+        """Return the exact gateway identities bound by this contract."""
+
+        return tuple(sorted({self.model, self.response_model}))
+
+    def accepts_response_model(self, value: Any) -> bool:
+        return isinstance(value, str) and value in self.accepted_response_models
 
     @classmethod
     def from_config_file(cls, config_path: Path) -> "ProviderRuntimeContract":
@@ -328,19 +339,34 @@ class ProviderRuntimeContract:
             raise ProviderRuntimeError("benchmark provider default profile is missing")
         base_url = _single_provider_value(profile.get("base_urls"), field="base_urls").rstrip("/")
         model = _single_provider_value(profile.get("models"), field="models")
+        raw_response_model_map = profile.get("response_model_map") or {}
+        if not isinstance(raw_response_model_map, Mapping) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in raw_response_model_map.items()
+        ):
+            raise ProviderRuntimeError("benchmark provider response_model_map must be an object")
+        response_model = str(raw_response_model_map.get(model) or model).strip()
+        if not response_model:
+            raise ProviderRuntimeError("benchmark provider response model is incomplete")
         if _environment_references(base_url) or _environment_references(model):
             raise ProviderRuntimeError("benchmark provider identity must be source-controlled")
+        if _environment_references(response_model):
+            raise ProviderRuntimeError(
+                "benchmark provider response identity must be source-controlled"
+            )
         keys = tuple(sorted(_environment_references(raw)))
         identity_payload = {
             "schema_version": PROVIDER_RUNTIME_CONTRACT_VERSION,
             "base_url": base_url,
             "model": model,
+            "response_model": response_model,
             "config_sha256": config_sha256,
             "required_environment_keys": list(keys),
         }
         return cls(
             base_url=base_url,
             model=model,
+            response_model=response_model,
             config_sha256=config_sha256,
             required_environment_keys=keys,
             identity_sha256=_canonical_sha256(identity_payload),
@@ -365,7 +391,11 @@ class ProviderRuntimeContract:
             getattr(profile, "base_urls", None), field="base_urls"
         ).rstrip("/")
         model = _single_provider_value(getattr(profile, "models", None), field="models")
-        if not base_url or not model:
+        response_model_map = getattr(profile, "response_model_map", {})
+        if not isinstance(response_model_map, Mapping):
+            raise ProviderRuntimeError("benchmark provider response_model_map must be an object")
+        response_model = str(response_model_map.get(model) or model).strip()
+        if not base_url or not model or not response_model:
             raise ProviderRuntimeError("benchmark provider identity is incomplete")
         raw, config_sha256 = _read_config_snapshot(Path(config_path))
         if not isinstance(raw, Mapping):
@@ -379,12 +409,14 @@ class ProviderRuntimeContract:
             "schema_version": PROVIDER_RUNTIME_CONTRACT_VERSION,
             "base_url": base_url,
             "model": model,
+            "response_model": response_model,
             "config_sha256": config_sha256,
             "required_environment_keys": list(keys),
         }
         return cls(
             base_url=base_url,
             model=model,
+            response_model=response_model,
             config_sha256=config_sha256,
             required_environment_keys=keys,
             identity_sha256=_canonical_sha256(identity_payload),
@@ -395,6 +427,7 @@ class ProviderRuntimeContract:
             "schema_version": self.schema_version,
             "base_url": self.base_url,
             "model": self.model,
+            "response_model": self.response_model,
             "config_sha256": self.config_sha256,
             "required_environment_keys": list(self.required_environment_keys),
             "identity_sha256": self.identity_sha256,
@@ -430,6 +463,7 @@ def require_p6_provider_contract(config_path: Path) -> ProviderRuntimeContract:
     if (
         contract.base_url != P6_PROVIDER_BASE_URL
         or contract.model != P6_PROVIDER_MODEL
+        or contract.response_model != P6_PROVIDER_RESPONSE_MODEL
         or contract.required_environment_keys != (P6_API_KEY_ENVIRONMENT_KEY,)
         or not isinstance(profile, Mapping)
         or not isinstance(profiles, Mapping)
@@ -441,12 +475,14 @@ def require_p6_provider_contract(config_path: Path) -> ProviderRuntimeContract:
             for role in ("modeling", "analysis", "validation")
         )
         or profile.get("api_key") != "${Z_SCOPE_API_KEY}"
+        or profile.get("response_model_map") != {P6_PROVIDER_MODEL: P6_PROVIDER_RESPONSE_MODEL}
         or profile.get("base_url_max_concurrent_requests") != P6_MAX_CONCURRENT_CALLS
         or type(profile.get("max_tokens")) is not int
         or profile.get("max_tokens") != 8192
         or type(profile.get("max_retries")) is not int
         or profile.get("max_retries") != 2
         or profile.get("retry_until_available") is not False
+        or profile.get("supports_structured_output") is not False
         or profile.get("require_exact_response_model") is not True
         or type(profile.get("timeout")) is not int
         or profile.get("timeout") != 120
@@ -647,7 +683,7 @@ def probe_provider(
                 "content": "Return a JSON object with the single boolean field ok set to true.",
             }
         ],
-        "max_tokens": 32,
+        "max_tokens": 256,
         "stream": False,
         "temperature": 0,
     }
@@ -674,7 +710,7 @@ def probe_provider(
         raise ProviderProbeError("provider_protocol_incompatible") from exc
     if not isinstance(payload, Mapping):
         raise ProviderProbeError("provider_protocol_incompatible")
-    if payload.get("model") != contract.model:
+    if not contract.accepts_response_model(payload.get("model")):
         raise ProviderProbeError("provider_identity_mismatch")
     usage = payload.get("usage")
     prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, Mapping) else None
@@ -718,7 +754,7 @@ def probe_provider(
         "provider_usage_coverage": 1.0,
         "requested_model": contract.model,
         "requested_model_coverage": 1.0,
-        "response_model": contract.model,
+        "response_model": contract.response_model,
         "response_model_coverage": 1.0,
         "queue_empty": True,
         "dimensions": {

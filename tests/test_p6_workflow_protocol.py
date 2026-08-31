@@ -201,7 +201,7 @@ def test_workflow_runs_real_frozen_qualification_and_candidate_bound_cold_scans(
         assert text.count(f"--scan-depth {depth}") == 2
         assert text.count(f"p6-cold-{depth}-failure.json") == 2
     assert text.count('"--workers",') == 3
-    assert text.count('"--provider-model", "GLM-5.2"') == 3
+    assert text.count('"--provider-model", "deepseek-v4-flash"') == 3
     assert text.count('--expected-git-sha "$P6_CANDIDATE_COMMIT"') == 3
     assert text.count("--expected-git-tree") == 3
     assert "prepare_p6_runtime_source(" in text
@@ -409,7 +409,7 @@ def test_provider_failure_output_is_typed_and_bound_to_the_probe_job() -> None:
     )
     assert "validate_authority >/dev/null 2>&1" in authority["run"]
     assert "stage=entry_input; class=input_binding_failure:1; count=1" in authority["run"]
-    assert '${!required_name:-}' in authority["run"]
+    assert "${!required_name:-}" in authority["run"]
     assert "|| return 2" in authority["run"]
     assert ":?sealed runner must configure" not in authority["run"]
     assert "P6_ENTRY_FAILURE_MARKER" in authority["env"]
