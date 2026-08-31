@@ -25,6 +25,7 @@ defaults:
 
 env:
   P6_MAX_CONCURRENT_CALLS: "8"
+  Z_SCOPE_BENCHMARK_OCI_RUNTIME: podman
   P6_ATTEMPT_ID: p6-${{ github.run_id }}-${{ github.run_attempt }}
   P6_CONTROL_PLANE_COMMIT: ${{ inputs.control_plane_commit }}
   P6_CANDIDATE_COMMIT: ${{ inputs.candidate_sha }}

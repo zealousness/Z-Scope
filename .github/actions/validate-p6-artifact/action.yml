@@ -42,6 +42,12 @@ runs:
         child = {
             "PATH": os.environ.get("PATH", ""),
             "PYTHONPATH": str(control),
+            # setup-p6-python binds the self-hosted toolcache's shared
+            # libpython directory through this exact variable.  Dropping it
+            # here makes the trusted sys.executable fail before the
+            # answer-free validator can run and misclassifies a clean
+            # diagnostic as artifact contamination.
+            "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
         }
         command_suffix = []
         literal_canaries = []
