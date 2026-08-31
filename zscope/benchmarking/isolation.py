@@ -6,13 +6,17 @@ import hashlib
 import json
 import os
 import re
+import signal
 import shutil
+import stat
 import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
+
+from zscope.benchmarking.provider_runtime import ProviderRuntimeContract
 
 
 ISOLATION_SCHEMA_VERSION = "zscope.benchmark-isolation.v1"
@@ -30,6 +34,29 @@ _NETWORK_LABEL_MODE = "io.zscope.network-policy"
 _NETWORK_LABEL_SHA = "io.zscope.network-policy-sha256"
 _PROXY_LABEL_ROLE = "io.zscope.role"
 _PROXY_LABEL_SHA = "io.zscope.network-policy-sha256"
+P6_OCI_CLEANUP_SCHEMA_VERSION = "zscope.p6-oci-cleanup.v1"
+P6_OCI_CONCURRENCY_GROUP = "p6-pilot-validation"
+P6_OCI_LABEL_SCHEMA = "io.zscope.p6-cleanup-contract"
+P6_OCI_LABEL_CONCURRENCY_GROUP = "io.zscope.p6-concurrency-group"
+P6_OCI_LABEL_REPOSITORY = "io.zscope.p6-repository"
+P6_OCI_LABEL_WORKFLOW_RUN_ID = "io.zscope.p6-workflow-run-id"
+P6_OCI_LABEL_WORKFLOW_RUN_ATTEMPT = "io.zscope.p6-workflow-run-attempt"
+P6_OCI_LABEL_ATTEMPT_ID = "io.zscope.p6-attempt-id"
+P6_OCI_LABEL_PHASE = "io.zscope.p6-phase"
+_P6_REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+_P6_POSITIVE_INTEGER_RE = re.compile(r"[1-9][0-9]*\Z")
+_SECRET_ENVIRONMENT_MARKERS = (
+    "API_KEY",
+    "ACCESS_KEY",
+    "AUTHORIZATION",
+    "BEARER",
+    "CREDENTIAL",
+    "PASSWORD",
+    "PASSWD",
+    "PRIVATE_KEY",
+    "SECRET",
+    "TOKEN",
+)
 _PODMAN_V4_DEFAULT_CAPABILITIES = frozenset(
     {
         "CAP_CHOWN",
@@ -51,6 +78,68 @@ class BenchmarkIsolationError(RuntimeError):
     """Raised when a requested isolation claim cannot be established."""
 
 
+class _OciPhaseInterrupted(KeyboardInterrupt):
+    """Internal fixed-shape interrupt used to force OCI cleanup."""
+
+
+def _safe_phase_name(value: str) -> str:
+    return _SAFE_NAME_RE.sub("-", str(value)).strip("-.")[:32] or "phase"
+
+
+@dataclass(frozen=True)
+class P6OciCleanupScope:
+    """Exact runner-owned labels used to recover hard-killed P6 scanners."""
+
+    repository: str
+    workflow_run_id: str
+    workflow_run_attempt: str
+    attempt_id: str
+    concurrency_group: str = P6_OCI_CONCURRENCY_GROUP
+
+    @classmethod
+    def from_environment(
+        cls,
+        environment: Mapping[str, str],
+        *,
+        process_environment: Optional[Mapping[str, str]] = None,
+    ) -> Optional["P6OciCleanupScope"]:
+        process = process_environment if process_environment is not None else os.environ
+
+        def value(name: str) -> str:
+            return str(environment.get(name) or process.get(name) or "").strip()
+
+        attempt_id = value("P6_ATTEMPT_ID")
+        if not attempt_id:
+            return None
+        repository = value("GITHUB_REPOSITORY")
+        run_id = value("GITHUB_RUN_ID")
+        run_attempt = value("GITHUB_RUN_ATTEMPT")
+        if (
+            _P6_REPOSITORY_RE.fullmatch(repository) is None
+            or _P6_POSITIVE_INTEGER_RE.fullmatch(run_id) is None
+            or _P6_POSITIVE_INTEGER_RE.fullmatch(run_attempt) is None
+            or attempt_id != f"p6-{run_id}-{run_attempt}"
+        ):
+            raise BenchmarkIsolationError("P6 OCI cleanup scope is invalid")
+        return cls(
+            repository=repository,
+            workflow_run_id=run_id,
+            workflow_run_attempt=run_attempt,
+            attempt_id=attempt_id,
+        )
+
+    def labels(self, phase: str) -> Dict[str, str]:
+        return {
+            P6_OCI_LABEL_SCHEMA: P6_OCI_CLEANUP_SCHEMA_VERSION,
+            P6_OCI_LABEL_CONCURRENCY_GROUP: self.concurrency_group,
+            P6_OCI_LABEL_REPOSITORY: self.repository,
+            P6_OCI_LABEL_WORKFLOW_RUN_ID: self.workflow_run_id,
+            P6_OCI_LABEL_WORKFLOW_RUN_ATTEMPT: self.workflow_run_attempt,
+            P6_OCI_LABEL_ATTEMPT_ID: self.attempt_id,
+            P6_OCI_LABEL_PHASE: _safe_phase_name(phase),
+        }
+
+
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
     raw = json.dumps(
         dict(value),
@@ -59,6 +148,61 @@ def _canonical_sha256(value: Mapping[str, Any]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def sealed_runtime_source_sha256(root: Path) -> str:
+    """Hash an all-file, link-free runtime source tree for OCI mounting."""
+
+    base = Path(root).resolve()
+    if not base.is_dir():
+        raise BenchmarkIsolationError("sealed runtime source does not exist")
+    rows: list[Dict[str, Any]] = []
+    total_size = 0
+    for path in sorted(base.rglob("*"), key=lambda item: item.relative_to(base).as_posix()):
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise BenchmarkIsolationError("sealed runtime source is unreadable") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise BenchmarkIsolationError("sealed runtime source contains a symbolic link")
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise BenchmarkIsolationError("sealed runtime source contains a special file")
+        relative = path.relative_to(base).as_posix()
+        if (
+            "__pycache__" in path.parts
+            or path.suffix.lower() in {".pyc", ".pyo"}
+            or any(
+                token in relative.lower()
+                for token in ("ground_truth", "ground-truth", "/scorer", "/expected")
+            )
+        ):
+            raise BenchmarkIsolationError("sealed runtime source contains a forbidden file")
+        try:
+            payload = path.read_bytes()
+        except OSError as exc:
+            raise BenchmarkIsolationError("sealed runtime source is unreadable") from exc
+        total_size += len(payload)
+        if total_size > 64 * 1024 * 1024:
+            raise BenchmarkIsolationError("sealed runtime source exceeds the size limit")
+        rows.append(
+            {
+                "path": relative,
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    if not rows or not any(row["path"] == "__init__.py" for row in rows):
+        raise BenchmarkIsolationError("sealed runtime source is incomplete")
+    return _canonical_sha256(
+        {
+            "schema_version": "zscope.sealed-runtime-source.v1",
+            "files": rows,
+            "file_count": len(rows),
+            "total_size": total_size,
+        }
+    )
 
 
 def _runtime_family(runtime: str, runtime_path: str = "") -> str:
@@ -99,6 +243,48 @@ def _nested(mapping: Mapping[str, Any], *path: str) -> Any:
     return value
 
 
+def _is_secret_environment_key(key: str) -> bool:
+    upper = str(key or "").upper()
+    return bool(
+        upper == "Z_SCOPE_P6_API_KEY_FILE"
+        or any(marker in upper for marker in _SECRET_ENVIRONMENT_MARKERS)
+    )
+
+
+def _environment_entries(value: Any) -> tuple[Dict[str, str], bool]:
+    """Parse OCI ``Config.Env`` without ever returning unkeyed raw values."""
+
+    if value is None:
+        return {}, True
+    if not isinstance(value, list):
+        return {}, False
+    entries: Dict[str, str] = {}
+    for raw in value:
+        if not isinstance(raw, str) or "=" not in raw:
+            return {}, False
+        key, item = raw.split("=", 1)
+        if not key or key in entries:
+            return {}, False
+        entries[key] = item
+    return entries, True
+
+
+def _credential_metadata_safe(value: Any) -> bool:
+    entries, parsed = _environment_entries(value)
+    return parsed and not any(_is_secret_environment_key(key) for key in entries)
+
+
+def _inspect_projection_sha256(inspect: Mapping[str, Any]) -> str:
+    """Hash inspect evidence after replacing environment values with key names."""
+
+    projection = json.loads(json.dumps(dict(inspect), ensure_ascii=False))
+    config = projection.get("Config")
+    if isinstance(config, dict) and "Env" in config:
+        entries, parsed = _environment_entries(config.get("Env"))
+        config["Env"] = sorted(entries) if parsed else ["<invalid-environment-metadata>"]
+    return _canonical_sha256(projection)
+
+
 def _is_rootless_info(runtime_family: str, info: Mapping[str, Any]) -> bool:
     if runtime_family == "podman":
         return any(
@@ -125,9 +311,30 @@ class OciNetworkPolicy:
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "OciNetworkPolicy":
+        """Compatibility constructor for non-bundled benchmark callers."""
+
+        return cls._from_endpoint(
+            environment,
+            endpoint=str(environment.get("Z_SCOPE_LLM_BASE_URL") or "").strip(),
+        )
+
+    @classmethod
+    def from_provider_contract(
+        cls,
+        environment: Mapping[str, str],
+        provider_contract: ProviderRuntimeContract,
+    ) -> "OciNetworkPolicy":
+        return cls._from_endpoint(environment, endpoint=provider_contract.base_url)
+
+    @classmethod
+    def _from_endpoint(
+        cls,
+        environment: Mapping[str, str],
+        *,
+        endpoint: str,
+    ) -> "OciNetworkPolicy":
         network = str(environment.get("Z_SCOPE_BENCHMARK_OCI_NETWORK") or "").strip()
         proxy = str(environment.get("Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER") or "").strip()
-        endpoint = str(environment.get("Z_SCOPE_LLM_BASE_URL") or "").strip()
         parsed = urlsplit(endpoint)
         if not network:
             raise BenchmarkIsolationError("formal OCI requires an explicit internal network")
@@ -168,6 +375,8 @@ class OciIsolationPlan:
     cache_output: str
     argv: Tuple[str, ...]
     environment_keys: Tuple[str, ...]
+    runtime_source: str = ""
+    runtime_source_sha256: str = ""
     network_mode: str = "unverified"
     network_name: str = ""
     network_policy_sha256: str = ""
@@ -202,6 +411,18 @@ class OciIsolationPlan:
                     "purpose": "artifact_output",
                     "read_only": False,
                 },
+                *(
+                    [
+                        {
+                            "source": self.runtime_source,
+                            "destination": "/zscope-runtime/zscope",
+                            "purpose": "runtime_source",
+                            "read_only": True,
+                        }
+                    ]
+                    if self.runtime_source
+                    else []
+                ),
             ],
             "argv": list(self.argv),
             "environment_keys": list(self.environment_keys),
@@ -210,6 +431,8 @@ class OciIsolationPlan:
             "network_policy_sha256": self.network_policy_sha256,
             "truth_mounted": False,
             "repository_mounted": False,
+            "runtime_source_mounted": bool(self.runtime_source),
+            "runtime_source_sha256": self.runtime_source_sha256,
             "plan_validated": True,
             "execution_verified": False,
             "network_restriction_verified": False,
@@ -261,6 +484,8 @@ def build_oci_isolation_plan(
     cache_output: Optional[Path] = None,
     scan_command: Sequence[str],
     environment: Mapping[str, str],
+    provider_contract: Optional[ProviderRuntimeContract] = None,
+    runtime_source: Optional[Path] = None,
 ) -> OciIsolationPlan:
     capability = oci_capability(runtime=runtime, image=image)
     if not capability["available"]:
@@ -276,7 +501,11 @@ def build_oci_isolation_plan(
         cache.mkdir(parents=True, exist_ok=True)
     if not cache.is_dir():
         raise BenchmarkIsolationError(f"cache output does not exist: {cache}")
-    roots = (source, output, cache)
+    runtime_tree = Path(runtime_source).resolve() if runtime_source is not None else None
+    runtime_tree_sha256 = (
+        sealed_runtime_source_sha256(runtime_tree) if runtime_tree is not None else ""
+    )
+    roots = tuple(path for path in (source, output, cache, runtime_tree) if path is not None)
     if any(
         left == right or left.is_relative_to(right) or right.is_relative_to(left)
         for index, left in enumerate(roots)
@@ -295,12 +524,29 @@ def build_oci_isolation_plan(
     command_text = json.dumps([str(value) for value in scan_command]).lower()
     if "ground_truth" in command_text or "benchmark/" in command_text:
         raise BenchmarkIsolationError("scan command references benchmark answer material")
-    allowed_environment = tuple(
-        sorted(key for key in environment if key in _PASSTHROUGH_ENVIRONMENT)
+    if provider_contract is not None:
+        missing = [
+            key
+            for key in provider_contract.required_environment_keys
+            if not str(environment.get(key) or "").strip()
+        ]
+        if missing:
+            raise BenchmarkIsolationError(
+                "provider contract environment is incomplete: " + ", ".join(missing)
+            )
+    allowed_keys = (
+        frozenset(provider_contract.required_environment_keys)
+        if provider_contract is not None
+        else _PASSTHROUGH_ENVIRONMENT
     )
+    allowed_environment = tuple(sorted(key for key in environment if key in allowed_keys))
     policy: Optional[OciNetworkPolicy]
     try:
-        policy = OciNetworkPolicy.from_environment(environment)
+        policy = (
+            OciNetworkPolicy.from_provider_contract(environment, provider_contract)
+            if provider_contract is not None
+            else OciNetworkPolicy.from_environment(environment)
+        )
     except BenchmarkIsolationError:
         policy = None
     argv = (
@@ -318,6 +564,11 @@ def build_oci_isolation_plan(
         f"type=bind,src={output},dst=/zscope-output",
         "--mount",
         f"type=bind,src={cache},dst=/zscope-cache",
+        *(
+            ("--mount", f"type=bind,src={runtime_tree},dst=/zscope-runtime/zscope,readonly")
+            if runtime_tree is not None
+            else ()
+        ),
         *(("--network", policy.network_name) if policy is not None else ()),
         image,
         *tuple(str(value) for value in scan_command),
@@ -330,6 +581,8 @@ def build_oci_isolation_plan(
         cache_output=str(cache),
         argv=argv,
         environment_keys=allowed_environment,
+        runtime_source=str(runtime_tree) if runtime_tree is not None else "",
+        runtime_source_sha256=runtime_tree_sha256,
         network_mode=("model-endpoint-only" if policy is not None else "unverified"),
         network_name=(policy.network_name if policy is not None else ""),
         network_policy_sha256=(policy.policy_sha256 if policy is not None else ""),
@@ -427,6 +680,8 @@ class RootlessOciExecutor:
         artifact_output: Path,
         cache_output: Path,
         environment: Mapping[str, str],
+        provider_contract: Optional[ProviderRuntimeContract] = None,
+        runtime_source: Optional[Path] = None,
         process_runner: ProcessRunner = subprocess.run,
         which: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
@@ -440,28 +695,120 @@ class RootlessOciExecutor:
         self.scan_input = Path(scan_input).resolve()
         self.artifact_output = Path(artifact_output).resolve()
         self.cache_output = Path(cache_output).resolve()
-        self.environment = {
+        self.runtime_source = Path(runtime_source).resolve() if runtime_source is not None else None
+        self.runtime_source_sha256 = (
+            sealed_runtime_source_sha256(self.runtime_source)
+            if self.runtime_source is not None
+            else ""
+        )
+        source_environment = {
             str(key): str(value)
             for key, value in environment.items()
             if key not in TRUTH_ENVIRONMENT_KEYS
             and "GROUND_TRUTH" not in str(key).upper()
             and "BENCHMARK_TRUTH" not in str(key).upper()
         }
-        self.network_policy = OciNetworkPolicy.from_environment(self.environment)
+        self.provider_contract = provider_contract
+        if provider_contract is not None:
+            missing = [
+                key
+                for key in provider_contract.required_environment_keys
+                if not str(source_environment.get(key) or "").strip()
+            ]
+            if missing:
+                raise BenchmarkIsolationError(
+                    "provider contract environment is incomplete: " + ", ".join(missing)
+                )
+        if provider_contract is not None:
+            self.provider_identity_sha256 = provider_contract.identity_sha256
+        else:
+            base_url = str(source_environment.get("Z_SCOPE_LLM_BASE_URL") or "").strip()
+            model = str(source_environment.get("Z_SCOPE_LLM_MODEL") or "").strip()
+            self.provider_identity_sha256 = (
+                _canonical_sha256(
+                    {
+                        "schema_version": "zscope.oci-provider-identity.v1",
+                        "base_url": base_url.rstrip("/"),
+                        "model": model,
+                    }
+                )
+                if base_url and model
+                else ""
+            )
+        self.container_environment_keys = tuple(
+            sorted(
+                key
+                for key in source_environment
+                if key
+                in (
+                    frozenset(provider_contract.required_environment_keys)
+                    if provider_contract is not None
+                    else _PASSTHROUGH_ENVIRONMENT
+                )
+            )
+        )
+        self.credential_environment_keys = tuple(
+            key
+            for key in self.container_environment_keys
+            if key == "Z_SCOPE_API_KEY" or _is_secret_environment_key(key)
+        )
+        self._provider_environment = {
+            key: source_environment[key]
+            for key in self.credential_environment_keys
+            if key in source_environment
+        }
+        # OCI metadata/preflight commands inherit no credentials.  The live
+        # provider values are added only to the one ``runtime run`` subprocess
+        # that asks OCI to copy their names into the scanner environment.
+        self.environment = {
+            key: value
+            for key, value in source_environment.items()
+            if key not in self.credential_environment_keys and not _is_secret_environment_key(key)
+        }
+        self.p6_cleanup_scope = P6OciCleanupScope.from_environment(source_environment)
+        self.network_policy = (
+            OciNetworkPolicy.from_provider_contract(source_environment, provider_contract)
+            if provider_contract is not None
+            else OciNetworkPolicy.from_environment(source_environment)
+        )
         self._run = process_runner
         self._preflight: Optional[Dict[str, Any]] = None
         self._phases: list[Dict[str, Any]] = []
         self._validate_roots()
+
+    def _clear_provider_credentials(self) -> None:
+        self._provider_environment.clear()
+
+    def _verify_runtime_source_integrity(self) -> None:
+        if self.runtime_source is None:
+            return
+        if sealed_runtime_source_sha256(self.runtime_source) != self.runtime_source_sha256:
+            self._clear_provider_credentials()
+            raise BenchmarkIsolationError("sealed runtime source changed after binding")
 
     def _validate_roots(self) -> None:
         for label, path in (
             ("scan input", self.scan_input),
             ("artifact output", self.artifact_output),
             ("cache output", self.cache_output),
+            *(
+                (("runtime source", self.runtime_source),)
+                if self.runtime_source is not None
+                else ()
+            ),
         ):
             if not path.is_dir():
                 raise BenchmarkIsolationError(f"{label} does not exist: {path}")
-        roots = (self.scan_input, self.artifact_output, self.cache_output)
+        roots = tuple(
+            path
+            for path in (
+                self.scan_input,
+                self.artifact_output,
+                self.cache_output,
+                self.runtime_source,
+            )
+            if path is not None
+        )
         if any(
             left == right or left.is_relative_to(right) or right.is_relative_to(left)
             for index, left in enumerate(roots)
@@ -476,7 +823,12 @@ class RootlessOciExecutor:
         ):
             raise BenchmarkIsolationError("truth material is present in the scan input")
 
-    def _invoke(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    def _invoke(
+        self,
+        argv: Sequence[str],
+        *,
+        provider_environment: Optional[Mapping[str, str]] = None,
+    ) -> subprocess.CompletedProcess[str]:
         runtime_environment = dict(os.environ)
         for key in tuple(runtime_environment):
             upper = key.upper()
@@ -484,9 +836,19 @@ class RootlessOciExecutor:
                 key in TRUTH_ENVIRONMENT_KEYS
                 or "GROUND_TRUTH" in upper
                 or "BENCHMARK_TRUTH" in upper
+                or key in self.credential_environment_keys
+                or _is_secret_environment_key(key)
             ):
                 runtime_environment.pop(key, None)
         runtime_environment.update(self.environment)
+        if provider_environment:
+            runtime_environment.update(
+                {
+                    key: value
+                    for key, value in provider_environment.items()
+                    if key in self.credential_environment_keys
+                }
+            )
         return self._run(
             [str(value) for value in argv],
             stdout=subprocess.PIPE,
@@ -499,10 +861,7 @@ class RootlessOciExecutor:
     def _inspect(self, argv: Sequence[str], *, context: str) -> Dict[str, Any]:
         result = self._invoke(argv)
         if result.returncode != 0:
-            detail = str(result.stderr or result.stdout or "").strip()
-            raise BenchmarkIsolationError(
-                f"{context} failed ({result.returncode})" + (f": {detail}" if detail else "")
-            )
+            raise BenchmarkIsolationError(f"{context} failed ({result.returncode})")
         return _json_object(str(result.stdout or ""), context=context)
 
     def _network_membership(
@@ -531,10 +890,7 @@ class RootlessOciExecutor:
         ]
         result = self._invoke(argv)
         if result.returncode != 0:
-            detail = str(result.stderr or result.stdout or "").strip()
-            raise BenchmarkIsolationError(
-                f"{context} failed ({result.returncode})" + (f": {detail}" if detail else "")
-            )
+            raise BenchmarkIsolationError(f"{context} failed ({result.returncode})")
         rows = _json_array(str(result.stdout or ""), context=context)
         peers: Dict[str, Dict[str, Any]] = {}
         for row in rows:
@@ -572,6 +928,13 @@ class RootlessOciExecutor:
         return peers, _canonical_sha256(snapshot)
 
     def preflight(self) -> Dict[str, Any]:
+        try:
+            return self._preflight_retaining_credentials()
+        except BaseException:
+            self._clear_provider_credentials()
+            raise
+
+    def _preflight_retaining_credentials(self) -> Dict[str, Any]:
         if self._preflight is not None:
             return dict(self._preflight)
         info_argv = (
@@ -621,6 +984,7 @@ class RootlessOciExecutor:
         )
         proxy_id = str(proxy.get("Id") or proxy.get("ID") or "")
         proxy_labels = _labels(_nested(proxy, "Config", "Labels"))
+        proxy_credential_metadata_safe = _credential_metadata_safe(_nested(proxy, "Config", "Env"))
         proxy_network = _container_networks(proxy).get(self.network_policy.network_name)
         proxy_running = _nested(proxy, "State", "Running") is True
         aliases = []
@@ -634,6 +998,10 @@ class RootlessOciExecutor:
             raise BenchmarkIsolationError("model endpoint proxy role is not attested")
         if proxy_labels.get(_PROXY_LABEL_SHA) != self.network_policy.policy_sha256:
             raise BenchmarkIsolationError("model endpoint proxy policy digest does not match")
+        if not proxy_credential_metadata_safe:
+            raise BenchmarkIsolationError(
+                "model endpoint proxy exposes credential metadata in OCI configuration"
+            )
         if self.network_policy.endpoint_host not in aliases:
             raise BenchmarkIsolationError("model endpoint hostname is not a proxy network alias")
         peers, network_membership_sha256 = self._network_membership(
@@ -650,13 +1018,15 @@ class RootlessOciExecutor:
             "image_id": image_id,
             "network_inspect_sha256": _canonical_sha256(network),
             "network_membership_sha256": network_membership_sha256,
-            "proxy_inspect_sha256": _canonical_sha256(proxy),
+            "proxy_inspect_sha256": _inspect_projection_sha256(proxy),
             "rootless_verified": True,
             "image_digest_verified": True,
             "network_internal": True,
             "network_policy_sha256": self.network_policy.policy_sha256,
             "network_name": self.network_policy.network_name,
             "endpoint_origin": self.network_policy.endpoint_origin,
+            "provider_identity_sha256": self.provider_identity_sha256,
+            "proxy_credential_metadata_safe": True,
             "proxy_container_id": proxy_id,
             "proxy_running": True,
         }
@@ -667,6 +1037,11 @@ class RootlessOciExecutor:
             "/zscope-input": "scan_input",
             "/zscope-output": "artifact_output",
             "/zscope-cache": "cache",
+            **(
+                {"/zscope-runtime/zscope": "runtime_source"}
+                if self.runtime_source is not None
+                else {}
+            ),
         }
         result = []
         for raw in inspect.get("Mounts") or []:
@@ -695,6 +1070,7 @@ class RootlessOciExecutor:
         name: str,
         run_result: subprocess.CompletedProcess[str],
         accepted_returncodes: Sequence[int],
+        expected_credential_keys: Sequence[str],
     ) -> Dict[str, Any]:
         inspect = self._inspect(
             [self.runtime_path, "inspect", name], context=f"{phase} container inspect"
@@ -720,6 +1096,11 @@ class RootlessOciExecutor:
             (str(self.scan_input), "/zscope-input", True),
             (str(self.artifact_output), "/zscope-output", False),
             (str(self.cache_output), "/zscope-cache", False),
+            *(
+                {(str(self.runtime_source), "/zscope-runtime/zscope", True)}
+                if self.runtime_source is not None
+                else set()
+            ),
         }
         actual_sources = {
             (str(row["source"]), str(row["destination"]), bool(row["read_only"])) for row in mounts
@@ -730,6 +1111,7 @@ class RootlessOciExecutor:
         proxy_id = str(_as_mapping(self._preflight).get("proxy_container_id") or "")
         proxy_current_id = str(proxy.get("Id") or proxy.get("ID") or "")
         proxy_labels = _labels(_nested(proxy, "Config", "Labels"))
+        proxy_credential_metadata_safe = _credential_metadata_safe(_nested(proxy, "Config", "Env"))
         proxy_network = _container_networks(proxy).get(self.network_policy.network_name)
         proxy_aliases = (
             [str(value).lower() for value in proxy_network.get("Aliases") or []]
@@ -742,6 +1124,7 @@ class RootlessOciExecutor:
             and isinstance(proxy_network, Mapping)
             and proxy_labels.get(_PROXY_LABEL_ROLE) == "model-endpoint-proxy"
             and proxy_labels.get(_PROXY_LABEL_SHA) == self.network_policy.policy_sha256
+            and proxy_credential_metadata_safe
             and self.network_policy.endpoint_host in proxy_aliases
         )
         network_internal = network.get("Internal")
@@ -777,9 +1160,32 @@ class RootlessOciExecutor:
             image_ref and _image_identity_matches(container_image_id, expected_image_id)
         )
         scanner_labels = _labels(_nested(inspect, "Config", "Labels"))
+        expected_cleanup_labels = (
+            self.p6_cleanup_scope.labels(phase) if self.p6_cleanup_scope is not None else {}
+        )
+        p6_cleanup_scope_verified = bool(
+            self.p6_cleanup_scope is not None
+            and all(
+                scanner_labels.get(key) == value for key, value in expected_cleanup_labels.items()
+            )
+        )
         scanner_labels_verified = bool(
             scanner_labels.get(_PROXY_LABEL_ROLE) == "scanner"
             and scanner_labels.get(_NETWORK_LABEL_SHA) == self.network_policy.policy_sha256
+            and (self.p6_cleanup_scope is None or p6_cleanup_scope_verified)
+        )
+        scanner_environment, scanner_environment_parsed = _environment_entries(
+            _nested(inspect, "Config", "Env")
+        )
+        credential_keys = {str(key) for key in expected_credential_keys}
+        scanner_provider_environment_verified = bool(
+            scanner_environment_parsed
+            and credential_keys.issubset(scanner_environment)
+            and all(bool(scanner_environment.get(key)) for key in credential_keys)
+            and not any(
+                _is_secret_environment_key(key) and key not in credential_keys
+                for key in scanner_environment
+            )
         )
         normalized_cap_drop = {str(value).upper() for value in cap_drop}
         cap_drop_verified = bool(
@@ -805,6 +1211,7 @@ class RootlessOciExecutor:
             and peer_ids_valid
             and network_contract_verified
             and scanner_labels_verified
+            and scanner_provider_environment_verified
             and image_verified
             and security_verified
             and isinstance(state_exit, int)
@@ -828,6 +1235,33 @@ class RootlessOciExecutor:
             "security_opt": list(security_opt) if isinstance(security_opt, list) else [],
             "security_verified": security_verified,
             "scanner_labels_verified": scanner_labels_verified,
+            "p6_cleanup_scope_verified": p6_cleanup_scope_verified,
+            "p6_workflow_run_id": (
+                self.p6_cleanup_scope.workflow_run_id if self.p6_cleanup_scope is not None else ""
+            ),
+            "p6_workflow_run_attempt": (
+                int(self.p6_cleanup_scope.workflow_run_attempt)
+                if self.p6_cleanup_scope is not None
+                else 0
+            ),
+            "p6_attempt_id": (
+                self.p6_cleanup_scope.attempt_id if self.p6_cleanup_scope is not None else ""
+            ),
+            "p6_repository": (
+                self.p6_cleanup_scope.repository if self.p6_cleanup_scope is not None else ""
+            ),
+            "p6_concurrency_group": (
+                self.p6_cleanup_scope.concurrency_group if self.p6_cleanup_scope is not None else ""
+            ),
+            "p6_phase": (_safe_phase_name(phase) if self.p6_cleanup_scope is not None else ""),
+            "scanner_provider_environment_verified": scanner_provider_environment_verified,
+            "scanner_provider_environment_keys": sorted(credential_keys),
+            # The runner persists only the fixed zscope.oci-phase-log.v1
+            # summary written by execute_phase.  Captured runtime streams stay
+            # in memory long enough to inspect protocol state and are never
+            # copied into the phase artifact.
+            "stdout_persisted": False,
+            "stderr_persisted": False,
             "mounts": mounts,
             "unexpected_mount_count": sum(row["purpose"] == "unexpected" for row in mounts),
             "network_name": network_mode,
@@ -838,8 +1272,10 @@ class RootlessOciExecutor:
             "network_internal": network_internal is True,
             "network_contract_verified": network_contract_verified,
             "proxy_verified": proxy_verified,
-            "container_inspect_sha256": _canonical_sha256(inspect),
-            "proxy_inspect_sha256": _canonical_sha256(proxy),
+            "proxy_credential_metadata_safe": proxy_credential_metadata_safe,
+            "provider_identity_sha256": self.provider_identity_sha256,
+            "container_inspect_sha256": _inspect_projection_sha256(inspect),
+            "proxy_inspect_sha256": _inspect_projection_sha256(proxy),
             "network_inspect_sha256": _canonical_sha256(network),
             "network_membership_sha256": network_membership_sha256,
             "inspect_verified": inspect_verified,
@@ -852,16 +1288,20 @@ class RootlessOciExecutor:
         *,
         log_path: Path,
         accepted_returncodes: Sequence[int] = (0,),
+        provider_credentials: bool = True,
     ) -> OciPhaseResult:
         import time
 
         self.preflight()
+        self._verify_runtime_source_integrity()
         if not phase or not command:
+            self._clear_provider_credentials()
             raise BenchmarkIsolationError("OCI phase and command must be non-empty")
         command_text = json.dumps([str(value) for value in command]).lower()
         if "ground_truth" in command_text or "benchmark/" in command_text:
+            self._clear_provider_credentials()
             raise BenchmarkIsolationError("scan command references benchmark answer material")
-        safe_phase = _SAFE_NAME_RE.sub("-", phase).strip("-.")[:32] or "phase"
+        safe_phase = _safe_phase_name(phase)
         name = f"zscope-benchmark-{safe_phase}-{uuid.uuid4().hex[:12]}"
         argv = [
             self.runtime_path,
@@ -879,6 +1319,14 @@ class RootlessOciExecutor:
             f"type=bind,src={self.artifact_output},dst=/zscope-output",
             "--mount",
             f"type=bind,src={self.cache_output},dst=/zscope-cache",
+            *(
+                (
+                    "--mount",
+                    f"type=bind,src={self.runtime_source},dst=/zscope-runtime/zscope,readonly",
+                )
+                if self.runtime_source is not None
+                else ()
+            ),
             "--network",
             self.network_policy.network_name,
             "--label",
@@ -886,37 +1334,154 @@ class RootlessOciExecutor:
             "--label",
             f"{_NETWORK_LABEL_SHA}={self.network_policy.policy_sha256}",
         ]
-        for key in sorted(key for key in self.environment if key in _PASSTHROUGH_ENVIRONMENT):
-            argv.extend(("--env", key))
-        argv.extend((self.image, *(str(value) for value in command)))
-        started = time.monotonic()
-        run_result = self._invoke(argv)
-        elapsed = time.monotonic() - started
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(
-            str(run_result.stdout or "") + str(run_result.stderr or ""), encoding="utf-8"
+        if self.p6_cleanup_scope is not None:
+            for key, value in self.p6_cleanup_scope.labels(safe_phase).items():
+                argv.extend(("--label", f"{key}={value}"))
+        expected_credential_keys = (
+            tuple(self.credential_environment_keys) if provider_credentials else ()
         )
-        phase_evidence: Optional[Dict[str, Any]] = None
-        inspection_error = ""
+        if provider_credentials and any(
+            not str(self._provider_environment.get(key) or "").strip()
+            for key in expected_credential_keys
+        ):
+            self._clear_provider_credentials()
+            raise BenchmarkIsolationError("provider credentials are unavailable for OCI phase")
+        for key in self.container_environment_keys:
+            if key in self.credential_environment_keys:
+                if provider_credentials:
+                    argv.extend(("--env", key))
+            else:
+                argv.extend(("--env", key))
+        argv.extend((self.image, *(str(value) for value in command)))
         try:
-            phase_evidence = self._phase_evidence(
-                phase=phase,
-                name=name,
-                run_result=run_result,
-                accepted_returncodes=tuple(int(value) for value in accepted_returncodes),
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "zscope.oci-phase-log.v1",
+                        "phase": safe_phase,
+                        "outcome": "launching",
+                        "return_code": None,
+                        "return_code_accepted": False,
+                        "stdout_persisted": False,
+                        "stderr_persisted": False,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
             )
-        except BenchmarkIsolationError as exc:
-            inspection_error = str(exc)
+        except BaseException:
+            self._clear_provider_credentials()
+            raise
+        protected_signals = tuple(
+            value
+            for value in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None))
+            if isinstance(value, int)
+        )
+        previous_signal_handlers: Dict[int, Any] = {}
+
+        def interrupt_phase(_signum: int, _frame: Any) -> None:
+            for protected in previous_signal_handlers:
+                try:
+                    signal.signal(protected, signal.SIG_IGN)
+                except (OSError, RuntimeError, ValueError):
+                    pass
+            raise _OciPhaseInterrupted()
+
+        try:
+            for protected in protected_signals:
+                previous_signal_handlers[protected] = signal.getsignal(protected)
+                signal.signal(protected, interrupt_phase)
+        except (OSError, RuntimeError, ValueError):
+            for protected, previous in previous_signal_handlers.items():
+                try:
+                    signal.signal(protected, previous)
+                except (OSError, RuntimeError, ValueError):
+                    pass
+            self._clear_provider_credentials()
+            raise BenchmarkIsolationError("OCI phase cancellation guard is unavailable") from None
+        started = time.monotonic()
+        cleanup_failed = True
+        run_result: Optional[subprocess.CompletedProcess[str]] = None
+        phase_evidence: Optional[Dict[str, Any]] = None
+        elapsed = 0.0
+        try:
+            try:
+                run_result = self._invoke(
+                    argv,
+                    provider_environment=(
+                        self._provider_environment if provider_credentials else None
+                    ),
+                )
+                elapsed = time.monotonic() - started
+                accepted = tuple(int(value) for value in accepted_returncodes)
+                log_path.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": "zscope.oci-phase-log.v1",
+                            "phase": safe_phase,
+                            "outcome": "completed",
+                            "return_code": int(run_result.returncode),
+                            "return_code_accepted": int(run_result.returncode) in set(accepted),
+                            "stdout_persisted": False,
+                            "stderr_persisted": False,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                phase_evidence = self._phase_evidence(
+                    phase=phase,
+                    name=name,
+                    run_result=run_result,
+                    accepted_returncodes=accepted,
+                    expected_credential_keys=expected_credential_keys,
+                )
+            except BenchmarkIsolationError:
+                raise
+            except Exception:
+                raise BenchmarkIsolationError(
+                    f"OCI phase {safe_phase!r} runtime invocation failed"
+                ) from None
         finally:
-            cleanup = self._invoke([self.runtime_path, "rm", "--force", name])
-        if cleanup.returncode != 0:
+            try:
+                for protected in previous_signal_handlers:
+                    try:
+                        signal.signal(protected, signal.SIG_IGN)
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+                try:
+                    cleanup = self._invoke([self.runtime_path, "rm", "--force", name])
+                    cleanup_failed = cleanup.returncode != 0
+                except BaseException:
+                    cleanup_failed = True
+                if not (
+                    phase_evidence is not None and phase_evidence.get("inspect_verified") is True
+                ):
+                    self._clear_provider_credentials()
+            finally:
+                for protected, previous in previous_signal_handlers.items():
+                    try:
+                        signal.signal(protected, previous)
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+        if cleanup_failed:
+            self._clear_provider_credentials()
             raise BenchmarkIsolationError(f"failed to remove inspected OCI container {name}")
-        if inspection_error:
-            raise BenchmarkIsolationError(inspection_error)
+        self._verify_runtime_source_integrity()
+        assert run_result is not None
         assert phase_evidence is not None
+        phase_evidence["cancellation_cleanup_guard_verified"] = True
         self._phases.append(phase_evidence)
         if phase_evidence.get("inspect_verified") is not True:
+            self._clear_provider_credentials()
             raise BenchmarkIsolationError(f"OCI phase {phase!r} failed execution evidence checks")
+        if provider_credentials and phase == "scan":
+            self._clear_provider_credentials()
         return OciPhaseResult(
             phase=phase,
             seconds=elapsed,
@@ -925,7 +1490,12 @@ class RootlessOciExecutor:
         )
 
     def execution_evidence(self, *, required_phases: Sequence[str] = ()) -> Dict[str, Any]:
-        preflight = self.preflight()
+        try:
+            self._verify_runtime_source_integrity()
+            preflight = self.preflight()
+        except Exception:
+            self._clear_provider_credentials()
+            raise
         required = {str(value) for value in required_phases}
         present = {str(row.get("phase") or "") for row in self._phases}
         phases_verified = bool(self._phases) and all(
@@ -946,6 +1516,8 @@ class RootlessOciExecutor:
             "release_capable": phases_verified,
             "truth_mounted": False,
             "repository_mounted": False,
+            "runtime_source_mounted": self.runtime_source is not None,
+            "runtime_source_sha256": self.runtime_source_sha256,
             "scanner_cwd": "/zscope-input",
             "scanner_cwd_isolated": phases_verified,
             "mounts": mounts,
@@ -959,6 +1531,7 @@ class RootlessOciExecutor:
             "required_phases": sorted(required),
             "errors": ([] if phases_verified else ["required OCI phases are not fully verified"]),
         }
+        self._clear_provider_credentials()
         return evidence
 
 
@@ -1004,6 +1577,8 @@ def validate_oci_execution_evidence(
         if isinstance(raw_errors, (list, tuple))
         else [str(raw_errors)] if raw_errors else []
     )
+    if evidence.get("schema_version") != ISOLATION_SCHEMA_VERSION:
+        errors.append("isolation evidence schema version is invalid")
     for key, expected in (
         ("mode", "oci"),
         ("available", True),
@@ -1018,6 +1593,7 @@ def validate_oci_execution_evidence(
         ("mounts_verified", True),
         ("security_verified", True),
         ("network_restriction_verified", True),
+        ("proxy_credential_metadata_safe", True),
     ):
         if evidence.get(key) != expected:
             errors.append(f"{key} must be {expected!r}")
@@ -1025,8 +1601,16 @@ def validate_oci_execution_evidence(
         errors.append("image must be pinned by a 64-hex sha256 digest")
     if evidence.get("network_mode") != "model-endpoint-only":
         errors.append("network_mode must be 'model-endpoint-only'")
+    runtime_source_required = evidence.get("runtime_source_mounted") is True
+    if runtime_source_required and not _SHA256_RE.fullmatch(
+        str(evidence.get("runtime_source_sha256") or "")
+    ):
+        errors.append("runtime source digest is missing or invalid")
     if not _SHA256_RE.fullmatch(str(evidence.get("network_policy_sha256") or "")):
         errors.append("network policy digest is missing or invalid")
+    provider_identity_sha256 = str(evidence.get("provider_identity_sha256") or "")
+    if not _SHA256_RE.fullmatch(provider_identity_sha256):
+        errors.append("provider identity digest is missing or invalid")
     if (
         _runtime_family(str(evidence.get("runtime") or ""), str(evidence.get("runtime_path") or ""))
         not in _ALLOWED_RUNTIME_NAMES
@@ -1057,7 +1641,7 @@ def validate_oci_execution_evidence(
         source_text = str(raw.get("source") or "")
         destination_text = str(raw.get("destination") or "")
         purpose = str(raw.get("purpose") or "")
-        if purpose not in {"scan_input", "artifact_output", "cache"}:
+        if purpose not in {"scan_input", "artifact_output", "cache", "runtime_source"}:
             errors.append(f"mounts[{index}] has invalid purpose")
         if not source_text or not destination_text:
             errors.append(f"mounts[{index}] has no source or destination")
@@ -1080,6 +1664,11 @@ def validate_oci_execution_evidence(
                 errors.append("scan_input mount must be read-only")
         elif purpose in {"artifact_output", "cache"} and raw.get("read_only") is True:
             errors.append(f"{purpose} mount must be writable")
+        elif purpose == "runtime_source":
+            if destination_text != "/zscope-runtime/zscope":
+                errors.append("runtime_source mount destination is invalid")
+            if raw.get("read_only") is not True:
+                errors.append("runtime_source mount must be read-only")
         for truth in protected_truth:
             if truth == source or truth.is_relative_to(source):
                 errors.append(f"mounts[{index}] contains benchmark truth")
@@ -1088,6 +1677,8 @@ def validate_oci_execution_evidence(
     for purpose in ("scan_input", "artifact_output", "cache"):
         if purpose not in found_purposes:
             errors.append(f"{purpose} mount evidence is missing")
+    if runtime_source_required and "runtime_source" not in found_purposes:
+        errors.append("runtime_source mount evidence is missing")
     if any(
         left == right or left.is_relative_to(right) or right.is_relative_to(left)
         for index, left in enumerate(mount_sources)
@@ -1112,11 +1703,50 @@ def validate_oci_execution_evidence(
                 "network_peers_verified",
                 "network_contract_verified",
                 "proxy_verified",
+                "proxy_credential_metadata_safe",
                 "scanner_labels_verified",
+                "scanner_provider_environment_verified",
+                "cancellation_cleanup_guard_verified",
                 "image_verified",
             ):
                 if raw.get(field) is not True:
                     errors.append(f"phase_executions[{index}].{field} must be true")
+            for field in ("stdout_persisted", "stderr_persisted"):
+                if raw.get(field) is not False:
+                    errors.append(f"phase_executions[{index}].{field} must be false")
+            if str(raw.get("provider_identity_sha256") or "") != provider_identity_sha256:
+                errors.append(f"phase_executions[{index}] provider identity does not match")
+            provider_keys = raw.get("scanner_provider_environment_keys")
+            if not isinstance(provider_keys, list) or any(
+                not isinstance(key, str) or not key for key in provider_keys
+            ):
+                errors.append(f"phase_executions[{index}] provider environment keys are invalid")
+            elif raw.get("phase") == "scan" and "Z_SCOPE_API_KEY" not in provider_keys:
+                errors.append(f"phase_executions[{index}] scan provider environment key is missing")
+            p6_values = (
+                raw.get("p6_workflow_run_id"),
+                raw.get("p6_workflow_run_attempt"),
+                raw.get("p6_attempt_id"),
+                raw.get("p6_repository"),
+                raw.get("p6_concurrency_group"),
+                raw.get("p6_phase"),
+            )
+            if any(value is not None and value != "" and value != 0 for value in p6_values):
+                run_id = str(raw.get("p6_workflow_run_id") or "")
+                run_attempt = raw.get("p6_workflow_run_attempt")
+                attempt_id = str(raw.get("p6_attempt_id") or "")
+                if (
+                    raw.get("p6_cleanup_scope_verified") is not True
+                    or _P6_POSITIVE_INTEGER_RE.fullmatch(run_id) is None
+                    or isinstance(run_attempt, bool)
+                    or not isinstance(run_attempt, int)
+                    or run_attempt < 1
+                    or attempt_id != f"p6-{run_id}-{run_attempt}"
+                    or _P6_REPOSITORY_RE.fullmatch(str(raw.get("p6_repository") or "")) is None
+                    or raw.get("p6_concurrency_group") != P6_OCI_CONCURRENCY_GROUP
+                    or raw.get("p6_phase") != _safe_phase_name(str(raw.get("phase") or ""))
+                ):
+                    errors.append(f"phase_executions[{index}] P6 cleanup scope is invalid")
             if int(raw.get("unexpected_mount_count") or 0) != 0:
                 errors.append(f"phase_executions[{index}] has unexpected mounts")
             if not _SHA256_RE.fullmatch(str(raw.get("container_inspect_sha256") or "")):

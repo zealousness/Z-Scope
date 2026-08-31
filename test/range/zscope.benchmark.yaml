@@ -4,13 +4,14 @@ config_version: 2
 
 llms:
   default:
-    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
-    models: ["${Z_SCOPE_LLM_MODEL}"]
+    base_urls: ["https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1"]
+    models: ["GLM-5.2"]
     api_key: ${Z_SCOPE_API_KEY}
     base_url_max_concurrent_requests: 8
     max_tokens: 8192
-    max_retries: 4
-    retry_until_available: true
+    max_retries: 2
+    retry_until_available: false
+    require_exact_response_model: true
     timeout: 120
 
 project:

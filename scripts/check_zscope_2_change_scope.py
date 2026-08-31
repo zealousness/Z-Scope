@@ -39,7 +39,13 @@ def classify_path(path: str) -> str | None:
         "scripts/range_perf_",
         "scripts/score_",
     )
-    if value.startswith(scorer_prefixes):
+    scorer_paths = {
+        # This entry point is exclusively the bundled benchmark control plane;
+        # it never participates in a product scan. Classifying it with its
+        # implementation preserves product/scorer separation for protocol work.
+        "zscope/cli/benchmark.py",
+    }
+    if value in scorer_paths or value.startswith(scorer_prefixes):
         return "scorer"
 
     truth_paths = {

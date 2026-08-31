@@ -9,6 +9,7 @@ from scripts.check_zscope_2_change_scope import (
 def test_change_scope_classifies_governed_paths_without_overlap() -> None:
     assert classify_path("zscope/core/validation/runner.py") == "product"
     assert classify_path("zscope/benchmarking/protocol.py") == "scorer"
+    assert classify_path("zscope/cli/benchmark.py") == "scorer"
     assert classify_path("test/range/benchmark/ground_truth.json") == "truth_fixture"
     assert classify_path("test/range/benchmark/v16/ground_truth.json") == "truth_fixture"
     assert classify_path("test/range/benchmark/v16/pairs/CASE-001/manifest.json") == (

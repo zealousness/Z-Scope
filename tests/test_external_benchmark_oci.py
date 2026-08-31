@@ -35,6 +35,7 @@ class ExternalFakeOciRuntime:
         self.rootless = rootless
         self.scanner_name = ""
         self.run_argv: list[str] = []
+        self.scanner_environment: list[str] = []
         self.runtime_environment: dict[str, str] = {}
         self.config_text = ""
         self.entries_text = ""
@@ -85,7 +86,8 @@ class ExternalFakeOciRuntime:
                             "Labels": {
                                 "io.zscope.role": "model-endpoint-proxy",
                                 "io.zscope.network-policy-sha256": self.policy.policy_sha256,
-                            }
+                            },
+                            "Env": [],
                         },
                         "State": {"Running": True},
                         "NetworkSettings": {
@@ -102,6 +104,17 @@ class ExternalFakeOciRuntime:
             self.scanner_name = command[command.index("--name") + 1]
             self.run_argv = command
             self.runtime_environment = dict(kwargs.get("env") or {})
+            self.scanner_environment = []
+            for index, value in enumerate(command[:-1]):
+                if value != "--env":
+                    continue
+                specification = command[index + 1]
+                if "=" in specification:
+                    self.scanner_environment.append(specification)
+                else:
+                    self.scanner_environment.append(
+                        f"{specification}={self.runtime_environment.get(specification, '')}"
+                    )
             self.config_text = (self.scan_input / "zscope.execution.yaml").read_text(
                 encoding="utf-8"
             )
@@ -145,6 +158,7 @@ class ExternalFakeOciRuntime:
                                 "io.zscope.role": "scanner",
                                 "io.zscope.network-policy-sha256": self.policy.policy_sha256,
                             },
+                            "Env": list(self.scanner_environment),
                         },
                         "HostConfig": {
                             "ReadonlyRootfs": True,
@@ -352,6 +366,15 @@ def test_external_formal_executes_real_rootless_oci_contract_then_scores_on_host
     assert suite.as_posix() not in fake.compile_commands_text
     assert "ground_truth" not in fake.entries_text.lower()
     assert "GROUND_TRUTH_PATH" not in fake.runtime_environment
+    assert fake.runtime_environment["Z_SCOPE_API_KEY"] == "secret"
+    assert "secret" not in fake.run_argv
+    api_key_index = fake.run_argv.index("Z_SCOPE_API_KEY")
+    assert fake.run_argv[api_key_index - 1 : api_key_index + 1] == [
+        "--env",
+        "Z_SCOPE_API_KEY",
+    ]
+    assert "secret" not in json.dumps(summary)
+    assert "secret" not in (run_dir / "isolation.json").read_text(encoding="utf-8")
     mount_sources = {
         Path(row["source"]) for row in summary["isolation"]["mounts"] if isinstance(row, dict)
     }
