@@ -143,19 +143,22 @@ jobs:
           set -euo pipefail
           validate_authority() {
           set -euo pipefail
-          : "${Z_SCOPE_P6_API_KEY_FILE:?sealed runner must configure the key-file path}"
-          : "${Z_SCOPE_P6_FROZEN_TRACE_ROOT:?sealed runner must configure the trace root}"
-          : "${Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256:?sealed runner must configure the trace digest}"
-          : "${Z_SCOPE_P6_CANARY_SOURCE_ROOT:?sealed runner must configure the canary source root}"
-          : "${Z_SCOPE_P6_CANARY_SOURCE_TREE_SHA256:?sealed runner must configure the canary tree digest}"
-          : "${Z_SCOPE_P6_CANARY_COMPILE_COMMANDS:?sealed runner must configure compile_commands}"
-          : "${Z_SCOPE_P6_CANARY_COMPILE_COMMANDS_SHA256:?sealed runner must configure the compile_commands digest}"
-          : "${Z_SCOPE_P6_QUALIFICATION_HARNESS:?sealed runner must configure the qualification harness}"
-          : "${Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256:?sealed runner must configure the harness digest}"
-          : "${Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE:?sealed runner must configure the hidden bundle}"
-          : "${Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE_SHA256:?sealed runner must configure the hidden bundle digest}"
-          : "${Z_SCOPE_P6_SAFE_PAIR_BUNDLE:?sealed runner must configure the safe-pair bundle}"
-          : "${Z_SCOPE_P6_SAFE_PAIR_BUNDLE_SHA256:?sealed runner must configure the safe-pair digest}"
+          for required_name in \
+            Z_SCOPE_P6_API_KEY_FILE \
+            Z_SCOPE_P6_FROZEN_TRACE_ROOT \
+            Z_SCOPE_P6_FROZEN_TRACE_MANIFEST_SHA256 \
+            Z_SCOPE_P6_CANARY_SOURCE_ROOT \
+            Z_SCOPE_P6_CANARY_SOURCE_TREE_SHA256 \
+            Z_SCOPE_P6_CANARY_COMPILE_COMMANDS \
+            Z_SCOPE_P6_CANARY_COMPILE_COMMANDS_SHA256 \
+            Z_SCOPE_P6_QUALIFICATION_HARNESS \
+            Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256 \
+            Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE \
+            Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE_SHA256 \
+            Z_SCOPE_P6_SAFE_PAIR_BUNDLE \
+            Z_SCOPE_P6_SAFE_PAIR_BUNDLE_SHA256; do
+            test -n "${!required_name:-}" || return 2
+          done
           test -n "${Z_SCOPE_P6_API_KEY_FILE:-}"
           case "$Z_SCOPE_P6_API_KEY_FILE" in /*) ;; *) exit 2 ;; esac
           test -f "$Z_SCOPE_P6_API_KEY_FILE"
