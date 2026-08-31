@@ -38,6 +38,8 @@ def _regular_mode(monkeypatch: pytest.MonkeyPatch, path: Path, mode: int = 0o600
             st_dev=result.st_dev,
             st_ino=result.st_ino,
             st_size=result.st_size,
+            st_mtime_ns=result.st_mtime_ns,
+            st_ctime_ns=result.st_ctime_ns,
         )
 
     def fake_lstat(self: Path):
@@ -254,6 +256,8 @@ def test_explicit_api_key_file_rejects_symlink_nonregular_and_broad_mode(
                 st_dev=result.st_dev,
                 st_ino=result.st_ino,
                 st_size=result.st_size,
+                st_mtime_ns=result.st_mtime_ns,
+                st_ctime_ns=result.st_ctime_ns,
             )
 
         def fake_lstat(self: Path):
@@ -304,6 +308,28 @@ def test_p6_provider_config_rejects_duplicate_yaml_keys(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ProviderRuntimeError, match="unreadable"):
+        require_p6_provider_contract(config)
+
+
+def test_p6_provider_config_rejects_replacement_between_lstat_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "provider.yaml"
+    config.write_bytes(SPECS["c_cpp"].config_path.read_bytes())
+    original_open = provider_runtime.os.open
+    replaced = False
+
+    def replacing_open(target, flags, *args, **kwargs):
+        nonlocal replaced
+        if Path(target) == config and not replaced:
+            replaced = True
+            config.unlink()
+            config.write_bytes(SPECS["c_cpp"].config_path.read_bytes() + b"\n")
+        return original_open(target, flags, *args, **kwargs)
+
+    monkeypatch.setattr(provider_runtime.os, "open", replacing_open)
+
+    with pytest.raises(ProviderRuntimeError, match="changed during validation"):
         require_p6_provider_contract(config)
 
 
