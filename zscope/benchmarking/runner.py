@@ -172,6 +172,19 @@ class BenchmarkSpec:
     def truth_path(self) -> Path:
         return self.fixture_root / "benchmark" / "ground_truth.json"
 
+    def truth_path_for_mode(self, mode: str) -> Path:
+        """Select the governed scoring contract for one execution mode.
+
+        Historical trial/formal v4 runs remain bound to the repository-root
+        v15 truth.  P6 is a new, non-release qualification protocol and must
+        consume the independently attested v16 contract instead of inheriting
+        v15's static denominator and Arm-A release comparison.
+        """
+
+        if self.language == "c_cpp" and mode == "pilot":
+            return self.fixture_root / "benchmark" / "v16" / "ground_truth.json"
+        return self.truth_path
+
 
 SPECS = {
     "c_cpp": BenchmarkSpec(
@@ -838,7 +851,35 @@ def _range_gates_for_depth(
     return gates
 
 
-def _gate_c(score: Dict[str, Any], *, scan_depth: str = "balanced") -> List[str]:
+def _pilot_range_gates(scan_depth: str) -> Dict[str, Tuple[str, float]]:
+    """Return the non-release quality/accounting gates for one P6 pilot."""
+
+    gates = _range_gates_for_depth(scan_depth)
+    selected = {
+        name: contract
+        for name, contract in gates.items()
+        if name
+        in {
+            "median_tokens",
+            "per_run_tokens",
+            "provider_usage_coverage",
+            "explicit_attribution_coverage",
+            "queue_drained_rate",
+            "token_conservation_rate",
+            "telemetry_complete_rate",
+            "protocol_anomaly_count",
+        }
+    }
+    selected["median_with_review_recall"] = (">=", 0.85)
+    return selected
+
+
+def _gate_c(
+    score: Dict[str, Any],
+    *,
+    scan_depth: str = "balanced",
+    require_release_rule_qualification: bool = True,
+) -> List[str]:
     """Evaluate only invariants that must hold on every cold Range run.
 
     Median quality, cross-run stability, and the Arm-A comparison belong to
@@ -872,12 +913,14 @@ def _gate_c(score: Dict[str, Any], *, scan_depth: str = "balanced") -> List[str]
     ):
         failures.append("call-level LLM usage event ledger is missing")
     if (
-        requirements.get("require_qualified_default_rules_for_release")
+        require_release_rule_qualification
+        and requirements.get("require_qualified_default_rules_for_release")
         and int(score.get("default_enabled_unqualified_rule_count") or 0) > 0
     ):
         failures.append("default-enabled deterministic rules are not externally qualified")
     if (
-        requirements.get("require_qualified_default_rules_for_release")
+        require_release_rule_qualification
+        and requirements.get("require_qualified_default_rules_for_release")
         and score.get("rule_qualification_telemetry_present") is not True
     ):
         failures.append("rule qualification telemetry is missing")
@@ -1474,9 +1517,17 @@ def _provider_model_identity_metrics(
     rows: Sequence[Mapping[str, Any]],
     *,
     expected_model: str,
+    expected_response_model: Optional[str] = None,
+    expected_response_models: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Aggregate response identity without substituting the requested model."""
 
+    frozen_response_model = expected_response_model or expected_model
+    frozen_response_models = {
+        str(value).strip()
+        for value in (expected_response_models or (frozen_response_model,))
+        if str(value).strip()
+    }
     successful = [row for row in rows if row.get("outcome") == "success"]
     requested_mismatch = 0
     missing = 0
@@ -1491,7 +1542,7 @@ def _provider_model_identity_metrics(
             missing += 1
             continue
         present += 1
-        if response_model != expected_model:
+        if response_model not in frozen_response_models:
             mismatch += 1
     count = len(successful)
     return {
@@ -1511,6 +1562,7 @@ def _p6_usage_conservation(
     model_identity: Mapping[str, Any],
     decision_trace_artifact: Optional[Mapping[str, Any]],
     expected_model: str,
+    expected_response_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the answer-free P6 physical conservation projection.
 
@@ -1581,7 +1633,7 @@ def _p6_usage_conservation(
             ),
             6,
         ),
-        "response_model": expected_model,
+        "response_model": expected_response_model or expected_model,
         "response_model_coverage": float(
             model_identity.get("provider_response_model_coverage") or 0.0
         ),
@@ -1995,6 +2047,7 @@ def _run_trial_in_workspace(
     candidate_revision: Optional[str] = None,
 ) -> Dict[str, Any]:
     started = time.monotonic()
+    truth_path = spec.truth_path_for_mode(mode)
     scan_root = workspace / "scan-input"
     cache = workspace / "cache"
     cache_existed_before_run = cache.exists()
@@ -2234,7 +2287,7 @@ def _run_trial_in_workspace(
                 required=True,
                 capability=isolation_capability,
                 repository_checkout=repository_root(),
-                truth_paths=(spec.truth_path,),
+                truth_paths=(truth_path,),
             )
         except BenchmarkIsolationError as exc:
             if mode == "pilot":
@@ -2342,7 +2395,7 @@ def _run_trial_in_workspace(
         {PROVIDER_BASE_URL_ENVIRONMENT_KEY, PROVIDER_MODEL_ENVIRONMENT_KEY}
     ):
         truth_environment.pop(key, None)
-    truth_environment["Z_SCOPE_BENCHMARK_TRUTH"] = str(spec.truth_path.resolve())
+    truth_environment["Z_SCOPE_BENCHMARK_TRUTH"] = str(truth_path.resolve())
     score_path = run_dir / "score.json"
     score_argv = [
         python,
@@ -2366,6 +2419,8 @@ def _run_trial_in_workspace(
     model_identity = _provider_model_identity_metrics(
         usage_rows,
         expected_model=provider_contract.model,
+        expected_response_model=provider_contract.response_model,
+        expected_response_models=provider_contract.accepted_response_models,
     )
     score.update(model_identity)
     score.setdefault("scan_wall_seconds", round(phase_seconds["scan"], 6))
@@ -2399,9 +2454,18 @@ def _run_trial_in_workspace(
             model_identity=model_identity,
             decision_trace_artifact=decision_trace_artifact,
             expected_model=provider_contract.model,
+            expected_response_model=provider_contract.response_model,
         )
     _json_dump(score_path, score)
-    gate_failures = _gate_c(score, scan_depth=scan_depth) if spec.language == "c_cpp" else []
+    gate_failures = (
+        _gate_c(
+            score,
+            scan_depth=scan_depth,
+            require_release_rule_qualification=mode != "pilot",
+        )
+        if spec.language == "c_cpp"
+        else []
+    )
     if mode == "pilot" and (
         model_identity["provider_response_model_coverage"] != 1.0
         or model_identity["provider_response_model_missing_count"] != 0
@@ -2734,6 +2798,7 @@ def _aggregate(
     }
     commands = summaries[0].get("execution", {}) if summaries else {}
     formal = mode == "formal"
+    pilot = mode == "pilot"
     per_run_passed = bool(summaries) and all(
         summary.get("queue_empty") is True and not summary.get("gate_failures")
         for summary in summaries
@@ -2755,6 +2820,12 @@ def _aggregate(
         scan_depth,
         required_confirmed_tp=required_tp,
     )
+    if pilot:
+        # P6 is a one-run, non-release qualification.  It must expose both
+        # quality views, but gates the reviewable set without fabricating that
+        # needs-review findings have independent confirmation.  P7/formal
+        # retains dynamic confirmed-TP/recall and Arm-A requirements.
+        depth_gates = _pilot_range_gates(scan_depth)
     aggregate_gate_failures = _gate_metrics(aggregate_gate_metrics, depth_gates)
     if (
         formal
@@ -2769,7 +2840,7 @@ def _aggregate(
             "formal Range requires one consistent independently attested truth contract"
         )
     arm_a_binding = _aggregate_arm_a_binding(summaries)
-    if arm_a_binding.get("passed") is not True:
+    if not pilot and arm_a_binding.get("passed") is not True:
         aggregate_gate_failures.append("frozen Validator Arm-A baseline is missing or inconsistent")
     passed = per_run_passed and not aggregate_gate_failures
     sealed_gate_metrics = _aggregate_named_metrics(summaries, C_SEALED_GATES)
@@ -2883,6 +2954,7 @@ def _aggregate_range_gate_metrics(
     tp_values = values("confirmed_tp")
     token_values = values("tokens")
     recall_values = values("confirmed_recall")
+    with_review_recall_values = values("with_review_recall")
     fdr_deltas = values("actionable_fdr_delta_vs_arm_a_pp")
     provider_coverage = values("provider_usage_coverage")
     attribution_coverage = values("explicit_attribution_coverage")
@@ -2902,6 +2974,11 @@ def _aggregate_range_gate_metrics(
         ),
         "median_confirmed_recall": (
             float(statistics.median(recall_values)) if len(recall_values) == expected else 0.0
+        ),
+        "median_with_review_recall": (
+            float(statistics.median(with_review_recall_values))
+            if len(with_review_recall_values) == expected
+            else 0.0
         ),
         "median_tokens": (
             float(statistics.median(token_values)) if len(token_values) == expected else 0.0
@@ -3063,7 +3140,7 @@ def run_benchmark(
             ) from exc
     destination = (output or _default_output(language, mode)).resolve()
     destination.mkdir(parents=True, exist_ok=False)
-    _validate_truth(spec.truth_path)
+    _validate_truth(spec.truth_path_for_mode(mode))
     if mode == "smoke":
         scan_root = destination / "scan-input"
         manifest = copy_scan_input(spec.fixture_root, scan_root, language)

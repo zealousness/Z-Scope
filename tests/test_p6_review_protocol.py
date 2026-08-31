@@ -238,9 +238,9 @@ def _usage_conservation(calls: int) -> dict:
         "provider_reported_call_count": calls,
         "estimated_call_count": 0,
         "provider_usage_coverage": 1.0,
-        "requested_model": "GLM-5.2",
+        "requested_model": "deepseek-v4-flash",
         "requested_model_coverage": 1.0,
-        "response_model": "GLM-5.2",
+        "response_model": "deepseek-v4-flash-ga-260731",
         "response_model_coverage": 1.0,
         "queue_empty": True,
         "dimensions": {
@@ -291,7 +291,7 @@ def _qualification_for_role_projection() -> dict:
             "artifact_sha256": "d" * 64,
             "provider_identity_sha256": provider_identity,
             "config_sha256": "e" * 64,
-            "model": "GLM-5.2",
+            "model": "deepseek-v4-flash",
             "call_count": 1,
             "provider_usage_coverage": 1.0,
             "estimated_provider_call_count": 0,
@@ -325,7 +325,7 @@ def _qualification_for_role_projection() -> dict:
 def test_reviewer_identity_manifest_freezes_three_non_scanner_models() -> None:
     manifest = load_reviewer_identity_manifest()
 
-    assert manifest["scanner"] == {"model": "GLM-5.2", "review_eligible": False}
+    assert manifest["scanner"] == {"model": "deepseek-v4-flash", "review_eligible": False}
     assert manifest["reviewers"] == FROZEN_REVIEWER_IDENTITIES
     assert manifest["reviewers"]["product_architecture"]["model"] == "glm-5.3"
     assert manifest["reviewers"]["proof_security"]["model"] == "deepseek-v4-pro-0813"
@@ -380,7 +380,7 @@ def test_review_decision_requires_exact_role_identity_and_checks(tmp_path: Path)
     decision = _decision(packet, "proof_security")
     validate_review_decision(decision, packet=packet, role="proof_security")
 
-    decision["model"] = "GLM-5.2"
+    decision["model"] = "deepseek-v4-flash"
     with pytest.raises(P6ProtocolError, match="reviewer identity"):
         validate_review_decision(decision, packet=packet, role="proof_security")
 

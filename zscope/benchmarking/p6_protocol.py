@@ -21,6 +21,8 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Dict, Iterable, List, Mapping, NoReturn, Optional, Sequence, Tuple
 
+from zscope.benchmarking.provider_runtime import P6_PROVIDER_MODEL, P6_PROVIDER_RESPONSE_MODEL
+
 
 FAILURE_DIAGNOSTIC_SCHEMA_VERSION = "zscope.p6-failure-diagnostic.v1"
 CHECKPOINT_SCHEMA_VERSION = "zscope.p6-checkpoint.v1"
@@ -980,9 +982,9 @@ def zero_usage_conservation() -> Mapping[str, Any]:
         "provider_reported_call_count": 0,
         "estimated_call_count": 0,
         "provider_usage_coverage": 1.0,
-        "requested_model": "GLM-5.2",
+        "requested_model": P6_PROVIDER_MODEL,
         "requested_model_coverage": 1.0,
-        "response_model": "GLM-5.2",
+        "response_model": P6_PROVIDER_RESPONSE_MODEL,
         "response_model_coverage": 1.0,
         "queue_empty": True,
         "dimensions": {
@@ -1018,9 +1020,9 @@ def validate_usage_conservation(
         raise P6ProtocolError("P6 zero-call stage contains physical model calls")
     if (
         value.get("provider_usage_coverage") != 1.0
-        or value.get("requested_model") != "GLM-5.2"
+        or value.get("requested_model") != P6_PROVIDER_MODEL
         or value.get("requested_model_coverage") != 1.0
-        or value.get("response_model") != "GLM-5.2"
+        or value.get("response_model") != P6_PROVIDER_RESPONSE_MODEL
         or value.get("response_model_coverage") != 1.0
         or value.get("queue_empty") is not True
     ):
@@ -1075,7 +1077,7 @@ def combine_usage_conservation(rows: Sequence[Mapping[str, Any]]) -> Mapping[str
 
 
 def validate_provider_probe(value: Mapping[str, Any]) -> None:
-    """Validate the source-free physical GLM-5.2 provider probe."""
+    """Validate the source-free physical deepseek-v4-flash provider probe."""
 
     _expect_exact_fields(value, _PROVIDER_PROBE_FIELDS, name="P6 provider probe")
     if (
@@ -1086,7 +1088,7 @@ def validate_provider_probe(value: Mapping[str, Any]) -> None:
         or isinstance(value.get("call_count"), bool)
         or value.get("provider_usage_coverage") != 1.0
         or value.get("estimated_provider_call_count") != 0
-        or value.get("model") != "GLM-5.2"
+        or value.get("model") != P6_PROVIDER_MODEL
     ):
         raise P6ProtocolError("P6 provider probe invariants are invalid")
     _expect_sha256(value.get("provider_identity_sha256"), name="provider probe identity")
@@ -1106,7 +1108,7 @@ def provider_probe_projection(value: Mapping[str, Any], *, file_sha256: str) -> 
         "artifact_sha256": file_sha256,
         "provider_identity_sha256": value["provider_identity_sha256"],
         "config_sha256": value["config_sha256"],
-        "model": "GLM-5.2",
+        "model": P6_PROVIDER_MODEL,
         "call_count": 1,
         "provider_usage_coverage": 1.0,
         "estimated_provider_call_count": 0,
@@ -2189,7 +2191,7 @@ def validate_pilot_aggregate(
     if not isinstance(provider, Mapping):
         _pilot_failure("provider_identity_mismatch")
     if (
-        provider.get("model") != "GLM-5.2"
+        provider.get("model") != P6_PROVIDER_MODEL
         or provider.get("base_url")
         != "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1"
         or provider.get("required_environment_keys") != ["Z_SCOPE_API_KEY"]

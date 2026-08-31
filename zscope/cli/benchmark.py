@@ -10,7 +10,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Mapping, Optional
 
 from zscope.benchmarking.runner import (
     BenchmarkError,
@@ -63,6 +63,31 @@ def _score_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     return parser
+
+
+def _public_run_payload(
+    payload: Mapping[str, Any], *, mode: str, dry_run: bool
+) -> Mapping[str, Any]:
+    """Return the CLI-safe view of one benchmark result.
+
+    Pilot aggregates intentionally contain answer-bearing issue and scoring
+    material for the sealed artifact.  Printing that aggregate would copy it
+    into an operator terminal or workflow log.  Keep historical trial/formal
+    output compatibility, while making every non-dry-run pilot invocation
+    emit only fixed, answer-free completion fields.
+    """
+
+    if mode != "pilot" or dry_run:
+        return payload
+    return {
+        "schema_version": "zscope.p6-cli-summary.v1",
+        "mode": "pilot",
+        "scan_depth": payload.get("scan_depth"),
+        "completed": payload.get("all_completed") is True,
+        "passed": payload.get("passed") is True,
+        "formal_benchmark": False,
+        "release_eligible": False,
+    }
 
 
 def _wsl_argv(argv: List[str]) -> List[str]:
@@ -171,7 +196,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                 dry_run=args.dry_run,
                 scan_depth=args.scan_depth,
             )
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        public_payload = (
+            _public_run_payload(
+                payload,
+                mode=args.mode,
+                dry_run=bool(args.dry_run),
+            )
+            if args.command == "run"
+            else payload
+        )
+        print(json.dumps(public_payload, ensure_ascii=False, indent=2))
     except BenchmarkError as exc:
         if getattr(args, "command", "") == "run" and getattr(args, "mode", "") == "pilot":
             allowed = set(FAILURE_CLASS_TO_STAGE)

@@ -56,7 +56,11 @@ def _regular_mode(monkeypatch: pytest.MonkeyPatch, path: Path, mode: int = 0o600
 
 
 def _contract(config_path: Path) -> ProviderRuntimeContract:
-    profile = SimpleNamespace(base_urls=[RANGE_BASE_URL], models=["GLM-5.2"])
+    profile = SimpleNamespace(
+        base_urls=[RANGE_BASE_URL],
+        models=["deepseek-v4-flash"],
+        response_model_map={"deepseek-v4-flash": "deepseek-v4-flash-ga-260731"},
+    )
     return ProviderRuntimeContract.from_effective_config(
         SimpleNamespace(llm=profile, llms={"default": profile}),
         config_path=config_path,
@@ -78,23 +82,37 @@ def test_range_provider_config_is_exact_and_bounded() -> None:
 
     assert profile == {
         "base_urls": [RANGE_BASE_URL],
-        "models": ["GLM-5.2"],
+        "models": ["deepseek-v4-flash"],
+        "response_model_map": {"deepseek-v4-flash": "deepseek-v4-flash-ga-260731"},
         "api_key": "${Z_SCOPE_API_KEY}",
         "base_url_max_concurrent_requests": 8,
         "max_tokens": 8192,
         "max_retries": 2,
         "retry_until_available": False,
+        "supports_structured_output": False,
         "require_exact_response_model": True,
         "timeout": 120,
     }
     assert raw["concurrency"]["llm_max_inflight"] == 8
-    assert require_p6_provider_contract(SPECS["c_cpp"].config_path).model == "GLM-5.2"
+    assert require_p6_provider_contract(SPECS["c_cpp"].config_path).model == "deepseek-v4-flash"
+    assert (
+        require_p6_provider_contract(SPECS["c_cpp"].config_path).response_model
+        == "deepseek-v4-flash-ga-260731"
+    )
+    assert require_p6_provider_contract(SPECS["c_cpp"].config_path).accepted_response_models == (
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-ga-260731",
+    )
 
 
 @pytest.mark.parametrize(
     ("path", "value"),
     [
-        (("llms", "default", "models"), ["GLM-5.2-alias"]),
+        (("llms", "default", "models"), ["deepseek-v4-flash-alias"]),
+        (
+            ("llms", "default", "response_model_map"),
+            {"deepseek-v4-flash": "deepseek-v4-flash-ga-260731-alias"},
+        ),
         (("llms", "default", "base_urls"), ["https://example.invalid/v1"]),
         (("llms", "default", "api_key"), "${ANOTHER_KEY}"),
         (("llms", "default", "base_url_max_concurrent_requests"), 7),
@@ -103,6 +121,7 @@ def test_range_provider_config_is_exact_and_bounded() -> None:
         (("llms", "default", "max_retries"), 3),
         (("llms", "default", "max_retries"), 2.0),
         (("llms", "default", "retry_until_available"), True),
+        (("llms", "default", "supports_structured_output"), True),
         (("llms", "default", "timeout"), 121),
         (("llms", "default", "timeout"), 120.0),
         (("concurrency", "llm_max_inflight"), 7),
@@ -149,7 +168,8 @@ def test_provider_runtime_contract_binds_resolved_identity_and_config() -> None:
     payload = contract.as_dict()
 
     assert payload["base_url"] == RANGE_BASE_URL
-    assert payload["model"] == "GLM-5.2"
+    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["response_model"] == "deepseek-v4-flash-ga-260731"
     assert payload["required_environment_keys"] == ["Z_SCOPE_API_KEY"]
     assert len(payload["config_sha256"]) == 64
     assert len(payload["identity_sha256"]) == 64
@@ -184,7 +204,7 @@ def test_fixed_provider_rejects_only_conflicting_legacy_identity() -> None:
         contract,
         {
             "Z_SCOPE_LLM_BASE_URL": RANGE_BASE_URL,
-            "Z_SCOPE_LLM_MODEL": "GLM-5.2",
+            "Z_SCOPE_LLM_MODEL": "deepseek-v4-flash",
         },
     )
 
@@ -211,7 +231,7 @@ def test_explicit_api_key_file_accepts_only_comments_export_and_one_key(
 @pytest.mark.parametrize(
     "content, message",
     [
-        ("Z_SCOPE_LLM_MODEL=GLM-5.2\n", "unexpected provider credential key"),
+        ("Z_SCOPE_LLM_MODEL=deepseek-v4-flash\n", "unexpected provider credential key"),
         ("Z_SCOPE_API_KEY=one\nZ_SCOPE_API_KEY=two\n", "duplicate provider credential key"),
         ("Z_SCOPE_API_KEY=\n", "must not be empty"),
         ("Z_SCOPE_API_KEY='unterminated\n", "quoting is invalid"),
@@ -348,7 +368,7 @@ def test_p6_provider_contract_uses_one_frozen_config_snapshot(
 
     contract = require_p6_provider_contract(SPECS["c_cpp"].config_path)
 
-    assert contract.model == "GLM-5.2"
+    assert contract.model == "deepseek-v4-flash"
     assert calls == 1
 
 
@@ -517,7 +537,9 @@ def test_pilot_requires_exact_lowercase_candidate_commit_binding(
         benchmark_runner.run_benchmark("c_cpp", "pilot", output=tmp_path / "pilot")
 
 
-def _probe_payload(*, model: str = "GLM-5.2", include_usage: bool = True, finish="stop"):
+def _probe_payload(
+    *, model: str = "deepseek-v4-flash-ga-260731", include_usage: bool = True, finish="stop"
+):
     payload = {
         "model": model,
         "choices": [{"finish_reason": finish, "message": {"content": '{"ok":true}'}}],
@@ -544,10 +566,12 @@ def test_neutral_probe_validates_model_usage_and_never_returns_response_body() -
     result = probe_provider(contract, api_key="private", transport=transport)
 
     assert result["passed"] is True
-    assert result["model"] == "GLM-5.2"
+    assert result["model"] == "deepseek-v4-flash"
     assert result["provider_usage_coverage"] == 1.0
     assert result["estimated_provider_call_count"] == 0
     assert result["usage_conservation"]["physical_call_count"] == 1
+    assert result["usage_conservation"]["requested_model"] == "deepseek-v4-flash"
+    assert result["usage_conservation"]["response_model"] == "deepseek-v4-flash-ga-260731"
     assert result["usage_conservation"]["dimensions"]["token"] == {
         "numerator": 13,
         "denominator": 13,
@@ -557,6 +581,22 @@ def test_neutral_probe_validates_model_usage_and_never_returns_response_body() -
     assert captured["url"] == RANGE_BASE_URL + "/chat/completions"
     assert b"ground_truth" not in captured["body"]
     assert b"fixture" not in captured["body"]
+    assert json.loads(captured["body"])["max_tokens"] == 256
+
+
+def test_neutral_probe_accepts_the_exact_requested_gateway_alias() -> None:
+    contract = _contract(SPECS["c_cpp"].config_path)
+
+    result = probe_provider(
+        contract,
+        api_key="private",
+        transport=lambda _request, _timeout: ProviderProbeResponse(
+            status=200,
+            body=_probe_payload(model="deepseek-v4-flash"),
+        ),
+    )
+
+    assert result["passed"] is True
 
 
 def test_neutral_probe_redirect_handler_never_reissues_authorization() -> None:
@@ -613,7 +653,7 @@ def test_neutral_probe_classifies_http_status_without_body(status: int, failure_
         (
             json.dumps(
                 {
-                    "model": "GLM-5.2",
+                    "model": "deepseek-v4-flash-ga-260731",
                     "choices": [{"finish_reason": "stop", "message": {}}],
                     "usage": {
                         "prompt_tokens": 10,
@@ -627,7 +667,7 @@ def test_neutral_probe_classifies_http_status_without_body(status: int, failure_
         (
             json.dumps(
                 {
-                    "model": "GLM-5.2",
+                    "model": "deepseek-v4-flash-ga-260731",
                     "choices": [{"finish_reason": "stop", "message": {}}],
                     "usage": {
                         "prompt_tokens": -1,
@@ -642,7 +682,7 @@ def test_neutral_probe_classifies_http_status_without_body(status: int, failure_
         (
             json.dumps(
                 {
-                    "model": "GLM-5.2",
+                    "model": "deepseek-v4-flash-ga-260731",
                     "choices": [
                         {
                             "finish_reason": "stop",
@@ -659,7 +699,7 @@ def test_neutral_probe_classifies_http_status_without_body(status: int, failure_
             "provider_protocol_incompatible",
         ),
         (
-            b'{"model":"GLM-5.2","model":"alias-model",'
+            b'{"model":"deepseek-v4-flash-ga-260731","model":"alias-model",'
             b'"choices":[{"finish_reason":"stop","message":{}}],'
             b'"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}',
             "provider_protocol_incompatible",

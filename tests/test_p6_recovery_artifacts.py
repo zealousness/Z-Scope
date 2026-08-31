@@ -54,9 +54,9 @@ def _usage_conservation(calls: int = 3) -> dict[str, object]:
         "provider_reported_call_count": calls,
         "estimated_call_count": 0,
         "provider_usage_coverage": 1.0,
-        "requested_model": "GLM-5.2",
+        "requested_model": "deepseek-v4-flash",
         "requested_model_coverage": 1.0,
-        "response_model": "GLM-5.2",
+        "response_model": "deepseek-v4-flash-ga-260731",
         "response_model_coverage": 1.0,
         "queue_empty": True,
         "dimensions": {
@@ -87,7 +87,7 @@ def _provider_probe() -> dict[str, object]:
         "estimated_provider_call_count": 0,
         "provider_identity_sha256": "7" * 64,
         "config_sha256": "6" * 64,
-        "model": "GLM-5.2",
+        "model": "deepseek-v4-flash",
         "usage_conservation": usage,
     }
 
@@ -296,7 +296,7 @@ def _pilot_aggregate(
                 },
                 "provenance": {
                     "provider_runtime": {
-                        "model": "GLM-5.2",
+                        "model": "deepseek-v4-flash",
                         "base_url": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
                         "required_environment_keys": ["Z_SCOPE_API_KEY"],
                         "identity_sha256": "7" * 64,
@@ -866,9 +866,9 @@ def test_canary_receipt_binds_physical_provider_usage(tmp_path: Path) -> None:
         "provider_reported_call_count": 3,
         "estimated_call_count": 0,
         "provider_usage_coverage": 1.0,
-        "requested_model": "GLM-5.2",
+        "requested_model": "deepseek-v4-flash",
         "requested_model_coverage": 1.0,
-        "response_model": "GLM-5.2",
+        "response_model": "deepseek-v4-flash-ga-260731",
         "response_model_coverage": 1.0,
         "queue_empty": True,
         "dimensions": {

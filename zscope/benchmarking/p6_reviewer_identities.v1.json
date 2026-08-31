@@ -1,7 +1,7 @@
 {
   "schema_version": "zscope.p6-reviewer-identities.v1",
   "scanner": {
-    "model": "GLM-5.2",
+    "model": "deepseek-v4-flash",
     "review_eligible": false
   },
   "reviewers": {

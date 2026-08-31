@@ -43,7 +43,7 @@ python scripts/score_range_v5.py aggregate \
 
 ## 环境与门禁
 
-C/C++ trial/pilot/formal 需要 Linux 用户态以及 CMake、clangd、gclang、get-bc、LLVM、SVF/Saber 全工具链。Range 的 source-controlled provider contract 固定为 `https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1` 与精确模型 ID `GLM-5.2`，配置只引用 `Z_SCOPE_API_KEY`，不接受 Base URL 或模型环境变量覆盖。任何深度工具缺失都会失败，不允许以降级结果形成 unified 结论。
+C/C++ trial/pilot/formal 需要 Linux 用户态以及 CMake、clangd、gclang、get-bc、LLVM、SVF/Saber 全工具链。Range 的 source-controlled provider contract 固定为 `https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1` 与精确请求模型 ID `deepseek-v4-flash`。网关可能逐调用返回同一个精确请求身份 `deepseek-v4-flash`，也可能返回精确版本化部署身份 `deepseek-v4-flash-ga-260731`；二者构成配置绑定的封闭响应身份集合，其他值一律拒绝。真实中性探针确认该部署虽然接受 `response_format/json_schema`，却不能稳定遵循完整 Validator 对象契约；因此 Validator 固定使用强制 function-tool schema，并把 candidate、cluster、pass 与 evidence-reference allow-list 直接绑定到每次调用的 schema。一次 answer-free contract regeneration 是唯一允许的格式恢复边界，不得回传首次响应正文或无界重试。若同一部署已经有成功调用后孤立返回 HTTP 400，runtime 只允许对 byte-identical request 做一次有界重试；首次即 400 或相同请求连续两次 400 均按 provider protocol 不兼容 fail closed，不能改写 schema、Prompt 或输入规避。配置只引用 `Z_SCOPE_API_KEY`，不接受 Base URL 或模型环境变量覆盖，也不接受前缀、模糊别名或未登记的响应模型。任何深度工具缺失都会失败，不允许以降级结果形成 unified 结论。
 
 首次执行前应在**实际运行 benchmark 的 Linux/WSL shell** 中完成以下 bootstrap。示例路径对应 README 中的 SVF 3.2/LLVM 18 安装布局；自定义安装必须换成实际路径：
 
@@ -65,6 +65,8 @@ export Z_SCOPE_API_KEY='your-secret-from-a-secret-store'
 ```
 
 通用 `zscope-benchmark` 不会搜索或自动读取 `test/range/zscope.local.env`。trial/formal 若由操作者加载该未跟踪文件，文件只应包含 `Z_SCOPE_API_KEY`。P6 `pilot` 不读取进程中已有的 key，而要求 runner 级 `Z_SCOPE_P6_API_KEY_FILE` 指向绝对路径；显式文件解析器通过 no-follow 单一文件描述符读取，只接受一个非空 `Z_SCOPE_API_KEY`（允许空行、注释和可选 `export`），并拒绝额外/重复键、symlink、非普通文件、读取期间替换和过宽权限。sealed runner 上该文件必须位于 Linux/WSL 原生私有文件系统并设为 `0600`；Windows/DrvFS 上的仓库文件不能直接作为凭据文件，必须由受控步骤复制到 WSL 原生私有路径并收紧权限。真实 bearer 只临时进入受控 OCI `run` 子进程环境，并通过不含值的 `--env Z_SCOPE_API_KEY` 复制到 scanner 环境；不得写入 argv、`$GITHUB_ENV`、挂载的 env 文件、原始日志或 artifact。preflight、inspect 和 cleanup 子进程不得继承 bearer。
+
+非 dry-run 的 `pilot` CLI 成功终态只向 stdout 输出固定的 `zscope.p6-cli-summary.v1` 完成摘要；包含 issue、评分和调用明细的完整 aggregate 只保留在显式输出目录的 `aggregate.json` 中，不得复制到操作者或 Actions 日志。trial/formal 的既有 JSON stdout 接口保持兼容。
 
 运行前执行 preflight；每个命令都必须成功，`ldd` 不能出现 `not found`：
 
@@ -208,7 +210,17 @@ P6 不合并不同 attempt 的 usage、trace、指标或 wall time，也不能�
 一次 cold producer。只有内容、lineage 和文件 SHA-256 全部重新校验的 complete checkpoint 可以做一次
 byte-exact、zero-call finalize。
 
-执行顺序固定为：E0/候选/配置准入；无源码和 fixture 的 GLM-5.2 单调用探针；Linux 工具链、
+P6 的质量门禁使用显式 `with_review` 视图：单次 cold depth 的
+`median_with_review_recall` 必须至少为 85%，同时仍要求 provider usage、归因、队列排空、token 守恒、
+telemetry 和协议异常门禁全部通过。P6 artifact 仍同时报告 confirmed 与 with-review 两种视图，但不会把
+`needs_review` 伪装为独立确认，也不会用 `median_confirmed_tp`/`median_confirmed_recall` 阻塞这个
+non-release pilot。动态 confirmed TP/recall、Arm-A delta、五轮稳定性和发布资格只属于 P7 formal；
+safe/fixed/near-miss 中的 false confirmation 仍是 P6 的零容忍 soundness blocker。
+本次 Hunter concurrency、Prompt 或 Proof Catalog 变化由确定性
+`qualification-artifact.v2.json` 重新执行 120 个 answer-isolated P4 单元；历史
+`qualification-artifact.json` 继续只读保留并维持既有 P4 review lineage，不能用新 artifact 改写旧审核。
+
+执行顺序固定为：E0/候选/配置准入；无源码和 fixture 的 deepseek-v4-flash 单调用探针；Linux 工具链、
 动态库、rootless OCI 和 cold-cache preflight；零模型 policy replay 与 certificate reverify；匿名
 P2/P3/P4 qualification；safe/fixed/near-miss 双侧验证；EvidenceAction canary；cold fast、balanced、
 deep；守恒和 qualification seal；最后依次执行三名互相隔离的独立审核。任一步失败，后续步骤都必须
@@ -226,7 +238,7 @@ run 目录、`scan-input`、日志、raw report、`model_events` 或 scored Trut
 producer/content hash、provider identity、usage/model-identity coverage、守恒、队列和 V3 到达计数。
 上传前必须执行路径、symlink、ZIP、secret、source、fixture、expected、Truth、Prompt/response 和
 scanner-model-output canary。qualification 只选择同一 attempt 的 fast/balanced/deep producer，并要求
-物理 usage events 对每次成功调用证明 requested model 和 provider response model 均精确为 `GLM-5.2`，
+物理 usage events 对每次成功调用分别证明 requested model 精确为 `deepseek-v4-flash`、provider response model 属于配置绑定的精确集合 `{deepseek-v4-flash, deepseek-v4-flash-ga-260731}`，
 identity coverage 为 1，missing/mismatch/estimated call 均为 0。
 
 受保护 runner 还必须独立配置冻结 trace、canary source tree/compile commands、qualification harness、
@@ -236,7 +248,7 @@ hidden holdout、safe pair 和 EvidenceAction canary 必须由受保护 runner �
 绑定的 harness 对当前 candidate 在 OCI 中真实执行并输出严格聚合 receipt；host control plane 只做
 answer-free prepare/revalidation，不能直接 import candidate scanner 或拿 scanner key 执行 candidate
 Python。任意预制 `passed:true` receipt 不被接受。每个含模型的
-receipt 都必须给出 GLM-5.2 requested/response identity、物理/provider-reported/estimated call、token、
+receipt 都必须给出 deepseek-v4-flash requested/response identity、物理/provider-reported/estimated call、token、
 tool、trace、finding、terminal 与 queue 的完整守恒。canary source 在 prepare 与模型调用之间再次做
 link-free canonical tree hash，比对成功后才运行。
 
@@ -257,7 +269,7 @@ schema、group 和 repository 列举，再逐容器 inspect 校验完整 ID、�
 三名独立 reviewer 的冻结身份分别是 Claude Code `2.1.233` + `glm-5.3` high、DSH
 `0.1.0-rc.6` + `deepseek-v4-pro-0813` max，以及 Codex CLI `0.144.4` +
 `gpt-5.6-sol` xhigh。每个模型调用前必须以 CLI `--version` 精确验证 harness；scanner 的
-GLM-5.2 不能签审。三份 packet 共享 qualification/evidence root，但各自只嵌入本角色需要的、严格
+deepseek-v4-flash 扫描器不能签审。三份 packet 共享 qualification/evidence root，但各自只嵌入本角色需要的、严格
 UTF-8 JSON、内容和 SHA-256 双绑定 evidence，不依赖 shell 或文件工具读取。packet 递归拒绝 secret、
 source、fixture、expected、Truth、Prompt/response、scanner model output、其他 reviewer decision 和
 隐藏 reasoning。初次非零仅允许一次同命令 transport retry；严格 contract regeneration 和
