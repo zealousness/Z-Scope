@@ -1,0 +1,117 @@
+name: Validate P6 sanitized artifact with live scanner canary
+description: Run the trusted control-plane answer-free validator without exposing the key.
+inputs:
+  paths:
+    description: Newline-separated artifact files relative to the control checkout
+    required: true
+  stage:
+    description: Fixed P6 stage used by the public typed failure annotation
+    required: true
+  require-key:
+    description: Require and scan the live scanner secret (false only for credential-failure evidence)
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Validate strict schemas and reject the live scanner secret
+      shell: bash
+      working-directory: ${{ github.workspace }}/control
+      env:
+        P6_SANITIZED_ARTIFACT_PATHS: ${{ inputs.paths }}
+        P6_SANITIZED_ARTIFACT_STAGE: ${{ inputs.stage }}
+        P6_SANITIZED_ARTIFACT_REQUIRE_KEY: ${{ inputs.require-key }}
+      run: |
+        set -euo pipefail
+        if ! python3 - <<'PY' >/dev/null 2>&1
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        from scripts.validate_p6_artifact_tree import (
+            discover_regular_files,
+            revalidate_regular_file,
+        )
+        from zscope.benchmarking.provider_runtime import load_explicit_api_key_file
+
+        control = Path.cwd().resolve()
+        paths = discover_regular_files(
+            control, os.environ["P6_SANITIZED_ARTIFACT_PATHS"].splitlines()
+        )
+        child = {
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": str(control),
+        }
+        command_suffix = []
+        literal_canaries = []
+        require_key = os.environ["P6_SANITIZED_ARTIFACT_REQUIRE_KEY"] == "true"
+        if require_key:
+            key_file = Path(os.environ["Z_SCOPE_P6_API_KEY_FILE"])
+            scanner_environment = load_explicit_api_key_file(key_file)
+            child.update(scanner_environment)
+            literal_canaries.extend(scanner_environment.values())
+            command_suffix = ["--canary-env", "Z_SCOPE_API_KEY"]
+        elif os.environ["P6_SANITIZED_ARTIFACT_REQUIRE_KEY"] != "false":
+            raise SystemExit(2)
+        literal_canaries.extend(
+            value
+            for name in (
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "DEEPSEEK_API_KEY",
+                "CODEX_API_KEY",
+                "OPENAI_API_KEY",
+            )
+            if (value := os.environ.get(name))
+        )
+        for path in paths:
+            path = revalidate_regular_file(control, path)
+            before = path.lstat()
+            payload = path.read_bytes()
+            path = revalidate_regular_file(control, path)
+            after = path.lstat()
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                raise SystemExit(2)
+            if any(canary.encode("utf-8") in payload for canary in literal_canaries):
+                raise SystemExit(2)
+            relative = path.relative_to(control).as_posix()
+            # Reviewer packet/decision/raw-envelope files have their own strict
+            # validator. In particular, the raw envelope intentionally contains
+            # one bounded `stdout` decision string, which the generic answer-free
+            # key gate must not reinterpret as hidden model output.
+            if "/payload/reviews/" in f"/{relative}":
+                continue
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/p6_pilot_protocol.py",
+                    "validate-answer-free",
+                    "--input",
+                    str(path),
+                    *command_suffix,
+                ],
+                cwd=control,
+                env=child,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise SystemExit(2)
+        PY
+        then
+          echo "::error::stage=${P6_SANITIZED_ARTIFACT_STAGE}; class=artifact_integrity_failure:1; count=1"
+          exit 2
+        fi

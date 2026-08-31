@@ -1,0 +1,39 @@
+{
+  "schema_version": "zscope.p6-reviewer-identities.v1",
+  "scanner": {
+    "model": "GLM-5.2",
+    "review_eligible": false
+  },
+  "reviewers": {
+    "product_architecture": {
+      "harness": "claude-code",
+      "harness_version": "2.1.233",
+      "provider": "claude-code",
+      "model": "glm-5.3",
+      "reasoning_effort": "high",
+      "permission_mode": "read-only",
+      "shell_enabled": false,
+      "route_config_contract": "sealed-e0-route-snapshot-sha256"
+    },
+    "proof_security": {
+      "harness": "dsh",
+      "harness_version": "0.1.0-rc.6",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro-0813",
+      "reasoning_effort": "max",
+      "permission_mode": "read-only",
+      "shell_enabled": false,
+      "route_config_contract": "sealed-e0-route-snapshot-sha256"
+    },
+    "independent_benchmark": {
+      "harness": "codex-cli",
+      "harness_version": "0.144.4",
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "xhigh",
+      "permission_mode": "read-only-ephemeral",
+      "shell_enabled": false,
+      "route_config_contract": "explicit-strict-cli-flags-and-sealed-login"
+    }
+  }
+}

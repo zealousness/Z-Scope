@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -118,6 +119,116 @@ def test_java_scan_input_rejects_answer_metadata(tmp_path: Path) -> None:
         copy_scan_input(source, tmp_path / "scan", "java")
 
 
+def test_scan_input_rejects_source_symlinks(tmp_path: Path) -> None:
+    source = tmp_path / "fixture"
+    (source / "src").mkdir(parents=True)
+    outside = tmp_path / "outside.c"
+    outside.write_text("int secret(void) { return 1; }\n", encoding="utf-8")
+    try:
+        (source / "src" / "linked.c").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+    (source / "CMakeLists.txt").write_text("project(test C)\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkError, match="symbolic link"):
+        copy_scan_input(source, tmp_path / "scan", "c_cpp")
+
+
+def test_p6_runtime_source_snapshot_binds_python_and_non_python_assets(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "candidate" / "zscope"
+    source.mkdir(parents=True)
+    (source / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+    (source / "runtime_defaults.yaml").write_text("version: 1\n", encoding="utf-8")
+    (source / "AGENT.md").write_text("frozen prompt\n", encoding="utf-8")
+    first = tmp_path / "sealed-first"
+    first_digest = benchmark_runner.prepare_p6_runtime_source(first, source_root=source)
+
+    (source / "runtime_defaults.yaml").write_text("version: 2\n", encoding="utf-8")
+    second = tmp_path / "sealed-second"
+    second_digest = benchmark_runner.prepare_p6_runtime_source(second, source_root=source)
+
+    assert first_digest != second_digest
+    assert (first / "AGENT.md").read_text(encoding="utf-8") == "frozen prompt\n"
+    assert not any(path.is_symlink() for path in first.rglob("*"))
+
+
+def test_p6_runtime_source_is_materialized_from_the_bound_git_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    package = repository / "zscope"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+    (package / "runtime_defaults.yaml").write_text("version: committed\n", encoding="utf-8")
+    for command in (
+        ("git", "init", "--quiet"),
+        ("git", "add", "zscope"),
+        (
+            "git",
+            "-c",
+            "user.name=P6 Test",
+            "-c",
+            "user.email=p6@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "candidate",
+        ),
+    ):
+        subprocess.run(command, cwd=repository, check=True)
+    revision = subprocess.check_output(
+        ("git", "rev-parse", "HEAD"), cwd=repository, text=True
+    ).strip()
+    (package / "runtime_defaults.yaml").write_text("version: dirty\n", encoding="utf-8")
+    monkeypatch.setattr(benchmark_runner, "repository_root", lambda: repository)
+
+    sealed = tmp_path / "sealed"
+    benchmark_runner.prepare_p6_runtime_source(sealed, git_revision=revision)
+
+    assert (sealed / "runtime_defaults.yaml").read_text(encoding="utf-8") == (
+        "version: committed\n"
+    )
+
+
+def test_p6_runtime_source_rejects_a_raw_tree_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    package = repository / "zscope"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+    for command in (
+        ("git", "init", "--quiet"),
+        ("git", "add", "zscope"),
+        (
+            "git",
+            "-c",
+            "user.name=P6 Test",
+            "-c",
+            "user.email=p6@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "candidate",
+        ),
+    ):
+        subprocess.run(command, cwd=repository, check=True)
+    tree = subprocess.check_output(
+        ("git", "rev-parse", "HEAD^{tree}"), cwd=repository, text=True
+    ).strip()
+    monkeypatch.setattr(benchmark_runner, "repository_root", lambda: repository)
+
+    with pytest.raises(BenchmarkError, match="p6_runtime_source_invalid") as raised:
+        benchmark_runner.prepare_p6_runtime_source(
+            tmp_path / "sealed",
+            git_revision=tree,
+        )
+
+    assert raised.value.failure_class == "input_binding_failure"
+
+
 def test_trial_is_exactly_one_and_formal_requires_five() -> None:
     with pytest.raises(BenchmarkError, match="exactly one"):
         run_benchmark("java", "trial", runs=2, dry_run=True)
@@ -143,6 +254,39 @@ def test_trial_aggregate_never_marks_nested_run_release_eligible() -> None:
 
     assert aggregate["release_eligible"] is False
     assert aggregate["runs"][0]["release_eligible"] is False
+
+
+def test_pilot_aggregate_binds_the_selected_candidate_revision(monkeypatch) -> None:
+    selected = "a" * 40
+    tree = "b" * 40
+    observed: list[str | None] = []
+    monkeypatch.setattr(
+        benchmark_runner,
+        "_git_identity",
+        lambda revision=None: (observed.append(revision) or selected, tree),
+    )
+    summary = {
+        "run": 1,
+        "completed": True,
+        "release_eligible": False,
+        "queue_empty": True,
+        "gate_failures": [],
+        "sealed_gate_failures": [],
+        "metrics": {"recall": 1.0},
+        "phase_seconds": {"total": 1.0},
+        "execution": {},
+    }
+
+    aggregate = _aggregate(
+        SPECS["c_cpp"],
+        [summary],
+        "pilot",
+        git_revision=selected,
+    )
+
+    assert observed == [selected]
+    assert aggregate["git_sha"] == selected
+    assert aggregate["git_tree"] == tree
 
 
 def test_individual_run_release_eligibility_requires_formal_mode_and_gates() -> None:
@@ -233,6 +377,141 @@ def test_failed_trial_archives_partial_trace_before_workspace_cleanup(
         "llm_usage_events_deadbeef.jsonl",
     }
     assert (artifact / "interrupted-diagnostics" / "decision_traces" / "VAL_1.json").is_file()
+
+
+def test_failed_pilot_archives_only_answer_free_usage_aggregates(
+    monkeypatch, tmp_path: Path
+) -> None:
+    work_parent = tmp_path / "native-work"
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
+    canary = "P6_MODEL_OUTPUT_CANARY"
+
+    def fake_run(spec, run_dir, run_number, *, mode, workspace, scan_depth):
+        trace_root = workspace / "cache" / "project" / ".zscope_snapshots"
+        (trace_root / "model_events").mkdir(parents=True)
+        (trace_root / "model_events" / "event.json").write_text(
+            json.dumps({"model_output": canary}), encoding="utf-8"
+        )
+        event = _usage_event()
+        event["provider_response_model"] = "glm-5.1"
+        (trace_root / "llm_usage_events_deadbeef.jsonl").write_text(
+            json.dumps(event) + "\n", encoding="utf-8"
+        )
+        raise BenchmarkError("scan interrupted")
+
+    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fake_run)
+
+    with pytest.raises(BenchmarkError, match="scan interrupted"):
+        benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="pilot")
+
+    payload_text = (artifact / "interrupted-diagnostics.json").read_text(encoding="utf-8")
+    payload = json.loads(payload_text)
+    assert payload["schema_version"] == "zscope.p6-interrupted-diagnostics.v1"
+    assert payload["event_count"] == 1
+    assert payload["provider_response_model_present_count"] == 1
+    assert payload["answer_material_present"] is False
+    assert canary not in payload_text
+    assert not (artifact / "interrupted-diagnostics").exists()
+
+
+def test_provider_model_identity_metrics_never_fallback_to_requested_model() -> None:
+    exact = _usage_event(sequence=1, reservation_id="call-1")
+    exact["model"] = "GLM-5.2"
+    exact["requested_model"] = "GLM-5.2"
+    exact["provider_response_model"] = "GLM-5.2"
+    missing = _usage_event(sequence=2, reservation_id="call-2")
+    missing["model"] = "GLM-5.2"
+    missing["requested_model"] = "GLM-5.2"
+    mismatch = _usage_event(sequence=3, reservation_id="call-3")
+    mismatch["model"] = "GLM-5.2"
+    mismatch["requested_model"] = "GLM-5.2"
+    mismatch["provider_response_model"] = "alias-model"
+
+    metrics = benchmark_runner._provider_model_identity_metrics(
+        [exact, missing, mismatch], expected_model="GLM-5.2"
+    )
+
+    assert metrics == {
+        "provider_response_model_coverage": 0.666667,
+        "provider_response_model_missing_count": 1,
+        "provider_response_model_mismatch_count": 1,
+        "requested_model_mismatch_count": 0,
+        "provider_response_model_successful_call_count": 3,
+    }
+
+
+def test_p6_usage_conservation_recomputes_every_physical_dimension() -> None:
+    rows = [
+        {
+            "outcome": "success",
+            "requested_model": "GLM-5.2",
+            "provider_response_model": "GLM-5.2",
+            "total_tokens": 15,
+            "tool_call_count": 1,
+        },
+        {
+            "outcome": "success",
+            "requested_model": "GLM-5.2",
+            "provider_response_model": "GLM-5.2",
+            "total_tokens": 17,
+            "tool_call_count": 2,
+        },
+    ]
+    report = {
+        "issues": [{"validation_cluster_uid": "cluster-1", "finding_root_uid": "root-1"}],
+        "issues_with_needs_review": [],
+        "candidate_terminal_states": [
+            {
+                "validation_cluster_uid": "cluster-1",
+                "terminal_event_uid": "terminal-1",
+                "terminal_authority": "zscope.proof-checker",
+            },
+            {
+                "validation_cluster_uid": "cluster-2",
+                "terminal_event_uid": "terminal-2",
+                "terminal_authority": "zscope.proof-checker",
+            },
+        ],
+        "run_manifest": {"finding_root_count": 1},
+    }
+    score = {
+        "queue_empty": True,
+        "usage_accounting": {
+            "call_count": 2,
+            "provider_reported_call_count": 2,
+            "provider_usage_coverage": 1.0,
+            "totals": {
+                "total_tokens": 32,
+                "tool_call_count": 3,
+                "estimated_or_conservative_calls": 0,
+            },
+        },
+    }
+    identity = benchmark_runner._provider_model_identity_metrics(rows, expected_model="GLM-5.2")
+
+    result = benchmark_runner._p6_usage_conservation(
+        report=report,
+        score=score,
+        usage_rows=rows,
+        model_identity=identity,
+        decision_trace_artifact={"trace_count": 2, "complete": True},
+        expected_model="GLM-5.2",
+    )
+
+    assert all(row["conserved"] for row in result["dimensions"].values())
+    assert result["physical_call_count"] == result["provider_reported_call_count"] == 2
+
+    tampered = benchmark_runner._p6_usage_conservation(
+        report=report,
+        score=score,
+        usage_rows=rows,
+        model_identity=identity,
+        decision_trace_artifact={"trace_count": 1, "complete": True},
+        expected_model="GLM-5.2",
+    )
+    assert tampered["dimensions"]["trace"]["conserved"] is False
 
 
 def test_score_exposes_confirmed_and_with_review_views(monkeypatch, tmp_path: Path) -> None:
@@ -543,6 +822,19 @@ def test_usage_event_sidecar_rejects_sparse_or_unknown_v1_fields(tmp_path: Path)
         benchmark_runner._read_usage_events_jsonl(path)
 
 
+def test_usage_event_sidecar_accepts_legacy_v1_without_response_identity(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "usage.jsonl"
+    event = _usage_event()
+    event["schema_version"] = "zscope.llm-usage-event.v1"
+    event.pop("requested_model")
+    event.pop("provider_response_model")
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    assert benchmark_runner._read_usage_events_jsonl(path) == [event]
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
@@ -680,6 +972,10 @@ def test_current_java_entries_have_no_answer_fields() -> None:
 
 def test_cpp_run_restarts_inside_wsl_on_windows(monkeypatch) -> None:
     captured = {}
+    monkeypatch.setenv("Z_SCOPE_API_KEY", "secret")
+    monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "https://legacy.invalid/v1")
+    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "legacy-model")
+    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", r"C:\benchmark-work")
     monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
         benchmark_cli.subprocess,
@@ -703,3 +999,111 @@ def test_cpp_run_restarts_inside_wsl_on_windows(monkeypatch) -> None:
     assert captured["argv"][:3] == ["wsl", "bash", "-lc"]
     assert "Z_SCOPE_BENCHMARK_IN_WSL" in captured["env"]["WSLENV"]
     assert "Z_SCOPE_BENCHMARK_WORK_ROOT/p" in captured["env"]["WSLENV"]
+    assert "Z_SCOPE_API_KEY" in captured["env"]["WSLENV"]
+    assert "Z_SCOPE_LLM_BASE_URL" not in captured["env"]["WSLENV"]
+    assert "Z_SCOPE_LLM_MODEL" not in captured["env"]["WSLENV"]
+
+
+def test_cpp_pilot_forwards_only_explicit_key_file_to_wsl(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        benchmark_cli.subprocess,
+        "check_output",
+        lambda *args, **kwargs: "/mnt/c/work/Z-Scope\n",
+    )
+    monkeypatch.setenv("Z_SCOPE_API_KEY", "must-not-be-forwarded")
+    monkeypatch.setenv(
+        "Z_SCOPE_LLM_BASE_URL",
+        "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
+    )
+    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "GLM-5.2")
+    monkeypatch.setenv("Z_SCOPE_P6_API_KEY_FILE", r"C:\private\zscope.local.env")
+    monkeypatch.setenv("Z_SCOPE_P6_CANDIDATE_COMMIT", "a" * 40)
+    monkeypatch.setenv("WSLENV", "Z_SCOPE_API_KEY:UNRELATED_SECRET/p")
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(benchmark_cli.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit) as exit_info:
+        benchmark_cli.main(["run", "--language", "c_cpp", "--mode", "pilot"])
+
+    assert exit_info.value.code == 0
+    wslenv = captured["env"]["WSLENV"]
+    assert "Z_SCOPE_P6_API_KEY_FILE/p" in wslenv
+    assert "Z_SCOPE_P6_CANDIDATE_COMMIT" in wslenv
+    assert "Z_SCOPE_API_KEY" not in wslenv
+    assert "Z_SCOPE_LLM_BASE_URL" not in wslenv
+    assert "Z_SCOPE_LLM_MODEL" not in wslenv
+    assert "UNRELATED_SECRET" not in wslenv
+    assert "Z_SCOPE_API_KEY" not in captured["env"]
+    assert "Z_SCOPE_LLM_BASE_URL" not in captured["env"]
+    assert "Z_SCOPE_LLM_MODEL" not in captured["env"]
+
+
+def test_cpp_pilot_rejects_conflicting_identity_before_wsl_dispatch(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "legacy-model")
+    monkeypatch.setenv("Z_SCOPE_P6_API_KEY_FILE", r"C:\private\zscope.local.env")
+    called = False
+
+    def fake_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(benchmark_cli.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit) as exit_info:
+        benchmark_cli.main(["run", "--language", "c_cpp", "--mode", "pilot"])
+
+    assert exit_info.value.code == 2
+    assert capsys.readouterr().err == (
+        "stage=provider; class=provider_identity_override_attempt:1; count=1\n"
+    )
+    assert called is False
+
+
+def test_pilot_cli_never_surfaces_untyped_failure_body(monkeypatch, capsys) -> None:
+    canary = "P6_UNTYPED_FAILURE_SECRET_CANARY"
+    monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Linux")
+    monkeypatch.delenv("Z_SCOPE_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("Z_SCOPE_LLM_MODEL", raising=False)
+    monkeypatch.setattr(
+        benchmark_cli,
+        "run_benchmark",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(BenchmarkError(canary)),
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        benchmark_cli.main(["run", "--language", "c_cpp", "--mode", "pilot"])
+
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    assert error == "stage=artifact_seal; class=internal_failure:1; count=1\n"
+    assert canary not in error
+
+
+def test_pilot_cli_preserves_a_typed_input_binding_failure(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(benchmark_cli.platform, "system", lambda: "Linux")
+    monkeypatch.delenv("Z_SCOPE_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("Z_SCOPE_LLM_MODEL", raising=False)
+    monkeypatch.setattr(
+        benchmark_cli,
+        "run_benchmark",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            BenchmarkError(
+                "private input detail",
+                failure_class="input_binding_failure",
+            )
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        benchmark_cli.main(["run", "--language", "c_cpp", "--mode", "pilot"])
+
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    assert error == "stage=entry_input; class=input_binding_failure:1; count=1\n"

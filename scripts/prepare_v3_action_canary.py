@@ -43,6 +43,25 @@ def _sha(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
+def _sealed_source_tree_sha256(root: Path) -> str:
+    """Bind every regular source-tree byte while rejecting symlink substitution."""
+
+    root = root.resolve()
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        if path.is_symlink():
+            raise DecisionTraceError("canary source snapshot contains a symlink")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        payload = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
 def _json(path: Path) -> Dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -270,6 +289,7 @@ def prepare_canary(
         "schema_version": "zscope.v3-action-canary-preflight.v1",
         "trace_manifest_sha256": str(manifest.get("manifest_sha256") or ""),
         "trace_manifest_complete": manifest.get("complete") is True,
+        "sealed_source_tree_sha256": _sealed_source_tree_sha256(source_root),
         "source_root_sha256": _sha(source_hashes),
         "source_file_sha256": dict(sorted(source_hashes.items())),
         "compile_commands_sha256": hashlib.sha256(compile_commands_path.read_bytes()).hexdigest(),

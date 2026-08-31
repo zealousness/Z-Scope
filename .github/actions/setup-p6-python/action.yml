@@ -1,0 +1,29 @@
+name: Bind P6 Python to the immutable control-plane checkout
+description: Install the hash-locked Python 3.13 runtime and an explicit trusted checkout without dependency drift.
+
+inputs:
+  checkout-path:
+    description: Workspace-relative immutable control-plane checkout path
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: "3.13"
+    - name: Install hash-locked dependencies and current checkout
+      shell: bash
+      working-directory: ${{ github.workspace }}/${{ inputs.checkout-path }}
+      run: |
+        set -euo pipefail
+        if ! python3 -m pip install --disable-pip-version-check --require-hashes \
+          -r requirements/constraints/py313.txt >/dev/null 2>&1; then
+          echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
+          exit 2
+        fi
+        if ! python3 -m pip install --disable-pip-version-check --no-deps \
+          --no-build-isolation -e . >/dev/null 2>&1; then
+          echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
+          exit 2
+        fi
