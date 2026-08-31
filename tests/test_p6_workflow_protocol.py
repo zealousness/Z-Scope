@@ -409,6 +409,9 @@ def test_provider_failure_output_is_typed_and_bound_to_the_probe_job() -> None:
     )
     assert "validate_authority >/dev/null 2>&1" in authority["run"]
     assert "stage=entry_input; class=input_binding_failure:1; count=1" in authority["run"]
+    assert '${!required_name:-}' in authority["run"]
+    assert "|| return 2" in authority["run"]
+    assert ":?sealed runner must configure" not in authority["run"]
     assert "P6_ENTRY_FAILURE_MARKER" in authority["env"]
     assert "os.O_EXCL" in authority["run"] and "os.O_NOFOLLOW" in authority["run"]
     assert '"failure_class": "input_binding_failure"' in authority["run"]
