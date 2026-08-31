@@ -8,6 +8,7 @@ from zscope.benchmarking.runner import (
     _gate_c_sealed,
     _gate_metrics,
     _performance_outliers,
+    _pilot_range_gates,
 )
 
 
@@ -102,6 +103,7 @@ def test_range_aggregate_executes_all_locked_policy_gates() -> None:
                 "confirmed_tp": 112,
                 "tokens": 9_000_000 + run,
                 "confirmed_recall": 0.82,
+                "with_review_recall": 0.91,
                 "actionable_fdr_delta_vs_arm_a_pp": 0.5,
                 "provider_usage_coverage": 1.0,
                 "explicit_attribution_coverage": 1.0,
@@ -118,9 +120,19 @@ def test_range_aggregate_executes_all_locked_policy_gates() -> None:
 
     assert _gate_metrics(actuals, C_GATES) == []
     assert actuals["median_confirmed_tp"] == 112
+    assert actuals["median_with_review_recall"] == 0.91
     assert actuals["true_positive_jaccard"] == 1.0
     assert actuals["queue_drained_rate"] == 1.0
     assert actuals["telemetry_complete_rate"] == 1.0
+
+
+def test_p6_pilot_gates_reviewable_recall_without_claiming_confirmation() -> None:
+    gates = _pilot_range_gates("balanced")
+
+    assert gates["median_with_review_recall"] == (">=", 0.85)
+    assert "median_confirmed_tp" not in gates
+    assert "median_confirmed_recall" not in gates
+    assert "actionable_fdr_delta_vs_arm_a_pp" not in gates
 
 
 def test_range_aggregate_fails_closed_without_arm_a_delta() -> None:

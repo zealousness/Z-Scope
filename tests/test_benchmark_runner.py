@@ -289,6 +289,53 @@ def test_pilot_aggregate_binds_the_selected_candidate_revision(monkeypatch) -> N
     assert aggregate["git_tree"] == tree
 
 
+def test_pilot_aggregate_passes_reviewable_quality_without_claiming_release(
+    monkeypatch,
+) -> None:
+    selected = "a" * 40
+    monkeypatch.setattr(
+        benchmark_runner,
+        "_git_identity",
+        lambda revision=None: (str(revision or selected), "b" * 40),
+    )
+    summary = {
+        "run": 1,
+        "completed": True,
+        "release_eligible": False,
+        "queue_empty": True,
+        "gate_failures": [],
+        "sealed_gate_failures": [],
+        "metrics": {
+            "confirmed_tp": 0,
+            "confirmed_recall": 0.0,
+            "with_review_recall": 0.9,
+            "tokens": 3_000_000,
+            "provider_usage_coverage": 1.0,
+            "explicit_attribution_coverage": 1.0,
+            "token_conservation_passed": True,
+            "telemetry_complete_rate": 1.0,
+            "protocol_anomaly_count": 0,
+            "true_positive_truth_ids": [],
+        },
+        "phase_seconds": {"total": 1.0},
+        "execution": {},
+    }
+
+    aggregate = _aggregate(
+        SPECS["c_cpp"],
+        [summary],
+        "pilot",
+        scan_depth="balanced",
+        git_revision=selected,
+    )
+
+    assert aggregate["passed"] is True
+    assert aggregate["formal_benchmark"] is False
+    assert aggregate["release_eligible"] is False
+    assert aggregate["range_gate_failures"] == []
+    assert aggregate["range_gate_metrics"]["median_with_review_recall"] == 0.9
+
+
 def test_individual_run_release_eligibility_requires_formal_mode_and_gates() -> None:
     assert not _run_release_eligible("trial", {"queue_empty": True}, [])
     assert not _run_release_eligible("formal", {"queue_empty": False}, [])
@@ -418,19 +465,21 @@ def test_failed_pilot_archives_only_answer_free_usage_aggregates(
 
 def test_provider_model_identity_metrics_never_fallback_to_requested_model() -> None:
     exact = _usage_event(sequence=1, reservation_id="call-1")
-    exact["model"] = "GLM-5.2"
-    exact["requested_model"] = "GLM-5.2"
-    exact["provider_response_model"] = "GLM-5.2"
+    exact["model"] = "deepseek-v4-flash"
+    exact["requested_model"] = "deepseek-v4-flash"
+    exact["provider_response_model"] = "deepseek-v4-flash-ga-260731"
     missing = _usage_event(sequence=2, reservation_id="call-2")
-    missing["model"] = "GLM-5.2"
-    missing["requested_model"] = "GLM-5.2"
+    missing["model"] = "deepseek-v4-flash"
+    missing["requested_model"] = "deepseek-v4-flash"
     mismatch = _usage_event(sequence=3, reservation_id="call-3")
-    mismatch["model"] = "GLM-5.2"
-    mismatch["requested_model"] = "GLM-5.2"
+    mismatch["model"] = "deepseek-v4-flash"
+    mismatch["requested_model"] = "deepseek-v4-flash"
     mismatch["provider_response_model"] = "alias-model"
 
     metrics = benchmark_runner._provider_model_identity_metrics(
-        [exact, missing, mismatch], expected_model="GLM-5.2"
+        [exact, missing, mismatch],
+        expected_model="deepseek-v4-flash",
+        expected_response_model="deepseek-v4-flash-ga-260731",
     )
 
     assert metrics == {
@@ -446,15 +495,15 @@ def test_p6_usage_conservation_recomputes_every_physical_dimension() -> None:
     rows = [
         {
             "outcome": "success",
-            "requested_model": "GLM-5.2",
-            "provider_response_model": "GLM-5.2",
+            "requested_model": "deepseek-v4-flash",
+            "provider_response_model": "deepseek-v4-flash-ga-260731",
             "total_tokens": 15,
             "tool_call_count": 1,
         },
         {
             "outcome": "success",
-            "requested_model": "GLM-5.2",
-            "provider_response_model": "GLM-5.2",
+            "requested_model": "deepseek-v4-flash",
+            "provider_response_model": "deepseek-v4-flash-ga-260731",
             "total_tokens": 17,
             "tool_call_count": 2,
         },
@@ -489,7 +538,11 @@ def test_p6_usage_conservation_recomputes_every_physical_dimension() -> None:
             },
         },
     }
-    identity = benchmark_runner._provider_model_identity_metrics(rows, expected_model="GLM-5.2")
+    identity = benchmark_runner._provider_model_identity_metrics(
+        rows,
+        expected_model="deepseek-v4-flash",
+        expected_response_model="deepseek-v4-flash-ga-260731",
+    )
 
     result = benchmark_runner._p6_usage_conservation(
         report=report,
@@ -497,7 +550,8 @@ def test_p6_usage_conservation_recomputes_every_physical_dimension() -> None:
         usage_rows=rows,
         model_identity=identity,
         decision_trace_artifact={"trace_count": 2, "complete": True},
-        expected_model="GLM-5.2",
+        expected_model="deepseek-v4-flash",
+        expected_response_model="deepseek-v4-flash-ga-260731",
     )
 
     assert all(row["conserved"] for row in result["dimensions"].values())
@@ -509,7 +563,8 @@ def test_p6_usage_conservation_recomputes_every_physical_dimension() -> None:
         usage_rows=rows,
         model_identity=identity,
         decision_trace_artifact={"trace_count": 1, "complete": True},
-        expected_model="GLM-5.2",
+        expected_model="deepseek-v4-flash",
+        expected_response_model="deepseek-v4-flash-ga-260731",
     )
     assert tampered["dimensions"]["trace"]["conserved"] is False
 
@@ -1017,7 +1072,7 @@ def test_cpp_pilot_forwards_only_explicit_key_file_to_wsl(monkeypatch) -> None:
         "Z_SCOPE_LLM_BASE_URL",
         "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
     )
-    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "GLM-5.2")
+    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "deepseek-v4-flash")
     monkeypatch.setenv("Z_SCOPE_P6_API_KEY_FILE", r"C:\private\zscope.local.env")
     monkeypatch.setenv("Z_SCOPE_P6_CANDIDATE_COMMIT", "a" * 40)
     monkeypatch.setenv("WSLENV", "Z_SCOPE_API_KEY:UNRELATED_SECRET/p")

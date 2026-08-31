@@ -129,7 +129,8 @@ jobs:
               __import__("pathlib").Path("test/range/zscope.benchmark.yaml")
           )
           assert contract.base_url == "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1"
-          assert contract.model == "GLM-5.2"
+          assert contract.model == "deepseek-v4-flash"
+          assert contract.response_model == "deepseek-v4-flash-ga-260731"
           assert contract.required_environment_keys == ("Z_SCOPE_API_KEY",)
           config = yaml.safe_load(__import__("pathlib").Path("test/range/zscope.benchmark.yaml").read_text(encoding="utf-8"))
           assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 8
@@ -328,7 +329,7 @@ jobs:
           marker: ${{ runner.temp }}/p6-entry-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
 
   provider_probe:
-    name: source-free GLM-5.2 provider probe
+    name: source-free deepseek-v4-flash provider probe
     needs: entry
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
@@ -390,7 +391,8 @@ jobs:
           contract = require_p6_provider_contract(Path("test/range/zscope.benchmark.yaml"))
           assert value["provider_identity_sha256"] == contract.identity_sha256
           assert value["config_sha256"] == contract.config_sha256
-          assert value["model"] == contract.model == "GLM-5.2"
+          assert value["model"] == contract.model == "deepseek-v4-flash"
+          assert contract.response_model == "deepseek-v4-flash-ga-260731"
           Path("provider-probe.json").write_text(
               json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
               encoding="utf-8",
@@ -902,7 +904,7 @@ jobs:
               "--control-plane-commit", os.environ["P6_CONTROL_PLANE_COMMIT"],
               "--harness-sha256", os.environ["Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"],
               "--workers", child["P6_MAX_CONCURRENT_CALLS"],
-              "--provider-model", "GLM-5.2", "--input", sys.argv[2],
+              "--provider-model", "deepseek-v4-flash", "--input", sys.argv[2],
               "--input-sha256", sys.argv[3], "--output", "hidden-holdout-receipt.json",
           ]
           completed = subprocess.run(
@@ -1046,7 +1048,7 @@ jobs:
               "--control-plane-commit", os.environ["P6_CONTROL_PLANE_COMMIT"],
               "--harness-sha256", os.environ["Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"],
               "--workers", child["P6_MAX_CONCURRENT_CALLS"],
-              "--provider-model", "GLM-5.2", "--input", sys.argv[2],
+              "--provider-model", "deepseek-v4-flash", "--input", sys.argv[2],
               "--input-sha256", sys.argv[3], "--output", "safe-pair-receipt.json",
           ]
           completed = subprocess.run(
@@ -1226,7 +1228,7 @@ jobs:
               "--control-plane-commit", os.environ["P6_CONTROL_PLANE_COMMIT"],
               "--harness-sha256", os.environ["Z_SCOPE_P6_QUALIFICATION_HARNESS_SHA256"],
               "--workers", env["P6_MAX_CONCURRENT_CALLS"],
-              "--provider-model", "GLM-5.2",
+              "--provider-model", "deepseek-v4-flash",
               "--preflight", "v3-canary-preflight.json",
               "--expected-preflight-sha256", sys.argv[1],
               "--trace-root", sys.argv[2], "--source-root", sys.argv[3],
@@ -1771,7 +1773,7 @@ jobs:
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
-            --producer-job 'source-free GLM-5.2 provider probe' --artifact-id "$PROVIDER_ID" \
+            --producer-job 'source-free deepseek-v4-flash provider probe' --artifact-id "$PROVIDER_ID" \
             --artifact-name "p6-provider-probe-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
             --artifact-digest "sha256:$PROVIDER_DIGEST" --required-member provider-probe.json \
             --output-dir restored/provider
@@ -2390,7 +2392,7 @@ jobs:
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
-            --producer-job 'source-free GLM-5.2 provider probe' --artifact-id "$PROVIDER_ID" \
+            --producer-job 'source-free deepseek-v4-flash provider probe' --artifact-id "$PROVIDER_ID" \
             --artifact-name "p6-provider-probe-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
             --artifact-digest "sha256:$PROVIDER_DIGEST" --required-member provider-probe.json \
             --output-dir restored/provider
@@ -3066,7 +3068,7 @@ jobs:
           }
           restore_prefix "$ENTRY_RESULT" entry 'P6 entry and provider identity' "$ENTRY_ID" \
             "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$ENTRY_DIGEST" entry-evidence.json failure-evidence/restored/entry
-          restore_prefix "$PROVIDER_RESULT" provider_probe 'source-free GLM-5.2 provider probe' "$PROVIDER_ID" \
+          restore_prefix "$PROVIDER_RESULT" provider_probe 'source-free deepseek-v4-flash provider probe' "$PROVIDER_ID" \
             "p6-provider-probe-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$PROVIDER_DIGEST" provider-probe.json failure-evidence/restored/provider
           restore_prefix "$TOOLCHAIN_RESULT" toolchain_oci_preflight 'toolchain OCI and cold-cache preflight' "$TOOLCHAIN_ID" \
             "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$TOOLCHAIN_DIGEST" toolchain-evidence.json failure-evidence/restored/toolchain

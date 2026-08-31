@@ -51,7 +51,11 @@ from zscope.benchmarking.p6_protocol import (
     write_json_exclusive,
     zero_usage_conservation,
 )
-from zscope.benchmarking.provider_runtime import require_p6_provider_contract
+from zscope.benchmarking.provider_runtime import (
+    P6_PROVIDER_MODEL,
+    P6_PROVIDER_RESPONSE_MODEL,
+    require_p6_provider_contract,
+)
 from zscope.benchmarking.p6_review import (
     REVIEW_ROLES,
     aggregate_review_set,
@@ -111,8 +115,8 @@ def _derive_canary_usage_conservation(value: Mapping[str, Any]) -> Mapping[str, 
         or set(identities)
         != {
             "successful_call_count",
-            "requested_glm_5_2_count",
-            "response_glm_5_2_count",
+            "requested_model_count",
+            "response_model_count",
         }
     ):
         raise P6ProtocolError("P6 EvidenceAction canary usage inputs are incomplete")
@@ -139,11 +143,9 @@ def _derive_canary_usage_conservation(value: Mapping[str, Any]) -> Mapping[str, 
     if selected < 1 or len(clusters) != selected:
         raise P6ProtocolError("P6 EvidenceAction canary cluster conservation is invalid")
     requested_count = _int_count(
-        identities.get("requested_glm_5_2_count"), name="requested model count"
+        identities.get("requested_model_count"), name="requested model count"
     )
-    response_count = _int_count(
-        identities.get("response_glm_5_2_count"), name="response model count"
-    )
+    response_count = _int_count(identities.get("response_model_count"), name="response model count")
     identity_successful = _int_count(
         identities.get("successful_call_count"), name="identity success count"
     )
@@ -227,9 +229,9 @@ def _derive_canary_usage_conservation(value: Mapping[str, Any]) -> Mapping[str, 
         "provider_reported_call_count": reported,
         "estimated_call_count": estimated,
         "provider_usage_coverage": 1.0,
-        "requested_model": "GLM-5.2",
+        "requested_model": P6_PROVIDER_MODEL,
         "requested_model_coverage": requested_count / physical,
-        "response_model": "GLM-5.2",
+        "response_model": P6_PROVIDER_RESPONSE_MODEL,
         "response_model_coverage": response_count / physical,
         "queue_empty": queue_empty,
         "dimensions": dimensions,
@@ -1223,7 +1225,7 @@ def _seal_offline_stage(args: argparse.Namespace) -> int:
             "attempt_id": args.attempt_id,
             "control_plane_commit": args.control_plane_commit,
             "candidate_sha": args.candidate_commit,
-            "provider_model": "GLM-5.2",
+            "provider_model": P6_PROVIDER_MODEL,
             "harness_sha256": args.harness_sha256,
             "input_sha256": args.qualification_input_sha256,
             "passed": True,
