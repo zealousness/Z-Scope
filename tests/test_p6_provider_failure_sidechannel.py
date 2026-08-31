@@ -214,6 +214,33 @@ def test_p6_runner_rejects_marker_on_success_and_malformed_marker(
         benchmark_runner._p6_scan_provider_failure_class(marker, return_code=2)
 
 
+def test_p6_provider_failure_marker_rejects_replacement_between_lstat_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / provider_runtime.P6_PROVIDER_FAILURE_FILENAME
+    payload = {
+        "schema_version": provider_runtime.P6_PROVIDER_FAILURE_SCHEMA_VERSION,
+        "failure_class": "provider_transport_exhausted",
+        "failure_count": 1,
+    }
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    original_open = provider_runtime.os.open
+    replaced = False
+
+    def replacing_open(target, flags, *args, **kwargs):
+        nonlocal replaced
+        if Path(target) == marker and not replaced:
+            replaced = True
+            marker.unlink()
+            marker.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return original_open(target, flags, *args, **kwargs)
+
+    monkeypatch.setattr(provider_runtime.os, "open", replacing_open)
+
+    with pytest.raises(provider_runtime.ProviderRuntimeError, match="changed during read"):
+        provider_runtime.load_p6_provider_failure_marker(marker)
+
+
 def test_p6_runner_accepts_exit_two_without_marker_as_non_provider_partial(
     tmp_path: Path,
 ) -> None:
