@@ -58,6 +58,31 @@ def test_java_entry_lookup_keeps_the_qualified_method_identifier() -> None:
     )
 
 
+def test_source_revision_falls_back_to_path_independent_source_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    from zscope.core.analysis import analyzer as analyzer_module
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for root in (first, second):
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "neutral.c").write_text("int neutral(void) { return 0; }\n")
+        (root / "build").mkdir()
+        (root / "build" / "generated.c").write_text("ignored\n")
+    monkeypatch.setattr(Analyzer, "_git_commit_sha", staticmethod(lambda _root: ""))
+
+    first_revision = analyzer_module.analysis_source_revision(first)
+    second_revision = analyzer_module.analysis_source_revision(second)
+
+    assert first_revision == second_revision
+    assert len(first_revision) == 64
+    (second / "src" / "neutral.c").write_text("int neutral(void) { return 1; }\n")
+    assert analyzer_module.analysis_source_revision(second) != first_revision
+    (first / "build" / "generated.c").write_text("still ignored\n")
+    assert analyzer_module.analysis_source_revision(first) == first_revision
+
+
 def test_snapshot_semantic_text_does_not_reclassify_described_function_as_api() -> None:
     semantics = LocalPatternSemantics()
     analyzer = object.__new__(Analyzer)

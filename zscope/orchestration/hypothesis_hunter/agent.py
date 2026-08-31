@@ -12,10 +12,15 @@ from .blind import assert_candidate_blind
 from .models import HYPOTHESIS_HUNT_REPORT_VERSION, validate_hunt_report
 
 
-HYPOTHESIS_HUNTER_CONTRACT = """Select only system-provided offer, fact, evidence,
-and EvidenceAction identifiers. Do not invent predicates, parameters, coverage,
-candidate state, or a terminal disposition. Emit exactly one strict report through
-the required terminal tool. Empty selections are valid when evidence is insufficient.
+HYPOTHESIS_HUNTER_CONTRACT = """Schedule bounded deterministic investigation.
+Select only system-provided offer, fact, evidence, and EvidenceAction identifiers.
+An EvidenceAction selection asks the Proof Engine to evaluate a frozen predicate; it
+does not assert that the predicate succeeds and does not grant terminal authority.
+For every risk-relevant offer, select the listed actions needed to evaluate its proof
+clauses even when no supporting fact exists yet, because those actions produce the
+facts. Do not invent predicates, parameters, coverage, candidate state, or a terminal
+disposition. Emit exactly one strict report through the required terminal tool. Use
+an empty selection only when no listed action can investigate the offer.
 """
 
 
@@ -148,9 +153,12 @@ class HypothesisHunterAgent(JsonToolAgent):
         assert_candidate_blind(projection)
         rendered = json.dumps(projection, ensure_ascii=False, sort_keys=True)
         prompt = (
-            "Call emit_hypothesis_hunt_report immediately and return no prose. Select only "
-            "listed identifiers. A complete report with no selections is valid when no offer "
-            "is supported.\n" + rendered
+            "Call emit_hypothesis_hunt_report immediately and return no prose. This is action "
+            "scheduling, not a vulnerability verdict: selecting an EvidenceAction requests "
+            "deterministic proof replay. Select only listed identifiers. For each risk-relevant "
+            "offer, select the listed actions that evaluate its proof clauses; do not require "
+            "pre-existing supporting facts. Return no selections only if no listed action can "
+            "investigate the offer.\n" + rendered
         )
         spec = JsonOutputSpec(
             type_name="hypothesis_hunt_report",

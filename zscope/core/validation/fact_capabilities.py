@@ -13,7 +13,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from ...retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
@@ -23,16 +23,26 @@ from .proof_kernel.models import (
     build_evidence_action as build_proof_action,
     build_proof_clause,
     build_proof_obligation,
+    function_summary_from_graph,
     program_proof_ir_from_graph,
     validate_certificate_envelope,
 )
 from .proof_kernel.provider import ProofProvider
-from .proof_kernel.registry import PREDICATE_REGISTRY
+from .proof_kernel.registry import PREDICATE_REGISTRY, signed_unsigned_flow_options
 
 
 CAPABILITY_REGISTRY_VERSION = "zscope.fact-capability-registry.v1"
 EVIDENCE_ACTION_VERSION = "zscope.evidence-action.v1"
 EVIDENCE_CERTIFICATE_VERSION = "zscope.evidence-certificate.v2"
+
+# A complete FunctionIR build launches two comparatively heavy Clang
+# subprocesses.  The Validator may run eight independent candidates at once,
+# but allowing every distinct function to launch Clang concurrently causes the
+# subprocesses to contend until their fixed timeout expires.  Same-function
+# locks below prevent duplicate work; this process-wide gate also bounds work
+# across different FunctionIRFactService instances and different functions.
+FUNCTION_IR_MAX_CONCURRENT_BUILDS = 1
+_FUNCTION_IR_BUILD_SLOTS = BoundedSemaphore(FUNCTION_IR_MAX_CONCURRENT_BUILDS)
 
 _FACT_PREDICATES = {
     "lockset": "lock_must_hold_at_access",
@@ -41,6 +51,7 @@ _FACT_PREDICATES = {
     "guard_dominance": "guard_dominates_sink",
     "source_controllability": "external_entry_parameter_binding",
     "type_layout": "record_layout_matches",
+    "value_range": "signed_value_reaches_unsigned_sink",
 }
 
 SUPPORTED_FACT_KINDS = frozenset(
@@ -536,6 +547,31 @@ class PathAndGuardProofProvider(_CertificateProvider):
         if source_statement:
             source_record = graph.statement_map.get(source_statement)
             source = source_record.block_uid if source_record else ""
+        if fact_kind == "value_range":
+            options = signed_unsigned_flow_options(function_summary_from_graph(graph))
+            fixed = {str(key): str(value) for key, value in parameters.items()}
+            if fixed in options:
+                return self.result(
+                    graph=graph,
+                    issue=issue,
+                    fact_kind=fact_kind,
+                    status="verified_true",
+                    reason="signed_unsigned_sink_flow_recomputed",
+                    predicate_value={
+                        "range_violation": True,
+                        "value_uid": fixed["value_uid"],
+                    },
+                    coverage="complete",
+                )
+            return self.result(
+                graph=graph,
+                issue=issue,
+                fact_kind=fact_kind,
+                status="unknown",
+                reason="signed_unsigned_flow_identity_unresolved",
+                predicate_value=None,
+                coverage="partial",
+            )
         if not sink:
             return self.result(
                 graph=graph,
@@ -613,16 +649,6 @@ class PathAndGuardProofProvider(_CertificateProvider):
                     sink_record.block_uid,
                     sink_statement,
                 ),
-            )
-        if fact_kind == "value_range":
-            return self.result(
-                graph=graph,
-                issue=issue,
-                fact_kind=fact_kind,
-                status="unknown",
-                reason="value_range_domain_not_available",
-                predicate_value=None,
-                coverage="partial",
             )
         return self.result(
             graph=graph,
@@ -786,12 +812,13 @@ class FunctionIRFactService:
                 if key in self._graphs:
                     return self._graphs[key]
             line = _issue_line(issue)
-            collected = self._clang.collect_for_function(
-                func_name=function,
-                file_path=file,
-                start_line=line,
-                end_line=line,
-            )
+            with _FUNCTION_IR_BUILD_SLOTS:
+                collected = self._clang.collect_for_function(
+                    func_name=function,
+                    file_path=file,
+                    start_line=line,
+                    end_line=line,
+                )
             graph = FunctionIRGraph.from_clang_evidence(
                 collected,
                 function=function,
@@ -844,7 +871,7 @@ class FunctionIRFactService:
         fact_kinds: Iterable[str],
     ) -> Tuple[EvidenceAction, ...]:
         graph = self.graph(issue, evidence)
-        if graph is None:
+        if graph is None or not graph.coverage_complete:
             return ()
         actions: list[EvidenceAction] = []
         for fact_kind in sorted({_normalized(value) for value in fact_kinds if _normalized(value)}):
@@ -859,43 +886,12 @@ class FunctionIRFactService:
                     "ir": graph.ir_sha256,
                 }
                 provider = self._providers[fact_kind]
-                proof_parameters = dict(parameters)
-                if fact_kind == "lockset" and "lock_uid" not in proof_parameters:
-                    locks = tuple(
-                        dict.fromkeys(
-                            symbol
-                            for event in graph.events
-                            if event.kind in {"lock_acquire", "lock_release"}
-                            for symbol in event.subject_symbols
-                        )
-                    )
-                    if len(locks) == 1:
-                        proof_parameters["lock_uid"] = locks[0]
-                compiled = self._compile_proof_artifacts(
-                    graph=graph,
-                    issue=issue,
-                    fact_kind=fact_kind,
-                    parameters=proof_parameters,
-                )
-                strict_action = compiled.get("action") if compiled else None
                 actions.append(
                     EvidenceAction(
-                        action_id=(
-                            str(strict_action["action_uid"])
-                            if isinstance(strict_action, Mapping)
-                            else "EVACTION_" + _sha(body)[:32]
-                        ),
+                        action_id="EVACTION_" + _sha(body)[:32],
                         fact_kind=fact_kind,
-                        provider_id=(
-                            str(strict_action["provider_id"])
-                            if isinstance(strict_action, Mapping)
-                            else provider.provider_id
-                        ),
-                        verifier_id=(
-                            str(strict_action["verifier_id"])
-                            if isinstance(strict_action, Mapping)
-                            else provider.verifier_id
-                        ),
+                        provider_id=provider.provider_id,
+                        verifier_id=provider.verifier_id,
                         subject_uid=_subject(issue),
                         decision_region_uid=_region(issue),
                         fixed_parameters=parameters,
@@ -916,6 +912,8 @@ class FunctionIRFactService:
         graph = self.graph(issue, evidence)
         if graph is None:
             return self._unavailable_result(action, "function_ir_unavailable")
+        if not graph.coverage_complete:
+            return self._unavailable_result(action, "function_ir_cfg_incomplete")
         expected = {
             value.action_id: value for value in self.actions(issue, evidence, (action.fact_kind,))
         }.get(action.action_id)
@@ -951,11 +949,17 @@ class FunctionIRFactService:
             )
             if len(locks) == 1:
                 parameters["lock_uid"] = locks[0]
-        artifacts = self._compile_proof_artifacts(
+        decision_proof = (
+            stable_result.fact.get("deterministic_proof")
+            if isinstance(stable_result.fact, Mapping)
+            else None
+        )
+        artifacts = self._compile_terminal_proof_artifacts(
             graph=graph,
             issue=issue,
             fact_kind=action.fact_kind,
             parameters=parameters,
+            decision_proof=(decision_proof if isinstance(decision_proof, Mapping) else None),
         )
         if artifacts is None:
             result = stable_result
@@ -989,13 +993,44 @@ class FunctionIRFactService:
         return result
 
     @staticmethod
-    def _compile_proof_artifacts(
+    def _compile_terminal_proof_artifacts(
         *,
         graph: FunctionIRGraph,
         issue: Mapping[str, Any],
         fact_kind: str,
         parameters: Mapping[str, Any],
+        decision_proof: Mapping[str, Any] | None,
     ) -> Optional[Dict[str, Dict[str, Any]]]:
+        if not decision_proof:
+            return None
+        outcome = str(decision_proof.get("outcome") or "")
+        proof_kind = str(decision_proof.get("proof_kind") or "")
+        terminal_contracts: dict[tuple[str, str, str], tuple[str, Mapping[str, Any]]] = {
+            (
+                "cleanup_coverage",
+                "confirm",
+                "missing_cleanup_path",
+            ): ("confirmation", {"cleanup_complete": False}),
+            (
+                "cleanup_coverage",
+                "reject",
+                "ownership_cleanup_complete",
+            ): ("counterproof", {"cleanup_complete": True}),
+            (
+                "source_sink_reachability",
+                "reject",
+                "sink_unreachable",
+            ): ("counterproof", {"path_exists": False}),
+            (
+                "value_range",
+                "confirm",
+                "signed_value_reaches_unsigned_sink",
+            ): ("confirmation", {"range_violation": True}),
+        }
+        terminal_contract = terminal_contracts.get((fact_kind, outcome, proof_kind))
+        if terminal_contract is None:
+            return None
+        role, expected_value = terminal_contract
         predicate_id = _FACT_PREDICATES.get(fact_kind)
         spec = PREDICATE_REGISTRY.get(predicate_id or "")
         subject_uid = _subject(issue)
@@ -1026,12 +1061,12 @@ class FunctionIRFactService:
             revision_uid="REV_" + graph.code_snapshot_sha256[:32],
         )
         clause = build_proof_clause(
-            role="confirmation",
+            role=role,
             provider_family=spec.provider_family,
             predicate_id=spec.predicate_id,
             fact_kind=spec.fact_kind,
             quantifier=spec.quantifier,
-            expected_value={"$derived": True},
+            expected_value=expected_value,
             parameters=fixed,
         )
         security_obligation = issue.get("security_obligation")
@@ -1044,11 +1079,17 @@ class FunctionIRFactService:
                 or security_obligation.get("obligation_uid")
                 or region_uid
             ),
-            defect_family=str(issue.get("defect_family") or issue.get("type") or "generic"),
+            defect_family=str(
+                issue.get("defect_family")
+                or issue.get("defect_class")
+                or issue.get("category")
+                or issue.get("type")
+                or "generic"
+            ),
             subject_uid=subject_uid,
             decision_region_uid=region_uid,
-            confirmation_clauses=(clause,),
-            counterproof_clauses=(),
+            confirmation_clauses=((clause,) if role == "confirmation" else ()),
+            counterproof_clauses=((clause,) if role == "counterproof" else ()),
             open_clauses=(),
             dependency_hashes=proof_ir["dependency_hashes"],
         )
@@ -1148,7 +1189,11 @@ class FunctionIRFactService:
                         else (
                             self.unavailable_reason(issue)
                             if graph is None
-                            else "subject_region_not_executable"
+                            else (
+                                "function_ir_cfg_incomplete"
+                                if not graph.coverage_complete
+                                else "subject_region_not_executable"
+                            )
                         )
                     ),
                 )
@@ -1205,6 +1250,10 @@ class FunctionIRFactService:
             outcome = "reject"
             proof_kind = "sink_unreachable"
             facts = ["sink_unreachable"]
+        elif fact_kind == "value_range" and value.get("range_violation") is True:
+            outcome = "confirm"
+            proof_kind = "signed_value_reaches_unsigned_sink"
+            facts = ["signed_source_value", "unsigned_length_sink", "range_guard_absent"]
         # Dominance alone says only that a condition executes before a sink.
         # It does not prove that the condition enforces the security predicate
         # (for example, that a bounds check is sufficiently strong).  Keep the
@@ -1284,6 +1333,8 @@ class FunctionIRFactService:
                 for source in sources
                 for sink in sink_blocks
             )[:16]
+        if fact_kind == "value_range":
+            return tuple(signed_unsigned_flow_options(function_summary_from_graph(graph)))[:16]
         if fact_kind == "guard_dominance":
             guard_statements = tuple(
                 statement.statement_uid
@@ -1360,7 +1411,7 @@ class FunctionIRFactService:
             # the provider registered but non-executable until Clang record
             # layout output is part of FunctionIRGraph.
             return ()
-        if fact_kind in {"caller_contract", "object_identity", "ownership_transfer", "value_range"}:
+        if fact_kind in {"caller_contract", "object_identity", "ownership_transfer"}:
             return ()
         return ()
 

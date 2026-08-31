@@ -8,7 +8,10 @@ from zscope.common.validator_protocol import (
     VALIDATOR_RESULT_VERSION,
     ValidatorResultV3,
     parse_validator_result_v3,
+    validator_result_schema_v3,
+    validator_result_v3_failure_class,
 )
+from zscope.framework.llm_client import ProviderFailureError
 
 
 def _slice() -> dict:
@@ -83,6 +86,59 @@ def _input(evidence_slice=None) -> dict:
     }
 
 
+def test_validator_v3_provider_schema_encodes_missing_fact_coherence() -> None:
+    schema = validator_result_schema_v3()
+
+    assert schema["allOf"][0]["then"]["properties"] == {
+        "verdict": {"const": "uncertain"},
+        "stop_reason": {"const": "missing_fact"},
+    }
+    assert "missing_fact" not in schema["allOf"][1]["then"]["properties"]["stop_reason"]["enum"]
+
+
+def test_validator_v3_provider_schema_binds_runtime_identities_and_refs() -> None:
+    schema = validator_result_schema_v3(
+        candidate_uid="CAND_1",
+        validation_cluster_uid="VAL_1",
+        expected_pass="initial",
+        allowed_evidence_refs=["FACT_2", "FACT_1", "FACT_1"],
+    )
+
+    assert schema["properties"]["candidate_uid"]["const"] == "CAND_1"
+    assert schema["properties"]["validation_cluster_uid"]["const"] == "VAL_1"
+    assert schema["properties"]["pass"]["const"] == "initial"
+    assert schema["properties"]["evidence_refs"]["items"]["enum"] == [
+        "FACT_1",
+        "FACT_2",
+    ]
+    empty = validator_result_schema_v3(allowed_evidence_refs=[])
+    assert empty["properties"]["evidence_refs"]["maxItems"] == 0
+
+
+def test_validator_v3_fixed_failure_classifier_never_echoes_values() -> None:
+    canary = "SECRET_CANARY_MUST_NOT_LEAK"
+    failure = validator_result_v3_failure_class(
+        _result(candidate_uid=canary),
+        candidate_uid="CAND_1",
+        validation_cluster_uid="VAL_1",
+        expected_pass="initial",
+        allowed_evidence_refs=["FACT_1"],
+    )
+
+    assert failure == "candidate_binding_mismatch"
+    assert canary not in failure
+    assert (
+        validator_result_v3_failure_class(
+            _result(evidence_refs=[canary]),
+            candidate_uid="CAND_1",
+            validation_cluster_uid="VAL_1",
+            expected_pass="initial",
+            allowed_evidence_refs=["FACT_1"],
+        )
+        == "evidence_ref_binding_mismatch"
+    )
+
+
 def test_proof_engine_v3_uses_one_direct_strict_completion() -> None:
     llm = _DirectLLM([{"content": json.dumps(_result())}])
     response = ProofEngineAgent(llm, []).run(_input())
@@ -92,7 +148,16 @@ def test_proof_engine_v3_uses_one_direct_strict_completion() -> None:
     assert len(llm.calls) == 1
     assert llm.calls[0][1]["max_tokens"] == 8192
     assert llm.calls[0][1]["response_format"]["json_schema"]["strict"] is True
+    bound = llm.calls[0][1]["response_format"]["json_schema"]["schema"]["properties"]
+    assert bound["candidate_uid"]["const"] == "CAND_1"
+    assert bound["validation_cluster_uid"]["const"] == "VAL_1"
+    assert bound["pass"]["const"] == "initial"
+    assert bound["evidence_refs"]["items"]["enum"] == ["FACT_1"]
     assert response.metadata["validator_api_call_count"] == 1
+    prompt = llm.calls[0][0][-1]["content"]
+    assert "missing_fact_request is an object" in prompt
+    assert "verdict must be uncertain" in prompt
+    assert "stop_reason must be missing_fact" in prompt
 
 
 def test_proof_engine_rejects_non_v3_and_generic_inputs_without_model_call() -> None:
@@ -120,6 +185,21 @@ def test_proof_engine_v3_failure_has_no_protocol_or_tool_fallback() -> None:
     assert "tools" not in llm.calls[0][1]
 
 
+def test_proof_engine_propagates_typed_systemic_provider_failure() -> None:
+    class FailingProvider(_DirectLLM):
+        def chat_completion(self, messages, **kwargs):
+            self.calls.append((messages, kwargs))
+            raise ProviderFailureError("provider_protocol_incompatible")
+
+    llm = FailingProvider([])
+
+    with pytest.raises(ProviderFailureError) as raised:
+        ProofEngineAgent(llm, []).run(_input())
+
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    assert len(llm.calls) == 1
+
+
 @pytest.mark.parametrize(
     ("reply", "stop_reason"),
     [
@@ -134,15 +214,47 @@ def test_proof_engine_v3_failure_has_no_protocol_or_tool_fallback() -> None:
         ),
     ],
 )
-def test_proof_engine_v3_malformed_output_fails_closed_in_one_call(reply, stop_reason) -> None:
-    llm = _DirectLLM([reply])
+def test_proof_engine_v3_malformed_output_has_one_bounded_regeneration(reply, stop_reason) -> None:
+    expected_calls = 1 if stop_reason == "output_truncated" else 2
+    llm = _DirectLLM([reply] * expected_calls)
     response = ProofEngineAgent(llm, []).run(_input())
     assert response.success is True
     assert response.data["verdict"] == "uncertain"
     assert response.data["stop_reason"] == stop_reason
-    assert len(llm.calls) == 1
-    assert response.metadata["validator_repair_attempted"] == 0
+    assert len(llm.calls) == expected_calls
+    assert response.metadata["validator_repair_attempted"] == (expected_calls - 1)
     assert response.metadata["validator_length_retry_count"] == 0
+    assert response.metadata["validator_contract_failure_count"] == 1
+    assert response.metadata["validator_contract_failure_class"] in {
+        "payload_not_object",
+        "structured_payload_missing",
+        "multiple_required_fields_missing",
+        "additional_field_present",
+        "multiple_required_fields_missing_with_additional",
+    }
+
+
+def test_proof_engine_v3_accepts_one_answer_free_contract_regeneration() -> None:
+    llm = _DirectLLM(
+        [
+            {"content": json.dumps({"error": "shape"})},
+            {"content": json.dumps(_result())},
+        ]
+    )
+
+    response = ProofEngineAgent(llm, []).run(_input())
+
+    assert response.success is True
+    assert response.data["verdict"] == "verified"
+    assert response.metadata["validator_repair_attempted"] == 1
+    assert response.metadata["validator_repair_accepted"] == 1
+    assert response.metadata["validator_api_call_count"] == 2
+    assert response.metadata["cumulative_prompt_tokens"] == 200
+    assert len(llm.calls) == 2
+    repair_prompt = llm.calls[1][0][-1]["content"]
+    assert "class=multiple_required_fields_missing_with_additional" in repair_prompt
+    assert "Do not repeat or discuss the prior response" in repair_prompt
+    assert "shape" not in repair_prompt
 
 
 def test_proof_engine_synthesis_does_not_count_input_facts_as_new_usage_facts() -> None:

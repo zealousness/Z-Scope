@@ -99,6 +99,20 @@ PREDICATE_REGISTRY: Dict[str, PredicateSpec] = {
             ("type_uid",),
             "clang_record_layout",
         ),
+        _spec(
+            "signed_value_reaches_unsigned_sink",
+            "path_guard",
+            "value_range",
+            "exists_path",
+            (
+                "value_uid",
+                "source_assignment_fact_uid",
+                "sink_argument_fact_uid",
+                "source_event_uid",
+                "sink_event_uid",
+            ),
+            "complete_typed_ast_and_cfg_path",
+        ),
     )
 }
 
@@ -112,7 +126,6 @@ NON_EXECUTABLE_PREDICATES = {
     "ownership_transfer": "closed_world_ownership_contract_unavailable",
     "caller_contract": "closed_world_caller_contract_unavailable",
     "object_identity": "field_sensitive_alias_proof_unavailable",
-    "value_range": "value_domain_proof_unavailable",
 }
 
 POLARITY_ROLE_TERMINAL_MATRIX = {
@@ -210,6 +223,170 @@ def _statement_location(summary: Mapping[str, Any], statement_uid: str) -> tuple
 
 def _events(summary: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [value for value in summary.get("events") or [] if isinstance(value, Mapping)]
+
+
+def _typed_ast_facts(summary: Mapping[str, Any], fact_kind: str) -> list[Mapping[str, Any]]:
+    return [
+        value
+        for value in summary.get("wrapper_summaries") or []
+        if isinstance(value, Mapping)
+        and value.get("summary_kind") == "typed_ast_value_fact"
+        and value.get("fact_kind") == fact_kind
+    ]
+
+
+def _typed_ast_complete(summary: Mapping[str, Any]) -> bool:
+    markers = [
+        value
+        for value in summary.get("wrapper_summaries") or []
+        if isinstance(value, Mapping) and value.get("summary_kind") == "typed_ast_value_coverage"
+    ]
+    return len(markers) == 1 and markers[0].get("complete") is True
+
+
+def _integer_type_is_unsigned(value: Any) -> bool:
+    text = str(value or "").lower().replace("_t", "")
+    if "ssize" in text:
+        return False
+    return bool("unsigned" in text or "size" in text or text in {"ulong", "uint"})
+
+
+def _integer_type_is_signed(value: Any) -> bool:
+    text = str(value or "").lower().replace("_t", "")
+    if not text or _integer_type_is_unsigned(text):
+        return False
+    return bool(
+        "signed" in text or "ssize" in text or text in {"int", "long", "short", "char", "long long"}
+    )
+
+
+_SIGNED_RESULT_APIS = frozenset({"read", "readv", "pread", "recv", "recvfrom", "recvmsg"})
+_UNSIGNED_LENGTH_SINK_ARGUMENTS: Dict[str, frozenset[int]] = {
+    "malloc": frozenset({0}),
+    "realloc": frozenset({1}),
+    "memcpy": frozenset({2}),
+    "memmove": frozenset({2}),
+    "strncpy": frozenset({2}),
+    "strncat": frozenset({2}),
+    "write": frozenset({2}),
+    "send": frozenset({2}),
+    "sendto": frozenset({2}),
+}
+
+
+def _event_for_call(
+    summary: Mapping[str, Any],
+    *,
+    callee: str,
+    line: int,
+) -> Optional[Mapping[str, Any]]:
+    matches = []
+    for event in _events(summary):
+        attributes = event.get("attributes")
+        attributes = attributes if isinstance(attributes, Mapping) else {}
+        if str(attributes.get("callee") or "") != callee:
+            continue
+        if line and int(attributes.get("source_line") or 0) != line:
+            continue
+        matches.append(event)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _negative_guard_exists(
+    summary: Mapping[str, Any],
+    *,
+    value_uid: str,
+    after_line: int,
+    before_line: int,
+) -> bool:
+    for guard in _typed_ast_facts(summary, "terminating_guard"):
+        line = int(guard.get("line") or 0)
+        if line and not (after_line <= line <= before_line):
+            continue
+        for comparison in guard.get("comparisons") or []:
+            if not isinstance(comparison, Mapping):
+                continue
+            opcode = str(comparison.get("opcode") or "")
+            lhs_refs = {str(value) for value in comparison.get("lhs_refs") or []}
+            rhs_refs = {str(value) for value in comparison.get("rhs_refs") or []}
+            lhs_literals = {str(value) for value in comparison.get("lhs_integer_literals") or []}
+            rhs_literals = {str(value) for value in comparison.get("rhs_integer_literals") or []}
+            if value_uid in lhs_refs and "0" in rhs_literals and opcode in {"<", "<="}:
+                return True
+            if value_uid in rhs_refs and "0" in lhs_literals and opcode in {">", ">="}:
+                return True
+    return False
+
+
+def signed_unsigned_flow_options(summary: Mapping[str, Any]) -> list[Dict[str, str]]:
+    """Return exact typed-AST/CFG identities for unguarded signed-length flows."""
+
+    complete, _ = _summary_complete(summary)
+    if not complete or not _typed_ast_complete(summary):
+        return []
+    assignments = _typed_ast_facts(summary, "call_assignment")
+    arguments = _typed_ast_facts(summary, "call_argument")
+    options: list[Dict[str, str]] = []
+    for source in assignments:
+        value_uid = str(source.get("target") or "")
+        source_callee = str(source.get("callee") or "").lower()
+        source_line = int(source.get("line") or 0)
+        if (
+            not value_uid
+            or source_callee not in _SIGNED_RESULT_APIS
+            or not _integer_type_is_signed(source.get("result_type"))
+        ):
+            continue
+        source_event = _event_for_call(summary, callee=source_callee, line=source_line)
+        if source_event is None:
+            continue
+        for sink in arguments:
+            sink_callee = str(sink.get("callee") or "").lower()
+            argument_index = int(sink.get("argument_index") or 0)
+            sink_line = int(sink.get("line") or 0)
+            if argument_index not in _UNSIGNED_LENGTH_SINK_ARGUMENTS.get(sink_callee, frozenset()):
+                continue
+            refs = {str(value) for value in sink.get("refs") or []}
+            ref_types = sink.get("ref_types")
+            ref_types = ref_types if isinstance(ref_types, Mapping) else {}
+            if (
+                value_uid not in refs
+                or not _integer_type_is_unsigned(sink.get("argument_type"))
+                or (
+                    value_uid in ref_types and not _integer_type_is_signed(ref_types.get(value_uid))
+                )
+                or (source_line and sink_line and sink_line < source_line)
+                or _negative_guard_exists(
+                    summary,
+                    value_uid=value_uid,
+                    after_line=source_line,
+                    before_line=sink_line,
+                )
+            ):
+                continue
+            sink_event = _event_for_call(summary, callee=sink_callee, line=sink_line)
+            if sink_event is None:
+                continue
+            source_node = str(source_event.get("node_uid") or "")
+            sink_node = str(sink_event.get("node_uid") or "")
+            path = _reachable_path(summary, source_node, sink_node)
+            if not path:
+                continue
+            if source_node == sink_node and _event_ordinal(source_event) > _event_ordinal(
+                sink_event
+            ):
+                continue
+            options.append(
+                {
+                    "value_uid": value_uid,
+                    "source_assignment_fact_uid": str(source.get("fact_uid") or ""),
+                    "sink_argument_fact_uid": str(sink.get("fact_uid") or ""),
+                    "source_event_uid": str(source_event.get("event_uid") or ""),
+                    "sink_event_uid": str(sink_event.get("event_uid") or ""),
+                }
+            )
+    unique = {tuple(sorted(value.items())): value for value in options}
+    return [unique[key] for key in sorted(unique)]
 
 
 def _event_ordinal(event: Mapping[str, Any]) -> int:
@@ -542,6 +719,52 @@ def evaluate_predicate(
             reason=(
                 "cfg_path_witness_recomputed" if path else "complete_cfg_nonreachability_recomputed"
             ),
+        )
+
+    if predicate_id == "signed_value_reaches_unsigned_sink":
+        if not complete:
+            return _unknown(spec, unresolved[0] if unresolved else "function_cfg_incomplete")
+        if not _typed_ast_complete(summary):
+            return _unknown(spec, "typed_ast_value_facts_incomplete")
+        fixed = {str(key): str(value) for key, value in parameters.items()}
+        options = signed_unsigned_flow_options(summary)
+        if fixed not in options:
+            return _unknown(spec, "signed_unsigned_flow_identity_unresolved")
+        event_map = {str(value.get("event_uid") or ""): value for value in _events(summary)}
+        source_event = event_map.get(fixed["source_event_uid"], {})
+        sink_event = event_map.get(fixed["sink_event_uid"], {})
+        source_node = str(source_event.get("node_uid") or "")
+        sink_node = str(sink_event.get("node_uid") or "")
+        path = _reachable_path(summary, source_node, sink_node)
+        actual = {"range_violation": True, "value_uid": fixed["value_uid"]}
+        return _complete_result(
+            spec,
+            actual=actual,
+            expected=expected,
+            witness={
+                "cfg_nodes": path,
+                "cfg_edges": [list(value) for value in zip(path, path[1:])],
+                "path_node_uids": path,
+                "exit_node_uids": [],
+                "values": actual,
+            },
+            enumerated=[
+                str(value.get("fact_uid") or "")
+                for value in summary.get("wrapper_summaries") or []
+                if isinstance(value, Mapping) and value.get("fact_uid")
+            ]
+            + [
+                str(value.get("event_uid") or "")
+                for value in _events(summary)
+                if value.get("event_uid")
+            ],
+            required=(
+                fixed["source_assignment_fact_uid"],
+                fixed["sink_argument_fact_uid"],
+                fixed["source_event_uid"],
+                fixed["sink_event_uid"],
+            ),
+            reason="signed_unsigned_sink_flow_recomputed",
         )
 
     if predicate_id == "guard_dominates_sink":

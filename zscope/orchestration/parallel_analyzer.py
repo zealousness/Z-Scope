@@ -23,7 +23,7 @@ from ..config.user_config_store import UserConfigStore
 from ..core.candidates.evidence import SemanticOverlayCompiler
 from ..core.candidates.decision_facts import DecisionFactGraphCache
 from ..core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
-from ..core.analysis.analyzer import Analyzer
+from ..core.analysis.analyzer import Analyzer, analysis_source_revision
 from ..core.validation.runner import ValidationResultCache
 from ..core.validation.fact_capabilities import FunctionIRFactService
 from ..framework.llm_client import LLMClient
@@ -171,7 +171,7 @@ class ParallelAnalyzer:
                 getattr(config.project, "project_id", "") or config.project.project_root.name
             ),
             project_root=str(config.project.project_root),
-            revision=Analyzer._git_commit_sha(config.project.project_root),
+            revision=analysis_source_revision(config.project.project_root),
             decision_trace_store=self._decision_trace_store,
         )
         self._scheduler: Optional[ScanScheduler] = None
@@ -269,7 +269,7 @@ class ParallelAnalyzer:
                 or self.base_config.project.project_root.name
             ),
             project_root=str(self.base_config.project.project_root),
-            revision=Analyzer._git_commit_sha(self.base_config.project.project_root),
+            revision=analysis_source_revision(self.base_config.project.project_root),
             decision_trace_store=self._decision_trace_store,
         )
         self._decision_fact_cache = DecisionFactGraphCache()
@@ -1156,14 +1156,15 @@ class ParallelAnalyzer:
                 analysis_llm_client=self._scan_role_llm_client("analysis"),
             )
             result = state.get("hypothesis_hunter_runtime") or {}
+            coverage = result.get("coverage_summary") or {}
             state.update(
                 {
                     "status": "complete",
-                    "hypothesis_count": int(result.get("hypothesis_count", 0) or 0),
+                    "hypothesis_count": int(coverage.get("hypothesis_count", 0) or 0),
                     "new_validation_group_count": int(
-                        result.get("registered_candidate_count", 0) or 0
+                        coverage.get("registered_candidate_count", 0) or 0
                     ),
-                    "llm_discovery_call_count": int(result.get("llm_call_count", 0) or 0),
+                    "llm_discovery_call_count": int(coverage.get("llm_call_count", 0) or 0),
                 }
             )
         except Exception as exc:
@@ -1250,6 +1251,7 @@ class ParallelAnalyzer:
             HypothesisArtifactStore(snapshot_dir / "hypothesis_hunter"),
             risk_threshold=int(profile.risk_threshold),
             max_units=profile.max_units,
+            max_concurrent_calls=int(self.base_config.concurrency.llm_max_inflight),
             model_profile=str(profile.name),
         ).run(
             semantic_map,
@@ -1318,6 +1320,7 @@ class ParallelAnalyzer:
                 api_key=llm_cfg.api_key,
                 base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                 models=llm_cfg.models,
+                response_model_map=getattr(llm_cfg, "response_model_map", {}),
                 timeout=effective_timeout,
                 max_retries=llm_cfg.max_retries,
                 retry_until_available=getattr(llm_cfg, "retry_until_available", False),
@@ -2336,7 +2339,7 @@ class ParallelAnalyzer:
             ).hexdigest(),
             revisions={
                 "security_spec_compiler": SecuritySpecCompiler.compiler_version,
-                "hypothesis_hunter": "hypothesis-hunter.v2",
+                "hypothesis_hunter": "hypothesis-hunter.v3",
                 "proof_registry": "proof-kernel.v2",
                 "proof_checker": "proof-checker.v2",
                 "proof_provider": "proof-provider.v2",

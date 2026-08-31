@@ -272,15 +272,28 @@ class ClangToolingEvidenceProvider:
 
     @classmethod
     def _summarize_function_decl(cls, node: Dict[str, Any]) -> Dict[str, Any]:
+        max_value_facts = 128
+        parameters: List[Dict[str, Any]] = []
         var_decls: List[Dict[str, Any]] = []
         call_exprs: List[Dict[str, Any]] = []
+        call_assignments: List[Dict[str, Any]] = []
+        conversions: List[Dict[str, Any]] = []
+        terminating_guards: List[Dict[str, Any]] = []
         binary_ops: List[Dict[str, Any]] = []
         unary_ops: List[Dict[str, Any]] = []
         return_count = 0
         if_count = 0
         for child in cls._walk_ast(node):
             kind = str(child.get("kind") or "")
-            if kind == "VarDecl":
+            if kind == "ParmVarDecl":
+                parameters.append(
+                    {
+                        "name": str(child.get("name") or ""),
+                        "type": cls._qual_type(child),
+                        "line": cls._loc_line(child),
+                    }
+                )
+            elif kind == "VarDecl":
                 var_decls.append(
                     {
                         "name": str(child.get("name") or ""),
@@ -288,16 +301,40 @@ class ClangToolingEvidenceProvider:
                         "line": cls._loc_line(child),
                     }
                 )
+                target = str(child.get("name") or "")
+                for nested in cls._walk_ast(child):
+                    if target and nested.get("kind") == "CallExpr":
+                        call_assignments.append(
+                            {
+                                "target": target,
+                                **cls._call_expr_summary(nested),
+                            }
+                        )
+                        break
             elif kind == "CallExpr":
                 call_exprs.append(cls._call_expr_summary(child))
             elif kind == "BinaryOperator":
+                raw_inner = child.get("inner")
+                inner = raw_inner if isinstance(raw_inner, list) else []
                 binary_ops.append(
                     {
                         "opcode": str(child.get("opcode") or ""),
                         "line": cls._loc_line(child),
                         "type": cls._qual_type(child),
+                        "refs": cls._decl_refs_in_node(child),
                     }
                 )
+                if str(child.get("opcode") or "") == "=" and len(inner) >= 2:
+                    targets = cls._decl_refs_in_node(inner[0])
+                    for nested in cls._walk_ast(inner[1]):
+                        if targets and nested.get("kind") == "CallExpr":
+                            call_assignments.append(
+                                {
+                                    "target": targets[0],
+                                    **cls._call_expr_summary(nested),
+                                }
+                            )
+                            break
             elif kind == "UnaryOperator":
                 unary_ops.append(
                     {
@@ -306,20 +343,56 @@ class ClangToolingEvidenceProvider:
                         "type": cls._qual_type(child),
                     }
                 )
-            elif kind == "ReturnStmt":
-                return_count += 1
+            elif kind in {
+                "ImplicitCastExpr",
+                "CStyleCastExpr",
+                "CXXStaticCastExpr",
+                "CXXFunctionalCastExpr",
+            }:
+                raw_inner = child.get("inner")
+                inner = raw_inner if isinstance(raw_inner, list) else []
+                source = next((value for value in inner if isinstance(value, dict)), {})
+                conversions.append(
+                    {
+                        "cast_kind": kind,
+                        "line": cls._loc_line(child),
+                        "source_type": cls._qual_type(source),
+                        "target_type": cls._qual_type(child),
+                        "refs": cls._decl_refs_in_node(child),
+                    }
+                )
             elif kind == "IfStmt":
                 if_count += 1
+                guard = cls._terminating_guard_summary(child)
+                if guard:
+                    terminating_guards.append(guard)
+            elif kind == "ReturnStmt":
+                return_count += 1
+        value_fact_collections = (
+            parameters,
+            call_assignments,
+            call_exprs,
+            conversions,
+            terminating_guards,
+            binary_ops,
+        )
         return {
             "name": str(node.get("name") or ""),
             "line": cls._loc_line(node),
             "type": cls._qual_type(node),
             "storage_class": str(node.get("storageClass") or ""),
+            "parameters": parameters[:max_value_facts],
             "var_decls": var_decls[:32],
-            "call_exprs": call_exprs[:32],
-            "binary_ops": binary_ops[:32],
+            "call_exprs": call_exprs[:max_value_facts],
+            "call_assignments": call_assignments[:max_value_facts],
+            "conversions": conversions[:max_value_facts],
+            "terminating_guards": terminating_guards[:max_value_facts],
+            "binary_ops": binary_ops[:max_value_facts],
             "unary_ops": unary_ops[:32],
             "matcher_facts": cls._ast_matcher_facts(call_exprs, binary_ops, unary_ops),
+            "value_fact_coverage_complete": all(
+                len(values) <= max_value_facts for values in value_fact_collections
+            ),
             "return_count": return_count,
             "if_count": if_count,
         }
@@ -337,8 +410,54 @@ class ClangToolingEvidenceProvider:
             "argument_kinds": [str(arg.get("kind") or "") for arg in args if isinstance(arg, dict)][
                 :8
             ],
+            "argument_types": [cls._qual_type(arg) for arg in args if isinstance(arg, dict)][:8],
             "argument_refs": argument_refs[:8],
+            "argument_ref_types": [
+                cls._decl_ref_types_in_node(arg) for arg in args if isinstance(arg, dict)
+            ][:8],
             "first_argument_refs": argument_refs[0] if argument_refs else [],
+        }
+
+    @classmethod
+    def _terminating_guard_summary(cls, node: Dict[str, Any]) -> Dict[str, Any]:
+        raw_inner = node.get("inner")
+        inner = raw_inner if isinstance(raw_inner, list) else []
+        if len(inner) < 2 or not isinstance(inner[0], dict) or not isinstance(inner[1], dict):
+            return {}
+        condition = inner[0]
+        then_branch = inner[1]
+        if not any(value.get("kind") == "ReturnStmt" for value in cls._walk_ast(then_branch)):
+            return {}
+        comparisons: List[Dict[str, Any]] = []
+        for value in cls._walk_ast(condition):
+            if value.get("kind") != "BinaryOperator" or str(value.get("opcode") or "") not in {
+                "<",
+                "<=",
+                ">",
+                ">=",
+                "==",
+                "!=",
+            }:
+                continue
+            raw_operands = value.get("inner")
+            operands = raw_operands if isinstance(raw_operands, list) else []
+            if len(operands) < 2 or not all(isinstance(item, dict) for item in operands[:2]):
+                continue
+            comparisons.append(
+                {
+                    "opcode": str(value.get("opcode") or ""),
+                    "lhs_refs": cls._decl_refs_in_node(operands[0]),
+                    "rhs_refs": cls._decl_refs_in_node(operands[1]),
+                    "lhs_integer_literals": cls._integer_literals_in_node(operands[0]),
+                    "rhs_integer_literals": cls._integer_literals_in_node(operands[1]),
+                }
+            )
+        if not comparisons:
+            return {}
+        return {
+            "line": cls._loc_line(node),
+            "comparisons": comparisons[:16],
+            "terminates_then_branch": True,
         }
 
     @classmethod
@@ -595,6 +714,32 @@ class ClangToolingEvidenceProvider:
             if ref_name and ref_name not in refs:
                 refs.append(ref_name)
         return refs[:8]
+
+    @classmethod
+    def _decl_ref_types_in_node(cls, node: Any) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        for child in cls._walk_ast(node):
+            if not isinstance(child, dict) or child.get("kind") != "DeclRefExpr":
+                continue
+            referenced = child.get("referencedDecl")
+            referenced = referenced if isinstance(referenced, dict) else {}
+            name = str(referenced.get("name") or child.get("name") or "")
+            if not name:
+                continue
+            type_name = cls._qual_type(referenced) or cls._qual_type(child)
+            result.setdefault(name, type_name)
+        return dict(sorted(result.items()))
+
+    @classmethod
+    def _integer_literals_in_node(cls, node: Any) -> List[str]:
+        values: List[str] = []
+        for child in cls._walk_ast(node):
+            if not isinstance(child, dict) or child.get("kind") != "IntegerLiteral":
+                continue
+            value = str(child.get("value") or "")
+            if value and value not in values:
+                values.append(value)
+        return values[:8]
 
     @staticmethod
     def _qual_type(node: Dict[str, Any]) -> str:
