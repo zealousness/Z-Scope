@@ -83,6 +83,9 @@ class RuleDrivenAnalyzer:
                 ),
                 global_max_concurrent_requests=config.concurrency.llm_max_inflight,
                 supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
+                require_exact_response_model=getattr(
+                    llm_cfg, "require_exact_response_model", False
+                ),
                 token_usage_ledger=token_usage_ledger,
                 llm_ref=name,
             )

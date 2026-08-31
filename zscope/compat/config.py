@@ -38,6 +38,7 @@ _LEGACY_LLM_KEYS = {
     "max_retries",
     "retry_until_available",
     "supports_structured_output",
+    "require_exact_response_model",
 }
 _LEGACY_PROJECT_KEYS = {
     "id",
@@ -247,6 +248,7 @@ def _migrate_llm_profile(raw: Any, path: str, warnings: List[str]) -> Dict[str, 
         "max_retries": data.get("max_retries"),
         "retry_until_available": data.get("retry_until_available"),
         "supports_structured_output": data.get("supports_structured_output"),
+        "require_exact_response_model": data.get("require_exact_response_model"),
     }
     for key in (
         "base_url_rate_limit_per_minute",

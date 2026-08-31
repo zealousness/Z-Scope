@@ -14,6 +14,8 @@ from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
 from ..config.config import ConfigLoader
 from ..framework.conversation_recorder import enable_conversation_recording
+from ..framework.llm_client import ProviderFailureError
+from ..framework import provider_failure_marker
 from ..framework.llm_usage import (
     ensure_scan_token_usage_ledger,
     scan_token_usage_snapshot,
@@ -21,6 +23,31 @@ from ..framework.llm_usage import (
 from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner, _task_slug
 from ..orchestration.rollout import rollout_runtime_policy
 from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
+
+
+def _persist_p6_provider_failure(error: ProviderFailureError) -> bool:
+    """Persist only the fixed typed marker when the P6 container requests it."""
+
+    try:
+        provider_failure_marker.write_p6_provider_failure_marker(
+            Path(provider_failure_marker.P6_PROVIDER_FAILURE_CONTAINER_PATH),
+            failure_class=error.failure_class,
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _provider_failure_exit_code(
+    error: ProviderFailureError,
+    *,
+    p6_pilot: bool,
+) -> int:
+    """Reserve exit 2 for a complete marker; marker failures fail closed."""
+
+    if not p6_pilot:
+        return 2
+    return 2 if _persist_p6_provider_failure(error) else 3
 
 
 @click.command()
@@ -158,6 +185,7 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
     default=None,
     help="Override scan.depth for this run. Java currently accepts fast only.",
 )
+@click.option("--p6-pilot", is_flag=True, default=False, hidden=True)
 def main(
     config: Path,
     verbose: bool,
@@ -188,6 +216,7 @@ def main(
     exit_policy: str,
     task_id: str,
     scan_depth: Optional[str],
+    p6_pilot: bool,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C/C++ and Java projects.
@@ -358,6 +387,9 @@ def main(
                 ),
                 global_max_concurrent_requests=zscope_config.concurrency.llm_max_inflight,
                 supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
+                require_exact_response_model=getattr(
+                    llm_cfg, "require_exact_response_model", False
+                ),
                 token_usage_ledger=token_usage_ledger,
                 llm_ref="default",
             )
@@ -735,6 +767,12 @@ def main(
 
     except click.ClickException:
         raise
+    except ProviderFailureError as exc:
+        exit_code = _provider_failure_exit_code(exc, p6_pilot=p6_pilot)
+        if exit_code != 2:
+            logger.error("P6 provider failure marker write failed")
+        logger.error("Analysis failed: provider request failed")
+        sys.exit(exit_code)
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
         sys.exit(2)
