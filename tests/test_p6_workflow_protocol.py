@@ -94,6 +94,7 @@ def test_workflow_is_one_sequential_non_release_pilot() -> None:
         "cancel-in-progress": "false",
     }
     assert workflow["env"]["P6_MAX_CONCURRENT_CALLS"] == "8"
+    assert workflow["env"]["Z_SCOPE_BENCHMARK_OCI_RUNTIME"] == "podman"
     expected_needs = {
         "provider_probe": {"entry"},
         "toolchain_oci": {"provider_probe"},
@@ -295,6 +296,7 @@ def test_artifacts_are_sanitized_and_restored_by_exact_id_and_digest() -> None:
     assert "--canary-env" in sanitizer and "Z_SCOPE_API_KEY" in sanitizer
     assert "stdout=subprocess.DEVNULL" in sanitizer
     assert "stderr=subprocess.DEVNULL" in sanitizer
+    assert '"LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", "")' in sanitizer
 
 
 def test_failure_path_is_answer_free_and_non_finalizable() -> None:
