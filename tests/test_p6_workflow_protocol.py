@@ -160,6 +160,7 @@ def test_every_job_binds_hash_locked_python_to_current_checkout() -> None:
         ]
         assert len(setup_steps) == 1, name
         assert setup_steps[0]["with"]["checkout-path"] == "control"
+        assert "install-project" not in setup_steps[0]["with"]
     assert workflow["defaults"]["run"]["working-directory"] == "control"
     assert workflow["env"]["PYTHONPATH"] == "${{ github.workspace }}/control"
     assert "candidate" not in workflow["env"]["PYTHONPATH"]
@@ -167,6 +168,10 @@ def test_every_job_binds_hash_locked_python_to_current_checkout() -> None:
     assert "--require-hashes" in setup
     assert "requirements/constraints/py313.txt" in setup
     assert "--no-deps" in setup and "--no-build-isolation" in setup
+    assert "steps.setup-python.outputs.python-path" in setup
+    assert "RUNNER_TOOL_CACHE" in setup
+    assert "LD_LIBRARY_PATH" in setup
+    assert "libpython3.13.so.1.0" in setup
 
 
 def test_workflow_runs_real_frozen_qualification_and_candidate_bound_cold_scans() -> None:
