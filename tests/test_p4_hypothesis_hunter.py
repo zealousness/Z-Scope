@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
+from threading import Barrier, Lock
 
 import pytest
 
@@ -93,6 +95,51 @@ def _graph(*, complete: bool = True) -> FunctionIRGraph:
     return value
 
 
+def _resource_graph(*, cleanup: bool) -> FunctionIRGraph:
+    statements = ["p = malloc(8)"]
+    calls = [{"callee": "malloc", "line": 10}]
+    if cleanup:
+        statements.append("free(p)")
+        calls.append({"callee": "free", "line": 11})
+    evidence = {
+        "clang_path": "clang-21.1.8",
+        "code_snapshot_sha256": "d" * 64,
+        "cfg_dump": {
+            "summary": {
+                "parse_ok": True,
+                "function": "resource_gateway",
+                "function_section_unique": True,
+                "entry_blocks": ["B1"],
+                "exit_blocks": ["B0"],
+                "blocks": [
+                    {
+                        "id": "B1",
+                        "label": "ENTRY",
+                        "successors": ["B0"],
+                        "predecessors": [],
+                        "statements": statements,
+                    },
+                    {
+                        "id": "B0",
+                        "label": "EXIT",
+                        "successors": [],
+                        "predecessors": ["B1"],
+                        "statements": [],
+                    },
+                ],
+            }
+        },
+        "ast_dump": {"summary": {"target_function": {"call_exprs": calls}}},
+    }
+    value = FunctionIRGraph.from_clang_evidence(
+        evidence,
+        function="resource_gateway",
+        file="src/resource_gateway.c",
+    )
+    assert value is not None
+    return value
+
+
 def _semantic_map() -> SecuritySemanticMap:
     record = FunctionSecurityRecord(
         function_uid="FUNC_NEUTRAL_GATEWAY",
@@ -144,6 +191,68 @@ def _semantic_map() -> SecuritySemanticMap:
     )
 
 
+def _resource_semantic_map() -> SecuritySemanticMap:
+    baseline = _semantic_map()
+    event = SecurityEvent(
+        event_id="EVENT_RESOURCE",
+        family="resource_lifecycle",
+        kind="resource_transition",
+        function_uid="FUNC_RESOURCE_GATEWAY",
+        file="src/resource_gateway.c",
+        line=10,
+        expression="p = malloc(8)",
+        evidence_ref="evidence:resource:neutral",
+    )
+    record = replace(
+        baseline.functions[0],
+        function_uid="FUNC_RESOURCE_GATEWAY",
+        index_name="resource_gateway",
+        function_name="resource_gateway",
+        file_path="src/resource_gateway.c",
+        signature="resource_gateway(void)",
+        code_hash="d" * 64,
+        entry_paths=(("ENTRY_EXTERNAL", "FUNC_RESOURCE_GATEWAY"),),
+        callees=("malloc",),
+        unresolved_callees=(),
+        events=(event,),
+    )
+    return replace(baseline, functions=(record,))
+
+
+def _semantic_map_with_function_count(count: int) -> SecuritySemanticMap:
+    baseline = _semantic_map()
+    template = baseline.functions[0]
+    records = []
+    for index in range(count):
+        suffix = f"_{index:02d}"
+        function_uid = template.function_uid + suffix
+        file_path = f"src/neutral_gateway_{index:02d}.c"
+        events = tuple(
+            replace(
+                event,
+                event_id=event.event_id + suffix,
+                function_uid=function_uid,
+                file=file_path,
+                evidence_ref=event.evidence_ref + suffix,
+            )
+            for event in template.events
+        )
+        records.append(
+            replace(
+                template,
+                function_uid=function_uid,
+                index_name=template.index_name + suffix,
+                function_name=template.function_name + suffix,
+                file_path=file_path,
+                signature=f"neutral_gateway_{index:02d}(int fd)",
+                code_hash=f"{index + 1:064x}",
+                entry_paths=(("ENTRY_EXTERNAL", function_uid),),
+                events=events,
+            )
+        )
+    return replace(baseline, functions=tuple(records))
+
+
 def _planned_bundle():
     semantic_map = _semantic_map()
     catalog = HypothesisProofCatalog(lambda record, event: _graph())
@@ -156,6 +265,46 @@ def _planned_bundle():
     assert planned
     assert planned[0].offers
     return semantic_map, planned[0]
+
+
+def test_statementless_proof_graph_is_one_unexecutable_unit_not_stage_failure() -> None:
+    original = _graph()
+    graph = replace(
+        original,
+        blocks=tuple(replace(block, statements=()) for block in original.blocks),
+        events=(),
+        ir_sha256="f" * 64,
+    )
+    planner = AttackSurfacePlanner(risk_threshold=35)
+
+    planned = planner.plan(
+        _semantic_map(),
+        proof_bundle_provider=HypothesisProofCatalog(lambda record, event: graph).bundles,
+    )
+
+    assert planned
+    assert all(value.offers == () for value in planned)
+
+
+def test_proof_bundle_failure_isolated_to_one_unit_without_error_body() -> None:
+    planner = AttackSurfacePlanner(risk_threshold=35)
+
+    planned = planner.plan(
+        _semantic_map(),
+        proof_bundle_provider=lambda record, event, identity: (_ for _ in ()).throw(
+            ValueError("source-derived-private-body")
+        ),
+    )
+
+    assert planned
+    assert all(value.offers == () for value in planned)
+    diagnostic = next(
+        value
+        for value in planner.diagnostics
+        if value["reason_code"] == "PROOF_BUNDLE_PROVIDER_REJECTED"
+    )
+    assert diagnostic["failure_class"] == "ValueError"
+    assert "source-derived-private-body" not in json.dumps(diagnostic)
 
 
 def _select_report(unit, offers):
@@ -206,6 +355,10 @@ def test_selected_action_path_rejects_duplicates_and_foreign_ids() -> None:
         selected_action_uids=(action_uid,),
     )
     assert len(result.actions) == 1
+    # A source-to-sink CFG path is a useful investigation fact, but it is not
+    # a sufficient proof of a memory/sensitive-operation vulnerability.
+    assert result.decision == "needs_review"
+    assert result.reason_code == "open_or_unknown_proof_clause"
     with pytest.raises(ValueError, match="duplicate_selected"):
         engine.evaluate_selected_actions(
             proof_ir=offer["proof_ir"],
@@ -218,6 +371,41 @@ def test_selected_action_path_rejects_duplicates_and_foreign_ids() -> None:
             obligation=offer["proof_obligation"],
             selected_action_uids=("EVACTION_" + "f" * 32,),
         )
+
+
+def test_only_complete_uncovered_resource_path_has_terminal_hunter_proof() -> None:
+    planner = AttackSurfacePlanner(risk_threshold=35)
+    unsafe = planner.plan(
+        _resource_semantic_map(),
+        proof_bundle_provider=HypothesisProofCatalog(
+            lambda record, event: _resource_graph(cleanup=False)
+        ).bundles,
+    )[0].offers[0]
+    assert unsafe["defect_family"] == "resource_leak"
+    assert unsafe["proof_obligation"]["open_clauses"] == []
+    unsafe_result = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=unsafe["proof_ir"],
+        obligation=unsafe["proof_obligation"],
+        selected_action_uids=(unsafe["evidence_actions"][0]["action_uid"],),
+    )
+    assert unsafe_result.decision == "confirmed"
+
+    safe = (
+        AttackSurfacePlanner(risk_threshold=35)
+        .plan(
+            _resource_semantic_map(),
+            proof_bundle_provider=HypothesisProofCatalog(
+                lambda record, event: _resource_graph(cleanup=True)
+            ).bundles,
+        )[0]
+        .offers[0]
+    )
+    safe_result = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=safe["proof_ir"],
+        obligation=safe["proof_obligation"],
+        selected_action_uids=(safe["evidence_actions"][0]["action_uid"],),
+    )
+    assert safe_result.decision != "confirmed"
 
 
 def test_hunt_report_rejects_free_parameters_and_cross_offer_actions() -> None:
@@ -314,8 +502,12 @@ def test_active_runtime_registers_live_unconfirmed_candidates_and_reuses_exact_c
     assert first["active_product_effect"] == "candidate_registration_only"
     assert live.lifecycle_snapshot()["summary"]["total"] > 0
     assert first["coverage_summary"]["hypothesis_count"] > 0
+    assert first["coverage_summary"]["registered_candidate_count"] > 0
     assert first["coverage_summary"]["coverage_status_counts"]["complete"] > 0
     assert isinstance(first["coverage_summary"]["reason_code_distribution"], dict)
+    payload = live.records()[0].ticket.evidence["candidate_payload"]
+    assert payload["function"] == "neutral_gateway"
+    assert payload["location"]["function_uid"] == ("FUNC_NEUTRAL_GATEWAY")
     first_call_count = len(calls)
 
     second = HypothesisHunterRuntime(
@@ -338,6 +530,61 @@ def test_active_runtime_registers_live_unconfirmed_candidates_and_reuses_exact_c
     assert identity["hypothesis_hunter_decision"]["active_product_effect"] == (
         "candidate_registration_only"
     )
+
+
+def test_runtime_collects_eight_concurrent_calls_and_isolates_one_failure(
+    tmp_path: Path,
+) -> None:
+    semantic_map = _semantic_map_with_function_count(4)
+    catalog = HypothesisProofCatalog(lambda record, event: _graph())
+    planned = AttackSurfacePlanner(risk_threshold=35).plan(
+        semantic_map,
+        proof_bundle_provider=catalog.bundles,
+    )
+    assert len(planned) == 8
+    assert all(value.offers for value in planned)
+
+    barrier = Barrier(8)
+    lock = Lock()
+    counters = {"active": 0, "maximum": 0, "calls": 0}
+
+    def runner(projection, unit, offers):
+        del projection
+        with lock:
+            counters["active"] += 1
+            counters["calls"] += 1
+            counters["maximum"] = max(counters["maximum"], counters["active"])
+            call_number = counters["calls"]
+        try:
+            barrier.wait(timeout=10)
+            if call_number == 1:
+                raise RuntimeError("private-provider-error-body")
+            return _select_report(unit, offers)
+        finally:
+            with lock:
+                counters["active"] -= 1
+
+    ledger = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
+    result = HypothesisHunterRuntime(
+        HypothesisArtifactStore(tmp_path),
+        risk_threshold=35,
+        max_concurrent_calls=8,
+    ).run(
+        semantic_map,
+        candidate_registrar=CandidateRegistrar(ledger),
+        proof_bundle_provider=catalog.bundles,
+        report_runner=runner,
+    )
+
+    assert counters == {"active": 0, "maximum": 8, "calls": 8}
+    assert result["coverage_summary"]["llm_call_count"] == 8
+    assert result["coverage_summary"]["coverage_status_counts"] == {
+        "complete": 7,
+        "partial": 0,
+        "failed": 1,
+    }
+    assert result["coverage_summary"]["hypothesis_count"] == 7
+    assert "private-provider-error-body" not in json.dumps(result)
 
 
 def test_incomplete_unit_is_observation_not_candidate(tmp_path: Path) -> None:

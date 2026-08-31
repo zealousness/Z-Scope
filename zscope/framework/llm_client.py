@@ -186,6 +186,8 @@ class LLMClient:
     AIMD_DECREASE_FACTOR = 0.5
     TRANSIENT_AUTH_RETRY_LIMIT = 1
     TRANSIENT_AUTH_RETRY_DELAY_SECONDS = 1.0
+    TRANSIENT_CLIENT_RESPONSE_RETRY_LIMIT = 1
+    TRANSIENT_CLIENT_RESPONSE_RETRY_DELAY_SECONDS = 1.0
     _SUMMARY_PRIORITY_KEYS = (
         "success",
         "error",
@@ -243,6 +245,7 @@ class LLMClient:
         require_exact_response_model: bool = False,
         token_usage_ledger: Optional[ScanTokenUsageLedger] = None,
         llm_ref: str = "",
+        response_model_map: Optional[Mapping[str, str]] = None,
     ):
         """
         Initialize LLM client.
@@ -251,6 +254,7 @@ class LLMClient:
             api_key: API key
             base_url: API base URL or ordered list of API base URLs
             models: List of model names in order of priority
+            response_model_map: Exact provider response identity for request aliases
             timeout: Request timeout in seconds
             max_retries: Retries per model
             retry_until_available: Keep retrying transient transport/provider
@@ -261,6 +265,11 @@ class LLMClient:
         self.base_urls = self._normalize_base_urls(base_url)
         self.base_url = self.base_urls[0]
         self.models = models
+        self.response_model_map = {
+            str(requested).strip(): str(response).strip()
+            for requested, response in (response_model_map or {}).items()
+            if str(requested).strip() and str(response).strip()
+        }
         self.timeout = float(timeout) if timeout is not None else None
         self.max_retries = max_retries
         self.retry_until_available = bool(retry_until_available)
@@ -1171,14 +1180,18 @@ class LLMClient:
             attempt = 0
             retry_transient = False
             retry_transient_auth = False
+            retry_transient_client_response = False
             transient_auth_retries_remaining = self.TRANSIENT_AUTH_RETRY_LIMIT
+            transient_client_response_retries_remaining = self.TRANSIENT_CLIENT_RESPONSE_RETRY_LIMIT
             while (
                 attempt < total_attempts
                 or (self.retry_until_available and retry_transient)
                 or retry_transient_auth
+                or retry_transient_client_response
             ):
                 retry_transient = False
                 retry_transient_auth = False
+                retry_transient_client_response = False
                 attempt += 1
                 token = current_cancellation_token()
                 if token is not None:
@@ -1188,6 +1201,7 @@ class LLMClient:
                 response: Optional[requests.Response] = None
                 usage_reservation: Optional[TokenUsageReservation] = None
                 usage_settled = False
+                usage_rejected_before_model = False
                 request_started: Optional[float] = None
                 usage_failure_class = "provider_request_failed"
                 retry_call, repair_call, new_fact_count = self._usage_call_flags(
@@ -1418,6 +1432,8 @@ class LLMClient:
 
                     if transient_http_error:
                         retry_transient = True
+                        if response.status_code == 429:
+                            usage_rejected_before_model = True
                         if response.status_code in {429, 502, 503, 504}:
                             self._record_endpoint_overload(
                                 endpoint,
@@ -1448,6 +1464,7 @@ class LLMClient:
                         # credential into an unbounded retry loop.
                         transient_auth_retries_remaining -= 1
                         retry_transient_auth = True
+                        usage_rejected_before_model = True
                         wait_time = self.TRANSIENT_AUTH_RETRY_DELAY_SECONDS
                         self._mark_base_url_cooldown(endpoint, wait_time)
                         post_attempt_delay = wait_time
@@ -1458,6 +1475,30 @@ class LLMClient:
                             "successful authentication; retrying once after %.1fs",
                             endpoint.url,
                             wait_time,
+                        )
+                        continue
+                    elif (
+                        response.status_code == 400
+                        and transient_client_response_retries_remaining > 0
+                    ):
+                        # A busy OpenAI-compatible gateway can occasionally
+                        # return an isolated 400 for a byte-identical request
+                        # while concurrent requests on the same deployment are
+                        # still establishing their first successes. Retry that
+                        # exact request once even during the startup window.
+                        # A deterministic schema/request rejection therefore
+                        # fails on the second identical response and never
+                        # degrades into an unbounded or mutated retry.
+                        transient_client_response_retries_remaining -= 1
+                        retry_transient_client_response = True
+                        usage_rejected_before_model = True
+                        post_attempt_delay = self.TRANSIENT_CLIENT_RESPONSE_RETRY_DELAY_SECONDS
+                        usage_failure_class = failure_class
+                        last_error = failure_class
+                        logger.warning(
+                            "Endpoint %s returned HTTP 400; retrying the "
+                            "byte-identical request once",
+                            endpoint.url,
                         )
                         continue
                     else:
@@ -1493,6 +1534,10 @@ class LLMClient:
                     if self.require_exact_response_model and failure_class.startswith(
                         "provider_protocol_"
                     ):
+                        logger.warning(
+                            "Strict provider response rejected (class=%s)",
+                            failure_class,
+                        )
                         post_attempt_delay = 0.0
                         last_error = failure_class
                         break
@@ -1526,13 +1571,19 @@ class LLMClient:
                                 if request_started is not None
                                 else 0
                             )
-                            manager.forfeit(
-                                usage_reservation,
-                                reason=usage_failure_class,
-                                retry=retry_call,
-                                repair=repair_call,
-                                duration_ms=duration_ms,
-                            )
+                            if usage_rejected_before_model:
+                                manager.reject_before_model(
+                                    usage_reservation,
+                                    reason=usage_failure_class,
+                                )
+                            else:
+                                manager.forfeit(
+                                    usage_reservation,
+                                    reason=usage_failure_class,
+                                    retry=retry_call,
+                                    repair=repair_call,
+                                    duration_ms=duration_ms,
+                                )
                         except ValueError:
                             # A successful response can be settled immediately
                             # before a downstream recorder/logging failure.
@@ -1660,7 +1711,13 @@ class LLMClient:
     def _validate_provider_response_model(
         self, *, requested_model: str, response_model: str
     ) -> None:
-        if self.require_exact_response_model and response_model != requested_model:
+        expected_response_model = self.response_model_map.get(requested_model, requested_model)
+        # Some gateways preserve the exact requested deployment alias while
+        # others return its exact versioned deployment identity. Both values
+        # are source-controlled by the request -> response map; every unrelated
+        # response identity still fails closed.
+        allowed_response_models = {requested_model, expected_response_model}
+        if self.require_exact_response_model and response_model not in allowed_response_models:
             raise _ProviderCallError("provider_protocol_model_mismatch")
 
     def _validate_provider_finish_reason(self, finish_reason: str) -> None:
@@ -1812,11 +1869,24 @@ class LLMClient:
             if (
                 self.require_exact_response_model
                 and "usage" in chunk
+                and chunk_usage is not None
                 and not isinstance(chunk_usage, dict)
             ):
                 raise _ProviderCallError("provider_protocol_usage_unverifiable")
-            if isinstance(chunk_usage, dict):
-                if self.require_exact_response_model and provider_usage_seen:
+            if isinstance(chunk_usage, dict) and chunk_usage:
+                usage_identity = {
+                    key: chunk_usage.get(key)
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                }
+                recorded_usage_identity = {
+                    key: provider_usage.get(key)
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                }
+                if (
+                    self.require_exact_response_model
+                    and provider_usage_seen
+                    and usage_identity != recorded_usage_identity
+                ):
                     raise _ProviderCallError("provider_protocol_usage_unverifiable")
                 provider_usage_seen = True
                 provider_usage.update(chunk_usage)

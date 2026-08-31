@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 
-FUNCTION_IR_VERSION = "zscope.function-ir-graph.v1"
+FUNCTION_IR_VERSION = "zscope.function-ir-graph.v2"
 
 
 def _canonical(value: Any) -> str:
@@ -92,6 +92,8 @@ class FunctionIRGraph:
     blocks: Tuple[FunctionIRBlock, ...]
     events: Tuple[FunctionIREvent, ...]
     ast_calls: Tuple[Dict[str, Any], ...]
+    ast_value_facts: Tuple[Dict[str, Any], ...]
+    ast_value_coverage_complete: bool
     code_snapshot_sha256: str
     backend_sha256: str
     coverage_complete: bool
@@ -145,6 +147,61 @@ class FunctionIRGraph:
         ast_target = ast_target if isinstance(ast_target, Mapping) else {}
         raw_calls = ast_target.get("call_exprs")
         calls = tuple(dict(item) for item in raw_calls or [] if isinstance(item, Mapping))
+        value_facts: list[Dict[str, Any]] = []
+
+        def add_value_fact(fact_kind: str, raw: Mapping[str, Any]) -> None:
+            body = {"fact_kind": fact_kind, **dict(raw)}
+            value_facts.append(
+                {
+                    "fact_uid": "ASTVAL_" + _sha(body)[:32],
+                    **body,
+                }
+            )
+
+        for value in ast_target.get("parameters") or []:
+            if isinstance(value, Mapping) and str(value.get("name") or ""):
+                add_value_fact("parameter", value)
+        for value in ast_target.get("call_assignments") or []:
+            if isinstance(value, Mapping) and str(value.get("target") or ""):
+                add_value_fact("call_assignment", value)
+        for call in calls:
+            argument_types = list(call.get("argument_types") or [])
+            argument_refs = list(call.get("argument_refs") or [])
+            argument_ref_types = list(call.get("argument_ref_types") or [])
+            for index in range(max(len(argument_types), len(argument_refs))):
+                add_value_fact(
+                    "call_argument",
+                    {
+                        "callee": str(call.get("callee") or ""),
+                        "line": int(call.get("line") or 0),
+                        "argument_index": index,
+                        "argument_type": str(
+                            argument_types[index] if index < len(argument_types) else ""
+                        ),
+                        "refs": list(argument_refs[index] if index < len(argument_refs) else []),
+                        "ref_types": dict(
+                            argument_ref_types[index]
+                            if index < len(argument_ref_types)
+                            and isinstance(argument_ref_types[index], Mapping)
+                            else {}
+                        ),
+                    },
+                )
+        for value in ast_target.get("conversions") or []:
+            if isinstance(value, Mapping):
+                add_value_fact("integer_conversion", value)
+        for value in ast_target.get("terminating_guards") or []:
+            if isinstance(value, Mapping):
+                add_value_fact("terminating_guard", value)
+        for value in ast_target.get("binary_ops") or []:
+            if isinstance(value, Mapping):
+                add_value_fact("binary_operator", value)
+        value_facts.sort(key=lambda value: str(value.get("fact_uid") or ""))
+        ast_value_coverage_complete = bool(
+            ast.get("parse_ok") is True
+            and ast_target
+            and ast_target.get("value_fact_coverage_complete") is True
+        )
         call_lines: Dict[str, list[int]] = {}
         for call in calls:
             callee = str(call.get("callee") or "")
@@ -227,16 +284,43 @@ class FunctionIRGraph:
             )
         entries = tuple(str(value) for value in cfg.get("entry_blocks") or [] if str(value))
         exits = tuple(str(value) for value in cfg.get("exit_blocks") or [] if str(value))
-        all_edges_valid = all(
-            target in block_ids
-            for block in blocks
-            for target in (*block.successors, *block.predecessors)
+        built_block_ids = tuple(block.block_uid for block in blocks)
+        built_block_set = set(built_block_ids)
+        raw_edges_valid = all(
+            str(target) in built_block_set
+            for raw_block in raw_blocks
+            if isinstance(raw_block, Mapping) and str(raw_block.get("id") or "")
+            for target in (
+                *(raw_block.get("successors") or []),
+                *(raw_block.get("predecessors") or []),
+            )
         )
+        edge_identities_unique = all(
+            len(block.successors) == len(set(block.successors))
+            and len(block.predecessors) == len(set(block.predecessors))
+            for block in blocks
+        )
+        successor_map = {block.block_uid: set(block.successors) for block in blocks}
+        reachable = {entries[0]} if len(entries) == 1 and entries[0] in built_block_set else set()
+        pending = list(reachable)
+        while pending:
+            current = pending.pop()
+            for target in successor_map.get(current, set()):
+                if target not in reachable:
+                    reachable.add(target)
+                    pending.append(target)
+        reachable_terminals = {value for value in reachable if not successor_map.get(value)}
         coverage_complete = bool(
             len(entries) == 1
+            and entries[0] in built_block_set
             and exits
             and blocks
-            and all_edges_valid
+            and len(built_block_ids) == len(set(built_block_ids))
+            and len(exits) == len(set(exits))
+            and set(exits) <= built_block_set
+            and set(exits) == reachable_terminals
+            and raw_edges_valid
+            and edge_identities_unique
             and cfg.get("truncated") is not True
             and cfg.get("parse_error") in (None, "")
         )
@@ -262,6 +346,8 @@ class FunctionIRGraph:
             "blocks": [asdict(value) for value in blocks],
             "events": [asdict(value) for value in events],
             "ast_calls": calls,
+            "ast_value_facts": value_facts,
+            "ast_value_coverage_complete": ast_value_coverage_complete,
             "code_snapshot_sha256": code_hash,
             "backend_sha256": backend_hash,
             "coverage_complete": coverage_complete,
@@ -276,6 +362,8 @@ class FunctionIRGraph:
             blocks=tuple(blocks),
             events=tuple(events),
             ast_calls=calls,
+            ast_value_facts=tuple(value_facts),
+            ast_value_coverage_complete=ast_value_coverage_complete,
             code_snapshot_sha256=code_hash,
             backend_sha256=backend_hash,
             coverage_complete=coverage_complete,
@@ -552,6 +640,10 @@ def graph_from_mapping(raw: Mapping[str, Any]) -> FunctionIRGraph:
         ast_calls=tuple(
             dict(value) for value in raw.get("ast_calls") or [] if isinstance(value, Mapping)
         ),
+        ast_value_facts=tuple(
+            dict(value) for value in raw.get("ast_value_facts") or [] if isinstance(value, Mapping)
+        ),
+        ast_value_coverage_complete=raw.get("ast_value_coverage_complete") is True,
         code_snapshot_sha256=str(raw.get("code_snapshot_sha256") or ""),
         backend_sha256=str(raw.get("backend_sha256") or ""),
         coverage_complete=raw.get("coverage_complete") is True,

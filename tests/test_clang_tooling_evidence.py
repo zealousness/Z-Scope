@@ -167,6 +167,104 @@ def test_clang_tooling_summarizes_ast_json() -> None:
     assert target["return_count"] == 1
 
 
+def test_clang_tooling_seals_typed_signed_length_flow_and_guard() -> None:
+    def ref(name: str, type_name: str = "") -> dict:
+        referenced = {"name": name}
+        if type_name:
+            referenced["type"] = {"qualType": type_name}
+        return {
+            "kind": "DeclRefExpr",
+            "type": {"qualType": type_name},
+            "referencedDecl": referenced,
+        }
+
+    recv_call = {
+        "kind": "CallExpr",
+        "loc": {"line": 12},
+        "type": {"qualType": "ssize_t"},
+        "inner": [ref("recv", "ssize_t (int, void *, size_t, int)"), ref("fd", "int")],
+    }
+    memcpy_call = {
+        "kind": "CallExpr",
+        "loc": {"line": 14},
+        "type": {"qualType": "void *"},
+        "inner": [
+            ref("memcpy", "void *(void *, const void *, size_t)"),
+            ref("dst", "void *"),
+            ref("src", "const void *"),
+            {
+                "kind": "ImplicitCastExpr",
+                "type": {"qualType": "size_t"},
+                "inner": [ref("n", "ssize_t")],
+            },
+        ],
+    }
+    ast = {
+        "kind": "TranslationUnitDecl",
+        "inner": [
+            {
+                "kind": "FunctionDecl",
+                "name": "demo",
+                "loc": {"line": 10},
+                "type": {"qualType": "void (int, void *, const void *)"},
+                "inner": [
+                    {"kind": "ParmVarDecl", "name": "fd", "type": {"qualType": "int"}},
+                    {
+                        "kind": "VarDecl",
+                        "name": "n",
+                        "loc": {"line": 12},
+                        "type": {"qualType": "ssize_t"},
+                        "inner": [recv_call],
+                    },
+                    {
+                        "kind": "IfStmt",
+                        "loc": {"line": 13},
+                        "inner": [
+                            {
+                                "kind": "BinaryOperator",
+                                "opcode": "<",
+                                "inner": [
+                                    ref("n", "ssize_t"),
+                                    {"kind": "IntegerLiteral", "value": "0"},
+                                ],
+                            },
+                            {"kind": "CompoundStmt", "inner": [{"kind": "ReturnStmt"}]},
+                        ],
+                    },
+                    memcpy_call,
+                ],
+            }
+        ],
+    }
+
+    summary = ClangToolingEvidenceProvider._summarize_ast_json(json.dumps(ast), func_name="demo")
+
+    target = summary["target_function"]
+    assert target["value_fact_coverage_complete"] is True
+    assert target["parameters"] == [{"name": "fd", "type": "int", "line": 0}]
+    assert target["call_assignments"][0]["target"] == "n"
+    assert target["call_assignments"][0]["result_type"] == "ssize_t"
+    memcpy = next(call for call in target["call_exprs"] if call["callee"] == "memcpy")
+    assert memcpy["argument_types"][2] == "size_t"
+    assert memcpy["argument_refs"][2] == ["n"]
+    assert memcpy["argument_ref_types"][2] == {"n": "ssize_t"}
+    assert target["terminating_guards"] == [
+        {
+            "line": 13,
+            "comparisons": [
+                {
+                    "opcode": "<",
+                    "lhs_refs": ["n"],
+                    "rhs_refs": [],
+                    "lhs_integer_literals": [],
+                    "rhs_integer_literals": ["0"],
+                }
+            ],
+            "terminates_then_branch": True,
+        }
+    ]
+
+
 def test_ast_summary_ignores_stderr_diagnostics(monkeypatch) -> None:
     ast = {
         "kind": "TranslationUnitDecl",

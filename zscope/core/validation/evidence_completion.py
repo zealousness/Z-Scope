@@ -791,21 +791,40 @@ class EvidenceCompletionQueue:
         category = str(issue.get("defect_class") or issue.get("category") or "").lower()
         for raw_kind in missing:
             kind = str(raw_kind or "").strip().lower()
-            add(kind)
-            if kind in {"event:shared_state_access", "event:lock", "event:unlock"}:
-                add("lockset")
-                add("happens_before")
-            elif kind in {"event:acquire", "event:exit", "event:release"}:
-                add("cleanup_coverage")
-                add("ownership_transfer")
-                add("caller_contract")
-            elif kind in {"source", "sink", "guard", "sanitizer"}:
-                add("source_controllability")
-                add("source_sink_reachability")
-                add("guard_dominance")
+            if kind in {
+                "source",
+                "sink",
+                "reachability",
+                "source_sink_reachability",
+            }:
+                # Older frozen candidates may already have projected the
+                # observation labels to ``source_sink_reachability``.  Route
+                # that legacy projection through the same semantic selector;
+                # otherwise the weaker path predicate survives beside the
+                # required value/source contract and can be mistaken for the
+                # terminal obligation during resume/replay.
                 if any(token in category for token in ("bound", "overflow", "size", "index")):
                     add("value_range")
-                    add("type_layout")
+                elif any(token in category for token in ("inject", "format", "untrusted", "taint")):
+                    add("source_controllability")
+                else:
+                    add("source_sink_reachability")
+            else:
+                add(kind)
+            if kind in {"event:shared_state_access", "event:lock", "event:unlock"}:
+                add("lockset")
+            elif kind in {"event:acquire", "event:exit", "event:release"}:
+                add("cleanup_coverage")
+            elif kind in {"guard", "sanitizer"}:
+                add("guard_dominance")
+
+        # Low-level observation labels select one semantic predicate; they do
+        # not make every adjacent predicate conjunctive.  For example, an
+        # acquisition/exit pair asks whether cleanup covers every exit.  A
+        # separate ownership-transfer or caller-contract clause is required
+        # only when the immutable obligation names it explicitly.  The prior
+        # fan-out made a complete local CFG proof impossible whenever an
+        # unrelated external-contract provider was unavailable.
 
         # Older candidates can carry a partial promotion status without an
         # explicit missing-kind list.  Use the defect family only to select
@@ -813,19 +832,12 @@ class EvidenceCompletionQueue:
         if not ordered and issue.get("candidate_promotion_eligible") is False:
             if any(token in category for token in ("race", "lock", "thread", "concurr")):
                 add("lockset")
-                add("happens_before")
             elif any(token in category for token in ("leak", "release", "ownership", "free")):
                 add("cleanup_coverage")
-                add("ownership_transfer")
-                add("caller_contract")
             elif any(token in category for token in ("bound", "overflow", "size", "index")):
                 add("value_range")
-                add("guard_dominance")
-                add("source_sink_reachability")
-                add("type_layout")
             else:
                 add("caller_contract")
-                add("source_sink_reachability")
         return tuple(ordered)
 
     @staticmethod

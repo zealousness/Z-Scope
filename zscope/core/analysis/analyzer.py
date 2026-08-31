@@ -9,6 +9,7 @@ import logging
 import time
 import datetime
 import inspect
+import os
 import re
 import subprocess
 import threading
@@ -150,6 +151,89 @@ from ...reporting.schema import report_reuse_blockers
 
 logger = logging.getLogger(__name__)
 
+_SOURCE_REVISION_SUFFIXES = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".h",
+        ".hh",
+        ".hpp",
+        ".hxx",
+        ".inc",
+        ".inl",
+        ".java",
+    }
+)
+_SOURCE_REVISION_EXCLUDED_DIRECTORIES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".venv",
+        ".zscope_knowledge",
+        ".zscope_snapshots",
+        "__pycache__",
+        "build",
+        "node_modules",
+        "out",
+        "target",
+        "venv",
+    }
+)
+
+
+def analysis_source_revision(project_root: Path) -> str:
+    """Return a path-independent revision for Git and sealed source copies.
+
+    Sealed and copied inputs deliberately omit ``.git``.  Candidate, SecuritySpec,
+    and Hunter identities still require an immutable source revision, so a
+    deterministic source manifest is used when no Git commit is available.
+    Generated/cache directories and symlinks are excluded from that manifest.
+    """
+
+    root = Path(project_root)
+    commit = Analyzer._git_commit_sha(root)
+    if commit:
+        return commit
+    digest = hashlib.sha256()
+    digest.update(b"zscope.source-revision.v1\0")
+    if not root.is_dir() or root.is_symlink():
+        return digest.hexdigest()
+    rows: list[tuple[str, Path]] = []
+    for current_root, directory_names, file_names in os.walk(root, followlinks=False):
+        directory_names[:] = sorted(
+            name
+            for name in directory_names
+            if name not in _SOURCE_REVISION_EXCLUDED_DIRECTORIES
+            and not (Path(current_root) / name).is_symlink()
+        )
+        current = Path(current_root)
+        for name in sorted(file_names):
+            path = current / name
+            if path.is_symlink() or path.suffix.lower() not in _SOURCE_REVISION_SUFFIXES:
+                continue
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            rows.append((relative, path))
+    for relative, path in sorted(rows):
+        encoded = relative.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        try:
+            with path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+        except OSError:
+            # A disappearing or unreadable source must not produce a partial
+            # identity that looks complete.
+            return ""
+    return digest.hexdigest()
+
+
 DEFAULT_SCAN_STEP_IDS = (
     "collect_candidates",
     "validate_candidates",
@@ -272,6 +356,7 @@ class Analyzer:
                     api_key=llm_cfg.api_key,
                     base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                     models=llm_cfg.models,
+                    response_model_map=getattr(llm_cfg, "response_model_map", {}),
                     timeout=minimum_optional_positive_seconds(
                         llm_cfg.timeout,
                         getattr(
@@ -323,7 +408,7 @@ class Analyzer:
                 getattr(config.project, "project_id", "") or config.project.project_root.name
             ),
             project_root=str(config.project.project_root),
-            revision=self._git_commit_sha(config.project.project_root),
+            revision=analysis_source_revision(config.project.project_root),
             decision_trace_store=self.decision_trace_store,
         )
         if self.candidate_ledger.decision_trace_store is None:
@@ -1070,6 +1155,7 @@ class Analyzer:
             HypothesisArtifactStore(Path(self.config.analysis.snapshot_dir) / "hypothesis_hunter"),
             risk_threshold=profile.risk_threshold,
             max_units=profile.max_units,
+            max_concurrent_calls=int(self.config.concurrency.llm_max_inflight),
             model_profile=profile.name,
         ).run(
             semantic_map,
@@ -4267,7 +4353,7 @@ class Analyzer:
             ).hexdigest(),
             revisions={
                 "security_spec_compiler": SecuritySpecCompiler.compiler_version,
-                "hypothesis_hunter": "hypothesis-hunter.v2",
+                "hypothesis_hunter": "hypothesis-hunter.v3",
                 "proof_registry": "proof-kernel.v2",
                 "proof_checker": "proof-checker.v2",
                 "proof_provider": "proof-provider.v2",

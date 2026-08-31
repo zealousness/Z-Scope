@@ -1,4 +1,4 @@
-"""Read and verify the frozen P4 qualification artifact."""
+"""Read and verify the current Hypothesis Hunter qualification artifact."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from ...core.validation.proof_kernel.canonical import content_sha256
 
 
 def load_builtin_qualification() -> dict[str, Any]:
-    resource = files(__package__).joinpath("qualification/qualification-artifact.json")
+    resource = files(__package__).joinpath("qualification/qualification-artifact.v2.json")
     raw = json.loads(resource.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("P4 qualification artifact must be an object")
     supplied = str(raw.get("content_sha256") or "")
     body = {key: value for key, value in raw.items() if key != "content_sha256"}
     if (
-        raw.get("schema_version") != "zscope.p4-hypothesis-qualification.v1"
+        raw.get("schema_version") != "zscope.p4-hypothesis-qualification.v2"
         or content_sha256(body) != supplied
         or int(raw.get("case_count", 0) or 0) < 120
         or int(raw.get("safe_case_count", 0) or 0) < 48

@@ -71,6 +71,7 @@ class RuleDrivenAnalyzer:
                 api_key=llm_cfg.api_key,
                 base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                 models=llm_cfg.models,
+                response_model_map=getattr(llm_cfg, "response_model_map", {}),
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
                 retry_until_available=getattr(llm_cfg, "retry_until_available", False),
