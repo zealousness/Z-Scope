@@ -44,6 +44,7 @@ from zscope.core.validation.fact_capabilities import (
 from zscope.framework.llm_client import LLMClient
 from zscope.framework.llm_usage import llm_usage_attribution_scope
 from zscope.orchestration.decision_trace import DecisionTraceError
+from zscope.benchmarking.provider_runtime import P6_PROVIDER_MODEL, P6_PROVIDER_RESPONSE_MODEL
 
 
 def _verify_preflight(path: Path, expected_sha256: str) -> Dict[str, Any]:
@@ -168,6 +169,7 @@ def _client(config: Any) -> tuple[LLMClient, Any, str]:
         supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
         token_usage_ledger=config.scan_token_usage_ledger,
         llm_ref=profile,
+        response_model_map=getattr(llm_cfg, "response_model_map", None),
     )
     return client, config.scan_token_usage_ledger, profile
 
@@ -421,10 +423,11 @@ def run_canary(
         if isinstance(event, Mapping) and event.get("outcome") == "success"
     ]
     requested_model_count = sum(
-        event.get("requested_model") == "GLM-5.2" for event in successful_events
+        event.get("requested_model") == P6_PROVIDER_MODEL for event in successful_events
     )
     response_model_count = sum(
-        event.get("provider_response_model") == "GLM-5.2" for event in successful_events
+        event.get("provider_response_model") in {P6_PROVIDER_MODEL, P6_PROVIDER_RESPONSE_MODEL}
+        for event in successful_events
     )
     physical_calls = int(usage_totals.get("request_count") or 0)
     provider_reported_calls = int(usage_totals.get("provider_reported_calls") or 0)
@@ -476,17 +479,17 @@ def run_canary(
         "provider_reported_call_count": provider_reported_calls,
         "estimated_call_count": estimated_calls,
         "provider_usage_coverage": provider_coverage,
-        "requested_model": "GLM-5.2",
+        "requested_model": P6_PROVIDER_MODEL,
         "requested_model_coverage": requested_coverage,
-        "response_model": "GLM-5.2",
+        "response_model": P6_PROVIDER_RESPONSE_MODEL,
         "response_model_coverage": response_coverage,
         "queue_empty": int(usage_snapshot.get("active_reservation_count") or 0) == 0,
         "dimensions": dimensions,
     }
     model_identity_counts = {
         "successful_call_count": len(successful_events),
-        "requested_glm_5_2_count": requested_model_count,
-        "response_glm_5_2_count": response_model_count,
+        "requested_model_count": requested_model_count,
+        "response_model_count": response_model_count,
     }
     usage_conservation_passed = bool(
         physical_calls >= 1

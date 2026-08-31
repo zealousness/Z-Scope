@@ -332,6 +332,7 @@ def _executor(
     provider_contract = ProviderRuntimeContract(
         base_url="https://models.internal/v1",
         model="glm-5.1",
+        response_model="glm-5.1",
         config_sha256="c" * 64,
         required_environment_keys=("Z_SCOPE_API_KEY",),
         identity_sha256="d" * 64,

@@ -31,6 +31,7 @@ from zscope.benchmarking.p6_protocol import (
     validate_usage_conservation,
     write_json_exclusive,
 )
+from zscope.benchmarking.provider_runtime import P6_PROVIDER_MODEL
 
 
 P6_REVIEW_PACKET_SCHEMA_VERSION = "zscope.p6-review-packet.v1"
@@ -432,7 +433,7 @@ def load_reviewer_identity_manifest(path: Optional[Path] = None) -> Mapping[str,
         raise P6ProtocolError("P6 reviewer identity manifest fields are invalid")
     if value.get("schema_version") != "zscope.p6-reviewer-identities.v1":
         raise P6ProtocolError("P6 reviewer identity manifest version is invalid")
-    if value.get("scanner") != {"model": "GLM-5.2", "review_eligible": False}:
+    if value.get("scanner") != {"model": P6_PROVIDER_MODEL, "review_eligible": False}:
         raise P6ProtocolError("P6 scanner identity cannot be used as an independent reviewer")
     if value.get("reviewers") != FROZEN_REVIEWER_IDENTITIES:
         raise P6ProtocolError("P6 reviewer identities differ from the frozen contract")
@@ -519,7 +520,7 @@ def project_role_evidence(qualification: Mapping[str, Any], *, role: str) -> Map
     for name in ("artifact_sha256", "provider_identity_sha256", "config_sha256"):
         _expect_sha256(provider_probe.get(name), f"provider probe {name}")
     if (
-        provider_probe.get("model") != "GLM-5.2"
+        provider_probe.get("model") != P6_PROVIDER_MODEL
         or provider_probe.get("call_count") != 1
         or provider_probe.get("provider_usage_coverage") != 1.0
         or provider_probe.get("estimated_provider_call_count") != 0
