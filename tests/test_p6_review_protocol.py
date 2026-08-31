@@ -1214,6 +1214,7 @@ def test_reviewer_version_probe_accepts_only_the_exact_harness_output(
 ) -> None:
     executable = tmp_path / "reviewer"
     executable.write_text("frozen reviewer", encoding="utf-8")
+    executable.chmod(0o700)
     observed_commands: list[list[str]] = []
 
     def run(command: list[str], **_kwargs: object) -> object:

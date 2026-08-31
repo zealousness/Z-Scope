@@ -40,6 +40,7 @@ P6_MAX_CONCURRENT_CALLS = 8
 
 _ENV_REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 _ENV_ASSIGNMENT_RE = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\Z")
+_FILE_SNAPSHOT_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
 
 PROVIDER_FAILURE_CLASSES = frozenset(
     {
@@ -142,7 +143,7 @@ def load_p6_provider_failure_marker(path: Path) -> dict[str, Any]:
             opened = os.fstat(descriptor)
             if (
                 not stat.S_ISREG(opened.st_mode)
-                or (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino)
+                or _file_snapshot_changed(metadata, opened)
                 or opened.st_size <= 0
                 or opened.st_size > 1024
             ):
@@ -154,10 +155,9 @@ def load_p6_provider_failure_marker(path: Path) -> dict[str, Any]:
                     break
                 raw.extend(chunk)
             completed = os.fstat(descriptor)
-            stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
             if len(raw) > 1024 or any(
                 getattr(opened, name, None) != getattr(completed, name, None)
-                for name in stable_fields
+                for name in _FILE_SNAPSHOT_FIELDS
                 if hasattr(opened, name) and hasattr(completed, name)
             ):
                 raise ProviderRuntimeError("P6 provider failure marker changed during read")
@@ -203,6 +203,21 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _file_snapshot_changed(before: Any, after: Any) -> bool:
+    """Return whether a no-follow file changed across two observations.
+
+    Device and inode alone are insufficient because an unlink followed by an
+    immediate create may reuse the inode. Size and nanosecond timestamps close
+    that replacement window; the post-read comparison still detects mutation
+    of an already-open file.
+    """
+
+    return any(
+        getattr(before, field, None) != getattr(after, field, None)
+        for field in _FILE_SNAPSHOT_FIELDS
+    )
+
+
 def _read_config_snapshot(path: Path) -> tuple[Any, str]:
     """Read one immutable, no-follow config snapshot for parsing and hashing."""
 
@@ -220,7 +235,7 @@ def _read_config_snapshot(path: Path) -> tuple[Any, str]:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise ProviderRuntimeError("benchmark provider config must be a regular file")
-        if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+        if _file_snapshot_changed(metadata, opened):
             raise ProviderRuntimeError("benchmark provider config changed during validation")
         if opened.st_size > 8 * 1024 * 1024:
             raise ProviderRuntimeError("benchmark provider config exceeds the size limit")
@@ -233,10 +248,9 @@ def _read_config_snapshot(path: Path) -> tuple[Any, str]:
             if len(payload) > 8 * 1024 * 1024:
                 raise ProviderRuntimeError("benchmark provider config exceeds the size limit")
         completed = os.fstat(descriptor)
-        stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
         if any(
             getattr(opened, name, None) != getattr(completed, name, None)
-            for name in stable_fields
+            for name in _FILE_SNAPSHOT_FIELDS
             if hasattr(opened, name) and hasattr(completed, name)
         ):
             raise ProviderRuntimeError("benchmark provider config changed during validation")
@@ -494,7 +508,7 @@ def load_explicit_api_key_file(path: Path) -> dict[str, str]:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise ProviderRuntimeError("provider credential file must be a regular file")
-        if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+        if _file_snapshot_changed(metadata, opened):
             raise ProviderRuntimeError("provider credential file changed during validation")
         if stat.S_IMODE(opened.st_mode) & (stat.S_IRWXG | stat.S_IRWXO):
             raise ProviderRuntimeError("provider credential file permissions are too broad")
@@ -509,10 +523,9 @@ def load_explicit_api_key_file(path: Path) -> dict[str, str]:
             if len(payload) > 1024 * 1024:
                 raise ProviderRuntimeError("provider credential file exceeds the size limit")
         completed = os.fstat(descriptor)
-        stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
         if any(
             getattr(opened, name, None) != getattr(completed, name, None)
-            for name in stable_fields
+            for name in _FILE_SNAPSHOT_FIELDS
             if hasattr(opened, name) and hasattr(completed, name)
         ):
             raise ProviderRuntimeError("provider credential file changed during validation")
