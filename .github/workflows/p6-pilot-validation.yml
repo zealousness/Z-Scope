@@ -39,8 +39,8 @@ jobs:
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
-      failure_class: ${{ steps.authority.outputs.failure_class }}
-      failure_count: ${{ steps.authority.outputs.failure_count }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 15
@@ -137,6 +137,8 @@ jobs:
           PY
       - name: Verify runner-owned secret and frozen-input authority before any model call
         id: authority
+        env:
+          P6_ENTRY_FAILURE_MARKER: ${{ runner.temp }}/p6-entry-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
         run: |
           set -euo pipefail
           validate_authority() {
@@ -211,13 +213,34 @@ jobs:
           PY
           }
           if ! validate_authority >/dev/null 2>&1; then
-            echo 'failure_class=input_binding_failure' >> "$GITHUB_OUTPUT"
-            echo 'failure_count=1' >> "$GITHUB_OUTPUT"
+            python3 - <<'PY' >/dev/null 2>&1
+          import json
+          import os
+          from pathlib import Path
+
+          runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          marker = Path(os.environ["P6_ENTRY_FAILURE_MARKER"])
+          if marker.parent.resolve(strict=True) != runner_temp or marker.name != (
+              f"p6-entry-failure-{os.environ['GITHUB_RUN_ID']}-"
+              f"{os.environ['GITHUB_RUN_ATTEMPT']}.json"
+          ):
+              raise SystemExit(2)
+          flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+          if hasattr(os, "O_NOFOLLOW"):
+              flags |= os.O_NOFOLLOW
+          descriptor = os.open(marker, flags, 0o600)
+          with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+              json.dump(
+                  {"failure_class": "input_binding_failure", "failure_count": 1},
+                  handle,
+                  sort_keys=True,
+                  separators=(",", ":"),
+              )
+              handle.write("\n")
+          PY
             echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
             exit 2
           fi
-          echo 'failure_class=' >> "$GITHUB_OUTPUT"
-          echo 'failure_count=0' >> "$GITHUB_OUTPUT"
       - name: Seal answer-free entry evidence
         run: |
           set -euo pipefail
@@ -292,6 +315,14 @@ jobs:
         with:
           name: p6-entry-evidence-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
           path: control/entry-evidence.json
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: entry
+          default-class: internal_failure
+          marker: ${{ runner.temp }}/p6-entry-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
 
   provider_probe:
     name: source-free GLM-5.2 provider probe
@@ -2908,7 +2939,7 @@ jobs:
               break
             fi
           done <<EOF
-          $ENTRY_RESULT:entry:$ENTRY_FAILURE_CLASS:entry_e0_unattested:$ENTRY_FAILURE_COUNT
+          $ENTRY_RESULT:entry:$ENTRY_FAILURE_CLASS:internal_failure:$ENTRY_FAILURE_COUNT
           $PROVIDER_RESULT:provider_probe:$PROVIDER_FAILURE_CLASS:provider_protocol_incompatible:$PROVIDER_FAILURE_COUNT
           $TOOLCHAIN_RESULT:toolchain_oci_preflight:$TOOLCHAIN_FAILURE_CLASS:oci_capability_failed:$TOOLCHAIN_FAILURE_COUNT
           $POLICY_RESULT:policy_replay:$POLICY_FAILURE_CLASS:replay_nondeterministic:$POLICY_FAILURE_COUNT

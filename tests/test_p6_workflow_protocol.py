@@ -399,13 +399,27 @@ def test_p6_scanner_cleanup_is_exact_label_scoped_and_survives_failure() -> None
 def test_provider_failure_output_is_typed_and_bound_to_the_probe_job() -> None:
     _, workflow = _workflow()
     assert workflow["jobs"]["entry"]["outputs"]["failure_class"] == (
-        "${{ steps.authority.outputs.failure_class }}"
+        "${{ steps.classify.outputs.failure-class }}"
+    )
+    assert workflow["jobs"]["entry"]["outputs"]["failure_count"] == (
+        "${{ steps.classify.outputs.failure-count }}"
     )
     authority = next(
         step for step in workflow["jobs"]["entry"]["steps"] if step.get("id") == "authority"
     )
     assert "validate_authority >/dev/null 2>&1" in authority["run"]
     assert "stage=entry_input; class=input_binding_failure:1; count=1" in authority["run"]
+    assert "P6_ENTRY_FAILURE_MARKER" in authority["env"]
+    assert "os.O_EXCL" in authority["run"] and "os.O_NOFOLLOW" in authority["run"]
+    assert '"failure_class": "input_binding_failure"' in authority["run"]
+    entry_classifier = next(
+        step for step in workflow["jobs"]["entry"]["steps"] if step.get("id") == "classify"
+    )
+    assert entry_classifier["if"] == "${{ always() }}"
+    assert entry_classifier["with"]["status"] == "${{ job.status }}"
+    assert entry_classifier["with"]["execution-stage"] == "entry"
+    assert entry_classifier["with"]["default-class"] == "internal_failure"
+    assert entry_classifier["with"]["marker"] == authority["env"]["P6_ENTRY_FAILURE_MARKER"]
     assert "str(exc)" not in authority["run"]
     assert workflow["jobs"]["provider_probe"]["outputs"]["failure_class"] == (
         "${{ steps.probe.outputs.failure_class }}"
@@ -652,6 +666,7 @@ def test_failure_boundary_tracks_each_offline_stage_independently() -> None:
 def test_every_p6_producer_exports_one_always_typed_failure_result() -> None:
     _, workflow = _workflow()
     producers = {
+        "entry": "entry",
         "toolchain_oci": "toolchain_oci_preflight",
         "policy_replay": "policy_replay",
         "certificate_reverify": "certificate_reverify",
@@ -677,6 +692,12 @@ def test_every_p6_producer_exports_one_always_typed_failure_result() -> None:
         assert classify["if"] == "${{ always() }}"
         assert classify["with"]["status"] == "${{ job.status }}"
         assert classify["with"]["execution-stage"] == stage
+
+    classifier = Path(".github/actions/classify-p6-job-failure/action.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "marker_was_present = False" in classifier
+    assert "if marker_was_present:" in classifier
 
 
 def test_failure_checkpoint_restores_and_seals_only_the_longest_exact_prefix() -> None:
