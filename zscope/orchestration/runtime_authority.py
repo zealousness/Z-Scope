@@ -1,8 +1,8 @@
-"""Strict P5 runtime-authority identity and cache epoch.
+"""Strict runtime-authority identity and cache epoch.
 
 The manifest is data, not a feature switch.  Public entry points bind the same
-semantic, hunting, proof, and trace revisions so pre-P5 reports cannot be
-mistaken for current decision evidence.
+semantic, hunting, proof, and trace revisions so pre-P6 proof results cannot
+be mistaken for current decision evidence.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from .decision_trace import DECISION_TRACE_SCHEMA_VERSION
 
 
 RUNTIME_AUTHORITY_SCHEMA_VERSION = "zscope.runtime-authority-manifest.v1"
-RUNTIME_AUTHORITY_PROTOCOL_REVISION = 1
-RUNTIME_CACHE_EPOCH = "zscope.runtime-authority.p5"
+RUNTIME_AUTHORITY_PROTOCOL_REVISION = 2
+RUNTIME_CACHE_EPOCH = "zscope.runtime-authority.p6-proof-v4"
 P5_RELEASE_STATUS_SCHEMA_VERSION = "zscope.p5-release-status.v1"
 SECURITY_SPEC_MODE = "authoritative"
 HYPOTHESIS_HUNTER_MODE = "active"
