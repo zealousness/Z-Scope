@@ -17,6 +17,10 @@ from threading import BoundedSemaphore, Lock
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from ...retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
+from ..candidates.decision_facts import (
+    SECURITY_OBLIGATION_VERSION,
+    security_obligation_for,
+)
 from .function_ir import FUNCTION_IR_VERSION, FunctionIREvent, FunctionIRGraph, graph_from_mapping
 from .proof_kernel.checker import ProofChecker
 from .proof_kernel.models import (
@@ -28,7 +32,16 @@ from .proof_kernel.models import (
     validate_certificate_envelope,
 )
 from .proof_kernel.provider import ProofProvider
-from .proof_kernel.registry import PREDICATE_REGISTRY, signed_unsigned_flow_options
+from .proof_kernel.registry import (
+    PREDICATE_REGISTRY,
+    build_cross_thread_function_ir,
+    function_ir_compound_wrappers,
+    qualified_bounds_options,
+    qualified_command_flow_options,
+    qualified_race_options,
+    qualified_resource_leak_options,
+    signed_unsigned_flow_options,
+)
 
 
 CAPABILITY_REGISTRY_VERSION = "zscope.fact-capability-registry.v1"
@@ -53,6 +66,20 @@ _FACT_PREDICATES = {
     "type_layout": "record_layout_matches",
     "value_range": "signed_value_reaches_unsigned_sink",
 }
+
+# Product-owned composite proof shapes.  These are vulnerability obligations,
+# not a restatement of a model verdict or of a RequiredFactPlan.  Every shape
+# freezes the complete set of clauses needed for one terminal decision.  A
+# clause for which the current registry has no closed-world predicate remains
+# in ``open_clauses`` so the sole ProofKernel reducer fails closed.
+_RACE_FAMILY_TOKENS = frozenset({"race", "lock", "thread", "concurr"})
+_LEAK_FAMILY_TOKENS = frozenset({"leak", "release", "acquire", "ownership", "resource", "free"})
+_BOUNDS_FAMILY_TOKENS = frozenset(
+    {"bound", "overflow", "length", "size", "index", "range", "integer"}
+)
+_DATAFLOW_FAMILY_TOKENS = frozenset(
+    {"dataflow", "injection", "taint", "source", "sink", "path", "command"}
+)
 
 SUPPORTED_FACT_KINDS = frozenset(
     {
@@ -96,6 +123,20 @@ def _subject(issue: Mapping[str, Any]) -> str:
     )
 
 
+def _candidate_subject(issue: Mapping[str, Any]) -> str:
+    """Rebuild the candidate subject without trusting its frozen obligation."""
+
+    return str(
+        issue.get("resource_identity")
+        or issue.get("thread_object")
+        or issue.get("subject_uid")
+        or issue.get("resource")
+        or issue.get("source_identity")
+        or issue.get("source")
+        or ""
+    )
+
+
 def _region(issue: Mapping[str, Any]) -> str:
     obligation = issue.get("security_obligation")
     obligation = obligation if isinstance(obligation, Mapping) else {}
@@ -118,6 +159,10 @@ def _structured_endpoint(value: Any) -> Mapping[str, Any]:
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, Mapping) else {}
+
+
+def _identity_text(value: Any) -> str:
+    return str(value or "").strip().casefold()
 
 
 def _issue_file(issue: Mapping[str, Any]) -> str:
@@ -548,7 +593,12 @@ class PathAndGuardProofProvider(_CertificateProvider):
             source_record = graph.statement_map.get(source_statement)
             source = source_record.block_uid if source_record else ""
         if fact_kind == "value_range":
-            options = signed_unsigned_flow_options(function_summary_from_graph(graph))
+            options = signed_unsigned_flow_options(
+                function_summary_from_graph(
+                    graph,
+                    wrapper_summaries=function_ir_compound_wrappers(graph),
+                )
+            )
             fixed = {str(key): str(value) for key, value in parameters.items()}
             if fixed in options:
                 return self.result(
@@ -756,8 +806,15 @@ class ContractAndTypeProofProvider(_CertificateProvider):
 class FunctionIRFactService:
     """Build one cached FunctionIRGraph and expose finite proof actions."""
 
-    def __init__(self, compile_commands_path: Optional[Path], *, enabled: bool) -> None:
+    def __init__(
+        self,
+        compile_commands_path: Optional[Path],
+        *,
+        enabled: bool,
+        code_index: Any = None,
+    ) -> None:
         self.enabled = bool(enabled)
+        self._code_index = code_index
         self._clang = ClangToolingEvidenceProvider(
             compile_commands_path,
             execute=self.enabled,
@@ -783,6 +840,242 @@ class FunctionIRFactService:
         }
         self._proof_provider = ProofProvider()
         self._proof_checker = ProofChecker()
+
+    @staticmethod
+    def _thread_entry_target(statement: str, callee: str) -> str:
+        if callee == "pthread_create":
+            match = re.fullmatch(
+                r"\s*pthread_create\s*\(\s*[^,()]+\s*,\s*[^,()]+\s*,\s*&?\s*"
+                r"([A-Za-z_]\w*)\s*,\s*[^,()]+\s*\)\s*;?\s*",
+                statement,
+            )
+        elif callee == "thrd_create":
+            match = re.fullmatch(
+                r"\s*thrd_create\s*\(\s*[^,()]+\s*,\s*&?\s*([A-Za-z_]\w*)\s*,\s*"
+                r"[^,()]+\s*\)\s*;?\s*",
+                statement,
+            )
+        else:
+            return ""
+        return str(match.group(1)) if match else ""
+
+    @staticmethod
+    def _same_file(left: str, right: str) -> bool:
+        first = str(left or "").replace("\\", "/").lstrip("./")
+        second = str(right or "").replace("\\", "/").lstrip("./")
+        return bool(
+            first
+            and second
+            and (first == second or first.endswith("/" + second) or second.endswith("/" + first))
+        )
+
+    def _unique_function_identity(
+        self,
+        function: str,
+        file_hint: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        finder = getattr(self._code_index, "find_function_identities", None)
+        if not callable(finder):
+            return None
+        try:
+            raw = finder(function, file_path=file_hint)
+        except Exception:
+            return None
+        identities = [dict(value) for value in raw or [] if isinstance(value, Mapping)]
+        if len(identities) != 1:
+            return None
+        identity = identities[0]
+        if (
+            str(identity.get("function_name") or "") != function
+            or not str(identity.get("file_path") or "")
+            or int(identity.get("start_line") or 0) <= 0
+        ):
+            return None
+        return identity
+
+    def _graph_for_identity(self, identity: Mapping[str, Any]) -> Optional[FunctionIRGraph]:
+        return self.graph(
+            {
+                "function": str(identity.get("function_name") or ""),
+                "function_signature": str(identity.get("function_name") or ""),
+                "file": str(identity.get("file_path") or ""),
+                "line": int(identity.get("start_line") or 0),
+            },
+            {},
+        )
+
+    def _qualified_global_binding(
+        self,
+        *,
+        worker_identities: Sequence[Mapping[str, Any]],
+        object_uid: str,
+    ) -> Optional[Dict[str, Any]]:
+        finder = getattr(self._code_index, "find_function_infos", None)
+        if not callable(finder):
+            return None
+        bindings: list[Dict[str, Any]] = []
+        for identity in worker_identities:
+            try:
+                raw_infos = finder(
+                    str(identity.get("function_name") or ""),
+                    file_path=str(identity.get("file_path") or ""),
+                )
+            except Exception:
+                return None
+            infos = [dict(value) for value in raw_infos or [] if isinstance(value, Mapping)]
+            if len(infos) != 1 or "referenced_globals_truncation" in infos[0]:
+                return None
+            matches = [
+                dict(value)
+                for value in infos[0].get("referenced_globals") or []
+                if isinstance(value, Mapping) and str(value.get("name") or "") == object_uid
+            ]
+            if len(matches) != 1:
+                return None
+            binding = matches[0]
+            if (
+                not str(binding.get("type") or "")
+                or not str(binding.get("file_path") or "")
+                or int(binding.get("line") or 0) <= 0
+                or str(binding.get("access") or "") not in {"read", "write", "read_write"}
+                or re.search(
+                    r"\b(?:_Atomic|atomic_)\w*",
+                    str(binding.get("type") or ""),
+                    re.IGNORECASE,
+                )
+            ):
+                return None
+            bindings.append(binding)
+        identity_keys = {
+            (
+                str(value.get("name") or ""),
+                str(value.get("type") or ""),
+                str(value.get("file_path") or "").replace("\\", "/"),
+                int(value.get("line") or 0),
+                str(value.get("storage_class") or ""),
+                tuple(map(str, value.get("qualifiers") or [])),
+            )
+            for value in bindings
+        }
+        if len(identity_keys) != 1:
+            return None
+        name, type_name, file_path, line, storage_class, qualifiers = next(iter(identity_keys))
+        return {
+            "name": name,
+            "type": type_name,
+            "file_path": file_path,
+            "line": line,
+            "storage_class": storage_class,
+            "qualifiers": list(qualifiers),
+        }
+
+    def _product_cross_thread_function_ir(
+        self,
+        issue: Mapping[str, Any],
+        candidate_graph: FunctionIRGraph,
+    ) -> Optional[Dict[str, Any]]:
+        """Construct race proof input exclusively from product-owned indexes.
+
+        Candidate evidence and Validator/model envelopes are deliberately not
+        consulted.  Any ambiguity in callback registration, function identity,
+        global identity, Clang graph coverage, or thread topology leaves the
+        compound race clauses open.
+        """
+
+        if self._code_index is None or not self.enabled:
+            return None
+        candidate_function = candidate_graph.function
+        object_uid = _subject(issue)
+        if not re.fullmatch(r"[A-Za-z_]\w*", object_uid):
+            return None
+        pointer_finder = getattr(self._code_index, "find_function_pointers", None)
+        if not callable(pointer_finder):
+            return None
+        try:
+            raw_pointers = pointer_finder(candidate_function)
+        except Exception:
+            return None
+        pointer_identities = {
+            (
+                str(value.get("caller") or value.get("name") or ""),
+                str(value.get("file") or value.get("filename") or ""),
+            )
+            for value in raw_pointers or []
+            if isinstance(value, Mapping)
+            and str(value.get("caller") or value.get("name") or "")
+            and str(value.get("file") or value.get("filename") or "")
+        }
+        if len(pointer_identities) != 1:
+            return None
+        creator_name, creator_file = next(iter(pointer_identities))
+        creator_identity = self._unique_function_identity(creator_name, creator_file)
+        if creator_identity is None:
+            return None
+        creator_graph = self._graph_for_identity(creator_identity)
+        if creator_graph is None:
+            return None
+        worker_names = []
+        for event in creator_graph.events:
+            if event.kind != "thread_create":
+                continue
+            statement = creator_graph.statement_map.get(event.statement_uid)
+            if statement is None:
+                return None
+            target = self._thread_entry_target(statement.text, event.callee)
+            if not target:
+                return None
+            worker_names.append(target)
+        if len(worker_names) != 2 or len(set(worker_names)) != 2:
+            return None
+        if candidate_function not in set(worker_names):
+            return None
+        worker_identities = []
+        worker_graphs = []
+        for worker_name in sorted(worker_names):
+            identity = self._unique_function_identity(worker_name)
+            if identity is None:
+                return None
+            worker_identities.append(identity)
+            graph: Optional[FunctionIRGraph]
+            if worker_name == candidate_function:
+                if not self._same_file(
+                    candidate_graph.file,
+                    str(identity.get("file_path") or ""),
+                ):
+                    return None
+                graph = candidate_graph
+            else:
+                graph = self._graph_for_identity(identity)
+            if graph is None:
+                return None
+            worker_graphs.append(graph)
+        global_binding = self._qualified_global_binding(
+            worker_identities=worker_identities,
+            object_uid=object_uid,
+        )
+        if global_binding is None:
+            return None
+        binding_sha = _sha(global_binding)
+        project_revision_sha256 = _sha(
+            {
+                "creator_ir_sha256": creator_graph.ir_sha256,
+                "worker_ir_sha256": sorted(value.ir_sha256 for value in worker_graphs),
+                "global_binding_sha256": binding_sha,
+            }
+        )
+        try:
+            return build_cross_thread_function_ir(
+                candidate_graph=candidate_graph,
+                creator_graph=creator_graph,
+                worker_graphs=worker_graphs,
+                object_uid=object_uid,
+                declaration_uid="GLOBAL_" + binding_sha[:32],
+                declaration_file=str(global_binding["file_path"]),
+                declaration_line=int(global_binding["line"]),
+                project_revision_sha256=project_revision_sha256,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def graph(
         self,
@@ -902,6 +1195,834 @@ class FunctionIRFactService:
                     )
                 )
         return tuple(actions)
+
+    @staticmethod
+    def composite_family(issue: Mapping[str, Any]) -> str:
+        """Return the frozen product proof shape for an ordinary candidate.
+
+        Family selection uses only governed candidate/SecurityObligation
+        fields.  It never consults a Validator verdict, answer key, or a
+        post-score label.
+        """
+
+        obligation = issue.get("security_obligation")
+        obligation = obligation if isinstance(obligation, Mapping) else {}
+        required = {
+            _normalized(value)
+            for value in (
+                issue.get("obligation_required_fact_kinds")
+                or obligation.get("required_fact_kinds")
+                or ()
+            )
+            if _normalized(value)
+        }
+        text = " ".join(
+            _normalized(value)
+            for value in (
+                obligation.get("defect_family"),
+                issue.get("defect_family"),
+                issue.get("defect_class"),
+                issue.get("category"),
+                issue.get("subcategory"),
+                issue.get("type"),
+                issue.get("rule"),
+                issue.get("rule_id"),
+            )
+            if value
+        )
+        if required & {
+            "lockset",
+            "happens_before",
+            "object_identity",
+            "event:shared_state_access",
+        } or any(value in text for value in _RACE_FAMILY_TOKENS):
+            return "race"
+        if required & {
+            "cleanup_coverage",
+            "ownership_transfer",
+            "event:acquire",
+            "event:exit",
+        } or any(value in text for value in _LEAK_FAMILY_TOKENS):
+            return "leak"
+        if required & {"value_range", "guard_dominance"} or any(
+            value in text for value in _BOUNDS_FAMILY_TOKENS
+        ):
+            return "bounds"
+        if required & {
+            "source_controllability",
+            "source_sink_reachability",
+            "caller_contract",
+            "source",
+            "sink",
+        } or any(value in text for value in _DATAFLOW_FAMILY_TOKENS):
+            return "dataflow"
+        return ""
+
+    @staticmethod
+    def _validated_governed_obligation(
+        issue: Mapping[str, Any],
+    ) -> Optional[Mapping[str, Any]]:
+        """Rebuild the product SecurityObligation and require exact anchors.
+
+        ``security_obligation_v1`` is a governance assertion, not permission to
+        trust an arbitrary mapping supplied by a candidate.  Rebuilding from
+        the candidate's independently frozen source/sink/subject fields binds
+        the region hash to those anchors before any compound clause can close.
+        """
+
+        if issue.get("security_obligation_v1") is not True:
+            return None
+        raw = issue.get("security_obligation")
+        if not isinstance(raw, Mapping):
+            return None
+        source_uid = issue.get("source_identity")
+        sink_uid = issue.get("sink_identity")
+        subject_uid = _candidate_subject(issue)
+        if (
+            not isinstance(source_uid, str)
+            or not source_uid
+            or not isinstance(sink_uid, str)
+            or not sink_uid
+            or not subject_uid
+        ):
+            return None
+        defect_family = str(issue.get("defect_class") or issue.get("category") or "")
+        if not defect_family:
+            return None
+        try:
+            expected = security_obligation_for(
+                issue,
+                project_id=str(issue.get("project_id") or ""),
+                revision=str(issue.get("revision") or ""),
+                defect_family=defect_family,
+                source_uid=source_uid,
+                sink_uid=sink_uid,
+                subject_uid=subject_uid,
+            ).to_dict()
+        except (KeyError, TypeError, ValueError):
+            return None
+        identity_fields = (
+            "version",
+            "obligation_uid",
+            "defect_family",
+            "obligation_shape",
+            "subject_uid",
+            "source_uid",
+            "sink_uid",
+            "decision_region_uid",
+            "required_fact_kinds",
+        )
+        if raw.get("version") != SECURITY_OBLIGATION_VERSION or any(
+            raw.get(key) != expected.get(key) for key in identity_fields
+        ):
+            return None
+        return raw
+
+    @staticmethod
+    def _endpoint_mapping(value: str) -> Mapping[str, Any]:
+        structured = _structured_endpoint(value)
+        if structured:
+            return structured
+        # Source-centric resource obligations use a stable
+        # ``function:line:event-kind:identity`` anchor.
+        parts = str(value or "").rsplit(":", 3)
+        if len(parts) == 4 and parts[1].isdigit():
+            return {
+                "function": parts[0],
+                "line": parts[1],
+                "kind": parts[2],
+                "resource": parts[3],
+            }
+        return {"identity": str(value or "")} if str(value or "") else {}
+
+    @staticmethod
+    def _semantic_anchor_matches(text: str, expected: Any) -> bool:
+        def normalized(value: Any) -> str:
+            return re.sub(r"\s+", "", _identity_text(value)).replace("->", ".")
+
+        needle = normalized(expected)
+        haystack = normalized(text)
+        if not needle or not haystack:
+            return False
+        if re.fullmatch(r"[a-z_]\w*", needle):
+            return re.search(rf"\b{re.escape(needle)}\b", haystack) is not None
+        return needle in haystack
+
+    @classmethod
+    def _endpoint_matches_graph_anchor(
+        cls,
+        endpoint_uid: str,
+        graph: FunctionIRGraph,
+        *,
+        event_uid: str = "",
+        statement_uid: str = "",
+    ) -> bool:
+        endpoint = cls._endpoint_mapping(endpoint_uid)
+        if not endpoint:
+            return False
+        event = next(
+            (value for value in graph.events if value.event_uid == event_uid),
+            None,
+        )
+        if event_uid and event is None:
+            return False
+        resolved_statement_uid = statement_uid or (event.statement_uid if event is not None else "")
+        statement = graph.statement_map.get(resolved_statement_uid)
+        if resolved_statement_uid and statement is None:
+            return False
+
+        imposed = 0
+        endpoint_file = str(endpoint.get("file") or endpoint.get("file_path") or "")
+        if endpoint_file:
+            imposed += 1
+            if not cls._same_file(endpoint_file, graph.file):
+                return False
+        endpoint_function = str(endpoint.get("function") or "")
+        if endpoint_function:
+            imposed += 1
+            normalized = _identity_text(endpoint_function).split("(", 1)[0]
+            if normalized != _identity_text(graph.function).split("(", 1)[0]:
+                return False
+        try:
+            endpoint_line = int(endpoint.get("line") or 0)
+        except (TypeError, ValueError):
+            return False
+        if endpoint_line:
+            imposed += 1
+            actual_line = int(
+                (event.source_line if event is not None else 0)
+                or (statement.source_line if statement is not None else 0)
+                or 0
+            )
+            if actual_line != endpoint_line:
+                return False
+
+        semantic_values = [
+            endpoint.get(key)
+            for key in (
+                "expression",
+                "operation",
+                "object",
+                "object_id",
+                "resource",
+                "symbol",
+                "field",
+                "identity",
+            )
+            if endpoint.get(key) not in (None, "")
+        ]
+        if semantic_values:
+            imposed += len(semantic_values)
+            searchable = " ".join(
+                [
+                    statement.text if statement is not None else "",
+                    event.callee if event is not None else "",
+                    *(event.subject_symbols if event is not None else ()),
+                ]
+            )
+            if not all(
+                cls._semantic_anchor_matches(searchable, value) for value in semantic_values
+            ):
+                return False
+        endpoint_kind = _identity_text(endpoint.get("kind"))
+        if endpoint_kind and endpoint_kind not in {"source", "sink", "event"}:
+            imposed += 1
+            actual_kind = _identity_text(event.kind if event is not None else "access")
+            if endpoint_kind not in actual_kind and actual_kind not in endpoint_kind:
+                return False
+        return imposed > 0
+
+    @classmethod
+    def _governed_option_anchors_match(
+        cls,
+        *,
+        family: str,
+        obligation: Mapping[str, Any],
+        graph: FunctionIRGraph,
+        parameters: Mapping[str, Any],
+        cross_thread_ir: Optional[Mapping[str, Any]],
+    ) -> bool:
+        source_uid = str(obligation.get("source_uid") or "")
+        sink_uid = str(obligation.get("sink_uid") or "")
+        if family in {"bounds", "dataflow"}:
+            return bool(
+                cls._endpoint_matches_graph_anchor(
+                    source_uid,
+                    graph,
+                    event_uid=str(parameters.get("source_event_uid") or ""),
+                )
+                and cls._endpoint_matches_graph_anchor(
+                    sink_uid,
+                    graph,
+                    event_uid=str(parameters.get("sink_event_uid") or ""),
+                )
+            )
+        if family == "leak":
+            return cls._endpoint_matches_graph_anchor(
+                source_uid,
+                graph,
+                event_uid=str(parameters.get("acquisition_event_uid") or ""),
+            )
+        if family != "race" or not isinstance(cross_thread_ir, Mapping):
+            return False
+        worker_graphs = []
+        for value in cross_thread_ir.get("worker_graphs") or []:
+            if not isinstance(value, Mapping):
+                return False
+            try:
+                restored = graph_from_mapping(value)
+            except (KeyError, TypeError, ValueError):
+                return False
+            if restored is None:
+                return False
+            worker_graphs.append(restored)
+        by_function = {value.function: value for value in worker_graphs}
+        left = by_function.get(str(parameters.get("left_function_uid") or ""))
+        right = by_function.get(str(parameters.get("right_function_uid") or ""))
+        if left is None or right is None or left is right:
+            return False
+        left_statement_uid = str(parameters.get("left_statement_uid") or "")
+        right_statement_uid = str(parameters.get("right_statement_uid") or "")
+        return bool(
+            (
+                cls._endpoint_matches_graph_anchor(
+                    source_uid,
+                    left,
+                    statement_uid=left_statement_uid,
+                )
+                and cls._endpoint_matches_graph_anchor(
+                    sink_uid,
+                    right,
+                    statement_uid=right_statement_uid,
+                )
+            )
+            or (
+                cls._endpoint_matches_graph_anchor(
+                    source_uid,
+                    right,
+                    statement_uid=right_statement_uid,
+                )
+                and cls._endpoint_matches_graph_anchor(
+                    sink_uid,
+                    left,
+                    statement_uid=left_statement_uid,
+                )
+            )
+        )
+
+    @staticmethod
+    def _open_composite_clause(
+        *,
+        semantic_id: str,
+        provider_family: str,
+        fact_kind: str,
+        quantifier: str,
+        expected_value: Any,
+        parameters: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        return build_proof_clause(
+            role="open",
+            provider_family=provider_family,
+            predicate_id=f"zscope.composite.{semantic_id}.v1",
+            fact_kind=fact_kind,
+            quantifier=quantifier,
+            expected_value=expected_value,
+            parameters=parameters,
+        )
+
+    @staticmethod
+    def _proof_parameters_for_action(
+        graph: FunctionIRGraph,
+        action: EvidenceAction,
+    ) -> Optional[Dict[str, Any]]:
+        """Project a fact action onto the frozen ProofKernel predicate schema."""
+
+        predicate_id = _FACT_PREDICATES.get(action.fact_kind)
+        spec = PREDICATE_REGISTRY.get(predicate_id or "")
+        if spec is None:
+            return None
+        fixed = dict(action.fixed_parameters)
+        if predicate_id == "source_sink_path_exists":
+            source_statement = str(fixed.pop("source_statement_uid", ""))
+            sink_statement = str(fixed.pop("sink_statement_uid", ""))
+            if source_statement:
+                statement = graph.statement_map.get(source_statement)
+                fixed["source_node_uid"] = statement.block_uid if statement else ""
+            if sink_statement:
+                statement = graph.statement_map.get(sink_statement)
+                fixed["sink_node_uid"] = statement.block_uid if statement else ""
+            fixed.setdefault("source_node_uid", str(fixed.pop("source_block_uid", "")))
+            fixed.setdefault("sink_node_uid", str(fixed.pop("sink_block_uid", "")))
+        elif predicate_id == "cleanup_covers_all_exits":
+            fixed = {"resource_uid": str(fixed.get("resource_symbol") or "")}
+        elif predicate_id == "lock_must_hold_at_access":
+            locks = tuple(
+                dict.fromkeys(
+                    symbol
+                    for event in graph.events
+                    if event.kind in {"lock_acquire", "lock_release"}
+                    for symbol in event.subject_symbols
+                )
+            )
+            if "lock_uid" not in fixed and len(locks) == 1:
+                fixed["lock_uid"] = locks[0]
+        if set(fixed) != set(spec.parameter_keys) or any(
+            value in (None, "") for value in fixed.values()
+        ):
+            return None
+        return fixed
+
+    def proof_parameters_for_action(
+        self,
+        action: EvidenceAction,
+        issue: Mapping[str, Any],
+        evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        predicate_id = _FACT_PREDICATES.get(action.fact_kind)
+        spec = PREDICATE_REGISTRY.get(predicate_id or "")
+        supplied = dict(action.fixed_parameters)
+        if (
+            spec is not None
+            and set(supplied) == set(spec.parameter_keys)
+            and all(value not in (None, "") for value in supplied.values())
+        ):
+            return supplied
+        graph = self.graph(issue, evidence)
+        if graph is None or not graph.coverage_complete:
+            return None
+        return self._proof_parameters_for_action(graph, action)
+
+    def build_composite_proof_input(
+        self,
+        issue: Mapping[str, Any],
+        evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Build one content-addressed v4 obligation for a Validator candidate.
+
+        The returned mapping has the same strict shape as a Hunter
+        ``proof_kernel_input``.  All executable clauses come from the frozen
+        FunctionIR action catalog.  Unsupported clauses remain explicit open
+        clauses, so a partial fact plan can never become a terminal proof.
+        """
+
+        family = self.composite_family(issue)
+        governed_obligation = (
+            self._validated_governed_obligation(issue)
+            if issue.get("security_obligation_v1") is True
+            else None
+        )
+        if issue.get("security_obligation_v1") is True and governed_obligation is None:
+            return None
+        graph = self.graph(issue, evidence)
+        subject_uid = str(
+            governed_obligation.get("subject_uid")
+            if governed_obligation is not None
+            else _subject(issue)
+        )
+        region_uid = str(
+            governed_obligation.get("decision_region_uid")
+            if governed_obligation is not None
+            else _region(issue)
+        )
+        if not family or graph is None or not graph.coverage_complete:
+            return None
+        if not subject_uid or not region_uid:
+            return None
+        product_cross_thread_ir = (
+            self._product_cross_thread_function_ir(issue, graph) if family == "race" else None
+        )
+        proof_ir = program_proof_ir_from_graph(
+            graph,
+            project_uid="PROJECT_" + _sha({"file": graph.file})[:32],
+            revision_uid="REV_" + graph.code_snapshot_sha256[:32],
+            wrapper_summaries=function_ir_compound_wrappers(
+                graph,
+                cross_thread_function_ir=product_cross_thread_ir,
+            ),
+        )
+        confirmation: list[Dict[str, Any]] = []
+        counterproof: list[Dict[str, Any]] = []
+        open_clauses: list[Dict[str, Any]] = []
+
+        def open_clause(
+            semantic_id: str,
+            provider_family: str,
+            fact_kind: str,
+            quantifier: str,
+            expected_value: Any,
+        ) -> None:
+            open_clauses.append(
+                self._open_composite_clause(
+                    semantic_id=semantic_id,
+                    provider_family=provider_family,
+                    fact_kind=fact_kind,
+                    quantifier=quantifier,
+                    expected_value=expected_value,
+                    parameters={
+                        "subject_uid": subject_uid,
+                        "decision_region_uid": region_uid,
+                    },
+                )
+            )
+
+        def exact_action(fact_kind: str) -> tuple[EvidenceAction, Dict[str, Any]] | None:
+            normalized = []
+            for action in self.actions(issue, evidence, (fact_kind,)):
+                parameters = self._proof_parameters_for_action(graph, action)
+                if parameters is not None:
+                    normalized.append((action, parameters))
+            return normalized[0] if len(normalized) == 1 else None
+
+        def executable_clause(
+            fact_kind: str,
+            expected_value: Any,
+        ) -> bool:
+            selected = exact_action(fact_kind)
+            predicate_id = _FACT_PREDICATES.get(fact_kind)
+            spec = PREDICATE_REGISTRY.get(predicate_id or "")
+            if selected is None or spec is None:
+                return False
+            _action, parameters = selected
+            confirmation.append(
+                build_proof_clause(
+                    role="confirmation",
+                    provider_family=spec.provider_family,
+                    predicate_id=spec.predicate_id,
+                    fact_kind=spec.fact_kind,
+                    quantifier=spec.quantifier,
+                    expected_value=expected_value,
+                    parameters=parameters,
+                )
+            )
+            return True
+
+        def registered_clause(
+            predicate_id: str,
+            expected_value: Any,
+            parameters: Mapping[str, Any],
+            *,
+            role: str = "confirmation",
+        ) -> None:
+            spec = PREDICATE_REGISTRY[predicate_id]
+            target = confirmation if role == "confirmation" else counterproof
+            target.append(
+                build_proof_clause(
+                    role=role,
+                    provider_family=spec.provider_family,
+                    predicate_id=spec.predicate_id,
+                    fact_kind=spec.fact_kind,
+                    quantifier=spec.quantifier,
+                    expected_value=expected_value,
+                    parameters=parameters,
+                )
+            )
+
+        summary = proof_ir["functions"][0]
+        compound_closed = False
+        if family == "race":
+            options = qualified_race_options(summary)
+            matching = [
+                value
+                for value in options
+                if str(value["fixed_parameters"].get("object_uid") or "") == subject_uid
+                and (
+                    governed_obligation is None
+                    or self._governed_option_anchors_match(
+                        family=family,
+                        obligation=governed_obligation,
+                        graph=graph,
+                        parameters=value["fixed_parameters"],
+                        cross_thread_ir=product_cross_thread_ir,
+                    )
+                )
+            ]
+            if len(matching) == 1:
+                parameters = matching[0]["fixed_parameters"]
+                for predicate_id, expected_value in (
+                    (
+                        "qualified_race_shared_object_identity",
+                        {"shared_object_identity": True},
+                    ),
+                    (
+                        "qualified_race_conflicting_accesses",
+                        {"conflicting_accesses": True},
+                    ),
+                    (
+                        "qualified_race_cross_thread_reachability",
+                        {"cross_thread_reachable": True},
+                    ),
+                    (
+                        "qualified_race_empty_locksets",
+                        {"must_hold_locks": []},
+                    ),
+                    (
+                        "qualified_race_no_happens_before",
+                        {"happens_before": False},
+                    ),
+                ):
+                    registered_clause(predicate_id, expected_value, parameters)
+                compound_closed = True
+        elif family == "bounds":
+            options = [
+                value
+                for value in qualified_bounds_options(summary)
+                if str(value.get("value_uid") or "") == subject_uid
+                and (
+                    governed_obligation is None
+                    or self._governed_option_anchors_match(
+                        family=family,
+                        obligation=governed_obligation,
+                        graph=graph,
+                        parameters=value,
+                        cross_thread_ir=product_cross_thread_ir,
+                    )
+                )
+            ]
+            if len(options) == 1:
+                parameters = options[0]
+                for predicate_id, expected_value in (
+                    (
+                        "qualified_bounds_source_controllable",
+                        {"source_controllable": True},
+                    ),
+                    ("qualified_bounds_path_complete", {"path_exists": True}),
+                    (
+                        "qualified_bounds_sink_contract",
+                        {"dangerous_sink_contract": True},
+                    ),
+                    ("qualified_bounds_range_violation", {"range_violation": True}),
+                ):
+                    registered_clause(predicate_id, expected_value, parameters)
+                compound_closed = True
+        elif family == "dataflow":
+            options = [
+                value
+                for value in qualified_command_flow_options(summary)
+                if str(value.get("value_uid") or "") == subject_uid
+                and (
+                    governed_obligation is None
+                    or self._governed_option_anchors_match(
+                        family=family,
+                        obligation=governed_obligation,
+                        graph=graph,
+                        parameters=value,
+                        cross_thread_ir=product_cross_thread_ir,
+                    )
+                )
+            ]
+            if len(options) == 1:
+                parameters = options[0]
+                for predicate_id, expected_value in (
+                    (
+                        "qualified_command_source_controllable",
+                        {"source_controllable": True},
+                    ),
+                    ("qualified_command_path_complete", {"path_exists": True}),
+                    (
+                        "qualified_command_sink_contract",
+                        {"dangerous_sink_contract": True},
+                    ),
+                    (
+                        "qualified_command_counterproof_absent",
+                        {"guard_or_sanitizer_counterproof_absent": True},
+                    ),
+                ):
+                    registered_clause(predicate_id, expected_value, parameters)
+                compound_closed = True
+        elif family == "leak":
+            matching = [
+                value
+                for value in qualified_resource_leak_options(summary)
+                if str(value["fixed_parameters"].get("resource_uid") or "") == subject_uid
+                and (
+                    governed_obligation is None
+                    or self._governed_option_anchors_match(
+                        family=family,
+                        obligation=governed_obligation,
+                        graph=graph,
+                        parameters=value["fixed_parameters"],
+                        cross_thread_ir=product_cross_thread_ir,
+                    )
+                )
+            ]
+            if len(matching) == 1:
+                parameters = matching[0]["fixed_parameters"]
+                actual = matching[0]["actual"]
+                if actual.get("cleanup_complete") is True:
+                    # A proved cleanup is an alternative terminal obligation,
+                    # never a simultaneously required confirmation clause.
+                    registered_clause(
+                        "qualified_leak_cleanup_complete",
+                        {"cleanup_complete": True},
+                        parameters,
+                        role="counterproof",
+                    )
+                    compound_closed = True
+                elif (
+                    actual.get("outstanding_on_reachable_exit") is True
+                    and actual.get("ownership_transfer_excluded") is True
+                ):
+                    for predicate_id, expected_value in (
+                        (
+                            "qualified_leak_acquisition_identity",
+                            {"exact_acquisition_identity": True},
+                        ),
+                        (
+                            "qualified_leak_exit_outstanding",
+                            {"outstanding_on_reachable_exit": True},
+                        ),
+                        (
+                            "qualified_leak_transfer_excluded",
+                            {"ownership_transfer_excluded": True},
+                        ),
+                    ):
+                        registered_clause(predicate_id, expected_value, parameters)
+                    compound_closed = True
+
+        if compound_closed:
+            pass
+        elif family == "race":
+            # Five independent conditions are required.  The current registry
+            # cannot establish cross-thread alias/conflict/reachability/HB.
+            open_clause(
+                "race.shared_object_identity",
+                "contract_type",
+                "object_identity",
+                "exact_binding",
+                {"shared_object_identity": True},
+            )
+            open_clause(
+                "race.conflicting_accesses",
+                "concurrency",
+                "conflicting_accesses",
+                "must_at_point",
+                {"conflicting_accesses": True},
+            )
+            open_clause(
+                "race.cross_thread_reachability",
+                "concurrency",
+                "cross_thread_reachability",
+                "exists_path",
+                {"cross_thread_reachable": True},
+            )
+            if not executable_clause("lockset", {"must_hold": False, "must_hold_locks": []}):
+                open_clause(
+                    "race.empty_lockset",
+                    "concurrency",
+                    "lockset",
+                    "must_at_point",
+                    {"must_hold_locks": []},
+                )
+            open_clause(
+                "race.no_happens_before",
+                "concurrency",
+                "happens_before",
+                "for_all_paths",
+                {"happens_before": False},
+            )
+        elif family in {"dataflow", "bounds"}:
+            if not executable_clause(
+                "source_controllability", {"external_entry_parameter_bound": True}
+            ):
+                open_clause(
+                    f"{family}.controllable_source",
+                    "contract_type",
+                    "source_controllability",
+                    "exact_binding",
+                    {"source_controllable": True},
+                )
+            if not executable_clause("source_sink_reachability", {"path_exists": True}):
+                open_clause(
+                    f"{family}.complete_source_sink_path",
+                    "path_guard",
+                    "source_sink_reachability",
+                    "exists_path",
+                    {"path_exists": True},
+                )
+            open_clause(
+                f"{family}.sink_contract",
+                "contract_type",
+                "caller_contract",
+                "exact_binding",
+                {"dangerous_sink_contract": True},
+            )
+            terminal_fact = "value_range" if family == "bounds" else "guard_dominance"
+            terminal_expected = (
+                {"range_violation": True} if family == "bounds" else {"guard_dominates_sink": False}
+            )
+            if not executable_clause(terminal_fact, terminal_expected):
+                open_clause(
+                    f"{family}.guard_or_value_range",
+                    "path_guard",
+                    terminal_fact,
+                    "exists_path" if terminal_fact == "value_range" else "for_all_paths",
+                    terminal_expected,
+                )
+        elif family == "leak":
+            open_clause(
+                "leak.acquisition_identity",
+                "contract_type",
+                "object_identity",
+                "exact_binding",
+                {"exact_acquisition_identity": True},
+            )
+            if not executable_clause("cleanup_coverage", {"cleanup_complete": False}):
+                open_clause(
+                    "leak.outstanding_on_reachable_exit",
+                    "resource",
+                    "cleanup_coverage",
+                    "for_all_exits",
+                    {"cleanup_complete": False},
+                )
+            open_clause(
+                "leak.ownership_transfer_excluded",
+                "resource",
+                "ownership_transfer",
+                "for_all_paths",
+                {"ownership_transferred": False},
+            )
+
+        security_obligation = issue.get("security_obligation")
+        security_obligation = (
+            security_obligation if isinstance(security_obligation, Mapping) else {}
+        )
+        obligation = build_proof_obligation(
+            validation_cluster_uid=str(
+                issue.get("validation_cluster_uid")
+                or security_obligation.get("obligation_uid")
+                or region_uid
+            ),
+            defect_family=str(
+                security_obligation.get("defect_family")
+                or issue.get("defect_family")
+                or issue.get("defect_class")
+                or issue.get("category")
+                or family
+            ),
+            subject_uid=subject_uid,
+            decision_region_uid=region_uid,
+            confirmation_clauses=confirmation,
+            counterproof_clauses=counterproof,
+            open_clauses=open_clauses,
+            dependency_hashes=proof_ir["dependency_hashes"],
+        )
+        selected_action_uids = [
+            str(
+                build_proof_action(
+                    obligation=obligation,
+                    clause=clause,
+                    proof_ir=proof_ir,
+                    provider_id=PREDICATE_REGISTRY[str(clause["predicate_id"])].provider_id,
+                    verifier_id=PREDICATE_REGISTRY[str(clause["predicate_id"])].verifier_id,
+                )["action_uid"]
+            )
+            for clause in (*confirmation, *counterproof)
+        ]
+        return {
+            "proof_ir": proof_ir,
+            "proof_obligation": obligation,
+            "selected_action_uids": selected_action_uids,
+        }
 
     def execute(
         self,
@@ -1059,6 +2180,7 @@ class FunctionIRFactService:
             graph,
             project_uid="PROJECT_" + _sha({"file": graph.file})[:32],
             revision_uid="REV_" + graph.code_snapshot_sha256[:32],
+            wrapper_summaries=function_ir_compound_wrappers(graph),
         )
         clause = build_proof_clause(
             role=role,
@@ -1334,7 +2456,11 @@ class FunctionIRFactService:
                 for sink in sink_blocks
             )[:16]
         if fact_kind == "value_range":
-            return tuple(signed_unsigned_flow_options(function_summary_from_graph(graph)))[:16]
+            summary = function_summary_from_graph(
+                graph,
+                wrapper_summaries=function_ir_compound_wrappers(graph),
+            )
+            return tuple(signed_unsigned_flow_options(summary))[:16]
         if fact_kind == "guard_dominance":
             guard_statements = tuple(
                 statement.statement_uid

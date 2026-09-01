@@ -161,6 +161,13 @@ class FunctionIRGraph:
         for value in ast_target.get("parameters") or []:
             if isinstance(value, Mapping) and str(value.get("name") or ""):
                 add_value_fact("parameter", value)
+        for value in ast_target.get("var_decls") or []:
+            if isinstance(value, Mapping) and str(value.get("name") or ""):
+                # Local declarations are part of the ownership identity
+                # domain.  Without them, a statement such as ``p = malloc``
+                # cannot be distinguished from a global or out-parameter
+                # assignment and therefore cannot close a leak obligation.
+                add_value_fact("variable_declaration", value)
         for value in ast_target.get("call_assignments") or []:
             if isinstance(value, Mapping) and str(value.get("target") or ""):
                 add_value_fact("call_assignment", value)

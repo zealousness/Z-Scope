@@ -39,6 +39,7 @@ from .registry import (
     POLARITY_ROLE_TERMINAL_MATRIX,
     PREDICATE_REGISTRY,
     PredicateSpec,
+    build_cross_thread_function_ir,
 )
 from .store import ProofArtifactStore
 
@@ -65,6 +66,7 @@ __all__ = [
     "ProofKernelEvaluation",
     "ProofProvider",
     "build_evidence_action",
+    "build_cross_thread_function_ir",
     "build_proof_clause",
     "build_proof_obligation",
     "freeze_proof_state",

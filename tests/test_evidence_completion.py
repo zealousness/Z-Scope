@@ -1764,7 +1764,9 @@ def test_required_fact_resolution_closes_all_obligation_kinds_before_v2() -> Non
         }
     assert issue["decision_fact_coverage"] == "complete"
     assert issue["missing_fact_kinds"] == []
-    assert issue["candidate_promotion_eligible"] is True
+    assert issue["fact_plan_complete"] is True
+    assert issue["candidate_promotion_eligible"] is False
+    assert issue["candidate_promotion_reason"] == ("fact_plan_complete_requires_proof_closure")
     assert len(issue["decision_fact_slice"]["facts"]) == 3
 
 

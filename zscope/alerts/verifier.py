@@ -190,6 +190,7 @@ class AlertVerifier:
         checker_refs: list[str] = []
         proof_root = ""
         integrity_status = "open_fail_closed"
+        authority_issue: Dict[str, Any] = {}
         if proof_input is None:
             proof_decision = {
                 "schema_version": "zscope.proof-kernel-evaluation.v1",
@@ -228,6 +229,7 @@ class AlertVerifier:
                 checker_refs = list(evaluation.checker_result_refs)
                 proof_root = evaluation.root_manifest_sha256
                 integrity_status = "verified"
+                evaluation.apply_to_issue(authority_issue)
                 proof_decision = {
                     "schema_version": evaluation.schema_version,
                     "proof_kernel_mode": evaluation.proof_kernel_mode,
@@ -243,6 +245,7 @@ class AlertVerifier:
                     "root_manifest_sha256": proof_root,
                 }
             except (KeyError, TypeError, ValueError) as exc:
+                integrity_status = "failed"
                 proof_decision = {
                     "schema_version": "zscope.proof-kernel-evaluation.v1",
                     "proof_kernel_mode": PROOF_KERNEL_MODE,
@@ -255,36 +258,13 @@ class AlertVerifier:
                     "error": f"{type(exc).__name__}: {exc}"[:500],
                 }
 
-        disposition = str(proof_decision["disposition"])
-        if disposition == "confirmed":
-            terminal_reason = "CONFIRMED_DETERMINISTIC_PROOF"
-            authority_name = "zscope.proof-checker"
-        elif disposition == "rejected_with_proof":
-            terminal_reason = "REJECTED_DETERMINISTIC_COUNTERPROOF"
-            authority_name = "zscope.proof-checker"
-        elif proof_decision["reason_code"] == "programmatic_proof_conflict":
-            terminal_reason = "NEEDS_REVIEW_EVIDENCE_CONFLICT"
-            authority_name = "zscope.proof-checker-conflict-resolver"
-        else:
-            disposition = "needs_review"
-            terminal_reason = "NEEDS_REVIEW_OPEN_CLAUSES"
-            authority_name = "zscope.proof-checker"
-        proof_authority = {
-            "schema_version": "zscope.terminal-authority-decision.v3",
-            "terminal": True,
-            "disposition": disposition,
-            "reason_code": terminal_reason,
-            "authority": authority_name,
-            "next_action": "",
-            "conflict_resolution": None,
-            "checker_result_refs": checker_refs,
-            "proof_root_sha256": proof_root,
-            "integrity_status": integrity_status,
-        }
         authority = self.terminal_authority.evaluate(
-            {"proof_kernel_terminal_authority_decision": proof_authority}
+            authority_issue,
+            protocol_or_engine_failure=integrity_status == "failed",
+            operation="live",
         )
         disposition = authority.disposition
+        proof_authority = authority.to_dict()
         security_identity = getattr(
             self,
             "security_spec_identity",
@@ -340,6 +320,16 @@ class AlertVerifier:
             "proof_kernel_checker_result_refs": checker_refs,
             "proof_kernel_root_manifest_sha256": proof_root,
             "proof_kernel_reverification_status": integrity_status,
+            **{
+                key: value
+                for key, value in authority_issue.items()
+                if key
+                in {
+                    "proof_kernel_frozen_state",
+                    "proof_kernel_closure_evaluation",
+                    "proof_kernel_promotion_certificate",
+                }
+            },
             "proof_kernel_terminal_authority_decision": proof_authority,
             "terminal_authority": authority.authority,
             "terminal_authority_decision": authority.to_dict(),

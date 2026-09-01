@@ -95,15 +95,15 @@ def _graph(*, complete: bool = True) -> FunctionIRGraph:
     return value
 
 
-def _resource_graph(*, cleanup: bool) -> FunctionIRGraph:
-    statements = ["p = malloc(8)"]
-    calls = [{"callee": "malloc", "line": 10}]
-    if cleanup:
-        statements.append("free(p)")
-        calls.append({"callee": "free", "line": 11})
+def _resource_graph_from_blocks(
+    blocks: list[dict[str, object]],
+    *,
+    calls: list[dict[str, object]],
+    snapshot: str = "d",
+) -> FunctionIRGraph:
     evidence = {
         "clang_path": "clang-21.1.8",
-        "code_snapshot_sha256": "d" * 64,
+        "code_snapshot_sha256": snapshot * 64,
         "cfg_dump": {
             "summary": {
                 "parse_ok": True,
@@ -111,22 +111,7 @@ def _resource_graph(*, cleanup: bool) -> FunctionIRGraph:
                 "function_section_unique": True,
                 "entry_blocks": ["B1"],
                 "exit_blocks": ["B0"],
-                "blocks": [
-                    {
-                        "id": "B1",
-                        "label": "ENTRY",
-                        "successors": ["B0"],
-                        "predecessors": [],
-                        "statements": statements,
-                    },
-                    {
-                        "id": "B0",
-                        "label": "EXIT",
-                        "successors": [],
-                        "predecessors": ["B1"],
-                        "statements": [],
-                    },
-                ],
+                "blocks": blocks,
             }
         },
         "ast_dump": {"summary": {"target_function": {"call_exprs": calls}}},
@@ -138,6 +123,33 @@ def _resource_graph(*, cleanup: bool) -> FunctionIRGraph:
     )
     assert value is not None
     return value
+
+
+def _resource_graph(*, cleanup: bool) -> FunctionIRGraph:
+    statements = ["p = malloc(8)"]
+    calls = [{"callee": "malloc", "line": 10}]
+    if cleanup:
+        statements.append("free(p)")
+        calls.append({"callee": "free", "line": 11})
+    return _resource_graph_from_blocks(
+        [
+            {
+                "id": "B1",
+                "label": "ENTRY",
+                "successors": ["B0"],
+                "predecessors": [],
+                "statements": statements,
+            },
+            {
+                "id": "B0",
+                "label": "EXIT",
+                "successors": [],
+                "predecessors": ["B1"],
+                "statements": [],
+            },
+        ],
+        calls=calls,
+    )
 
 
 def _semantic_map() -> SecuritySemanticMap:
@@ -191,7 +203,11 @@ def _semantic_map() -> SecuritySemanticMap:
     )
 
 
-def _resource_semantic_map() -> SecuritySemanticMap:
+def _resource_semantic_map(
+    *,
+    line: int = 10,
+    expression: str = "p = malloc(8)",
+) -> SecuritySemanticMap:
     baseline = _semantic_map()
     event = SecurityEvent(
         event_id="EVENT_RESOURCE",
@@ -199,8 +215,8 @@ def _resource_semantic_map() -> SecuritySemanticMap:
         kind="resource_transition",
         function_uid="FUNC_RESOURCE_GATEWAY",
         file="src/resource_gateway.c",
-        line=10,
-        expression="p = malloc(8)",
+        line=line,
+        expression=expression,
         evidence_ref="evidence:resource:neutral",
     )
     record = replace(
@@ -405,7 +421,283 @@ def test_only_complete_uncovered_resource_path_has_terminal_hunter_proof() -> No
         obligation=safe["proof_obligation"],
         selected_action_uids=(safe["evidence_actions"][0]["action_uid"],),
     )
-    assert safe_result.decision != "confirmed"
+    assert safe["proof_obligation"]["confirmation_clauses"] == []
+    assert len(safe["proof_obligation"]["counterproof_clauses"]) == 1
+    assert safe_result.decision == "rejected_with_proof"
+    assert safe_result.reason_code == "verified_counterproof"
+
+
+def test_resource_offer_binds_the_semantic_event_not_the_first_acquisition() -> None:
+    graph = _resource_graph_from_blocks(
+        [
+            {
+                "id": "B1",
+                "label": "ENTRY",
+                "successors": ["B0"],
+                "predecessors": [],
+                "statements": [
+                    "p = malloc(8)",
+                    "free(p)",
+                    "q = calloc(1, 8)",
+                ],
+            },
+            {
+                "id": "B0",
+                "label": "EXIT",
+                "successors": [],
+                "predecessors": ["B1"],
+                "statements": [],
+            },
+        ],
+        calls=[
+            {"callee": "malloc", "line": 10},
+            {"callee": "free", "line": 11},
+            # Both acquisitions deliberately share a source line; the event
+            # expression, not list order, must select the resource.
+            {"callee": "calloc", "line": 10},
+        ],
+    )
+    planner = AttackSurfacePlanner(risk_threshold=35)
+
+    second = planner.plan(
+        _resource_semantic_map(line=10, expression="q = calloc(1, 8)"),
+        proof_bundle_provider=HypothesisProofCatalog(lambda record, event: graph).bundles,
+    )[0].offers[0]
+    second_clause = second["proof_obligation"]["confirmation_clauses"][0]
+    assert second_clause["parameters"] == {"resource_uid": "q"}
+    assert (
+        ProofKernelEngine()
+        .evaluate_selected_actions(
+            proof_ir=second["proof_ir"],
+            obligation=second["proof_obligation"],
+            selected_action_uids=(second["evidence_actions"][0]["action_uid"],),
+        )
+        .decision
+        == "confirmed"
+    )
+
+    first = planner.plan(
+        _resource_semantic_map(line=10, expression="p = malloc(8)"),
+        proof_bundle_provider=HypothesisProofCatalog(lambda record, event: graph).bundles,
+    )[0].offers[0]
+    first_clause = first["proof_obligation"]["counterproof_clauses"][0]
+    assert first_clause["parameters"] == {"resource_uid": "p"}
+    assert (
+        ProofKernelEngine()
+        .evaluate_selected_actions(
+            proof_ir=first["proof_ir"],
+            obligation=first["proof_obligation"],
+            selected_action_uids=(first["evidence_actions"][0]["action_uid"],),
+        )
+        .decision
+        == "rejected_with_proof"
+    )
+    assert first["subject_uid"] != second["subject_uid"]
+
+
+@pytest.mark.parametrize(
+    ("statement", "extra_calls"),
+    [
+        ("return p", []),
+        ("g_owner = p", []),
+        ("ctx->field = p", []),
+        ("*out = p", []),
+        ("items[index] = p", []),
+        ("q = p", []),
+        ("register_owner(p)", [{"callee": "register_owner", "line": 11}]),
+        ("set_callback(p)", [{"callee": "set_callback", "line": 11}]),
+        ("consume(p)", [{"callee": "consume", "line": 11}]),
+    ],
+)
+def test_resource_alias_escape_transfer_and_unknown_callee_fail_closed(
+    statement: str,
+    extra_calls: list[dict[str, object]],
+) -> None:
+    graph = _resource_graph_from_blocks(
+        [
+            {
+                "id": "B1",
+                "label": "ENTRY",
+                "successors": ["B0"],
+                "predecessors": [],
+                "statements": ["p = malloc(8)", statement],
+            },
+            {
+                "id": "B0",
+                "label": "EXIT",
+                "successors": [],
+                "predecessors": ["B1"],
+                "statements": [],
+            },
+        ],
+        calls=[{"callee": "malloc", "line": 10}, *extra_calls],
+    )
+
+    planned = AttackSurfacePlanner(risk_threshold=35).plan(
+        _resource_semantic_map(),
+        proof_bundle_provider=HypothesisProofCatalog(lambda record, event: graph).bundles,
+    )
+
+    assert planned
+    assert planned[0].offers == ()
+
+
+def test_field_resource_and_reacquired_identity_fail_closed() -> None:
+    field_graph = _resource_graph_from_blocks(
+        [
+            {
+                "id": "B1",
+                "label": "ENTRY",
+                "successors": ["B0"],
+                "predecessors": [],
+                "statements": ["owner->field = malloc(8)"],
+            },
+            {
+                "id": "B0",
+                "label": "EXIT",
+                "successors": [],
+                "predecessors": ["B1"],
+                "statements": [],
+            },
+        ],
+        calls=[{"callee": "malloc", "line": 10}],
+    )
+    reacquired_graph = _resource_graph_from_blocks(
+        [
+            {
+                "id": "B1",
+                "label": "ENTRY",
+                "successors": ["B0"],
+                "predecessors": [],
+                "statements": ["p = malloc(8)", "free(p)", "p = calloc(1, 8)"],
+            },
+            {
+                "id": "B0",
+                "label": "EXIT",
+                "successors": [],
+                "predecessors": ["B1"],
+                "statements": [],
+            },
+        ],
+        calls=[
+            {"callee": "malloc", "line": 10},
+            {"callee": "free", "line": 11},
+            {"callee": "calloc", "line": 12},
+        ],
+    )
+    planner = AttackSurfacePlanner(risk_threshold=35)
+
+    assert (
+        planner.plan(
+            _resource_semantic_map(expression="owner->field = malloc(8)"),
+            proof_bundle_provider=HypothesisProofCatalog(lambda record, event: field_graph).bundles,
+        )[0].offers
+        == ()
+    )
+    assert (
+        planner.plan(
+            _resource_semantic_map(),
+            proof_bundle_provider=HypothesisProofCatalog(
+                lambda record, event: reacquired_graph
+            ).bundles,
+        )[0].offers
+        == ()
+    )
+
+
+def test_unreachable_resource_acquisition_cannot_form_a_counterproof() -> None:
+    graph = _resource_graph_from_blocks(
+        [
+            {
+                "id": "B1",
+                "label": "ENTRY",
+                "successors": ["B0"],
+                "predecessors": [],
+                "statements": [],
+            },
+            {
+                "id": "B9",
+                "label": "UNREACHABLE",
+                "successors": [],
+                "predecessors": [],
+                "statements": ["p = malloc(8)"],
+            },
+            {
+                "id": "B0",
+                "label": "EXIT",
+                "successors": [],
+                "predecessors": ["B1"],
+                "statements": [],
+            },
+        ],
+        calls=[{"callee": "malloc", "line": 10}],
+    )
+    assert graph.coverage_complete is True
+
+    planned = AttackSurfacePlanner(risk_threshold=35).plan(
+        _resource_semantic_map(),
+        proof_bundle_provider=HypothesisProofCatalog(lambda record, event: graph).bundles,
+    )
+
+    assert planned[0].offers == ()
+
+
+@pytest.mark.parametrize("cleanup_on_both_paths", [False, True])
+def test_resource_branch_cleanup_metamorphic(cleanup_on_both_paths: bool) -> None:
+    right_statements = ["free(p)"] if cleanup_on_both_paths else []
+    graph = _resource_graph_from_blocks(
+        [
+            {
+                "id": "B1",
+                "label": "ENTRY",
+                "successors": ["B2", "B3"],
+                "predecessors": [],
+                "statements": ["p = malloc(8)"],
+            },
+            {
+                "id": "B2",
+                "label": "",
+                "successors": ["B0"],
+                "predecessors": ["B1"],
+                "statements": ["free(p)"],
+            },
+            {
+                "id": "B3",
+                "label": "",
+                "successors": ["B0"],
+                "predecessors": ["B1"],
+                "statements": right_statements,
+            },
+            {
+                "id": "B0",
+                "label": "EXIT",
+                "successors": [],
+                "predecessors": ["B2", "B3"],
+                "statements": [],
+            },
+        ],
+        calls=[
+            {"callee": "malloc", "line": 10},
+            {"callee": "free", "line": 11},
+            *([{"callee": "free", "line": 12}] if cleanup_on_both_paths else []),
+        ],
+        snapshot="e" if cleanup_on_both_paths else "f",
+    )
+    offer = (
+        AttackSurfacePlanner(risk_threshold=35)
+        .plan(
+            _resource_semantic_map(),
+            proof_bundle_provider=HypothesisProofCatalog(lambda record, event: graph).bundles,
+        )[0]
+        .offers[0]
+    )
+    result = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=offer["proof_ir"],
+        obligation=offer["proof_obligation"],
+        selected_action_uids=(offer["evidence_actions"][0]["action_uid"],),
+    )
+
+    assert result.decision == ("rejected_with_proof" if cleanup_on_both_paths else "confirmed")
 
 
 def test_hunt_report_rejects_free_parameters_and_cross_offer_actions() -> None:
@@ -530,6 +822,29 @@ def test_active_runtime_registers_live_unconfirmed_candidates_and_reuses_exact_c
     assert identity["hypothesis_hunter_decision"]["active_product_effect"] == (
         "candidate_registration_only"
     )
+
+
+def test_runtime_counterproof_is_audited_without_registering_a_candidate(tmp_path: Path) -> None:
+    ledger = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
+    result = HypothesisHunterRuntime(
+        HypothesisArtifactStore(tmp_path),
+        risk_threshold=35,
+        model_profile="test",
+    ).run(
+        _resource_semantic_map(),
+        candidate_registrar=CandidateRegistrar(ledger),
+        proof_bundle_provider=HypothesisProofCatalog(
+            lambda record, event: _resource_graph(cleanup=True)
+        ).bundles,
+        report_runner=lambda projection, unit, offers: _select_report(unit, offers),
+    )
+
+    assert result["proof_decisions"][0]["decision"] == "rejected_with_proof"
+    assert result["coverage_summary"]["registered_candidate_count"] == 0
+    assert result["coverage_summary"]["reason_code_distribution"] == {
+        "selected_hypothesis_counterproved": 1
+    }
+    assert ledger.lifecycle_snapshot()["summary"]["total"] == 0
 
 
 def test_runtime_collects_eight_concurrent_calls_and_isolates_one_failure(

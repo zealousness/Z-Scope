@@ -299,6 +299,7 @@ class ClangToolingEvidenceProvider:
                         "name": str(child.get("name") or ""),
                         "type": cls._qual_type(child),
                         "line": cls._loc_line(child),
+                        "storage_class": str(child.get("storageClass") or ""),
                     }
                 )
                 target = str(child.get("name") or "")
@@ -390,8 +391,9 @@ class ClangToolingEvidenceProvider:
             "binary_ops": binary_ops[:max_value_facts],
             "unary_ops": unary_ops[:32],
             "matcher_facts": cls._ast_matcher_facts(call_exprs, binary_ops, unary_ops),
-            "value_fact_coverage_complete": all(
-                len(values) <= max_value_facts for values in value_fact_collections
+            "value_fact_coverage_complete": (
+                len(var_decls) <= 32
+                and all(len(values) <= max_value_facts for values in value_fact_collections)
             ),
             "return_count": return_count,
             "if_count": if_count,

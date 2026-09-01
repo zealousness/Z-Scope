@@ -4,7 +4,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from zscope.agents.proof_engine.agent import ProofEngineAgent
+from zscope.core.candidates.decision_facts import security_obligation_for
 from zscope.core.validation.fact_capabilities import (
     ConcurrencyProofProvider,
     EvidenceAction,
@@ -15,6 +18,10 @@ from zscope.core.validation.fact_capabilities import (
     verify_certificate_v2,
 )
 from zscope.core.validation.function_ir import FunctionIRGraph
+from zscope.core.validation.proof_kernel import (
+    ProofKernelEngine,
+    build_cross_thread_function_ir,
+)
 from zscope.core.validation.proofs import deterministic_decision_proof
 
 
@@ -108,7 +115,46 @@ def _issue(**values):
     return issue
 
 
-def _single_block_graph(statements, calls) -> FunctionIRGraph:
+def _governed_issue(issue, *, source, sink):
+    source_identity = (
+        json.dumps(source, sort_keys=True, separators=(",", ":"))
+        if isinstance(source, dict)
+        else str(source)
+    )
+    sink_identity = (
+        json.dumps(sink, sort_keys=True, separators=(",", ":"))
+        if isinstance(sink, dict)
+        else str(sink)
+    )
+    issue.update(
+        {
+            "project_id": "PROJECT_TEST",
+            "revision": "REV_TEST",
+            "defect_class": str(issue.get("category") or issue.get("defect_class") or ""),
+            "source_identity": source_identity,
+            "sink_identity": sink_identity,
+        }
+    )
+    subject_uid = str(
+        issue.get("resource_identity")
+        or issue.get("thread_object")
+        or issue.get("subject_uid")
+        or ""
+    )
+    issue["security_obligation"] = security_obligation_for(
+        issue,
+        project_id=issue["project_id"],
+        revision=issue["revision"],
+        defect_family=issue["defect_class"],
+        source_uid=source_identity,
+        sink_uid=sink_identity,
+        subject_uid=subject_uid,
+    ).to_dict()
+    issue["security_obligation_v1"] = True
+    return issue
+
+
+def _single_block_graph(statements, calls, *, var_decls=()) -> FunctionIRGraph:
     evidence = {
         "code_snapshot_sha256": "c" * 64,
         "cfg_dump": {
@@ -136,7 +182,16 @@ def _single_block_graph(statements, calls) -> FunctionIRGraph:
                 ],
             }
         },
-        "ast_dump": {"summary": {"target_function": {"call_exprs": calls}}},
+        "ast_dump": {
+            "summary": {
+                "parse_ok": True,
+                "target_function": {
+                    "call_exprs": calls,
+                    "var_decls": list(var_decls),
+                    "value_fact_coverage_complete": True,
+                },
+            }
+        },
     }
     graph = FunctionIRGraph.from_clang_evidence(
         evidence,
@@ -147,7 +202,153 @@ def _single_block_graph(statements, calls) -> FunctionIRGraph:
     return graph
 
 
-def _signed_length_graph(*, guarded: bool = False) -> FunctionIRGraph:
+def _named_single_block_graph(function, statements, calls, *, code_hash="9" * 64):
+    evidence = {
+        "clang_path": "clang",
+        "code_snapshot_sha256": code_hash,
+        "cfg_dump": {
+            "summary": {
+                "parse_ok": True,
+                "function": function,
+                "function_section_unique": True,
+                "entry_blocks": ["B1"],
+                "exit_blocks": ["B0"],
+                "blocks": [
+                    {
+                        "id": "B1",
+                        "label": "(ENTRY)",
+                        "successors": ["B0"],
+                        "predecessors": [],
+                        "statements": statements,
+                    },
+                    {
+                        "id": "B0",
+                        "label": "(EXIT)",
+                        "successors": [],
+                        "predecessors": ["B1"],
+                        "statements": [],
+                    },
+                ],
+            }
+        },
+        "ast_dump": {
+            "summary": {
+                "parse_ok": True,
+                "target_function": {
+                    "call_exprs": calls,
+                    "value_fact_coverage_complete": True,
+                },
+            }
+        },
+    }
+    graph = FunctionIRGraph.from_clang_evidence(
+        evidence,
+        function=function,
+        file=f"src/{function}.c",
+    )
+    assert graph is not None
+    return graph
+
+
+class _CrossThreadProductIndex:
+    def __init__(self, graphs):
+        self._graphs = graphs
+
+    def find_function_pointers(self, function):
+        if function != "worker_left":
+            return []
+        return [{"caller": "start_workers", "file": "src/start_workers.c", "line": 4}]
+
+    def find_function_identities(self, function, file_path=""):
+        graph = self._graphs.get(function)
+        if graph is None:
+            return []
+        if file_path and not str(graph.file).endswith(str(file_path)):
+            return []
+        return [
+            {
+                "function_name": function,
+                "file_path": graph.file,
+                "start_line": 1,
+                "end_line": 20,
+            }
+        ]
+
+    def find_function_infos(self, function, file_path=""):
+        if function not in {"worker_left", "worker_right"}:
+            return []
+        return [
+            {
+                "function_name": function,
+                "file_path": file_path,
+                "referenced_globals": [
+                    {
+                        "name": "g_counter",
+                        "type": "int",
+                        "file_path": "src/shared.c",
+                        "line": 2,
+                        "storage_class": "static",
+                        "qualifiers": [],
+                        "access": "write" if function == "worker_left" else "read",
+                    }
+                ],
+            }
+        ]
+
+
+def _cross_thread_race_fixture(*, locked=False, hidden_sync=False):
+    creator = _named_single_block_graph(
+        "start_workers",
+        [
+            "pthread_create(&left_thread, 0, worker_left, 0)",
+            "pthread_create(&right_thread, 0, worker_right, 0)",
+        ],
+        [
+            {"callee": "pthread_create", "line": 4},
+            {"callee": "pthread_create", "line": 5},
+        ],
+        code_hash="1" * 64,
+    )
+    left_statements = (
+        ["pthread_mutex_lock(&gate)", "g_counter++", "pthread_mutex_unlock(&gate)"]
+        if locked
+        else ["g_counter++"]
+    )
+    if hidden_sync:
+        left_statements.insert(0, "while (!ready) {}")
+    left_calls = (
+        [
+            {"callee": "pthread_mutex_lock", "line": 8},
+            {"callee": "pthread_mutex_unlock", "line": 10},
+        ]
+        if locked
+        else []
+    )
+    left = _named_single_block_graph(
+        "worker_left",
+        left_statements,
+        left_calls,
+        code_hash="2" * 64,
+    )
+    right = _named_single_block_graph(
+        "worker_right",
+        ["int snapshot = g_counter"],
+        [],
+        code_hash="3" * 64,
+    )
+    graphs = {value.function: value for value in (creator, left, right)}
+    service = FunctionIRFactService(
+        None,
+        enabled=True,
+        code_index=_CrossThreadProductIndex(graphs),
+    )
+    service._graph_for_identity = lambda identity: graphs.get(  # type: ignore[method-assign]
+        str(identity.get("function_name") or "")
+    )
+    return left, service
+
+
+def _signed_length_graph(*, guarded: bool = False, transformed: bool = False) -> FunctionIRGraph:
     target = {
         "parameters": [{"name": "fd", "type": "int", "line": 10}],
         "call_assignments": [
@@ -235,6 +436,7 @@ def _signed_length_graph(*, guarded: bool = False) -> FunctionIRGraph:
                         "predecessors": ["B2"],
                         "statements": [
                             "n = recv(fd, src, cap, 0)",
+                            *(["n = clamp_length(n)"] if transformed else []),
                             "memcpy(dst, src, n)",
                         ],
                     },
@@ -254,6 +456,88 @@ def _signed_length_graph(*, guarded: bool = False) -> FunctionIRGraph:
         evidence,
         function="copy_received",
         file="src/copy_received.c",
+    )
+    assert graph is not None
+    return graph
+
+
+def _command_flow_graph(*, transformed: bool = False) -> FunctionIRGraph:
+    statements = ["sanitize(cmd)", "system(cmd)"] if transformed else ["system(cmd)"]
+    calls = (
+        [
+            {
+                "callee": "sanitize",
+                "line": 11,
+                "argument_types": ["char *"],
+                "argument_refs": [["cmd"]],
+                "argument_ref_types": [{"cmd": "char *"}],
+            }
+        ]
+        if transformed
+        else []
+    )
+    calls.append(
+        {
+            "callee": "system",
+            "line": 12,
+            "argument_types": ["const char *"],
+            "argument_refs": [["cmd"]],
+            "argument_ref_types": [{"cmd": "char *"}],
+        }
+    )
+    evidence = {
+        "code_snapshot_sha256": "f" * 64,
+        "cfg_dump": {
+            "summary": {
+                "parse_ok": True,
+                "function": "run_command",
+                "function_section_unique": True,
+                "entry_blocks": ["B2"],
+                "exit_blocks": ["B0"],
+                "blocks": [
+                    {
+                        "id": "B2",
+                        "label": "(ENTRY)",
+                        "successors": ["B1"],
+                        "predecessors": [],
+                        "statements": [],
+                    },
+                    {
+                        "id": "B1",
+                        "label": "",
+                        "successors": ["B0"],
+                        "predecessors": ["B2"],
+                        "statements": statements,
+                    },
+                    {
+                        "id": "B0",
+                        "label": "(EXIT)",
+                        "successors": [],
+                        "predecessors": ["B1"],
+                        "statements": [],
+                    },
+                ],
+            }
+        },
+        "ast_dump": {
+            "summary": {
+                "parse_ok": True,
+                "target_function": {
+                    "parameters": [{"name": "cmd", "type": "char *", "line": 10}],
+                    "call_exprs": calls,
+                    "call_assignments": [],
+                    "conversions": [],
+                    "terminating_guards": [],
+                    "binary_ops": [],
+                    "value_fact_coverage_complete": True,
+                },
+            }
+        },
+    }
+    graph = FunctionIRGraph.from_clang_evidence(
+        evidence,
+        function="run_command",
+        file="src/run_command.c",
     )
     assert graph is not None
     return graph
@@ -831,6 +1115,722 @@ def test_cleanup_certificate_enumerates_all_exits_and_reports_uncovered_path() -
     tampered = dict(result.certificate)
     tampered["coverage"] = "partial"
     assert verify_certificate_v2(tampered) is False
+
+
+def test_composite_race_obligation_freezes_five_fail_closed_clauses() -> None:
+    graph = _clang_graph(branch_release=False)
+    issue = _issue(
+        category="data_race",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_RACE_COMPOSITE",
+            "defect_family": "data_race",
+            "subject_uid": "p",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": [
+                "object_identity",
+                "lockset",
+                "happens_before",
+            ],
+        },
+    )
+    service = FunctionIRFactService(None, enabled=False)
+
+    frozen = service.build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    obligation = frozen["proof_obligation"]
+    all_clauses = [
+        *obligation["confirmation_clauses"],
+        *obligation["open_clauses"],
+    ]
+    assert len(all_clauses) == 5
+    assert {value["fact_kind"] for value in all_clauses} == {
+        "object_identity",
+        "conflicting_accesses",
+        "cross_thread_reachability",
+        "lockset",
+        "happens_before",
+    }
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=obligation,
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+    assert evaluation.closure_evaluation.missing_clause_uids
+
+
+def test_composite_qualified_cross_thread_race_mints_v4_promotion() -> None:
+    graph, service = _cross_thread_race_fixture()
+    issue = _issue(
+        category="data_race",
+        function="worker_left",
+        file="src/worker_left.c",
+        subject_uid="g_counter",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_QUALIFIED_RACE",
+            "defect_family": "data_race",
+            "subject_uid": "g_counter",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": [
+                "object_identity",
+                "lockset",
+                "happens_before",
+            ],
+        },
+    )
+    frozen = service.build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    obligation = frozen["proof_obligation"]
+    assert obligation["open_clauses"] == []
+    assert obligation["counterproof_clauses"] == []
+    assert {value["fact_kind"] for value in obligation["confirmation_clauses"]} == {
+        "object_identity",
+        "conflicting_accesses",
+        "cross_thread_reachability",
+        "lockset",
+        "happens_before",
+    }
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=obligation,
+    )
+    assert evaluation.decision == "confirmed"
+    assert evaluation.promotion_certificate is not None
+    assert len(evaluation.check_results) == 5
+    assert {value["status"] for value in evaluation.check_results} == {"accepted"}
+
+
+def test_governed_race_rejects_wrong_access_pair_anchor() -> None:
+    graph, service = _cross_thread_race_fixture()
+    issue = _governed_issue(
+        _issue(
+            category="data_race",
+            function="worker_left",
+            file="src/worker_left.c",
+            subject_uid="g_counter",
+            thread_object="g_counter",
+            function_ir_graph=graph.to_dict(),
+        ),
+        source={"function": "worker_left", "expression": "different_object++"},
+        sink={"function": "worker_right", "expression": "g_counter"},
+    )
+
+    frozen = service.build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    assert frozen["proof_obligation"]["open_clauses"]
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_governed_race_accepts_exact_access_pair_and_region() -> None:
+    graph, service = _cross_thread_race_fixture()
+    issue = _governed_issue(
+        _issue(
+            category="data_race",
+            function="worker_left",
+            file="src/worker_left.c",
+            subject_uid="g_counter",
+            thread_object="g_counter",
+            function_ir_graph=graph.to_dict(),
+        ),
+        source={"function": "worker_left", "expression": "g_counter++"},
+        sink={"function": "worker_right", "expression": "g_counter"},
+    )
+
+    frozen = service.build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    assert frozen["proof_obligation"]["open_clauses"] == []
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+        selected_action_uids=frozen["selected_action_uids"],
+    )
+    assert evaluation.decision == "confirmed"
+    assert evaluation.promotion_certificate is not None
+
+
+def test_composite_locked_cross_thread_access_stays_open() -> None:
+    graph, service = _cross_thread_race_fixture(locked=True)
+    issue = _issue(
+        category="data_race",
+        function="worker_left",
+        file="src/worker_left.c",
+        subject_uid="g_counter",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_LOCKED_RACE",
+            "defect_family": "data_race",
+            "subject_uid": "g_counter",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["object_identity", "lockset", "happens_before"],
+        },
+    )
+
+    frozen = service.build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_composite_unmodeled_cross_thread_ordering_stays_open() -> None:
+    graph, service = _cross_thread_race_fixture(hidden_sync=True)
+    issue = _issue(
+        category="data_race",
+        function="worker_left",
+        file="src/worker_left.c",
+        subject_uid="g_counter",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_UNMODELED_ORDERING",
+            "defect_family": "data_race",
+            "subject_uid": "g_counter",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["object_identity", "lockset", "happens_before"],
+        },
+    )
+
+    frozen = service.build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    assert frozen["proof_obligation"]["open_clauses"]
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_composite_model_supplied_cross_thread_ir_is_ignored() -> None:
+    graph, _service = _cross_thread_race_fixture()
+    creator = _named_single_block_graph(
+        "start_workers",
+        [
+            "pthread_create(&left_thread, 0, worker_left, 0)",
+            "pthread_create(&right_thread, 0, worker_right, 0)",
+        ],
+        [
+            {"callee": "pthread_create", "line": 4},
+            {"callee": "pthread_create", "line": 5},
+        ],
+        code_hash="1" * 64,
+    )
+    right = _named_single_block_graph(
+        "worker_right", ["int snapshot = g_counter"], [], code_hash="3" * 64
+    )
+    untrusted_envelope = build_cross_thread_function_ir(
+        candidate_graph=graph,
+        creator_graph=creator,
+        worker_graphs=(graph, right),
+        object_uid="g_counter",
+        declaration_uid="GLOBAL:g_counter",
+        declaration_file="src/shared.c",
+        declaration_line=2,
+        project_revision_sha256="4" * 64,
+    )
+    issue = _issue(
+        category="data_race",
+        function="worker_left",
+        file="src/worker_left.c",
+        subject_uid="g_counter",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_TAMPERED_RACE",
+            "defect_family": "data_race",
+            "subject_uid": "g_counter",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["object_identity", "lockset", "happens_before"],
+        },
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(
+        issue,
+        {"_zscope_product_cross_thread_function_ir": untrusted_envelope},
+    )
+
+    assert frozen is not None
+    assert frozen["proof_obligation"]["open_clauses"]
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_composite_bounds_obligation_requires_all_four_semantic_classes() -> None:
+    graph = _signed_length_graph()
+    issue = _issue(
+        category="integer_bounds",
+        function="copy_received",
+        file="src/copy_received.c",
+        function_ir_graph=graph.to_dict(),
+        subject_uid="n",
+        source={"callee": "recv", "line": 12},
+        sink={"callee": "memcpy", "line": 14},
+        security_obligation={
+            "obligation_uid": "OBL_BOUNDS_COMPOSITE",
+            "defect_family": "integer_bounds",
+            "subject_uid": "n",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["source", "sink", "value_range"],
+        },
+    )
+    service = FunctionIRFactService(None, enabled=False)
+
+    frozen = service.build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    obligation = frozen["proof_obligation"]
+    clauses = [*obligation["confirmation_clauses"], *obligation["open_clauses"]]
+    assert len(clauses) == 4
+    assert {value["fact_kind"] for value in clauses} == {
+        "source_controllability",
+        "source_sink_reachability",
+        "caller_contract",
+        "value_range",
+    }
+    assert {value["fact_kind"] for value in obligation["confirmation_clauses"]} == {
+        "source_controllability",
+        "source_sink_reachability",
+        "caller_contract",
+        "value_range",
+    }
+    assert obligation["open_clauses"] == []
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=obligation,
+        selected_action_uids=frozen["selected_action_uids"],
+    )
+    assert evaluation.decision == "confirmed"
+    assert evaluation.promotion_certificate is not None
+    assert len(evaluation.check_results) == 4
+    assert {value["status"] for value in evaluation.check_results} == {"accepted"}
+
+
+@pytest.mark.parametrize(
+    ("subject_uid", "source", "sink"),
+    [
+        (
+            "unrelated_length",
+            {"function": "copy_received", "line": 12, "operation": "recv"},
+            {"function": "copy_received", "line": 14, "operation": "memcpy"},
+        ),
+        (
+            "n",
+            {"function": "copy_received", "line": 99, "operation": "recv"},
+            {"function": "copy_received", "line": 14, "operation": "memcpy"},
+        ),
+        (
+            "n",
+            {"function": "copy_received", "line": 12, "operation": "recv"},
+            {"function": "copy_received", "line": 99, "operation": "memcpy"},
+        ),
+    ],
+)
+def test_governed_bounds_rejects_wrong_subject_or_source_sink_anchor(
+    subject_uid, source, sink
+) -> None:
+    graph = _signed_length_graph()
+    issue = _governed_issue(
+        _issue(
+            category="integer_bounds",
+            function="copy_received",
+            file="src/copy_received.c",
+            function_ir_graph=graph.to_dict(),
+            subject_uid=subject_uid,
+        ),
+        source=source,
+        sink=sink,
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    assert frozen["proof_obligation"]["open_clauses"]
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_governed_obligation_rejects_rebound_decision_region() -> None:
+    graph = _signed_length_graph()
+    issue = _governed_issue(
+        _issue(
+            category="integer_bounds",
+            function="copy_received",
+            file="src/copy_received.c",
+            function_ir_graph=graph.to_dict(),
+            subject_uid="n",
+        ),
+        source={"function": "copy_received", "line": 12, "operation": "recv"},
+        sink={"function": "copy_received", "line": 14, "operation": "memcpy"},
+    )
+    issue["security_obligation"]["decision_region_uid"] = "REGION_REBOUND"
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is None
+
+
+def test_governed_bounds_accepts_exact_subject_source_and_sink() -> None:
+    graph = _signed_length_graph()
+    issue = _governed_issue(
+        _issue(
+            category="integer_bounds",
+            function="copy_received",
+            file="src/copy_received.c",
+            function_ir_graph=graph.to_dict(),
+            subject_uid="n",
+        ),
+        source={"function": "copy_received", "line": 12, "operation": "recv"},
+        sink={"function": "copy_received", "line": 14, "operation": "memcpy"},
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    assert frozen["proof_obligation"]["open_clauses"] == []
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+        selected_action_uids=frozen["selected_action_uids"],
+    )
+    assert evaluation.decision == "confirmed"
+    assert evaluation.promotion_certificate is not None
+
+
+def test_composite_bounds_intervening_value_transform_stays_open() -> None:
+    graph = _signed_length_graph(transformed=True)
+    issue = _issue(
+        category="integer_bounds",
+        function="copy_received",
+        file="src/copy_received.c",
+        function_ir_graph=graph.to_dict(),
+        subject_uid="n",
+        source={"callee": "recv", "line": 12},
+        sink={"callee": "memcpy", "line": 14},
+        security_obligation={
+            "obligation_uid": "OBL_BOUNDS_TRANSFORMED",
+            "defect_family": "integer_bounds",
+            "subject_uid": "n",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["source", "sink", "value_range"],
+        },
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    assert frozen["proof_obligation"]["open_clauses"]
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_composite_leak_obligation_keeps_identity_and_transfer_open() -> None:
+    graph = _clang_graph(branch_release=False)
+    issue = _issue(
+        category="memory_leak",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_LEAK_COMPOSITE",
+            "defect_family": "memory_leak",
+            "subject_uid": "p",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["event:acquire", "event:exit"],
+        },
+    )
+    service = FunctionIRFactService(None, enabled=False)
+
+    frozen = service.build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    obligation = frozen["proof_obligation"]
+    clauses = [*obligation["confirmation_clauses"], *obligation["open_clauses"]]
+    assert len(clauses) == 3
+    assert {value["fact_kind"] for value in clauses} == {
+        "object_identity",
+        "cleanup_coverage",
+        "ownership_transfer",
+    }
+    assert {value["fact_kind"] for value in obligation["open_clauses"]} == {
+        "object_identity",
+        "ownership_transfer",
+    }
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=obligation,
+        selected_action_uids=frozen["selected_action_uids"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_composite_direct_command_flow_stays_open_without_exact_caller_contract() -> None:
+    graph = _command_flow_graph()
+    issue = _issue(
+        category="command_injection",
+        function="run_command",
+        file="src/run_command.c",
+        function_ir_graph=graph.to_dict(),
+        subject_uid="cmd",
+        security_obligation={
+            "obligation_uid": "OBL_COMMAND_COMPOSITE",
+            "defect_family": "command_injection",
+            "subject_uid": "cmd",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["source", "sink", "caller_contract"],
+        },
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    obligation = frozen["proof_obligation"]
+    assert obligation["open_clauses"]
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=obligation,
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_composite_transformed_command_flow_remains_open() -> None:
+    graph = _command_flow_graph(transformed=True)
+    issue = _issue(
+        category="command_injection",
+        function="run_command",
+        file="src/run_command.c",
+        function_ir_graph=graph.to_dict(),
+        subject_uid="cmd",
+        security_obligation={
+            "obligation_uid": "OBL_COMMAND_TRANSFORMED",
+            "defect_family": "command_injection",
+            "subject_uid": "cmd",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["source", "sink", "caller_contract"],
+        },
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_composite_exact_resource_leak_mints_v4_promotion() -> None:
+    graph = _single_block_graph(
+        ["p = malloc(8)"],
+        [{"callee": "malloc", "line": 4}],
+        var_decls=[{"name": "p", "type": "void *", "line": 4, "storage_class": ""}],
+    )
+    issue = _issue(
+        category="memory_leak",
+        function="single_block",
+        file="src/generic.c",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_EXACT_LEAK",
+            "defect_family": "memory_leak",
+            "subject_uid": "p",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["event:acquire", "event:exit"],
+        },
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    obligation = frozen["proof_obligation"]
+    assert obligation["open_clauses"] == []
+    assert {value["fact_kind"] for value in obligation["confirmation_clauses"]} == {
+        "object_identity",
+        "cleanup_coverage",
+        "ownership_transfer",
+    }
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=obligation,
+        selected_action_uids=frozen["selected_action_uids"],
+    )
+    assert evaluation.decision == "confirmed"
+    assert evaluation.promotion_certificate is not None
+
+
+def test_governed_leak_rejects_wrong_acquisition_anchor() -> None:
+    graph = _single_block_graph(
+        ["p = malloc(8)"],
+        [{"callee": "malloc", "line": 4}],
+        var_decls=[{"name": "p", "type": "void *", "line": 4, "storage_class": ""}],
+    )
+    issue = _governed_issue(
+        _issue(
+            category="memory_leak",
+            function="single_block",
+            file="src/generic.c",
+            function_ir_graph=graph.to_dict(),
+            subject_uid="p",
+            resource_identity="p",
+        ),
+        source="single_block:99:resource_acquire:p",
+        sink="single_block:99:sink:p",
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    assert frozen["proof_obligation"]["open_clauses"]
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_composite_complete_cleanup_is_alternative_counterproof_terminal() -> None:
+    graph = _single_block_graph(
+        ["p = malloc(8)", "free(p)"],
+        [{"callee": "malloc", "line": 4}, {"callee": "free", "line": 5}],
+        var_decls=[{"name": "p", "type": "void *", "line": 4, "storage_class": ""}],
+    )
+    issue = _issue(
+        category="memory_leak",
+        function="single_block",
+        file="src/generic.c",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_EXACT_CLEANUP",
+            "defect_family": "memory_leak",
+            "subject_uid": "p",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["event:acquire", "event:exit"],
+        },
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    obligation = frozen["proof_obligation"]
+    assert obligation["confirmation_clauses"] == []
+    assert len(obligation["counterproof_clauses"]) == 1
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=obligation,
+        selected_action_uids=frozen["selected_action_uids"],
+    )
+    assert evaluation.decision == "rejected_with_proof"
+    assert evaluation.promotion_certificate is not None
+
+
+@pytest.mark.parametrize(
+    ("transfer_statement", "transfer_calls"),
+    [
+        ("return p", []),
+        ("global_owner = p", []),
+        ("ctx->field = p", []),
+        ("*out = p", []),
+        ("consume(p)", [{"callee": "consume", "line": 5}]),
+        ("container_push(list, p)", [{"callee": "container_push", "line": 5}]),
+        ("register_callback(p)", [{"callee": "register_callback", "line": 5}]),
+    ],
+)
+def test_composite_resource_transfer_paths_stay_open(transfer_statement, transfer_calls) -> None:
+    graph = _single_block_graph(
+        ["p = malloc(8)", transfer_statement],
+        [{"callee": "malloc", "line": 4}, *transfer_calls],
+        var_decls=[{"name": "p", "type": "void *", "line": 4, "storage_class": ""}],
+    )
+    issue = _issue(
+        category="memory_leak",
+        function="single_block",
+        file="src/generic.c",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_TRANSFER_UNKNOWN",
+            "defect_family": "memory_leak",
+            "subject_uid": "p",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["event:acquire", "event:exit"],
+        },
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+        selected_action_uids=frozen["selected_action_uids"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+@pytest.mark.parametrize(
+    "var_decls",
+    [
+        [],
+        [{"name": "p", "type": "void *", "line": 4, "storage_class": "static"}],
+    ],
+)
+def test_composite_non_automatic_acquisition_identity_stays_open(var_decls) -> None:
+    graph = _single_block_graph(
+        ["p = malloc(8)"],
+        [{"callee": "malloc", "line": 4}],
+        var_decls=var_decls,
+    )
+    issue = _issue(
+        category="memory_leak",
+        function="single_block",
+        file="src/generic.c",
+        function_ir_graph=graph.to_dict(),
+        security_obligation={
+            "obligation_uid": "OBL_NONLOCAL_RESOURCE",
+            "defect_family": "memory_leak",
+            "subject_uid": "p",
+            "decision_region_uid": "REGION_1",
+            "required_fact_kinds": ["event:acquire", "event:exit"],
+        },
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+
+    assert frozen is not None
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
 
 
 def test_capability_registry_requires_real_subject_region_action() -> None:

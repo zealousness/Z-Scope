@@ -35,7 +35,7 @@ class HypothesisHunterRuntime:
         risk_threshold: int,
         max_units: int | None = None,
         max_concurrent_calls: int = 8,
-        prompt_revision: str = "hypothesis-hunter.v3",
+        prompt_revision: str = "hypothesis-hunter.v4",
         model_profile: str = "analysis",
     ) -> None:
         self.store = store
@@ -249,21 +249,38 @@ class HypothesisHunterRuntime:
                     obligation=offer["proof_obligation"],
                     selected_action_uids=hypothesis["evidence_action_uids"],
                 )
-                function_uid = str((hypothesis.get("location") or {}).get("function_uid") or "")
-                issue = self._live_issue(
-                    hypothesis,
-                    offer=offer,
-                    proof=asdict(proof),
-                    function_name=function_names.get(function_uid, ""),
-                )
-                registration = candidate_registrar.register_issues(
-                    (issue,),
-                    source="hypothesis_hunter",
-                    default_entry_identity=str((unit.get("root_entry_uids") or ["__project__"])[0]),
-                    force_unconfirmed=True,
-                )
-                registered_candidate_ids = list(registration.candidate_ids)
-                if proof.decision != "confirmed":
+                registered_candidate_ids: list[str] = []
+                if proof.decision != "rejected_with_proof":
+                    function_uid = str((hypothesis.get("location") or {}).get("function_uid") or "")
+                    issue = self._live_issue(
+                        hypothesis,
+                        offer=offer,
+                        proof=asdict(proof),
+                        function_name=function_names.get(function_uid, ""),
+                    )
+                    registration = candidate_registrar.register_issues(
+                        (issue,),
+                        source="hypothesis_hunter",
+                        default_entry_identity=str(
+                            (unit.get("root_entry_uids") or ["__project__"])[0]
+                        ),
+                        force_unconfirmed=True,
+                    )
+                    registered_candidate_ids = list(registration.candidate_ids)
+                if proof.decision == "rejected_with_proof":
+                    observation = self._observation(
+                        unit,
+                        "selected_hypothesis_counterproved",
+                    )
+                    observations.append(observation)
+                    references.append(
+                        self.store.put(
+                            "hypothesis_coverage_observation",
+                            observation,
+                            dependency_refs=(hypothesis_ref,),
+                        )
+                    )
+                elif proof.decision != "confirmed":
                     observation = self._observation(
                         unit,
                         "selected_hypothesis_not_proven",
@@ -357,7 +374,7 @@ class HypothesisHunterRuntime:
                 "security_spec_manifest_sha256": str(
                     spec_runtime.get("root_manifest_sha256") or ""
                 ),
-                "proof_registry_revision": "proof-kernel.v2",
+                "proof_registry_revision": "proof-kernel.v4",
                 "prompt_revision": self.prompt_revision,
                 "model_profile": self.model_profile,
                 "dependency_hashes": list(unit.get("dependency_hashes") or []),
