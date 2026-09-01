@@ -596,7 +596,7 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
     wiki_data = _mapping(data.get("wiki"), "project.wiki")
     _check_keys(
         wiki_data,
-        {"mode", "auto_maintain", "state_dir", "compiler_enabled", "documents", "max_file_bytes", "max_files", "max_total_bytes", "max_context_tokens", "compiler_max_tokens", "max_source_chars", "max_output_chars", "max_wall_seconds", "max_pages"},
+        {"mode", "auto_maintain", "state_dir", "compiler_enabled", "documents", "max_file_bytes", "max_files", "max_total_bytes", "compiler_max_tokens", "max_wall_seconds", "max_constraints"},
         "project.wiki",
     )
     documents = _mapping(wiki_data.get("documents"), "project.wiki.documents")
@@ -634,12 +634,9 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         max_file_bytes=_positive_int(wiki_data.get("max_file_bytes", 10 * 1024 * 1024), "project.wiki.max_file_bytes"),
         max_files=_positive_int(wiki_data.get("max_files", 10_000), "project.wiki.max_files"),
         max_total_bytes=_positive_int(wiki_data.get("max_total_bytes", 100 * 1024 * 1024), "project.wiki.max_total_bytes"),
-        max_context_tokens=_optional_positive_int(wiki_data.get("max_context_tokens"), None),
         compiler_max_tokens=_optional_positive_int(wiki_data.get("compiler_max_tokens"), None),
-        max_source_chars=_optional_positive_int(wiki_data.get("max_source_chars"), None),
-        max_output_chars=_optional_positive_int(wiki_data.get("max_output_chars"), None),
         max_wall_seconds=_optional_positive_int(wiki_data.get("max_wall_seconds"), None),
-        max_pages=_optional_positive_int(wiki_data.get("max_pages"), None),
+        max_constraints=_optional_positive_int(wiki_data.get("max_constraints"), None),
     )
 
     project = ProjectConfig(
@@ -755,12 +752,16 @@ def _parse_concurrency(raw: Any, *, language: str) -> ConcurrencyConfig:
         "investigator_workers",
         "evidence_completion_workers",
         "index_workers",
+        "wiki_compiler_workers",
         "llm_max_inflight",
     }
     if language == "c_cpp":
         allowed.add("svf_workers")
     _check_keys(data, allowed, "concurrency")
-    required = set(allowed)
+    # Wiki compiler concurrency was added after the original v2 schema.  Keep
+    # old configurations loadable while making the new value explicit when
+    # present.
+    required = set(allowed) - {"wiki_compiler_workers"}
     missing = sorted(required - set(data))
     if missing:
         raise ValueError("concurrency is missing required key(s): " + ", ".join(missing))
@@ -775,6 +776,9 @@ def _parse_concurrency(raw: Any, *, language: str) -> ConcurrencyConfig:
             "concurrency.evidence_completion_workers",
         ),
         index_workers=_positive_int(data["index_workers"], "concurrency.index_workers"),
+        wiki_compiler_workers=_positive_int(
+            data.get("wiki_compiler_workers", 4), "concurrency.wiki_compiler_workers"
+        ),
         svf_workers=(
             _positive_int(data["svf_workers"], "concurrency.svf_workers")
             if language == "c_cpp"

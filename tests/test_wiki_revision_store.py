@@ -29,7 +29,7 @@ def _linked_page(page_id: str, target_id: str, ref_id: str) -> str:
     return "\n".join(f"## {heading}\n\n{values[heading]}\n" for heading in HEADINGS)
 
 
-def test_deterministic_skeleton_publishes_active_revision_and_refs(tmp_path: Path) -> None:
+def test_deterministic_skeleton_publishes_refs_without_generated_pages(tmp_path: Path) -> None:
     manifest = build_source_manifest(
         FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z"
     )
@@ -38,7 +38,7 @@ def test_deterministic_skeleton_publishes_active_revision_and_refs(tmp_path: Pat
         result = store.build_skeleton(FIXTURE, manifest)
         assert result.outcome == "background_only"
         assert result.constraints_created == 0
-        assert result.page_count >= 1
+        assert result.page_count == 0
         assert result.document_ref_count > 0
         active = store.active_revision()
         assert active and active["revision_id"] == result.revision_id
@@ -48,9 +48,8 @@ def test_deterministic_skeleton_publishes_active_revision_and_refs(tmp_path: Pat
         assert revision["compiler"]["kind"] == "deterministic"
         assert revision["lint"] == {"status": "passed", "errors": 0, "warnings": 0}
         pages = list((state / "revisions" / result.revision_id / "pages").rglob("*.md"))
-        assert pages
-        text = pages[0].read_text(encoding="utf-8")
-        assert all(f"## {heading}" in text for heading in HEADINGS)
+        assert pages == []
+        assert (state / "revisions" / result.revision_id / "index.md").is_file()
         refs = json.loads((state / "revisions" / result.revision_id / "refs.json").read_text())
         assert refs and all(ref["ref_id"].startswith("docref_") for ref in refs)
         log_text = (state / "log.md").read_text(encoding="utf-8")
@@ -95,10 +94,6 @@ def test_removed_only_update_publishes_stale_projection_without_llm_content(
     ):
         old_index.rebuild(before_root, manifest=before)
         first = store.build_skeleton(before_root, before)
-        project_page_id = store.connection.execute(
-            "SELECT page_id FROM pages WHERE revision_id=? AND canonical_slug='project'",
-            (first.revision_id,),
-        ).fetchone()["page_id"]
         removed_ref_id = store.connection.execute(
             "SELECT ref_id FROM document_refs WHERE revision_id=? AND source_id=? LIMIT 1",
             (first.revision_id, removed_source_id),
@@ -111,7 +106,6 @@ def test_removed_only_update_publishes_stale_projection_without_llm_content(
             source_index=old_index,
             base_revision_id=first.revision_id,
             changed_source_ids=[removed_source_id],
-            target_page_ids=[project_page_id],
         )
         seed_constraint = {
             "schema_version": "zscope.wiki-changeset.v1",
@@ -123,59 +117,30 @@ def test_removed_only_update_publishes_stale_projection_without_llm_content(
                     "source_ref": removed_source_id,
                     "extraction_status": "constraints_found",
                     "source_refs_used": [removed_ref_id],
-                    "constraint_ids": ["constraint_removed_seed"],
                     "reason": "seed",
                 }
             ],
-            "page_changes": [],
             "constraint_proposals": [
                 {
-                    "schema_version": "zscope.project-constraint.v1",
-                    "constraint_id": "constraint_removed_seed",
-                    "subject": {
-                        "kind": "api",
-                        "canonical_id": "api:parse_byte",
-                    },
-                    "scope": {
-                        "project_id": "fixture",
-                        "module_ids": [],
-                        "path_globs": [],
-                    },
+                    "schema_version": "zscope.project-constraint-proposal.v1",
+                    "subject_id": "api:parse_byte",
+                    "subject_kind": "api",
                     "kind": "input_range",
                     "statement": "parse_byte accepts 0..255",
-                    "normalized_value": {"min": 0, "max": 255},
-                    "authority": "documented_contract",
                     "normativity": "required",
-                    "status": "active",
                     "source_refs": [removed_ref_id],
-                    "page_refs": [project_page_id],
-                    "conflicts_with": [],
-                    "source_manifest_digest": before.source_manifest_digest,
-                    "created_revision_id": "wikirev_removed_seed",
                 }
             ],
-            "edge_proposals": [],
-            "retire_proposals": [],
-            "unresolved_conflicts": [],
             "summary": "seed",
         }
         seeded = store.apply_changeset(before_root, before, seed_workset, seed_constraint)
 
         new_index.rebuild(after_root, manifest=after)
-        page_ids = [
-            str(row["page_id"])
-            for row in store.connection.execute(
-                "SELECT page_id FROM pages WHERE revision_id=? ORDER BY page_id",
-                (seeded.revision_id,),
-            ).fetchall()
-        ]
         workset = build_ingest_workset(
             after,
             source_index=new_index,
             base_revision_id=seeded.revision_id,
             removed_source_ids=[removed_source_id],
-            target_page_ids=[project_page_id],
-            allowed_existing_pages=page_ids,
         )
         calls = []
 
@@ -203,18 +168,16 @@ def test_removed_only_update_publishes_stale_projection_without_llm_content(
         assert ref is not None
         assert json.loads(ref["ref_json"])["resolvable"] is False
         constraint = store.connection.execute(
-            "SELECT constraint_json FROM constraints WHERE revision_id=? AND constraint_id=?",
-            (result.revision_id, "constraint_removed_seed"),
+            "SELECT constraint_id, constraint_json FROM constraints WHERE revision_id=?",
+            (result.revision_id,),
         ).fetchone()
         assert constraint is not None
+        assert constraint["constraint_id"].startswith("constraint_")
         assert json.loads(constraint["constraint_json"])["status"] == "stale"
-        stale_pages = store.connection.execute(
-            "SELECT frontmatter_json, markdown FROM pages WHERE revision_id=? AND page_id=?",
-            (result.revision_id, project_page_id),
-        ).fetchone()
-        assert stale_pages is not None
-        assert json.loads(stale_pages["frontmatter_json"])["status"] == "stale"
-        assert "源文档已被移除" not in stale_pages["markdown"]
+        assert store.connection.execute(
+            "SELECT COUNT(*) AS count FROM pages WHERE revision_id=?",
+            (result.revision_id,),
+        ).fetchone()["count"] == 0
 
 
 def test_rollback_switches_active_pointer_without_rebuilding(tmp_path: Path) -> None:
@@ -252,10 +215,6 @@ def test_validated_changeset_is_merged_into_new_revision(tmp_path: Path) -> None
     with SourceIndex(tmp_path / "source.db") as index, WikiStore(state) as store:
         index.rebuild(FIXTURE, manifest=manifest)
         first = store.build_skeleton(FIXTURE, manifest)
-        page_id = store.connection.execute(
-            "SELECT page_id FROM pages WHERE revision_id=? AND canonical_slug='project'",
-            (first.revision_id,),
-        ).fetchone()["page_id"]
         ref_id = store.connection.execute(
             "SELECT ref_id FROM document_refs WHERE revision_id=? ORDER BY ref_id LIMIT 1",
             (first.revision_id,),
@@ -266,7 +225,6 @@ def test_validated_changeset_is_merged_into_new_revision(tmp_path: Path) -> None
             source_index=index,
             base_revision_id=first.revision_id,
             changed_source_ids=[source_id],
-            target_page_ids=[page_id],
         )
         changeset = {
             "schema_version": "zscope.wiki-changeset.v1",
@@ -278,45 +236,37 @@ def test_validated_changeset_is_merged_into_new_revision(tmp_path: Path) -> None
                     "source_ref": source_id,
                     "extraction_status": "constraints_found",
                     "source_refs_used": [ref_id],
-                    "constraint_ids": ["constraint_parse_byte"],
                     "reason": "provider",
                 }
             ],
-            "page_changes": [],
             "constraint_proposals": [
-                {
-                    "schema_version": "zscope.project-constraint.v1",
-                    "constraint_id": "constraint_parse_byte",
-                    "subject": {"kind": "api", "canonical_id": "api:parse_byte"},
-                    "scope": {"project_id": "fixture", "module_ids": [], "path_globs": []},
+                    {
+                        "schema_version": "zscope.project-constraint-proposal.v1",
+                        "subject_id": "api:parse_byte",
+                        "subject_kind": "api",
                     "kind": "input_range",
                     "statement": "parse_byte accepts 0..255",
-                    "normalized_value": {"min": 0, "max": 255},
-                    "authority": "documented_contract",
                     "normativity": "required",
-                    "status": "active",
                     "source_refs": [ref_id],
-                    "page_refs": [],
-                    "conflicts_with": [],
-                    "source_manifest_digest": manifest.source_manifest_digest,
-                    "created_revision_id": "wikirev_provider",
                 }
             ],
-            "edge_proposals": [],
-            "retire_proposals": [],
-            "unresolved_conflicts": [],
             "summary": "provider result",
         }
         result = store.apply_changeset(FIXTURE, manifest, workset, changeset)
         assert result.outcome == "changed"
         assert result.constraint_count == 1
         assert store.active_revision()["revision_id"] == result.revision_id
-        row = store.connection.execute(
-            "SELECT constraint_json FROM constraints WHERE revision_id=? AND constraint_id=?",
-            (result.revision_id, "constraint_parse_byte"),
-        ).fetchone()
-        assert row is not None
-        assert json.loads(row["constraint_json"])["status"] == "active"
+        rows = store.connection.execute(
+            "SELECT constraint_id, constraint_json FROM constraints WHERE revision_id=?",
+            (result.revision_id,),
+        ).fetchall()
+        assert len(rows) == 1
+        materialized = json.loads(rows[0]["constraint_json"])
+        assert rows[0]["constraint_id"].startswith("constraint_")
+        assert materialized["status"] == "active"
+        assert materialized["authority"] == "documented_contract"
+        assert "normalized_value" not in materialized
+        assert "page_refs" not in materialized
         service = ProjectKnowledgeService(
             source_index=index,
             wiki_store=store,
@@ -332,11 +282,11 @@ def test_validated_changeset_is_merged_into_new_revision(tmp_path: Path) -> None
             }
         )
         assert context["resolution_mode"] == "wiki"
-        assert context["constraints"][0]["constraint_id"] == "constraint_parse_byte"
+        assert context["constraints"][0]["constraint_id"] == rows[0]["constraint_id"]
         assert validate_project_knowledge(context)["context_digest"].startswith("sha256:")
 
 
-def test_compiler_publishes_two_linked_chinese_pages(tmp_path: Path) -> None:
+def test_constraint_only_changeset_does_not_publish_pages(tmp_path: Path) -> None:
     manifest = build_source_manifest(
         FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z"
     )
@@ -344,54 +294,39 @@ def test_compiler_publishes_two_linked_chinese_pages(tmp_path: Path) -> None:
     with SourceIndex(tmp_path / "source.db") as index, WikiStore(state) as store:
         index.rebuild(FIXTURE, manifest=manifest)
         first = store.build_skeleton(FIXTURE, manifest)
-        rows = store.connection.execute(
-            "SELECT page_id FROM pages WHERE revision_id=? ORDER BY page_id LIMIT 2",
-            (first.revision_id,),
-        ).fetchall()
-        page_ids = [str(row["page_id"]) for row in rows]
         source_id = manifest.accepted[0].source_id
         workset = build_ingest_workset(
             manifest,
             source_index=index,
             base_revision_id=first.revision_id,
             changed_source_ids=[source_id],
-            target_page_ids=page_ids,
-            allowed_existing_pages=page_ids,
         )
         ref_id = workset["allowed_source_refs"][0]
         changeset = {
             "schema_version": "zscope.wiki-changeset.v1",
             "workset_id": workset["workset_id"],
             "base_revision_id": first.revision_id,
-            "outcome": "background_only",
+            "outcome": "changed",
             "source_results": [
                 {
                     "source_ref": source_id,
-                    "extraction_status": "background_page_updated",
+                    "extraction_status": "constraints_found",
                     "source_refs_used": [ref_id],
-                    "constraint_ids": [],
-                    "reason": "two linked background pages",
+                    "reason": "one documented constraint",
                 }
             ],
-            "page_changes": [
-                {
-                    "operation": "upsert",
-                    "page_id": page_ids[0],
-                    "markdown": _linked_page(page_ids[0], page_ids[1], ref_id),
-                    "source_refs_used": [ref_id],
-                },
-                {
-                    "operation": "upsert",
-                    "page_id": page_ids[1],
-                    "markdown": _linked_page(page_ids[1], page_ids[0], ref_id),
-                    "source_refs_used": [ref_id],
-                },
+            "constraint_proposals": [
+                    {
+                        "schema_version": "zscope.project-constraint-proposal.v1",
+                        "subject_id": "api:parse_byte",
+                        "subject_kind": "api",
+                    "kind": "input_range",
+                    "statement": "parse_byte accepts 0..255",
+                    "normativity": "required",
+                    "source_refs": [ref_id],
+                }
             ],
-            "constraint_proposals": [],
-            "edge_proposals": [],
-            "retire_proposals": [],
-            "unresolved_conflicts": [],
-            "summary": "two linked Chinese pages",
+            "summary": "one documented constraint",
         }
         result = store.compile_and_apply(
             FIXTURE,
@@ -400,16 +335,12 @@ def test_compiler_publishes_two_linked_chinese_pages(tmp_path: Path) -> None:
             WikiCompiler(lambda _workset: changeset),
         )
 
+        assert result.constraint_count == 1
         published = store.connection.execute(
-            "SELECT page_id, markdown, frontmatter_json FROM pages WHERE revision_id=? AND page_id IN (?, ?) ORDER BY page_id",
-            (result.revision_id, *page_ids),
-        ).fetchall()
-        assert len(published) == 2
-        assert all("[[page_" in row["markdown"] for row in published)
-        assert all(
-            json.loads(row["frontmatter_json"])["generated_language"] == "zh-CN"
-            for row in published
-        )
+            "SELECT COUNT(*) AS count FROM pages WHERE revision_id=?",
+            (result.revision_id,),
+        ).fetchone()
+        assert published["count"] == 0
         assert 'schema_version: "zscope.wiki-index.v1"' in (
             store.revisions_root / result.revision_id / "index.md"
         ).read_text(encoding="utf-8")
@@ -431,15 +362,10 @@ def test_failed_changeset_keeps_previous_active_revision(tmp_path: Path) -> None
                     "source_ref": "docsrc_none",
                     "extraction_status": "extraction_failed",
                     "source_refs_used": [],
-                    "constraint_ids": [],
                     "reason": "provider unavailable",
                 }
             ],
-            "page_changes": [],
             "constraint_proposals": [],
-            "edge_proposals": [],
-            "retire_proposals": [],
-            "unresolved_conflicts": [],
             "summary": "failed",
         }
         # The workset identity is checked before publishing; a failed provider
@@ -491,35 +417,77 @@ def test_new_page_slug_is_safe_when_page_id_contains_underscores(tmp_path: Path)
             "source_results": [
                 {
                     "source_ref": source_id,
-                    "extraction_status": "background_page_updated",
+                    "extraction_status": "no_constraints_found",
                     "source_refs_used": [ref_id],
-                    "constraint_ids": [],
                     "reason": "background updated",
                 }
             ],
-            "page_changes": [
-                {
-                    "operation": "upsert",
-                    "page_id": "page_project",
-                    "source_refs_used": [ref_id],
-                    "markdown": _linked_page("page_project", "page_project", ref_id),
-                }
-            ],
             "constraint_proposals": [],
-            "edge_proposals": [],
-            "retire_proposals": [],
-            "unresolved_conflicts": [],
             "summary": "background only",
         }
 
         result = store.apply_changeset(FIXTURE, manifest, workset, changeset)
-        row = store.connection.execute(
-            "SELECT canonical_slug FROM pages WHERE revision_id=? AND page_id='page_project'",
+        assert store.connection.execute(
+            "SELECT COUNT(*) AS count FROM pages WHERE revision_id=?",
             (result.revision_id,),
-        ).fetchone()
-
-        assert row["canonical_slug"] == "page-project"
+        ).fetchone()["count"] == 0
         assert lint_revision(store, result.revision_id).passed
+
+
+def test_program_summary_does_not_change_revision_identity(tmp_path: Path) -> None:
+    manifest = build_source_manifest(
+        FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z"
+    )
+    with SourceIndex(tmp_path / "source.db") as index:
+        index.rebuild(FIXTURE, manifest=manifest)
+        with WikiStore(tmp_path / "wiki-a") as store_a, WikiStore(tmp_path / "wiki-b") as store_b:
+            first_a = store_a.build_skeleton(FIXTURE, manifest)
+            first_b = store_b.build_skeleton(FIXTURE, manifest)
+            assert first_a.revision_id == first_b.revision_id
+            source_id = manifest.accepted[0].source_id
+            workset = build_ingest_workset(
+                manifest,
+                source_index=index,
+                base_revision_id=first_a.revision_id,
+                changed_source_ids=[source_id],
+            )
+            ref_id = workset["allowed_source_refs"][0]
+
+            def changeset(summary: str) -> dict:
+                return {
+                    "schema_version": "zscope.wiki-changeset.v1",
+                    "workset_id": workset["workset_id"],
+                    "base_revision_id": first_a.revision_id,
+                    "outcome": "changed",
+                    "source_results": [
+                        {
+                            "source_ref": source_id,
+                            "extraction_status": "constraints_found",
+                            "source_refs_used": [ref_id],
+                            "reason": "provider",
+                        }
+                    ],
+                    "constraint_proposals": [
+                        {
+                            "schema_version": "zscope.project-constraint-proposal.v1",
+                            "subject_id": "api:parse_byte",
+                            "subject_kind": "api",
+                            "kind": "input_range",
+                            "statement": "parse_byte accepts 0..255",
+                            "normativity": "required",
+                            "source_refs": [ref_id],
+                        }
+                    ],
+                    "summary": summary,
+                }
+
+            result_a = store_a.apply_changeset(
+                FIXTURE, manifest, workset, changeset("first deterministic summary")
+            )
+            result_b = store_b.apply_changeset(
+                FIXTURE, manifest, workset, changeset("different wording")
+            )
+            assert result_a.revision_id == result_b.revision_id
 
 
 def test_candidate_lint_failure_keeps_previous_active_revision(
@@ -613,3 +581,54 @@ def test_store_rejects_untrusted_revision_ids_before_path_access(tmp_path: Path)
             store.rollback("../../outside")
 
     assert not (tmp_path / "outside.tmp").exists()
+
+
+def test_store_enforces_max_constraints_as_revision_total(tmp_path: Path) -> None:
+    manifest = build_source_manifest(
+        FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z"
+    )
+    with SourceIndex(tmp_path / "source.db") as index, WikiStore(tmp_path / "wiki") as store:
+        index.rebuild(FIXTURE, manifest=manifest)
+        first = store.build_skeleton(FIXTURE, manifest)
+        source_id = manifest.accepted[0].source_id
+        workset = build_ingest_workset(
+            manifest,
+            source_index=index,
+            base_revision_id=first.revision_id,
+            changed_source_ids=[source_id],
+            max_constraints=1,
+        )
+        ref_id = workset["allowed_source_refs"][0]
+        proposals = [
+            {
+                "schema_version": "zscope.project-constraint-proposal.v1",
+                "subject_id": "api:parse_byte",
+                "subject_kind": "api",
+                "kind": kind,
+                "statement": statement,
+                "normativity": "required",
+                "source_refs": [ref_id],
+            }
+            for kind, statement in (
+                ("input_range", "parse_byte accepts 0..255"),
+                ("size_contract", "parse_byte output is bounded"),
+            )
+        ]
+        changeset = {
+            "schema_version": "zscope.wiki-changeset.v1",
+            "workset_id": workset["workset_id"],
+            "base_revision_id": first.revision_id,
+            "outcome": "changed",
+            "source_results": [
+                {
+                    "source_ref": source_id,
+                    "extraction_status": "constraints_found",
+                    "source_refs_used": [ref_id],
+                    "reason": "test",
+                }
+            ],
+            "constraint_proposals": proposals,
+            "summary": "test",
+        }
+        with pytest.raises(Exception, match="max_constraints"):
+            store.apply_changeset(FIXTURE, manifest, workset, changeset)

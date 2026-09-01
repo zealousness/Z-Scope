@@ -611,68 +611,16 @@ class WikiStore:
         )
         rows = self._load_sections(project_root_path, manifest_obj)
         refs = [self._source_ref(row) for row in rows]
-        refs_by_source: Dict[str, List[Dict[str, Any]]] = {}
-        for ref in refs:
-            refs_by_source.setdefault(str(ref["source_id"]), []).append(ref)
-        pages: List[Tuple[Dict[str, Any], str, str]] = []
-        all_source_ids = [item.source_id for item in manifest_obj.accepted]
-        all_ref_ids = [str(ref["ref_id"]) for ref in refs]
-        pages.append(
-            self._make_page(
-                manifest_obj.project_id,
-                rid,
-                "project_overview",
-                "project",
-                manifest_obj.project_id,
-                all_source_ids,
-                all_ref_ids,
-                "项目说明文档的确定性 Wiki 骨架。",
-                "项目级背景页面；具体模块边界以来源引用为准。",
-            )
-            + ("project",)
-        )
         module_sources: Dict[str, List[str]] = {}
         for source in manifest_obj.accepted:
             for module in source.module_hints:
                 module_sources.setdefault(module, []).append(source.source_id)
-        for module in sorted(module_sources):
-            slug = "modules/" + slugify(module.removeprefix("module:"))
-            module_refs = [
-                str(ref["ref_id"])
-                for sid in module_sources[module]
-                for ref in refs_by_source.get(sid, ())
-            ]
-            pages.append(
-                self._make_page(
-                    manifest_obj.project_id,
-                    rid,
-                    "module",
-                    slug,
-                    module,
-                    module_sources[module],
-                    module_refs,
-                    "模块背景骨架，尚未生成结构化约束。",
-                    f"模块标识：{module}。",
-                )
-                + (slug,)
-            )
-        for source in manifest_obj.accepted:
-            slug = "sources/" + slugify(Path(source.relative_path).with_suffix("").as_posix())
-            source_refs = [str(ref["ref_id"]) for ref in refs_by_source.get(source.source_id, ())]
-            pages.append(
-                self._make_page(
-                    manifest_obj.project_id,
-                    rid,
-                    "source",
-                    slug,
-                    source.relative_path,
-                    [source.source_id],
-                    source_refs,
-                    "说明性 Markdown 来源页面。",
-                    f"来源路径：{source.relative_path}。",
-                )
-                + (slug,)
-            )
+
+        # Constraint-only revisions retain refs and structured constraints;
+        # generated Markdown pages are no longer part of the runtime Wiki.
+        # Keep the pages directory and index projection for old readers, but
+        # publish no newly generated page rows.
+        pages = []
 
         revision_dir = self.staging_root / f"{rid}.tmp"
         if revision_dir.exists():
@@ -931,6 +879,66 @@ class WikiStore:
         rows = self._load_sections(Path(project_root).resolve(), manifest)
         return {str(ref["ref_id"]): ref for ref in (self._source_ref(row) for row in rows)}
 
+    @classmethod
+    def _materialize_constraint_proposal(
+        cls,
+        raw: Mapping[str, Any],
+        manifest: SourceManifest,
+        workset: Mapping[str, Any],
+        revision_id: str,
+    ) -> Dict[str, Any]:
+        subject_id = str(raw.get("subject_id", "")).strip()
+        subject_kind = str(raw.get("subject_kind", "")).strip()
+        kind = str(raw.get("kind", "")).strip()
+        normativity = str(raw.get("normativity", "unknown")).strip()
+        statement = " ".join(str(raw.get("statement", "")).split())
+        source_refs = sorted(set(str(ref) for ref in raw.get("source_refs", ())))
+        ref_sources = {
+            str(item.get("ref_id")): str(item.get("source_id"))
+            for item in workset.get("source_ref_catalog", ())
+            if isinstance(item, Mapping)
+        }
+        source_ids = {ref_sources.get(ref, "") for ref in source_refs}
+        module_ids = sorted(
+            {
+                str(module)
+                for source in manifest.accepted
+                if source.source_id in source_ids
+                for module in source.module_hints
+            }
+        )
+        constraint_id = stable_id(
+            "constraint",
+            manifest.project_id,
+            subject_kind,
+            subject_id.casefold(),
+            kind,
+            normativity,
+            statement.casefold(),
+        )
+        return {
+            "schema_version": "zscope.project-constraint.v1",
+            "constraint_id": constraint_id,
+            "subject": {
+                "kind": subject_kind,
+                "canonical_id": subject_id,
+            },
+            "scope": {
+                "project_id": manifest.project_id,
+                "module_ids": module_ids,
+                "path_globs": [],
+            },
+            "kind": kind,
+            "statement": statement,
+            "authority": "documented_contract",
+            "normativity": normativity,
+            "status": "active",
+            "source_refs": source_refs,
+            "conflicts_with": [],
+            "source_manifest_digest": manifest.source_manifest_digest,
+            "created_revision_id": revision_id,
+        }
+
     def apply_changeset(
         self,
         project_root: Optional[Union[Path, str]],
@@ -1000,7 +1008,7 @@ class WikiStore:
                 constraints_created=0,
             )
 
-        pages, old_refs, old_constraints, old_edges = self._revision_rows(parent_id)
+        _old_pages, old_refs, old_constraints, _old_edges = self._revision_rows(parent_id)
         current_refs = self._current_refs(project_root, manifest_obj)
         refs = dict(old_refs)
         refs.update(current_refs)
@@ -1021,6 +1029,11 @@ class WikiStore:
         )
         stale_by_id = {str(item["constraint_id"]): item for item in stale}
 
+        # ``summary`` is a program-generated human/audit convenience field,
+        # not semantic Wiki content.  Exclude it from revision identity so a
+        # wording-only change cannot create revision churn.
+        revision_identity = dict(validated)
+        revision_identity.pop("summary", None)
         rid = validate_revision_id(
             revision_id
             or stable_id(
@@ -1028,22 +1041,23 @@ class WikiStore:
                 manifest_obj.project_id,
                 manifest_obj.source_manifest_digest,
                 parent_id or "none",
-                digest_json(validated),
+                digest_json(revision_identity),
             )
         )
         proposals: List[Dict[str, Any]] = []
         for raw in validated.get("constraint_proposals", ()):
-            item = dict(raw)
+            item = self._materialize_constraint_proposal(raw, manifest_obj, workset, rid)
             item["source_manifest_digest"] = manifest_obj.source_manifest_digest
             item["created_revision_id"] = rid
             item["source_refs"] = sorted(set(str(ref) for ref in item.get("source_refs", ())))
-            item["page_refs"] = sorted(set(str(ref) for ref in item.get("page_refs", ())))
             item["conflicts_with"] = sorted(set(str(ref) for ref in item.get("conflicts_with", ())))
             proposals.append(item)
+        proposal_ids = {str(item["constraint_id"]) for item in proposals}
         historical = [
             item
             for item in stale_by_id.values()
             if item.get("status") not in {"active", "conflicted"}
+            and str(item.get("constraint_id")) not in proposal_ids
         ]
         merge_base = [
             item for item in stale_by_id.values() if item.get("status") in {"active", "conflicted"}
@@ -1052,128 +1066,32 @@ class WikiStore:
         constraints.extend(historical)
         constraint_by_id = {str(item["constraint_id"]): item for item in constraints}
 
-        edges = dict(old_edges)
-        for raw in validated.get("edge_proposals", ()):
-            item = dict(raw)
-            item["source_refs"] = sorted(set(str(ref) for ref in item.get("source_refs", ())))
-            edges[str(item["edge_id"])] = item
-
-        page_changes = {str(item["page_id"]): item for item in validated.get("page_changes", ())}
-        rendered_pages: Dict[str, Dict[str, Any]] = {}
-        for page_id, row in pages.items():
-            rendered_pages[page_id] = {
-                "page_id": page_id,
-                "canonical_slug": row["canonical_slug"],
-                "frontmatter": dict(row.get("frontmatter", {})),
-                "markdown": str(row["markdown"]),
-                "content_digest": str(row.get("content_digest", "")),
-            }
+        # Constraint-only revisions intentionally drop historical page and
+        # edge projections.  They remain readable in their original revision,
+        # but no new page/edge data is copied into the current projection.
+        edges: Dict[str, Dict[str, Any]] = {}
+        pages_list: List[Dict[str, Any]] = []
         changed_page_ids: Set[str] = set()
-        for page_id, change in page_changes.items():
-            operation = str(change["operation"])
-            previous = rendered_pages.get(page_id)
-            if operation == "retire":
-                if previous is None:
-                    raise WikiChangeSetApplyError("cannot retire unknown page: " + page_id)
-                front = dict(previous["frontmatter"])
-                front["status"] = "retired"
-                previous["frontmatter"] = front
-                changed_page_ids.add(page_id)
-                continue
-            body = self._required_body(str(change.get("markdown", "")))
-            hint = self._frontmatter_hint(str(change.get("markdown", "")))
-            front = dict(previous["frontmatter"]) if previous else {}
-            canonical_slug = str(
-                front.get("canonical_slug") or hint.get("canonical_slug") or slugify(page_id)
-            )
-            title = str(front.get("title") or hint.get("title") or canonical_slug)
-            page_kind = str(front.get("page_kind") or hint.get("page_kind") or "topic")
-            source_refs_used = [str(ref) for ref in change.get("source_refs_used", ())]
-            source_ids = sorted(
-                {str(refs[ref]["source_id"]) for ref in source_refs_used if ref in refs}
-            )
-            constraint_ids = sorted(
-                {
-                    item.group(1)
-                    for item in __import__("re").finditer(r"\[(constraint_[a-z0-9_:-]+)\]", body)
-                    if item.group(1) in constraint_by_id
-                }
-            )
-            front.update(
-                {
-                    "schema_version": "zscope.wiki-page-frontmatter.v1",
-                    "page_id": page_id,
-                    "page_kind": page_kind,
-                    "canonical_slug": canonical_slug,
-                    "title": title,
-                    "project_id": manifest_obj.project_id,
-                    "module_ids": list(front.get("module_ids", ())),
-                    "subject_ids": list(front.get("subject_ids", ())),
-                    "status": "active",
-                    "source_ids": source_ids or list(front.get("source_ids", ())),
-                    "constraint_ids": constraint_ids,
-                    "depends_on": list(front.get("depends_on", ())),
-                    "generated_language": "zh-CN",
-                    "compiler_revision": rid,
-                }
-            )
-            import hashlib
-
-            front["content_digest"] = "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
-            rendered_pages[page_id] = {
-                "page_id": page_id,
-                "canonical_slug": canonical_slug,
-                "frontmatter": front,
-                "markdown": _frontmatter_text(front) + body,
-                "content_digest": front["content_digest"],
-            }
-            changed_page_ids.add(page_id)
-
-        for retire in validated.get("retire_proposals", ()):
-            object_type = str(retire["object_type"])
-            object_id = str(retire["object_id"])
-            if object_type == "page" and object_id in rendered_pages:
-                rendered_pages[object_id]["frontmatter"]["status"] = "retired"
-                changed_page_ids.add(object_id)
-            elif object_type == "constraint" and object_id in constraint_by_id:
-                constraint_by_id[object_id]["status"] = "retired"
-            elif object_type == "edge" and object_id in edges:
-                edges[object_id]["status"] = "retired"
-
-        current_source_ids = {item.source_id for item in manifest_obj.accepted}
-        for item in rendered_pages.values():
-            front = dict(item["frontmatter"])
-            if front.get("status") == "active" and any(
-                str(source_id) not in current_source_ids
-                for source_id in front.get("source_ids", ())
-            ):
-                front["status"] = "stale"
-            front["schema_version"] = "zscope.wiki-page-frontmatter.v1"
-            front["project_id"] = manifest_obj.project_id
-            front["compiler_revision"] = rid
-            try:
-                validate_instance(front, "zscope.wiki-page-frontmatter.v1")
-            except SchemaValidationError as exc:
-                raise WikiChangeSetApplyError(
-                    "invalid generated Wiki page frontmatter for "
-                    f"{item['page_id']}: " + "; ".join(exc.errors)
-                ) from exc
-            body = self._body_from_markdown(str(item["markdown"])).lstrip("\r\n")
-            item["frontmatter"] = front
-            item["markdown"] = _frontmatter_text(front) + body
 
         # A constraint projection belongs to this revision even when equal
         # values were merged from its parent.  Refresh the program-owned pin
         # while retaining its stable identity and provenance refs.
         for item in constraint_by_id.values():
+            item.pop("normalized_value", None)
+            item.pop("page_refs", None)
             item["source_manifest_digest"] = manifest_obj.source_manifest_digest
             item["created_revision_id"] = rid
 
-        pages_list = sorted(
-            rendered_pages.values(),
-            key=lambda item: (str(item["canonical_slug"]), str(item["page_id"])),
-        )
         constraints = sorted(constraint_by_id.values(), key=lambda item: str(item["constraint_id"]))
+        max_constraints = (
+            workset.get("limits", {}).get("max_constraints")
+            if isinstance(workset.get("limits"), Mapping)
+            else None
+        )
+        if max_constraints is not None and len(constraints) > int(max_constraints):
+            raise WikiChangeSetApplyError(
+                "project Wiki constraints exceed max_constraints storage limit"
+            )
         edges_list = sorted(edges.values(), key=lambda item: str(item["edge_id"]))
         page_meta = [
             {

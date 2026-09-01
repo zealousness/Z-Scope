@@ -261,12 +261,9 @@ class WikiConfig:
     max_total_bytes: int = 100 * 1024 * 1024
     # Wiki-local limits are opt-in. ``None`` means unlimited; the ordinary
     # LLM profile max_tokens remains the physical request ceiling.
-    max_context_tokens: Optional[int] = None
     compiler_max_tokens: Optional[int] = None
-    max_source_chars: Optional[int] = None
-    max_output_chars: Optional[int] = None
     max_wall_seconds: Optional[int] = None
-    max_pages: Optional[int] = None
+    max_constraints: Optional[int] = None
 
     def __post_init__(self) -> None:
         self.mode = str(self.mode or "off").strip().lower().replace("-", "_")
@@ -278,12 +275,9 @@ class WikiConfig:
         self.max_file_bytes = int(self.max_file_bytes)
         self.max_files = int(self.max_files)
         self.max_total_bytes = int(self.max_total_bytes)
-        self.max_context_tokens = _optional_positive_int(self.max_context_tokens, None)
         self.compiler_max_tokens = _optional_positive_int(self.compiler_max_tokens, None)
-        self.max_source_chars = _optional_positive_int(self.max_source_chars, None)
-        self.max_output_chars = _optional_positive_int(self.max_output_chars, None)
         self.max_wall_seconds = _optional_positive_int(self.max_wall_seconds, None)
-        self.max_pages = _optional_positive_int(self.max_pages, None)
+        self.max_constraints = _optional_positive_int(self.max_constraints, None)
         if min(self.max_file_bytes, self.max_files, self.max_total_bytes) <= 0:
             raise ValueError("project.wiki limits must be positive")
 
@@ -323,6 +317,7 @@ class ConcurrencyConfig:
     investigator_workers: int = 1
     evidence_completion_workers: int = 2
     index_workers: int = 4
+    wiki_compiler_workers: int = 4
     svf_workers: Optional[int] = None
     llm_max_inflight: int = 4
 
@@ -333,6 +328,7 @@ class ConcurrencyConfig:
             "investigator_workers": self.investigator_workers,
             "evidence_completion_workers": self.evidence_completion_workers,
             "index_workers": self.index_workers,
+            "wiki_compiler_workers": self.wiki_compiler_workers,
             "llm_max_inflight": self.llm_max_inflight,
         }
         if self.svf_workers is not None:

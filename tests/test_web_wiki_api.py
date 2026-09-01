@@ -11,7 +11,7 @@ from zscope.web.services import WikiControlService
 def _config(tmp_path: Path) -> SimpleNamespace:
     wiki = SimpleNamespace(
         state_dir=".zscope_knowledge/wiki",
-        max_context_tokens=1200,
+        max_constraints=None,
         document_exclude=["legacy/**"],
         explanatory_overrides=["docs/contracts/**/*.md"],
         generated_overrides=["artifacts/**"],
@@ -64,7 +64,6 @@ def test_wiki_control_service_rejects_scope_and_budget_overrides(tmp_path: Path,
     for query in (
         "project_root=%2Ftmp&subject=parse_byte",
         "subject=parse_byte&candidate_file=..%2Fsecret.md",
-        "subject=parse_byte&max_tokens=1201",
     ):
         try:
             service.query_payload(query)

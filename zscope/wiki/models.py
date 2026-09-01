@@ -52,6 +52,10 @@ class DocumentSection:
     module_hints: Tuple[str, ...] = ()
     normative_terms: Tuple[str, ...] = ()
     link_targets: Tuple[str, ...] = ()
+    fragment_index: Optional[int] = None
+    fragment_count: Optional[int] = None
+    char_start: Optional[int] = None
+    char_end: Optional[int] = None
 
 
 @dataclass(frozen=True)

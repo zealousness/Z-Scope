@@ -175,8 +175,13 @@ def lint_revision(store: WikiStore, revision_id: Optional[str] = None) -> LintRe
         except SchemaValidationError as exc:
             errors.extend(f"ref_schema:{ref_id}:{item}" for item in exc.errors)
     for constraint_id, constraint in constraints.items():
+        # Older revisions may contain page/normalized projections.  They are
+        # ignored during compatibility lint and never enter new projections.
+        lint_constraint = dict(constraint)
+        lint_constraint.pop("normalized_value", None)
+        lint_constraint.pop("page_refs", None)
         try:
-            validate_instance(constraint, "zscope.project-constraint.v1")
+            validate_instance(lint_constraint, "zscope.project-constraint.v1")
         except SchemaValidationError as exc:
             errors.extend(f"constraint_schema:{constraint_id}:{item}" for item in exc.errors)
         source_refs = [str(ref) for ref in constraint.get("source_refs", ())]
@@ -185,8 +190,6 @@ def lint_revision(store: WikiStore, revision_id: Optional[str] = None) -> LintRe
             errors.append(f"constraint_unresolved_ref:{constraint_id}")
         if constraint.get("status") == "active" and any(not bool(refs.get(ref, {}).get("resolvable")) for ref in source_refs):
             errors.append(f"active_constraint_unresolvable:{constraint_id}")
-        if any(str(page) not in page_ids for page in constraint.get("page_refs", ())):
-            errors.append(f"constraint_unresolved_page:{constraint_id}")
     for edge_id, edge in edges.items():
         try:
             validate_instance(edge, "zscope.wiki-edge.v1")
@@ -194,8 +197,6 @@ def lint_revision(store: WikiStore, revision_id: Optional[str] = None) -> LintRe
             errors.extend(f"edge_schema:{edge_id}:{item}" for item in exc.errors)
         if any(str(ref) not in refs for ref in edge.get("source_refs", ())):
             errors.append(f"edge_unresolved_ref:{edge_id}")
-    if not page_rows:
-        errors.append("no_pages")
     for row in page_rows:
         raw_frontmatter = str(row["frontmatter_json"])
         if len(raw_frontmatter) > LINT_MAX_JSON_CHARS:

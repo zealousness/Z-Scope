@@ -122,8 +122,7 @@ from ...wiki.source_manifest import build_source_manifest
 from ...wiki.compiler.compiler import WikiCompiler
 from ...wiki.compiler.llm_compiler import LLMWikiCompilerProvider
 from ...wiki.compiler.workset import build_ingest_workset
-from ...wiki.identity import slugify, stable_id
-from ...wiki.maintenance import WikiWriterLock, compare_manifests, dirty_page_closure
+from ...wiki.maintenance import WikiWriterLock, compare_manifests
 from ...wiki.store.revision_store import WikiStore, resolve_project_state_root
 from ...reporting.report import FinalReport, Issue, ReportGenerator
 from ...common.issue_identity import (
@@ -210,69 +209,6 @@ def _wiki_revision_compiler_kind(store: WikiStore, active: Optional[Dict[str, An
         return ""
     compiler = revision.get("compiler") if isinstance(revision, dict) else None
     return str(compiler.get("kind") or "") if isinstance(compiler, dict) else ""
-
-
-def _wiki_revision_has_materialized_pages(
-    store: WikiStore, active: Optional[Dict[str, Any]]
-) -> bool:
-    """Return whether this revision lineage contains a successful Wiki page build.
-
-    Deterministic skeleton/removal revisions preserve page rows but do not
-    prove that the LLM Wiki was ever materialized.  A successful LLM publish
-    records ``changed_pages`` in its publish event; walking the lineage keeps
-    that fact when a later deterministic revision only propagates freshness.
-    """
-
-    revision_id = str((active or {}).get("revision_id") or "")
-    seen = set()
-    while revision_id and revision_id not in seen:
-        seen.add(revision_id)
-        try:
-            revision = store.revision_metadata(revision_id)
-        except (OSError, ValueError):
-            break
-        compiler = revision.get("compiler") if isinstance(revision, dict) else None
-        kind = str(compiler.get("kind") or "") if isinstance(compiler, dict) else ""
-        if kind in {"llm", "mixed"}:
-            row = store.connection.execute(
-                "SELECT payload_json FROM wiki_events "
-                "WHERE revision_id=? AND event_type='publish' AND status='succeeded' "
-                "ORDER BY event_id DESC LIMIT 1",
-                (revision_id,),
-            ).fetchone()
-            if row is not None:
-                try:
-                    payload = json.loads(str(row["payload_json"]))
-                except (TypeError, ValueError):
-                    payload = {}
-                if isinstance(payload, dict):
-                    try:
-                        changed_pages = int(payload.get("changed_pages", 0) or 0)
-                    except (TypeError, ValueError):
-                        changed_pages = 0
-                    if changed_pages > 0:
-                        return True
-        revision_id = str(revision.get("parent_revision_id") or "")
-    return False
-
-
-def _wiki_bootstrap_page_ids(manifest: Any) -> Tuple[str, ...]:
-    """Return the stable page IDs that a fresh Wiki skeleton would expose."""
-
-    project_id = str(manifest.project_id)
-    slugs = {"project"}
-    modules = {
-        str(module)
-        for source in manifest.accepted
-        for module in source.module_hints
-        if str(module)
-    }
-    slugs.update("modules/" + slugify(module.removeprefix("module:")) for module in modules)
-    slugs.update(
-        "sources/" + slugify(Path(source.relative_path).with_suffix("").as_posix())
-        for source in manifest.accepted
-    )
-    return tuple(sorted(stable_id("page", project_id, slug) for slug in slugs))
 
 
 def _wiki_maintenance_requested(
@@ -609,7 +545,6 @@ class Analyzer:
                     wiki_store=None,
                     source_manifest_digest=manifest.source_manifest_digest,
                     mode=mode if mode in {"shadow", "active"} else "shadow",
-                    max_context_tokens=getattr(wiki, "max_context_tokens", None),
                 )
             wiki_store = WikiStore(state_dir)
             active = wiki_store.active_revision()
@@ -634,60 +569,24 @@ class Analyzer:
             )
             if maintenance_requested and active:
                 compiler_client = llm_clients.get("wiki_compiler") or llm_clients.get("default")
-                rows = wiki_store.connection.execute(
-                    "SELECT page_id, frontmatter_json FROM pages WHERE revision_id=? ORDER BY page_id",
-                    (active.get("revision_id"),),
-                ).fetchall()
-                target_pages = [str(row["page_id"]) for row in rows]
-                source_to_pages = {}
-                page_dependencies = {}
-                project_page_id = ""
-                for row in rows:
-                    try:
-                        front = json.loads(row["frontmatter_json"])
-                    except Exception:
-                        front = {}
-                    if not project_page_id and (
-                        front.get("page_kind") == "project_overview"
-                        or front.get("canonical_slug") == "project"
-                    ):
-                        project_page_id = str(row["page_id"])
-                    for source_id in front.get("source_ids", ()):
-                        source_to_pages.setdefault(str(source_id), []).append(str(row["page_id"]))
-                    page_dependencies[str(row["page_id"])] = [
-                        str(item) for item in front.get("depends_on", ())
-                    ]
-                if not project_page_id:
-                    project_page_id = stable_id("page", manifest.project_id, "project")
                 previous_manifest = wiki_store.revision_manifest(str(active.get("revision_id")))
                 if previous_manifest is not None:
                     delta = compare_manifests(previous_manifest, manifest)
-                    dirty_pages = dirty_page_closure(
-                        delta,
-                        source_to_pages=source_to_pages,
-                        project_page_id=project_page_id,
-                        page_dependencies=page_dependencies,
-                    )
                 else:
                     delta = None
-                    dirty_pages = tuple(target_pages) or _wiki_bootstrap_page_ids(manifest)
-                materialized_pages = bool(target_pages) and _wiki_revision_has_materialized_pages(
-                    wiki_store, active
+                # Constraint-only compilation has no page closure.  A revision
+                # without a prior successful constraint projection is rebuilt
+                # from all accepted Markdown so failed/empty parent revisions
+                # cannot strand the project in a partial state.
+                has_constraints = bool(
+                    wiki_store.connection.execute(
+                        "SELECT 1 FROM constraints WHERE revision_id=? LIMIT 1",
+                        (active.get("revision_id"),),
+                    ).fetchone()
                 )
-                if not materialized_pages:
-                    # A deterministic skeleton (or an empty/corrupt parent)
-                    # is not an incremental Wiki.  Any manifest delta must
-                    # bootstrap from all currently accepted documents so an
-                    # earlier failed compile cannot leave the project stuck
-                    # with only stale propagation or one changed source.
-                    bootstrap_source_ids = tuple(
-                        sorted(str(item.source_id) for item in manifest.accepted)
-                    )
-                    added_source_ids = bootstrap_source_ids
+                if not has_constraints:
+                    added_source_ids = tuple(sorted(str(item.source_id) for item in manifest.accepted))
                     changed_source_ids = ()
-                    dirty_pages = tuple(
-                        sorted(set(target_pages) | set(_wiki_bootstrap_page_ids(manifest)))
-                    )
                 else:
                     added_source_ids = delta.added_source_ids if delta else ()
                     changed_source_ids = delta.changed_source_ids if delta else ()
@@ -699,20 +598,21 @@ class Analyzer:
                     added_source_ids=added_source_ids,
                     changed_source_ids=changed_source_ids,
                     removed_source_ids=removed_source_ids,
-                    target_page_ids=dirty_pages,
-                    allowed_existing_pages=target_pages,
-                    max_pages=getattr(wiki, "max_pages", None),
-                    max_source_chars=getattr(wiki, "max_source_chars", None),
-                    max_output_chars=getattr(wiki, "max_output_chars", None),
                     max_wall_seconds=getattr(wiki, "max_wall_seconds", None),
+                    initial=not had_active_revision or not has_constraints,
                 )
-                compiler = WikiCompiler()
+                compiler_workers = int(
+                    getattr(getattr(config, "concurrency", None), "wiki_compiler_workers", 4)
+                    or 4
+                )
+                compiler = WikiCompiler(max_workers=compiler_workers)
                 if bool(getattr(wiki, "compiler_enabled", False)) and compiler_client is not None:
                     compiler = WikiCompiler(
                         LLMWikiCompilerProvider(
                             compiler_client,
                             max_tokens=getattr(wiki, "compiler_max_tokens", None),
-                        )
+                        ),
+                        max_workers=compiler_workers,
                     )
                 lock_path = state_dir / "locks" / "compiler.lock"
                 with WikiWriterLock(lock_path, timeout_seconds=0.0):
@@ -727,7 +627,6 @@ class Analyzer:
                 wiki_store=wiki_store,
                 source_manifest_digest=manifest.source_manifest_digest,
                 mode=mode if mode in {"shadow", "active"} else "shadow",
-                max_context_tokens=getattr(wiki, "max_context_tokens", None),
             )
         except Exception as exc:
             logger.warning(
@@ -750,7 +649,6 @@ class Analyzer:
                     wiki_store=None,
                     source_manifest_digest=manifest.source_manifest_digest,
                     mode=mode if mode in {"shadow", "active"} else "shadow",
-                    max_context_tokens=getattr(wiki, "max_context_tokens", None),
                 )
             if source_index is not None:
                 try:
@@ -5727,7 +5625,6 @@ class Analyzer:
                 "incremental_fact_count": 0,
                 "wiki_context_injected": False,
                 "selected_constraint_ids": {},
-                "selected_page_ids": {},
                 "selected_source_ref_ids": {},
                 "fallback_reasons": {},
             }

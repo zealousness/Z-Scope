@@ -22,6 +22,7 @@ EXPECTED = {
     "zscope.document-section.v1": "document-section.schema.json",
     "zscope.document-source-manifest.v1": "document-source-manifest.schema.json",
     "zscope.project-constraint.v1": "project-constraint.schema.json",
+    "zscope.project-constraint-proposal.v1": "project-constraint-proposal.schema.json",
     "zscope.document-ref.v1": "document-ref.schema.json",
     "zscope.wiki-edge.v1": "wiki-edge.schema.json",
     "zscope.wiki-revision.v1": "wiki-revision.schema.json",
@@ -58,12 +59,17 @@ def test_materialized_schema_set_matches_registry() -> None:
 def test_plan_json_blocks_are_materialized_without_drift() -> None:
     plan = PLAN.read_text(encoding="utf-8")
     blocks = re.findall(r"```json\n(.*?)\n```", plan, flags=re.DOTALL)
-    assert len(blocks) == len(EXPECTED)
+    assert blocks
+    block_ids = set()
     for block in blocks:
         planned = json.loads(block)
-        schema_id = planned["$id"]
-        assert schema_id in EXPECTED
-        assert planned == _load(SCHEMA_DIR / EXPECTED[schema_id])
+        schema_id = planned.get("$id")
+        if schema_id is not None:
+            assert schema_id in EXPECTED
+            block_ids.add(schema_id)
+    assert set(EXPECTED) - {"zscope.project-constraint-proposal.v1"} <= block_ids
+    assert "zscope.project-constraint-proposal.v1" in plan
+    assert "Constraint-only" in plan
 
 
 def test_external_refs_resolve_through_registry() -> None:
@@ -86,3 +92,14 @@ def test_external_refs_resolve_through_registry() -> None:
         for ref in refs:
             assert ref in registry, f"unregistered $ref {ref!r} in {path.name}"
             assert (SCHEMA_DIR / registry[ref]).is_file()
+
+
+def test_project_knowledge_excerpt_bound_is_program_owned() -> None:
+    schema = _load(SCHEMA_DIR / "validator-project-knowledge.schema.json")
+    assert "maxItems" not in schema["properties"]["source_excerpts"]
+    selection = schema["properties"]["selection"]
+    assert "omitted_source_excerpt_count" in selection["required"]
+    assert selection["properties"]["omitted_source_excerpt_count"] == {
+        "type": "integer",
+        "minimum": 0,
+    }

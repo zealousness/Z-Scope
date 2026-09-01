@@ -66,7 +66,11 @@ CREATE TABLE IF NOT EXISTS sections (
   excerpt TEXT NOT NULL,
   symbols_json TEXT NOT NULL,
   module_hints_json TEXT NOT NULL,
-  normative_terms_json TEXT NOT NULL
+  normative_terms_json TEXT NOT NULL,
+  fragment_index INTEGER,
+  fragment_count INTEGER,
+  char_start INTEGER,
+  char_end INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS links (
@@ -193,6 +197,13 @@ class SourceIndex:
 
     def _initialize(self) -> None:
         self.connection.executescript(SCHEMA_SQL)
+        columns = {
+            str(row["name"])
+            for row in self.connection.execute("PRAGMA table_info(sections)").fetchall()
+        }
+        for name in ("fragment_index", "fragment_count", "char_start", "char_end"):
+            if name not in columns:
+                self.connection.execute(f"ALTER TABLE sections ADD COLUMN {name} INTEGER")
         # FTS5 is optional in system SQLite.  Its shadow tables are SQLite
         # internals and the only additional business object is sections_fts.
         try:
@@ -431,7 +442,7 @@ class SourceIndex:
 
     def _insert_section(self, section: DocumentSection) -> None:
         self.connection.execute(
-            "INSERT INTO sections(section_id, source_id, heading_path_json, heading_level, start_line, end_line, text_digest, excerpt, symbols_json, module_hints_json, normative_terms_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sections(section_id, source_id, heading_path_json, heading_level, start_line, end_line, text_digest, excerpt, symbols_json, module_hints_json, normative_terms_json, fragment_index, fragment_count, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 section.section_id,
                 section.source_id,
@@ -444,6 +455,10 @@ class SourceIndex:
                 _json(section.symbols),
                 _json(section.module_hints),
                 _json(section.normative_terms),
+                section.fragment_index,
+                section.fragment_count,
+                section.char_start,
+                section.char_end,
             ),
         )
         if self._fts_enabled:
@@ -486,7 +501,8 @@ class SourceIndex:
                d.frontmatter_json, s.heading_path_json, s.heading_level,
                s.start_line, s.end_line, s.text_digest, s.excerpt,
                s.symbols_json, s.module_hints_json AS section_module_hints_json,
-               s.normative_terms_json
+               s.normative_terms_json, s.fragment_index, s.fragment_count,
+               s.char_start, s.char_end
         FROM sections AS s JOIN documents AS d ON d.source_id = s.source_id
         ORDER BY d.relative_path, s.start_line, s.section_id
         """
@@ -628,8 +644,8 @@ class SourceIndex:
         self,
         obligation: Union[ConstraintObligation, Mapping[str, Any]],
         *,
-        max_results: int = DEFAULT_MAX_RESULTS,
-        max_documents: int = DEFAULT_MAX_DOCUMENTS,
+        max_results: Optional[int] = DEFAULT_MAX_RESULTS,
+        max_documents: Optional[int] = DEFAULT_MAX_DOCUMENTS,
         max_tokens: Optional[int] = DEFAULT_MAX_TOKENS,
         hard_max_tokens: Optional[int] = HARD_MAX_TOKENS,
     ) -> List[Dict[str, Any]]:
@@ -640,7 +656,7 @@ class SourceIndex:
         merely to fill a budget.
         """
 
-        if max_results <= 0 or max_documents <= 0 or (max_tokens is not None and max_tokens <= 0):
+        if (max_results is not None and max_results <= 0) or (max_documents is not None and max_documents <= 0) or (max_tokens is not None and max_tokens <= 0):
             return []
         budgets = [int(value) for value in (max_tokens, hard_max_tokens, HARD_MAX_TOKENS) if value is not None]
         budget = min(budgets) if budgets else None
@@ -664,7 +680,7 @@ class SourceIndex:
         used_tokens = 0
         for item in ranked:
             path = item["relative_path"]
-            if path not in selected_documents and len(selected_documents) >= int(max_documents):
+            if max_documents is not None and path not in selected_documents and len(selected_documents) >= int(max_documents):
                 continue
             text = item["text"]
             tokens = int(item["_tokens"])
@@ -686,7 +702,7 @@ class SourceIndex:
             selected.append(item)
             selected_documents.add(path)
             used_tokens += tokens
-            if len(selected) >= min(int(max_results), DEFAULT_MAX_RESULTS):
+            if max_results is not None and len(selected) >= int(max_results):
                 break
         return selected
 

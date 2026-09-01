@@ -8,15 +8,17 @@
 
 **首期消费方**：validator_agent
 
-**目标**：把项目/模块文档中的约束编译为持久 Wiki，并在验证候选时提供相关约束；Wiki Compiler LLM 不可用时，直接从同一批原始文档中检索。
+**目标**：把项目/模块文档中的约束编译为持久的 Constraint projection，并在验证候选时提供相关约束；Wiki Compiler LLM 不可用时，直接从同一批原始文档中检索。
+
+**当前实现决策（2026-08）**：运行时只保留结构化 `ProjectConstraint`，不再把 LLM 生成的 Markdown 页面作为 Validator 知识层。LLM 只提交最小语义 proposal；ID、scope、authority、status、revision、digest、去重和 stale 传播均由程序生成。本文早期章节中的“生成页面”“page_excerpts”“page_changes”等设计均由本节及第 7 节之后的 Constraint-only 契约取代。
 
 ---
 
 ## 1. 执行摘要
 
-Z-SCOPE 增加一个位于原始项目文档与 Validator 之间的知识编译层。系统从 project.root 开始递归发现 .md 和 .markdown 文件，使用程序规则区分说明性文档、生成物、运行时指令、评测答案、敏感内容和未知文件。只有说明性文档进入知识语料。原始文档只读；Wiki Compiler LLM 负责持续维护可读的中文 Markdown Wiki；程序负责身份、引用、权限、schema、lint、版本、日志和原子发布。
+Z-SCOPE 增加一个位于原始项目文档与 Validator 之间的知识编译层。系统从 project.root 开始递归发现 .md 和 .markdown 文件，使用程序规则区分说明性文档、生成物、运行时指令、评测答案、敏感内容和未知文件。只有说明性文档进入知识语料。原始文档只读；Wiki Compiler LLM 只负责从有界原文中提取约束语义；程序负责身份、引用、权限、schema、lint、版本、日志和原子发布。
 
-Validator 不遍历整个 Wiki，也不在每个候选上重新总结所有文档。构建或维护 Wiki 后，ProjectKnowledgeService 根据候选的文件、模块、函数、API、资源、锁、缺陷类型和 missing fact，选取少量结构化约束、Wiki 章节和来源引用，作为可选的 project_knowledge 加入现有 ValidatorEvidenceSlice v3。
+Validator 不遍历整个 Wiki，也不在每个候选上重新总结所有文档。构建或维护 Constraint projection 后，ProjectKnowledgeService 根据候选的文件、模块、函数、API、资源、锁、缺陷类型和 missing fact，选取少量 active、documented_contract 约束和来源引用，作为可选的 project_knowledge 加入现有 ValidatorEvidenceSlice v3。
 
 降级路径与 Wiki Compiler LLM 解耦。文档发现、分类、Markdown 分节和本地索引均由程序完成。Compiler 因关闭、认证、限流、网络、超时、schema 或模型错误不可用时，DirectDocumentResolver 在已接受的原始文档章节中做确定性检索，返回带相对路径、标题、行号和 digest 的原文摘录。若 Validator 自身的 LLM 不可用，继续遵循现有失败或 needs_review 语义；文档检索不能伪装成验证。
 
@@ -36,16 +38,16 @@ Wiki 是项目约束上下文层，不是第二套漏洞证明系统：
 | Karpathy 概念 | Z-SCOPE 实现 |
 |---|---|
 | Raw sources | project.root 内通过策略接受的说明性 Markdown；只读、带 digest |
-| Wiki | .zscope_knowledge/wiki/revisions/ 下的中文页面、index.md、constraint/edge 投影 |
-| Schema | zscope/agents/wiki_compiler/AGENT.md |
-| Ingest | 发现、分类、分节、索引、规划、LLM 多页面维护、校验、暂存、发布 |
-| Query | 候选义务解析后查询结构化约束，再按需读取少量页面或原文 section |
+| Wiki | .zscope_knowledge/wiki/revisions/ 下的 Constraint/ref 投影和审计 metadata；页面目录仅为旧 revision 兼容 |
+| Schema | zscope/agents/wiki_compiler/AGENT.md + program-owned JSON schemas |
+| Ingest | 发现、分类、分节、索引、LLM 约束提取、程序物化、校验、暂存、发布 |
+| Query | 候选义务解析后查询结构化约束；无有效约束时直接搜索原文 section |
 | Lint | 引用、链接、孤立页、冲突、freshness、路径、安全、语言和预算检查 |
 | index.md | 内容导向导航，程序校验闭包和 metadata |
 | log.md | 程序根据结构化事件生成的追加日志，LLM 不直接写入 |
 | Query result filing | 只有有来源且可复用的项目知识进入后续维护，不自动把单次 verdict 写回 |
 
-必须保留的 Karpathy 特征：Wiki Markdown 是主要的人类知识产物；一个有界 workset 可以同时创建或更新多个相互关联的页面；新来源会更新既有页面；页面保存限定条件、冲突、unknown 和交叉链接；index.md 和 log.md 分别承担导航和时间线职责。
+必须保留的 Karpathy 特征：原始 Markdown 是事实来源；一个有界 workset 可以增量提取并合并多个来源的约束；每条约束保存限定条件、冲突、unknown 和可解析来源；index.md 和 log.md 分别承担兼容导航和时间线职责。生成式 Wiki 页面不再作为 Validator 运行时输入，避免重复设计和长输出失败。
 
 ---
 
@@ -55,7 +57,7 @@ Wiki 是项目约束上下文层，不是第二套漏洞证明系统：
 
 - 从 project.root 递归发现 Markdown，并稳定区分说明性文档和生成物。
 - 编译 README、设计、模块、API、协议和开发说明中的项目约束。
-- 维护 project、module、api、resource、lock 和跨模块协议页面。
+- 维护 project、module、api、resource、lock 和跨模块协议的结构化 Constraint。
 - 根据候选上下文提供少量、相关、可追溯的约束。
 - Compiler LLM 不可用时，直接搜索原始说明性文档。
 - 支持增量维护、freshness、冲突、回滚、审计和回放。
@@ -74,8 +76,8 @@ Wiki 是项目约束上下文层，不是第二套漏洞证明系统：
 | 层 | 所有者 | 规则 |
 |---|---|---|
 | 原始文档 | 被扫描项目 | Z-SCOPE 只读，不修改 |
-| Wiki 页面正文 | Wiki Compiler Agent | 通过受限 WikiChangeSet 更新中文 Markdown |
-| identity、authority、refs、lint、store、active pointer、log.md | Z-SCOPE 程序 | 模型和普通文档不能修改 |
+| Constraint statement | Wiki Compiler Agent | 只能通过终态工具提交最小语义 proposal |
+| identity、scope、authority、status、refs、lint、store、active pointer、log.md | Z-SCOPE 程序 | 模型和普通文档不能修改 |
 | 漏洞终态和报告 schema | 现有 Validator/报告流水线 | Wiki 不得旁路或覆盖 |
 
 ---
@@ -88,22 +90,24 @@ Wiki 是项目约束上下文层，不是第二套漏洞证明系统：
       -> MarkdownSectionIndexer
       -> source-manifest + source-index.db
       -> IngestPlanner
-      -> Wiki Compiler Agent
-      -> WikiChangeSet
+      -> Document Constraint Compiler Agent
+      -> WikiChangeSet (constraint proposals only)
       -> lint
       -> staging revision
       -> atomic active revision
-      -> ProjectKnowledgeService
+      -> ProjectKnowledgeService (active constraints only)
       -> ValidatorEvidenceSlice v3 + project_knowledge
       -> validator_agent
 
 两条读取路径必须独立：
 
-    accepted Markdown -> Wiki build/maintain -> active revision
-    active revision -> constraint selection -> bounded page excerpt
+    accepted Markdown -> constraint extraction/materialization -> active revision
+    active revision -> active constraint selection -> Validator context
 
     accepted Markdown -> deterministic section index -> exact/BM25 search
     exact/BM25 search -> bounded source excerpt
+
+LLM 不能直接写页面、edge、日志或 revision metadata。Constraint-only changeset 的程序拥有字段和流水线边界见第 9 节；页面文件即使由旧 revision 保留，也不参与新的 digest、匹配或 Validator 注入。
 
 两条路径共享同一 source manifest 和分类结果，不能使用不同的文档集合。
 
@@ -388,7 +392,36 @@ CREATE TABLE classification_events (
 
 ---
 
-## 7. Wiki 数据模型
+## 7. 当前 Constraint-only 数据模型
+
+### 7.1 LLM proposal 与程序物化
+
+LLM 终态工具名为 `emit_project_constraints`。工具参数只包含 `constraint_proposals` 数组；每条 proposal 只能提交以下六个语义字段，其中 `subject_kind` 使用固定 enum，`subject_id` 由模型生成并由程序校验。`schema_version` 不属于 final tool schema，由程序接收后补充为 `zscope.project-constraint-proposal.v1`。`summary` 也不属于 final tool schema，由程序根据 outcome、proposal 数量和 source results 确定性生成。不得提交 changeset 外壳、source results、outcome，也不得提交 `constraint_id`、`subject`、`scope`、`authority`、`status`、`source_manifest_digest`、`created_revision_id`、`normalized_value`、`page_refs` 或任何页面/edge 字段。
+
+```json
+{
+  "subject_id": "api:parse_byte",
+  "subject_kind": "api",
+  "kind": "input_range",
+  "statement": "parse_byte accepts values from 0 to 255.",
+  "normativity": "required",
+  "source_refs": ["docref_example"]
+}
+```
+
+程序对 proposal 做 allowlist、source-ref、敏感内容、长度和 outcome 校验，然后生成完整 `zscope.project-constraint.v1`：稳定 `constraint_id`、subject kind、project/module scope、`authority=documented_contract`、`status=active`、当前 manifest digest、revision ID、去重和冲突关系。`normalized_value` 被明确移除；语义全部保留在 `statement` 中。
+
+### 7.2 ProjectConstraint runtime contract
+
+Validator 只接收 active 且至少有一个可解析 `source_ref` 的 Constraint。Constraint 的必需程序字段为：`constraint_id`、`subject`、`scope`、`kind`、`statement`、`authority`、`normativity`、`status`、`source_refs`、`conflicts_with`、`source_manifest_digest`、`created_revision_id`。stale、conflicted、retired 和无法解析来源的记录留在 revision/audit 中，但不进入 active Validator context。
+
+### 7.3 Revision projection
+
+每次成功 ingest 仍发布不可变 revision、`refs.json`、`constraints.json`、`source-manifest.json`、`revision.json`、`index.md` 和审计事件；新 revision 的 `pages/` 为空，`edges.json` 为空。旧 revision 的页面和可选历史字段只为读取/回放兼容，不参与新的 Constraint digest 或运行时匹配。
+
+## 8. Wiki 数据模型（历史兼容说明）
+
+以下旧版 schema 示例保留用于理解历史 revision 的读取兼容边界；实现和新数据以第 7 节及 `zscope/wiki/schemas/*.schema.json` 为准。
 
 ### 7.1 ProjectConstraint schema
 
@@ -628,6 +661,8 @@ required_headings:
 
 ## 9. Wiki 编译与维护
 
+> 2026-08-31 修订说明：本章早期草案中的页面生成和完整 Workset 输入契约已由当前 Constraint-only 实现取代。现行模型输入、字段映射和边界以文末“Compiler 输入投影”修订为准；完整 Workset 仍是程序内部校验与发布边界。
+
 ### 9.1 Wiki Compiler Agent
 
 必须读取 workset 内的说明性 section 和 active pages；把新知识融入 project/module/API/resource/lock 页面；写中文 Markdown、维护 wikilink、保留限定条件、冲突和 unknown；提出带 source refs 的 constraint 和 edge；对不再支持的内容提出 stale/supersede。
@@ -644,7 +679,7 @@ required_headings:
   "$id": "zscope.wiki-ingest-workset.v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version","workset_id","project_id","base_revision_id","source_manifest_digest","added_source_ids","changed_source_ids","removed_source_ids","target_page_ids","allowed_source_refs","source_ref_catalog","source_sections","allowed_subject_ids","allowed_existing_pages","limits","created_at"],
+  "required": ["schema_version","workset_id","project_id","base_revision_id","source_manifest_digest","added_source_ids","changed_source_ids","removed_source_ids","allowed_source_refs","source_ref_catalog","source_sections","allowed_subject_ids","limits","created_at"],
   "properties": {
     "schema_version": {"const": "zscope.wiki-ingest-workset.v1"},
     "workset_id": {"type": "string", "pattern": "^workset_[a-z0-9_:-]+$"},
@@ -654,26 +689,25 @@ required_headings:
     "added_source_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^docsrc_[a-z0-9_:-]+$"}},
     "changed_source_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^docsrc_[a-z0-9_:-]+$"}},
     "removed_source_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^docsrc_[a-z0-9_:-]+$"}},
-    "target_page_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^page_[a-z0-9_:-]+$"}},
     "allowed_source_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^docref_[a-z0-9_:-]+$"}},
     "source_ref_catalog": {"type": "array", "maxItems": 4096, "items": {"$ref": "zscope.document-ref.v1"}},
     "source_sections": {"type": "array", "maxItems": 4096, "items": {"$ref": "zscope.document-section.v1"}},
     "allowed_subject_ids": {"type": "array", "maxItems": 4096, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 300}},
-    "allowed_existing_pages": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^page_[a-z0-9_:-]+$"}},
-    "limits": {"type": "object", "additionalProperties": false, "required": ["max_pages","max_source_chars","max_output_chars","max_wall_seconds"], "properties": {
-      "max_pages": {"type": ["integer", "null"], "minimum": 1},
-      "max_source_chars": {"type": ["integer", "null"], "minimum": 1024},
-      "max_output_chars": {"type": ["integer", "null"], "minimum": 1024},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["max_constraints","max_wall_seconds"], "properties": {
+      "max_constraints": {"type": ["integer", "null"], "minimum": 1},
       "max_wall_seconds": {"type": ["integer", "null"], "minimum": 1}
     }},
+    "initial": {"type": "boolean"},
     "created_at": {"type": "string", "format": "date-time"}
   }
 }
 ```
 
-`added_source_ids`、`changed_source_ids` 和 `removed_source_ids` 不得交集；`allowed_source_refs` 必须来自这些 source ID 或 Workset 的已发布依赖；`target_page_ids` 必须是 dirty closure 的结果。Agent 无权读任意路径、shell、网络或未发布 staging。
+`added_source_ids`、`changed_source_ids` 和 `removed_source_ids` 不得交集；`allowed_source_refs` 必须来自这些 source ID。`initial` 是程序拥有的 bootstrap 标记。Agent 无权读任意路径、shell、网络或未发布 staging。
 
-资源预算采用显式 opt-in：`project.wiki.max_context_tokens`、`compiler_max_tokens`、`max_source_chars`、`max_output_chars`、`max_wall_seconds` 和 `max_pages` 默认均为 `null`，表示不施加对应 Wiki 局部上限。配置正整数时才收紧；`compiler_max_tokens=null` 仅表示 Compiler 不覆盖请求参数，仍保留 `llms.<profile>.max_tokens` 的通用单请求 completion 上限。
+资源预算采用显式 opt-in：`project.wiki.compiler_max_tokens`、`max_wall_seconds` 和 `max_constraints` 默认均为 `null`，表示不施加对应 Wiki 局部上限。配置正整数时才收紧；`max_constraints` 同时限制 Compiler proposal 数量和项目 Wiki 数据库每个 revision 保存的 constraints 总数，Validator 每个候选由程序最多选择 20 条并记录 `omitted_constraint_count`，不依赖 schema 数组上限；`project_knowledge` 的 Wiki 与 direct source fallback 共用 4096 token 上限，调用方只能进一步收紧；`compiler_max_tokens=null` 仅表示 Compiler 不覆盖请求参数，仍保留 `llms.<profile>.max_tokens` 的通用单请求 completion 上限。Markdown 源文件大小只由 `project.wiki.max_file_bytes` 控制。大型文件采用 section 到临时 compiler chunk 的不重叠切分，chunk 并发数由 `concurrency.wiki_compiler_workers` 控制，默认 `4`；未知上下文窗口按 32K token 规划。
+
+Direct source fallback 同样由程序对 ranked 摘录执行最多 20 条的运行时截断，并在 `omitted_source_excerpt_count` 中记录未注入的候选数量；该数量限制不由 schema 数组上限实现。
 
 ### 9.3 WikiChangeSet schema
 
@@ -791,11 +825,15 @@ ConstraintObligationBuilder 从 candidate/evidence pack 提取 project、entry�
 
 ### 10.3 排序和预算
 
-heading/frontmatter 精确 symbol 最高；其次是 module/path scope、正文精确 symbol、规范性 fact-kind 语句、BM25、链接图距离。降低只有通用安全词、只在代码示例、描述性弱约束和重复 section 的分数。默认最多 5 个 section、2 个文档、2,000 tokens，硬上限 3,500 tokens；记录稳定 tie-break 和 ranking trace。
+heading/frontmatter 精确 symbol 最高；其次是 module/path scope、正文精确 symbol、规范性 fact-kind 语句、BM25、链接图距离。降低只有通用安全词、只在代码示例、描述性弱约束和重复 section 的分数。source-index 返回的候选集不在 direct fallback 层预先按 20 条截断；ProjectKnowledgeService 对 ranked 摘录执行最多 20 条和共享 4096 token 预算的程序截断，并通过 `omitted_source_excerpt_count` 记录未注入数量。记录稳定 tie-break 和 ranking trace。
 
 ### 10.4 返回
 
 source_fallback 返回 resolution_mode、source_manifest_digest、wiki_revision_id 为空、source_excerpts、ref_id、relative_path、heading_path、start_line、end_line、text、match_reasons、score、conflicts、unknowns、selected/omitted 和 fallback_reason。它返回原文，不从原文生成无引用 constraint。无命中返回 resolution_mode none 和 no_relevant_project_constraint，不能用低相关度内容填满预算。
+
+Validator LLM 接收的 `project_knowledge` 是从上述完整对象派生的紧凑投影：顶层只保留 `resolution_mode`、`wiki_revision_id`、`target`、`constraints`、`source_excerpts`、`conflicts`、`omitted_constraint_count`、`omitted_source_excerpt_count` 和 `fallback_reason`；`target` 统一包含真实 `candidate_file`、`function_name`、`subject_ids` 和 `obligation_kinds`。后两者只从 candidate/evidence obligation 解析，禁止从 constraints 反向补充；每条 constraint 显式包含 `subject_kind`。manifest/context digest、selection 预算明细和其他完整性字段由程序保留，不进入模型输入。
+
+上述紧凑投影同时包含 `omitted_source_excerpt_count`，用于区分“命中但因运行时预算未注入”的原文摘录与没有命中。
 
 ---
 
@@ -832,7 +870,7 @@ source_fallback 返回 resolution_mode、source_manifest_digest、wiki_revision_
   "required": [
     "schema_version", "resolution_mode", "project_id", "wiki_revision_id",
     "source_manifest_digest", "context_digest", "target", "constraints",
-    "page_excerpts", "source_excerpts", "conflicts", "unknowns", "selection"
+    "source_excerpts", "conflicts", "unknowns", "selection"
   ],
   "properties": {
     "schema_version": {"const": "zscope.validator-project-knowledge.v1"},
@@ -844,11 +882,11 @@ source_fallback 返回 resolution_mode、source_manifest_digest、wiki_revision_
     "target": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module_ids", "subject_ids", "obligation_kind", "candidate_file"],
+      "required": ["module_ids", "subject_ids", "obligation_kinds", "candidate_file"],
       "properties": {
         "module_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^module:[a-z0-9_.:/-]+$"}},
         "subject_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 300}},
-        "obligation_kind": {"type": "string", "enum": ["module_boundary", "public_api", "entry_exposure", "input_range", "input_format", "caller_precondition", "return_contract", "error_contract", "nullability", "size_contract", "ownership_acquire", "ownership_release", "ownership_transfer", "resource_lifecycle", "requires_lock", "protects_state", "lock_order", "threading_contract", "configuration_constraint", "sanitizer_or_guard", "documented_exception", "known_false_positive_pattern", "unknown"]},
+        "obligation_kinds": {"type": "array", "items": {"type": "string", "enum": ["module_boundary", "public_api", "entry_exposure", "input_range", "input_format", "caller_precondition", "return_contract", "error_contract", "nullability", "size_contract", "ownership_acquire", "ownership_release", "ownership_transfer", "resource_lifecycle", "requires_lock", "protects_state", "lock_order", "threading_contract", "configuration_constraint", "sanitizer_or_guard", "documented_exception", "known_false_positive_pattern", "unknown"]}},
         "candidate_file": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)(?:[^/]+/)*[^/]+$"},
         "function_id": {"type": ["string", "null"], "maxLength": 300},
         "entry_function": {"type": ["string", "null"], "maxLength": 300}
@@ -856,46 +894,25 @@ source_fallback 返回 resolution_mode、source_manifest_digest、wiki_revision_
     },
     "constraints": {
       "type": "array",
-      "maxItems": 8,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["constraint_id", "kind", "subject_id", "statement", "normalized_value", "authority", "normativity", "status", "source_refs", "page_refs"],
+        "required": ["constraint_id", "kind", "subject_id", "subject_kind", "statement", "authority", "normativity", "status", "source_refs"],
         "properties": {
           "constraint_id": {"type": "string", "pattern": "^constraint_[a-z0-9_:-]+$"},
           "kind": {"type": "string", "enum": ["module_boundary", "public_api", "entry_exposure", "input_range", "input_format", "caller_precondition", "return_contract", "error_contract", "nullability", "size_contract", "ownership_acquire", "ownership_release", "ownership_transfer", "resource_lifecycle", "requires_lock", "protects_state", "lock_order", "threading_contract", "configuration_constraint", "sanitizer_or_guard", "documented_exception", "known_false_positive_pattern"]},
           "subject_id": {"type": "string", "minLength": 1, "maxLength": 300},
+          "subject_kind": {"type": "string", "enum": ["project", "module", "api", "symbol", "resource", "lock", "type", "configuration", "topic"]},
           "statement": {"type": "string", "minLength": 1, "maxLength": 1600},
-          "normalized_value": {"type": ["object", "array", "string", "number", "boolean", "null"]},
           "authority": {"const": "documented_contract"},
           "normativity": {"type": "string", "enum": ["required", "recommended", "descriptive", "unknown"]},
           "status": {"const": "active"},
-          "source_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^docref_[a-z0-9_:-]+$"}},
-          "page_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^page_[a-z0-9_:-]+$"}}
-        }
-      }
-    },
-    "page_excerpts": {
-      "type": "array",
-      "maxItems": 3,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["page_id", "page_kind", "canonical_slug", "heading_path", "text", "constraint_ids", "source_refs"],
-        "properties": {
-          "page_id": {"type": "string", "pattern": "^page_[a-z0-9_:-]+$"},
-          "page_kind": {"type": "string", "enum": ["project_overview", "module", "api_contract", "resource_protocol", "lock_protocol", "configuration", "topic", "source"]},
-          "canonical_slug": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)(?:[a-z0-9-]+/)*[a-z0-9-]+$"},
-          "heading_path": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 240}},
-          "text": {"type": "string", "minLength": 1, "maxLength": 12000},
-          "constraint_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^constraint_[a-z0-9_:-]+$"}},
-          "source_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^docref_[a-z0-9_:-]+$"}}
+          "source_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^docref_[a-z0-9_:-]+$"}}
         }
       }
     },
     "source_excerpts": {
       "type": "array",
-      "maxItems": 4,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -944,13 +961,13 @@ source_fallback 返回 resolution_mode、source_manifest_digest、wiki_revision_
     "selection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["max_tokens", "estimated_tokens", "selected_constraint_ids", "omitted_constraint_count", "selected_page_ids", "selected_source_ref_ids", "ranking_version", "fallback_reason"],
+      "required": ["max_tokens", "estimated_tokens", "selected_constraint_ids", "omitted_constraint_count", "omitted_source_excerpt_count", "selected_source_ref_ids", "ranking_version", "fallback_reason"],
       "properties": {
-        "max_tokens": {"type": ["integer", "null"], "minimum": 256},
+        "max_tokens": {"type": ["integer", "null"], "minimum": 256, "maximum": 4096, "default": 4096},
         "estimated_tokens": {"type": "integer", "minimum": 0},
         "selected_constraint_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^constraint_[a-z0-9_:-]+$"}},
         "omitted_constraint_count": {"type": "integer", "minimum": 0},
-        "selected_page_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^page_[a-z0-9_:-]+$"}},
+        "omitted_source_excerpt_count": {"type": "integer", "minimum": 0},
         "selected_source_ref_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^docref_[a-z0-9_:-]+$"}},
         "ranking_version": {"type": "string", "minLength": 1, "maxLength": 120},
         "fallback_reason": {"type": ["string", "null"], "enum": ["compiler_disabled", "compiler_unavailable", "no_active_revision", "stale_revision", "invalid_revision", "no_wiki_match", "context_overflow", "no_relevant_project_constraint", null]}
@@ -964,10 +981,10 @@ source_fallback 返回 resolution_mode、source_manifest_digest、wiki_revision_
 
 | 条件 | 约束 |
 |---|---|
-| `resolution_mode=wiki` | `wiki_revision_id` 非空；`constraints` 和/或 `page_excerpts` 可以非空；`fallback_reason` 为 `null` 或仅表示 `no_wiki_match` 后仍采用 Wiki 背景页 |
-| `resolution_mode=source_fallback` | `wiki_revision_id=null`；`constraints=[]`、`page_excerpts=[]`；`source_excerpts` 可非空；`fallback_reason` 必须非空 |
-| `resolution_mode=none` | `wiki_revision_id=null`；`constraints`、`page_excerpts`、`source_excerpts`、`conflicts`、`unknowns` 全为空；`fallback_reason` 必须非空 |
-| 所有模式 | `estimated_tokens <= max_tokens`；`selected_*` 中的 ID 必须在对应数组中；所有 `source_refs`、`page_refs` 和 `constraint_ids` 必须存在于同一 `evidence_ref_catalog` 或 active slice projection |
+| `resolution_mode=wiki` | `wiki_revision_id` 非空；`constraints` 可以非空；`fallback_reason` 为 `null` |
+| `resolution_mode=source_fallback` | `wiki_revision_id=null`；`constraints=[]`；`source_excerpts` 可非空；`fallback_reason` 必须非空 |
+| `resolution_mode=none` | `wiki_revision_id=null`；`constraints`、`source_excerpts`、`conflicts`、`unknowns` 全为空；`fallback_reason` 必须非空 |
+| 所有模式 | `estimated_tokens <= max_tokens`；`selected_*` 中的 ID 必须在对应数组中；所有 `source_refs` 和 `constraint_ids` 必须存在于同一 `evidence_ref_catalog` 或 active slice projection |
 | `constraints` | 只能包含 `status=active`、`authority=documented_contract` 且至少一个可解析 `source_ref` 的约束；conflicted/stale/quarantined 约束只能出现在 `conflicts` 或 `unknowns` 摘要中 |
 
 `evidence_ref_catalog` 仍属于外层 `ValidatorEvidenceSlice v3` 的固定引用目录，不重复嵌入 `project_knowledge`。程序必须把 Wiki constraint、page excerpt 和 source excerpt 的 ref 注册到该目录，并为每个 ref 保存 `origin=project_knowledge`、摘要、相对路径/页面 locator 和 `resolvable` 状态。Validator 模型只能引用目录中的 key。
@@ -1133,7 +1150,7 @@ truth、secret 或 runtime instruction 泄漏；active revision 无法重建；r
 - [x] section parser、line locator、digest、source-index 可重建。
 - [x] 不依赖 LLM 的 direct query 可返回候选相关原文。
 - [x] page、constraint、ref、edge、ChangeSet、revision schema；已落盘为 `zscope/wiki/schemas/*.schema.json`，由 `schema-registry.json` 统一解析并由 `tests/test_wiki_schema_contract.py` 防漂移。
-- [x] Compiler 维护多页面中文 Markdown 和 wikilink；程序固定六个中文 H2、`[[page_id|中文标题]]` 目标闭包、source ref 展示、index schema 和 output/page 上限。
+- [x] Compiler 按文档提取带 source ref 的结构化 Constraint；页面生成已从新 revision 和 Validator context 移除，程序负责 identity、scope、lint、stale 和发布。
 - [x] 程序拥有 identity、authority、lint、publish、rollback、active pointer、log.md。
 - [x] source 变更/删除传播 stale，冲突不静默覆盖。
 - [x] Validator 使用独立 project_knowledge.v1，文档约束不能单独成为 proof。
@@ -1144,3 +1161,6 @@ truth、secret 或 runtime instruction 泄漏；active revision 无法重建；r
 - [x] `control/direct/shadow/active/unavailable` 五模式结构 replay 可离线执行，且显式证明未调用 LLM/benchmark。
 - [ ] 真实 A/B 和正式 benchmark 达到 verified precision 不下降、误报降低门禁。
 - [x] docs/modules/wiki.md、配置、CLI、迁移和实施记录同步。
+
+## 17.TODO
+Validator project_knowledge：完善 candidate 解析器，稳定填充 `target.module_ids`、`target.subject_ids` 和 `target.obligation_kinds`，覆盖函数、模块、文件、资源、锁及多义务候选；在解析失败时记录可审计的空值/unknown 语义。

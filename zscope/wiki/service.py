@@ -22,6 +22,9 @@ ZERO_DIGEST = "sha256:" + "0" * 64
 RUNTIME_PROJECTION_MAX_ROWS = 10_000
 RUNTIME_PROJECTION_MAX_JSON_CHARS = 1024 * 1024
 RUNTIME_PROJECTION_MAX_MARKDOWN_CHARS = 2 * 1024 * 1024
+DEFAULT_PROJECT_KNOWLEDGE_MAX_TOKENS = 4096
+MAX_WIKI_CONSTRAINTS = 20
+MAX_SOURCE_EXCERPTS = 20
 
 
 def validate_project_knowledge(value: Mapping[str, Any]) -> Dict[str, Any]:
@@ -33,26 +36,22 @@ def validate_project_knowledge(value: Mapping[str, Any]) -> Dict[str, Any]:
         raise
     mode = str(value.get("resolution_mode"))
     constraints = list(value.get("constraints") or ())
-    pages = list(value.get("page_excerpts") or ())
     sources = list(value.get("source_excerpts") or ())
     if mode == "wiki" and not value.get("wiki_revision_id"):
         raise ValueError("wiki project knowledge requires wiki_revision_id")
-    if mode == "source_fallback" and (value.get("wiki_revision_id") is not None or constraints or pages):
-        raise ValueError("source_fallback cannot carry Wiki revision, constraints, or pages")
-    if mode == "none" and (value.get("wiki_revision_id") is not None or constraints or pages or sources or value.get("conflicts") or value.get("unknowns")):
+    if mode == "source_fallback" and (value.get("wiki_revision_id") is not None or constraints):
+        raise ValueError("source_fallback cannot carry Wiki revision or constraints")
+    if mode == "none" and (value.get("wiki_revision_id") is not None or constraints or sources or value.get("conflicts") or value.get("unknowns")):
         raise ValueError("none project knowledge must be empty")
     selection = value.get("selection") if isinstance(value.get("selection"), Mapping) else {}
     max_tokens = selection.get("max_tokens")
     if max_tokens is not None and int(selection.get("estimated_tokens", 0) or 0) > int(max_tokens):
         raise ValueError("project knowledge exceeds max_tokens")
     constraint_ids = {str(item.get("constraint_id")) for item in constraints if isinstance(item, Mapping)}
-    page_ids = {str(item.get("page_id")) for item in pages if isinstance(item, Mapping)}
     source_ids = {str(item.get("ref_id")) for item in sources if isinstance(item, Mapping)}
     if not set(selection.get("selected_constraint_ids", ())) <= constraint_ids:
         raise ValueError("selected constraint is absent from context")
-    if not set(selection.get("selected_page_ids", ())) <= page_ids:
-        raise ValueError("selected page is absent from context")
-    if not set(selection.get("selected_source_ref_ids", ())) <= source_ids | {str(ref) for item in constraints for ref in item.get("source_refs", ())} | {str(ref) for item in pages for ref in item.get("source_refs", ())}:
+    if not set(selection.get("selected_source_ref_ids", ())) <= source_ids | {str(ref) for item in constraints for ref in item.get("source_refs", ())}:
         raise ValueError("selected source ref is absent from context")
     for item in constraints:
         if item.get("status") != "active" or item.get("authority") != "documented_contract" or not item.get("source_refs"):
@@ -75,7 +74,6 @@ class ProjectKnowledgeService:
         source_manifest_digest: Optional[str] = None,
         mode: str = "shadow",
         compiler_available: Optional[bool] = None,
-        max_context_tokens: Optional[int] = None,
     ) -> None:
         if mode not in {"shadow", "active"}:
             raise ValueError("Wiki context mode must be shadow or active")
@@ -84,12 +82,10 @@ class ProjectKnowledgeService:
         self.source_manifest_digest = source_manifest_digest or getattr(source_index, "source_manifest_digest", None) or ZERO_DIGEST
         self.mode = mode
         self.compiler_available = compiler_available
-        self.max_context_tokens = max_context_tokens
         self._telemetry_lock = threading.RLock()
         self._pinned_revision_id: Optional[str] = None
         self._pinned_constraints: Tuple[Dict[str, Any], ...] = ()
         self._pinned_refs: Dict[str, Dict[str, Any]] = {}
-        self._pinned_pages: Tuple[Dict[str, Any], ...] = ()
         self._pinned_compiler_kind: Optional[str] = None
         self._pin_active_revision()
         self._telemetry = {
@@ -100,7 +96,6 @@ class ProjectKnowledgeService:
             "knowledge_context_tokens": 0,
             "incremental_fact_count": 0,
             "selected_constraint_ids": Counter(),
-            "selected_page_ids": Counter(),
             "selected_source_ref_ids": Counter(),
             "fallback_reasons": Counter(),
         }
@@ -161,36 +156,6 @@ class ProjectKnowledgeService:
             if isinstance(value, dict):
                 refs[str(row["ref_id"])] = value
 
-        pages = []
-        for row in rows(
-            "SELECT page_id, canonical_slug, frontmatter_json, markdown FROM pages WHERE revision_id=? ORDER BY canonical_slug, page_id",
-        ):
-            raw_frontmatter = str(row["frontmatter_json"])
-            markdown = str(row["markdown"])
-            if len(raw_frontmatter) > RUNTIME_PROJECTION_MAX_JSON_CHARS:
-                raise ValueError("Wiki page frontmatter exceeds size limit")
-            if len(markdown) > RUNTIME_PROJECTION_MAX_MARKDOWN_CHARS:
-                raise ValueError("Wiki page Markdown exceeds size limit")
-            try:
-                frontmatter = json.loads(raw_frontmatter)
-            except Exception:
-                continue
-            if not isinstance(frontmatter, dict):
-                continue
-            # Only current Wiki pages may enter the Validator runtime
-            # projection.  Historical/stale pages remain available in the
-            # revision for audit and maintenance, but are not queryable.
-            if frontmatter.get("status") != "active":
-                continue
-            pages.append(
-                {
-                    "page_id": str(row["page_id"]),
-                    "canonical_slug": str(row["canonical_slug"]),
-                    "frontmatter": frontmatter,
-                    "markdown": markdown,
-                }
-            )
-
         compiler_kind = None
         try:
             revision = self.wiki_store.revision_metadata(revision_id)
@@ -203,7 +168,6 @@ class ProjectKnowledgeService:
         self._pinned_revision_id = revision_id
         self._pinned_constraints = tuple(constraints)
         self._pinned_refs = refs
-        self._pinned_pages = tuple(pages)
         self._pinned_compiler_kind = compiler_kind
 
     def _record_context(self, context: Mapping[str, Any]) -> Dict[str, Any]:
@@ -218,14 +182,9 @@ class ProjectKnowledgeService:
                 self._telemetry["none_count"] += 1
             selection = context.get("selection") if isinstance(context.get("selection"), Mapping) else {}
             self._telemetry["knowledge_context_tokens"] += int(selection.get("estimated_tokens", 0) or 0)
-            # Background pages alone are not proof of Wiki injection.  Count only
-            # structured constraints or page excerpts that carry constraint IDs;
-            # this prevents a deterministic skeleton from being reported as an
-            # injected knowledge signal.
-            page_facts = sum(len(item.get("constraint_ids") or ()) for item in (context.get("page_excerpts") or ()) if isinstance(item, Mapping))
-            facts = len(context.get("constraints") or ()) + page_facts
+            facts = len(context.get("constraints") or ())
             self._telemetry["incremental_fact_count"] += facts
-            for key, counter_name in (("selected_constraint_ids", "selected_constraint_ids"), ("selected_page_ids", "selected_page_ids"), ("selected_source_ref_ids", "selected_source_ref_ids")):
+            for key, counter_name in (("selected_constraint_ids", "selected_constraint_ids"), ("selected_source_ref_ids", "selected_source_ref_ids")):
                 counter = self._telemetry[counter_name]
                 for value in selection.get(key, ()):
                     counter[str(value)] += 1
@@ -247,7 +206,6 @@ class ProjectKnowledgeService:
                 "incremental_fact_count": int(self._telemetry["incremental_fact_count"]),
                 "wiki_context_injected": bool(self.mode == "active" and self._telemetry["wiki_resolution_count"] > 0 and self._telemetry["incremental_fact_count"] > 0 and self._telemetry["knowledge_context_tokens"] > 0),
                 "selected_constraint_ids": dict(sorted(self._telemetry["selected_constraint_ids"].items())),
-                "selected_page_ids": dict(sorted(self._telemetry["selected_page_ids"].items())),
                 "selected_source_ref_ids": dict(sorted(self._telemetry["selected_source_ref_ids"].items())),
                 "fallback_reasons": dict(sorted(self._telemetry["fallback_reasons"].items())),
             }
@@ -286,7 +244,7 @@ class ProjectKnowledgeService:
             return False
         return True
 
-    def _wiki_constraints(self, obligation: ConstraintObligation, max_constraints: int = 8) -> Tuple[Dict[str, Any], ...]:
+    def _wiki_constraints(self, obligation: ConstraintObligation) -> Tuple[Dict[str, Any], ...]:
         rid, constraints, refs = self._active_projection()
         if rid is None:
             return ()
@@ -298,42 +256,6 @@ class ProjectKnowledgeService:
             if self._constraint_matches(item, obligation):
                 selected.append(dict(item))
         selected.sort(key=lambda item: (str(item.get("kind", "")), str(item.get("subject", {}).get("canonical_id", "")), str(item.get("constraint_id", ""))))
-        return tuple(selected[:max_constraints])
-
-    def _wiki_pages(self, obligation: ConstraintObligation, constraint_ids: Sequence[str] = (), max_pages: int = 3) -> Tuple[Dict[str, Any], ...]:
-        if self._pinned_revision_id is None:
-            return ()
-        selected = []
-        for row in self._pinned_pages:
-            front = row["frontmatter"]
-            # Keep this guard even though _pin_active_revision filters the
-            # snapshot, so manually supplied or future projections cannot
-            # re-introduce non-active pages into Validator context.
-            if front.get("status") != "active":
-                continue
-            subject = " ".join(str(item) for item in front.get("subject_ids", []))
-            modules = " ".join(str(item) for item in front.get("module_ids", []))
-            slug = str(row["canonical_slug"])
-            if obligation.module_ids and not any(module in modules or module.removeprefix("module:") in slug for module in obligation.module_ids):
-                if front.get("page_kind") != "project_overview":
-                    continue
-            text = row["markdown"]
-            if obligation.subject_ids and not any(str(term).casefold() in (text + " " + subject).casefold() for term in obligation.subject_ids):
-                if front.get("page_kind") not in {"project_overview", "source"}:
-                    continue
-            refs = []
-            for line in text.splitlines():
-                if "[docref_" in line:
-                    start = line.find("[docref_") + 1
-                    end = line.find("]", start)
-                    if end > start:
-                        refs.append(line[start:end])
-            page_constraint_ids = [str(value) for value in front.get("constraint_ids", ()) if str(value) in set(constraint_ids)]
-            if constraint_ids and not page_constraint_ids and front.get("page_kind") not in {"project_overview", "source"}:
-                continue
-            selected.append({"page_id": front["page_id"], "page_kind": front["page_kind"], "canonical_slug": slug, "heading_path": [front.get("title", slug)], "text": text[:12000], "constraint_ids": page_constraint_ids, "source_refs": refs})
-            if len(selected) >= max_pages:
-                break
         return tuple(selected)
 
     def resolve_for_candidate(
@@ -346,34 +268,65 @@ class ProjectKnowledgeService:
         fallback_reason: str = "compiler_unavailable",
     ) -> Dict[str, Any]:
         if max_tokens is None:
-            max_tokens = self.max_context_tokens
-        if max_tokens is not None and max_tokens < 256:
+            max_tokens = DEFAULT_PROJECT_KNOWLEDGE_MAX_TOKENS
+        if max_tokens < 256:
             raise ValueError("max_tokens must be at least 256")
+        if max_tokens > DEFAULT_PROJECT_KNOWLEDGE_MAX_TOKENS:
+            raise ValueError(
+                f"max_tokens must not exceed {DEFAULT_PROJECT_KNOWLEDGE_MAX_TOKENS}"
+            )
         obligation = self._obligation(candidate, evidence_pack)
         candidate_file = obligation.candidate_file or "unknown.md"
         target = {
             "module_ids": list(obligation.module_ids),
             "subject_ids": list(obligation.subject_ids),
-            "obligation_kind": obligation.obligation_kind,
+            "obligation_kinds": ([obligation.obligation_kind] if obligation.obligation_kind not in {"", "unknown"} else []),
             "candidate_file": candidate_file,
         }
         if obligation.function_id:
             target["function_id"] = obligation.function_id
         if obligation.entry_function:
             target["entry_function"] = obligation.entry_function
-        constraints = self._wiki_constraints(obligation)
-        constraint_ids = [str(item["constraint_id"]) for item in constraints]
-        pages = self._wiki_pages(obligation, constraint_ids)
+        matched_constraints = self._wiki_constraints(obligation)
+        constraints = []
+        used_tokens = 0
+        for item in matched_constraints:
+            if len(constraints) >= MAX_WIKI_CONSTRAINTS:
+                break
+            cost = _tokens(str(item.get("statement", "")))
+            if used_tokens + cost > max_tokens:
+                continue
+            constraints.append(item)
+            used_tokens += cost
+        omitted_constraint_count = len(matched_constraints) - len(constraints)
         effective_compiler = self.compiler_available if compiler_available is None else compiler_available
         if effective_compiler is None:
             effective_compiler = self._pinned_compiler_kind in {"llm", "mixed"}
-        if (pages or constraints) and effective_compiler:
+        if matched_constraints and effective_compiler:
             constraint_items = []
             for item in constraints:
-                constraint_items.append({key: item.get(key) for key in ("constraint_id", "kind", "statement", "normalized_value", "authority", "normativity", "status", "source_refs", "page_refs") if key in item} | {"subject_id": str(item.get("subject", {}).get("canonical_id", ""))})
+                subject = item.get("subject") if isinstance(item.get("subject"), Mapping) else {}
+                constraint_items.append(
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "constraint_id",
+                            "kind",
+                            "statement",
+                            "authority",
+                            "normativity",
+                            "status",
+                            "source_refs",
+                        )
+                        if key in item
+                    }
+                    | {
+                        "subject_id": str(subject.get("canonical_id", "")),
+                        "subject_kind": str(subject.get("kind", "")),
+                    }
+                )
             selected_source_refs = list(dict.fromkeys(
-                [ref for p in pages for ref in p["source_refs"]]
-                + [ref for item in constraint_items for ref in item.get("source_refs", ())]
+                [ref for item in constraint_items for ref in item.get("source_refs", ())]
             ))
             context: Dict[str, Any] = {
                 "schema_version": "zscope.validator-project-knowledge.v1",
@@ -384,22 +337,39 @@ class ProjectKnowledgeService:
                 "context_digest": ZERO_DIGEST,
                 "target": target,
                 "constraints": constraint_items,
-                "page_excerpts": list(pages),
                 "source_excerpts": [],
                 "conflicts": [],
                 "unknowns": [],
-                "selection": {"max_tokens": max_tokens, "estimated_tokens": sum(_tokens(p["text"]) for p in pages) + sum(_tokens(str(item["statement"])) for item in constraint_items), "selected_constraint_ids": [item["constraint_id"] for item in constraint_items], "omitted_constraint_count": 0, "selected_page_ids": [p["page_id"] for p in pages], "selected_source_ref_ids": selected_source_refs, "ranking_version": "wiki-constraint-rank.v1", "fallback_reason": None},
+                "selection": {"max_tokens": max_tokens, "estimated_tokens": sum(_tokens(str(item["statement"])) for item in constraint_items), "selected_constraint_ids": [item["constraint_id"] for item in constraint_items], "omitted_constraint_count": omitted_constraint_count, "omitted_source_excerpt_count": 0, "selected_source_ref_ids": selected_source_refs, "ranking_version": "documented-constraint-rank.v2", "fallback_reason": None},
             }
-            if max_tokens is not None:
-                context["selection"]["estimated_tokens"] = min(context["selection"]["estimated_tokens"], max_tokens)
             context["context_digest"] = digest_json({key: value for key, value in context.items() if key != "context_digest"})
             return self._record_context(context)
-        resolution = DirectDocumentResolver(self.source_index).resolve(obligation, max_results=4, max_tokens=max_tokens, fallback_reason=fallback_reason)
-        mode = resolution.resolution_mode
-        excerpts = [item.to_dict() for item in resolution.source_excerpts]
-        estimate = sum(_tokens(item["text"]) for item in excerpts)
-        if max_tokens is not None:
-            estimate = min(max_tokens, estimate)
+        resolution = DirectDocumentResolver(self.source_index).resolve(
+            obligation,
+            # Retrieve the ranked candidate set without applying the context
+            # count/token budget.  Those are project_knowledge projection
+            # concerns and must be accounted for by this program-owned layer.
+            max_results=None,
+            max_documents=None,
+            max_tokens=None,
+            fallback_reason=fallback_reason,
+        )
+        matched_excerpts = [item.to_dict() for item in resolution.source_excerpts]
+        excerpts = []
+        used_tokens = 0
+        for item in matched_excerpts:
+            if len(excerpts) >= MAX_SOURCE_EXCERPTS:
+                break
+            cost = _tokens(str(item.get("text", "")))
+            if used_tokens + cost > max_tokens:
+                continue
+            excerpts.append(item)
+            used_tokens += cost
+        omitted_source_excerpt_count = len(matched_excerpts) - len(excerpts)
+        # Preserve source_fallback when matches existed but the shared token
+        # budget left no excerpt room; the omission counter explains why the
+        # selected projection is empty.
+        mode = "source_fallback" if matched_excerpts else "none"
         context = {
             "schema_version": "zscope.validator-project-knowledge.v1",
             "resolution_mode": mode,
@@ -409,11 +379,10 @@ class ProjectKnowledgeService:
             "context_digest": ZERO_DIGEST,
             "target": target,
             "constraints": [],
-            "page_excerpts": [],
             "source_excerpts": excerpts,
             "conflicts": [],
             "unknowns": [],
-            "selection": {"max_tokens": max_tokens, "estimated_tokens": estimate, "selected_constraint_ids": [], "omitted_constraint_count": 0, "selected_page_ids": [], "selected_source_ref_ids": [item["ref_id"] for item in excerpts], "ranking_version": "source-index.v1", "fallback_reason": resolution.fallback_reason},
+            "selection": {"max_tokens": max_tokens, "estimated_tokens": used_tokens, "selected_constraint_ids": [], "omitted_constraint_count": 0, "omitted_source_excerpt_count": omitted_source_excerpt_count, "selected_source_ref_ids": [item["ref_id"] for item in excerpts], "ranking_version": "source-index.v1", "fallback_reason": resolution.fallback_reason},
         }
         context["context_digest"] = digest_json({key: value for key, value in context.items() if key != "context_digest"})
         return self._record_context(context)

@@ -63,6 +63,7 @@ def _render(
     investigator_workers: int,
     evidence_workers: int,
     index_workers: int,
+    wiki_compiler_workers: int,
     svf_workers: int,
     llm_max_inflight: int,
 ) -> str:
@@ -122,6 +123,7 @@ def _render(
         f"  investigator_workers: {investigator_workers}",
         f"  evidence_completion_workers: {evidence_workers}",
         f"  index_workers: {index_workers}",
+        f"  wiki_compiler_workers: {wiki_compiler_workers}",
     ]
     if language == "c_cpp":
         concurrency_lines.append(f"  svf_workers: {svf_workers}")
@@ -220,6 +222,7 @@ def main(
     cpu_count = max(1, os.cpu_count() or 1)
     entry_workers = min(4, cpu_count)
     index_workers = min(4, cpu_count)
+    wiki_compiler_workers = 4
     svf_workers = min(2, cpu_count)
     validator_workers = 2
     investigator_workers = 1
@@ -228,6 +231,9 @@ def main(
     if use_interactive:
         entry_workers = click.prompt("Entry workers", type=click.IntRange(1), default=entry_workers)
         index_workers = click.prompt("Index workers", type=click.IntRange(1), default=index_workers)
+        wiki_compiler_workers = click.prompt(
+            "Wiki compiler workers", type=click.IntRange(1), default=wiki_compiler_workers
+        )
         if detected == "c_cpp":
             svf_workers = click.prompt("SVF workers", type=click.IntRange(1), default=svf_workers)
         validator_workers = click.prompt(
@@ -259,6 +265,7 @@ def main(
         investigator_workers=investigator_workers,
         evidence_workers=evidence_workers,
         index_workers=index_workers,
+        wiki_compiler_workers=wiki_compiler_workers,
         svf_workers=svf_workers,
         llm_max_inflight=llm_max_inflight,
     )

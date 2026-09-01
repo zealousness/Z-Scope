@@ -88,13 +88,14 @@ def dirty_page_closure(
 def merge_constraint_proposals(
     existing: Sequence[Mapping[str, Any]], proposals: Sequence[Mapping[str, Any]]
 ) -> List[Dict[str, Any]]:
-    """Merge same-slot equal values and preserve unequal values as conflicts."""
+    """Merge same-slot equal statements and preserve unequal statements."""
 
     result = [dict(item) for item in existing]
-    by_slot: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
+    by_slot: Dict[Tuple[str, str, str, str], List[Dict[str, Any]]] = {}
     for item in result:
         subject = item.get("subject", {})
         slot = (
+            str(subject.get("kind", "")),
             str(subject.get("canonical_id", item.get("subject_id", ""))),
             str(item.get("kind", "")),
             json.dumps(item.get("scope", {}), sort_keys=True, ensure_ascii=False),
@@ -104,6 +105,7 @@ def merge_constraint_proposals(
         item = dict(proposal)
         subject = item.get("subject", {})
         slot = (
+            str(subject.get("kind", "")),
             str(subject.get("canonical_id", item.get("subject_id", ""))),
             str(item.get("kind", "")),
             json.dumps(item.get("scope", {}), sort_keys=True, ensure_ascii=False),
@@ -113,7 +115,7 @@ def merge_constraint_proposals(
             (
                 candidate
                 for candidate in matches
-                if candidate.get("normalized_value") == item.get("normalized_value")
+                if str(candidate.get("statement", "")).strip() == str(item.get("statement", "")).strip()
             ),
             None,
         )
@@ -121,21 +123,24 @@ def merge_constraint_proposals(
             same["source_refs"] = sorted(
                 set(same.get("source_refs", ())) | set(item.get("source_refs", ()))
             )
-            same["page_refs"] = sorted(
-                set(same.get("page_refs", ())) | set(item.get("page_refs", ()))
-            )
             continue
-        for conflict in matches:
-            conflict["status"] = "conflicted"
-            conflict.setdefault("conflicts_with", [])
-            conflict["conflicts_with"] = sorted(
-                set(conflict["conflicts_with"]) | {item.get("constraint_id")}
-            )
-            item.setdefault("conflicts_with", [])
-            item["conflicts_with"] = sorted(
-                set(item["conflicts_with"]) | {conflict.get("constraint_id")}
-            )
+        # Keep competing statements visible instead of silently choosing one.
+        # The program owns the conflict status and cross-links; the LLM only
+        # supplies the semantic statement and its source references.
+        if matches:
+            for candidate in matches:
+                candidate["status"] = "conflicted"
+                candidate_refs = set(candidate.get("conflicts_with", ()))
+                candidate_refs.add(str(item.get("constraint_id", "")))
+                candidate["conflicts_with"] = sorted(ref for ref in candidate_refs if ref)
             item["status"] = "conflicted"
+            item["conflicts_with"] = sorted(
+                {
+                    str(candidate.get("constraint_id", ""))
+                    for candidate in matches
+                    if str(candidate.get("constraint_id", ""))
+                }
+            )
         matches.append(item)
         result.append(item)
     return result

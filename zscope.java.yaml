@@ -43,4 +43,5 @@ concurrency:
   investigator_workers: 1
   evidence_completion_workers: 2
   index_workers: 4
+  wiki_compiler_workers: 4
   llm_max_inflight: 4

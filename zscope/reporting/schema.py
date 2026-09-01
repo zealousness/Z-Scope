@@ -570,7 +570,6 @@ def build_run_manifest(
             "knowledge_context_tokens": 0,
             "incremental_fact_count": 0,
             "selected_constraint_ids": {},
-            "selected_page_ids": {},
             "selected_source_ref_ids": {},
             "fallback_reasons": {},
         },

@@ -299,16 +299,13 @@ class WikiControlService:
 
         config = self._config()
         wiki = config.project.wiki
-        configured_limit = wiki.max_context_tokens
-        raw_limit = (params.get("max_tokens") or [configured_limit])[0]
+        raw_limit = (params.get("max_tokens") or [None])[0]
         try:
             max_tokens = None if raw_limit is None else int(raw_limit)
         except (TypeError, ValueError) as exc:
             raise ValueError("max_tokens must be an integer") from exc
         if max_tokens is not None and max_tokens < 256:
             raise ValueError("max_tokens must be at least 256")
-        if configured_limit is not None and max_tokens is not None and max_tokens > configured_limit:
-            raise ValueError(f"max_tokens must not exceed {configured_limit}")
         root = config.project.project_root
         return wiki_query(
             root,

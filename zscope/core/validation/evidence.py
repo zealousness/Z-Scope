@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from copy import deepcopy
 from typing import Any, Callable, Dict, List, Mapping, Optional, cast
 
@@ -419,6 +420,113 @@ def build_validator_evidence_slice_v2(
     }
 
 
+def build_validator_project_knowledge_projection(
+    knowledge: Mapping[str, Any], issue: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Project Wiki context into the compact shape shown to Validator LLMs."""
+
+    target = knowledge.get("target") if isinstance(knowledge.get("target"), Mapping) else {}
+    issue_file = str(
+        issue.get("candidate_file")
+        or issue.get("relative_file")
+        or issue.get("file_path")
+        or issue.get("file")
+        or ""
+    ).replace("\\", "/").lstrip("/")
+    if not issue_file:
+        location = str(issue.get("location") or "").replace("\\", "/")
+        match = re.match(r"^(.*?):\d+(?::\d+)?$", location)
+        issue_file = match.group(1).lstrip("/") if match else ""
+    raw_constraints = [
+        item for item in knowledge.get("constraints") or [] if isinstance(item, Mapping)
+    ]
+    constraint_subject_ids = list(
+        dict.fromkeys(
+            str(item.get("subject_id") or "")
+            for item in raw_constraints
+            if str(item.get("subject_id") or "")
+        )
+    )
+    # Target identity comes from the candidate/evidence obligation only.
+    # Never infer it from whichever constraints happened to match.
+    target_subject_ids = _candidate_subject_ids(issue)
+    target_obligation_kinds = _candidate_obligation_kinds(issue)
+    projected_target = {
+        "project_id": str(target.get("project_id") or knowledge.get("project_id") or ""),
+        "module_ids": list(target.get("module_ids") or []),
+        "subject_ids": target_subject_ids,
+        "obligation_kinds": target_obligation_kinds,
+        "candidate_file": str(
+            issue_file
+            or ("" if str(target.get("candidate_file") or "") == "unknown.md" else target.get("candidate_file"))
+            or "unknown.md"
+        ),
+        "function_name": str(
+            target.get("function_name")
+            or target.get("function_id")
+            or issue.get("function")
+            or ""
+        ),
+    }
+    constraints = []
+    for item in raw_constraints:
+        subject_kind = item.get("subject_kind") or (
+            item.get("subject", {}).get("kind", "")
+            if isinstance(item.get("subject"), Mapping)
+            else ""
+        )
+        subject_id = str(item.get("subject_id") or "")
+        prefix = f"{subject_kind}:" if subject_kind else ""
+        if prefix and subject_id.startswith(prefix):
+            subject_id = subject_id[len(prefix) :]
+        constraints.append(
+            {
+                "constraint_id": item.get("constraint_id"),
+                "kind": item.get("kind"),
+                "subject_id": subject_id,
+                "subject_kind": subject_kind,
+                "statement": item.get("statement"),
+                "authority": item.get("authority"),
+                "normativity": item.get("normativity"),
+                "source_refs": list(item.get("source_refs") or []),
+            }
+        )
+    selection = knowledge.get("selection") if isinstance(knowledge.get("selection"), Mapping) else {}
+    return {
+        "resolution_mode": knowledge.get("resolution_mode"),
+        "wiki_revision_id": knowledge.get("wiki_revision_id"),
+        "target": projected_target,
+        "constraints": constraints,
+        "source_excerpts": list(knowledge.get("source_excerpts") or []),
+        "conflicts": list(knowledge.get("conflicts") or []),
+        "omitted_constraint_count": int(selection.get("omitted_constraint_count", 0) or 0),
+        "omitted_source_excerpt_count": int(selection.get("omitted_source_excerpt_count", 0) or 0),
+        "fallback_reason": selection.get("fallback_reason"),
+    }
+
+
+def _candidate_subject_ids(issue: Mapping[str, Any]) -> list[str]:
+    values = issue.get("subject_ids") or issue.get("subject_id") or issue.get("subject")
+    if isinstance(values, Mapping):
+        values = values.get("canonical_id") or values.get("id")
+    if isinstance(values, str):
+        values = [values]
+    return list(dict.fromkeys(str(value).strip() for value in (values or []) if str(value).strip()))
+
+
+def _candidate_obligation_kinds(issue: Mapping[str, Any]) -> list[str]:
+    values = (
+        issue.get("obligation_kinds")
+        or issue.get("missing_fact_kinds")
+        or issue.get("fact_kinds")
+        or issue.get("obligation_kind")
+        or issue.get("fact_kind")
+    )
+    if isinstance(values, str):
+        values = [values]
+    return list(dict.fromkeys(str(value).strip() for value in (values or []) if str(value).strip()))
+
+
 def build_validator_evidence_slice_v3(
     issue: Mapping[str, Any],
     evidence_pack: Mapping[str, Any],
@@ -504,13 +612,12 @@ def build_validator_evidence_slice_v3(
         max_string_chars=1800,
     )
 
-    # Project knowledge is an auxiliary, claim-first context projection.  It
-    # is deliberately copied only when supplied by the read-only Wiki service;
-    # missing or invalid Wiki state leaves the existing evidence slice intact.
+    # Project knowledge keeps its full audit envelope in the evidence pack and
+    # exposes only the decision-relevant projection to the Validator model.
     project_knowledge = pack.get("project_knowledge")
     if isinstance(project_knowledge, Mapping):
         result["project_knowledge"] = _compact_validation_value(
-            project_knowledge,
+            build_validator_project_knowledge_projection(project_knowledge, issue),
             max_list_items=16,
             max_string_chars=1800,
         )
@@ -587,13 +694,6 @@ def build_validator_evidence_slice_v3(
                 add_ref(item.get("constraint_id"), "project_constraint", item.get("statement"))
                 for ref in item.get("source_refs") or []:
                     add_ref(ref, "project_document_ref", item.get("statement"))
-                for ref in item.get("page_refs") or []:
-                    add_ref(ref, "project_wiki_page", item.get("statement"))
-        for item in knowledge.get("page_excerpts") or []:
-            if isinstance(item, Mapping):
-                add_ref(item.get("page_id"), "project_wiki_page", item.get("canonical_slug"))
-                for ref in item.get("source_refs") or []:
-                    add_ref(ref, "project_document_ref", item.get("canonical_slug"))
         for item in knowledge.get("source_excerpts") or []:
             if isinstance(item, Mapping):
                 add_ref(item.get("ref_id"), "project_document_ref", item.get("relative_path"))

@@ -19,11 +19,17 @@ class DirectDocumentResolver:
         self,
         obligation: ConstraintObligation,
         *,
-        max_results: int = 4,
+        max_results: Optional[int] = 4,
+        max_documents: Optional[int] = None,
         max_tokens: Optional[int] = None,
         fallback_reason: str = "compiler_unavailable",
     ) -> DirectResolution:
-        rows = self.source_index.search(obligation, max_results=max_results, max_tokens=max_tokens)
+        rows = self.source_index.search(
+            obligation,
+            max_results=max_results,
+            max_documents=max_documents,
+            max_tokens=max_tokens,
+        )
         excerpts = tuple(
             SourceExcerpt(
                 ref_id=row["ref_id"],

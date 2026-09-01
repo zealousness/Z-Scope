@@ -165,7 +165,7 @@ python -m pytest -q tests/test_wiki_revision_store.py tests/test_wiki_source_ind
 
 ### 阶段目标
 
-把 Compiler 的输入/输出边界实现为程序可校验对象。模型只能处理程序生成的 bounded workset；没有 LLM 时也能产出明确的 `background_only/no_constraints_found` 结果；有 provider 时所有 JSON 仍须经过同一 ChangeSet 状态机。
+把 Compiler 的输入/输出边界实现为程序可校验对象。模型只处理由程序从 bounded workset 派生的输入 projection；没有 LLM 时也能产出明确的 `background_only/no_constraints_found` 结果；有 provider 时所有 JSON 仍须经过同一 ChangeSet 状态机。
 
 ### 实际文件
 
@@ -331,13 +331,13 @@ python -m pytest -q tests/test_wiki_cli.py tests/test_wiki_service.py tests/test
 
 ### 实际文件
 
-- `zscope/wiki/compiler/llm_compiler.py`：发送 bounded workset 的最小 system/user 请求，解析 JSON/tool-call，并调用 `validate_changeset`；解析失败由上层 `WikiCompiler` 变成 `extraction_failed`。
+- `zscope/wiki/compiler/llm_compiler.py`：发送最小 system/user 请求和 `build_llm_input_projection()` 结果，解析 JSON/tool-call，并调用 `validate_changeset`；解析失败由上层 `WikiCompiler` 变成 `extraction_failed`。
 - `tests/test_wiki_llm_compiler.py`：fake client 的结构化 ChangeSet 测试，无真实 endpoint、API key 或 benchmark。
 - `zscope/agents/wiki_compiler/AGENT.md`：Compiler 权限和无约束文档说明。
 
 ### 固定行为和 reason/status
 
-- LLM 只能看到 workset JSON，不可任意读取 project.root、shell、网络或未发布页面；所有 source/page/ref identity 由程序分配。
+- LLM 只能看到 Workset 派生的 projection，不可任意读取 project.root、shell、网络或未发布页面；所有 source/page/ref identity 由程序分配。
 - `background_only/no_constraints_found` 是合法成功结果；空 constraint 不等于项目不存在约束，也不产生负面 Validator 证据。
 - malformed JSON、未知字段、越权 ref、错误状态机和 provider 异常均不发布新 page/constraint/edge，旧 active revision 保持不变。
 
@@ -400,7 +400,7 @@ python -m pytest -q tests/test_wiki_lint.py tests/test_wiki_cli.py tests/test_wi
   - 增加 page、constraint、edge、retire 的 allowlist 和 authority/schema 检查，以及 source result 必须属于 workset 的校验。
   - 变更集先通过本地 Schema registry，再执行 outcome 状态机和跨字段不变量。
 - `zscope/wiki/compiler/workset.py`、`zscope/wiki/schemas/wiki-ingest-workset.schema.json`
-  - Workset 新增固定 `source_sections` 投影，包含 section digest、行号、符号、module hints、规范性词和链接；显式配置 `max_source_chars` 时受其限制，默认 `null` 不施加该 Wiki 局部预算，不再只向 Compiler 发送 source ID。
+  - Workset 新增固定 `source_sections` 投影，包含 section digest、行号、符号、module hints、规范性词和链接；所有被接受的 Markdown section 均完整投影，不再提供源字符截断预算。
 - `zscope/wiki/schema.py`、`tests/test_wiki_schema_resolver.py`
   - 新增 registry 加载、local `$ref` 检查和 Draft 2020-12 常用关键字的无依赖校验；安装 `jsonschema` 时自动委托完整 Draft 2020-12 validator，禁止网络 resolver。
 - `zscope/wiki/service.py`
@@ -416,6 +416,7 @@ python -m pytest -q tests/test_wiki_lint.py tests/test_wiki_cli.py tests/test_wi
 - 发布顺序固定为：校验 → 内存合并 → staging 文件 → 不可变 revision → SQLite projection → fsync/原子替换 `active.json` → program event/log。任一步骤在 active pointer 切换前失败，旧 revision 保持可读。
 - Compiler 无法使用、响应 malformed、schema 不合法或 provider 抛错时，active revision 不变；Validator 从 source-index direct fallback，不将失败包装成“无约束”。
 - `source_sections` 是 bounded source projection，不授予模型任意路径读取权限；敏感/生成/truth/runtime 文档仍不会进入 section。
+- 单个 Markdown 文件在进入 Compiler 前按 section 规划为不重叠的临时 chunk；chunk 不进入 revision 或 manifest identity，按 `concurrency.wiki_compiler_workers` 并发执行后在父 Workset 边界原子聚合。未暴露上下文窗口的模型按 32K token 保守预算规划，超长 section 使用 fragment 引用而不是截断。
 - 无结构化约束的说明文档仍可更新背景页面，但 `constraint_proposals=[]`、`constraints_created=0`，不会产生负面 Validator 证据。
 
 ### 验证命令和结果
@@ -602,7 +603,7 @@ git diff --check
   - 定义 `[[page_id|中文标题]]` wikilink 解析、中文正文检查、frontmatter 后 body 提取和程序 index link 投影。
 - `zscope/wiki/compiler/changeset.py`
   - upsert 页面必须严格满足 heading 顺序、中文正文、source ref 展示和 wikilink allowlist。
-  - 同一 ChangeSet upsert 多个页面时，每个页面必须链接另一个本次修改页面；重复 page ID 始终 fail closed，显式配置 `max_pages` 或 `max_output_chars` 时对应越界同样 fail closed，默认 `null` 不施加这两项 Wiki 局部预算。
+  - Constraint-only ChangeSet 不再包含页面变更；显式配置 `max_constraints` 时，Compiler proposal 数量和发布后的 revision constraints 总数越界都必须 fail closed，默认 `null` 不施加持久化数量预算。Validator 选择匹配约束和 direct source 摘录时均由程序最多保留 20 条，剩余条数分别写入 `omitted_constraint_count` 和 `omitted_source_excerpt_count`，不依赖 schema 数组上限。
 - `zscope/wiki/compiler/llm_compiler.py`、`zscope/agents/wiki_compiler/AGENT.md`
   - Compiler prompt/Agent contract 固定中文页面结构、wikilink 语法和来源索引要求。
   - Compiler 通过终态工具 `emit_wiki_changeset` 提交结果，初次提交失败后最多进行两次修复重试；revision provenance 固定记录 `prompt_version=zscope.wiki-compiler.prompt.v3`、provider identity 和模型名。
@@ -889,7 +890,7 @@ git diff --check
 
 - `zscope/cli/wiki.py`
   - 增加 `--config/-c`，保留 `--root`；两者同时提供但解析出的 root 不一致时 fail closed。
-  - config 模式固定读取 `project.root`、`project.id`、`project.wiki.state_dir`、三组 document override、discovery 三项资源上限和可选 `max_context_tokens`；该字段默认 `null`，CLI/Web/MCP 仅在显式配置时收紧查询预算。
+  - config 模式固定读取 `project.root`、`project.id`、`project.wiki.state_dir`、三组 document override、discovery 三项资源上限和可选 `max_constraints`；该字段默认 `null`，用于限制 Compiler proposal 数量及项目 Wiki 数据库每个 revision 保存的 constraints 总数。`project_knowledge` 的 Wiki/fallback 共享 4096 token 上限，单次调用可收紧但不可超过该值。
   - `query` 复用 `wiki_query()` 的 Wiki-first/direct-source fallback 路径；`status` 复用 bounded `wiki_status()`；`lint` 使用 read-only `WikiStore`。
   - 四个写命令统一持有 `<state_dir>/locks/compiler.lock`；rollback 测试在实际调用 `WikiStore.rollback()` 时校验 owner JSON 已存在。
 - `zscope/wiki/store/revision_store.py`、`zscope/wiki/control.py`
@@ -1182,3 +1183,73 @@ python -m pytest -q tests/test_wiki_maintenance.py tests/test_wiki_compiler.py
 ```
 
 定向测试为 `30 passed`；未运行 demo 扫描，未访问真实 LLM endpoint。
+
+## 2026-08-31：阶段 26——Constraint-only 运行时知识层
+
+### 决策
+
+Constraint 与生成式 Wiki 页面承担了重复的语义职责，而 Validator 的匹配、来源校验和 stale 传播本来就需要结构化对象。因此保留 `ProjectConstraint` 作为唯一运行时语义派生产物，停止生成式 Markdown 页面进入新 revision 或 Validator context。原始 Markdown 仍是事实来源；旧 revision 的页面仅保留读取/回放兼容。
+
+### 实施内容
+
+- 新增 `zscope.project-constraint-proposal.v1`。终态工具 `emit_project_constraints` 只接收 `constraint_proposals`；每条 proposal 显式提交 `subject_kind`，其值受固定 enum 限制；`schema_version` 不进入 final tool schema，由程序补充，不再添加额外的 `allowed_subject_kinds` 或模型 `summary` 输出字段。`summary` 由程序根据 outcome、proposal 数量和 source results 确定性生成。
+- `LLMWikiCompilerProvider` 在终态处理器中由程序补齐 changeset 外壳、source results、outcome 和 compiler provenance；模型不能提交 `constraint_id`、scope、status、authority、revision/digest、`normalized_value`、`page_refs`、页面或 edge 字段。
+- `WikiStore` 为每条 proposal 稳定生成 constraint ID、subject kind、project/module scope、`authority=documented_contract`、active status、manifest/revision metadata；按 subject/kind/scope 合并相同 statement，保留不同 statement 为 conflicted，并对来源删除确定性传播 stale。
+- 新 revision 写入 refs、constraints、manifest、index、audit/log projection，`pages/` 和 `edges.json` 为空；页面不参与 digest、匹配和 Validator 注入。
+  - `ProjectKnowledgeService` 只选择 active、documented_contract 且 source refs 可解析的 Constraint；没有有效 Constraint 或 Compiler 不可用时从 source-index 获取全部相关原文候选，再由程序最多保留 20 条并记录 `omitted_source_excerpt_count`。
+- 删除 `page_excerpts`、`selected_page_ids` 和 Constraint 的 `normalized_value/page_refs` 运行时字段；旧 revision lint/迁移时剥离历史字段以保持可读性。
+- 更新 Wiki Compiler/Validator Agent 契约、模块文档、schema registry 和迁移后的测试；未运行 demo 扫描。
+
+### 验证
+
+```text
+python -m pytest -q tests/test_wiki_*.py tests/test_validator_project_knowledge.py tests/test_agent_docs.py
+python -m pytest -q
+python -m compileall -q zscope tests
+git diff --check
+```
+
+Constraint/Validator 定向回归为 `115 passed`；完整回归为 `1917 passed, 5 skipped`。未访问真实 LLM endpoint，未运行 demo 扫描。
+
+## 2026-08-31：阶段 27——LLM 输入投影
+
+### 目标
+
+将 Compiler 的模型可见输入从内部 `IngestWorkset` 收敛为稳定、可审计的语义投影，降低上下文冗余和程序字段被模型复述/篡改的风险，同时保留程序对完整 Workset 的终态校验能力。
+
+### 输入契约
+
+`build_llm_input_projection(workset)` 对单个 Markdown 文档生成以下固定顶层字段：
+
+```json
+{
+  "file_path": "README.md",
+  "title": "llm_wiki_demo",
+  "change": "initial",
+  "sections": [
+    {
+      "ref_id": "docref_...",
+      "heading_path": ["项目和模块约束", "标签 API"],
+      "start_line": 9,
+      "end_line": 14,
+      "text": "..."
+    }
+  ]
+}
+```
+
+`sections` 仅来自当前文档，`ref_id` 按 `stable_id("docref", source_id, section_id)` 重建，并从程序维护的 catalog 取得路径。多文档、缺少 catalog、source ID 不匹配、越过当前 delta 或 malformed section 时，投影立即拒绝；removed-only 和 noop 不进入 Compiler。`change` 在无 base revision 且仅有新增来源时为 `initial`，其余进入 Compiler 的变化为 `incremental`。
+
+### 所有权边界
+
+模型只看到上述投影和 `AGENT.md` 契约；`workset_id`、source ID、base revision、manifest digest、source catalog、subject ID allowlist、limits、revision metadata 和发布状态均由程序保留。终态工具 schema 在每条 proposal 内暴露 `subject_kind` enum，不增加额外的 `allowed_subject_kinds` 输出字段。模型终态工具只提交语义 proposal，Provider 再用完整 Workset 生成 ChangeSet 外壳、程序生成 `summary`，并执行 schema、source-ref、subject allowlist 和状态机校验。多个文档的 proposal 在程序侧合并后一次性发布 revision；`summary` 不参与 revision identity。
+
+### 验证
+
+```text
+python -m pytest -q tests/test_wiki_llm_compiler.py tests/test_wiki_compiler.py
+python -m compileall -q zscope tests
+git diff --check
+```
+
+结果：`17 passed`（LLM projection/Compiler）；未访问真实 LLM endpoint，未运行 demo 扫描。
