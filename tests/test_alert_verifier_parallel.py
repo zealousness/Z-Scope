@@ -6,6 +6,7 @@ from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.core.validation.function_ir import FunctionIRGraph
 from zscope.core.validation.proof_kernel import (
     PREDICATE_REGISTRY,
+    PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
     ProofKernelEngine,
     build_proof_clause,
     build_proof_obligation,
@@ -106,6 +107,7 @@ def _proof_input_with_unknown_required_counterproof() -> dict:
         obligation=obligation,
     )
     return {
+        "schema_version": PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
         "proof_ir": proof_ir,
         "proof_obligation": obligation,
         "selected_action_uids": [value["action_uid"] for value in actions],
@@ -192,6 +194,7 @@ def _terminal_path_proof_input(*, role: str) -> dict:
         obligation=obligation,
     )
     return {
+        "schema_version": PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
         "proof_ir": proof_ir,
         "proof_obligation": obligation,
         "selected_action_uids": [value["action_uid"] for value in actions],

@@ -19,7 +19,11 @@ from .closure import (
     reduce_proof_closure,
     validate_promotion_binding,
 )
-from .engine import ProofKernelEngine, ProofKernelEvaluation
+from .engine import (
+    PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
+    ProofKernelEngine,
+    ProofKernelEvaluation,
+)
 from .provider import ProofProvider
 from .models import (
     EVIDENCE_ACTION_VERSION,
@@ -52,6 +56,7 @@ __all__ = [
     "NON_EXECUTABLE_PREDICATES",
     "POLARITY_ROLE_TERMINAL_MATRIX",
     "PROGRAM_PROOF_IR_VERSION",
+    "PROOF_KERNEL_AUTHORITY_INPUT_VERSION",
     "PROMOTION_CERTIFICATE_VERSION",
     "PROOF_CLOSURE_EVALUATION_VERSION",
     "PROOF_CHECK_RESULT_VERSION",

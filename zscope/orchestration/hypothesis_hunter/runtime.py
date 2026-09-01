@@ -6,7 +6,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from ...core.validation.proof_kernel import ProofKernelEngine
+from ...core.validation.proof_kernel import (
+    PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
+    ProofKernelEngine,
+)
 from ...framework.base import AgentResponse
 from ...framework.llm_usage import llm_usage_attribution_scope
 from ...semantics.security_map import SecuritySemanticMap
@@ -424,6 +427,7 @@ class HypothesisHunterRuntime:
             "security_hypothesis": dict(hypothesis),
             "proof_kernel_evaluation": dict(proof),
             "proof_kernel_input": {
+                "schema_version": PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
                 "proof_ir": dict(offer["proof_ir"]),
                 "proof_obligation": dict(offer["proof_obligation"]),
                 "selected_action_uids": list(hypothesis["evidence_action_uids"]),

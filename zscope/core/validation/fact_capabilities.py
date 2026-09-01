@@ -23,6 +23,7 @@ from ..candidates.decision_facts import (
 )
 from .function_ir import FUNCTION_IR_VERSION, FunctionIREvent, FunctionIRGraph, graph_from_mapping
 from .proof_kernel.checker import ProofChecker
+from .proof_kernel.engine import PROOF_KERNEL_AUTHORITY_INPUT_VERSION
 from .proof_kernel.models import (
     build_evidence_action as build_proof_action,
     build_proof_clause,
@@ -2019,6 +2020,7 @@ class FunctionIRFactService:
             for clause in (*confirmation, *counterproof)
         ]
         return {
+            "schema_version": PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
             "proof_ir": proof_ir,
             "proof_obligation": obligation,
             "selected_action_uids": selected_action_uids,

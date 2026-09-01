@@ -20,6 +20,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, cast
 
+from ..core.validation.authority import (
+    LEGACY_TERMINAL_AUTHORITY_DECISION_V3,
+    TERMINAL_AUTHORITY_DECISION_V4,
+    TerminalAuthorityEvaluator,
+)
+
 
 DECISION_TRACE_SCHEMA_VERSION = "zscope.issue-decision-trace.v3"
 DECISION_EVENT_SCHEMA_VERSION = "zscope.issue-decision-event.v3"
@@ -195,25 +201,77 @@ def _disposition(issue: Mapping[str, Any]) -> str:
     )
 
 
-def terminal_reason_codes(issue: Mapping[str, Any]) -> tuple[str, ...]:
-    """Project only the P5 TerminalAuthorityDecision v3 explanation."""
+def _authority_disposition(disposition: str) -> str:
+    if disposition == "validated":
+        return "confirmed"
+    if disposition == "rejected":
+        return "rejected_with_proof"
+    return disposition
 
-    disposition = _disposition(issue)
+
+def _live_v4_authority(issue: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return an exact live v4 projection, never a recorded v3 assertion.
+
+    Decision traces are an audit sidecar, but ``finalize_issue`` is still a
+    live write boundary. Re-running TerminalAuthority here prevents a forged,
+    stale, or cross-obligation terminal object from acquiring a new trace and
+    report projection merely because its outer fields look plausible.
+    """
+
+    recorded = issue.get("terminal_authority_decision")
+    if not isinstance(recorded, Mapping):
+        return None
+    recorded_dict = dict(recorded)
+    if str(recorded_dict.get("schema_version") or "") != TERMINAL_AUTHORITY_DECISION_V4:
+        return None
+    materialized = issue.get("proof_kernel_terminal_authority_decision")
+    if isinstance(materialized, Mapping) and dict(materialized) != recorded_dict:
+        return None
+    carrier = dict(issue)
+    carrier["proof_kernel_terminal_authority_decision"] = recorded_dict
+    projected = TerminalAuthorityEvaluator().evaluate(carrier, operation="live").to_dict()
+    if projected != recorded_dict:
+        return None
+    if projected.get("terminal") is not True:
+        return None
+    if str(projected.get("disposition") or "") != _authority_disposition(_disposition(issue)):
+        return None
+    return projected
+
+
+def audit_terminal_reason_codes(issue: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read a historical v3 terminal reason without authorizing it live.
+
+    This function exists only for immutable historical trace/report tooling.
+    Product code must use :func:`terminal_reason_codes`, whose default is the
+    fail-closed v4 live contract.
+    """
+
     authority = issue.get("terminal_authority_decision")
     authority = authority if isinstance(authority, Mapping) else {}
-    valid_authority = bool(
-        authority.get("schema_version") == "zscope.terminal-authority-decision.v3"
+    if (
+        str(authority.get("schema_version") or "") == LEGACY_TERMINAL_AUTHORITY_DECISION_V3
         and authority.get("terminal") is True
-        and str(authority.get("disposition") or "") == disposition
-        and str(authority.get("authority") or "")
-        in {"zscope.proof-checker", "zscope.proof-checker-conflict-resolver"}
-    )
+        and str(authority.get("disposition") or "") == _authority_disposition(_disposition(issue))
+    ):
+        reason = str(authority.get("reason_code") or "")
+        if reason in TERMINAL_REASON_CODES:
+            return (reason,)
+    return terminal_reason_codes(issue)
+
+
+def terminal_reason_codes(issue: Mapping[str, Any]) -> tuple[str, ...]:
+    """Project only an independently revalidated live v4 explanation."""
+
+    disposition = _disposition(issue)
+    authority = _live_v4_authority(issue) or {}
+    valid_authority = bool(authority)
     if disposition in {"confirmed", "validated"}:
-        if not valid_authority:
+        if not valid_authority or authority.get("disposition") != "confirmed":
             return ("NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",)
         return (str(authority.get("reason_code") or "CONFIRMED_VERIFIED_CLOSURE"),)
     if disposition in {"rejected", "rejected_with_proof"}:
-        if not valid_authority:
+        if not valid_authority or authority.get("disposition") != "rejected_with_proof":
             return ("NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",)
         return (str(authority.get("reason_code") or "REJECTED_DETERMINISTIC_COUNTERPROOF"),)
     if disposition == "deduplicated_alias":
@@ -495,16 +553,10 @@ class DecisionTraceStore:
         }
         operational = str(issue.get("record_role") or "") == "operational_obligation"
         if security_terminal and not operational:
-            if not (
-                terminal_authority.get("schema_version") == "zscope.terminal-authority-decision.v3"
-                and terminal_authority.get("terminal") is True
-                and str(terminal_authority.get("disposition") or "")
-                in {disposition, "confirmed" if disposition == "validated" else disposition}
-                and str(terminal_authority.get("authority") or "")
-                in {"zscope.proof-checker", "zscope.proof-checker-conflict-resolver"}
-            ):
+            if _live_v4_authority(issue) is None:
                 raise DecisionTraceError(
-                    "security terminal requires TerminalAuthorityDecision v3 from Proof Engine"
+                    "security terminal requires an exact live TerminalAuthorityDecision v4 "
+                    "projection from the bound Proof Engine state"
                 )
         explicit_reasons = issue.get("terminal_reason_codes")
         reasons = (
@@ -560,6 +612,10 @@ class DecisionTraceStore:
                     issue.get("terminal_authority_decision") or {}
                 ),
                 "proof_kernel_mode": str(issue.get("proof_kernel_mode") or "authoritative"),
+                "proof_kernel_input": _sanitize(issue.get("proof_kernel_input") or {}),
+                "proof_kernel_live_selected_action_uids": _sanitize(
+                    issue.get("proof_kernel_live_selected_action_uids") or []
+                ),
                 "proof_kernel_artifact_refs": _sanitize(
                     issue.get("proof_kernel_artifact_refs") or []
                 ),
@@ -568,6 +624,15 @@ class DecisionTraceStore:
                 ),
                 "proof_kernel_checker_result_refs": _sanitize(
                     issue.get("proof_kernel_checker_result_refs") or []
+                ),
+                "proof_kernel_frozen_state": _sanitize(
+                    issue.get("proof_kernel_frozen_state") or {}
+                ),
+                "proof_kernel_closure_evaluation": _sanitize(
+                    issue.get("proof_kernel_closure_evaluation") or {}
+                ),
+                "proof_kernel_promotion_certificate": _sanitize(
+                    issue.get("proof_kernel_promotion_certificate") or {}
                 ),
                 "proof_kernel_root_manifest_sha256": str(
                     issue.get("proof_kernel_root_manifest_sha256") or ""

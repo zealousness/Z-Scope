@@ -56,11 +56,22 @@ class TerminalAuthorityDecision:
 
 def terminal_decision_from_promotion(
     *,
+    proof_kernel_input: Mapping[str, Any],
     frozen_state: FrozenProofState | Mapping[str, Any],
     closure_evaluation: ProofClosureEvaluation | Mapping[str, Any],
     promotion_certificate: PromotionCertificate | Mapping[str, Any],
 ) -> TerminalAuthorityDecision:
-    """Build the only v4 decision capable of changing a live terminal state."""
+    """Build a v4 terminal only after independently re-running the reducer.
+
+    Content hashes prove object integrity, not provenance.  A caller able to
+    re-seal state, closure and promotion objects must therefore still fail
+    unless the deterministic provider, Checker and reducer reproduce the same
+    chain from the original sealed Proof IR, obligation and selection.
+    """
+
+    from .proof_kernel.engine import ProofKernelEngine
+
+    recomputed = ProofKernelEngine().reevaluate_authority_input(proof_kernel_input)
 
     valid, reason = validate_promotion_binding(
         frozen_state=frozen_state,
@@ -84,6 +95,13 @@ def terminal_decision_from_promotion(
         if isinstance(promotion_certificate, PromotionCertificate)
         else PromotionCertificate.from_mapping(promotion_certificate)
     )
+    if (
+        state != recomputed.frozen_state
+        or closure != recomputed.closure_evaluation
+        or recomputed.promotion_certificate is None
+        or promotion != recomputed.promotion_certificate
+    ):
+        raise ValueError("promotion_reducer_revalidation_mismatch")
     if promotion.disposition == "confirmed":
         reason_code = "CONFIRMED_DETERMINISTIC_PROOF"
     elif promotion.disposition == "rejected_with_proof":
@@ -144,6 +162,7 @@ class TerminalAuthorityEvaluator:
         raw_state = issue.get("proof_kernel_frozen_state")
         raw_closure = issue.get("proof_kernel_closure_evaluation")
         raw_promotion = issue.get("proof_kernel_promotion_certificate")
+        raw_input = issue.get("proof_kernel_input")
         engine_decision = issue.get("proof_kernel_terminal_authority_decision")
 
         state: Optional[FrozenProofState] = None
@@ -158,9 +177,20 @@ class TerminalAuthorityEvaluator:
             state = None
             closure = None
 
-        if state is not None and closure is not None and isinstance(raw_promotion, Mapping):
+        if (state is not None or closure is not None or isinstance(raw_promotion, Mapping)) and not (
+            isinstance(raw_input, Mapping)
+        ):
+            protocol_or_engine_failure = True
+
+        if (
+            state is not None
+            and closure is not None
+            and isinstance(raw_promotion, Mapping)
+            and isinstance(raw_input, Mapping)
+        ):
             try:
                 authorized = terminal_decision_from_promotion(
+                    proof_kernel_input=raw_input,
                     frozen_state=state,
                     closure_evaluation=closure,
                     promotion_certificate=raw_promotion,
@@ -176,6 +206,27 @@ class TerminalAuthorityEvaluator:
                     and dict(engine_decision) == authorized.to_dict()
                 ):
                     return authorized
+                protocol_or_engine_failure = True
+
+        reducer_bound_incomplete = False
+        if (
+            state is not None
+            and closure is not None
+            and isinstance(raw_input, Mapping)
+            and not isinstance(raw_promotion, Mapping)
+        ):
+            try:
+                from .proof_kernel.engine import ProofKernelEngine
+
+                recomputed = ProofKernelEngine().reevaluate_authority_input(raw_input)
+                reducer_bound_incomplete = bool(
+                    recomputed.frozen_state == state
+                    and recomputed.closure_evaluation == closure
+                    and recomputed.promotion_certificate is None
+                )
+                if not reducer_bound_incomplete:
+                    protocol_or_engine_failure = True
+            except (KeyError, TypeError, ValueError):
                 protocol_or_engine_failure = True
 
         if (
@@ -200,7 +251,12 @@ class TerminalAuthorityEvaluator:
                 },
             )
 
-        if state is not None and closure is not None and _bound_incomplete_closure(state, closure):
+        if (
+            state is not None
+            and closure is not None
+            and reducer_bound_incomplete
+            and _bound_incomplete_closure(state, closure)
+        ):
             if has_executable_action:
                 return TerminalAuthorityDecision(
                     terminal=False,
