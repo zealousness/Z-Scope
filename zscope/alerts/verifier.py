@@ -18,7 +18,10 @@ from .adapter import ExternalAlert
 from ..config.config import ZScopeConfig
 from ..config.user_config_store import UserConfigStore
 from ..core.validation.authority import TerminalAuthorityEvaluator
-from ..core.validation.proof_kernel.engine import ProofKernelEngine
+from ..core.validation.proof_kernel.engine import (
+    PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
+    ProofKernelEngine,
+)
 from ..core.validation.proof_kernel.lifecycle import PROOF_KERNEL_MODE
 from ..orchestration.decision_trace import ensure_decision_trace_store
 from ..orchestration.hypothesis_hunter.store import load_hypothesis_manifest_identity
@@ -203,10 +206,11 @@ class AlertVerifier:
                 "root_manifest_sha256": "",
             }
         elif set(proof_input) != {
+            "schema_version",
             "proof_ir",
             "proof_obligation",
             "selected_action_uids",
-        }:
+        } or proof_input.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION:
             proof_decision = {
                 "schema_version": "zscope.proof-kernel-evaluation.v1",
                 "proof_kernel_mode": PROOF_KERNEL_MODE,

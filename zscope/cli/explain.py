@@ -9,8 +9,16 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, cast
 
-from ..core.validation.authority import TerminalAuthorityEvaluator
+from ..core.validation.authority import (
+    LEGACY_TERMINAL_AUTHORITY_DECISION_V3,
+    TERMINAL_AUTHORITY_DECISION_V4,
+    TerminalAuthorityEvaluator,
+)
 from ..core.validation.fact_capabilities import verify_certificate_v2
+from ..core.validation.proof_kernel import (
+    PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
+    ProofKernelEngine,
+)
 from ..core.validation.proof_kernel.checker import ProofChecker
 from ..orchestration.decision_trace import (
     DecisionTraceError,
@@ -271,7 +279,16 @@ def _policy_input(trace: Mapping[str, Any], snapshot_root: Path) -> Dict[str, An
     payload = record.get("payload")
     payload = payload if isinstance(payload, Mapping) else {}
     issue = dict(payload.get("issue") or {})
-    for key in ("decision_proof", "evidence_closure_state", "v3_evidence_closure"):
+    for key in (
+        "decision_proof",
+        "evidence_closure_state",
+        "v3_evidence_closure",
+        "proof_kernel_input",
+        "proof_kernel_frozen_state",
+        "proof_kernel_closure_evaluation",
+        "proof_kernel_promotion_certificate",
+        "terminal_authority_decision",
+    ):
         if isinstance(payload.get(key), Mapping):
             issue[key] = dict(payload[key])
     proof_decision = payload.get("proof_kernel_terminal_authority_decision")
@@ -282,37 +299,135 @@ def _policy_input(trace: Mapping[str, Any], snapshot_root: Path) -> Dict[str, An
     issue["proof_kernel_checker_result_refs"] = list(
         payload.get("proof_kernel_checker_result_refs") or []
     )
+    issue["proof_kernel_live_selected_action_uids"] = list(
+        payload.get("proof_kernel_live_selected_action_uids") or []
+    )
     issue["proof_kernel_root_manifest_sha256"] = str(
         payload.get("proof_kernel_root_manifest_sha256") or ""
     )
     return issue
 
 
-def _policy_replay(trace: Mapping[str, Any], snapshot_root: Path) -> Dict[str, Any]:
-    issue = _policy_input(trace, snapshot_root)
-    if not (
-        issue.get("proof_kernel_artifact_refs")
-        and issue.get("proof_kernel_checker_results")
-        and issue.get("proof_kernel_checker_result_refs")
-        and issue.get("proof_kernel_root_manifest_sha256")
-        and isinstance(issue.get("proof_kernel_terminal_authority_decision"), Mapping)
-    ):
-        return {
-            "schema_version": "zscope.terminal-authority-decision.v3",
-            "terminal": True,
-            "disposition": "needs_review",
-            "reason_code": "NEEDS_REVIEW_OPEN_CLAUSES",
-            "authority": "terminal_authority_evaluator",
-            "next_action": "",
-            "conflict_resolution": None,
+def _failed_policy_replay(expected: str, policy_issue: str) -> Dict[str, Any]:
+    replay = (
+        TerminalAuthorityEvaluator()
+        .evaluate({}, protocol_or_engine_failure=True, operation="audit")
+        .to_dict()
+    )
+    replay.update(
+        {
             "matches_frozen_terminal": False,
-            "expected_terminal_disposition": str(trace.get("terminal_disposition") or ""),
-            "policy_issue": "proof_kernel_artifacts_unavailable",
+            "expected_terminal_disposition": expected,
+            "policy_issue": policy_issue,
         }
-    replay = TerminalAuthorityEvaluator().replay(issue, {})
+    )
+    return replay
+
+
+def _json_equal(left: Any, right: Any) -> bool:
+    return json.dumps(
+        left,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ) == json.dumps(
+        right,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _policy_replay(trace: Mapping[str, Any], snapshot_root: Path) -> Dict[str, Any]:
     expected = str(trace.get("terminal_disposition") or "")
-    replay["matches_frozen_terminal"] = str(replay.get("disposition") or "") == expected
+    issue = _policy_input(trace, snapshot_root)
+    recorded_authority = issue.get("terminal_authority_decision")
+    recorded_engine_authority = issue.get("proof_kernel_terminal_authority_decision")
+    schemas = {
+        str(value.get("schema_version") or "")
+        for value in (recorded_authority, recorded_engine_authority)
+        if isinstance(value, Mapping)
+    }
+    if LEGACY_TERMINAL_AUTHORITY_DECISION_V3 in schemas:
+        return _failed_policy_replay(expected, "legacy_v3_audit_only")
+    if not (
+        isinstance(recorded_authority, Mapping)
+        and recorded_authority.get("schema_version") == TERMINAL_AUTHORITY_DECISION_V4
+        and isinstance(recorded_engine_authority, Mapping)
+        and recorded_engine_authority.get("schema_version") == TERMINAL_AUTHORITY_DECISION_V4
+    ):
+        return _failed_policy_replay(expected, "terminal_authority_v4_unavailable")
+
+    raw = issue.get("proof_kernel_input")
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "schema_version",
+        "proof_ir",
+        "proof_obligation",
+        "selected_action_uids",
+    } or raw.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION:
+        return _failed_policy_replay(expected, "proof_kernel_input_unavailable")
+    selected = raw.get("selected_action_uids")
+    live_selected = issue.get("proof_kernel_live_selected_action_uids")
+    if not (
+        isinstance(raw.get("proof_ir"), Mapping)
+        and isinstance(raw.get("proof_obligation"), Mapping)
+        and isinstance(selected, list)
+        and all(isinstance(value, str) and value for value in selected)
+        and len(selected) == len(set(selected))
+        and isinstance(live_selected, list)
+        and all(isinstance(value, str) and value for value in live_selected)
+        and len(live_selected) == len(set(live_selected))
+    ):
+        return _failed_policy_replay(expected, "proof_kernel_input_invalid")
+    try:
+        engine = ProofKernelEngine()
+        evaluation = (
+            engine.evaluate_selected_actions(
+                proof_ir=raw["proof_ir"],
+                obligation=raw["proof_obligation"],
+                selected_action_uids=tuple(live_selected),
+            )
+            if live_selected
+            else engine.evaluate(
+                proof_ir=raw["proof_ir"],
+                obligation=raw["proof_obligation"],
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        return _failed_policy_replay(expected, "proof_kernel_reduction_failed")
+
+    promotion = (
+        evaluation.promotion_certificate.to_dict()
+        if evaluation.promotion_certificate is not None
+        else None
+    )
+    stored_promotion = issue.get("proof_kernel_promotion_certificate")
+    if stored_promotion == {}:
+        stored_promotion = None
+    exact_projection = bool(
+        issue.get("proof_kernel_frozen_state") == evaluation.frozen_state.to_dict()
+        and issue.get("proof_kernel_closure_evaluation") == evaluation.closure_evaluation.to_dict()
+        and stored_promotion == promotion
+        and issue.get("proof_kernel_checker_results")
+        == [dict(value) for value in evaluation.check_results]
+        and issue.get("proof_kernel_artifact_refs") == list(evaluation.artifact_refs)
+        and issue.get("proof_kernel_checker_result_refs") == list(evaluation.checker_result_refs)
+        and issue.get("proof_kernel_root_manifest_sha256") == evaluation.root_manifest_sha256
+    )
+    if not exact_projection:
+        return _failed_policy_replay(expected, "proof_kernel_replay_binding_mismatch")
+
+    carrier: Dict[str, Any] = {}
+    evaluation.apply_to_issue(carrier)
+    replay = TerminalAuthorityEvaluator().evaluate(carrier, operation="audit").to_dict()
+    exact_terminal = bool(
+        _json_equal(recorded_authority, replay)
+        and _json_equal(recorded_engine_authority, replay)
+        and str(replay.get("disposition") or "") == expected
+    )
+    replay["matches_frozen_terminal"] = exact_terminal
     replay["expected_terminal_disposition"] = expected
+    replay["policy_issue"] = "none" if exact_terminal else "terminal_authority_replay_mismatch"
     return replay
 
 

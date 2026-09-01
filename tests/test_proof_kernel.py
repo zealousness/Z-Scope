@@ -13,6 +13,8 @@ from zscope.core.validation.proof_kernel import (
     PREDICATE_REGISTRY,
     NON_EXECUTABLE_PREDICATES,
     POLARITY_ROLE_TERMINAL_MATRIX,
+    FrozenProofState,
+    ProofClosureEvaluation,
     ProofArtifactStore,
     ProofChecker,
     ProofKernelEngine,
@@ -21,6 +23,7 @@ from zscope.core.validation.proof_kernel import (
     build_proof_clause,
     build_proof_obligation,
     freeze_proof_state,
+    issue_promotion_certificate,
     program_proof_ir_from_graph,
     reduce_proof_closure,
 )
@@ -569,11 +572,7 @@ def test_v4_promotion_binds_state_closure_obligation_ir_and_root() -> None:
     assert promotion.proof_ir_sha256 == proof_ir["content_sha256"]
     assert promotion.proof_root_sha256 == evaluation.root_manifest_sha256
 
-    issue = {
-        "proof_kernel_frozen_state": evaluation.frozen_state.to_dict(),
-        "proof_kernel_closure_evaluation": evaluation.closure_evaluation.to_dict(),
-        "proof_kernel_promotion_certificate": promotion.to_dict(),
-    }
+    issue = evaluation.authority_inputs()
     authority = TerminalAuthorityEvaluator().evaluate(issue)
 
     assert authority.disposition == "confirmed"
@@ -595,6 +594,7 @@ def test_v4_materialized_decision_must_equal_promotion_projection() -> None:
     )
     assert evaluation.promotion_certificate is not None
     expected = terminal_decision_from_promotion(
+        proof_kernel_input=evaluation.authority_inputs()["proof_kernel_input"],
         frozen_state=evaluation.frozen_state,
         closure_evaluation=evaluation.closure_evaluation,
         promotion_certificate=evaluation.promotion_certificate,
@@ -603,9 +603,7 @@ def test_v4_materialized_decision_must_equal_promotion_projection() -> None:
 
     authority = TerminalAuthorityEvaluator().evaluate(
         {
-            "proof_kernel_frozen_state": evaluation.frozen_state.to_dict(),
-            "proof_kernel_closure_evaluation": evaluation.closure_evaluation.to_dict(),
-            "proof_kernel_promotion_certificate": evaluation.promotion_certificate.to_dict(),
+            **evaluation.authority_inputs(),
             "proof_kernel_terminal_authority_decision": tampered,
         }
     )
@@ -629,8 +627,7 @@ def test_v4_tampered_and_cross_obligation_promotions_fail_closed() -> None:
     tampered["obligation_uid"] = "POBL_cross_obligation"
     authority = TerminalAuthorityEvaluator().evaluate(
         {
-            "proof_kernel_frozen_state": evaluation.frozen_state.to_dict(),
-            "proof_kernel_closure_evaluation": evaluation.closure_evaluation.to_dict(),
+            **evaluation.authority_inputs(),
             "proof_kernel_promotion_certificate": tampered,
         }
     )
@@ -649,13 +646,54 @@ def test_v4_tampered_and_cross_obligation_promotions_fail_closed() -> None:
     assert other.promotion_certificate is not None
     cross = TerminalAuthorityEvaluator().evaluate(
         {
-            "proof_kernel_frozen_state": evaluation.frozen_state.to_dict(),
-            "proof_kernel_closure_evaluation": evaluation.closure_evaluation.to_dict(),
+            **evaluation.authority_inputs(),
             "proof_kernel_promotion_certificate": other.promotion_certificate.to_dict(),
         }
     )
     assert cross.disposition == "needs_review"
     assert cross.reason_code == "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE"
+
+
+def test_fully_resealed_promotion_chain_is_reduced_against_original_input() -> None:
+    proof_ir, obligation, _ = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    evaluation = ProofKernelEngine().evaluate(proof_ir=proof_ir, obligation=obligation)
+    assert evaluation.promotion_certificate is not None
+
+    forged_state_body = evaluation.frozen_state.to_dict()
+    forged_state_body.pop("proof_state_uid")
+    forged_state_body.pop("content_sha256")
+    forged_state_body["subject_uid"] = "SUBJECT_RESEALED_ATTACK"
+    forged_state = FrozenProofState.from_mapping(
+        seal_mapping(forged_state_body, uid_field="proof_state_uid", prefix="PSTATE_")
+    )
+
+    forged_closure_body = evaluation.closure_evaluation.to_dict()
+    forged_closure_body.pop("closure_uid")
+    forged_closure_body.pop("content_sha256")
+    forged_closure_body["proof_state_sha256"] = forged_state.content_sha256
+    forged_closure = ProofClosureEvaluation.from_mapping(
+        seal_mapping(forged_closure_body, uid_field="closure_uid", prefix="PCLOSURE_")
+    )
+    forged_promotion = issue_promotion_certificate(
+        frozen_state=forged_state,
+        closure_evaluation=forged_closure,
+    )
+
+    authority = TerminalAuthorityEvaluator().evaluate(
+        {
+            "proof_kernel_input": evaluation.authority_inputs()["proof_kernel_input"],
+            "proof_kernel_frozen_state": forged_state.to_dict(),
+            "proof_kernel_closure_evaluation": forged_closure.to_dict(),
+            "proof_kernel_promotion_certificate": forged_promotion.to_dict(),
+        }
+    )
+
+    assert authority.disposition == "needs_review"
+    assert authority.reason_code == "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE"
 
 
 def test_reducer_detects_checker_result_rebinding_after_freeze() -> None:

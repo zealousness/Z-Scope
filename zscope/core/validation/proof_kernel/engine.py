@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 
@@ -22,6 +23,9 @@ from .registry import PREDICATE_REGISTRY
 from .store import ProofArtifactStore
 
 
+PROOF_KERNEL_AUTHORITY_INPUT_VERSION = "zscope.proof-kernel-authority-input.v1"
+
+
 @dataclass(frozen=True)
 class ProofKernelEvaluation:
     schema_version: str
@@ -37,11 +41,20 @@ class ProofKernelEvaluation:
     frozen_state: FrozenProofState
     closure_evaluation: ProofClosureEvaluation
     promotion_certificate: Optional[PromotionCertificate]
+    proof_ir: Dict[str, Any]
+    obligation: Dict[str, Any]
+    selected_action_uids: Tuple[str, ...]
 
     def authority_inputs(self) -> Dict[str, Any]:
         """Return the exact v4 artifacts consumed by TerminalAuthority."""
 
         return {
+            "proof_kernel_input": {
+                "schema_version": PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
+                "proof_ir": deepcopy(self.proof_ir),
+                "proof_obligation": deepcopy(self.obligation),
+                "selected_action_uids": list(self.selected_action_uids),
+            },
             "proof_kernel_frozen_state": self.frozen_state.to_dict(),
             "proof_kernel_closure_evaluation": self.closure_evaluation.to_dict(),
             **(
@@ -60,6 +73,7 @@ class ProofKernelEvaluation:
         """
 
         projected = self.authority_inputs()
+        issue["proof_kernel_input"] = projected["proof_kernel_input"]
         issue["proof_kernel_frozen_state"] = projected["proof_kernel_frozen_state"]
         issue["proof_kernel_closure_evaluation"] = projected["proof_kernel_closure_evaluation"]
         if self.promotion_certificate is None:
@@ -156,6 +170,44 @@ class ProofKernelEngine:
             proof_ir=proof_ir,
             obligation=obligation,
             selected_action_uids=tuple(normalized),
+        )
+
+    def reevaluate_authority_input(
+        self,
+        value: Mapping[str, Any],
+    ) -> ProofKernelEvaluation:
+        """Re-run the deterministic provider, Checker and sole reducer.
+
+        TerminalAuthority, resume and replay use this entry point instead of
+        trusting a self-consistent set of caller-supplied state/closure hashes.
+        The method deliberately accepts no stored action, certificate or
+        Checker-result objects: all of them are regenerated from the sealed IR,
+        obligation and exact selected action identities.
+        """
+
+        if set(value) != {
+            "schema_version",
+            "proof_ir",
+            "proof_obligation",
+            "selected_action_uids",
+        }:
+            raise ValueError("proof_kernel_authority_input_fields_invalid")
+        if value.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION:
+            raise ValueError("proof_kernel_authority_input_version_invalid")
+        proof_ir = value.get("proof_ir")
+        obligation = value.get("proof_obligation")
+        selected = value.get("selected_action_uids")
+        if not isinstance(proof_ir, Mapping) or not isinstance(obligation, Mapping):
+            raise ValueError("proof_kernel_authority_input_artifacts_required")
+        if not isinstance(selected, list) or any(not isinstance(item, str) for item in selected):
+            raise ValueError("proof_kernel_authority_input_selection_invalid")
+        normalized = tuple(str(item) for item in selected)
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("proof_kernel_authority_input_selection_duplicate")
+        return self._evaluate(
+            proof_ir=proof_ir,
+            obligation=obligation,
+            selected_action_uids=normalized,
         )
 
     def _evaluate(
@@ -264,4 +316,7 @@ class ProofKernelEngine:
             frozen_state=frozen_state,
             closure_evaluation=closure_evaluation,
             promotion_certificate=promotion_certificate,
+            proof_ir=deepcopy(dict(proof_ir)),
+            obligation=deepcopy(dict(obligation)),
+            selected_action_uids=tuple(str(value["action_uid"]) for value in executable),
         )

@@ -8,32 +8,44 @@ import pytest
 
 from scripts.run_p6_policy_replay import P6PolicyReplayError, replay_trace_root
 from scripts.reverify_v3_trace import reverify_trace_root
+from scripts.p2_proof_corpus import build_corpus
+from zscope.core.validation.authority import TerminalAuthorityEvaluator
+from zscope.core.validation.proof_kernel import ProofKernelEngine
 from zscope.orchestration.decision_trace import DecisionTraceStore
 from zscope.benchmarking.p6_protocol import canonical_sha256
+from zscope.cli.explain import _policy_replay
 
 
 def _trace_root(tmp_path: Path) -> Path:
     store = DecisionTraceStore(tmp_path, scan_uid="P6_REPLAY")
-    store.bind_candidate("VAL_1", candidate_uids=("CAND_1",))
-    store.finalize_issue(
+    case = build_corpus()["cases"][0]
+    proof_ir = case["program_proof_ir"]
+    obligation = case["proof_obligation"]
+    evaluation = ProofKernelEngine().evaluate(proof_ir=proof_ir, obligation=obligation)
+    issue = {}
+    evaluation.apply_to_issue(issue)
+    selected_action_uids = [str(value["action_uid"]) for value in evaluation.actions]
+    issue.update(
         {
             "candidate_uid": "CAND_1",
-            "validation_cluster_uid": "VAL_1",
-            "candidate_disposition": "needs_review",
-            "validation_status": "needs_review",
-            "proof_coverage": "incomplete",
-            "terminal_authority_decision": {
-                "schema_version": "zscope.terminal-authority-decision.v3",
-                "disposition": "needs_review",
-                "terminal": True,
-                "reason_code": "NEEDS_REVIEW_OPEN_CLAUSES",
-                "authority": "zscope.proof-checker",
-                "next_action": "",
-                "conflict_resolution": None,
-            },
-        },
-        view_memberships=("default", "with_needs_review"),
+            "validation_cluster_uid": obligation["validation_cluster_uid"],
+            "candidate_disposition": "confirmed",
+            "validation_status": "validated",
+            "proof_coverage": "complete",
+            "proof_kernel_input": evaluation.authority_inputs()["proof_kernel_input"],
+            "proof_kernel_live_selected_action_uids": selected_action_uids,
+            "proof_kernel_checker_results": [dict(value) for value in evaluation.check_results],
+            "proof_kernel_artifact_refs": list(evaluation.artifact_refs),
+            "proof_kernel_checker_result_refs": list(evaluation.checker_result_refs),
+            "proof_kernel_root_manifest_sha256": evaluation.root_manifest_sha256,
+        }
     )
+    authority = TerminalAuthorityEvaluator().evaluate(issue, operation="live").to_dict()
+    issue["proof_kernel_terminal_authority_decision"] = authority
+    issue["terminal_authority_decision"] = authority
+    cluster_uid = str(issue["validation_cluster_uid"])
+    store.bind_candidate(cluster_uid, candidate_uids=("CAND_1",))
+    store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
     store.snapshot()
     return tmp_path
 
@@ -53,6 +65,53 @@ def test_policy_replay_executes_every_hash_bound_trace_without_calls(tmp_path: P
     assert payload["truth_inputs"] == 0
     assert payload["formal_evidence"] is False
     assert len(payload["result_root_sha256"]) == 64
+    assert payload["terminal_match_counts"] == {"true": 1}
+    assert payload["policy_issue_counts"] == {"none": 1}
+
+
+def test_legacy_v3_policy_is_audit_only(monkeypatch, tmp_path: Path) -> None:
+    legacy = {
+        "schema_version": "zscope.terminal-authority-decision.v3",
+        "terminal": True,
+        "disposition": "confirmed",
+        "reason_code": "CONFIRMED_DETERMINISTIC_PROOF",
+        "authority": "zscope.proof-checker",
+        "next_action": "",
+        "conflict_resolution": None,
+    }
+    monkeypatch.setattr(
+        "zscope.cli.explain._policy_input",
+        lambda *_args, **_kwargs: {
+            "terminal_authority_decision": legacy,
+            "proof_kernel_terminal_authority_decision": legacy,
+        },
+    )
+
+    replay = _policy_replay({"terminal_disposition": "confirmed"}, tmp_path)
+
+    assert replay["matches_frozen_terminal"] is False
+    assert replay["disposition"] == "needs_review"
+    assert replay["policy_issue"] == "legacy_v3_audit_only"
+
+
+def test_formal_policy_replay_fails_on_any_terminal_mismatch(monkeypatch, tmp_path: Path) -> None:
+    root = _trace_root(tmp_path)
+    monkeypatch.setattr(
+        "scripts.run_p6_policy_replay._policy_replay",
+        lambda *_args, **_kwargs: {
+            "matches_frozen_terminal": False,
+            "policy_issue": "terminal_authority_replay_mismatch",
+        },
+    )
+
+    with pytest.raises(P6PolicyReplayError, match="terminal policy replay mismatch"):
+        replay_trace_root(
+            root,
+            control_plane_commit="a" * 40,
+            candidate_git_sha="a" * 40,
+            workflow_run_id="123",
+            workflow_run_attempt=1,
+        )
 
 
 def test_policy_replay_rejects_manifest_or_trace_tampering(tmp_path: Path) -> None:

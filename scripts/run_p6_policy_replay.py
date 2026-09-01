@@ -207,6 +207,11 @@ def replay_trace_root(
             raise P6PolicyReplayError("trace cluster identity mismatch")
         _validate_record(record, trace, relative=relative, terminal=True)
         replay = _policy_replay(trace, root)
+        if (
+            replay.get("matches_frozen_terminal") is not True
+            or replay.get("policy_issue") != "none"
+        ):
+            raise P6PolicyReplayError("terminal policy replay mismatch")
         result_hashes.append(canonical_sha256(replay))
         match_counts[str(bool(replay.get("matches_frozen_terminal"))).lower()] += 1
         policy_issue_counts[str(replay.get("policy_issue") or "none")] += 1

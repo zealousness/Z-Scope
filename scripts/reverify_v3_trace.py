@@ -75,6 +75,7 @@ def reverify_trace_root(
     terminal_trace_count = 0
     empty_required_fact_v3_count = 0
     verifier_cluster_count = 0
+    all_passed = True
     for cluster_uid, record in sorted(traces.items()):
         if not isinstance(record, Mapping):
             raise P6PolicyReplayError("invalid trace manifest record")
@@ -108,6 +109,26 @@ def reverify_trace_root(
         ]
         if classifications:
             verifier_cluster_count += 1
+        claim_results = [
+            value for value in result.get("claim_results") or [] if isinstance(value, Mapping)
+        ]
+        claims_passed = all(
+            value.get("matches_frozen_status") is True and value.get("certificate_valid") is True
+            for value in claim_results
+        )
+        policy = result.get("policy_replay")
+        terminal_policy_passed = bool(
+            trace.get("terminal_event_uid")
+            and isinstance(policy, Mapping)
+            and policy.get("matches_frozen_terminal") is True
+            and policy.get("policy_issue") == "none"
+        )
+        if trace.get("terminal_event_uid"):
+            all_passed = all_passed and terminal_policy_passed and claims_passed
+        elif claim_results:
+            # A non-terminal P2/P4 proof trace can still be independently
+            # reverified, but legacy preview claims remain audit-only.
+            all_passed = all_passed and claims_passed
         counts.update(classifications)
         fact_kind_counts.update(
             str(value.get("fact_kind") or "unknown")
@@ -161,7 +182,7 @@ def reverify_trace_root(
         "claim_count": sum(counts.values()),
         "classification_counts": dict(sorted(counts.items())),
         "fact_kind_counts": dict(sorted(fact_kind_counts.items())),
-        "passed": True,
+        "passed": all_passed,
         "llm_calls": 0,
         "truth_inputs": 0,
         "answer_material_present": False,
@@ -191,6 +212,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             workflow_run_id=args.workflow_run_id,
             workflow_run_attempt=args.workflow_run_attempt,
         )
+        if result.get("passed") is not True:
+            return 2
     except (
         OSError,
         ValueError,
