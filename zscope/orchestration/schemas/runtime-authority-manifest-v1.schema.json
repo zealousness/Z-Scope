@@ -19,8 +19,8 @@
   ],
   "properties": {
     "schema_version": {"const": "zscope.runtime-authority-manifest.v1"},
-    "protocol_revision": {"const": 1},
-    "cache_epoch": {"const": "zscope.runtime-authority.p5"},
+    "protocol_revision": {"const": 2},
+    "cache_epoch": {"const": "zscope.runtime-authority.p6-proof-v4"},
     "source_tree_hash": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "backend_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

@@ -14,6 +14,7 @@ REQUIRED_MODULES = {
     "zscope/core/validation/proof_kernel/__init__.py",
     "zscope/core/validation/proof_kernel/canonical.py",
     "zscope/core/validation/proof_kernel/checker.py",
+    "zscope/core/validation/proof_kernel/closure.py",
     "zscope/core/validation/proof_kernel/engine.py",
     "zscope/core/validation/proof_kernel/lifecycle.py",
     "zscope/core/validation/proof_kernel/models.py",
