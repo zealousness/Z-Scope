@@ -1,12 +1,23 @@
+from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from scripts.p2_proof_corpus import build_case
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.decision_facts import (
     DECISION_CONTEXT_V33,
     DecisionFactGraphCache,
 )
+from zscope.core.validation.authority import TerminalAuthorityEvaluator
+from zscope.core.validation.proof_kernel import (
+    ProofKernelEngine,
+    build_proof_clause,
+    build_proof_obligation,
+)
+from zscope.core.validation.proof_kernel.canonical import seal_mapping
 from zscope.orchestration.candidates import CandidateLedger, CandidateTicket
-import pytest
-from pathlib import Path
-from types import SimpleNamespace
 
 
 def _ticket(*, priority=90, negative=None):
@@ -28,6 +39,60 @@ def _ticket(*, priority=90, negative=None):
             "negative_evidence": list(negative or []),
         },
     )
+
+
+def _terminal_v4_issue(cluster_uid: str, *, disposition: str = "confirmed") -> dict:
+    case = build_case("concurrency", 0)
+    obligation_body = deepcopy(case["proof_obligation"])
+    obligation_body.pop("obligation_uid")
+    obligation_body.pop("content_sha256")
+    obligation_body["validation_cluster_uid"] = cluster_uid
+    if disposition == "confirmed":
+        obligation = seal_mapping(
+            obligation_body,
+            uid_field="obligation_uid",
+            prefix="POBL_",
+        )
+    elif disposition == "rejected_with_proof":
+        confirmation = obligation_body["confirmation_clauses"][0]
+        counterproof = build_proof_clause(
+            role="counterproof",
+            provider_family=confirmation["provider_family"],
+            predicate_id=confirmation["predicate_id"],
+            fact_kind=confirmation["fact_kind"],
+            quantifier=confirmation["quantifier"],
+            expected_value=confirmation["expected_value"],
+            parameters=confirmation["parameters"],
+        )
+        obligation = build_proof_obligation(
+            validation_cluster_uid=cluster_uid,
+            defect_family=obligation_body["defect_family"],
+            subject_uid=obligation_body["subject_uid"],
+            decision_region_uid=obligation_body["decision_region_uid"],
+            confirmation_clauses=(),
+            counterproof_clauses=(counterproof,),
+            dependency_hashes=obligation_body["dependency_hashes"],
+        )
+    else:  # pragma: no cover - test helper contract
+        raise ValueError("unsupported_terminal_disposition")
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=case["program_proof_ir"],
+        obligation=obligation,
+    )
+    assert evaluation.decision == disposition
+    issue: dict = {
+        "validation_cluster_uid": cluster_uid,
+        "candidate_disposition": disposition,
+    }
+    evaluation.apply_to_issue(issue)
+    authority = TerminalAuthorityEvaluator().evaluate(issue, operation="live").to_dict()
+    issue["proof_kernel_terminal_authority_decision"] = authority
+    issue["terminal_authority_decision"] = deepcopy(authority)
+    return issue
+
+
+def _confirmed_v4_issue(cluster_uid: str) -> dict:
+    return _terminal_v4_issue(cluster_uid)
 
 
 def test_investigator_report_cannot_confirm_candidate() -> None:
@@ -53,7 +118,10 @@ def test_investigator_report_cannot_confirm_candidate() -> None:
     assert record.disposition == ""
 
 
-def test_main_validation_backfills_candidate_terminal_state() -> None:
+@pytest.mark.parametrize("forged_disposition", ["confirmed", "rejected_with_proof"])
+def test_main_validation_cannot_backfill_proof_terminal_without_exact_v4_authority(
+    forged_disposition: str,
+) -> None:
     ledger = CandidateLedger()
     record, _ = ledger.add(
         _ticket(negative=["a guard may bound len"]),
@@ -66,16 +134,111 @@ def test_main_validation_backfills_candidate_terminal_state() -> None:
             "candidate_uid": record.candidate_uid,
             "evidence_hash": record.evidence_hash,
             "context_signature": record.context_signature,
-            "candidate_disposition": "confirmed",
+            "candidate_disposition": forged_disposition,
             "validation_status": "validated",
         },
-        disposition="confirmed",
+        disposition=forged_disposition,
         status="validated",
     )
 
     assert updated == 1
+    assert record.status == "needs_review"
+    assert record.disposition == "needs_review"
+    assert record.terminal_issue["candidate_terminal_authority_failure_class"] == (
+        "terminal_authority_binding_invalid"
+    )
+
+
+def test_main_validation_accepts_exact_v4_terminal_authority() -> None:
+    ledger = CandidateLedger()
+    ticket = _ticket(negative=["a guard may bound len"])
+    ticket.evidence["validation_cluster_uid"] = "VAL_exact_v4"
+    record, _ = ledger.add(
+        ticket,
+        source="local_rule:entry",
+        call_path=["entry", "sink"],
+    )
+    issue = _confirmed_v4_issue(record.validation_cluster_uid)
+
+    assert (
+        ledger.mark_issue_terminal(
+            issue,
+            disposition="confirmed",
+            status="validated",
+        )
+        == 1
+    )
     assert record.status == "validated"
     assert record.disposition == "confirmed"
+
+
+def test_main_validation_accepts_exact_v4_counterproof_terminal_authority() -> None:
+    ledger = CandidateLedger()
+    ticket = _ticket(negative=["the path may be unreachable"])
+    ticket.evidence["validation_cluster_uid"] = "VAL_exact_v4_counterproof"
+    record, _ = ledger.add(
+        ticket,
+        source="local_rule:entry",
+        call_path=["entry", "sink"],
+    )
+    issue = _terminal_v4_issue(
+        record.validation_cluster_uid,
+        disposition="rejected_with_proof",
+    )
+
+    assert (
+        ledger.mark_issue_terminal(
+            issue,
+            disposition="rejected_with_proof",
+            status="rejected",
+        )
+        == 1
+    )
+    assert record.status == "rejected"
+    assert record.disposition == "rejected_with_proof"
+
+
+@pytest.mark.parametrize("failure_kind", ["legacy", "stale", "cross_obligation", "forged"])
+def test_proof_terminal_lineage_mismatch_fails_closed(failure_kind: str) -> None:
+    ledger = CandidateLedger()
+    ticket = _ticket()
+    ticket.evidence["validation_cluster_uid"] = "VAL_current"
+    record, _ = ledger.add(
+        ticket,
+        source="local_rule:entry",
+        call_path=["entry", "sink"],
+    )
+    issue = _confirmed_v4_issue(record.validation_cluster_uid)
+    if failure_kind == "legacy":
+        issue["proof_kernel_terminal_authority_decision"] = {
+            "schema_version": "zscope.terminal-authority-decision.v3",
+            "terminal": True,
+            "disposition": "confirmed",
+        }
+    elif failure_kind == "stale":
+        issue["terminal_authority_decision"] = {
+            **issue["terminal_authority_decision"],
+            "reason_code": "STALE",
+        }
+    elif failure_kind == "cross_obligation":
+        issue = _confirmed_v4_issue("VAL_other")
+        issue["validation_cluster_uid"] = record.validation_cluster_uid
+    else:
+        issue["proof_kernel_promotion_certificate"] = {
+            **issue["proof_kernel_promotion_certificate"],
+            "subject_uid": "forged-subject",
+        }
+
+    assert (
+        ledger.mark_issue_terminal(
+            issue,
+            disposition="confirmed",
+            status="validated",
+        )
+        == 1
+    )
+    assert record.disposition == "needs_review"
+    assert record.terminal_issue["terminal_authority_decision"]["disposition"] == "needs_review"
 
 
 def test_investigator_completion_cannot_close_validation_obligation() -> None:
@@ -232,8 +395,8 @@ def test_repeated_display_id_across_entries_cannot_cross_update_terminal_state()
         )
         == 1
     )
-    assert first.disposition == "confirmed"
-    assert second.disposition == "confirmed"
+    assert first.disposition == "needs_review"
+    assert second.disposition == "needs_review"
 
 
 def test_same_candidate_and_context_keep_distinct_evidence_validation_records() -> None:
@@ -268,12 +431,12 @@ def test_same_candidate_and_context_keep_distinct_evidence_validation_records() 
                 "evidence_hash": first.evidence_hash,
                 "context_signature": first.context_signature,
             },
-            disposition="rejected_with_proof",
-            status="rejected",
+            disposition="needs_review",
+            status="needs_review",
         )
         == 1
     )
-    assert first.disposition == "rejected_with_proof"
+    assert first.disposition == "needs_review"
     assert second.disposition == ""
 
 
@@ -340,14 +503,9 @@ def test_validation_group_outcome_is_the_only_reportable_terminal_projection() -
 
     # A queued group is diagnostic state, not an actionable review row.
     assert ledger.lifecycle_snapshot()["outcomes"] == []
-    assert (
-        ledger.mark_issue_terminal(
-            {"validation_cluster_uid": first.validation_cluster_uid, "description": "confirmed"},
-            disposition="confirmed",
-            status="validated",
-        )
-        == 1
-    )
+    confirmed = _confirmed_v4_issue(first.validation_cluster_uid)
+    confirmed["description"] = "confirmed"
+    assert ledger.mark_issue_terminal(confirmed, disposition="confirmed", status="validated") == 1
 
     outcome = ledger.freeze()["outcomes"]
     assert len(outcome) == 1

@@ -24,10 +24,10 @@ def _manifest():
         proof_root_sha256="f" * 64,
         revisions={
             "security_spec_compiler": "v2",
-            "hypothesis_hunter": "v2",
-            "proof_checker": "v2",
-            "proof_provider": "v2",
-            "predicate_registry": "proof-kernel.v2",
+            "hypothesis_hunter": "v4",
+            "proof_checker": "v4",
+            "proof_provider": "v4",
+            "predicate_registry": "proof-kernel.v4",
         },
     )
 
@@ -86,8 +86,27 @@ def test_model_and_legacy_proof_cannot_form_a_terminal_decision() -> None:
             }
         }
     )
-    assert checker_owned.disposition == "confirmed"
-    assert checker_owned.authority == "zscope.proof-checker"
+    assert checker_owned.disposition == "needs_review"
+    assert checker_owned.reason_code == "NEEDS_REVIEW_LEGACY_AUTHORITY_NOT_AUTHORIZED"
+    assert checker_owned.integrity_status == "legacy_audit_only"
+
+    audited = evaluator.evaluate(
+        {
+            "proof_kernel_terminal_authority_decision": {
+                "schema_version": "zscope.terminal-authority-decision.v3",
+                "terminal": True,
+                "disposition": "confirmed",
+                "reason_code": "CONFIRMED_DETERMINISTIC_PROOF",
+                "authority": "zscope.proof-checker",
+                "checker_result_refs": ["sha256:" + "a" * 64],
+                "proof_root_sha256": "b" * 64,
+                "integrity_status": "verified",
+            }
+        },
+        operation="audit",
+    )
+    assert audited.disposition == "needs_review"
+    assert audited.reason_code == "NEEDS_REVIEW_LEGACY_AUTHORITY_AUDIT_ONLY"
 
 
 def test_pre_p5_reports_and_release_are_fail_closed() -> None:

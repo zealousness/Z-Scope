@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from .canonical import content_sha256
 from .checker import ProofChecker
+from .closure import (
+    FrozenProofState,
+    PromotionCertificate,
+    ProofClosureEvaluation,
+    freeze_proof_state,
+    issue_promotion_certificate,
+    reduce_proof_closure,
+)
 from .lifecycle import PROOF_KERNEL_MODE, require_authoritative_mode
 from .models import build_evidence_action, validate_obligation, validate_program_ir
 from .provider import ProofProvider
@@ -26,6 +34,41 @@ class ProofKernelEvaluation:
     artifact_refs: Tuple[str, ...]
     checker_result_refs: Tuple[str, ...]
     root_manifest_sha256: str
+    frozen_state: FrozenProofState
+    closure_evaluation: ProofClosureEvaluation
+    promotion_certificate: Optional[PromotionCertificate]
+
+    def authority_inputs(self) -> Dict[str, Any]:
+        """Return the exact v4 artifacts consumed by TerminalAuthority."""
+
+        return {
+            "proof_kernel_frozen_state": self.frozen_state.to_dict(),
+            "proof_kernel_closure_evaluation": self.closure_evaluation.to_dict(),
+            **(
+                {"proof_kernel_promotion_certificate": (self.promotion_certificate.to_dict())}
+                if self.promotion_certificate is not None
+                else {}
+            ),
+        }
+
+    def apply_to_issue(self, issue: MutableMapping[str, Any]) -> None:
+        """Atomically replace stale authority inputs on a mutable issue.
+
+        A non-terminal re-evaluation deliberately removes any older promotion
+        and materialized authority decision so resume/V3 cannot retain a
+        certificate issued for a different closure.
+        """
+
+        projected = self.authority_inputs()
+        issue["proof_kernel_frozen_state"] = projected["proof_kernel_frozen_state"]
+        issue["proof_kernel_closure_evaluation"] = projected["proof_kernel_closure_evaluation"]
+        if self.promotion_certificate is None:
+            issue.pop("proof_kernel_promotion_certificate", None)
+        else:
+            issue["proof_kernel_promotion_certificate"] = projected[
+                "proof_kernel_promotion_certificate"
+            ]
+        issue.pop("proof_kernel_terminal_authority_decision", None)
 
 
 class ProofKernelEngine:
@@ -166,12 +209,6 @@ class ProofKernelEngine:
                 )
                 refs.extend((action_ref, certificate_ref, check_ref))
                 checker_refs.append(check_ref)
-        decision, reason = self._authoritative_closure(
-            obligation,
-            tuple(results),
-            executable_action_uids={str(value["action_uid"]) for value in executable},
-            catalog=tuple(catalog),
-        )
         if self.store is not None:
             root_manifest = self.store.write_root_manifest(refs)
             root_manifest_sha256 = str(root_manifest["content_sha256"])
@@ -191,82 +228,40 @@ class ProofKernelEngine:
                     "checker_result_refs": sorted(set(checker_refs)),
                 }
             )
+        frozen_state = freeze_proof_state(
+            proof_ir=proof_ir,
+            obligation=obligation,
+            action_catalog=tuple(catalog),
+            selected_action_uids=tuple(str(value["action_uid"]) for value in executable),
+            check_results=tuple(results),
+            checker_result_refs=tuple(checker_refs),
+            root_manifest_sha256=root_manifest_sha256,
+        )
+        closure_evaluation = reduce_proof_closure(
+            frozen_state=frozen_state,
+            proof_ir=proof_ir,
+            obligation=obligation,
+            action_catalog=tuple(catalog),
+            check_results=tuple(results),
+        )
+        promotion_certificate = None
+        if closure_evaluation.complete:
+            promotion_certificate = issue_promotion_certificate(
+                frozen_state=frozen_state,
+                closure_evaluation=closure_evaluation,
+            )
         return ProofKernelEvaluation(
             schema_version="zscope.proof-kernel-evaluation.v1",
             proof_kernel_mode=self.mode,
-            decision=decision,
-            reason_code=reason,
+            decision=closure_evaluation.disposition,
+            reason_code=closure_evaluation.reason_code,
             actions=tuple(actions),
             certificates=tuple(certificates),
             check_results=tuple(results),
             artifact_refs=tuple(refs),
             checker_result_refs=tuple(checker_refs),
             root_manifest_sha256=root_manifest_sha256,
+            frozen_state=frozen_state,
+            closure_evaluation=closure_evaluation,
+            promotion_certificate=promotion_certificate,
         )
-
-    @staticmethod
-    def _authoritative_closure(
-        obligation: Mapping[str, Any],
-        results: Tuple[Mapping[str, Any], ...],
-        *,
-        executable_action_uids: set[str],
-        catalog: Tuple[Mapping[str, Any], ...],
-    ) -> tuple[str, str]:
-        accepted_confirmation = {
-            str(value.get("clause_uid") or "")
-            for value in results
-            if value.get("status") == "accepted"
-            and value.get("terminal_contribution") == "confirmation"
-        }
-        accepted_counterproof = {
-            str(value.get("clause_uid") or "")
-            for value in results
-            if value.get("status") == "accepted"
-            and value.get("terminal_contribution") == "counterproof"
-        }
-        required_confirmation = {
-            str(value.get("clause_uid") or "")
-            for value in obligation.get("confirmation_clauses") or []
-            if value.get("required") is True
-        }
-        required_counterproof = {
-            str(value.get("clause_uid") or "")
-            for value in obligation.get("counterproof_clauses") or []
-            if value.get("required") is True
-        }
-        all_required = required_confirmation | required_counterproof
-        catalog_clause_uids = {str(value.get("clause_uid") or "") for value in catalog}
-        required_executable = {
-            str(value.get("clause_uid") or "")
-            for value in catalog
-            if str(value.get("action_uid") or "") in executable_action_uids
-        }
-        selected_result_clauses = {str(value.get("clause_uid") or "") for value in results}
-        accepted_clauses = accepted_confirmation | accepted_counterproof
-        # A required clause outside the executable registry is an explicit
-        # open proof obligation.  Omitting it from the action catalog must not
-        # make another accepted clause look like a complete closure.
-        if not all_required.issubset(catalog_clause_uids):
-            return "needs_review", "required_clause_not_executable"
-        # A model selection cannot turn an omitted executable required clause
-        # into an implicit success. Every required action must have a Checker
-        # result before an authoritative closure is possible.
-        if not all_required.issubset(required_executable):
-            return "needs_review", "required_executable_clause_not_selected"
-        if not all_required.issubset(selected_result_clauses):
-            return "needs_review", "required_executable_clause_not_checked"
-        # A Checker result with unknown/conflicting/rejected status records an
-        # attempt, but only accepted verified_true evidence closes its clause.
-        # This is especially important for required counterproof clauses: an
-        # unknown safety predicate can never be interpreted as its absence.
-        if not all_required.issubset(accepted_clauses):
-            return "needs_review", "open_or_unknown_proof_clause"
-        if accepted_confirmation and accepted_counterproof:
-            return "needs_review", "programmatic_proof_conflict"
-        if required_counterproof and required_counterproof <= accepted_counterproof:
-            return "rejected_with_proof", "verified_counterproof"
-        if obligation.get("open_clauses"):
-            return "needs_review", "open_or_unknown_proof_clause"
-        if required_confirmation and required_confirmation <= accepted_confirmation:
-            return "confirmed", "verified_confirmation_proof"
-        return "needs_review", "open_or_unknown_proof_clause"

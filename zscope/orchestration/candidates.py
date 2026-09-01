@@ -19,6 +19,10 @@ from .candidate_envelope import (
     validation_cluster_uid_for,
 )
 from .decision_trace import DecisionTraceStore
+from ..core.validation.authority import (
+    TERMINAL_AUTHORITY_DECISION_V4,
+    TerminalAuthorityEvaluator,
+)
 from ..reporting.attribution import (
     FindingAttribution,
     finding_attribution_mapping_errors,
@@ -865,6 +869,16 @@ class CandidateLedger:
         if not occurrence_uid and not has_exact_validation_identity and not validation_cluster_uid:
             return 0
 
+        requested_disposition = (
+            disposition if disposition in TERMINAL_DISPOSITIONS else "needs_review"
+        )
+        requested_status = status or requested_disposition
+        if requested_disposition in {"confirmed", "rejected_with_proof"}:
+            requested_disposition, requested_status = self._authorized_proof_terminal(
+                issue,
+                requested_disposition=requested_disposition,
+            )
+
         updated = 0
         with self._lock:
             for record in self._records.values():
@@ -880,10 +894,8 @@ class CandidateLedger:
                     matches = occurrence_uid in record.occurrence_uids
                 if not matches:
                     continue
-                record.disposition = (
-                    disposition if disposition in TERMINAL_DISPOSITIONS else "needs_review"
-                )
-                record.status = status or record.disposition
+                record.disposition = requested_disposition
+                record.status = requested_status
                 record.terminal_issue = deepcopy(issue)
                 proof = issue.get("decision_proof") or issue.get("rejection_proof")
                 record.decision_proof = deepcopy(proof) if isinstance(proof, dict) else {}
@@ -900,6 +912,74 @@ class CandidateLedger:
                 )
                 updated += 1
         return updated
+
+    @staticmethod
+    def _authorized_proof_terminal(
+        issue: Dict[str, Any],
+        *,
+        requested_disposition: str,
+    ) -> tuple[str, str]:
+        """Authorize a proof terminal at the canonical lifecycle boundary.
+
+        The Validator is an evidence producer; a mutable issue field is not a
+        terminal authority.  Requiring both materialized v4 projections to be
+        the exact deterministic projection of the sealed promotion chain keeps
+        the Candidate Ledger from turning a stale, cross-obligation, legacy, or
+        model-authored assertion into a reportable security finding.
+        """
+
+        evaluator = TerminalAuthorityEvaluator()
+        projected = evaluator.evaluate(issue, operation="live")
+        projected_dict = projected.to_dict()
+        recorded = issue.get("terminal_authority_decision")
+        engine_recorded = issue.get("proof_kernel_terminal_authority_decision")
+        evidence_pack = _as_dict(issue.get("evidence_pack"))
+        cluster_uid = str(
+            issue.get("validation_cluster_uid") or evidence_pack.get("validation_cluster_uid") or ""
+        )
+        claimed_disposition = str(issue.get("candidate_disposition") or "").lower()
+        authorized = bool(
+            projected.terminal
+            and projected.disposition == requested_disposition
+            and projected.integrity_status == "verified"
+            and projected.promotion_certificate is not None
+            and cluster_uid
+            and projected.validation_cluster_uid == cluster_uid
+            and (not claimed_disposition or claimed_disposition == requested_disposition)
+            and isinstance(recorded, Mapping)
+            and recorded.get("schema_version") == TERMINAL_AUTHORITY_DECISION_V4
+            and dict(recorded) == projected_dict
+            and isinstance(engine_recorded, Mapping)
+            and engine_recorded.get("schema_version") == TERMINAL_AUTHORITY_DECISION_V4
+            and dict(engine_recorded) == projected_dict
+        )
+        if authorized:
+            return requested_disposition, (
+                "validated" if requested_disposition == "confirmed" else "rejected"
+            )
+
+        # Preserve the obligation for user-visible review, but remove the
+        # untrusted promotion projection before materializing the fail-closed
+        # authority.  A complete closure without a valid certificate is not a
+        # terminal proof.
+        issue.pop("proof_kernel_promotion_certificate", None)
+        issue.pop("proof_kernel_terminal_authority_decision", None)
+        issue.pop("terminal_authority_decision", None)
+        fail_closed = evaluator.evaluate(
+            issue,
+            protocol_or_engine_failure=True,
+            operation="live",
+        )
+        fail_closed_dict = fail_closed.to_dict()
+        issue["proof_kernel_terminal_authority_decision"] = fail_closed_dict
+        issue["terminal_authority_decision"] = fail_closed_dict
+        issue["terminal_authority"] = fail_closed.authority
+        issue["terminal_reason_codes"] = [fail_closed.reason_code]
+        issue["candidate_disposition"] = "needs_review"
+        issue["validation_status"] = "needs_review"
+        issue["policy_disposition"] = "needs_review"
+        issue["candidate_terminal_authority_failure_class"] = "terminal_authority_binding_invalid"
+        return "needs_review", "needs_review"
 
     def mark_validation_running(self, issue: Mapping[str, Any]) -> int:
         """Claim a validation group without assigning a security disposition."""
