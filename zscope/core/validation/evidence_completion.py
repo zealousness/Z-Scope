@@ -625,16 +625,21 @@ class EvidenceCompletionQueue:
         issue["decision_fact_slice"] = final_slice
         issue["missing_fact_kinds"] = list(missing_fact_kinds)
         issue["decision_fact_coverage"] = final_slice["coverage"]
-        if closure.complete:
-            issue["candidate_promotion_eligible"] = True
-            issue["candidate_promotion_reason"] = "required_local_facts_complete"
-        else:
-            issue["candidate_promotion_eligible"] = False
-            issue["candidate_promotion_reason"] = (
+        # Fact-plan closure is evidence availability, not vulnerability-proof
+        # closure.  Only the v4 ProofKernel reducer may issue a promotion
+        # certificate after these facts are mapped back to the original frozen
+        # obligation.
+        issue["fact_plan_complete"] = closure.complete
+        issue["candidate_promotion_eligible"] = False
+        issue["candidate_promotion_reason"] = (
+            "fact_plan_complete_requires_proof_closure"
+            if closure.complete
+            else (
                 "required_local_facts_conflicting"
                 if conflicting_fact_kinds
                 else "required_local_facts_incomplete"
             )
+        )
         return EvidenceResolutionBatch(
             resolutions=tuple(resolutions),
             evidence_delta=delta,
@@ -748,8 +753,9 @@ class EvidenceCompletionQueue:
         issue["missing_fact_kinds"] = remaining
         issue["decision_fact_coverage"] = fact_slice["coverage"]
         if fact_slice["coverage"] == "complete" and code_hashes:
-            issue["candidate_promotion_eligible"] = True
-            issue["candidate_promotion_reason"] = "required_local_facts_complete"
+            issue["fact_plan_complete"] = True
+            issue["candidate_promotion_eligible"] = False
+            issue["candidate_promotion_reason"] = "fact_plan_complete_requires_proof_closure"
 
     @staticmethod
     def required_resolution_fact_kinds(

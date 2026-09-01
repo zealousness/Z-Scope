@@ -112,6 +112,92 @@ def _proof_input_with_unknown_required_counterproof() -> dict:
     }
 
 
+def _terminal_path_proof_input(*, role: str) -> dict:
+    graph = FunctionIRGraph.from_clang_evidence(
+        {
+            "clang_path": "clang-21.1.8",
+            "code_snapshot_sha256": "b" * 64,
+            "unresolved_dynamic_edges": False,
+            "cfg_dump": {
+                "summary": {
+                    "parse_ok": True,
+                    "function": "sealed_worker",
+                    "function_section_unique": True,
+                    "entry_blocks": ["B2"],
+                    "exit_blocks": ["B0"],
+                    "blocks": [
+                        {
+                            "id": "B2",
+                            "label": "ENTRY",
+                            "successors": ["B1"],
+                            "predecessors": [],
+                            "statements": ["consume(input)"],
+                        },
+                        {
+                            "id": "B1",
+                            "label": "",
+                            "successors": ["B0"],
+                            "predecessors": ["B2"],
+                            "statements": ["return 0"],
+                        },
+                        {
+                            "id": "B0",
+                            "label": "EXIT",
+                            "successors": [],
+                            "predecessors": ["B1"],
+                            "statements": [],
+                        },
+                    ],
+                }
+            },
+            "ast_dump": {
+                "summary": {"target_function": {"call_exprs": [{"callee": "consume", "line": 3}]}}
+            },
+        },
+        function="sealed_worker",
+        file="src/sealed_worker.c",
+    )
+    assert graph is not None
+    proof_ir = program_proof_ir_from_graph(
+        graph, project_uid="PROJECT_ALERT", revision_uid="REV_ALERT_V4"
+    )
+    spec = PREDICATE_REGISTRY["source_sink_path_exists"]
+    if role == "confirmation":
+        parameters = {"source_node_uid": "B2", "sink_node_uid": "B1"}
+        expected = {"path_exists": True}
+    else:
+        assert role == "counterproof"
+        parameters = {"source_node_uid": "B1", "sink_node_uid": "B2"}
+        expected = {"path_exists": False}
+    clause = build_proof_clause(
+        role=role,
+        provider_family=spec.provider_family,
+        predicate_id=spec.predicate_id,
+        fact_kind=spec.fact_kind,
+        quantifier=spec.quantifier,
+        expected_value=expected,
+        parameters=parameters,
+    )
+    obligation = build_proof_obligation(
+        validation_cluster_uid=f"VAL_ALERT_{role.upper()}",
+        defect_family="neutral_family",
+        subject_uid="SUBJECT_ALERT",
+        decision_region_uid="REGION_ALERT",
+        confirmation_clauses=((clause,) if role == "confirmation" else ()),
+        counterproof_clauses=((clause,) if role == "counterproof" else ()),
+        dependency_hashes=proof_ir["dependency_hashes"],
+    )
+    actions = ProofKernelEngine().action_catalog(
+        proof_ir=proof_ir,
+        obligation=obligation,
+    )
+    return {
+        "proof_ir": proof_ir,
+        "proof_obligation": obligation,
+        "selected_action_uids": [value["action_uid"] for value in actions],
+    }
+
+
 def test_alert_verifier_uses_workers_and_preserves_order() -> None:
     class ParallelVerifier(AlertVerifier):
         def __init__(self) -> None:
@@ -205,3 +291,54 @@ def test_alert_required_unknown_counterproof_cannot_confirm() -> None:
 
     assert result["candidate_disposition"] == "needs_review"
     assert result["proof_kernel_decision"]["reason_code"] == ("open_or_unknown_proof_clause")
+
+
+def test_alert_confirmed_proof_uses_v4_promotion_chain() -> None:
+    verifier = AlertVerifier.__new__(AlertVerifier)
+    verifier.terminal_authority = TerminalAuthorityEvaluator()
+    alert = _alert(
+        1,
+        raw={
+            "properties": {
+                "zscopeProofKernelInput": _terminal_path_proof_input(role="confirmation"),
+                "proof_kernel_terminal_authority_decision": {
+                    "schema_version": "zscope.terminal-authority-decision.v3",
+                    "disposition": "rejected_with_proof",
+                },
+            }
+        },
+    )
+
+    result = verifier._verify_single(alert, 1)
+
+    assert result["candidate_disposition"] == "confirmed"
+    assert result["terminal_authority_decision"]["schema_version"] == (
+        "zscope.terminal-authority-decision.v4"
+    )
+    assert (
+        result["proof_kernel_terminal_authority_decision"] == result["terminal_authority_decision"]
+    )
+    assert result["proof_kernel_frozen_state"]["obligation_uid"]
+    assert result["proof_kernel_closure_evaluation"]["complete"] is True
+    assert result["proof_kernel_promotion_certificate"]["disposition"] == "confirmed"
+
+
+def test_alert_counterproof_uses_v4_promotion_chain() -> None:
+    verifier = AlertVerifier.__new__(AlertVerifier)
+    verifier.terminal_authority = TerminalAuthorityEvaluator()
+    alert = _alert(
+        1,
+        raw={
+            "properties": {
+                "zscopeProofKernelInput": _terminal_path_proof_input(role="counterproof")
+            }
+        },
+    )
+
+    result = verifier._verify_single(alert, 1)
+
+    assert result["candidate_disposition"] == "rejected_with_proof"
+    assert result["terminal_authority_decision"]["schema_version"] == (
+        "zscope.terminal-authority-decision.v4"
+    )
+    assert result["proof_kernel_promotion_certificate"]["disposition"] == ("rejected_with_proof")

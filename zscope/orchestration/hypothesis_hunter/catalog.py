@@ -15,6 +15,7 @@ from ...core.validation.proof_kernel import (
     program_proof_ir_from_graph,
 )
 from ...semantics.security_map import FunctionSecurityRecord, SecurityEvent
+from .resource_proof import ResourceProofBinding, resolve_resource_proof_binding
 
 
 GraphProvider = Callable[[FunctionSecurityRecord, SecurityEvent], Optional[FunctionIRGraph]]
@@ -47,12 +48,22 @@ class HypothesisProofCatalog:
         graph = self.graph_provider(record, event)
         if graph is None:
             return ()
+        resource_binding: ResourceProofBinding | None = None
+        if event.family == "resource_lifecycle":
+            resource_binding = resolve_resource_proof_binding(graph, event)
+            if resource_binding is None:
+                return ()
         proof_ir = program_proof_ir_from_graph(
             graph,
             project_uid="PROJECT_" + _sha(record.file_path)[:32],
             revision_uid="REV_" + graph.code_snapshot_sha256[:32],
         )
-        predicate_id, parameters = self._predicate_and_parameters(graph, record, event)
+        predicate_id, parameters = self._predicate_and_parameters(
+            graph,
+            record,
+            event,
+            resource_binding=resource_binding,
+        )
         if not predicate_id:
             return ()
         spec = PREDICATE_REGISTRY.get(predicate_id)
@@ -60,18 +71,49 @@ class HypothesisProofCatalog:
             return ()
         subject_uid = str(identity.get("subject_uid") or "")
         region_uid = str(identity.get("decision_region_uid") or "")
+        if resource_binding is not None:
+            # Bind the planner identity to the exact acquisition rather than
+            # coalescing every resource in one function under the first event.
+            subject_uid = (
+                "HRESOURCE_"
+                + _sha(
+                    [
+                        record.function_uid,
+                        resource_binding.acquisition_event_uid,
+                        resource_binding.resource_uid,
+                        graph.ir_sha256,
+                    ]
+                )[:32]
+            )
+            region_uid = (
+                "HREGION_"
+                + _sha(
+                    [
+                        record.file_path,
+                        record.function_uid,
+                        resource_binding.acquisition_statement_uid,
+                    ]
+                )[:32]
+            )
         if not subject_uid or not region_uid:
             return ()
         terminal_capable = (
             event.family == "resource_lifecycle" and predicate_id == "cleanup_covers_all_exits"
         )
+        is_resource_counterproof = bool(
+            resource_binding is not None and resource_binding.cleanup_complete
+        )
         clause = build_proof_clause(
-            role="confirmation",
+            role="counterproof" if is_resource_counterproof else "confirmation",
             provider_family=spec.provider_family,
             predicate_id=spec.predicate_id,
             fact_kind=spec.fact_kind,
             quantifier=spec.quantifier,
-            expected_value=self._unsafe_expected_value(predicate_id),
+            expected_value=(
+                {"cleanup_complete": True}
+                if is_resource_counterproof
+                else self._unsafe_expected_value(predicate_id)
+            ),
             parameters=parameters,
         )
         # Most semantic-map events identify a useful investigation point, but
@@ -103,19 +145,34 @@ class HypothesisProofCatalog:
         )
         obligation = build_proof_obligation(
             validation_cluster_uid="HCLUSTER_"
-            + _sha([record.function_uid, event.event_id, predicate_id])[:32],
+            + _sha(
+                [
+                    record.function_uid,
+                    event.event_id,
+                    predicate_id,
+                    (
+                        resource_binding.acquisition_event_uid
+                        if resource_binding is not None
+                        else ""
+                    ),
+                ]
+            )[:32],
             defect_family=defect_family,
             subject_uid=subject_uid,
             decision_region_uid=region_uid,
-            confirmation_clauses=(clause,),
-            counterproof_clauses=(),
+            confirmation_clauses=(() if is_resource_counterproof else (clause,)),
+            counterproof_clauses=((clause,) if is_resource_counterproof else ()),
             open_clauses=open_clauses,
             dependency_hashes=proof_ir["dependency_hashes"],
         )
         actions = self.engine.action_catalog(proof_ir=proof_ir, obligation=obligation)
         if not actions:
             return ()
-        location_statement = self._target_statement(graph, event)
+        location_statement = (
+            graph.statement_map.get(resource_binding.acquisition_statement_uid)
+            if resource_binding is not None
+            else self._target_statement(graph, event)
+        )
         if location_statement is None:
             return ()
         location_line = max(1, int(event.line or location_statement.source_line or 1))
@@ -174,7 +231,13 @@ class HypothesisProofCatalog:
         graph: FunctionIRGraph,
         record: FunctionSecurityRecord,
         event: SecurityEvent,
+        *,
+        resource_binding: ResourceProofBinding | None = None,
     ) -> tuple[str, dict[str, str]]:
+        if event.family == "resource_lifecycle":
+            if resource_binding is not None:
+                return "cleanup_covers_all_exits", {"resource_uid": resource_binding.resource_uid}
+            return "", {}
         target = cls._target_statement(graph, event)
         if target is None:
             return "", {}
@@ -190,15 +253,6 @@ class HypothesisProofCatalog:
                     "access_statement_uid": target.statement_uid,
                     "lock_uid": locks[0],
                 }
-        if event.family == "resource_lifecycle":
-            resources = [
-                symbol
-                for value in graph.events
-                if value.kind == "resource_acquire"
-                for symbol in value.subject_symbols
-            ]
-            if resources:
-                return "cleanup_covers_all_exits", {"resource_uid": resources[0]}
         if event.family in {"auth_boundary", "state_protocol"}:
             return "external_entry_parameter_binding", {
                 "parameter_uid": record.function_uid + ":arg0",
