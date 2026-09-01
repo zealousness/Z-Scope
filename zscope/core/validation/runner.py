@@ -1157,6 +1157,15 @@ class ValidationRunner:
             "attempted_fact_kinds": sorted(
                 {value.fact_kind for value in batch.resolutions if value.fact_kind}
             ),
+            "parameterized_request_scopes": [
+                self._fact_first_parameterized_request_scope(
+                    issue,
+                    evidence_pack,
+                    value.fact_kind,
+                )
+                for value in batch.resolutions
+                if value.fact_kind
+            ],
             "resolutions": [
                 {
                     "fact_kind": value.fact_kind,
@@ -2187,6 +2196,235 @@ class ValidationRunner:
             "reason": str(request.get("reason") or ""),
         }
 
+    def _v2_request_identity(
+        self,
+        item: _PreparedValidation,
+        raw_request: Mapping[str, Any],
+    ) -> tuple[str, Dict[str, Any]]:
+        """Bind a V2 request to its exact parameters and V1 evidence snapshot.
+
+        A fact kind is a provider routing key, not a request identity.  Keeping
+        the subject, function, fixed action parameters, and the evidence slice
+        seen by the requesting model lets an exact duplicate be a zero-call
+        transition while a refined request of the same kind remains runnable.
+        """
+
+        fact_kind = str(raw_request.get("fact_kind") or "").strip().lower()
+        subject_uid = str(raw_request.get("subject_uid") or "").strip()
+        function_uid = str(raw_request.get("function_uid") or "").strip()
+        explicit = raw_request.get("fixed_parameters")
+        fixed_parameters: Any = dict(explicit) if isinstance(explicit, Mapping) else None
+        if fixed_parameters is None:
+            fixed_parameters = self._parameterized_action_parameters(
+                item.raw_issue,
+                item.evidence_pack,
+                fact_kind=fact_kind,
+                subject_uid=subject_uid,
+            )
+
+        snapshots = item.raw_issue.get("validator_evidence_snapshot_sha256_by_pass")
+        snapshots = snapshots if isinstance(snapshots, Mapping) else {}
+        evidence_snapshot_sha256 = str(snapshots.get("initial") or "")
+        if not evidence_snapshot_sha256:
+            evidence_snapshot_sha256 = self._stable_hash(
+                {
+                    "decision_fact_slice": item.raw_issue.get("decision_fact_slice") or {},
+                    "evidence_closure_state": item.raw_issue.get("evidence_closure_state") or {},
+                    "evidence_pack": item.evidence_pack,
+                }
+            )
+        payload = {
+            "fact_kind": fact_kind,
+            "subject_uid": subject_uid,
+            "function_uid": function_uid,
+            "fixed_parameters": fixed_parameters,
+            "evidence_snapshot_sha256": evidence_snapshot_sha256,
+        }
+        return self._stable_hash(payload), payload
+
+    def _parameterized_action_parameters(
+        self,
+        issue: Mapping[str, Any],
+        evidence_pack: Mapping[str, Any],
+        *,
+        fact_kind: str,
+        subject_uid: str,
+    ) -> list[Dict[str, Any]]:
+        """Return the deterministic fixed-parameter catalog for one request scope."""
+
+        action_parameters: list[Dict[str, Any]] = []
+        try:
+            actions = self._fact_capabilities.executable_actions(
+                issue,
+                evidence_pack,
+                (fact_kind,),
+            )
+        except Exception:
+            actions = ()
+        for action in actions:
+            if subject_uid and action.subject_uid and action.subject_uid != subject_uid:
+                continue
+            action_parameters.append(dict(action.fixed_parameters))
+        return sorted(
+            action_parameters,
+            key=lambda value: json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ),
+        )
+
+    def _fact_first_parameterized_request_scope(
+        self,
+        issue: Mapping[str, Any],
+        evidence_pack: Mapping[str, Any],
+        fact_kind: str,
+    ) -> Dict[str, Any]:
+        """Describe the exact parameter scope already exercised by fact-first.
+
+        The shadow sweep predates a model request, so it has no model evidence
+        snapshot yet.  Subject, function, and fixed parameters are nevertheless
+        deterministic.  The first matching V1 snapshot is bound when the model
+        asks for that exact scope; a different subject/function/parameter set is
+        therefore never hidden behind the shadow attempt.
+        """
+
+        normalized_kind = str(fact_kind or "").strip().lower()
+        function_uid = str(
+            issue.get("function_signature")
+            or issue.get("function")
+            or issue.get("function_name")
+            or ""
+        ).strip()
+        obligation = issue.get("security_obligation")
+        obligation = obligation if isinstance(obligation, Mapping) else {}
+        if normalized_kind == "caller_contract":
+            # Caller contracts are function-scoped.  Treating the detector's
+            # structured source identity as a distinct subject would rerun the
+            # same function-level provider after V1.
+            subject_uid = function_uid
+        else:
+            subject_uid = str(
+                issue.get("resource_identity")
+                or issue.get("source_identity")
+                or obligation.get("subject_uid")
+                or ""
+            ).strip()
+        return {
+            "fact_kind": normalized_kind,
+            "subject_uid": subject_uid,
+            "function_uid": function_uid,
+            "fixed_parameters": self._parameterized_action_parameters(
+                issue,
+                evidence_pack,
+                fact_kind=normalized_kind,
+                subject_uid=subject_uid,
+            ),
+        }
+
+    def _matches_fact_first_parameterized_request(
+        self,
+        issue: Dict[str, Any],
+        *,
+        identity_sha256: str,
+        identity: Mapping[str, Any],
+    ) -> bool:
+        """Bind and recognize one no-increment request already run in shadow.
+
+        Only the first V1 evidence snapshot may inherit a fact-first attempt.
+        Once bound, any changed evidence snapshot is a refined request and is
+        allowed to execute even when its fact kind and object are unchanged.
+        """
+
+        shadow = issue.get("proof_kernel_fact_first")
+        shadow = shadow if isinstance(shadow, Mapping) else {}
+        scopes = shadow.get("parameterized_request_scopes")
+        if not isinstance(scopes, list):
+            return False
+        request_scope = {
+            key: deepcopy(identity.get(key))
+            for key in ("fact_kind", "subject_uid", "function_uid", "fixed_parameters")
+        }
+        matching_scope = next(
+            (
+                dict(value)
+                for value in scopes
+                if isinstance(value, Mapping)
+                and all(value.get(key) == request_scope.get(key) for key in request_scope)
+            ),
+            None,
+        )
+        if matching_scope is None:
+            return False
+        scope_sha256 = self._stable_hash(request_scope)
+        baselines = issue.setdefault("fact_first_parameterized_request_baselines", [])
+        if not isinstance(baselines, list):
+            baselines = []
+            issue["fact_first_parameterized_request_baselines"] = baselines
+        existing = next(
+            (
+                value
+                for value in baselines
+                if isinstance(value, Mapping)
+                and str(value.get("scope_sha256") or "") == scope_sha256
+            ),
+            None,
+        )
+        if existing is None:
+            baselines.append(
+                {
+                    "scope_sha256": scope_sha256,
+                    "identity_sha256": identity_sha256,
+                    "evidence_snapshot_sha256": str(identity.get("evidence_snapshot_sha256") or ""),
+                }
+            )
+            return True
+        return str(existing.get("identity_sha256") or "") == identity_sha256
+
+    @staticmethod
+    def _legacy_fact_request_hash(issue: Mapping[str, Any], request: Mapping[str, Any]) -> str:
+        """Return the pre-v2 queue key so refined requests can bypass kind-level history."""
+
+        return hashlib.sha256(
+            json.dumps(
+                {
+                    "cluster": str(issue.get("validation_cluster_uid") or ""),
+                    "fact_kind": str(request.get("fact_kind") or "").strip().lower(),
+                    "subject_uid": str(request.get("subject_uid") or ""),
+                    "function_uid": str(request.get("function_uid") or ""),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _begin_v2_request_attempt(
+        issue: Dict[str, Any],
+        *,
+        identity_sha256: str,
+        identity: Mapping[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        attempts = issue.setdefault("validator_fact_request_attempts", [])
+        if not isinstance(attempts, list):
+            attempts = []
+            issue["validator_fact_request_attempts"] = attempts
+        if any(
+            isinstance(value, Mapping)
+            and str(value.get("identity_sha256") or "") == identity_sha256
+            for value in attempts
+        ):
+            return None
+        record = {
+            "identity_sha256": identity_sha256,
+            **dict(identity),
+            "status": "started",
+        }
+        attempts.append(record)
+        return record
+
     @staticmethod
     def _update_candidate_ledger(
         state: Dict[str, Any],
@@ -2301,16 +2539,11 @@ class ValidationRunner:
             if isinstance(raw_request, Mapping)
             else ""
         )
-        fact_first_attempted = {
-            str(value)
-            for value in item.raw_issue.get("fact_first_attempted_fact_kinds") or []
-            if str(value)
-        }
-        if not requested_kind or requested_kind in fact_first_attempted:
+        if not requested_kind or not isinstance(raw_request, Mapping):
             item.raw_issue["validator_fact_resolution"] = {
                 "fact_kinds": [requested_kind] if requested_kind else [],
-                "statuses": ["already_attempted"] if requested_kind else [],
-                "status": "no_new_parameterized_request",
+                "statuses": [],
+                "status": "no_parameterized_request",
                 "evidence_delta_hash": "",
                 "proof_added": False,
             }
@@ -2322,14 +2555,92 @@ class ValidationRunner:
                 reason_code="V2_SKIPPED_NO_DELTA",
                 details={
                     "requested_fact_kind": requested_kind,
-                    "fact_first_attempted": sorted(fact_first_attempted),
+                    "request_identity": "",
                 },
                 dedupe_key=(
-                    f"v2-skipped-fact-first:{requested_kind or 'no-request'}:"
+                    f"v2-skipped-no-request:{requested_kind or 'no-request'}:"
                     f"{self._trace_cluster_uid(item.raw_issue)}"
                 ),
             )
             return val_data
+        request_identity_sha256, request_identity = self._v2_request_identity(
+            item,
+            raw_request,
+        )
+        if self._matches_fact_first_parameterized_request(
+            item.raw_issue,
+            identity_sha256=request_identity_sha256,
+            identity=request_identity,
+        ):
+            attempt = self._begin_v2_request_attempt(
+                item.raw_issue,
+                identity_sha256=request_identity_sha256,
+                identity=request_identity,
+            )
+            if attempt is not None:
+                attempt["status"] = "fact_first_no_new_evidence"
+                attempt["evidence_delta_hash"] = ""
+            item.raw_issue["validator_fact_resolution"] = {
+                "fact_kinds": [requested_kind],
+                "statuses": ["prevalidated_no_new_evidence"],
+                "status": "no_new_parameterized_request",
+                "request_identity_sha256": request_identity_sha256,
+                "evidence_delta_hash": "",
+                "proof_added": False,
+            }
+            item.raw_issue["validator_v2_stop_reason"] = "no_evidence_gain"
+            self._trace_event(
+                item.raw_issue,
+                stage="V2",
+                actor="validation_runner",
+                reason_code="V2_SKIPPED_NO_DELTA",
+                details={
+                    "requested_fact_kind": requested_kind,
+                    "request_identity_sha256": request_identity_sha256,
+                    "duplicate_scope": "fact_first_parameterized_request",
+                },
+                dedupe_key=f"v2-fact-first-no-new:{request_identity_sha256}",
+            )
+            return val_data
+        attempt = self._begin_v2_request_attempt(
+            item.raw_issue,
+            identity_sha256=request_identity_sha256,
+            identity=request_identity,
+        )
+        if attempt is None:
+            item.raw_issue["validator_fact_resolution"] = {
+                "fact_kinds": [requested_kind],
+                "statuses": ["duplicate_request"],
+                "status": "exact_duplicate_request",
+                "request_identity_sha256": request_identity_sha256,
+                "evidence_delta_hash": "",
+                "proof_added": False,
+            }
+            item.raw_issue["validator_v2_stop_reason"] = "duplicate_fact_request"
+            self._trace_event(
+                item.raw_issue,
+                stage="V2",
+                actor="validation_runner",
+                reason_code="V2_SKIPPED_NO_DELTA",
+                details={
+                    "requested_fact_kind": requested_kind,
+                    "request_identity_sha256": request_identity_sha256,
+                    "duplicate_scope": "exact_parameterized_request",
+                },
+                dedupe_key=f"v2-exact-duplicate:{request_identity_sha256}",
+            )
+            return val_data
+
+        # EvidenceCompletionQueue predates the parameterized identity and
+        # remembers only cluster/kind/subject/function.  Remove that narrower
+        # key for a genuinely new snapshot/parameter request; the runner's
+        # stronger identity above remains the authoritative duplicate guard.
+        legacy_hash = self._legacy_fact_request_hash(item.raw_issue, raw_request)
+        legacy_attempts = item.raw_issue.get("evidence_completion_request_hashes")
+        if isinstance(legacy_attempts, list):
+            item.raw_issue["evidence_completion_request_hashes"] = [
+                value for value in legacy_attempts if str(value) != legacy_hash
+            ]
         try:
             batch = self._evidence_completion_queue.resolve_required_facts(
                 item.raw_issue,
@@ -2337,15 +2648,17 @@ class ValidationRunner:
                 validation_evidence=item.evidence_pack,
                 fact_kinds_override=(requested_kind,),
             )
-        except Exception as exc:
+        except Exception:
             logger.warning(
-                "Required fact resolution failed for candidate %s: %s",
+                "Required fact resolution failed for candidate %s class=%s",
                 item.raw_issue.get("candidate_uid") or item.raw_issue.get("id"),
-                exc,
+                "deterministic_fact_provider_failed",
             )
+            attempt["status"] = "provider_error"
             item.raw_issue["validator_fact_resolution"] = {
                 "status": "provider_error",
-                "error": f"{type(exc).__name__}: {exc}"[:500],
+                "request_identity_sha256": request_identity_sha256,
+                "failure_class": "deterministic_fact_provider_failed",
             }
             item.raw_issue["validator_v2_stop_reason"] = "unsupported_fact"
             return self._terminal_from_prior_for_v3(
@@ -2356,6 +2669,10 @@ class ValidationRunner:
             )
 
         statuses = [value.terminal_status for value in batch.resolutions]
+        attempt["status"] = (
+            "resolved" if batch.has_evidence_delta else (statuses[0] if statuses else "no_match")
+        )
+        attempt["evidence_delta_hash"] = batch.evidence_delta_hash
         self._record_proof_kernel_authority(
             item.raw_issue,
             item.evidence_pack,
@@ -2365,6 +2682,7 @@ class ValidationRunner:
             "fact_kinds": [value.fact_kind for value in batch.resolutions],
             "statuses": statuses,
             "status": str(item.raw_issue.get("evidence_completion_status") or "not_applicable"),
+            "request_identity_sha256": request_identity_sha256,
             "evidence_delta_hash": batch.evidence_delta_hash,
             "proof_added": batch.proof_added,
         }
@@ -3874,6 +4192,11 @@ class ValidationRunner:
                 sort_keys=True,
                 separators=(",", ":"),
             )
+            snapshots = raw_issue.setdefault("validator_evidence_snapshot_sha256_by_pass", {})
+            if not isinstance(snapshots, dict):
+                snapshots = {}
+                raw_issue["validator_evidence_snapshot_sha256_by_pass"] = snapshots
+            snapshots[validation_pass] = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
             estimated_tokens = LLMClient.estimate_tokens([{"role": "user", "content": serialized}])
             raw_issue["validator_evidence_slice_version"] = VALIDATOR_EVIDENCE_SLICE_V3
             raw_issue["evidence_slice_token_count"] = int(estimated_tokens)

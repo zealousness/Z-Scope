@@ -695,6 +695,255 @@ def test_validation_runner_does_not_recheck_without_evidence_delta() -> None:
     assert issue["validator_v2_stop_reason"] == "no_evidence_gain"
 
 
+def test_v2_exact_parameterized_duplicate_is_zero_provider_and_model_calls(monkeypatch) -> None:
+    agent = FakeValidatorAgent([])
+    runner = _runner(agent)
+    issue = _issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
+    issue["validator_evidence_snapshot_sha256_by_pass"] = {"initial": "a" * 64}
+    item = SimpleNamespace(
+        raw_issue=issue,
+        issue_func="sink_func",
+        issue_code="void sink_func(void) {}",
+        evidence_pack={"path": {"complete": True}},
+    )
+    request = {
+        "fact_kind": "value_range",
+        "subject_uid": "wire_len",
+        "function_uid": "sink_func",
+        "reason": "a bound is required",
+    }
+    val_data = _validator_v3_result(
+        missing_fact_request=request,
+        stop_reason="missing_fact",
+    )
+    provider_calls = []
+
+    def resolve(*_args, **_kwargs):
+        provider_calls.append(1)
+        return SimpleNamespace(
+            resolutions=[
+                SimpleNamespace(
+                    fact_kind="value_range",
+                    terminal_status="no_match",
+                    status="no_match",
+                    miss_reason="no qualified local fact",
+                )
+            ],
+            evidence_delta={},
+            evidence_delta_hash="",
+            proof_added=False,
+            has_evidence_delta=False,
+        )
+
+    monkeypatch.setattr(runner._evidence_completion_queue, "resolve_required_facts", resolve)
+
+    runner._run_v3_evidence_recheck(item, agent, val_data, {})
+    runner._run_v3_evidence_recheck(item, agent, val_data, {})
+
+    assert len(provider_calls) == 1
+    assert agent.inputs == []
+    assert issue["validator_fact_resolution"]["status"] == "exact_duplicate_request"
+    assert len(issue["validator_fact_request_attempts"]) == 1
+
+
+def test_v2_no_match_does_not_exhaust_refined_same_kind_request(monkeypatch) -> None:
+    agent = FakeValidatorAgent([])
+    runner = _runner(agent)
+    issue = _issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
+    issue["validator_evidence_snapshot_sha256_by_pass"] = {"initial": "a" * 64}
+    item = SimpleNamespace(
+        raw_issue=issue,
+        issue_func="sink_func",
+        issue_code="void sink_func(void) {}",
+        evidence_pack={"path": {"complete": True}},
+    )
+    provider_calls = []
+
+    def resolve(*_args, **_kwargs):
+        provider_calls.append(1)
+        return SimpleNamespace(
+            resolutions=[
+                SimpleNamespace(
+                    fact_kind="value_range",
+                    terminal_status="no_match",
+                    status="no_match",
+                    miss_reason="no qualified local fact",
+                )
+            ],
+            evidence_delta={},
+            evidence_delta_hash="",
+            proof_added=False,
+            has_evidence_delta=False,
+        )
+
+    monkeypatch.setattr(runner._evidence_completion_queue, "resolve_required_facts", resolve)
+    first = _validator_v3_result(
+        missing_fact_request={
+            "fact_kind": "value_range",
+            "subject_uid": "wire_len",
+            "function_uid": "sink_func",
+            "reason": "the first bound is required",
+        },
+        stop_reason="missing_fact",
+    )
+    refined = _validator_v3_result(
+        missing_fact_request={
+            "fact_kind": "value_range",
+            "subject_uid": "payload_len",
+            "function_uid": "sink_func",
+            "reason": "a refined object bound is required",
+        },
+        stop_reason="missing_fact",
+    )
+
+    runner._run_v3_evidence_recheck(item, agent, first, {})
+    runner._run_v3_evidence_recheck(item, agent, refined, {})
+
+    assert len(provider_calls) == 2
+    assert agent.inputs == []
+    attempts = issue["validator_fact_request_attempts"]
+    assert len(attempts) == 2
+    assert {entry["subject_uid"] for entry in attempts} == {"wire_len", "payload_len"}
+    assert {entry["status"] for entry in attempts} == {"no_match"}
+
+
+def test_v2_same_object_can_retry_after_evidence_snapshot_changes(monkeypatch) -> None:
+    agent = FakeValidatorAgent([])
+    runner = _runner(agent)
+    issue = _issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
+    issue["validator_evidence_snapshot_sha256_by_pass"] = {"initial": "a" * 64}
+    item = SimpleNamespace(
+        raw_issue=issue,
+        issue_func="sink_func",
+        issue_code="void sink_func(void) {}",
+        evidence_pack={},
+    )
+    request = _validator_v3_result(
+        missing_fact_request={
+            "fact_kind": "value_range",
+            "subject_uid": "wire_len",
+            "function_uid": "sink_func",
+            "reason": "the bound is required",
+        },
+        stop_reason="missing_fact",
+    )
+    provider_calls = []
+
+    def resolve(*_args, **_kwargs):
+        provider_calls.append(1)
+        return SimpleNamespace(
+            resolutions=[
+                SimpleNamespace(
+                    fact_kind="value_range",
+                    terminal_status="no_match",
+                    status="no_match",
+                    miss_reason="no qualified local fact",
+                )
+            ],
+            evidence_delta={},
+            evidence_delta_hash="",
+            proof_added=False,
+            has_evidence_delta=False,
+        )
+
+    monkeypatch.setattr(runner._evidence_completion_queue, "resolve_required_facts", resolve)
+
+    runner._run_v3_evidence_recheck(item, agent, request, {})
+    issue["validator_evidence_snapshot_sha256_by_pass"]["initial"] = "b" * 64
+    runner._run_v3_evidence_recheck(item, agent, request, {})
+
+    assert len(provider_calls) == 2
+    assert len(issue["validator_fact_request_attempts"]) == 2
+    assert len(issue.get("evidence_completion_request_hashes") or []) <= 1
+
+
+def test_v2_fact_first_exact_scope_is_zero_call_but_each_refinement_runs(monkeypatch) -> None:
+    agent = FakeValidatorAgent([])
+    runner = _runner(agent)
+    issue = _issue(
+        candidate_uid="CAND_FACT_FIRST",
+        validation_cluster_uid="VAL_FACT_FIRST",
+        function="entry",
+    )
+    issue["validator_evidence_snapshot_sha256_by_pass"] = {"initial": "a" * 64}
+    issue["proof_kernel_fact_first"] = {
+        "status": "exhausted",
+        "attempted_fact_kinds": ["caller_contract"],
+        "parameterized_request_scopes": [
+            {
+                "fact_kind": "caller_contract",
+                "subject_uid": "entry",
+                "function_uid": "entry",
+                "fixed_parameters": [],
+            }
+        ],
+    }
+    item = SimpleNamespace(
+        raw_issue=issue,
+        issue_func="entry",
+        issue_code="void entry(void) {}",
+        evidence_pack={},
+    )
+    provider_calls = []
+
+    def resolve(*_args, **_kwargs):
+        provider_calls.append(1)
+        return SimpleNamespace(
+            resolutions=[
+                SimpleNamespace(
+                    fact_kind="caller_contract",
+                    terminal_status="no_match",
+                    status="no_match",
+                    miss_reason="no qualified closed-world contract",
+                )
+            ],
+            evidence_delta={},
+            evidence_delta_hash="",
+            proof_added=False,
+            has_evidence_delta=False,
+        )
+
+    monkeypatch.setattr(runner._evidence_completion_queue, "resolve_required_facts", resolve)
+
+    def request(
+        *,
+        subject: str = "entry",
+        function: str = "entry",
+        fixed_parameters=None,
+    ):
+        missing = {
+            "fact_kind": "caller_contract",
+            "subject_uid": subject,
+            "function_uid": function,
+            "reason": "the caller contract is missing",
+        }
+        if fixed_parameters is not None:
+            missing["fixed_parameters"] = fixed_parameters
+        return _validator_v3_result(
+            missing_fact_request=missing,
+            stop_reason="missing_fact",
+        )
+
+    runner._run_v3_evidence_recheck(item, agent, request(), {})
+    assert provider_calls == []
+    assert issue["validator_fact_resolution"]["status"] == ("no_new_parameterized_request")
+
+    runner._run_v3_evidence_recheck(item, agent, request(subject="other"), {})
+    runner._run_v3_evidence_recheck(item, agent, request(function="other"), {})
+    runner._run_v3_evidence_recheck(
+        item,
+        agent,
+        request(fixed_parameters={"contract_scope": "closed_world"}),
+        {},
+    )
+    issue["validator_evidence_snapshot_sha256_by_pass"]["initial"] = "b" * 64
+    runner._run_v3_evidence_recheck(item, agent, request(), {})
+
+    assert len(provider_calls) == 4
+    assert len(issue["validator_fact_request_attempts"]) == 5
+    assert agent.inputs == []
+
+
 def test_validation_runner_maps_fact_provider_timeout_to_canonical_stop(monkeypatch) -> None:
     request = {
         "fact_kind": "value_range",
