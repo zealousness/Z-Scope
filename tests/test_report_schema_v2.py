@@ -7,6 +7,7 @@ from zscope.reporting.schema import (
     coalesce_terminal_candidates,
     completeness_status,
     exit_code_for_report,
+    needs_review_count,
     report_invariant_status,
     report_is_reusable,
     report_reuse_blockers,
@@ -105,10 +106,235 @@ def test_report_invariant_rejects_open_evidence_completion() -> None:
         [review],
         [confirmed, review],
         canonical_projection=True,
+        default_items=[confirmed],
+        with_needs_review_items=[confirmed, review],
     )
 
     assert status["valid"] is False
     assert status["open_evidence_completion_count"] == 1
+
+
+def test_report_invariant_accounts_all_terminal_dispositions_and_views() -> None:
+    confirmed = {
+        "candidate_disposition": "confirmed",
+        "validation_cluster_uid": "VAL_confirmed",
+        "status": "confirmed",
+        "obligation_uid": "OBL_confirmed",
+    }
+    review = {
+        "candidate_disposition": "needs_review",
+        "validation_cluster_uid": "VAL_review",
+        "status": "needs_review",
+        "obligation_uid": "OBL_review",
+    }
+    rejected = {
+        "candidate_disposition": "rejected_with_proof",
+        "validation_cluster_uid": "VAL_rejected",
+        "status": "rejected_with_proof",
+        "obligation_uid": "OBL_rejected",
+    }
+    alias = {
+        "candidate_disposition": "deduplicated_alias",
+        "validation_cluster_uid": "VAL_alias",
+        "status": "deduplicated_alias",
+        "obligation_uid": "OBL_alias",
+    }
+    audit = {
+        "candidate_disposition": "shadow_observation",
+        "validation_cluster_uid": "VAL_audit",
+        "status": "shadow_observation",
+        "validation_status": "needs_review",
+        "obligation_uid": "OBL_audit",
+    }
+    operational = {
+        "candidate_disposition": "engine_failed",
+        "record_role": "operational_obligation",
+        "status": "engine_failed",
+        "operational_uid": "OP_engine",
+    }
+
+    status = report_invariant_status(
+        [confirmed],
+        [review],
+        [confirmed, review, rejected, alias, audit, operational],
+        canonical_projection=True,
+        default_items=[confirmed],
+        with_needs_review_items=[confirmed, review],
+    )
+
+    assert status["valid"] is True
+    assert status["terminal_outcome_count"] == 6
+    assert status["terminal_outcome_conservation_passed"] is True
+    assert status["terminal_disposition_counts"] == {
+        "confirmed": 1,
+        "deduplicated_alias": 1,
+        "engine_failed": 1,
+        "needs_review": 1,
+        "rejected_with_proof": 1,
+        "shadow_observation": 1,
+    }
+    assert status["deduplicated_alias_count"] == 1
+    assert status["audit_observation_count"] == 1
+    assert status["rejected_with_proof_count"] == 1
+    assert status["operational_obligation_count"] == 1
+    assert status["default_is_with_needs_review_subset"] is True
+    assert status["all_canonical_needs_review_included"] is True
+    assert needs_review_count([review, audit], [review, audit]) == 1
+
+
+def test_report_invariant_rejects_unknown_terminal_or_missing_review_projection() -> None:
+    confirmed = {
+        "candidate_disposition": "confirmed",
+        "validation_cluster_uid": "VAL_confirmed",
+        "status": "confirmed",
+    }
+    review = {
+        "candidate_disposition": "needs_review",
+        "validation_cluster_uid": "VAL_review",
+        "status": "needs_review",
+    }
+    unknown = {
+        "candidate_disposition": "mystery_terminal",
+        "validation_cluster_uid": "VAL_unknown",
+        "status": "mystery_terminal",
+    }
+
+    status = report_invariant_status(
+        [confirmed],
+        [],
+        [confirmed, review, unknown],
+        canonical_projection=True,
+    )
+
+    assert status["valid"] is False
+    assert status["unknown_terminal_disposition_count"] == 1
+    assert status["terminal_outcome_conservation_passed"] is False
+    assert status["all_canonical_needs_review_included"] is False
+
+
+def test_report_invariant_rejects_actual_review_view_missing_default_member() -> None:
+    confirmed = {
+        "candidate_disposition": "confirmed",
+        "validation_cluster_uid": "VAL_confirmed",
+        "status": "confirmed",
+    }
+    review = {
+        "candidate_disposition": "needs_review",
+        "validation_cluster_uid": "VAL_review",
+        "status": "needs_review",
+    }
+
+    status = report_invariant_status(
+        [confirmed],
+        [review],
+        [confirmed, review],
+        canonical_projection=True,
+        default_items=[confirmed],
+        with_needs_review_items=[review],
+    )
+
+    assert status["valid"] is False
+    assert status["default_is_with_needs_review_subset"] is False
+    assert status["all_canonical_needs_review_included"] is True
+
+
+def test_report_invariant_rejects_extra_non_actionable_view_members() -> None:
+    confirmed = {
+        "candidate_disposition": "confirmed",
+        "validation_cluster_uid": "VAL_confirmed",
+        "status": "confirmed",
+    }
+    review = {
+        "candidate_disposition": "needs_review",
+        "validation_cluster_uid": "VAL_review",
+        "status": "needs_review",
+    }
+    rejected = {
+        "candidate_disposition": "rejected_with_proof",
+        "validation_cluster_uid": "VAL_rejected",
+        "status": "rejected_with_proof",
+    }
+    audit = {
+        "candidate_disposition": "shadow_observation",
+        "validation_cluster_uid": "VAL_audit",
+        "status": "shadow_observation",
+    }
+
+    for extra in (rejected, audit):
+        status = report_invariant_status(
+            [confirmed],
+            [review],
+            [confirmed, review, rejected, audit],
+            canonical_projection=True,
+            default_items=[confirmed],
+            with_needs_review_items=[confirmed, review, extra],
+        )
+        assert status["valid"] is False
+        assert status["actual_with_needs_review_membership_exact"] is False
+
+
+def test_report_invariant_rejects_duplicate_or_empty_view_identities() -> None:
+    confirmed = {
+        "candidate_disposition": "confirmed",
+        "validation_cluster_uid": "VAL_confirmed",
+        "status": "confirmed",
+    }
+    review = {
+        "candidate_disposition": "needs_review",
+        "validation_cluster_uid": "VAL_review",
+        "status": "needs_review",
+    }
+    duplicate = report_invariant_status(
+        [confirmed],
+        [review],
+        [confirmed, review],
+        canonical_projection=True,
+        default_items=[confirmed],
+        with_needs_review_items=[confirmed, review, review],
+    )
+    assert duplicate["valid"] is False
+    assert duplicate["view_membership_identities_unique"] is False
+
+    empty = report_invariant_status(
+        [confirmed],
+        [review],
+        [confirmed, review],
+        canonical_projection=True,
+        default_items=[confirmed],
+        with_needs_review_items=[confirmed, {"candidate_disposition": "needs_review"}],
+    )
+    assert empty["valid"] is False
+    assert empty["view_membership_identities_nonempty"] is False
+
+
+def test_apply_report_schema_attaches_both_canonical_views_when_missing() -> None:
+    confirmed = {
+        "candidate_disposition": "confirmed",
+        "validation_cluster_uid": "VAL_confirmed",
+        "status": "confirmed",
+        "obligation_uid": "OBL_confirmed",
+    }
+    review = {
+        "candidate_disposition": "needs_review",
+        "validation_cluster_uid": "VAL_review",
+        "status": "needs_review",
+        "obligation_uid": "OBL_review",
+    }
+    report = {"issues": [confirmed]}
+    apply_report_schema_v2(
+        report,
+        state={
+            "canonical_outcome_projection": True,
+            "candidate_terminal_states": [confirmed, review],
+        },
+        issues=[confirmed],
+        observations=[review],
+        metadata={"run_id": "RUN"},
+        entry_function="entry",
+    )
+
+    assert set(report["report_views"]) == {"default", "with_needs_review"}
+    assert report["run_manifest"]["report_invariant_status"]["valid"] is True
 
 
 def test_candidate_envelope_separates_display_id_from_internal_occurrence() -> None:

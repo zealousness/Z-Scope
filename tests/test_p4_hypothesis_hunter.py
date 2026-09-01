@@ -9,6 +9,7 @@ import pytest
 
 from zscope.core.validation.function_ir import FunctionIRGraph
 from zscope.core.validation.proof_kernel import ProofKernelEngine
+from zscope.framework.llm_usage import P6BalancedTokenAdmissionError
 from zscope.orchestration.candidates import CandidateLedger, CandidateRegistrar
 from zscope.orchestration.hypothesis_hunter import (
     AttackSurfacePlanner,
@@ -900,6 +901,31 @@ def test_runtime_collects_eight_concurrent_calls_and_isolates_one_failure(
     }
     assert result["coverage_summary"]["hypothesis_count"] == 7
     assert "private-provider-error-body" not in json.dumps(result)
+
+
+def test_runtime_propagates_p6_hard_token_admission(tmp_path: Path) -> None:
+    catalog = HypothesisProofCatalog(lambda record, event: _graph())
+    ledger = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
+
+    def deny_before_provider(projection, unit, offers):
+        del projection, unit, offers
+        raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
+
+    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
+        HypothesisHunterRuntime(
+            HypothesisArtifactStore(tmp_path),
+            risk_threshold=35,
+            max_units=1,
+            max_concurrent_calls=8,
+        ).run(
+            _semantic_map(),
+            candidate_registrar=CandidateRegistrar(ledger),
+            proof_bundle_provider=catalog.bundles,
+            report_runner=deny_before_provider,
+        )
+
+    assert raised.value.failure_class == "p6_token_hard_limit"
+    assert ledger.lifecycle_snapshot()["summary"]["total"] == 0
 
 
 def test_incomplete_unit_is_observation_not_candidate(tmp_path: Path) -> None:

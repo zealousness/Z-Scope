@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/p6-balanced-quality-aggregate-v1.json",
+  "title": "P6 balanced answer-free quality aggregate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_binding_sha256",
+    "legacy_v15",
+    "truth_v16_product",
+    "truth_v16_design_risk",
+    "cross_view",
+    "balanced_scan_usage",
+    "producer_invariants",
+    "invariants",
+    "hard_gate_passed",
+    "challenge_passed",
+    "answer_material_present",
+    "formal_benchmark",
+    "release_eligible",
+    "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.p6-balanced-quality-aggregate.v1"},
+    "evidence_binding_sha256": {"$ref": "#/$defs/sha256"},
+    "legacy_v15": {"$ref": "#/$defs/views"},
+    "truth_v16_product": {"$ref": "#/$defs/views"},
+    "truth_v16_design_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "with_needs_review"],
+      "properties": {
+        "default": {"$ref": "#/$defs/designView"},
+        "with_needs_review": {"$ref": "#/$defs/designView"}
+      }
+    },
+    "cross_view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legacy_v15", "truth_v16_product"],
+      "properties": {
+        "legacy_v15": {"type": "boolean"},
+        "truth_v16_product": {"type": "boolean"}
+      }
+    },
+    "balanced_scan_usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_tokens",
+        "maximum_tokens",
+        "provider_usage_coverage",
+        "estimated_call_count",
+        "provider_response_model_missing_count",
+        "provider_response_model_mismatch_count",
+        "requested_model_mismatch_count",
+        "admission_request_count",
+        "admission_admitted_count",
+        "admission_denied_count",
+        "soft_watermark_denied_count",
+        "hard_limit_denied_count",
+        "passed"
+      ],
+      "properties": {
+        "total_tokens": {"type": "integer", "minimum": 0},
+        "maximum_tokens": {"type": "integer", "minimum": 0},
+        "provider_usage_coverage": {"type": "number", "minimum": 0},
+        "estimated_call_count": {"type": "integer", "minimum": 0},
+        "provider_response_model_missing_count": {"type": "integer", "minimum": 0},
+        "provider_response_model_mismatch_count": {"type": "integer", "minimum": 0},
+        "requested_model_mismatch_count": {"type": "integer", "minimum": 0},
+        "admission_request_count": {"type": "integer", "minimum": 0},
+        "admission_admitted_count": {"type": "integer", "minimum": 0},
+        "admission_denied_count": {"type": "integer", "minimum": 0},
+        "soft_watermark_denied_count": {"type": "integer", "minimum": 0},
+        "hard_limit_denied_count": {"type": "integer", "minimum": 0},
+        "passed": {"type": "boolean"}
+      }
+    },
+    "producer_invariants": {"$ref": "#/$defs/producerInvariants"},
+    "invariants": {"$ref": "#/$defs/invariants"},
+    "hard_gate_passed": {"const": false},
+    "challenge_passed": {"type": "boolean"},
+    "answer_material_present": {"const": false},
+    "formal_benchmark": {"const": false},
+    "release_eligible": {"const": false},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "views": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "with_needs_review"],
+      "properties": {
+        "default": {"$ref": "#/$defs/view"},
+        "with_needs_review": {"$ref": "#/$defs/view"}
+      }
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "truth_count",
+        "true_positives",
+        "false_negatives",
+        "false_positives_raw",
+        "hard_passed",
+        "challenge_passed"
+      ],
+      "properties": {
+        "truth_count": {"type": "integer", "minimum": 0},
+        "true_positives": {"type": "integer", "minimum": 0},
+        "false_negatives": {"type": "integer", "minimum": 0},
+        "false_positives_raw": {"type": "integer", "minimum": 0},
+        "hard_passed": {"type": "boolean"},
+        "challenge_passed": {"type": "boolean"}
+      }
+    },
+    "designView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["truth_count", "true_positives", "false_negatives"],
+      "properties": {
+        "truth_count": {"type": "integer", "minimum": 0},
+        "true_positives": {"type": "integer", "minimum": 0},
+        "false_negatives": {"type": "integer", "minimum": 0}
+      }
+    },
+    "producerInvariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "git_commit",
+        "git_tree",
+        "candidate",
+        "provider",
+        "runtime",
+        "oci_image",
+        "cold_cache",
+        "selected_attempt",
+        "formal_benchmark_false",
+        "release_eligible_false"
+      ],
+      "properties": {
+        "git_commit": {"type": "boolean"},
+        "git_tree": {"type": "boolean"},
+        "candidate": {"type": "boolean"},
+        "provider": {"type": "boolean"},
+        "runtime": {"type": "boolean"},
+        "oci_image": {"type": "boolean"},
+        "cold_cache": {"type": "boolean"},
+        "selected_attempt": {"type": "boolean"},
+        "formal_benchmark_false": {"type": "boolean"},
+        "release_eligible_false": {"type": "boolean"}
+      }
+    },
+    "invariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scanner_answer_isolated",
+        "queue_drained",
+        "report_view_membership_conserved",
+        "terminal_outcome_conserved",
+        "default_is_subset_of_with_needs_review",
+        "v16_design_risk_separate",
+        "formal_benchmark_false",
+        "release_eligible_false"
+      ],
+      "properties": {
+        "scanner_answer_isolated": {"type": "boolean"},
+        "queue_drained": {"type": "boolean"},
+        "report_view_membership_conserved": {"type": "boolean"},
+        "terminal_outcome_conserved": {"type": "boolean"},
+        "default_is_subset_of_with_needs_review": {"type": "boolean"},
+        "v16_design_risk_separate": {"type": "boolean"},
+        "formal_benchmark_false": {"type": "boolean"},
+        "release_eligible_false": {"type": "boolean"}
+      }
+    }
+  }
+}

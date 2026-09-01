@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 from ..common.utils import extract_json_blocks
 from ..framework.base import AgentResponse, BaseAgent
 from ..framework.llm_client import LLMClient
+from ..framework.llm_usage import P6BalancedTokenAdmissionError
 from ..tools.policy import ToolPolicy
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,24 @@ class ToolCallingAgent(BaseAgent):
             [tool.get_schema() for tool in self.tools]
         )
         self._tool_by_name = {tool.name: tool for tool in self.tools}
+
+    def _p6_answer_free_failure_mode(self) -> bool:
+        """Return whether this agent is running under sealed P6 admission."""
+
+        ledger = getattr(self.llm_client, "token_usage_ledger", None)
+        if ledger is None:
+            return False
+        snapshot = ledger.snapshot()
+        admission = snapshot.get("p6_balanced_admission")
+        return isinstance(admission, dict) and bool(admission.get("enabled"))
+
+    @staticmethod
+    def _p6_internal_failure_marker() -> str:
+        return "class=internal_failure; count=1"
+
+    @staticmethod
+    def _p6_internal_failure_metadata() -> Dict[str, Any]:
+        return {"failure_class": "internal_failure", "failure_count": 1}
 
     def _tool_executor(self, name: str, args: Any) -> Dict[str, Any]:
         tool = self._tool_by_name.get(name)
@@ -511,7 +530,21 @@ class JsonToolAgent(ToolCallingAgent):
                 data={},
                 error=f"Failed to parse {parse_label}. See logs for full content.",
             )
+        except P6BalancedTokenAdmissionError:
+            raise
         except Exception as exc:
+            if self._p6_answer_free_failure_mode():
+                logger.error(
+                    "%s failed: %s",
+                    self.name,
+                    self._p6_internal_failure_marker(),
+                )
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error=self._p6_internal_failure_marker(),
+                    metadata=self._p6_internal_failure_metadata(),
+                )
             return AgentResponse(success=False, data={}, error=str(exc))
 
     def _extract_json_output(
@@ -596,6 +629,8 @@ class JsonToolAgent(ToolCallingAgent):
             return None
         try:
             data = json.loads(arguments)
+        except P6BalancedTokenAdmissionError:
+            raise
         except Exception:
             return None
         return data if isinstance(data, dict) else None
@@ -962,13 +997,23 @@ class JsonToolAgent(ToolCallingAgent):
                 trace_label=trace_label,
                 trace_iteration=trace_iteration,
             )
+        except P6BalancedTokenAdmissionError:
+            raise
         except Exception as exc:
+            p6_answer_free = self._p6_answer_free_failure_mode()
             if not response_format:
-                logger.warning(
-                    "JSON repair call failed for %s: %s",
-                    json_output_spec.type_name,
-                    exc,
-                )
+                if p6_answer_free:
+                    logger.warning(
+                        "JSON repair call failed for %s: %s",
+                        json_output_spec.type_name,
+                        self._p6_internal_failure_marker(),
+                    )
+                else:
+                    logger.warning(
+                        "JSON repair call failed for %s: %s",
+                        json_output_spec.type_name,
+                        exc,
+                    )
                 return None
             try:
                 return chat_completion(
@@ -994,13 +1039,22 @@ class JsonToolAgent(ToolCallingAgent):
                     trace_label=f"{trace_label}; structured_fallback=tool",
                     trace_iteration=trace_iteration,
                 )
+            except P6BalancedTokenAdmissionError:
+                raise
             except Exception as fallback_exc:
-                logger.warning(
-                    "JSON repair call failed for %s after structured fallback: %s; fallback_error=%s",
-                    json_output_spec.type_name,
-                    exc,
-                    fallback_exc,
-                )
+                if p6_answer_free:
+                    logger.warning(
+                        "JSON repair call failed for %s after structured fallback: %s",
+                        json_output_spec.type_name,
+                        self._p6_internal_failure_marker(),
+                    )
+                else:
+                    logger.warning(
+                        "JSON repair call failed for %s after structured fallback: %s; fallback_error=%s",
+                        json_output_spec.type_name,
+                        exc,
+                        fallback_exc,
+                    )
                 return None
 
     @staticmethod

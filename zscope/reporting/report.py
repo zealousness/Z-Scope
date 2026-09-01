@@ -137,6 +137,11 @@ class Issue:
     decision_trace_ref: Optional[str] = None
     decision_trace_sha256: Optional[str] = None
     terminal_event_uid: Optional[str] = None
+    terminal_transition_event_uid: Optional[str] = None
+    terminal_transition_event_hash: Optional[str] = None
+    terminal_transition_authority_sha256: Optional[str] = None
+    terminal_transition_level: Optional[str] = None
+    terminal_transition_disposition: Optional[str] = None
     terminal_authority: Optional[str] = None
     terminal_reason_codes: Optional[List[str]] = None
     open_clause_ids: Optional[List[str]] = None

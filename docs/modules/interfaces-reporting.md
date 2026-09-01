@@ -49,7 +49,7 @@ tests:
 ## 必须保持的不变量
 
 - `report_views.default` 与 `report_views.with_needs_review` 的语义和计数必须一致且可复算。
-- `confirmed` 同时属于 default 与 with-needs-review，`needs_review` 只属于后者；rejected、shadow 和 engine failure 仅保留 terminal trace。Finding-root 只做 primary/alias 展示投影，不能删除底层 cluster trace。
+- `confirmed` 同时属于 default 与 with-needs-review，canonical `needs_review` 只属于后者；`audit_observations` 是独立、守恒的 shadow-observation 集合，既不进入 default，也不冒充 with-needs-review finding，但必须连同其 terminal trace 在报告 metadata 中保留。rejected 与 engine failure 同样保留 terminal trace。Finding-root 只做 primary/alias 展示投影，不能删除底层 cluster trace。
 - `zscope-explain` 只能读取冻结的 report/manifest/trace/evidence/usage。它在输出前验证事件链、trace 文档 hash、所有内容寻址引用与 usage sidecar；`policy-replay` 不调用模型，`reverify` 对严格 P2 证书必须加载冻结 ProgramProofIR、obligation、action 和 certificate 后重新运行独立 Checker，不能只检查证书 hash；代码 revision 变化时拒绝比较。
 - Finding-root 投影不得使用 benchmark truth、规则名、自由文本相似度或 LLM，也不得改变 Candidate Ledger/Validator identity；不能跨 defect family、函数、subject 或 decision region 合并，反证、blocking negative evidence 与事实冲突都会阻断合并。needs-review 只有在 required/missing fact 与阻断契约一致时才能合并。
 - live 报告不得注册 report-time semantic-dedup hook 或 LLM cache。历史报告展示只能调用 `zscope.compat.reports` 的只读副本，不得回流 Ledger、Proof 或 promotion。

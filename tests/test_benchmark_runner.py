@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
 import yaml
 
+from scripts.p2_proof_corpus import build_case
 from zscope.benchmarking import runner as benchmark_runner
 from zscope.cli import benchmark as benchmark_cli
 from zscope.benchmarking.runner import (
@@ -23,7 +25,32 @@ from zscope.benchmarking.runner import (
     score_artifact,
 )
 from zscope.framework.llm_usage import LLMUsageAttribution, LLMUsageEvent
+from zscope.core.validation.authority import TerminalAuthorityEvaluator
+from zscope.core.validation.proof_kernel import ProofKernelEngine
 from zscope.orchestration.decision_trace import DecisionTraceStore
+
+
+@lru_cache(maxsize=1)
+def _confirmed_v4_bundle() -> dict:
+    case = build_case("concurrency", 0)
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=case["program_proof_ir"],
+        obligation=case["proof_obligation"],
+    )
+    carrier = {}
+    evaluation.apply_to_issue(carrier)
+    authority = TerminalAuthorityEvaluator().evaluate(carrier, operation="live").to_dict()
+    carrier["proof_kernel_terminal_authority_decision"] = authority
+    carrier["terminal_authority_decision"] = authority
+    return carrier
+
+
+def _needs_review_v4_bundle() -> dict:
+    authority = TerminalAuthorityEvaluator().evaluate({}, operation="live").to_dict()
+    return {
+        "proof_kernel_terminal_authority_decision": authority,
+        "terminal_authority_decision": authority,
+    }
 
 
 def _usage_event(*, sequence: int = 1, reservation_id: str = "call-1") -> dict:
@@ -52,6 +79,43 @@ def _usage_event(*, sequence: int = 1, reservation_id: str = "call-1") -> dict:
         cached_prompt_tokens=2,
         reasoning_tokens=1,
     ).to_dict()
+
+
+def test_p6_retry_conservation_bounds_contract_regeneration_per_operation() -> None:
+    report = {
+        "metadata": {
+            "llm_usage": {
+                "p6_balanced_admission": {"enabled": True},
+                "rejected_before_model_count": 0,
+                "rejected_before_model_reasons": {},
+                "rejected_before_model_attempts": [],
+            }
+        }
+    }
+    operation_id = "a" * 64
+
+    def regeneration(sequence: int) -> dict:
+        row = _usage_event(sequence=sequence, reservation_id=f"call-{sequence}")
+        row.update(
+            {
+                "call_chain_id": f"llm-call-chain-{sequence}",
+                "attempt_index": 1,
+                "logical_operation_id": operation_id,
+                "call_kind": "contract_regeneration",
+            }
+        )
+        row["attribution"]["call_kind"] = "contract_regeneration"
+        return row
+
+    one = benchmark_runner._p6_retry_conservation(report, usage_rows=[regeneration(1)])
+    assert one["passed"] is True
+    assert one["maximum_observed_contract_regenerations"] == 1
+
+    two = benchmark_runner._p6_retry_conservation(
+        report, usage_rows=[regeneration(1), regeneration(2)]
+    )
+    assert two["passed"] is False
+    assert two["maximum_observed_contract_regenerations"] == 2
 
 
 @pytest.mark.parametrize("language", ["c_cpp", "java"])
@@ -356,6 +420,25 @@ def test_cpp_benchmark_uses_eight_parallel_entry_and_validation_workers() -> Non
     assert config["concurrency"]["svf_workers"] == 2
 
 
+def test_public_p6_pilot_plan_is_answer_free_until_external_freeze(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "Z_SCOPE_LLM_BASE_URL",
+        "Z_SCOPE_LLM_MODEL",
+        "Z_SCOPE_BENCHMARK_TRUTH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    plan = run_benchmark("c_cpp", "pilot", dry_run=True, scan_depth="balanced")
+
+    assert plan["answer_free_producer"] is True
+    assert plan["truth_stage"] == "post_freeze_score"
+    assert plan["stages"][-2:] == ["producer_metrics", "freeze_external"]
+    assert "score" not in plan["stages"]
+    assert "gate" not in plan["stages"]
+
+
 def test_wsl_cpp_work_root_rejects_windows_mount(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(tmp_path))
     monkeypatch.setattr(benchmark_runner, "_is_wsl", lambda: True)
@@ -385,6 +468,101 @@ def test_trial_workspace_is_temporary_and_removed(monkeypatch, tmp_path: Path) -
 
     assert result == {"run": 1, "mode": "trial"}
     assert not observed["workspace"].exists()
+
+
+def test_p6_answer_free_trial_propagates_without_a_score_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    work_parent = tmp_path / "native-work"
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
+
+    def fake_run(
+        spec,
+        run_dir,
+        run_number,
+        *,
+        mode,
+        workspace,
+        scan_depth,
+        answer_free_producer,
+    ):
+        assert mode == "pilot"
+        assert answer_free_producer is True
+        return {
+            "answer_free_producer": True,
+            "execution": {"scan_argv": ["zscope", "--p6-pilot"]},
+        }
+
+    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fake_run)
+
+    summary = benchmark_runner._run_trial(
+        SPECS["c_cpp"],
+        artifact,
+        1,
+        mode="pilot",
+        answer_free_producer=True,
+    )
+
+    assert summary["answer_free_producer"] is True
+    assert "score_argv" not in summary["execution"]
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "report.json",
+        "llm_usage_events.jsonl",
+        "decision_traces/VAL_1.json",
+        "scan-input/src/canary.c",
+    ),
+)
+def test_p6_cold_producer_scans_actual_key_bytes_in_every_archive_surface(
+    tmp_path: Path, relative: str
+) -> None:
+    secret = "actual-p6-scanner-key-that-must-never-land"
+    root = tmp_path / "producer-material"
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"details": secret}), encoding="utf-8")
+
+    with pytest.raises(BenchmarkError) as raised:
+        benchmark_runner._p6_scan_cold_producer_material_for_secret(
+            (root,),
+            credential_environment={"Z_SCOPE_API_KEY": secret},
+        )
+
+    assert raised.value.failure_class == "artifact_integrity_failure"
+    assert secret not in str(raised.value)
+
+
+def test_p6_actual_key_detection_destroys_attempt_without_interrupted_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    work_parent = tmp_path / "native-work"
+    attempt = tmp_path / "run-01"
+    attempt.mkdir()
+    (attempt / "report.json").write_text("contaminated", encoding="utf-8")
+    monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
+
+    def fail_with_actual_key(*_args: object, **_kwargs: object) -> None:
+        raise benchmark_runner._P6ProtectedCanaryError()
+
+    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fail_with_actual_key)
+
+    with pytest.raises(BenchmarkError) as raised:
+        benchmark_runner._run_trial(
+            SPECS["c_cpp"],
+            attempt,
+            1,
+            mode="pilot",
+            credential_environment={"Z_SCOPE_API_KEY": "actual-key"},
+            answer_free_producer=True,
+        )
+
+    assert raised.value.failure_class == "artifact_integrity_failure"
+    assert not attempt.exists()
 
 
 def test_failed_trial_archives_partial_trace_before_workspace_cleanup(
@@ -488,6 +666,8 @@ def test_provider_model_identity_metrics_never_fallback_to_requested_model() -> 
         "provider_response_model_mismatch_count": 1,
         "requested_model_mismatch_count": 0,
         "provider_response_model_successful_call_count": 3,
+        "provider_response_model_counts": {"deepseek-v4-flash-ga-260731": 1},
+        "provider_response_model_counts_conserved": False,
     }
 
 
@@ -748,16 +928,13 @@ def test_decision_trace_sidecar_is_archived_and_rebound_for_offline_explain(
         "validation_status": "validated",
         "proof_coverage": "complete",
         "decision_proof": {"coverage": "complete", "polarity": "positive"},
-        "terminal_authority_decision": {
-            "schema_version": "zscope.terminal-authority-decision.v3",
-            "terminal": True,
-            "disposition": "confirmed",
-            "reason_code": "CONFIRMED_DETERMINISTIC_PROOF",
-            "authority": "zscope.proof-checker",
-            "next_action": "",
-            "conflict_resolution": None,
-        },
+        **_confirmed_v4_bundle(),
     }
+    store.record_terminal_transition(
+        issue,
+        level="V1",
+        authority=issue["terminal_authority_decision"],
+    )
     store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
     manifest = store.snapshot()
     report = {
@@ -828,15 +1005,7 @@ def test_decision_trace_archive_rejects_tampered_content_object(tmp_path: Path) 
         "candidate_uid": "CAND_1",
         "validation_cluster_uid": "VAL_1",
         "candidate_disposition": "needs_review",
-        "terminal_authority_decision": {
-            "schema_version": "zscope.terminal-authority-decision.v3",
-            "terminal": True,
-            "disposition": "needs_review",
-            "reason_code": "NEEDS_REVIEW_OPEN_CLAUSES",
-            "authority": "zscope.proof-checker",
-            "next_action": "",
-            "conflict_resolution": None,
-        },
+        **_needs_review_v4_bundle(),
     }
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
     manifest = store.snapshot()
@@ -885,6 +1054,9 @@ def test_usage_event_sidecar_accepts_legacy_v1_without_response_identity(
     event["schema_version"] = "zscope.llm-usage-event.v1"
     event.pop("requested_model")
     event.pop("provider_response_model")
+    event.pop("call_chain_id")
+    event.pop("attempt_index")
+    event.pop("logical_operation_id")
     path.write_text(json.dumps(event) + "\n", encoding="utf-8")
 
     assert benchmark_runner._read_usage_events_jsonl(path) == [event]

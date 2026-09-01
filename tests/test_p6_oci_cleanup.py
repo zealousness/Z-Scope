@@ -48,6 +48,7 @@ class FakeCleanupRuntime:
         command = [str(value) for value in argv]
         self.environments.append(dict(kwargs.get("env") or {}))
         if command[1:3] == ["ps", "--all"]:
+            assert command[3] == "--no-trunc"
             filters = [
                 command[index + 1].removeprefix("label=")
                 for index, value in enumerate(command[:-1])
@@ -60,7 +61,7 @@ class FakeCleanupRuntime:
                     "=" in item and labels.get(item.split("=", 1)[0]) == item.split("=", 1)[1]
                     for item in filters
                 ):
-                    matches.append(identity[:12])
+                    matches.append(identity)
             return self._result(command, stdout="\n".join(matches) + ("\n" if matches else ""))
         if command[1] == "inspect":
             listed = command[2]
@@ -86,9 +87,7 @@ def _container(identity_character: str, labels: dict[str, str]) -> dict[str, Any
         "Name": f"/zscope-benchmark-{phase}-{identity[-12:]}",
         "Config": {
             "Labels": dict(labels),
-            # Inspect may contain the live scanner key, but the helper neither
-            # prints nor persists the raw object.
-            "Env": ["Z_SCOPE_API_KEY=never-persist-this"],
+            "Env": [],
         },
     }
 
@@ -122,6 +121,12 @@ def test_current_cleanup_removes_only_exact_run_attempt_and_scrubs_child_env(
     runtime = FakeCleanupRuntime([current, other])
     monkeypatch.setenv("Z_SCOPE_API_KEY", "host-secret")
     monkeypatch.setenv("Z_SCOPE_P6_API_KEY_FILE", "/private/key-file")
+    monkeypatch.setenv("PATH", "/attacker/bin")
+    monkeypatch.setenv("HOME", "/attacker/home")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/attacker/run")
+    monkeypatch.setenv("LD_PRELOAD", "/attacker/inject.so")
+    monkeypatch.setenv("PYTHONPATH", "/attacker/python")
+    monkeypatch.setenv("HTTPS_PROXY", "http://attacker.invalid:8080")
 
     assert _cleanup(tmp_path, runtime, mode="current") == 1
 
@@ -129,6 +134,17 @@ def test_current_cleanup_removes_only_exact_run_attempt_and_scrubs_child_env(
     assert other["Id"] in runtime.containers
     assert all("Z_SCOPE_API_KEY" not in item for item in runtime.environments)
     assert all("Z_SCOPE_P6_API_KEY_FILE" not in item for item in runtime.environments)
+    assert all(item["PATH"] != "/attacker/bin" for item in runtime.environments)
+    assert all(
+        "HOME" not in item or item["HOME"] != "/attacker/home" for item in runtime.environments
+    )
+    assert all(
+        "XDG_RUNTIME_DIR" not in item or item["XDG_RUNTIME_DIR"] != "/attacker/run"
+        for item in runtime.environments
+    )
+    assert all("LD_PRELOAD" not in item for item in runtime.environments)
+    assert all("PYTHONPATH" not in item for item in runtime.environments)
+    assert all("HTTPS_PROXY" not in item for item in runtime.environments)
 
 
 def test_stale_cleanup_removes_all_verified_scanners_in_serialized_repository_scope(
@@ -156,6 +172,18 @@ def test_cleanup_refuses_unverified_or_mismatched_targets(tmp_path: Path, mutati
     else:
         container["Name"] = "/zscope-benchmark-build-aaaaaaaaaaaa"
     runtime = FakeCleanupRuntime([container])
+
+    with pytest.raises(P6OciCleanupError, match="identity"):
+        _cleanup(tmp_path, runtime, mode="stale")
+
+    assert runtime.removed == []
+
+
+def test_cleanup_refuses_same_prefix_cross_job_replacement(tmp_path: Path) -> None:
+    container = _container("a", _labels(run_id="12345", run_attempt="2"))
+    runtime = FakeCleanupRuntime([container])
+    listed_id = container["Id"]
+    container["Id"] = listed_id[:12] + "b" * 52
 
     with pytest.raises(P6OciCleanupError, match="identity"):
         _cleanup(tmp_path, runtime, mode="stale")

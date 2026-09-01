@@ -11,6 +11,7 @@ from zscope.benchmarking.p6_review import (
     REVIEW_ROLES,
     ROLE_CHECKS,
     aggregate_review_set,
+    build_common_review_evidence,
     build_review_packet,
     finalize_review_packet,
     load_reviewer_identity_manifest,
@@ -23,6 +24,16 @@ from zscope.benchmarking.p6_review import (
 
 def _write_role_packet(root: Path, role: str, *, evidence_root: str = "d" * 64) -> Path:
     root.mkdir(parents=True)
+    common = build_common_review_evidence(
+        qualification_sha256="c" * 64,
+        e0_lineage_artifact_sha256="1" * 64,
+        balanced_quality_gate_sha256=evidence_root,
+        quality_revalidation_receipt_sha256="2" * 64,
+        successor_qualification_sha256="3" * 64,
+    )
+    common_path = root / "evidence" / "common-review-evidence.json"
+    common_path.parent.mkdir()
+    common_path.write_text(json.dumps(common, sort_keys=True) + "\n", encoding="utf-8")
     evidence = root / "evidence.json"
     evidence.write_text('{"answer_free":true}\n', encoding="utf-8")
     material = root / "review-material-manifest.json"
@@ -36,7 +47,7 @@ def _write_role_packet(root: Path, role: str, *, evidence_root: str = "d" * 64) 
         candidate_sha256="a" * 64,
         policy_sha256="b" * 64,
         qualification_sha256="c" * 64,
-        evidence_root_sha256=evidence_root,
+        evidence_root_sha256=common["evidence_root_sha256"],
         artifact_files=[
             {
                 "path": "evidence.json",
@@ -48,6 +59,11 @@ def _write_role_packet(root: Path, role: str, *, evidence_root: str = "d" * 64) 
                 "sha256": hashlib.sha256(material.read_bytes()).hexdigest(),
                 "content": material.read_text(encoding="utf-8"),
             },
+            {
+                "path": "evidence/common-review-evidence.json",
+                "sha256": hashlib.sha256(common_path.read_bytes()).hexdigest(),
+                "content": common_path.read_text(encoding="utf-8"),
+            },
         ],
     )
     path = root / "packet.json"
@@ -58,6 +74,14 @@ def _write_role_packet(root: Path, role: str, *, evidence_root: str = "d" * 64) 
 
 def _decision(packet: dict, role: str) -> dict:
     identity = FROZEN_REVIEWER_IDENTITIES[role]
+    material_sha = next(
+        row["sha256"]
+        for row in packet["artifact_files"]
+        if row["path"] == "review-material-manifest.json"
+    )
+    evidence_sha = next(
+        row["sha256"] for row in packet["artifact_files"] if row["path"] == "evidence.json"
+    )
     return {
         "schema_version": "zscope.p6-review-decision.v1",
         "packet_uid": packet["packet_uid"],
@@ -77,7 +101,7 @@ def _decision(packet: dict, role: str) -> dict:
             {
                 "name": name,
                 "result": "pass",
-                "artifact_sha256": packet["artifact_files"][1 if index == 0 else 0]["sha256"],
+                "artifact_sha256": material_sha if index == 0 else evidence_sha,
             }
             for index, name in enumerate(ROLE_CHECKS[role])
         ],
@@ -131,7 +155,9 @@ def _command_identity(packet: dict, role: str) -> list[str]:
             "--profile",
             "headless",
             "--patch",
-            f"<ephemeral-patch-sha256:{patch_hash}>",
+            f"<ephemeral-policy-patch-sha256:{patch_hash}>",
+            "--patch",
+            "<ephemeral-review-input-channel>",
             "<isolated-instruction-sha256:"
             + hashlib.sha256(p6_review._deepseek_instruction().encode()).hexdigest()
             + ">",
@@ -146,8 +172,26 @@ def _write_review_artifact(packet_path: Path, output_dir: Path, role: str) -> No
     material_sha, material = p6_review._material_from_packet(packet, material_root=Path.cwd())
     prompt = p6_review._prompt(packet, role=role, material=material)
     prompt_sha = hashlib.sha256(prompt.encode()).hexdigest()
+    call = p6_review._review_usage_call(
+        sequence=1,
+        attribution="initial",
+        role=role,
+        observed_model_identity=FROZEN_REVIEWER_IDENTITIES[role]["model"],
+        model_observation_source=(
+            "sealed_command" if role == "independent_benchmark" else "provider_reported"
+        ),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        input_sha256=prompt_sha,
+        transport_stdout_sha256=hashlib.sha256(stdout.encode()).hexdigest(),
+        transport_stderr_sha256=hashlib.sha256(b"").hexdigest(),
+    )
+    reviewer_usage = p6_review._build_reviewer_usage(
+        role=role, packet=packet, decision=decision, calls=[call]
+    )
     raw = {
-        "schema_version": "zscope.p6-review-raw-envelope.v1",
+        "schema_version": p6_review.P6_REVIEW_RAW_SCHEMA_VERSION,
         "packet_uid": packet["packet_uid"],
         "packet_sha256": packet["packet_sha256"],
         "role": role,
@@ -169,6 +213,7 @@ def _write_review_artifact(packet_path: Path, output_dir: Path, role: str) -> No
         "accepted_prompt_sha256": prompt_sha,
         "material_root_sha256": material_sha,
         "decision_sha256": canonical_sha256(decision),
+        "reviewer_usage": reviewer_usage,
     }
     output_dir.mkdir()
     (output_dir / "decision.json").write_text(
@@ -176,6 +221,57 @@ def _write_review_artifact(packet_path: Path, output_dir: Path, role: str) -> No
     )
     (output_dir / "raw-envelope.json").write_text(
         json.dumps(raw, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _review_process_result(
+    role: str, decision_stdout: str, *, returncode: int = 0, stderr: str = ""
+) -> object:
+    return type(
+        "Result",
+        (),
+        {
+            "returncode": returncode,
+            "stdout": decision_stdout,
+            "stderr": stderr,
+            "p6_decision_stdout": decision_stdout,
+            "p6_review_usage_rows": [
+                {
+                    "observed_model_identity": FROZEN_REVIEWER_IDENTITIES[role]["model"],
+                    "model_observation_source": (
+                        "sealed_command" if role == "independent_benchmark" else "provider_reported"
+                    ),
+                    "prompt_tokens": 20,
+                    "completion_tokens": 5,
+                    "total_tokens": 25,
+                }
+            ],
+        },
+    )()
+
+
+def _dsh_usage_event(*, input_tokens: int = 13, output_tokens: int = 5) -> str:
+    return (
+        json.dumps(
+            {
+                "type": "assistant/message",
+                "data": {
+                    "message": {
+                        "role": "assistant",
+                        "content": "answer-free reviewer output is never projected",
+                        "source": {
+                            "provider": "deepseek",
+                            "model": "deepseek-v4-pro-0813",
+                        },
+                    },
+                    "usage": {
+                        "inputTokens": input_tokens,
+                        "outputTokens": output_tokens,
+                    },
+                },
+            }
+        )
+        + "\n"
     )
 
 
@@ -228,6 +324,60 @@ def _set_correction_records(
         )
     raw["bounded_correction"] = records
     raw["accepted_prompt_sha256"] = records[-1]["correction_prompt_sha256"]
+    calls = []
+    invocation_rows = [
+        (
+            "initial",
+            hashlib.sha256(initial_prompt.encode()).hexdigest(),
+            records[0]["initial_stdout_sha256"],
+            records[0]["initial_stderr_sha256"],
+        )
+    ]
+    for index, record in enumerate(records):
+        next_stdout = (
+            records[index + 1]["initial_stdout_sha256"]
+            if index + 1 < len(records)
+            else raw["reviewer_stdout_sha256"]
+        )
+        next_stderr = (
+            records[index + 1]["initial_stderr_sha256"]
+            if index + 1 < len(records)
+            else raw["stderr_sha256"]
+        )
+        invocation_rows.append(
+            (
+                record["kind"],
+                record["correction_prompt_sha256"],
+                next_stdout,
+                next_stderr,
+            )
+        )
+    for sequence, (attribution, input_sha, stdout_sha, stderr_sha) in enumerate(
+        invocation_rows, start=1
+    ):
+        calls.append(
+            p6_review._review_usage_call(
+                sequence=sequence,
+                attribution=attribution,
+                role=role,
+                observed_model_identity=FROZEN_REVIEWER_IDENTITIES[role]["model"],
+                model_observation_source=(
+                    "sealed_command" if role == "independent_benchmark" else "provider_reported"
+                ),
+                prompt_tokens=10 + sequence,
+                completion_tokens=5,
+                total_tokens=15 + sequence,
+                input_sha256=input_sha,
+                transport_stdout_sha256=stdout_sha,
+                transport_stderr_sha256=stderr_sha,
+            )
+        )
+    raw["reviewer_usage"] = p6_review._build_reviewer_usage(
+        role=role,
+        packet=packet,
+        decision=decision,
+        calls=calls,
+    )
     raw_path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
     return raw
 
@@ -478,6 +628,317 @@ def test_three_reviews_are_role_separated_and_share_one_evidence_root(tmp_path: 
     assert review_set["blocker_count"] == 0
     assert review_set["formal_evidence"] is False
     assert review_set["release_eligible"] is False
+    packet_values = [json.loads(path.read_text(encoding="utf-8")) for path in packets.values()]
+    assert len({packet["packet_sha256"] for packet in packet_values}) == 3
+    assert len({packet["evidence_root_sha256"] for packet in packet_values}) == 1
+    role_payloads = [
+        next(
+            row
+            for row in packet["artifact_files"]
+            if row["path"] == "review-material-manifest.json"
+        )
+        for packet in packet_values
+    ]
+    assert len({packet["role"] for packet in packet_values}) == 3
+    assert len({payload["sha256"] for payload in role_payloads}) == 3
+    conservation = review_set["reviewer_usage_conservation"]
+    assert conservation["role_count"] == 3
+    assert conservation["physical_call_count"] == 3
+    assert conservation["provider_reported_call_count"] == 3
+    assert conservation["provider_usage_coverage"] == 1.0
+    assert conservation["missing_usage_call_count"] == 0
+    assert conservation["mismatched_model_call_count"] == 0
+    assert conservation["estimated_call_count"] == 0
+    assert conservation["token_conservation_passed"] is True
+    assert conservation["included_in_balanced_scan_token_gate"] is False
+    assert all(len(row["review_artifact_sha256"]) == 64 for row in review_set["reviews"])
+    observation_sources = {
+        row["role"]: row["model_observation_source"] for row in review_set["reviews"]
+    }
+    assert observation_sources == {
+        "product_architecture": "provider_reported",
+        "proof_security": "provider_reported",
+        "independent_benchmark": "sealed_command",
+    }
+    assert all("actual_model" not in row for row in review_set["reviews"])
+
+
+def test_reviewer_usage_schema_and_three_frozen_harness_envelopes(tmp_path: Path) -> None:
+    claude_outer = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "duration_ms": 1,
+        "duration_api_ms": 1,
+        "num_turns": 1,
+        "result": "",
+        "session_id": "answer-free",
+        "total_cost_usd": 0,
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_creation_input_tokens": 4,
+            "cache_read_input_tokens": 6,
+        },
+        "modelUsage": {"glm-5.3": {"inputTokens": 110, "outputTokens": 20}},
+        "permission_denials": [],
+        "uuid": "answer-free",
+        "structured_output": {},
+    }
+    assert p6_review._claude_usage_rows(json.dumps(claude_outer)) == [
+        {
+            "observed_model_identity": "glm-5.3",
+            "model_observation_source": "provider_reported",
+            "prompt_tokens": 110,
+            "completion_tokens": 20,
+            "total_tokens": 130,
+        }
+    ]
+
+    codex_jsonl = "\n".join(
+        (
+            json.dumps({"type": "thread.started", "thread_id": "answer-free"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 200,
+                        "cached_input_tokens": 50,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 30,
+                        "reasoning_output_tokens": 10,
+                    },
+                }
+            ),
+        )
+    )
+    assert p6_review._codex_usage_rows(codex_jsonl, requested_model="gpt-5.6-sol") == [
+        {
+            "observed_model_identity": "gpt-5.6-sol",
+            "model_observation_source": "sealed_command",
+            "prompt_tokens": 200,
+            "completion_tokens": 30,
+            "total_tokens": 230,
+        }
+    ]
+
+    dsh_home = tmp_path / "dsh"
+    dsh_home.mkdir()
+    environment = {"DSH_HOME": str(dsh_home.resolve())}
+    session = dsh_home / "sessions" / "project" / "review.jsonl"
+    session.parent.mkdir(parents=True)
+    session.write_text(
+        "\n".join(
+            (
+                json.dumps({"schemaVersion": 1, "answer_free": True}),
+                json.dumps(
+                    {
+                        "type": "request/context",
+                        "data": {
+                            "provider": "deepseek",
+                            "model": "deepseek-v4-pro-0813",
+                        },
+                    }
+                ),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = p6_review._dsh_session_state(environment)
+    with session.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "type": "assistant/message",
+                    "data": {
+                        "message": {
+                            "role": "assistant",
+                            "content": "never persisted",
+                            "source": {
+                                "provider": "deepseek",
+                                "model": "deepseek-v4-pro-0813",
+                            },
+                        },
+                        "usage": {
+                            "inputTokens": 300,
+                            "outputTokens": 40,
+                            "cacheReadTokens": 7,
+                            "cacheWriteTokens": 3,
+                            "reasoningTokens": 11,
+                        },
+                    },
+                }
+            )
+            + "\n"
+        )
+    dsh_rows = p6_review._dsh_usage_rows(environment=environment, before=before)
+    assert dsh_rows == [
+        {
+            "provider": "deepseek",
+            "observed_model_identity": "deepseek-v4-pro-0813",
+            "model_observation_source": "provider_reported",
+            "prompt_tokens": 310,
+            "completion_tokens": 40,
+            "total_tokens": 350,
+        }
+    ]
+    assert "message" not in dsh_rows[0]
+    assert "reasoningTokens" not in dsh_rows[0]
+
+    before_append = p6_review._dsh_session_state(environment)
+    with session.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "type": "assistant/message",
+                    "data": {
+                        "message": {
+                            "role": "assistant",
+                            "content": "second call not persisted",
+                            "source": {
+                                "provider": "deepseek",
+                                "model": "deepseek-v4-pro-0813",
+                            },
+                        },
+                        "usage": {
+                            "inputTokens": 13,
+                            "outputTokens": 5,
+                        },
+                    },
+                }
+            )
+            + "\n"
+        )
+    assert p6_review._dsh_usage_rows(environment=environment, before=before_append) == [
+        {
+            "provider": "deepseek",
+            "observed_model_identity": "deepseek-v4-pro-0813",
+            "model_observation_source": "provider_reported",
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "total_tokens": 18,
+        }
+    ]
+
+    packet_path = _write_role_packet(tmp_path / "schema-packet", "proof_security")
+    output = tmp_path / "schema-review"
+    _write_review_artifact(packet_path, output, "proof_security")
+    raw = json.loads((output / "raw-envelope.json").read_text(encoding="utf-8"))
+    schema = json.loads(
+        Path("zscope/benchmarking/p6_reviewer_usage.schema.json").read_text(encoding="utf-8")
+    )
+    assert schema["$id"] == "https://zscope.dev/schemas/p6_reviewer_usage.schema.json"
+
+
+def test_codex_failed_turn_requires_and_conserves_strict_provider_usage() -> None:
+    failed_with_usage = json.dumps(
+        {
+            "type": "turn.failed",
+            "usage": {
+                "input_tokens": 31,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 7,
+                "reasoning_output_tokens": 2,
+            },
+        }
+    )
+    assert p6_review._codex_usage_rows(failed_with_usage, requested_model="gpt-5.6-sol") == [
+        {
+            "observed_model_identity": "gpt-5.6-sol",
+            "model_observation_source": "sealed_command",
+            "prompt_tokens": 31,
+            "completion_tokens": 7,
+            "total_tokens": 38,
+        }
+    ]
+    with pytest.raises(P6ProtocolError, match="provider usage"):
+        p6_review._codex_usage_rows(
+            json.dumps({"type": "turn.failed", "error": {"message": "redacted"}}),
+            requested_model="gpt-5.6-sol",
+        )
+
+
+def test_dsh_usage_rejects_inode_replacement_prefix_forge_and_new_file(
+    tmp_path: Path,
+) -> None:
+    def session_tree(name: str) -> tuple[dict[str, str], Path]:
+        root = tmp_path / name
+        session = root / "sessions" / "project" / "review.jsonl"
+        session.parent.mkdir(parents=True)
+        session.write_text('{"schemaVersion":1}\n', encoding="utf-8")
+        return {"DSH_HOME": str(root.resolve())}, session
+
+    environment, session = session_tree("inode-replace")
+    before = p6_review._dsh_session_state(environment)
+    replacement = session.with_name("replacement.jsonl")
+    replacement.write_bytes(session.read_bytes() + _dsh_usage_event().encode("utf-8"))
+    replacement.replace(session)
+    with pytest.raises(P6ProtocolError, match="replaced or linked"):
+        p6_review._dsh_usage_rows(environment=environment, before=before)
+
+    environment, session = session_tree("prefix-forge")
+    before = p6_review._dsh_session_state(environment)
+    prefix = bytearray(session.read_bytes())
+    prefix[0] ^= 1
+    session.write_bytes(bytes(prefix) + _dsh_usage_event().encode("utf-8"))
+    with pytest.raises(P6ProtocolError, match="prefix changed"):
+        p6_review._dsh_usage_rows(environment=environment, before=before)
+
+    environment, session = session_tree("new-file")
+    before = p6_review._dsh_session_state(environment)
+    session.with_name("injected.jsonl").write_text(_dsh_usage_event(), encoding="utf-8")
+    with pytest.raises(P6ProtocolError, match="session tree changed"):
+        p6_review._dsh_usage_rows(environment=environment, before=before)
+
+
+def test_reviewer_usage_rejects_self_resealed_model_usage_and_token_tamper(
+    tmp_path: Path,
+) -> None:
+    role = "proof_security"
+    packet_path = _write_role_packet(tmp_path / "packet", role)
+    output = tmp_path / "review"
+    _write_review_artifact(packet_path, output, role)
+    raw_path = output / "raw-envelope.json"
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+
+    call = raw["reviewer_usage"]["calls"][0]
+    call["observed_model_identity"] = "gpt-5.6-sol"
+    call["call_sha256"] = canonical_sha256(
+        {key: value for key, value in call.items() if key != "call_sha256"}
+    )
+    raw["reviewer_usage"]["mismatched_model_call_count"] = 1
+    raw["reviewer_usage"]["reviewer_usage_sha256"] = canonical_sha256(
+        {
+            key: value
+            for key, value in raw["reviewer_usage"].items()
+            if key != "reviewer_usage_sha256"
+        }
+    )
+    raw_path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(P6ProtocolError, match="usage binding or conservation"):
+        validate_review_artifact(output_dir=output, packet_path=packet_path, role=role)
+
+
+def test_review_set_rejects_any_common_evidence_tamper(tmp_path: Path) -> None:
+    packets = {}
+    outputs = {}
+    for role in REVIEW_ROLES:
+        packet_path = _write_role_packet(tmp_path / f"packet-{role}", role)
+        output_dir = tmp_path / f"output-{role}"
+        _write_review_artifact(packet_path, output_dir, role)
+        packets[role] = packet_path
+        outputs[role] = output_dir
+
+    common_path = packets["proof_security"].parent / "evidence" / "common-review-evidence.json"
+    common = json.loads(common_path.read_text(encoding="utf-8"))
+    common["quality_revalidation_receipt_sha256"] = "f" * 64
+    common_path.write_text(json.dumps(common) + "\n", encoding="utf-8")
+
+    with pytest.raises(P6ProtocolError):
+        aggregate_review_set(packet_paths=packets, output_dirs=outputs)
 
 
 def test_review_set_rejects_mixed_qualification_roots(tmp_path: Path) -> None:
@@ -508,6 +969,121 @@ def test_review_material_is_allowlisted_hash_bound_and_never_embedded(tmp_path: 
     assert manifest["material_root_sha256"] == canonical_sha256(
         {key: value for key, value in manifest.items() if key != "material_root_sha256"}
     )
+
+
+@pytest.mark.parametrize(
+    "forbidden_path",
+    (
+        "test/range/benchmark/v16/ground_truth.json",
+        "tmp/scorer/material.json",
+        "tmp/packets/review-packet.json",
+    ),
+)
+def test_review_material_allowlist_rejects_truth_scorer_and_packets(
+    forbidden_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(
+        p6_review.ROLE_REVIEW_MATERIAL_PATHS,
+        "proof_security",
+        (forbidden_path,),
+    )
+
+    with pytest.raises(P6ProtocolError, match="answer material"):
+        p6_review.build_review_material_manifest(candidate_root=Path.cwd(), role="proof_security")
+
+
+def test_review_material_allowlists_cover_current_p6_quality_and_proof_authority() -> None:
+    assert p6_review._MAX_REVIEW_MATERIAL_BYTES == 4_194_304
+    assert p6_review._ANSWER_FREE_REVIEW_MATERIAL_PATH_EXCEPTIONS == frozenset(
+        {"zscope/benchmarking/p6_expected_proxy_attestation.schema.json"}
+    )
+    common = {
+        ".github/workflows/p6-pilot-validation.yml",
+        "scripts/qualify_p6_proof_promotion.py",
+        "tests/test_p6_proof_promotion_qualification.py",
+        "zscope/benchmarking/p6_review.py",
+        "zscope/orchestration/p6-proof-promotion-qualification.v1.json",
+        "zscope/orchestration/proof_promotion_qualification.py",
+        "zscope/orchestration/schemas/p6-proof-promotion-qualification-v1.schema.json",
+    }
+    for role in REVIEW_ROLES:
+        assert common <= set(p6_review.ROLE_REVIEW_MATERIAL_PATHS[role])
+    proof_critical = {
+        "scripts/run_p6_synthetic_replay.py",
+        "tests/test_p6_synthetic_replay.py",
+        "zscope/agents/base.py",
+        "zscope/agents/proof_engine/agent.py",
+        "zscope/benchmarking/p6_synthetic_replay.py",
+        "zscope/core/analysis/analyzer.py",
+        "zscope/core/validation/audit_eligibility.py",
+        "zscope/core/validation/evidence_completion.py",
+        "zscope/core/validation/fact_capabilities.py",
+        "zscope/core/validation/function_ir.py",
+        "zscope/core/validation/proof_kernel/closure.py",
+        "zscope/core/validation/proof_kernel/registry.py",
+        "zscope/core/validation/runner.py",
+        "zscope/orchestration/hypothesis_hunter/resource_proof.py",
+        "zscope/orchestration/hypothesis_hunter/runtime.py",
+        "zscope/orchestration/candidates.py",
+        "zscope/orchestration/decision_trace.py",
+        "zscope/orchestration/parallel_analyzer.py",
+        "zscope/reporting/assembler.py",
+        "zscope/reporting/finding_roots.py",
+        "zscope/reporting/report.py",
+        "zscope/reporting/schema.py",
+        "zscope/reporting/views.py",
+    }
+    assert proof_critical <= set(p6_review.ROLE_REVIEW_MATERIAL_PATHS["proof_security"])
+    quality_critical = {
+        ".github/actions/validate-p6-artifact/action.yml",
+        "containers/p6/Containerfile",
+        "containers/p6/runtime-lock.json",
+        "containers/p6/verify_toolchain.py",
+        "scripts/p6_balanced_orchestrator.py",
+        "scripts/p6_balanced_quality_gate.py",
+        "scripts/p6_tcp_relay.py",
+        "scripts/run_p6_cold_producer.py",
+        "zscope/benchmarking/p6_balanced_quality_aggregate.schema.json",
+        "zscope/benchmarking/p6_balanced_quality_gate.schema.json",
+        "zscope/benchmarking/p6_expected_proxy_attestation.schema.json",
+        "zscope/benchmarking/p6_final_evidence_manifest.schema.json",
+        "zscope/benchmarking/p6_local_image_provenance.schema.json",
+        "zscope/benchmarking/p6_local_proxy_provision.schema.json",
+        "zscope/benchmarking/p6_balanced_orchestrator.py",
+        "zscope/benchmarking/p6_quality_revalidation_receipt.schema.json",
+        "zscope/benchmarking/p6_reviewer_usage.schema.json",
+        "zscope/benchmarking/p6_toolchain_oci_evidence.schema.json",
+        "zscope/cli/cli.py",
+    }
+    for role in ("product_architecture", "independent_benchmark"):
+        assert quality_critical <= set(p6_review.ROLE_REVIEW_MATERIAL_PATHS[role])
+
+    forbidden = (
+        "ground_truth",
+        "ground-truth",
+        "/truth/",
+        "scorer",
+        "/packet/",
+        "/packets/",
+        "/reviews/",
+        "packet.json",
+        "review-packet",
+        "review_packet",
+    )
+    for role in REVIEW_ROLES:
+        paths = p6_review.ROLE_REVIEW_MATERIAL_PATHS[role]
+        assert len(paths) == len(set(paths))
+        assert all(
+            path == "test/range/zscope.benchmark.yaml" or not path.startswith("test/range/")
+            for path in paths
+        )
+        assert all(
+            not any(token in f"/{path.casefold()}/" for token in forbidden) for path in paths
+        )
+        total_bytes = sum((Path.cwd() / path).stat().st_size for path in paths)
+        assert total_bytes < p6_review._MAX_REVIEW_MATERIAL_BYTES
+        manifest = p6_review.build_review_material_manifest(candidate_root=Path.cwd(), role=role)
+        assert manifest["file_count"] == len(paths)
 
 
 def test_review_decision_must_ground_to_material_manifest(tmp_path: Path) -> None:
@@ -817,6 +1393,75 @@ def test_reviewer_transport_exception_does_not_expose_captured_output(
     assert marker not in str(failure.value)
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected_class", "expected_count"),
+    (
+        (
+            P6ProtocolError(
+                "P6 reviewer transport failed after one bounded retry; "
+                "class=review_transport_failed; count=2"
+            ),
+            "review_transport_failed",
+            2,
+        ),
+        (P6ProtocolError("review_binding_invalid"), "review_binding_invalid", 1),
+    ),
+)
+def test_reviewer_wrapper_writes_only_typed_failure_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: P6ProtocolError,
+    expected_class: str,
+    expected_count: int,
+) -> None:
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path.resolve()))
+    monkeypatch.setattr(
+        p6_review,
+        "run_reviewer",
+        lambda **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    marker = tmp_path / "review-failure.json"
+
+    with pytest.raises(P6ProtocolError, match=expected_class):
+        p6_review.run_reviewer_with_failure_marker(
+            role="proof_security",
+            packet_path=tmp_path / "packet.json",
+            output_dir=tmp_path / "review",
+            failure_marker=marker,
+        )
+
+    assert json.loads(marker.read_text(encoding="utf-8")) == {
+        "failure_class": expected_class,
+        "failure_count": expected_count,
+    }
+    assert "transport failed" not in marker.read_text(encoding="utf-8")
+
+
+def test_reviewer_wrapper_classifies_a_valid_blocking_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path.resolve()))
+    monkeypatch.setattr(
+        p6_review,
+        "run_reviewer",
+        lambda **_kwargs: {"decision": "changes_required", "blocker_count": 3},
+    )
+    marker = tmp_path / "review-blocker.json"
+
+    with pytest.raises(P6ProtocolError, match="review_blocker"):
+        p6_review.run_reviewer_with_failure_marker(
+            role="proof_security",
+            packet_path=tmp_path / "packet.json",
+            output_dir=tmp_path / "review",
+            failure_marker=marker,
+        )
+
+    assert json.loads(marker.read_text(encoding="utf-8")) == {
+        "failure_class": "review_blocker",
+        "failure_count": 3,
+    }
+
+
 def test_deepseek_prompt_never_enters_process_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -839,6 +1484,21 @@ def test_deepseek_prompt_never_enters_process_arguments(
     assert command[-1] == p6_review._deepseek_instruction()
     assert identity[-1].startswith("<isolated-instruction-sha256:")
     assert identity[:2] == [str(executable.resolve()), f"<binary-sha256:{executable_sha}>"]
+    assert "- id: tool-fs\n  disabled: true" in p6_review._deepseek_patch_text()
+    assert "- id: tool-fs-search\n  disabled: true" in p6_review._deepseek_patch_text()
+    input_patch = tmp_path / "deepseek-review-input.patch.yml"
+    assert secret_prompt in input_patch.read_text(encoding="utf-8")
+    assert "<ephemeral-review-input-channel>" in identity
+
+    _, correction_identity = p6_review._command_for_role(
+        "proof_security",
+        executable=executable.resolve(),
+        executable_sha256=executable_sha,
+        temp_root=tmp_path,
+        schema={"type": "object"},
+        prompt="bounded correction with the same frozen command identity",
+    )
+    assert correction_identity == identity
 
 
 def test_codex_reviewer_command_identity_keeps_exact_e0_no_shell_contract() -> None:
@@ -859,6 +1519,9 @@ def test_codex_reviewer_command_identity_keeps_exact_e0_no_shell_contract() -> N
         "--skip-git-repo-check",
         "--output-schema",
         "decision-schema.json",
+        "--json",
+        "--output-last-message",
+        "codex-last-message.json",
         "--color",
         "never",
         "-",
@@ -958,6 +1621,131 @@ def test_bounded_correction_transition_disallows_duplicates_and_reverse_order() 
     assert p6_review._next_correction_kind([contract, grounding], contract) is None
 
 
+def test_codex_failed_turn_usage_is_counted_before_one_transport_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    role = "independent_benchmark"
+    packet_path = _write_role_packet(tmp_path / "packet", role)
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    executable = tmp_path / "codex"
+    executable.write_bytes(b"sealed independent reviewer")
+    executable.chmod(0o500)
+    executable_sha = hashlib.sha256(executable.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        p6_review,
+        "_resolve_reviewer_executable",
+        lambda _role, *, search_path: (executable.resolve(), executable_sha),
+    )
+    monkeypatch.setattr(p6_review, "_untrusted_reviewer_roots", lambda: ())
+    invocation_count = 0
+
+    def run(command: list[str], **kwargs: object) -> object:
+        nonlocal invocation_count
+        if len(command) == 2 and command[1] == "--version":
+            return type(
+                "Result",
+                (),
+                {"returncode": 0, "stdout": "codex-cli 0.144.4\n", "stderr": ""},
+            )()
+        invocation_count += 1
+        if invocation_count == 1:
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 1,
+                    "stdout": json.dumps(
+                        {
+                            "type": "turn.failed",
+                            "usage": {"input_tokens": 31, "output_tokens": 7},
+                        }
+                    ),
+                    "stderr": "answer-free transport failure",
+                },
+            )()
+        cwd = Path(str(kwargs["cwd"]))
+        (cwd / "codex-last-message.json").write_text(
+            json.dumps(_decision(packet, role)), encoding="utf-8"
+        )
+        return type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 41, "output_tokens": 9},
+                    }
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(p6_review.subprocess, "run", run)
+    output_dir = tmp_path / "output"
+    p6_review.run_reviewer(
+        role=role,
+        packet_path=packet_path,
+        output_dir=output_dir,
+        material_root=Path.cwd(),
+    )
+    raw = json.loads((output_dir / "raw-envelope.json").read_text(encoding="utf-8"))
+    calls = raw["reviewer_usage"]["calls"]
+    assert invocation_count == 2
+    assert [call["attribution"] for call in calls] == ["initial", "transport_retry"]
+    assert [call["total_tokens"] for call in calls] == [38, 50]
+    assert all(call["model_observation_source"] == "sealed_command" for call in calls)
+    validate_review_artifact(output_dir=output_dir, packet_path=packet_path, role=role)
+
+
+def test_codex_failed_turn_without_usage_fails_closed_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    role = "independent_benchmark"
+    packet_path = _write_role_packet(tmp_path / "packet", role)
+    executable = tmp_path / "codex"
+    executable.write_bytes(b"sealed independent reviewer")
+    executable.chmod(0o500)
+    executable_sha = hashlib.sha256(executable.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        p6_review,
+        "_resolve_reviewer_executable",
+        lambda _role, *, search_path: (executable.resolve(), executable_sha),
+    )
+    monkeypatch.setattr(p6_review, "_untrusted_reviewer_roots", lambda: ())
+    invocation_count = 0
+
+    def run(command: list[str], **_kwargs: object) -> object:
+        nonlocal invocation_count
+        if len(command) == 2 and command[1] == "--version":
+            return type(
+                "Result",
+                (),
+                {"returncode": 0, "stdout": "codex-cli 0.144.4\n", "stderr": ""},
+            )()
+        invocation_count += 1
+        return type(
+            "Result",
+            (),
+            {
+                "returncode": 1,
+                "stdout": json.dumps({"type": "turn.failed", "error": "redacted"}),
+                "stderr": "answer-free transport failure",
+            },
+        )()
+
+    monkeypatch.setattr(p6_review.subprocess, "run", run)
+    with pytest.raises(P6ProtocolError, match="provider usage"):
+        p6_review.run_reviewer(
+            role=role,
+            packet_path=packet_path,
+            output_dir=tmp_path / "output",
+            material_root=Path.cwd(),
+        )
+    assert invocation_count == 1
+
+
 def test_reviewer_runs_contract_then_optional_grounding_correction_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -994,11 +1782,7 @@ def test_reviewer_runs_contract_then_optional_grounding_correction_once(
                 {"returncode": 0, "stdout": "codex-cli 0.144.4\n", "stderr": ""},
             )()
         review_inputs.append(kwargs.get("input") if isinstance(kwargs.get("input"), str) else None)
-        return type(
-            "Result",
-            (),
-            {"returncode": 0, "stdout": next(review_outputs), "stderr": ""},
-        )()
+        return _review_process_result(role, next(review_outputs))
 
     monkeypatch.setattr(p6_review.subprocess, "run", run)
     output_dir = tmp_path / "output"
@@ -1054,7 +1838,11 @@ def test_contract_regeneration_rejects_changes_to_locked_material_fields(
             if len(command) == 2 and command[1] == "--version"
             else next(outputs)
         )
-        return type("Result", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+        return (
+            type("Result", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+            if len(command) == 2 and command[1] == "--version"
+            else _review_process_result(role, stdout)
+        )
 
     monkeypatch.setattr(p6_review.subprocess, "run", run)
     with pytest.raises(P6ProtocolError, match="changed substantive fields"):
@@ -1095,7 +1883,11 @@ def test_grounding_correction_rejects_non_grounding_material_changes(
             if len(command) == 2 and command[1] == "--version"
             else next(outputs)
         )
-        return type("Result", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+        return (
+            type("Result", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+            if len(command) == 2 and command[1] == "--version"
+            else _review_process_result(role, stdout)
+        )
 
     monkeypatch.setattr(p6_review.subprocess, "run", run)
     with pytest.raises(P6ProtocolError, match="changed substantive fields"):

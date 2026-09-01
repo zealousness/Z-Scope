@@ -7,6 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 import errno
+import hashlib
 import random
 import re
 import json
@@ -41,6 +42,7 @@ from ..common.utils import extract_json_blocks
 from .conversation_recorder import ConversationSession, get_conversation_recorder
 from .llm_usage import (
     LLMUsageAttribution,
+    P6BalancedTokenAdmissionError,
     ScanTokenUsageLedger,
     TokenUsageReservation,
     current_llm_usage_attribution,
@@ -257,9 +259,8 @@ class LLMClient:
             response_model_map: Exact provider response identity for request aliases
             timeout: Request timeout in seconds
             max_retries: Retries per model
-            retry_until_available: Keep retrying transient transport/provider
-                failures after ``max_retries`` until the request succeeds or
-                the scan is cancelled.
+            retry_until_available: Compatibility flag. Transient failures remain
+                bounded by the configured retry budget.
         """
         self.api_key = api_key
         self.base_urls = self._normalize_base_urls(base_url)
@@ -471,6 +472,8 @@ class LLMClient:
         trace_agent: Optional[str],
         trace_label: Optional[str],
         usage_attribution: Optional[Mapping[str, Any]],
+        call_chain_id: str = "",
+        attempt_index: int = 1,
     ) -> Optional[TokenUsageReservation]:
         manager = self.token_usage_ledger
         if manager is None:
@@ -483,6 +486,24 @@ class LLMClient:
             llm_ref=self.llm_ref,
             explicit=inherited_attribution,
         )
+        operation_kind = attribution.call_kind
+        if operation_kind == "contract_regeneration":
+            match = re.search(
+                r"(?:^|[;\s])pass\s*=\s*([^;]+)",
+                str(trace_label or ""),
+                flags=re.IGNORECASE,
+            )
+            operation_kind = str(match.group(1)).strip() if match else ""
+        logical_operation_id = ""
+        if attribution.validation_cluster_uid and operation_kind:
+            material = "\x00".join(
+                (
+                    attribution.agent,
+                    attribution.validation_cluster_uid,
+                    operation_kind,
+                )
+            )
+            logical_operation_id = hashlib.sha256(material.encode("utf-8")).hexdigest()
         return manager.reserve(
             self._estimate_request_prompt_tokens(
                 messages,
@@ -492,6 +513,9 @@ class LLMClient:
             max_completion_tokens,
             attribution=attribution,
             model=model,
+            call_chain_id=call_chain_id,
+            attempt_index=attempt_index,
+            logical_operation_id=logical_operation_id,
         )
 
     def _settle_scan_usage(
@@ -1154,6 +1178,11 @@ class LLMClient:
 
         for model in self.models:
             logger.info(f"Using model: {model}")
+            call_chain_id = (
+                self.token_usage_ledger.new_call_chain_id()
+                if self.token_usage_ledger is not None
+                else ""
+            )
 
             payload = {
                 "model": model,
@@ -1179,19 +1208,10 @@ class LLMClient:
             total_attempts = (self.max_retries + 1) * max(1, len(self._base_url_states))
             attempt = 0
             retry_transient = False
-            retry_transient_auth = False
-            retry_transient_client_response = False
             transient_auth_retries_remaining = self.TRANSIENT_AUTH_RETRY_LIMIT
             transient_client_response_retries_remaining = self.TRANSIENT_CLIENT_RESPONSE_RETRY_LIMIT
-            while (
-                attempt < total_attempts
-                or (self.retry_until_available and retry_transient)
-                or retry_transient_auth
-                or retry_transient_client_response
-            ):
+            while attempt < total_attempts:
                 retry_transient = False
-                retry_transient_auth = False
-                retry_transient_client_response = False
                 attempt += 1
                 token = current_cancellation_token()
                 if token is not None:
@@ -1224,6 +1244,8 @@ class LLMClient:
                         trace_agent=trace_agent,
                         trace_label=trace_label,
                         usage_attribution=usage_attribution,
+                        call_chain_id=call_chain_id,
+                        attempt_index=attempt,
                     )
                     attempt_payload = dict(payload)
                     if usage_reservation is not None:
@@ -1423,11 +1445,7 @@ class LLMClient:
                         failure_class,
                         response.status_code,
                         attempt,
-                        (
-                            "unbounded"
-                            if (self.retry_until_available and transient_http_error)
-                            else str(total_attempts)
-                        ),
+                        (str(total_attempts)),
                     )
 
                     if transient_http_error:
@@ -1456,6 +1474,7 @@ class LLMClient:
                     elif (
                         response.status_code == 401
                         and transient_auth_retries_remaining > 0
+                        and attempt < total_attempts
                         and self._has_successful_call()
                     ):
                         # A provider can occasionally return an isolated 401 while
@@ -1463,7 +1482,6 @@ class LLMClient:
                         # succeed. Retry that condition once, but never turn a bad
                         # credential into an unbounded retry loop.
                         transient_auth_retries_remaining -= 1
-                        retry_transient_auth = True
                         usage_rejected_before_model = True
                         wait_time = self.TRANSIENT_AUTH_RETRY_DELAY_SECONDS
                         self._mark_base_url_cooldown(endpoint, wait_time)
@@ -1480,6 +1498,7 @@ class LLMClient:
                     elif (
                         response.status_code == 400
                         and transient_client_response_retries_remaining > 0
+                        and attempt < total_attempts
                     ):
                         # A busy OpenAI-compatible gateway can occasionally
                         # return an isolated 400 for a byte-identical request
@@ -1490,7 +1509,6 @@ class LLMClient:
                         # fails on the second identical response and never
                         # degrades into an unbounded or mutated retry.
                         transient_client_response_retries_remaining -= 1
-                        retry_transient_client_response = True
                         usage_rejected_before_model = True
                         post_attempt_delay = self.TRANSIENT_CLIENT_RESPONSE_RETRY_DELAY_SECONDS
                         usage_failure_class = failure_class
@@ -1506,6 +1524,11 @@ class LLMClient:
                         last_error = failure_class
                         break  # Try next model
 
+                except P6BalancedTokenAdmissionError:
+                    # Admission is a deterministic pre-provider decision.  It
+                    # is never a transport failure and must not be retried or
+                    # conservatively charged as a physical model call.
+                    raise
                 except Exception as e:
                     local_fd_exhausted = self._is_too_many_open_files(e)
                     overload_reason = (
@@ -1525,9 +1548,7 @@ class LLMClient:
                     if local_fd_exhausted:
                         wait_time = max(wait_time, self.LOCAL_FD_EXHAUSTION_COOLDOWN_SECONDS)
                         self._recover_from_local_fd_exhaustion(e, wait_time)
-                    is_last = attempt >= total_attempts and not (
-                        self.retry_until_available and retry_transient
-                    )
+                    is_last = attempt >= total_attempts
                     post_attempt_delay = 0.0 if is_last else wait_time
                     failure_class = self._provider_failure_class(e)
                     usage_failure_class = failure_class
@@ -1547,15 +1568,7 @@ class LLMClient:
                         endpoint.url,
                         failure_class,
                         attempt,
-                        (
-                            "unbounded"
-                            if (
-                                self.retry_until_available
-                                and retry_transient
-                                and attempt >= total_attempts
-                            )
-                            else str(total_attempts)
-                        ),
+                        (str(total_attempts)),
                         is_last,
                     )
                     last_error = failure_class
@@ -3006,6 +3019,28 @@ class LLMClient:
                             func_args,
                             result,
                         )
+
+                    # A program-owned checker may close the security decision
+                    # while handling one tool call in a model response that
+                    # contains several calls.  Stop the current tool round at
+                    # that exact boundary: calling the remaining tools would
+                    # be post-proof work even though the model emitted their
+                    # requests before the proof existed.  The existing hook
+                    # below validates and returns the terminal payload without
+                    # starting another model iteration.
+                    programmatic_terminal = getattr(
+                        tool_executor,
+                        "_zscope_programmatic_terminal_payload",
+                        None,
+                    )
+                    if callable(programmatic_terminal):
+                        try:
+                            terminal_after_tool = programmatic_terminal()
+                        except Exception as exc:
+                            logger.warning("Programmatic terminal hook failed: %s", exc)
+                            terminal_after_tool = None
+                        if isinstance(terminal_after_tool, dict):
+                            break
 
                     if isinstance(result, dict) and result.get("repeat_call_guard"):
                         loop_guard_recovery = {

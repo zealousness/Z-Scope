@@ -11,7 +11,10 @@ from ...core.validation.proof_kernel import (
     ProofKernelEngine,
 )
 from ...framework.base import AgentResponse
-from ...framework.llm_usage import llm_usage_attribution_scope
+from ...framework.llm_usage import (
+    P6BalancedTokenAdmissionError,
+    llm_usage_attribution_scope,
+)
 from ...semantics.security_map import SecuritySemanticMap
 from ..candidates import CandidateRegistrar
 from .lifecycle import ACTIVE_PRODUCT_EFFECT, HYPOTHESIS_HUNTER_MODE
@@ -175,6 +178,8 @@ class HypothesisHunterRuntime:
                     index = futures[future]
                     try:
                         response = future.result()
+                    except P6BalancedTokenAdmissionError:
+                        raise
                     except Exception:
                         # A provider/transport failure belongs to exactly this
                         # audit unit.  The exception body must never enter an

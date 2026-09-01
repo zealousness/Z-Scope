@@ -9,6 +9,12 @@ on:
       candidate_sha:
         description: Exact main commit to validate as the non-release P6 candidate
         required: true
+      local_evidence_commit:
+        description: Exact immutable commit adding only the locally passed WSL balanced quality gate
+        required: true
+      local_quality_gate_sha256:
+        description: External SHA-256 of the exact local WSL balanced quality-gate bytes
+        required: true
 
 concurrency:
   group: p6-pilot-validation
@@ -29,6 +35,9 @@ env:
   P6_ATTEMPT_ID: p6-${{ github.run_id }}-${{ github.run_attempt }}
   P6_CONTROL_PLANE_COMMIT: ${{ inputs.control_plane_commit }}
   P6_CANDIDATE_COMMIT: ${{ inputs.candidate_sha }}
+  P6_LOCAL_EVIDENCE_COMMIT: ${{ inputs.local_evidence_commit }}
+  P6_LOCAL_QUALITY_GATE_SHA256: ${{ inputs.local_quality_gate_sha256 }}
+  P6_LOCAL_QUALITY_GATE_PATH: .github/evidence/p6/local-balanced-quality-gate.json
   P6_CONTROL_ROOT: ${{ github.workspace }}/control
   P6_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
   PYTHONPATH: ${{ github.workspace }}/control
@@ -51,6 +60,8 @@ jobs:
           set -euo pipefail
           [[ "$P6_CONTROL_PLANE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$P6_CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$P6_LOCAL_EVIDENCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$P6_LOCAL_QUALITY_GATE_SHA256" =~ ^[0-9a-f]{64}$ ]]
           test "$P6_CONTROL_PLANE_COMMIT" = "$GITHUB_SHA"
       - name: Checkout immutable control plane
         uses: actions/checkout@v7
@@ -69,6 +80,186 @@ jobs:
       - uses: ./control/.github/actions/setup-p6-python
         with:
           checkout-path: control
+      - name: Require immutable passed local WSL balanced evidence before provider work
+        env:
+          P6_ENTRY_FAILURE_MARKER: ${{ runner.temp }}/p6-entry-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
+        run: |
+          set -euo pipefail
+          validate_local_evidence() {
+            python3 - <<'PY'
+          import hashlib
+          import os
+          import shutil
+          import stat
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          from scripts.p6_balanced_quality_gate import validate_quality_gate
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          from zscope.benchmarking.provider_runtime import require_p6_provider_contract
+          from zscope.benchmarking.runner import prepare_p6_runtime_source
+
+          control_root = Path(os.environ["P6_CONTROL_ROOT"]).resolve(strict=True)
+          candidate_root = Path(os.environ["P6_CANDIDATE_ROOT"]).resolve(strict=True)
+          runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          control_commit = os.environ["P6_CONTROL_PLANE_COMMIT"]
+          candidate_commit = os.environ["P6_CANDIDATE_COMMIT"]
+          evidence_commit = os.environ["P6_LOCAL_EVIDENCE_COMMIT"]
+          evidence_path = os.environ["P6_LOCAL_QUALITY_GATE_PATH"]
+          expected_digest = os.environ["P6_LOCAL_QUALITY_GATE_SHA256"]
+
+          def git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+              return subprocess.run(
+                  ["git", *arguments],
+                  cwd=control_root,
+                  check=check,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+              )
+
+          if git("cat-file", "-t", control_commit).stdout.strip() != b"commit":
+              raise SystemExit(2)
+          if git("cat-file", "-t", candidate_commit).stdout.strip() != b"commit":
+              raise SystemExit(2)
+          if git("cat-file", "-t", evidence_commit).stdout.strip() != b"commit":
+              raise SystemExit(2)
+          if candidate_commit != control_commit:
+              raise SystemExit(2)
+          if git("merge-base", "--is-ancestor", evidence_commit, control_commit, check=False).returncode != 0:
+              raise SystemExit(2)
+          if git("merge-base", "--is-ancestor", candidate_commit, control_commit, check=False).returncode != 0:
+              raise SystemExit(2)
+          candidate_parents = git("rev-list", "--parents", "-n", "1", candidate_commit).stdout.decode(
+              "ascii", errors="strict"
+          ).strip().split()
+          if (
+              len(candidate_parents) != 3
+              or candidate_parents[0] != candidate_commit
+              or evidence_commit not in candidate_parents[1:]
+          ):
+              raise SystemExit(2)
+          evidence_change = git(
+              "diff-tree",
+              "--no-commit-id",
+              "--name-status",
+              "-r",
+              evidence_commit,
+          ).stdout.decode("utf-8", errors="strict").splitlines()
+          tree_row = git("ls-tree", evidence_commit, "--", evidence_path).stdout.decode(
+              "utf-8", errors="strict"
+          ).strip().split()
+          if len(tree_row) != 4 or tree_row[:2] != ["100644", "blob"] or tree_row[3] != evidence_path:
+              raise SystemExit(2)
+          candidate_tree = git("rev-parse", f"{candidate_commit}^{{tree}}").stdout.decode(
+              "ascii", errors="strict"
+          ).strip()
+          evidence_tree = git("rev-parse", f"{evidence_commit}^{{tree}}").stdout.decode(
+              "ascii", errors="strict"
+          ).strip()
+          if candidate_tree != evidence_tree:
+              raise SystemExit(2)
+          evidence_bytes = git("show", f"{evidence_commit}:{evidence_path}").stdout
+          if hashlib.sha256(evidence_bytes).hexdigest() != expected_digest:
+              raise SystemExit(2)
+
+          work_root = Path(tempfile.mkdtemp(prefix="p6-local-evidence-", dir=runner_temp))
+          try:
+              work_mode = stat.S_IMODE(work_root.lstat().st_mode)
+              if work_root.is_symlink() or not work_root.is_dir() or work_mode & 0o077:
+                  raise SystemExit(2)
+              evidence_file = work_root / "quality-gate.json"
+              flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+              if hasattr(os, "O_NOFOLLOW"):
+                  flags |= os.O_NOFOLLOW
+              descriptor = os.open(evidence_file, flags, 0o600)
+              with os.fdopen(descriptor, "wb") as handle:
+                  handle.write(evidence_bytes)
+              gate = load_json_strict(evidence_file)
+              if not isinstance(gate, dict):
+                  raise SystemExit(2)
+              validate_quality_gate(gate)
+              if (
+                  gate.get("hard_gate_passed") is not True
+                  or gate.get("formal_benchmark") is not False
+                  or gate.get("release_eligible") is not False
+              ):
+                  raise SystemExit(2)
+              bindings = gate.get("bindings")
+              if not isinstance(bindings, dict):
+                  raise SystemExit(2)
+              tested_commit = bindings.get("git_commit")
+              if not isinstance(tested_commit, str):
+                  raise SystemExit(2)
+              if git("cat-file", "-t", tested_commit).stdout.strip() != b"commit":
+                  raise SystemExit(2)
+              parent_row = git("rev-list", "--parents", "-n", "1", evidence_commit).stdout.decode(
+                  "ascii", errors="strict"
+              ).strip().split()
+              if parent_row != [evidence_commit, tested_commit]:
+                  raise SystemExit(2)
+              if evidence_change != [f"A\t{evidence_path}"]:
+                  raise SystemExit(2)
+              candidate_change = git(
+                  "diff", "--name-status", tested_commit, candidate_commit
+              ).stdout.decode("utf-8", errors="strict").splitlines()
+              if candidate_change != [f"A\t{evidence_path}"]:
+                  raise SystemExit(2)
+              tested_tree = git("rev-parse", f"{tested_commit}^{{tree}}").stdout.decode(
+                  "ascii", errors="strict"
+              ).strip()
+              tested_sha256 = hashlib.sha256(tested_commit.encode("ascii")).hexdigest()
+              contract = require_p6_provider_contract(
+                  candidate_root / "test/range/zscope.benchmark.yaml"
+              )
+              runtime_source = work_root / "runtime-source"
+              runtime_sha256 = prepare_p6_runtime_source(
+                  runtime_source,
+                  git_revision=candidate_commit,
+              )
+              expected_bindings = {
+                  "git_commit": tested_commit,
+                  "git_tree": tested_tree,
+                  "candidate_sha256": tested_sha256,
+                  "provider_identity_sha256": contract.identity_sha256,
+                  "runtime_sha256": runtime_sha256,
+                  "config_sha256": contract.config_sha256,
+              }
+              if any(bindings.get(name) != value for name, value in expected_bindings.items()):
+                  raise SystemExit(2)
+          finally:
+              shutil.rmtree(work_root, ignore_errors=True)
+          PY
+          }
+          if ! validate_local_evidence >/dev/null 2>&1; then
+            python3 - <<'PY' >/dev/null 2>&1
+          import json
+          import os
+          from pathlib import Path
+
+          runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          marker = Path(os.environ["P6_ENTRY_FAILURE_MARKER"])
+          if marker.parent.resolve(strict=True) != runner_temp or marker.name != (
+              f"p6-entry-failure-{os.environ['GITHUB_RUN_ID']}-"
+              f"{os.environ['GITHUB_RUN_ATTEMPT']}.json"
+          ):
+              raise SystemExit(2)
+          flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+          if hasattr(os, "O_NOFOLLOW"):
+              flags |= os.O_NOFOLLOW
+          descriptor = os.open(marker, flags, 0o600)
+          with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+              json.dump(
+                  {"failure_class": "input_binding_failure", "failure_count": 1},
+                  handle,
+                  sort_keys=True,
+                  separators=(",", ":"),
+              )
+              handle.write("\n")
+          PY
+            echo '::error::stage=entry_input; class=input_binding_failure:1; count=1'
+            exit 2
+          fi
       - name: Remove exact-label stale P6 scanners before any secret is loaded
         run: |
           set -euo pipefail
@@ -94,7 +285,14 @@ jobs:
             .github/actions/validate-p6-artifact \
             .github/workflows/p6-pilot-validation.yml \
             .github/workflows/p6-pilot-finalize-recovery.yml \
+            containers/p6/Containerfile \
+            containers/p6/runtime-lock.json \
+            containers/p6/verify_toolchain.py \
             scripts/download_p6_run_artifact.py \
+            scripts/p6_balanced_orchestrator.py \
+            scripts/p6_balanced_quality_gate.py \
+            scripts/p6_local_runtime.py \
+            scripts/p6_tcp_relay.py \
             scripts/p6_pilot_protocol.py \
             scripts/project_p6_entry_lineage.py \
             scripts/run_p6_cold_producer.py \
@@ -109,6 +307,10 @@ jobs:
             test/range/benchmark/v16/truth-manifest.json \
             scripts/score_range_v5.py \
             zscope/benchmarking/p6_protocol.py \
+            zscope/benchmarking/p6_balanced_orchestrator.py \
+            zscope/benchmarking/p6_balanced_quality_gate.schema.json \
+            zscope/benchmarking/p6_local_image_provenance.schema.json \
+            zscope/benchmarking/p6_local_runtime.py \
             zscope/benchmarking/p6_review.py \
             zscope/benchmarking/provider_runtime.py \
             zscope/benchmarking/runner.py \
@@ -252,6 +454,7 @@ jobs:
           import hashlib
           import json
           import os
+          import stat
           import subprocess
           from pathlib import Path
 
@@ -330,7 +533,7 @@ jobs:
 
   provider_probe:
     name: source-free deepseek-v4-flash provider probe
-    needs: entry
+    needs: [entry, toolchain_oci]
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
@@ -357,15 +560,56 @@ jobs:
       - uses: ./control/.github/actions/setup-p6-python
         with:
           checkout-path: control
+      - name: Restore and validate the exact proxy receipt before provider credentials
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Generate the closed expected-proxy attestation without credentials
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: provider
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Execute one constant source-free request
         id: probe
         run: |
           set -euo pipefail
           if ! python3 - <<'PY' >/dev/null 2>&1
+          import hashlib
           import json
           import os
           from pathlib import Path
-          from zscope.benchmarking.p6_protocol import load_json_strict, validate_provider_probe
+          from zscope.benchmarking.p6_protocol import (
+              load_expected_proxy_attestation,
+              load_json_strict,
+              validate_provider_probe,
+          )
           from zscope.benchmarking.provider_runtime import (
               ProviderProbeError,
               require_p6_provider_contract,
@@ -379,6 +623,20 @@ jobs:
               "provider_protocol_incompatible",
               "provider_usage_unverifiable",
           }
+          attestation_path = Path(
+              os.environ["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"]
+          )
+          if (
+              not attestation_path.is_absolute()
+              or (os.name == "posix" and attestation_path.lstat().st_mode & 0o077)
+          ):
+              raise SystemExit(2)
+          load_expected_proxy_attestation(
+              attestation_path,
+              expected_file_sha256=os.environ[
+                  "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256"
+              ],
+          )
           try:
               value = run_p6_provider_probe(Path("test/range/zscope.benchmark.yaml"))
           except ProviderProbeError as exc:
@@ -424,7 +682,7 @@ jobs:
 
   toolchain_oci:
     name: toolchain OCI and cold-cache preflight
-    needs: provider_probe
+    needs: entry
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
@@ -471,6 +729,7 @@ jobs:
           import hashlib
           import json
           import os
+          import stat
           import subprocess
           import tempfile
           from pathlib import Path
@@ -479,10 +738,19 @@ jobs:
               RootlessOciExecutor,
               validate_oci_execution_evidence,
           )
-          from zscope.benchmarking.p6_protocol import canonical_sha256
+          from zscope.benchmarking.p6_local_runtime import (
+              BASE_IMAGE_DIGEST,
+              IMAGE_LABEL_BASE_DIGEST,
+              IMAGE_LABEL_CONTAINERFILE,
+              IMAGE_LABEL_LOCK,
+              IMAGE_LABEL_REVISION,
+              ProxyProvisionRequest,
+              load_image_provenance,
+              provision_transparent_proxy,
+          )
+          from zscope.benchmarking.p6_protocol import canonical_sha256, load_json_strict
           from zscope.benchmarking.provider_runtime import (
               ProviderRuntimeContract,
-              load_explicit_api_key_file,
           )
           from zscope.benchmarking.runner import prepare_p6_runtime_source
 
@@ -490,12 +758,107 @@ jobs:
           image = os.environ.get("Z_SCOPE_BENCHMARK_OCI_IMAGE", "")
           if image.count("@sha256:") != 1:
               raise SystemExit(2)
+          provenance_source = Path(
+              os.environ.get("Z_SCOPE_P6_OCI_IMAGE_PROVENANCE_FILE", "")
+          )
+          if not provenance_source.is_absolute():
+              raise SystemExit(2)
+          before = provenance_source.lstat()
+          if provenance_source.is_symlink() or not stat.S_ISREG(before.st_mode):
+              raise SystemExit(2)
+          provenance_bytes = provenance_source.read_bytes()
+          after = provenance_source.lstat()
+          if (
+              before.st_dev,
+              before.st_ino,
+              before.st_size,
+              before.st_mtime_ns,
+          ) != (
+              after.st_dev,
+              after.st_ino,
+              after.st_size,
+              after.st_mtime_ns,
+          ):
+              raise SystemExit(2)
+          with Path("image-provenance.json").open("xb") as stream:
+              stream.write(provenance_bytes)
+          provenance = load_image_provenance(Path("image-provenance.json"))
+          if (
+              provenance["git_revision"] != os.environ["P6_CANDIDATE_COMMIT"]
+              or provenance["image_ref"] != image
+              or provenance["base_image_digest"] != BASE_IMAGE_DIGEST
+              or provenance["containerfile_sha256"]
+              != hashlib.sha256(Path("containers/p6/Containerfile").read_bytes()).hexdigest()
+              or provenance["runtime_lock_sha256"]
+              != hashlib.sha256(Path("containers/p6/runtime-lock.json").read_bytes()).hexdigest()
+              or provenance["python_requirements_sha256"]
+              != hashlib.sha256(Path("requirements/release/py313.txt").read_bytes()).hexdigest()
+          ):
+              raise SystemExit(2)
+          inspect_result = subprocess.run(
+              [runtime, "image", "inspect", image],
+              check=False,
+              capture_output=True,
+              text=True,
+              encoding="utf-8",
+              env={name: os.environ[name] for name in ("PATH", "LD_LIBRARY_PATH") if name in os.environ},
+          )
+          try:
+              inspected = json.loads(inspect_result.stdout)
+              inspected = inspected[0] if isinstance(inspected, list) and len(inspected) == 1 else inspected
+              config = inspected["Config"]
+              labels = config["Labels"]
+          except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+              raise SystemExit(2)
+          digest = image.rsplit("@", 1)[1]
+          digest_rows = {
+              str(item).rsplit("@", 1)[-1]
+              for item in [*(inspected.get("RepoDigests") or []), inspected.get("Digest") or ""]
+              if item
+          }
+          if (
+              inspect_result.returncode != 0
+              or str(inspected.get("Id") or inspected.get("ID") or "")
+              != provenance["image_id"]
+              or digest != provenance["image_digest"]
+              or digest not in digest_rows
+              or labels.get(IMAGE_LABEL_BASE_DIGEST) != BASE_IMAGE_DIGEST
+              or labels.get(IMAGE_LABEL_REVISION) != provenance["git_revision"]
+              or labels.get(IMAGE_LABEL_LOCK) != provenance["runtime_lock_sha256"]
+              or labels.get(IMAGE_LABEL_CONTAINERFILE) != provenance["containerfile_sha256"]
+          ):
+              raise SystemExit(2)
           contract = ProviderRuntimeContract.from_config_file(
               Path("test/range/zscope.benchmark.yaml")
           )
-          key_environment = load_explicit_api_key_file(
-              Path(os.environ["Z_SCOPE_P6_API_KEY_FILE"])
+          for name in (
+              "Z_SCOPE_BENCHMARK_OCI_NETWORK",
+              "Z_SCOPE_BENCHMARK_OCI_EGRESS_NETWORK",
+              "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER",
+          ):
+              if not os.environ.get(name, "").strip():
+                  raise SystemExit(2)
+          proxy_provision = provision_transparent_proxy(
+              request=ProxyProvisionRequest(
+                  runtime=runtime,
+                  image_ref=image,
+                  internal_network=os.environ["Z_SCOPE_BENCHMARK_OCI_NETWORK"],
+                  egress_network=os.environ["Z_SCOPE_BENCHMARK_OCI_EGRESS_NETWORK"],
+                  proxy_container=os.environ[
+                      "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER"
+                  ],
+                  relay_path=Path("scripts/p6_tcp_relay.py"),
+                  image_provenance_path=Path("image-provenance.json"),
+              ),
+              provider_contract=contract,
+              output=Path("proxy-provision.json"),
           )
+          # This phase explicitly runs with provider_credentials=False.  Satisfy
+          # the constructor's frozen provider shape without reading the live key;
+          # the placeholder is never forwarded into OCI.
+          key_environment = {
+              "Z_SCOPE_API_KEY": "p6-preflight-credential-not-forwarded"
+          }
           policy_environment = dict(key_environment)
           for name in (
               "Z_SCOPE_BENCHMARK_OCI_NETWORK",
@@ -557,6 +920,13 @@ jobs:
               if (
                   execution.get("runtime_source_mounted") is not True
                   or execution.get("runtime_source_sha256") != runtime_source_sha256
+                  or execution.get("image_id") != provenance["image_id"]
+                  or execution.get("proxy_container_id")
+                  != proxy_provision["proxy_container_id"]
+                  or execution.get("network_policy_sha256")
+                  != proxy_provision["network_policy_sha256"]
+                  or execution.get("provider_identity_sha256")
+                  != proxy_provision["provider_identity_sha256"]
               ):
                   raise SystemExit(2)
               candidate = os.environ["P6_CANDIDATE_COMMIT"]
@@ -581,6 +951,14 @@ jobs:
                   "image_ref": image,
                   "image_digest": image.rsplit("@", 1)[1],
                   "image_id": execution["image_id"],
+                  "image_provenance_sha256": hashlib.sha256(
+                      Path("image-provenance.json").read_bytes()
+                  ).hexdigest(),
+                  "image_provenance_content_sha256": provenance["content_sha256"],
+                  "proxy_provision_sha256": hashlib.sha256(
+                      Path("proxy-provision.json").read_bytes()
+                  ).hexdigest(),
+                  "proxy_provision_content_sha256": proxy_provision["content_sha256"],
                   "runtime_source_sha256": runtime_source_sha256,
                   "oci_execution_sha256": canonical_sha256(execution),
                   "rootless_verified": execution["rootless_verified"] is True,
@@ -608,15 +986,61 @@ jobs:
             echo '::error::stage=toolchain_oci_cache; class=oci_isolation_violation:1; count=1'
             exit 2
           fi
+      - name: Cross-bind raw toolchain provenance to live immutable identities
+        run: |
+          set -euo pipefail
+          mapfile -t trusted_provider < <(python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.isolation import OciNetworkPolicy
+          from zscope.benchmarking.provider_runtime import ProviderRuntimeContract
+          contract = ProviderRuntimeContract.from_config_file(Path("test/range/zscope.benchmark.yaml"))
+          policy = OciNetworkPolicy.from_provider_contract(os.environ, contract)
+          print(contract.identity_sha256)
+          print(policy.policy_sha256)
+          print(policy.endpoint_origin)
+          PY
+          )
+          test "${#trusted_provider[@]}" = 3
+          image_id="$($Z_SCOPE_BENCHMARK_OCI_RUNTIME image inspect --format '{{.Id}}' "$Z_SCOPE_BENCHMARK_OCI_IMAGE")"
+          proxy_id="$($Z_SCOPE_BENCHMARK_OCI_RUNTIME container inspect --format '{{.Id}}' "$Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER")"
+          candidate_tree="$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')"
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          python3 scripts/p6_pilot_protocol.py validate-toolchain-provenance-files \
+            --toolchain-evidence toolchain-evidence.json \
+            --image-provenance image-provenance.json \
+            --proxy-provision proxy-provision.json \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --candidate-tree "$candidate_tree" \
+            --candidate-sha256 "$candidate_sha" \
+            --provider-identity-sha256 "${trusted_provider[0]}" \
+            --image-ref "$Z_SCOPE_BENCHMARK_OCI_IMAGE" \
+            --image-id "$image_id" \
+            --proxy-container "$Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER" \
+            --proxy-container-id "$proxy_id" \
+            --network-name "$Z_SCOPE_BENCHMARK_OCI_NETWORK" \
+            --egress-network-name "$Z_SCOPE_BENCHMARK_OCI_EGRESS_NETWORK" \
+            --network-policy-sha256 "${trusted_provider[1]}" \
+            --endpoint-origin "${trusted_provider[2]}" >/dev/null 2>&1
       - uses: ./control/.github/actions/validate-p6-artifact
         with:
-          paths: toolchain-evidence.json
+          paths: |
+            image-provenance.json
+            proxy-provision.json
+            toolchain-evidence.json
           stage: toolchain_oci_cache
       - uses: ./control/.github/actions/upload-artifact-retry
         id: upload
         with:
           name: p6-toolchain-oci-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
-          path: control/toolchain-evidence.json
+          path: |
+            control/image-provenance.json
+            control/proxy-provision.json
+            control/toolchain-evidence.json
       - name: Remove exact current-attempt P6 scanners
         if: ${{ always() }}
         run: |
@@ -640,7 +1064,7 @@ jobs:
 
   policy_replay:
     name: P6 frozen policy replay
-    needs: toolchain_oci
+    needs: provider_probe
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 30
@@ -863,19 +1287,42 @@ jobs:
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
             --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
             --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
-            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
             --output-dir restored/toolchain
+      - name: Validate the exact proxy receipt before the hidden-holdout model call
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: toolchain_oci_cache
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Execute frozen hidden-holdout harness against the current candidate
         run: |
           set -euo pipefail
           QUALIFICATION_HARNESS="$Z_SCOPE_P6_QUALIFICATION_HARNESS"
           HIDDEN_BUNDLE="$Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE"
           HIDDEN_BUNDLE_SHA="$Z_SCOPE_P6_HIDDEN_HOLDOUT_BUNDLE_SHA256"
+          if ! python3 scripts/qualify_p6_proof_promotion.py --check >/dev/null 2>&1; then
+            echo '::error::stage=candidates; class=anonymous_qualification_failed:1; count=1'
+            exit 2
+          fi
           if ! python3 -m pytest -q \
             tests/test_p2_proof_corpus.py \
             tests/test_p3_security_spec_qualification.py \
             tests/test_p4_hypothesis_qualification.py \
-            tests/test_p5_runtime_authority.py >/dev/null 2>&1; then
+            tests/test_p5_runtime_authority.py \
+            tests/test_p6_proof_promotion_qualification.py \
+            tests/test_audit_eligibility.py >/dev/null 2>&1; then
             echo '::error::stage=candidates; class=anonymous_qualification_failed:1; count=1'
             exit 2
           fi
@@ -883,6 +1330,9 @@ jobs:
           if ! python3 - "$QUALIFICATION_HARNESS" "$HIDDEN_BUNDLE" "$HIDDEN_BUNDLE_SHA" <<'PY' >/dev/null 2>&1
           import os, subprocess, sys
           from pathlib import Path
+          from zscope.benchmarking.p6_protocol import (
+              load_expected_proxy_attestation,
+          )
           from zscope.benchmarking.provider_runtime import load_explicit_api_key_file
           allowed = {
               "PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -892,8 +1342,22 @@ jobs:
               "Z_SCOPE_BENCHMARK_OCI_RUNTIME", "Z_SCOPE_BENCHMARK_OCI_IMAGE",
               "Z_SCOPE_BENCHMARK_OCI_NETWORK",
               "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER",
+              "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE",
+              "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256",
           }
           child = {name: value for name, value in os.environ.items() if name in allowed}
+          attestation_path = Path(child["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"])
+          if (
+              not attestation_path.is_absolute()
+              or (os.name == "posix" and attestation_path.lstat().st_mode & 0o077)
+          ):
+              raise SystemExit(2)
+          load_expected_proxy_attestation(
+              attestation_path,
+              expected_file_sha256=child[
+                  "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256"
+              ],
+          )
           key_file = os.environ["Z_SCOPE_P6_API_KEY_FILE"]
           child.update(load_explicit_api_key_file(Path(key_file)))
           command = [
@@ -1008,8 +1472,25 @@ jobs:
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
             --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
             --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
-            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
             --output-dir restored/toolchain
+      - name: Validate the exact proxy receipt before the safe-pair model call
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: toolchain_oci_cache
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Execute frozen safe-pair dual-scan harness against the current candidate
         run: |
           set -euo pipefail
@@ -1027,6 +1508,9 @@ jobs:
           if ! python3 - "$QUALIFICATION_HARNESS" "$SAFE_BUNDLE" "$SAFE_BUNDLE_SHA" <<'PY' >/dev/null 2>&1
           import os, subprocess, sys
           from pathlib import Path
+          from zscope.benchmarking.p6_protocol import (
+              load_expected_proxy_attestation,
+          )
           from zscope.benchmarking.provider_runtime import load_explicit_api_key_file
           allowed = {
               "PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -1036,8 +1520,22 @@ jobs:
               "Z_SCOPE_BENCHMARK_OCI_RUNTIME", "Z_SCOPE_BENCHMARK_OCI_IMAGE",
               "Z_SCOPE_BENCHMARK_OCI_NETWORK",
               "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER",
+              "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE",
+              "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256",
           }
           child = {name: value for name, value in os.environ.items() if name in allowed}
+          attestation_path = Path(child["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"])
+          if (
+              not attestation_path.is_absolute()
+              or (os.name == "posix" and attestation_path.lstat().st_mode & 0o077)
+          ):
+              raise SystemExit(2)
+          load_expected_proxy_attestation(
+              attestation_path,
+              expected_file_sha256=child[
+                  "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256"
+              ],
+          )
           key_file = os.environ["Z_SCOPE_P6_API_KEY_FILE"]
           child.update(load_explicit_api_key_file(Path(key_file)))
           command = [
@@ -1152,8 +1650,25 @@ jobs:
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
             --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
             --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
-            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
             --output-dir restored/toolchain
+      - name: Validate the exact proxy receipt before the EvidenceAction model call
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: toolchain_oci_cache
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Prepare answer-free EvidenceAction input and invoke the sealed candidate harness
         run: |
           set -euo pipefail
@@ -1205,6 +1720,9 @@ jobs:
           if ! python3 - "$preflight_sha" "$TRACE_ROOT" "$CANARY_SOURCE" "$COMPILE_COMMANDS" <<'PY' >/dev/null 2>&1
           import os, subprocess, sys
           from pathlib import Path
+          from zscope.benchmarking.p6_protocol import (
+              load_expected_proxy_attestation,
+          )
           from zscope.benchmarking.provider_runtime import load_explicit_api_key_file
           allowed = {
               "PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -1214,8 +1732,22 @@ jobs:
               "Z_SCOPE_BENCHMARK_OCI_RUNTIME", "Z_SCOPE_BENCHMARK_OCI_IMAGE",
               "Z_SCOPE_BENCHMARK_OCI_NETWORK",
               "Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER",
+              "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE",
+              "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256",
           }
           env = {name: value for name, value in os.environ.items() if name in allowed}
+          attestation_path = Path(env["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"])
+          if (
+              not attestation_path.is_absolute()
+              or (os.name == "posix" and attestation_path.lstat().st_mode & 0o077)
+          ):
+              raise SystemExit(2)
+          load_expected_proxy_attestation(
+              attestation_path,
+              expected_file_sha256=env[
+                  "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256"
+              ],
+          )
           key_file = os.environ["Z_SCOPE_P6_API_KEY_FILE"]
           env.update(load_explicit_api_key_file(Path(key_file)))
           command = [
@@ -1452,8 +1984,25 @@ jobs:
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
             --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
             --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
-            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
             --output-dir restored/toolchain
+      - name: Validate the exact proxy receipt before the cold fast executor
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: toolchain_oci_cache
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Execute fast from a new empty cache root
         run: |
           set -euo pipefail
@@ -1555,8 +2104,25 @@ jobs:
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
             --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
             --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
-            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
             --output-dir restored/toolchain
+      - name: Validate the exact proxy receipt before the cold balanced executor
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: toolchain_oci_cache
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Execute balanced from a new empty cache root
         run: |
           set -euo pipefail
@@ -1581,15 +2147,36 @@ jobs:
             echo '::error::stage=artifact_seal; class=artifact_integrity_failure:1; count=1'
             exit 2
           fi
+          if ! python3 scripts/p6_balanced_orchestrator.py freeze \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-git-sha "$P6_CANDIDATE_COMMIT" \
+            --candidate-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --aggregate p6-balanced/aggregate.json \
+            --report p6-balanced/run-01/report.json \
+            --producer-metrics p6-balanced/run-01/producer-metrics.json \
+            --producer-projection p6-balanced-projection.json \
+            --provider-config test/range/zscope.benchmark.yaml \
+            --output p6-balanced-frozen >/dev/null 2>&1; then
+            echo '::error::stage=artifact_seal; class=artifact_integrity_failure:1; count=1'
+            exit 2
+          fi
       - uses: ./control/.github/actions/validate-p6-artifact
         with:
-          paths: p6-balanced-projection.json
+          paths: |
+            p6-balanced-projection.json
+            p6-balanced-frozen
           stage: artifact_seal
+          byte-scan-only: "true"
       - uses: ./control/.github/actions/upload-artifact-retry
         id: upload
         with:
           name: p6-cold-balanced-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
-          path: control/p6-balanced-projection.json
+          path: |
+            control/p6-balanced-projection.json
+            control/p6-balanced-frozen
       - name: Remove exact current-attempt P6 scanners
         if: ${{ always() }}
         run: |
@@ -1612,9 +2199,154 @@ jobs:
           default-class: quality_no_progress_gate_failed
           marker: ${{ runner.temp }}/p6-cold-balanced-failure.json
 
+  balanced_quality_gate:
+    name: independently score and gate the frozen balanced report
+    needs: [cold_balanced]
+    runs-on: [self-hosted, linux, x64, zscope-sealed]
+    environment: sealed-benchmark
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      failure_aggregate_artifact_id: ${{ steps.upload_failure_aggregate.outputs.artifact-id }}
+      failure_aggregate_artifact_digest: ${{ steps.upload_failure_aggregate.outputs.artifact-digest }}
+      failure_class: ${{ steps.classify.outputs.failure-class }}
+      failure_count: ${{ steps.classify.outputs.failure-count }}
+    steps:
+      - name: Checkout immutable control plane
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CONTROL_PLANE_COMMIT }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout candidate as untrusted read-only input
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.P6_CANDIDATE_COMMIT }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./control/.github/actions/setup-p6-python
+        with:
+          checkout-path: control
+      - name: Restore the exact frozen balanced report without provider credentials
+        env:
+          Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
+          GITHUB_TOKEN: ${{ github.token }}
+          BALANCED_ID: ${{ needs.cold_balanced.outputs.artifact_id }}
+          BALANCED_DIGEST: ${{ needs.cold_balanced.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$BALANCED_ID" =~ ^[0-9]+$ ]]
+          [[ "$BALANCED_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'one isolated cold balanced pilot' --artifact-id "$BALANCED_ID" \
+            --artifact-name "p6-cold-balanced-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$BALANCED_DIGEST" \
+            --required-member p6-balanced-projection.json \
+            --required-member p6-balanced-frozen/report.json \
+            --required-member p6-balanced-frozen/bindings.json \
+            --required-member p6-balanced-frozen/usage-evidence.json \
+            --required-member p6-balanced-frozen/manifest.json \
+            --output-dir restored/balanced
+      - name: Dual-score and gate the exact frozen report
+        id: score
+        run: |
+          set -euo pipefail
+          aggregate=quality-failure-aggregate.json
+          test ! -e "$aggregate"
+          status=0
+          python3 scripts/p6_balanced_orchestrator.py score \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-git-sha "$P6_CANDIDATE_COMMIT" \
+            --candidate-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --frozen-root restored/balanced/p6-balanced-frozen \
+            --producer-projection restored/balanced/p6-balanced-projection.json \
+            --legacy-truth test/range/benchmark/ground_truth.json \
+            --v16-truth test/range/benchmark/v16/ground_truth.json \
+            --repository-root . --output quality-candidate \
+            --failure-aggregate "$aggregate" >/dev/null 2>&1 || status=$?
+          if [[ -f "$aggregate" && ! -L "$aggregate" ]]; then
+            echo 'failure_aggregate_present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'failure_aggregate_present=false' >> "$GITHUB_OUTPUT"
+          fi
+          if (( status != 0 )); then
+            echo '::error::stage=report_finding; class=quality_no_progress_gate_failed:1; count=1'
+            exit 2
+          fi
+      - name: Byte-scan the closed quality failure aggregate
+        id: aggregate_scan
+        if: ${{ failure() && steps.score.outputs.failure_aggregate_present == 'true' }}
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: quality-failure-aggregate.json
+          stage: artifact_seal
+          require-key: "false"
+          byte-scan-only: "true"
+      - name: Upload the closed quality failure aggregate
+        id: upload_failure_aggregate
+        if: ${{ always() && steps.score.outcome == 'failure' && steps.score.outputs.failure_aggregate_present == 'true' && steps.aggregate_scan.outcome == 'success' }}
+        uses: ./control/.github/actions/upload-artifact-retry
+        with:
+          name: p6-balanced-quality-failure-aggregate-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: control/quality-failure-aggregate.json
+      - name: Strictly revalidate the successful quality bundle
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/p6_balanced_orchestrator.py revalidate \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-git-sha "$P6_CANDIDATE_COMMIT" \
+            --candidate-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --restored-bundle quality-candidate \
+            --legacy-truth test/range/benchmark/ground_truth.json \
+            --v16-truth test/range/benchmark/v16/ground_truth.json \
+            --repository-root . --output quality \
+            --receipt quality-revalidation-receipt.json >/dev/null 2>&1; then
+            echo '::error::stage=report_finding; class=quality_no_progress_gate_failed:1; count=1'
+            exit 2
+          fi
+          rm -r -- quality-candidate
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: quality/p6-balanced-quality-gate.json
+          stage: artifact_seal
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            quality
+            quality-revalidation-receipt.json
+          stage: artifact_seal
+          byte-scan-only: "true"
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: upload
+        with:
+          name: p6-balanced-quality-${{ env.P6_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ github.run_attempt }}
+          path: |
+            control/quality
+            control/quality-revalidation-receipt.json
+      - uses: ./control/.github/actions/classify-p6-job-failure
+        id: classify
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          execution-stage: balanced_quality_gate
+          default-class: quality_no_progress_gate_failed
+
   cold_deep:
     name: one isolated cold deep pilot
-    needs: [cold_balanced, toolchain_oci]
+    needs: [balanced_quality_gate, toolchain_oci]
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 720
@@ -1658,8 +2390,25 @@ jobs:
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
             --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
             --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
-            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
             --output-dir restored/toolchain
+      - name: Validate the exact proxy receipt before the cold deep executor
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: toolchain_oci_cache
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Execute deep from a new empty cache root
         run: |
           set -euo pipefail
@@ -1784,7 +2533,10 @@ jobs:
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
             --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
             --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
-            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
             --output-dir restored/toolchain
           python3 scripts/download_p6_run_artifact.py \
             --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
@@ -1822,6 +2574,20 @@ jobs:
             --artifact-name "p6-cold-deep-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
             --artifact-digest "sha256:$DEEP_DIGEST" --required-member p6-deep-projection.json \
             --output-dir restored/deep
+      - name: Revalidate the exact proxy receipt before qualification sealing
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: artifact_seal
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Revalidate conservation and select one producer per depth
         run: |
           set -euo pipefail
@@ -1851,6 +2617,37 @@ jobs:
             --toolchain-evidence-sha256 "$toolchain_sha" \
             --attempt-id "$P6_ATTEMPT_ID" \
             --output qualification.json
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import (
+              load_expected_proxy_attestation,
+              load_json_strict,
+          )
+
+          qualification = load_json_strict(Path("qualification.json"))
+          attestation_path = Path(
+              os.environ["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"]
+          )
+          attestation = load_expected_proxy_attestation(
+              attestation_path,
+              expected_file_sha256=os.environ[
+                  "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256"
+              ],
+          )
+          toolchain = qualification["toolchain_evidence"]
+          if (
+              toolchain["proxy_provision_sha256"]
+              != attestation["proxy_provision_sha256"]
+              or toolchain["image_provenance_sha256"]
+              != attestation["image_provenance_sha256"]
+              or toolchain["image_ref"] != attestation["image_ref"]
+              or toolchain["image_id"] != attestation["image_id"]
+              or qualification["provider_identity_sha256"]
+              != attestation["provider_identity_sha256"]
+          ):
+              raise SystemExit(2)
+          PY
       - uses: ./control/.github/actions/validate-p6-artifact
         with:
           paths: qualification.json
@@ -1870,7 +2667,7 @@ jobs:
 
   product_architecture_review:
     name: independent product architecture review
-    needs: [qualification_seal, entry]
+    needs: [qualification_seal, balanced_quality_gate, entry, toolchain_oci]
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 720
@@ -1905,12 +2702,20 @@ jobs:
           ARTIFACT_DIGEST: ${{ needs.qualification_seal.outputs.artifact_digest }}
           ENTRY_ID: ${{ needs.entry.outputs.artifact_id }}
           ENTRY_DIGEST: ${{ needs.entry.outputs.artifact_digest }}
+          QUALITY_ID: ${{ needs.balanced_quality_gate.outputs.artifact_id }}
+          QUALITY_DIGEST: ${{ needs.balanced_quality_gate.outputs.artifact_digest }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
         run: |
           set -euo pipefail
           [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
           [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           [[ "$ENTRY_ID" =~ ^[0-9]+$ ]]
           [[ "$ENTRY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$QUALITY_ID" =~ ^[0-9]+$ ]]
+          [[ "$QUALITY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           python3 scripts/download_p6_run_artifact.py \
             --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
@@ -1929,6 +2734,51 @@ jobs:
             --artifact-name "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
             --artifact-digest "sha256:$ENTRY_DIGEST" --required-member entry-evidence.json \
             --output-dir packet/entry
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'independently score and gate the frozen balanced report' \
+            --artifact-id "$QUALITY_ID" \
+            --artifact-name "p6-balanced-quality-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$QUALITY_DIGEST" \
+            --required-member quality/bindings.json \
+            --required-member quality/frozen-manifest.json \
+            --required-member quality/frozen-report.json \
+            --required-member quality/legacy-score.json \
+            --required-member quality/p6-balanced-quality-gate.json \
+            --required-member quality/producer-projection.json \
+            --required-member quality-revalidation-receipt.json \
+            --required-member quality/usage-evidence.json \
+            --required-member quality/v16-score.json \
+            --output-dir packet/quality-artifact
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Validate the exact proxy receipt before the product reviewer model call
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: independent_review
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Build the product-architecture packet without reviewer credentials
         run: |
           set -euo pipefail
@@ -1938,17 +2788,31 @@ jobs:
           python3 scripts/project_p6_entry_lineage.py \
             --entry-evidence packet/entry/entry-evidence.json \
             --output packet/evidence/e0-lineage.json >/dev/null
-          evidence_root_sha="$(python3 - <<'PY'
-          from pathlib import Path
-          from zscope.benchmarking.p6_protocol import canonical_sha256, load_json_strict
-          qualification = load_json_strict(Path("packet/evidence/qualification.json"))
-          lineage = load_json_strict(Path("packet/evidence/e0-lineage.json"))
-          print(canonical_sha256({
-              "qualification_sha256": qualification["qualification_sha256"],
-              "e0_lineage_artifact_sha256": lineage["artifact_sha256"],
-          }))
-          PY
-          )"
+          cp "$P6_CANDIDATE_ROOT/zscope/orchestration/p6-proof-promotion-qualification.v1.json" \
+            packet/evidence/successor-qualification.json
+          evidence_root_sha="$(python3 -m zscope.benchmarking.p6_review build-common-evidence \
+            --qualification packet/evidence/qualification.json \
+            --e0-lineage packet/evidence/e0-lineage.json \
+            --quality-bundle-root packet/quality-artifact/quality \
+            --quality-revalidation-receipt packet/quality-artifact/quality-revalidation-receipt.json \
+            --successor-qualification packet/evidence/successor-qualification.json \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-git-sha "$P6_CANDIDATE_COMMIT" \
+            --candidate-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --output packet/evidence/common-review-evidence.json)"
+          cp packet/quality-artifact/quality/p6-balanced-quality-gate.json \
+            packet/evidence/p6-balanced-quality-gate.json
+          cp packet/quality-artifact/quality/bindings.json \
+            packet/evidence/p6-balanced-bindings.json
+          cp packet/quality-artifact/quality/frozen-manifest.json \
+            packet/evidence/p6-balanced-frozen-manifest.json
+          cp packet/quality-artifact/quality/producer-projection.json \
+            packet/evidence/p6-balanced-producer-projection.json
+          cp packet/quality-artifact/quality-revalidation-receipt.json \
+            packet/evidence/p6-balanced-quality-revalidation-receipt.json
           python3 -m zscope.benchmarking.p6_review project-role-evidence \
             --qualification packet/evidence/qualification.json --role product_architecture \
             --output packet/evidence/product-architecture.json
@@ -1961,23 +2825,47 @@ jobs:
             --evidence-root-sha256 "$evidence_root_sha" \
             --artifact evidence/product-architecture.json=packet/evidence/product-architecture.json \
             --artifact evidence/e0-lineage.json=packet/evidence/e0-lineage.json \
+            --artifact evidence/common-review-evidence.json=packet/evidence/common-review-evidence.json \
+            --artifact evidence/successor-qualification.json=packet/evidence/successor-qualification.json \
+            --artifact evidence/p6-balanced-quality-gate.json=packet/evidence/p6-balanced-quality-gate.json \
+            --artifact evidence/p6-balanced-bindings.json=packet/evidence/p6-balanced-bindings.json \
+            --artifact evidence/p6-balanced-frozen-manifest.json=packet/evidence/p6-balanced-frozen-manifest.json \
+            --artifact evidence/p6-balanced-producer-projection.json=packet/evidence/p6-balanced-producer-projection.json \
+            --artifact evidence/p6-balanced-quality-revalidation-receipt.json=packet/evidence/p6-balanced-quality-revalidation-receipt.json \
             --artifact evidence/review-material-manifest.json=packet/evidence/review-material-manifest.json \
             --output packet/packet.json
       - name: Invoke exact Claude Code 2.1.233 glm-5.3 high identity
+        env:
+          P6_REVIEW_FAILURE_MARKER: ${{ runner.temp }}/p6-product-review-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
         run: |
           set -euo pipefail
           if ! python3 - <<'PY' >/dev/null 2>&1
           import os
           from pathlib import Path
-          from zscope.benchmarking.p6_review import run_reviewer
-          run_reviewer(
+          from zscope.benchmarking.p6_protocol import load_expected_proxy_attestation
+          from zscope.benchmarking.p6_review import run_reviewer_with_failure_marker
+          attestation_path = Path(
+              os.environ["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"]
+          )
+          if (
+              not attestation_path.is_absolute()
+              or (os.name == "posix" and attestation_path.lstat().st_mode & 0o077)
+          ):
+              raise SystemExit(2)
+          load_expected_proxy_attestation(
+              attestation_path,
+              expected_file_sha256=os.environ[
+                  "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256"
+              ],
+          )
+          run_reviewer_with_failure_marker(
               role="product_architecture", packet_path=Path("packet/packet.json"),
               output_dir=Path("review"),
+              failure_marker=Path(os.environ["P6_REVIEW_FAILURE_MARKER"]),
               material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
           )
           PY
           then
-            echo '::error::stage=independent_review; class=review_blocker:1; count=1'
             exit 2
           fi
       - name: Validate the product-architecture output without reviewer credentials
@@ -1997,6 +2885,28 @@ jobs:
             echo '::error::stage=independent_review; class=review_binding_invalid:1; count=1'
             exit 2
           fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            packet/packet.json
+            packet/evidence/product-architecture.json
+            packet/evidence/e0-lineage.json
+            packet/evidence/common-review-evidence.json
+            packet/evidence/successor-qualification.json
+            packet/evidence/p6-balanced-quality-gate.json
+            packet/evidence/p6-balanced-bindings.json
+            packet/evidence/p6-balanced-frozen-manifest.json
+            packet/evidence/p6-balanced-producer-projection.json
+            packet/evidence/p6-balanced-quality-revalidation-receipt.json
+            packet/evidence/review-material-manifest.json
+            packet/quality-artifact/quality/p6-balanced-quality-gate.json
+            packet/quality-artifact/quality/bindings.json
+            packet/quality-artifact/quality/frozen-manifest.json
+            packet/quality-artifact/quality/producer-projection.json
+            packet/quality-artifact/quality-revalidation-receipt.json
+            review
+          stage: independent_review
+          byte-scan-only: "true"
       - uses: ./control/.github/actions/upload-artifact-retry
         id: upload
         with:
@@ -2005,6 +2915,18 @@ jobs:
             control/packet/packet.json
             control/packet/evidence/product-architecture.json
             control/packet/evidence/e0-lineage.json
+            control/packet/evidence/common-review-evidence.json
+            control/packet/evidence/successor-qualification.json
+            control/packet/evidence/p6-balanced-quality-gate.json
+            control/packet/evidence/p6-balanced-bindings.json
+            control/packet/evidence/p6-balanced-frozen-manifest.json
+            control/packet/evidence/p6-balanced-producer-projection.json
+            control/packet/evidence/p6-balanced-quality-revalidation-receipt.json
+            control/packet/quality-artifact/quality/p6-balanced-quality-gate.json
+            control/packet/quality-artifact/quality/bindings.json
+            control/packet/quality-artifact/quality/frozen-manifest.json
+            control/packet/quality-artifact/quality/producer-projection.json
+            control/packet/quality-artifact/quality-revalidation-receipt.json
             control/packet/evidence/review-material-manifest.json
             control/review
       - uses: ./control/.github/actions/classify-p6-job-failure
@@ -2014,10 +2936,11 @@ jobs:
           status: ${{ job.status }}
           execution-stage: product_architecture_review
           default-class: review_binding_invalid
+          marker: ${{ runner.temp }}/p6-product-review-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
 
   proof_security_review:
     name: independent proof security review
-    needs: [product_architecture_review, qualification_seal, entry]
+    needs: [product_architecture_review, qualification_seal, balanced_quality_gate, entry, toolchain_oci]
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 720
@@ -2052,12 +2975,20 @@ jobs:
           ARTIFACT_DIGEST: ${{ needs.qualification_seal.outputs.artifact_digest }}
           ENTRY_ID: ${{ needs.entry.outputs.artifact_id }}
           ENTRY_DIGEST: ${{ needs.entry.outputs.artifact_digest }}
+          QUALITY_ID: ${{ needs.balanced_quality_gate.outputs.artifact_id }}
+          QUALITY_DIGEST: ${{ needs.balanced_quality_gate.outputs.artifact_digest }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
         run: |
           set -euo pipefail
           [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
           [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           [[ "$ENTRY_ID" =~ ^[0-9]+$ ]]
           [[ "$ENTRY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$QUALITY_ID" =~ ^[0-9]+$ ]]
+          [[ "$QUALITY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           python3 scripts/download_p6_run_artifact.py \
             --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
@@ -2076,6 +3007,51 @@ jobs:
             --artifact-name "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
             --artifact-digest "sha256:$ENTRY_DIGEST" --required-member entry-evidence.json \
             --output-dir packet/entry
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'independently score and gate the frozen balanced report' \
+            --artifact-id "$QUALITY_ID" \
+            --artifact-name "p6-balanced-quality-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$QUALITY_DIGEST" \
+            --required-member quality/bindings.json \
+            --required-member quality/frozen-manifest.json \
+            --required-member quality/frozen-report.json \
+            --required-member quality/legacy-score.json \
+            --required-member quality/p6-balanced-quality-gate.json \
+            --required-member quality/producer-projection.json \
+            --required-member quality-revalidation-receipt.json \
+            --required-member quality/usage-evidence.json \
+            --required-member quality/v16-score.json \
+            --output-dir packet/quality-artifact
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Validate the exact proxy receipt before the proof reviewer model call
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: independent_review
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Build the proof-security packet without reviewer credentials
         run: |
           set -euo pipefail
@@ -2085,17 +3061,31 @@ jobs:
           python3 scripts/project_p6_entry_lineage.py \
             --entry-evidence packet/entry/entry-evidence.json \
             --output packet/evidence/e0-lineage.json >/dev/null
-          evidence_root_sha="$(python3 - <<'PY'
-          from pathlib import Path
-          from zscope.benchmarking.p6_protocol import canonical_sha256, load_json_strict
-          qualification = load_json_strict(Path("packet/evidence/qualification.json"))
-          lineage = load_json_strict(Path("packet/evidence/e0-lineage.json"))
-          print(canonical_sha256({
-              "qualification_sha256": qualification["qualification_sha256"],
-              "e0_lineage_artifact_sha256": lineage["artifact_sha256"],
-          }))
-          PY
-          )"
+          cp "$P6_CANDIDATE_ROOT/zscope/orchestration/p6-proof-promotion-qualification.v1.json" \
+            packet/evidence/successor-qualification.json
+          evidence_root_sha="$(python3 -m zscope.benchmarking.p6_review build-common-evidence \
+            --qualification packet/evidence/qualification.json \
+            --e0-lineage packet/evidence/e0-lineage.json \
+            --quality-bundle-root packet/quality-artifact/quality \
+            --quality-revalidation-receipt packet/quality-artifact/quality-revalidation-receipt.json \
+            --successor-qualification packet/evidence/successor-qualification.json \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-git-sha "$P6_CANDIDATE_COMMIT" \
+            --candidate-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --output packet/evidence/common-review-evidence.json)"
+          cp packet/quality-artifact/quality/p6-balanced-quality-gate.json \
+            packet/evidence/p6-balanced-quality-gate.json
+          cp packet/quality-artifact/quality/bindings.json \
+            packet/evidence/p6-balanced-bindings.json
+          cp packet/quality-artifact/quality/frozen-manifest.json \
+            packet/evidence/p6-balanced-frozen-manifest.json
+          cp packet/quality-artifact/quality/producer-projection.json \
+            packet/evidence/p6-balanced-producer-projection.json
+          cp packet/quality-artifact/quality-revalidation-receipt.json \
+            packet/evidence/p6-balanced-quality-revalidation-receipt.json
           python3 -m zscope.benchmarking.p6_review project-role-evidence \
             --qualification packet/evidence/qualification.json --role proof_security \
             --output packet/evidence/proof-security.json
@@ -2108,23 +3098,47 @@ jobs:
             --evidence-root-sha256 "$evidence_root_sha" \
             --artifact evidence/proof-security.json=packet/evidence/proof-security.json \
             --artifact evidence/e0-lineage.json=packet/evidence/e0-lineage.json \
+            --artifact evidence/common-review-evidence.json=packet/evidence/common-review-evidence.json \
+            --artifact evidence/successor-qualification.json=packet/evidence/successor-qualification.json \
+            --artifact evidence/p6-balanced-quality-gate.json=packet/evidence/p6-balanced-quality-gate.json \
+            --artifact evidence/p6-balanced-bindings.json=packet/evidence/p6-balanced-bindings.json \
+            --artifact evidence/p6-balanced-frozen-manifest.json=packet/evidence/p6-balanced-frozen-manifest.json \
+            --artifact evidence/p6-balanced-producer-projection.json=packet/evidence/p6-balanced-producer-projection.json \
+            --artifact evidence/p6-balanced-quality-revalidation-receipt.json=packet/evidence/p6-balanced-quality-revalidation-receipt.json \
             --artifact evidence/review-material-manifest.json=packet/evidence/review-material-manifest.json \
             --output packet/packet.json
       - name: Invoke exact DSH 0.1.0-rc.6 DeepSeek v4 Pro max identity
+        env:
+          P6_REVIEW_FAILURE_MARKER: ${{ runner.temp }}/p6-proof-review-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
         run: |
           set -euo pipefail
           if ! python3 - <<'PY' >/dev/null 2>&1
           import os
           from pathlib import Path
-          from zscope.benchmarking.p6_review import run_reviewer
-          run_reviewer(
+          from zscope.benchmarking.p6_protocol import load_expected_proxy_attestation
+          from zscope.benchmarking.p6_review import run_reviewer_with_failure_marker
+          attestation_path = Path(
+              os.environ["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"]
+          )
+          if (
+              not attestation_path.is_absolute()
+              or (os.name == "posix" and attestation_path.lstat().st_mode & 0o077)
+          ):
+              raise SystemExit(2)
+          load_expected_proxy_attestation(
+              attestation_path,
+              expected_file_sha256=os.environ[
+                  "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256"
+              ],
+          )
+          run_reviewer_with_failure_marker(
               role="proof_security", packet_path=Path("packet/packet.json"),
               output_dir=Path("review"),
+              failure_marker=Path(os.environ["P6_REVIEW_FAILURE_MARKER"]),
               material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
           )
           PY
           then
-            echo '::error::stage=independent_review; class=review_blocker:1; count=1'
             exit 2
           fi
       - name: Validate the proof-security output without reviewer credentials
@@ -2144,6 +3158,28 @@ jobs:
             echo '::error::stage=independent_review; class=review_binding_invalid:1; count=1'
             exit 2
           fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            packet/packet.json
+            packet/evidence/proof-security.json
+            packet/evidence/e0-lineage.json
+            packet/evidence/common-review-evidence.json
+            packet/evidence/successor-qualification.json
+            packet/evidence/p6-balanced-quality-gate.json
+            packet/evidence/p6-balanced-bindings.json
+            packet/evidence/p6-balanced-frozen-manifest.json
+            packet/evidence/p6-balanced-producer-projection.json
+            packet/evidence/p6-balanced-quality-revalidation-receipt.json
+            packet/evidence/review-material-manifest.json
+            packet/quality-artifact/quality/p6-balanced-quality-gate.json
+            packet/quality-artifact/quality/bindings.json
+            packet/quality-artifact/quality/frozen-manifest.json
+            packet/quality-artifact/quality/producer-projection.json
+            packet/quality-artifact/quality-revalidation-receipt.json
+            review
+          stage: independent_review
+          byte-scan-only: "true"
       - uses: ./control/.github/actions/upload-artifact-retry
         id: upload
         with:
@@ -2152,6 +3188,18 @@ jobs:
             control/packet/packet.json
             control/packet/evidence/proof-security.json
             control/packet/evidence/e0-lineage.json
+            control/packet/evidence/common-review-evidence.json
+            control/packet/evidence/successor-qualification.json
+            control/packet/evidence/p6-balanced-quality-gate.json
+            control/packet/evidence/p6-balanced-bindings.json
+            control/packet/evidence/p6-balanced-frozen-manifest.json
+            control/packet/evidence/p6-balanced-producer-projection.json
+            control/packet/evidence/p6-balanced-quality-revalidation-receipt.json
+            control/packet/quality-artifact/quality/p6-balanced-quality-gate.json
+            control/packet/quality-artifact/quality/bindings.json
+            control/packet/quality-artifact/quality/frozen-manifest.json
+            control/packet/quality-artifact/quality/producer-projection.json
+            control/packet/quality-artifact/quality-revalidation-receipt.json
             control/packet/evidence/review-material-manifest.json
             control/review
       - uses: ./control/.github/actions/classify-p6-job-failure
@@ -2161,10 +3209,11 @@ jobs:
           status: ${{ job.status }}
           execution-stage: proof_security_review
           default-class: review_binding_invalid
+          marker: ${{ runner.temp }}/p6-proof-review-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
 
   independent_benchmark_review:
     name: independent benchmark review
-    needs: [proof_security_review, qualification_seal, entry]
+    needs: [proof_security_review, qualification_seal, balanced_quality_gate, entry, toolchain_oci]
     runs-on: [self-hosted, linux, x64, zscope-sealed]
     environment: sealed-benchmark
     timeout-minutes: 720
@@ -2199,12 +3248,20 @@ jobs:
           ARTIFACT_DIGEST: ${{ needs.qualification_seal.outputs.artifact_digest }}
           ENTRY_ID: ${{ needs.entry.outputs.artifact_id }}
           ENTRY_DIGEST: ${{ needs.entry.outputs.artifact_digest }}
+          QUALITY_ID: ${{ needs.balanced_quality_gate.outputs.artifact_id }}
+          QUALITY_DIGEST: ${{ needs.balanced_quality_gate.outputs.artifact_digest }}
+          TOOLCHAIN_ID: ${{ needs.toolchain_oci.outputs.artifact_id }}
+          TOOLCHAIN_DIGEST: ${{ needs.toolchain_oci.outputs.artifact_digest }}
         run: |
           set -euo pipefail
           [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
           [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           [[ "$ENTRY_ID" =~ ^[0-9]+$ ]]
           [[ "$ENTRY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$QUALITY_ID" =~ ^[0-9]+$ ]]
+          [[ "$QUALITY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$TOOLCHAIN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TOOLCHAIN_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           python3 scripts/download_p6_run_artifact.py \
             --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
@@ -2223,6 +3280,70 @@ jobs:
             --artifact-name "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
             --artifact-digest "sha256:$ENTRY_DIGEST" --required-member entry-evidence.json \
             --output-dir packet/entry
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'independently score and gate the frozen balanced report' \
+            --artifact-id "$QUALITY_ID" \
+            --artifact-name "p6-balanced-quality-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$QUALITY_DIGEST" \
+            --required-member quality/bindings.json \
+            --required-member quality/frozen-manifest.json \
+            --required-member quality/frozen-report.json \
+            --required-member quality/legacy-score.json \
+            --required-member quality/p6-balanced-quality-gate.json \
+            --required-member quality/producer-projection.json \
+            --required-member quality-revalidation-receipt.json \
+            --required-member quality/usage-evidence.json \
+            --required-member quality/v16-score.json \
+            --output-dir packet/quality-artifact
+          quality_members=(bindings.json frozen-manifest.json frozen-report.json legacy-score.json p6-balanced-quality-gate.json producer-projection.json usage-evidence.json v16-score.json)
+          python3 scripts/p6_balanced_orchestrator.py revalidate \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-git-sha "$P6_CANDIDATE_COMMIT" \
+            --candidate-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --restored-bundle packet/quality-artifact/quality \
+            --legacy-truth test/range/benchmark/ground_truth.json \
+            --v16-truth test/range/benchmark/v16/ground_truth.json \
+            --repository-root . --output packet/quality-revalidated \
+            --receipt packet/quality-revalidated-receipt.json >/dev/null 2>&1
+          for member in "${quality_members[@]}"; do
+            cmp -s "packet/quality-artifact/quality/$member" "packet/quality-revalidated/$member"
+          done
+          cmp -s packet/quality-artifact/quality-revalidation-receipt.json packet/quality-revalidated-receipt.json
+          rm -r -- packet/quality-revalidated
+          rm -- packet/quality-revalidated-receipt.json
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
+            --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
+            --output-dir restored/toolchain
+      - name: Validate the exact proxy receipt before the benchmark reviewer model call
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: independent_review
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
       - name: Build the independent-benchmark packet without reviewer credentials
         run: |
           set -euo pipefail
@@ -2232,17 +3353,31 @@ jobs:
           python3 scripts/project_p6_entry_lineage.py \
             --entry-evidence packet/entry/entry-evidence.json \
             --output packet/evidence/e0-lineage.json >/dev/null
-          evidence_root_sha="$(python3 - <<'PY'
-          from pathlib import Path
-          from zscope.benchmarking.p6_protocol import canonical_sha256, load_json_strict
-          qualification = load_json_strict(Path("packet/evidence/qualification.json"))
-          lineage = load_json_strict(Path("packet/evidence/e0-lineage.json"))
-          print(canonical_sha256({
-              "qualification_sha256": qualification["qualification_sha256"],
-              "e0_lineage_artifact_sha256": lineage["artifact_sha256"],
-          }))
-          PY
-          )"
+          cp "$P6_CANDIDATE_ROOT/zscope/orchestration/p6-proof-promotion-qualification.v1.json" \
+            packet/evidence/successor-qualification.json
+          evidence_root_sha="$(python3 -m zscope.benchmarking.p6_review build-common-evidence \
+            --qualification packet/evidence/qualification.json \
+            --e0-lineage packet/evidence/e0-lineage.json \
+            --quality-bundle-root packet/quality-artifact/quality \
+            --quality-revalidation-receipt packet/quality-artifact/quality-revalidation-receipt.json \
+            --successor-qualification packet/evidence/successor-qualification.json \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-git-sha "$P6_CANDIDATE_COMMIT" \
+            --candidate-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --output packet/evidence/common-review-evidence.json)"
+          cp packet/quality-artifact/quality/p6-balanced-quality-gate.json \
+            packet/evidence/p6-balanced-quality-gate.json
+          cp packet/quality-artifact/quality/bindings.json \
+            packet/evidence/p6-balanced-bindings.json
+          cp packet/quality-artifact/quality/frozen-manifest.json \
+            packet/evidence/p6-balanced-frozen-manifest.json
+          cp packet/quality-artifact/quality/producer-projection.json \
+            packet/evidence/p6-balanced-producer-projection.json
+          cp packet/quality-artifact/quality-revalidation-receipt.json \
+            packet/evidence/p6-balanced-quality-revalidation-receipt.json
           python3 -m zscope.benchmarking.p6_review project-role-evidence \
             --qualification packet/evidence/qualification.json --role independent_benchmark \
             --output packet/evidence/independent-benchmark.json
@@ -2255,23 +3390,47 @@ jobs:
             --evidence-root-sha256 "$evidence_root_sha" \
             --artifact evidence/independent-benchmark.json=packet/evidence/independent-benchmark.json \
             --artifact evidence/e0-lineage.json=packet/evidence/e0-lineage.json \
+            --artifact evidence/common-review-evidence.json=packet/evidence/common-review-evidence.json \
+            --artifact evidence/successor-qualification.json=packet/evidence/successor-qualification.json \
+            --artifact evidence/p6-balanced-quality-gate.json=packet/evidence/p6-balanced-quality-gate.json \
+            --artifact evidence/p6-balanced-bindings.json=packet/evidence/p6-balanced-bindings.json \
+            --artifact evidence/p6-balanced-frozen-manifest.json=packet/evidence/p6-balanced-frozen-manifest.json \
+            --artifact evidence/p6-balanced-producer-projection.json=packet/evidence/p6-balanced-producer-projection.json \
+            --artifact evidence/p6-balanced-quality-revalidation-receipt.json=packet/evidence/p6-balanced-quality-revalidation-receipt.json \
             --artifact evidence/review-material-manifest.json=packet/evidence/review-material-manifest.json \
             --output packet/packet.json
       - name: Invoke exact Codex CLI 0.144.4 GPT-5.6-Sol xhigh identity
+        env:
+          P6_REVIEW_FAILURE_MARKER: ${{ runner.temp }}/p6-benchmark-review-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
         run: |
           set -euo pipefail
           if ! python3 - <<'PY' >/dev/null 2>&1
           import os
           from pathlib import Path
-          from zscope.benchmarking.p6_review import run_reviewer
-          run_reviewer(
+          from zscope.benchmarking.p6_protocol import load_expected_proxy_attestation
+          from zscope.benchmarking.p6_review import run_reviewer_with_failure_marker
+          attestation_path = Path(
+              os.environ["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"]
+          )
+          if (
+              not attestation_path.is_absolute()
+              or (os.name == "posix" and attestation_path.lstat().st_mode & 0o077)
+          ):
+              raise SystemExit(2)
+          load_expected_proxy_attestation(
+              attestation_path,
+              expected_file_sha256=os.environ[
+                  "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256"
+              ],
+          )
+          run_reviewer_with_failure_marker(
               role="independent_benchmark", packet_path=Path("packet/packet.json"),
               output_dir=Path("review"),
+              failure_marker=Path(os.environ["P6_REVIEW_FAILURE_MARKER"]),
               material_root=Path(os.environ["P6_CANDIDATE_ROOT"]),
           )
           PY
           then
-            echo '::error::stage=independent_review; class=review_blocker:1; count=1'
             exit 2
           fi
       - name: Validate the independent-benchmark output without reviewer credentials
@@ -2291,6 +3450,28 @@ jobs:
             echo '::error::stage=independent_review; class=review_binding_invalid:1; count=1'
             exit 2
           fi
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            packet/packet.json
+            packet/evidence/independent-benchmark.json
+            packet/evidence/e0-lineage.json
+            packet/evidence/common-review-evidence.json
+            packet/evidence/successor-qualification.json
+            packet/evidence/p6-balanced-quality-gate.json
+            packet/evidence/p6-balanced-bindings.json
+            packet/evidence/p6-balanced-frozen-manifest.json
+            packet/evidence/p6-balanced-producer-projection.json
+            packet/evidence/p6-balanced-quality-revalidation-receipt.json
+            packet/evidence/review-material-manifest.json
+            packet/quality-artifact/quality/p6-balanced-quality-gate.json
+            packet/quality-artifact/quality/bindings.json
+            packet/quality-artifact/quality/frozen-manifest.json
+            packet/quality-artifact/quality/producer-projection.json
+            packet/quality-artifact/quality-revalidation-receipt.json
+            review
+          stage: independent_review
+          byte-scan-only: "true"
       - uses: ./control/.github/actions/upload-artifact-retry
         id: upload
         with:
@@ -2299,6 +3480,18 @@ jobs:
             control/packet/packet.json
             control/packet/evidence/independent-benchmark.json
             control/packet/evidence/e0-lineage.json
+            control/packet/evidence/common-review-evidence.json
+            control/packet/evidence/successor-qualification.json
+            control/packet/evidence/p6-balanced-quality-gate.json
+            control/packet/evidence/p6-balanced-bindings.json
+            control/packet/evidence/p6-balanced-frozen-manifest.json
+            control/packet/evidence/p6-balanced-producer-projection.json
+            control/packet/evidence/p6-balanced-quality-revalidation-receipt.json
+            control/packet/quality-artifact/quality/p6-balanced-quality-gate.json
+            control/packet/quality-artifact/quality/bindings.json
+            control/packet/quality-artifact/quality/frozen-manifest.json
+            control/packet/quality-artifact/quality/producer-projection.json
+            control/packet/quality-artifact/quality-revalidation-receipt.json
             control/packet/evidence/review-material-manifest.json
             control/review
       - uses: ./control/.github/actions/classify-p6-job-failure
@@ -2308,10 +3501,11 @@ jobs:
           status: ${{ job.status }}
           execution-stage: independent_benchmark_review
           default-class: review_binding_invalid
+          marker: ${{ runner.temp }}/p6-benchmark-review-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
 
   final_evidence_seal:
     name: seal complete reviewed P6 checkpoint
-    needs: [entry, provider_probe, toolchain_oci, policy_replay, certificate_reverify, anonymous_qualification, safe_pair_validation, evidence_action_canary, offline_qualification, cold_fast, cold_balanced, cold_deep, qualification_seal, product_architecture_review, proof_security_review, independent_benchmark_review]
+    needs: [entry, provider_probe, toolchain_oci, policy_replay, certificate_reverify, anonymous_qualification, safe_pair_validation, evidence_action_canary, offline_qualification, cold_fast, cold_balanced, balanced_quality_gate, cold_deep, qualification_seal, product_architecture_review, proof_security_review, independent_benchmark_review]
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
@@ -2364,6 +3558,8 @@ jobs:
           FAST_DIGEST: ${{ needs.cold_fast.outputs.artifact_digest }}
           BALANCED_ID: ${{ needs.cold_balanced.outputs.artifact_id }}
           BALANCED_DIGEST: ${{ needs.cold_balanced.outputs.artifact_digest }}
+          QUALITY_ID: ${{ needs.balanced_quality_gate.outputs.artifact_id }}
+          QUALITY_DIGEST: ${{ needs.balanced_quality_gate.outputs.artifact_digest }}
           DEEP_ID: ${{ needs.cold_deep.outputs.artifact_id }}
           DEEP_DIGEST: ${{ needs.cold_deep.outputs.artifact_digest }}
           QUALIFICATION_ID: ${{ needs.qualification_seal.outputs.artifact_id }}
@@ -2376,8 +3572,8 @@ jobs:
           BENCHMARK_DIGEST: ${{ needs.independent_benchmark_review.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          for value in "$ENTRY_ID" "$PROVIDER_ID" "$TOOLCHAIN_ID" "$POLICY_ID" "$REVERIFY_ID" "$HIDDEN_ID" "$SAFE_ID" "$CANARY_ID" "$OFFLINE_ID" "$FAST_ID" "$BALANCED_ID" "$DEEP_ID" "$QUALIFICATION_ID" "$PRODUCT_ID" "$PROOF_ID" "$BENCHMARK_ID"; do [[ "$value" =~ ^[0-9]+$ ]]; done
-          for value in "$ENTRY_DIGEST" "$PROVIDER_DIGEST" "$TOOLCHAIN_DIGEST" "$POLICY_DIGEST" "$REVERIFY_DIGEST" "$HIDDEN_DIGEST" "$SAFE_DIGEST" "$CANARY_DIGEST" "$OFFLINE_DIGEST" "$FAST_DIGEST" "$BALANCED_DIGEST" "$DEEP_DIGEST" "$QUALIFICATION_DIGEST" "$PRODUCT_DIGEST" "$PROOF_DIGEST" "$BENCHMARK_DIGEST"; do [[ "$value" =~ ^[0-9a-f]{64}$ ]]; done
+          for value in "$ENTRY_ID" "$PROVIDER_ID" "$TOOLCHAIN_ID" "$POLICY_ID" "$REVERIFY_ID" "$HIDDEN_ID" "$SAFE_ID" "$CANARY_ID" "$OFFLINE_ID" "$FAST_ID" "$BALANCED_ID" "$QUALITY_ID" "$DEEP_ID" "$QUALIFICATION_ID" "$PRODUCT_ID" "$PROOF_ID" "$BENCHMARK_ID"; do [[ "$value" =~ ^[0-9]+$ ]]; done
+          for value in "$ENTRY_DIGEST" "$PROVIDER_DIGEST" "$TOOLCHAIN_DIGEST" "$POLICY_DIGEST" "$REVERIFY_DIGEST" "$HIDDEN_DIGEST" "$SAFE_DIGEST" "$CANARY_DIGEST" "$OFFLINE_DIGEST" "$FAST_DIGEST" "$BALANCED_DIGEST" "$QUALITY_DIGEST" "$DEEP_DIGEST" "$QUALIFICATION_DIGEST" "$PRODUCT_DIGEST" "$PROOF_DIGEST" "$BENCHMARK_DIGEST"; do [[ "$value" =~ ^[0-9a-f]{64}$ ]]; done
           python3 scripts/download_p6_run_artifact.py \
             --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
@@ -2403,7 +3599,10 @@ jobs:
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
             --producer-job 'toolchain OCI and cold-cache preflight' --artifact-id "$TOOLCHAIN_ID" \
             --artifact-name "p6-toolchain-oci-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
-            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" --required-member toolchain-evidence.json \
+            --artifact-digest "sha256:$TOOLCHAIN_DIGEST" \
+            --required-member image-provenance.json \
+            --required-member proxy-provision.json \
+            --required-member toolchain-evidence.json \
             --output-dir restored/toolchain
           python3 scripts/download_p6_run_artifact.py \
             --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
@@ -2467,6 +3666,44 @@ jobs:
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
             --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --producer-job 'independently score and gate the frozen balanced report' \
+            --artifact-id "$QUALITY_ID" \
+            --artifact-name "p6-balanced-quality-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-digest "sha256:$QUALITY_DIGEST" \
+            --required-member quality/bindings.json \
+            --required-member quality/frozen-manifest.json \
+            --required-member quality/frozen-report.json \
+            --required-member quality/legacy-score.json \
+            --required-member quality/p6-balanced-quality-gate.json \
+            --required-member quality/producer-projection.json \
+            --required-member quality-revalidation-receipt.json \
+            --required-member quality/usage-evidence.json \
+            --required-member quality/v16-score.json \
+            --output-dir restored/quality-artifact
+          quality_members=(bindings.json frozen-manifest.json frozen-report.json legacy-score.json p6-balanced-quality-gate.json producer-projection.json usage-evidence.json v16-score.json)
+          python3 scripts/p6_balanced_orchestrator.py revalidate \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-git-sha "$P6_CANDIDATE_COMMIT" \
+            --candidate-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --restored-bundle restored/quality-artifact/quality \
+            --legacy-truth test/range/benchmark/ground_truth.json \
+            --v16-truth test/range/benchmark/v16/ground_truth.json \
+            --repository-root . --output restored/quality-revalidated \
+            --receipt restored/quality-revalidated-receipt.json >/dev/null 2>&1
+          for member in "${quality_members[@]}"; do
+            cmp -s "restored/quality-artifact/quality/$member" "restored/quality-revalidated/$member"
+          done
+          cmp -s restored/quality-artifact/quality-revalidation-receipt.json restored/quality-revalidated-receipt.json
+          rm -r -- restored/quality-revalidated
+          rm -- restored/quality-revalidated-receipt.json
+          python3 scripts/download_p6_run_artifact.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
             --producer-job 'one isolated cold deep pilot' --artifact-id "$DEEP_ID" \
             --artifact-name "p6-cold-deep-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
             --artifact-digest "sha256:$DEEP_DIGEST" --required-member p6-deep-projection.json \
@@ -2510,6 +3747,100 @@ jobs:
             --artifact-digest "sha256:$BENCHMARK_DIGEST" --required-member packet/packet.json \
             --required-member review/decision.json --required-member review/raw-envelope.json \
             --output-dir restored/reviews/independent-benchmark
+      - name: Cross-bind restored toolchain provenance to live immutable identities
+        run: |
+          set -euo pipefail
+          mapfile -t trusted_provider < <(python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.isolation import OciNetworkPolicy
+          from zscope.benchmarking.provider_runtime import ProviderRuntimeContract
+          contract = ProviderRuntimeContract.from_config_file(Path("test/range/zscope.benchmark.yaml"))
+          policy = OciNetworkPolicy.from_provider_contract(os.environ, contract)
+          print(contract.identity_sha256)
+          print(policy.policy_sha256)
+          print(policy.endpoint_origin)
+          PY
+          )
+          test "${#trusted_provider[@]}" = 3
+          image_id="$($Z_SCOPE_BENCHMARK_OCI_RUNTIME image inspect --format '{{.Id}}' "$Z_SCOPE_BENCHMARK_OCI_IMAGE")"
+          proxy_id="$($Z_SCOPE_BENCHMARK_OCI_RUNTIME container inspect --format '{{.Id}}' "$Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER")"
+          candidate_tree="$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')"
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          python3 scripts/p6_pilot_protocol.py validate-toolchain-provenance-files \
+            --toolchain-evidence restored/toolchain/toolchain-evidence.json \
+            --image-provenance restored/toolchain/image-provenance.json \
+            --proxy-provision restored/toolchain/proxy-provision.json \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" --candidate-tree "$candidate_tree" \
+            --candidate-sha256 "$candidate_sha" \
+            --provider-identity-sha256 "${trusted_provider[0]}" \
+            --image-ref "$Z_SCOPE_BENCHMARK_OCI_IMAGE" --image-id "$image_id" \
+            --proxy-container "$Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER" \
+            --proxy-container-id "$proxy_id" \
+            --network-name "$Z_SCOPE_BENCHMARK_OCI_NETWORK" \
+            --egress-network-name "$Z_SCOPE_BENCHMARK_OCI_EGRESS_NETWORK" \
+            --network-policy-sha256 "${trusted_provider[1]}" \
+            --endpoint-origin "${trusted_provider[2]}" >/dev/null 2>&1
+      - name: Cross-check final execution provenance against the closed proxy attestation
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: |
+            restored/toolchain/image-provenance.json
+            restored/toolchain/proxy-provision.json
+            restored/toolchain/toolchain-evidence.json
+          stage: artifact_seal
+          require-key: "false"
+          byte-scan-only: "true"
+          toolchain-evidence: restored/toolchain/toolchain-evidence.json
+          image-provenance: restored/toolchain/image-provenance.json
+          proxy-provision: restored/toolchain/proxy-provision.json
+          expected-proxy-attestation: expected-proxy-attestation.json
+      - name: Verify qualification and final proxy lineage agree exactly
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import (
+              load_expected_proxy_attestation,
+              load_json_strict,
+          )
+
+          attestation_path = Path(
+              os.environ["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"]
+          )
+          attestation = load_expected_proxy_attestation(
+              attestation_path,
+              expected_file_sha256=os.environ[
+                  "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256"
+              ],
+          )
+          qualification = load_json_strict(Path("restored/qualification/qualification.json"))
+          receipt = load_json_strict(Path("restored/toolchain/proxy-provision.json"))
+          toolchain = qualification["toolchain_evidence"]
+          depths = qualification["depths"]
+          if (
+              toolchain["proxy_provision_sha256"]
+              != attestation["proxy_provision_sha256"]
+              or toolchain["image_provenance_sha256"]
+              != attestation["image_provenance_sha256"]
+              or qualification["provider_identity_sha256"]
+              != attestation["provider_identity_sha256"]
+              or receipt["proxy_container_id"] != attestation["proxy_container_id"]
+              or receipt["network_policy_sha256"]
+              != attestation["network_policy_sha256"]
+              or any(
+                  depth["provider_identity_sha256"]
+                  != attestation["provider_identity_sha256"]
+                  or depth["oci_image_ref"] != attestation["image_ref"]
+                  or depth["oci_image_id"] != attestation["image_id"]
+                  for depth in depths
+              )
+          ):
+              raise SystemExit(2)
+          PY
       - name: Strictly aggregate all three independent zero-blocker decisions
         run: |
           set -euo pipefail
@@ -2566,14 +3897,38 @@ jobs:
           canary_payload="$(sha256sum restored/canary/offline-canary.json | awk '{print $1}')"
           fast_payload="$(sha256sum restored/fast/p6-fast-projection.json | awk '{print $1}')"
           balanced_payload="$(sha256sum restored/balanced/p6-balanced-projection.json | awk '{print $1}')"
+          quality_payload="$(sha256sum restored/quality-artifact/quality/p6-balanced-quality-gate.json | awk '{print $1}')"
           deep_payload="$(sha256sum restored/deep/p6-deep-projection.json | awk '{print $1}')"
           qualification_payload="$(sha256sum restored/qualification/qualification.json | awk '{print $1}')"
-          product_payload="$(sha256sum restored/reviews/product-architecture/review/decision.json | awk '{print $1}')"
-          proof_payload="$(sha256sum restored/reviews/proof-security/review/decision.json | awk '{print $1}')"
-          benchmark_payload="$(sha256sum restored/reviews/independent-benchmark/review/decision.json | awk '{print $1}')"
-          mkdir -p checkpoint-run/stage-artifacts checkpoint-run/payload/reviews/product-architecture checkpoint-run/payload/reviews/proof-security checkpoint-run/payload/reviews/independent-benchmark
+          mapfile -t review_payloads < <(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          review_set = load_json_strict(Path("p6-independent-reviews.json"))
+          rows = {row["role"]: row for row in review_set["reviews"]}
+          for role in ("product_architecture", "proof_security", "independent_benchmark"):
+              print(rows[role]["review_artifact_sha256"])
+          conservation = review_set["reviewer_usage_conservation"]
+          if (
+              conservation["provider_usage_coverage"] != 1.0
+              or conservation["missing_usage_call_count"] != 0
+              or conservation["mismatched_model_call_count"] != 0
+              or conservation["estimated_call_count"] != 0
+              or conservation["call_conservation_passed"] is not True
+              or conservation["token_conservation_passed"] is not True
+              or conservation["included_in_balanced_scan_token_gate"] is not False
+          ):
+              raise SystemExit(2)
+          PY
+          )
+          test "${#review_payloads[@]}" = 3
+          product_payload="${review_payloads[0]}"
+          proof_payload="${review_payloads[1]}"
+          benchmark_payload="${review_payloads[2]}"
+          mkdir -p checkpoint-run/stage-artifacts checkpoint-run/payload/quality checkpoint-run/payload/reviews/product-architecture checkpoint-run/payload/reviews/proof-security checkpoint-run/payload/reviews/independent-benchmark
           cp restored/entry/entry-evidence.json checkpoint-run/payload/entry-evidence.json
           cp restored/provider/provider-probe.json checkpoint-run/payload/provider-probe.json
+          cp restored/toolchain/image-provenance.json checkpoint-run/payload/image-provenance.json
+          cp restored/toolchain/proxy-provision.json checkpoint-run/payload/proxy-provision.json
           cp restored/toolchain/toolchain-evidence.json checkpoint-run/payload/toolchain-evidence.json
           cp restored/policy/policy-replay.json checkpoint-run/payload/policy-replay.json
           cp restored/reverify/offline-reverify.json checkpoint-run/payload/offline-reverify.json
@@ -2583,15 +3938,54 @@ jobs:
           cp restored/offline/offline-evidence.json checkpoint-run/payload/offline-evidence.json
           cp restored/fast/p6-fast-projection.json checkpoint-run/payload/p6-fast-projection.json
           cp restored/balanced/p6-balanced-projection.json checkpoint-run/payload/p6-balanced-projection.json
+          cp restored/quality-artifact/quality/bindings.json checkpoint-run/payload/quality/bindings.json
+          cp restored/quality-artifact/quality/frozen-manifest.json checkpoint-run/payload/quality/frozen-manifest.json
+          cp restored/quality-artifact/quality/frozen-report.json checkpoint-run/payload/quality/frozen-report.json
+          cp restored/quality-artifact/quality/legacy-score.json checkpoint-run/payload/quality/legacy-score.json
+          cp restored/quality-artifact/quality/p6-balanced-quality-gate.json checkpoint-run/payload/quality/p6-balanced-quality-gate.json
+          cp restored/quality-artifact/quality/producer-projection.json checkpoint-run/payload/quality/producer-projection.json
+          cp restored/quality-artifact/quality/usage-evidence.json checkpoint-run/payload/quality/usage-evidence.json
+          cp restored/quality-artifact/quality/v16-score.json checkpoint-run/payload/quality/v16-score.json
+          cp restored/quality-artifact/quality-revalidation-receipt.json checkpoint-run/payload/quality-revalidation-receipt.json
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          from scripts.p6_balanced_quality_gate import validate_quality_gate_bundle
+          from zscope.benchmarking.p6_balanced_orchestrator import (
+              BalancedRunIdentity,
+              validate_quality_revalidation_receipt,
+          )
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          validate_quality_gate_bundle(Path("checkpoint-run/payload/quality"))
+          candidate_tree = subprocess.run(
+              ["git", "-C", os.environ["P6_CANDIDATE_ROOT"], "rev-parse", "HEAD^{tree}"],
+              check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+          ).stdout.strip()
+          validate_quality_revalidation_receipt(
+              load_json_strict(Path("checkpoint-run/payload/quality-revalidation-receipt.json")),
+              identity=BalancedRunIdentity(
+                  workflow_run_id=os.environ["GITHUB_RUN_ID"],
+                  workflow_run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                  attempt_id=os.environ["P6_ATTEMPT_ID"],
+                  control_plane_commit=os.environ["P6_CONTROL_PLANE_COMMIT"],
+                  candidate_git_sha=os.environ["P6_CANDIDATE_COMMIT"],
+                  candidate_git_tree=candidate_tree,
+              ),
+          )
+          PY
           cp restored/deep/p6-deep-projection.json checkpoint-run/payload/p6-deep-projection.json
           cp restored/qualification/qualification.json checkpoint-run/payload/qualification.json
           cp restored/reviews/product-architecture/packet/packet.json checkpoint-run/payload/reviews/product-architecture/packet.json
+          cp -R restored/reviews/product-architecture/packet/evidence checkpoint-run/payload/reviews/product-architecture/evidence
           cp restored/reviews/product-architecture/review/decision.json checkpoint-run/payload/reviews/product-architecture/decision.json
           cp restored/reviews/product-architecture/review/raw-envelope.json checkpoint-run/payload/reviews/product-architecture/raw-envelope.json
           cp restored/reviews/proof-security/packet/packet.json checkpoint-run/payload/reviews/proof-security/packet.json
+          cp -R restored/reviews/proof-security/packet/evidence checkpoint-run/payload/reviews/proof-security/evidence
           cp restored/reviews/proof-security/review/decision.json checkpoint-run/payload/reviews/proof-security/decision.json
           cp restored/reviews/proof-security/review/raw-envelope.json checkpoint-run/payload/reviews/proof-security/raw-envelope.json
           cp restored/reviews/independent-benchmark/packet/packet.json checkpoint-run/payload/reviews/independent-benchmark/packet.json
+          cp -R restored/reviews/independent-benchmark/packet/evidence checkpoint-run/payload/reviews/independent-benchmark/evidence
           cp restored/reviews/independent-benchmark/review/decision.json checkpoint-run/payload/reviews/independent-benchmark/decision.json
           cp restored/reviews/independent-benchmark/review/raw-envelope.json checkpoint-run/payload/reviews/independent-benchmark/raw-envelope.json
           cp p6-independent-reviews.json checkpoint-run/payload/p6-independent-reviews.json
@@ -2637,7 +4031,7 @@ jobs:
               if relative == "final-evidence-manifest.json":
                   continue
               rows.append({"path": relative, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
-          stages = ["entry", "provider_probe", "toolchain_oci_preflight", "policy_replay", "certificate_reverify", "anonymous_qualification", "safe_pair_validation", "evidence_action_canary", "cold_fast", "cold_balanced", "cold_deep", "conservation", "qualification_seal", "product_architecture_review", "proof_security_review", "independent_benchmark_review", "final_evidence_seal"]
+          stages = ["entry", "provider_probe", "toolchain_oci_preflight", "policy_replay", "certificate_reverify", "anonymous_qualification", "safe_pair_validation", "evidence_action_canary", "cold_fast", "cold_balanced", "balanced_quality_gate", "cold_deep", "conservation", "qualification_seal", "product_architecture_review", "proof_security_review", "independent_benchmark_review", "final_evidence_seal"]
           payload = {
               "schema_version": "zscope.p6-final-evidence-manifest.v1",
               "control_plane_commit": os.environ["P6_CONTROL_PLANE_COMMIT"],
@@ -2653,14 +4047,23 @@ jobs:
           payload["evidence_sha256"] = canonical_sha256(payload)
           (root / "final-evidence-manifest.json").write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
           PY
+          python3 scripts/p6_pilot_protocol.py validate-final-evidence-manifest \
+            --manifest checkpoint-run/payload/final-evidence-manifest.json \
+            --payload-root checkpoint-run/payload \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" \
+            --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --candidate-sha256 "$candidate_sha" >/dev/null 2>&1
           conservation_payload="$(sha256sum checkpoint-run/payload/conservation.json | awk '{print $1}')"
           final_payload="$(sha256sum checkpoint-run/payload/final-evidence-manifest.json | awk '{print $1}')"
-          stages=(entry provider_probe toolchain_oci_preflight policy_replay certificate_reverify anonymous_qualification safe_pair_validation evidence_action_canary cold_fast cold_balanced cold_deep conservation qualification_seal product_architecture_review proof_security_review independent_benchmark_review final_evidence_seal)
+          stages=(entry provider_probe toolchain_oci_preflight policy_replay certificate_reverify anonymous_qualification safe_pair_validation evidence_action_canary cold_fast cold_balanced balanced_quality_gate cold_deep conservation qualification_seal product_architecture_review proof_security_review independent_benchmark_review final_evidence_seal)
           payloads=(
             "$entry_payload" "$provider_payload" "$toolchain_payload"
             "$policy_payload" "$reverify_payload" "$hidden_payload"
             "$safe_payload" "$canary_payload" "$fast_payload"
-            "$balanced_payload" "$deep_payload" "$conservation_payload"
+            "$balanced_payload" "$quality_payload" "$deep_payload" "$conservation_payload"
             "$qualification_payload" "$product_payload" "$proof_payload" "$benchmark_payload"
             "$final_payload"
           )
@@ -2752,14 +4155,92 @@ jobs:
             --required-member stage-artifacts/final_evidence_seal.json \
             --required-member payload/entry-evidence.json \
             --required-member payload/provider-probe.json \
+            --required-member payload/image-provenance.json \
+            --required-member payload/proxy-provision.json \
             --required-member payload/toolchain-evidence.json \
             --required-member payload/qualification.json \
+            --required-member payload/quality/bindings.json \
+            --required-member payload/quality/frozen-manifest.json \
+            --required-member payload/quality/frozen-report.json \
+            --required-member payload/quality/legacy-score.json \
+            --required-member payload/quality/p6-balanced-quality-gate.json \
+            --required-member payload/quality/producer-projection.json \
+            --required-member payload/quality/usage-evidence.json \
+            --required-member payload/quality/v16-score.json \
+            --required-member payload/quality-revalidation-receipt.json \
             --required-member payload/p6-independent-reviews.json \
             --required-member payload/final-evidence-manifest.json \
             --required-member payload/reviews/product-architecture/decision.json \
             --required-member payload/reviews/proof-security/decision.json \
             --required-member payload/reviews/independent-benchmark/decision.json \
             --output-dir restored/checkpoint
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          from scripts.p6_balanced_quality_gate import validate_quality_gate_bundle
+          from zscope.benchmarking.p6_balanced_orchestrator import (
+              BalancedRunIdentity,
+              validate_quality_revalidation_receipt,
+          )
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          validate_quality_gate_bundle(Path("restored/checkpoint/payload/quality"))
+          candidate_tree = subprocess.run(
+              ["git", "-C", os.environ["P6_CANDIDATE_ROOT"], "rev-parse", "HEAD^{tree}"],
+              check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+          ).stdout.strip()
+          validate_quality_revalidation_receipt(
+              load_json_strict(Path("restored/checkpoint/payload/quality-revalidation-receipt.json")),
+              identity=BalancedRunIdentity(
+                  workflow_run_id=os.environ["GITHUB_RUN_ID"],
+                  workflow_run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                  attempt_id=os.environ["P6_ATTEMPT_ID"],
+                  control_plane_commit=os.environ["P6_CONTROL_PLANE_COMMIT"],
+                  candidate_git_sha=os.environ["P6_CANDIDATE_COMMIT"],
+                  candidate_git_tree=candidate_tree,
+              ),
+          )
+          PY
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          python3 scripts/p6_pilot_protocol.py validate-final-evidence-manifest \
+            --manifest restored/checkpoint/payload/final-evidence-manifest.json \
+            --payload-root restored/checkpoint/payload \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" --candidate-sha256 "$candidate_sha" \
+            >/dev/null 2>&1
+          mapfile -t trusted_provider < <(python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.isolation import OciNetworkPolicy
+          from zscope.benchmarking.provider_runtime import ProviderRuntimeContract
+          contract = ProviderRuntimeContract.from_config_file(Path("test/range/zscope.benchmark.yaml"))
+          policy = OciNetworkPolicy.from_provider_contract(os.environ, contract)
+          print(contract.identity_sha256)
+          print(policy.policy_sha256)
+          print(policy.endpoint_origin)
+          PY
+          )
+          test "${#trusted_provider[@]}" = 3
+          image_id="$($Z_SCOPE_BENCHMARK_OCI_RUNTIME image inspect --format '{{.Id}}' "$Z_SCOPE_BENCHMARK_OCI_IMAGE")"
+          proxy_id="$($Z_SCOPE_BENCHMARK_OCI_RUNTIME container inspect --format '{{.Id}}' "$Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER")"
+          python3 scripts/p6_pilot_protocol.py validate-toolchain-provenance-files \
+            --toolchain-evidence restored/checkpoint/payload/toolchain-evidence.json \
+            --image-provenance restored/checkpoint/payload/image-provenance.json \
+            --proxy-provision restored/checkpoint/payload/proxy-provision.json \
+            --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt-id "$P6_ATTEMPT_ID" --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --candidate-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+            --candidate-sha256 "$candidate_sha" \
+            --provider-identity-sha256 "${trusted_provider[0]}" \
+            --image-ref "$Z_SCOPE_BENCHMARK_OCI_IMAGE" --image-id "$image_id" \
+            --proxy-container "$Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER" \
+            --proxy-container-id "$proxy_id" \
+            --network-name "$Z_SCOPE_BENCHMARK_OCI_NETWORK" \
+            --egress-network-name "$Z_SCOPE_BENCHMARK_OCI_EGRESS_NETWORK" \
+            --network-policy-sha256 "${trusted_provider[1]}" \
+            --endpoint-origin "${trusted_provider[2]}" >/dev/null 2>&1
       - name: Byte-exact zero-call finalization
         run: |
           set -euo pipefail
@@ -2839,6 +4320,7 @@ jobs:
       - offline_qualification
       - cold_fast
       - cold_balanced
+      - balanced_quality_gate
       - cold_deep
       - qualification_seal
       - product_architecture_review
@@ -2905,6 +4387,9 @@ jobs:
           BALANCED_RESULT: ${{ needs.cold_balanced.result }}
           BALANCED_FAILURE_CLASS: ${{ needs.cold_balanced.outputs.failure_class }}
           BALANCED_FAILURE_COUNT: ${{ needs.cold_balanced.outputs.failure_count }}
+          QUALITY_RESULT: ${{ needs.balanced_quality_gate.result }}
+          QUALITY_FAILURE_CLASS: ${{ needs.balanced_quality_gate.outputs.failure_class }}
+          QUALITY_FAILURE_COUNT: ${{ needs.balanced_quality_gate.outputs.failure_count }}
           DEEP_RESULT: ${{ needs.cold_deep.result }}
           DEEP_FAILURE_CLASS: ${{ needs.cold_deep.outputs.failure_class }}
           DEEP_FAILURE_COUNT: ${{ needs.cold_deep.outputs.failure_count }}
@@ -2955,6 +4440,7 @@ jobs:
           $OFFLINE_RESULT:cold_fast:$OFFLINE_FAILURE_CLASS:internal_failure:$OFFLINE_FAILURE_COUNT
           $FAST_RESULT:cold_fast:$FAST_FAILURE_CLASS:quality_no_progress_gate_failed:$FAST_FAILURE_COUNT
           $BALANCED_RESULT:cold_balanced:$BALANCED_FAILURE_CLASS:quality_no_progress_gate_failed:$BALANCED_FAILURE_COUNT
+          $QUALITY_RESULT:balanced_quality_gate:$QUALITY_FAILURE_CLASS:quality_no_progress_gate_failed:$QUALITY_FAILURE_COUNT
           $DEEP_RESULT:cold_deep:$DEEP_FAILURE_CLASS:quality_no_progress_gate_failed:$DEEP_FAILURE_COUNT
           $SEAL_RESULT:qualification_seal:$SEAL_FAILURE_CLASS:accounting_conservation_failure:$SEAL_FAILURE_COUNT
           $PRODUCT_RESULT:product_architecture_review:$PRODUCT_FAILURE_CLASS:review_binding_invalid:$PRODUCT_FAILURE_COUNT
@@ -3024,6 +4510,11 @@ jobs:
           BALANCED_RESULT: ${{ needs.cold_balanced.result }}
           BALANCED_ID: ${{ needs.cold_balanced.outputs.artifact_id }}
           BALANCED_DIGEST: ${{ needs.cold_balanced.outputs.artifact_digest }}
+          QUALITY_RESULT: ${{ needs.balanced_quality_gate.result }}
+          QUALITY_ID: ${{ needs.balanced_quality_gate.outputs.artifact_id }}
+          QUALITY_DIGEST: ${{ needs.balanced_quality_gate.outputs.artifact_digest }}
+          QUALITY_FAILURE_AGGREGATE_ID: ${{ needs.balanced_quality_gate.outputs.failure_aggregate_artifact_id }}
+          QUALITY_FAILURE_AGGREGATE_DIGEST: ${{ needs.balanced_quality_gate.outputs.failure_aggregate_artifact_digest }}
           DEEP_RESULT: ${{ needs.cold_deep.result }}
           DEEP_ID: ${{ needs.cold_deep.outputs.artifact_id }}
           DEEP_DIGEST: ${{ needs.cold_deep.outputs.artifact_digest }}
@@ -3066,6 +4557,14 @@ jobs:
             restore "$job" "$id" "$name" "$digest" "$member" "$target"
             printf '%s\n' "$stage" >> failure-evidence/prefix-stages.txt
           }
+          if [[ -n "${QUALITY_FAILURE_AGGREGATE_ID}${QUALITY_FAILURE_AGGREGATE_DIGEST}" ]]; then
+            test "$QUALITY_RESULT" = failure
+            restore 'independently score and gate the frozen balanced report' \
+              "$QUALITY_FAILURE_AGGREGATE_ID" \
+              "p6-balanced-quality-failure-aggregate-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+              "$QUALITY_FAILURE_AGGREGATE_DIGEST" quality-failure-aggregate.json \
+              failure-evidence/quality-failure-aggregate
+          fi
           restore_prefix "$ENTRY_RESULT" entry 'P6 entry and provider identity' "$ENTRY_ID" \
             "p6-entry-evidence-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$ENTRY_DIGEST" entry-evidence.json failure-evidence/restored/entry
           restore_prefix "$PROVIDER_RESULT" provider_probe 'source-free deepseek-v4-flash provider probe' "$PROVIDER_ID" \
@@ -3086,6 +4585,53 @@ jobs:
             "p6-cold-fast-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$FAST_DIGEST" p6-fast-projection.json failure-evidence/restored/fast
           restore_prefix "$BALANCED_RESULT" cold_balanced 'one isolated cold balanced pilot' "$BALANCED_ID" \
             "p6-cold-balanced-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$BALANCED_DIGEST" p6-balanced-projection.json failure-evidence/restored/balanced
+          if [[ "$prefix_open" = true ]]; then
+            if [[ "$QUALITY_RESULT" = success ]]; then
+              [[ "$QUALITY_ID" =~ ^[0-9]+$ ]]
+              [[ "$QUALITY_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+              python3 scripts/download_p6_run_artifact.py \
+                --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+                --run-attempt "$GITHUB_RUN_ATTEMPT" \
+                --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+                --candidate-commit "$P6_CANDIDATE_COMMIT" \
+                --producer-job 'independently score and gate the frozen balanced report' \
+                --artifact-id "$QUALITY_ID" \
+                --artifact-name "p6-balanced-quality-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" \
+                --artifact-digest "sha256:$QUALITY_DIGEST" \
+                --required-member quality/bindings.json \
+                --required-member quality/frozen-manifest.json \
+                --required-member quality/frozen-report.json \
+                --required-member quality/legacy-score.json \
+                --required-member quality/p6-balanced-quality-gate.json \
+                --required-member quality/producer-projection.json \
+                --required-member quality/usage-evidence.json \
+                --required-member quality/v16-score.json \
+                --required-member quality-revalidation-receipt.json \
+                --output-dir failure-evidence/restored/quality-artifact
+              python3 scripts/p6_balanced_orchestrator.py revalidate \
+                --workflow-run-id "$GITHUB_RUN_ID" \
+                --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+                --attempt-id "$P6_ATTEMPT_ID" \
+                --control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+                --candidate-git-sha "$P6_CANDIDATE_COMMIT" \
+                --candidate-git-tree "$(git -C "$P6_CANDIDATE_ROOT" rev-parse 'HEAD^{tree}')" \
+                --restored-bundle failure-evidence/restored/quality-artifact/quality \
+                --legacy-truth test/range/benchmark/ground_truth.json \
+                --v16-truth test/range/benchmark/v16/ground_truth.json \
+                --repository-root . --output failure-evidence/quality-revalidated \
+                --receipt failure-evidence/quality-revalidated-receipt.json >/dev/null 2>&1
+              quality_members=(bindings.json frozen-manifest.json frozen-report.json legacy-score.json p6-balanced-quality-gate.json producer-projection.json usage-evidence.json v16-score.json)
+              for member in "${quality_members[@]}"; do
+                cmp -s "failure-evidence/restored/quality-artifact/quality/$member" "failure-evidence/quality-revalidated/$member"
+              done
+              cmp -s failure-evidence/restored/quality-artifact/quality-revalidation-receipt.json failure-evidence/quality-revalidated-receipt.json
+              rm -r -- failure-evidence/quality-revalidated
+              rm -- failure-evidence/quality-revalidated-receipt.json
+              printf '%s\n' balanced_quality_gate >> failure-evidence/prefix-stages.txt
+            else
+              prefix_open=false
+            fi
+          fi
           restore_prefix "$DEEP_RESULT" cold_deep 'one isolated cold deep pilot' "$DEEP_ID" \
             "p6-cold-deep-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$DEEP_DIGEST" p6-deep-projection.json failure-evidence/restored/deep
           if [[ "$prefix_open" = true ]]; then
@@ -3108,6 +4654,14 @@ jobs:
               "p6-complete-checkpoint-${P6_CONTROL_PLANE_COMMIT}-${P6_CANDIDATE_COMMIT}-${GITHUB_RUN_ATTEMPT}" "$FINAL_SEAL_DIGEST" checkpoint.json failure-evidence/complete-checkpoint
             printf '%s\n' final_evidence_seal >> failure-evidence/prefix-stages.txt
           fi
+      - name: Byte-scan the optionally restored quality failure aggregate
+        if: ${{ needs.balanced_quality_gate.result == 'failure' && needs.balanced_quality_gate.outputs.failure_aggregate_artifact_id != '' && needs.balanced_quality_gate.outputs.failure_aggregate_artifact_digest != '' }}
+        uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: failure-evidence/quality-failure-aggregate/quality-failure-aggregate.json
+          stage: artifact_seal
+          require-key: "false"
+          byte-scan-only: "true"
       - name: Emit typed diagnostic and an exact non-finalizable checkpoint when possible
         env:
           FAILURE_EXECUTION_STAGE: ${{ steps.boundary.outputs.stage }}
@@ -3253,6 +4807,7 @@ jobs:
                 evidence_action_canary) echo failure-evidence/restored/canary/offline-canary.json ;;
                 cold_fast) echo failure-evidence/restored/fast/p6-fast-projection.json ;;
                 cold_balanced) echo failure-evidence/restored/balanced/p6-balanced-projection.json ;;
+                balanced_quality_gate) echo failure-evidence/restored/quality-artifact/quality/p6-balanced-quality-gate.json ;;
                 cold_deep) echo failure-evidence/restored/deep/p6-deep-projection.json ;;
                 conservation) echo failure-evidence/restored/qualification/conservation.json ;;
                 qualification_seal) echo failure-evidence/restored/qualification/qualification.json ;;

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -14,11 +15,21 @@ try:
 except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
     from check_p1_runtime_reachability import wheel_errors as reachability_errors
 from zscope.orchestration.runtime_authority import validate_p5_release_status
+from zscope.orchestration.proof_promotion_qualification import (
+    P6_PROOF_PROMOTION_QUALIFICATION_RESOURCE,
+    SOURCE_BOUND_PATHS,
+    load_successor_qualification,
+    validate_successor_qualification,
+)
 
 
 RELEASE_STATUS = "zscope/orchestration/p5-release-status.json"
+SUCCESSOR_QUALIFICATION = "zscope/orchestration/" + P6_PROOF_PROMOTION_QUALIFICATION_RESOURCE
 REQUIRED_ENTRIES = {
     RELEASE_STATUS,
+    SUCCESSOR_QUALIFICATION,
+    "zscope/orchestration/proof_promotion_qualification.py",
+    "zscope/orchestration/schemas/p6-proof-promotion-qualification-v1.schema.json",
     "zscope/orchestration/runtime_authority.py",
     "zscope/orchestration/schemas/runtime-authority-manifest-v1.schema.json",
     "zscope/orchestration/schemas/p5-release-status-v1.schema.json",
@@ -59,6 +70,41 @@ def wheel_errors(path: Path, *, expected_status: str | None = None) -> list[str]
                             "P5 release status mismatch: "
                             f"expected {expected_status}, got {raw.get('status')}"
                         )
+            if SUCCESSOR_QUALIFICATION in names:
+                successor = json.loads(archive.read(SUCCESSOR_QUALIFICATION).decode("utf-8"))
+                if not isinstance(successor, dict):
+                    errors.append("P6 proof/promotion successor qualification must be an object")
+                else:
+                    valid, reason = validate_successor_qualification(successor)
+                    if not valid:
+                        errors.append(
+                            "P6 proof/promotion successor qualification invalid: " + reason
+                        )
+                    else:
+                        try:
+                            expected_successor = load_successor_qualification()
+                        except (OSError, TypeError, ValueError) as exc:
+                            errors.append(
+                                "current P6 proof/promotion successor qualification is stale: "
+                                f"{exc}"
+                            )
+                        else:
+                            if successor != expected_successor:
+                                errors.append(
+                                    "wheel P6 proof/promotion successor qualification mismatch"
+                                )
+                        source_hashes = successor.get("source_sha256") or {}
+                        for source_path in SOURCE_BOUND_PATHS:
+                            if source_path not in names:
+                                errors.append(
+                                    "wheel missing successor-bound source: " + source_path
+                                )
+                                continue
+                            digest = hashlib.sha256(archive.read(source_path)).hexdigest()
+                            if digest != source_hashes.get(source_path):
+                                errors.append(
+                                    "wheel successor-bound source hash mismatch: " + source_path
+                                )
             proof_agent = "zscope/agents/proof_engine/agent.py"
             if proof_agent in names:
                 source = archive.read(proof_agent).decode("utf-8")

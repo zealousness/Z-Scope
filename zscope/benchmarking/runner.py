@@ -38,9 +38,15 @@ from zscope.benchmarking.isolation import (
     sealed_runtime_source_sha256,
 )
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
-from zscope.benchmarking.p6_protocol import P6ProtocolError, validate_usage_conservation
+from zscope.benchmarking.p6_protocol import (
+    P6ProtocolError,
+    scan_regular_artifact_tree_for_canaries,
+    validate_usage_conservation,
+)
 from zscope.benchmarking.provider_runtime import (
     P6_API_KEY_ENVIRONMENT_KEY,
+    P6_MAX_CONTRACT_REGENERATIONS,
+    P6_MAX_TRANSPORT_RETRIES,
     P6_PROVIDER_FAILURE_FILENAME,
     PROVIDER_FAILURE_CLASSES,
     PROVIDER_BASE_URL_ENVIRONMENT_KEY,
@@ -57,11 +63,13 @@ from zscope.benchmarking.replay_bundle import write_validator_replay_bundle
 from zscope.config.config import ConfigLoader
 from zscope.framework.llm_usage import (
     LEGACY_USAGE_EVENT_SCHEMA_VERSION,
+    PREVIOUS_USAGE_EVENT_SCHEMA_VERSION,
     TOKEN_USAGE_STAGES,
     USAGE_ATTRIBUTION_SCHEMA_VERSION,
     USAGE_EVENT_SCHEMA_VERSION,
     canonical_usage_stage,
 )
+from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.orchestration.decision_trace import (
     DECISION_TRACE_MANIFEST_VERSION,
     load_decision_trace,
@@ -69,9 +77,11 @@ from zscope.orchestration.decision_trace import (
     verify_evidence_object,
     verify_model_event,
 )
+from zscope.reporting.finding_roots import _has_complete_deterministic_proof
 
 
 FORMAL_SCHEMA_VERSION = DEFAULT_BENCHMARK_POLICY.formal_schema_version
+P6_ANSWER_FREE_PRODUCER_METRICS_SCHEMA_VERSION = "zscope.p6-answer-free-producer-metrics.v1"
 MIN_FORMAL_RUNS = DEFAULT_BENCHMARK_POLICY.minimum_formal_trials
 TRUTH_ENVIRONMENT_KEYS = {
     "Z_SCOPE_BENCHMARK_TRUTH",
@@ -113,6 +123,16 @@ class BenchmarkError(RuntimeError):
         super().__init__(message)
 
 
+class _P6ProtectedCanaryError(BenchmarkError):
+    """Fixed, answer-free signal for a contaminated cold-producer attempt."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "artifact_integrity_failure",
+            failure_class="artifact_integrity_failure",
+        )
+
+
 def _p6_failure(failure_class: str, *, message: Optional[str] = None) -> BenchmarkError:
     """Construct an explicitly typed P6 boundary failure."""
 
@@ -148,6 +168,31 @@ def _p6_scan_provider_failure_class(
     if return_code != 2:
         raise _p6_failure("oci_isolation_violation")
     return str(marker["failure_class"])
+
+
+def _p6_scan_failure_class(
+    marker_path: Path,
+    *,
+    return_code: int,
+) -> Optional[str]:
+    """Classify every non-successful P6 scanner boundary fail closed.
+
+    Exit 1 is the normal findings-present report contract.  Exit 2 is accepted
+    by the process wrapper only so a complete typed provider marker can be
+    inspected without reading scanner output.  A marker-free exit 2 must never
+    be archived as a completed cold producer: it means the scanner stopped
+    before the sealed report/accounting boundary could be established.
+    """
+
+    provider_failure = _p6_scan_provider_failure_class(
+        marker_path,
+        return_code=return_code,
+    )
+    if provider_failure is not None:
+        return provider_failure
+    if return_code == 2:
+        return "accounting_conservation_failure"
+    return None
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -1271,6 +1316,9 @@ _USAGE_EVENT_FIELDS_V1 = frozenset(
 _USAGE_EVENT_FIELDS_V2 = _USAGE_EVENT_FIELDS_V1.union(
     {"requested_model", "provider_response_model"}
 )
+_USAGE_EVENT_FIELDS_V3 = _USAGE_EVENT_FIELDS_V2.union(
+    {"call_chain_id", "attempt_index", "logical_operation_id"}
+)
 _USAGE_ATTRIBUTION_FIELDS = frozenset(
     {
         "schema_version",
@@ -1394,14 +1442,15 @@ def _validate_usage_event_v1(raw: Mapping[str, Any], *, line_number: int) -> int
             + ", ".join(sorted(forbidden))
         )
     schema_version = raw.get("schema_version")
-    expected_fields = (
-        _USAGE_EVENT_FIELDS_V1
-        if schema_version == LEGACY_USAGE_EVENT_SCHEMA_VERSION
-        else _USAGE_EVENT_FIELDS_V2
-    )
+    expected_fields = {
+        LEGACY_USAGE_EVENT_SCHEMA_VERSION: _USAGE_EVENT_FIELDS_V1,
+        PREVIOUS_USAGE_EVENT_SCHEMA_VERSION: _USAGE_EVENT_FIELDS_V2,
+        USAGE_EVENT_SCHEMA_VERSION: _USAGE_EVENT_FIELDS_V3,
+    }.get(str(schema_version), _USAGE_EVENT_FIELDS_V3)
     _require_exact_usage_fields(raw, expected=expected_fields, context=context)
     if schema_version not in {
         LEGACY_USAGE_EVENT_SCHEMA_VERSION,
+        PREVIOUS_USAGE_EVENT_SCHEMA_VERSION,
         USAGE_EVENT_SCHEMA_VERSION,
     }:
         raise BenchmarkError(f"{context} has unsupported schema_version {raw['schema_version']!r}")
@@ -1426,8 +1475,25 @@ def _validate_usage_event_v1(raw: Mapping[str, Any], *, line_number: int) -> int
         raise BenchmarkError(f"{context} has no call_id")
     if not raw["outcome"]:
         raise BenchmarkError(f"{context} has no outcome")
-    if schema_version == USAGE_EVENT_SCHEMA_VERSION and raw["model"] != raw["requested_model"]:
+    if (
+        schema_version in {PREVIOUS_USAGE_EVENT_SCHEMA_VERSION, USAGE_EVENT_SCHEMA_VERSION}
+        and raw["model"] != raw["requested_model"]
+    ):
         raise BenchmarkError(f"{context} model does not match requested_model")
+    if schema_version == USAGE_EVENT_SCHEMA_VERSION:
+        chain_id = raw["call_chain_id"]
+        attempt_index = raw["attempt_index"]
+        operation_id = raw["logical_operation_id"]
+        if (
+            not isinstance(chain_id, str)
+            or re.fullmatch(r"llm-call-chain-[1-9][0-9]*", chain_id) is None
+            or isinstance(attempt_index, bool)
+            or not isinstance(attempt_index, int)
+            or attempt_index < 1
+            or not isinstance(operation_id, str)
+            or (operation_id and re.fullmatch(r"[0-9a-f]{64}", operation_id) is None)
+        ):
+            raise BenchmarkError(f"{context} transport lineage is invalid")
 
     attribution = raw["attribution"]
     if not isinstance(attribution, dict):
@@ -1533,6 +1599,7 @@ def _provider_model_identity_metrics(
     missing = 0
     mismatch = 0
     present = 0
+    response_model_counts = {model: 0 for model in sorted(frozen_response_models)}
     for row in successful:
         requested = str(row.get("requested_model") or row.get("model") or "").strip()
         response_model = str(row.get("provider_response_model") or "").strip()
@@ -1544,6 +1611,8 @@ def _provider_model_identity_metrics(
         present += 1
         if response_model not in frozen_response_models:
             mismatch += 1
+        else:
+            response_model_counts[response_model] += 1
     count = len(successful)
     return {
         "provider_response_model_coverage": round(present / count if count else 0.0, 6),
@@ -1551,6 +1620,243 @@ def _provider_model_identity_metrics(
         "provider_response_model_mismatch_count": mismatch,
         "requested_model_mismatch_count": requested_mismatch,
         "provider_response_model_successful_call_count": count,
+        "provider_response_model_counts": response_model_counts,
+        "provider_response_model_counts_conserved": bool(
+            sum(response_model_counts.values()) == count and missing == 0 and mismatch == 0
+        ),
+    }
+
+
+def _p6_admission_conservation(
+    report: Mapping[str, Any],
+    *,
+    physical_call_count: int,
+) -> Dict[str, Any]:
+    """Project P6 admission accounting without turning denials into calls.
+
+    The admission ledger is embedded in the frozen report while physical
+    provider attempts come from the independently archived usage sidecar.
+    Keeping those domains separate is essential: a soft/hard budget refusal
+    is a zero-call control-plane event and must never reduce provider usage
+    coverage or fabricate estimated/missing usage.
+    """
+
+    owners = (
+        _as_dict(report.get("llm_usage")),
+        _as_dict(_as_dict(report.get("metadata")).get("llm_usage")),
+        _as_dict(_as_dict(report.get("summary")).get("llm_usage")),
+        _as_dict(_as_dict(report.get("run_manifest")).get("llm_usage")),
+    )
+    snapshots = tuple(
+        candidate
+        for owner in owners
+        for candidate in (owner, _as_dict(owner.get("scan_token_usage")))
+        if candidate
+    )
+    snapshot = next(
+        (value for value in snapshots if isinstance(value.get("p6_balanced_admission"), Mapping)),
+        {},
+    )
+    admission = _as_dict(snapshot.get("p6_balanced_admission"))
+
+    def count(name: str) -> int:
+        value = admission.get(name)
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) else -1
+
+    requests = count("request_count")
+    admitted = count("admitted_request_count")
+    denied = count("denied_request_count")
+    active = snapshot.get("active_reservation_count")
+    rejected = snapshot.get("rejected_before_model_count")
+    active = int(active) if isinstance(active, int) and not isinstance(active, bool) else -1
+    rejected = int(rejected) if isinstance(rejected, int) and not isinstance(rejected, bool) else -1
+    raw_reasons = admission.get("denied_reasons")
+    reasons = raw_reasons if isinstance(raw_reasons, Mapping) else {}
+    reason_counts = {
+        str(name): int(value)
+        for name, value in reasons.items()
+        if isinstance(name, str)
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    }
+    reason_conserved = bool(
+        isinstance(raw_reasons, Mapping)
+        and len(reason_counts) == len(raw_reasons)
+        and sum(reason_counts.values()) == denied
+    )
+    request_conserved = bool(
+        admission.get("request_conservation_passed") is True
+        and requests >= 0
+        and admitted >= 0
+        and denied >= 0
+        and requests == admitted + denied
+    )
+    # At finalization no reservation may remain in flight.  Every admitted
+    # request is therefore either a physical archived call or an explicitly
+    # counted pre-model rejection; denied admissions are not in either set.
+    zero_call_denials = bool(
+        active == 0 and rejected >= 0 and admitted == int(physical_call_count) + rejected
+    )
+    return {
+        "enabled": admission.get("enabled") is True,
+        "request_count": max(0, requests),
+        "admitted_request_count": max(0, admitted),
+        "denied_request_count": max(0, denied),
+        "denied_reasons": dict(sorted(reason_counts.items())),
+        "request_conservation_passed": request_conserved,
+        "zero_call_denial_conservation_passed": zero_call_denials,
+    }
+
+
+def _p6_retry_conservation(
+    report: Mapping[str, Any],
+    *,
+    usage_rows: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Prove bounded transport retry and contract regeneration per call chain.
+
+    Physical attempts are independently archived in the usage JSONL.  HTTP
+    rejections proven to occur before model execution remain zero-token events,
+    but their content-free chain/attempt lineage is retained in the scan ledger
+    embedded in the frozen report.  Combining both sources prevents a sequence
+    of rejected attempts from disappearing from the retry proof.
+    """
+
+    owners = (
+        _as_dict(report.get("llm_usage")),
+        _as_dict(_as_dict(report.get("metadata")).get("llm_usage")),
+        _as_dict(_as_dict(report.get("summary")).get("llm_usage")),
+        _as_dict(_as_dict(report.get("run_manifest")).get("llm_usage")),
+    )
+    snapshots = tuple(
+        candidate
+        for owner in owners
+        for candidate in (owner, _as_dict(owner.get("scan_token_usage")))
+        if candidate
+    )
+    snapshot = next(
+        (value for value in snapshots if isinstance(value.get("p6_balanced_admission"), Mapping)),
+        {},
+    )
+    raw_rejections = snapshot.get("rejected_before_model_attempts")
+    rejections = raw_rejections if isinstance(raw_rejections, list) else []
+    expected_rejection_count = snapshot.get("rejected_before_model_count")
+    expected_rejection_count = (
+        int(expected_rejection_count)
+        if isinstance(expected_rejection_count, int)
+        and not isinstance(expected_rejection_count, bool)
+        else -1
+    )
+
+    attempts: Dict[str, Dict[int, str]] = {}
+    contract_chains: Dict[str, set[str]] = {}
+    valid = True
+
+    def add_attempt(
+        *,
+        chain_id: Any,
+        attempt_index: Any,
+        source: str,
+        call_kind: Any,
+        operation_id: Any,
+    ) -> None:
+        nonlocal valid
+        if (
+            not isinstance(chain_id, str)
+            or re.fullmatch(r"llm-call-chain-[1-9][0-9]*", chain_id) is None
+            or isinstance(attempt_index, bool)
+            or not isinstance(attempt_index, int)
+            or attempt_index < 1
+        ):
+            valid = False
+            return
+        chain = attempts.setdefault(chain_id, {})
+        if attempt_index in chain:
+            valid = False
+            return
+        chain[attempt_index] = source
+        if call_kind == "contract_regeneration":
+            if (
+                not isinstance(operation_id, str)
+                or re.fullmatch(r"[0-9a-f]{64}", operation_id) is None
+            ):
+                valid = False
+                return
+            contract_chains.setdefault(operation_id, set()).add(chain_id)
+
+    for row in usage_rows:
+        if row.get("schema_version") != USAGE_EVENT_SCHEMA_VERSION:
+            valid = False
+            continue
+        add_attempt(
+            chain_id=row.get("call_chain_id"),
+            attempt_index=row.get("attempt_index"),
+            source="physical",
+            call_kind=row.get("call_kind"),
+            operation_id=row.get("logical_operation_id"),
+        )
+        if row.get("retry") is not (row.get("attempt_index") != 1):
+            valid = False
+
+    rejection_reasons: Dict[str, int] = {}
+    for row in rejections:
+        if not isinstance(row, Mapping) or set(row) != {
+            "call_chain_id",
+            "attempt_index",
+            "logical_operation_id",
+            "call_kind",
+            "reason",
+        }:
+            valid = False
+            continue
+        reason = row.get("reason")
+        if not isinstance(reason, str) or not reason:
+            valid = False
+            continue
+        rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        add_attempt(
+            chain_id=row.get("call_chain_id"),
+            attempt_index=row.get("attempt_index"),
+            source="pre_model_rejection",
+            call_kind=row.get("call_kind"),
+            operation_id=row.get("logical_operation_id"),
+        )
+
+    declared_reasons = snapshot.get("rejected_before_model_reasons")
+    if (
+        expected_rejection_count != len(rejections)
+        or not isinstance(declared_reasons, Mapping)
+        or dict(sorted(rejection_reasons.items())) != dict(sorted(declared_reasons.items()))
+    ):
+        valid = False
+
+    max_attempt = 0
+    retry_count = 0
+    for indices in attempts.values():
+        highest = max(indices, default=0)
+        max_attempt = max(max_attempt, highest)
+        retry_count += max(0, highest - 1)
+        if set(indices) != set(range(1, highest + 1)):
+            valid = False
+        if highest > P6_MAX_TRANSPORT_RETRIES + 1:
+            valid = False
+
+    max_regenerations = max((len(value) for value in contract_chains.values()), default=0)
+    regeneration_conserved = max_regenerations <= P6_MAX_CONTRACT_REGENERATIONS
+    return {
+        "maximum_transport_retries": P6_MAX_TRANSPORT_RETRIES,
+        "maximum_contract_regenerations": P6_MAX_CONTRACT_REGENERATIONS,
+        "logical_call_chain_count": len(attempts),
+        "physical_attempt_count": len(usage_rows),
+        "pre_model_rejection_count": len(rejections),
+        "transport_retry_count": retry_count,
+        "maximum_observed_attempt_index": max_attempt,
+        "contract_regeneration_operation_count": len(contract_chains),
+        "maximum_observed_contract_regenerations": max_regenerations,
+        "call_chain_conservation_passed": valid,
+        "contract_regeneration_conservation_passed": regeneration_conserved,
+        "passed": valid and regeneration_conserved,
     }
 
 
@@ -1652,6 +1958,499 @@ def _p6_usage_conservation(
             "terminal": dimension(len(terminal_clusters), len(report_clusters)),
         },
     }
+
+
+def _archived_decision_trace_artifact(report: Mapping[str, Any], run_dir: Path) -> Dict[str, Any]:
+    """Revalidate the archived answer-free trace manifest used by P6 accounting."""
+
+    manifest_owner = _as_dict(report.get("run_manifest"))
+    raw = manifest_owner.get("decision_trace_artifact")
+    if not isinstance(raw, Mapping):
+        raw = _as_dict(report.get("metadata")).get("decision_trace_artifact")
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "schema_version",
+        "path",
+        "sha256",
+        "manifest_sha256",
+        "trace_count",
+        "coverage_trace_count",
+        "evidence_object_count",
+        "model_event_count",
+        "complete",
+        "answer_free",
+    }:
+        raise BenchmarkError("answer-free decision-trace artifact is missing")
+    if (
+        raw.get("schema_version") != "zscope.decision-trace-artifact.v1"
+        or raw.get("path") != _DECISION_TRACE_MANIFEST_ARCHIVE_NAME
+        or raw.get("complete") is not True
+        or raw.get("answer_free") is not True
+    ):
+        raise BenchmarkError("answer-free decision-trace artifact is invalid")
+    path = run_dir / _DECISION_TRACE_MANIFEST_ARCHIVE_NAME
+    if path.is_symlink() or not path.is_file() or _sha256_file(path) != raw.get("sha256"):
+        raise BenchmarkError("answer-free decision-trace artifact digest is invalid")
+    manifest = _load_json_object(path)
+    supplied = str(manifest.get("manifest_sha256") or "")
+    unsigned = dict(manifest)
+    unsigned.pop("manifest_sha256", None)
+    if (
+        manifest.get("schema_version") != DECISION_TRACE_MANIFEST_VERSION
+        or supplied != _canonical_object_sha256(unsigned)
+        or supplied != raw.get("manifest_sha256")
+        or manifest.get("complete") is not True
+        or int(manifest.get("trace_count") or 0) != int(raw.get("trace_count") or 0)
+        or int(manifest.get("coverage_trace_count") or 0)
+        != int(raw.get("coverage_trace_count") or 0)
+        or int(manifest.get("evidence_object_count") or 0)
+        != int(raw.get("evidence_object_count") or 0)
+        or int(manifest.get("model_event_count") or 0) != int(raw.get("model_event_count") or 0)
+    ):
+        raise BenchmarkError("answer-free decision-trace manifest is invalid")
+    return dict(raw)
+
+
+_P6_V4_POLICY_FIELDS = (
+    "terminal_authority_decision",
+    "proof_kernel_input",
+    "proof_kernel_live_selected_action_uids",
+    "proof_kernel_artifact_refs",
+    "proof_kernel_checker_results",
+    "proof_kernel_checker_result_refs",
+    "proof_kernel_frozen_state",
+    "proof_kernel_closure_evaluation",
+    "proof_kernel_promotion_certificate",
+    "proof_kernel_root_manifest_sha256",
+    "proof_kernel_terminal_authority_decision",
+)
+
+
+def _p6_terminal_authority_conservation(
+    *,
+    report: Mapping[str, Any],
+    run_dir: Path,
+    usage_rows: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Reverify v4 terminal authority and post-terminal call conservation.
+
+    The projection is reconstructed from the archived report, hash-chained
+    decision traces, content-addressed policy evidence and the physical usage
+    ledger.  No producer-declared aggregate or score participates.
+    """
+
+    raw_terminal = report.get("candidate_terminal_states")
+    if not isinstance(raw_terminal, list) or any(
+        not isinstance(item, Mapping) for item in raw_terminal
+    ):
+        raise BenchmarkError("candidate terminal state archive is malformed")
+    terminal_items = [dict(item) for item in raw_terminal]
+    by_cluster: Dict[str, Dict[str, Any]] = {}
+    for item in terminal_items:
+        cluster_uid = str(item.get("validation_cluster_uid") or "")
+        if not cluster_uid or cluster_uid in by_cluster:
+            raise BenchmarkError("candidate terminal cluster identity is invalid")
+        by_cluster[cluster_uid] = item
+
+    manifest_owner = _as_dict(report.get("run_manifest"))
+    artifact = _as_dict(manifest_owner.get("decision_trace_artifact"))
+    manifest_name = str(artifact.get("path") or "")
+    if Path(manifest_name).name != manifest_name or not manifest_name:
+        raise BenchmarkError("decision-trace manifest archive identity is invalid")
+    manifest = _load_json_object(run_dir / manifest_name)
+    trace_rows = manifest.get("traces")
+    if not isinstance(trace_rows, Mapping) or set(trace_rows) != set(by_cluster):
+        raise BenchmarkError("terminal report and decision traces do not conserve")
+
+    usage_call_ids = [str(row.get("call_id") or "") for row in usage_rows]
+    if any(not value for value in usage_call_ids) or len(usage_call_ids) != len(
+        set(usage_call_ids)
+    ):
+        raise BenchmarkError("physical usage call identities are invalid")
+    traced_call_ids: list[str] = []
+    traced_tool_call_ids: list[str] = []
+    referenced_model_digests: set[str] = set()
+    post_terminal_call_ids: list[str] = []
+    post_terminal_tool_call_ids: list[str] = []
+    confirmed = [
+        item
+        for item in terminal_items
+        if str(item.get("candidate_disposition") or "").lower() == "confirmed"
+        and str(item.get("record_role") or "") != "operational_obligation"
+    ]
+    confirmed_report_v4_count = sum(_has_complete_deterministic_proof(item) for item in confirmed)
+    confirmed_trace_v4_count = 0
+
+    for cluster_uid, item in sorted(by_cluster.items()):
+        trace_row = trace_rows[cluster_uid]
+        if not isinstance(trace_row, Mapping):
+            raise BenchmarkError("decision-trace manifest row is malformed")
+        relative = str(trace_row.get("path") or "")
+        trace_path = _safe_trace_source_path(run_dir, relative, context="archived decision trace")
+        trace = load_decision_trace(trace_path)
+        if (
+            str(trace.get("validation_cluster_uid") or "") != cluster_uid
+            or str(trace.get("document_sha256") or "")
+            != str(item.get("decision_trace_sha256") or "")
+            or relative != str(item.get("decision_trace_ref") or "")
+            or str(trace.get("terminal_event_uid") or "")
+            != str(item.get("terminal_event_uid") or "")
+        ):
+            raise BenchmarkError("terminal report-to-trace binding is invalid")
+        events = trace.get("events")
+        if not isinstance(events, list) or any(not isinstance(event, Mapping) for event in events):
+            raise BenchmarkError("archived decision trace events are malformed")
+        disposition = str(item.get("candidate_disposition") or "").lower()
+        original_disposition = str(item.get("finding_root_original_disposition") or "").lower()
+        proven_alias = bool(
+            disposition == "deduplicated_alias"
+            and original_disposition in {"confirmed", "rejected_with_proof"}
+        )
+        proof_disposition = original_disposition if proven_alias else disposition
+        proof_terminal = proof_disposition in {"confirmed", "rejected_with_proof"}
+        transition_fields = {
+            "terminal_transition_event_uid": str(item.get("terminal_transition_event_uid") or ""),
+            "terminal_transition_event_hash": str(item.get("terminal_transition_event_hash") or ""),
+            "terminal_transition_authority_sha256": str(
+                item.get("terminal_transition_authority_sha256") or ""
+            ),
+            "terminal_transition_level": str(item.get("terminal_transition_level") or ""),
+            "terminal_transition_disposition": str(
+                item.get("terminal_transition_disposition") or ""
+            ),
+        }
+        if proof_terminal:
+            if (
+                transition_fields["terminal_transition_event_uid"]
+                != str(trace.get("terminal_transition_event_uid") or "")
+                or transition_fields["terminal_transition_event_hash"]
+                != str(trace.get("terminal_transition_event_hash") or "")
+                or transition_fields["terminal_transition_authority_sha256"]
+                != str(trace.get("terminal_transition_authority_sha256") or "")
+                or transition_fields["terminal_transition_level"]
+                != str(trace.get("terminal_transition_level") or "")
+                or transition_fields["terminal_transition_disposition"]
+                != str(trace.get("terminal_transition_disposition") or "")
+                or transition_fields["terminal_transition_level"] not in {"V0", "V1", "V2", "V3"}
+                or transition_fields["terminal_transition_disposition"] != proof_disposition
+                or transition_fields["terminal_transition_authority_sha256"]
+                != _canonical_object_sha256(_as_dict(item.get("terminal_authority_decision")))
+            ):
+                raise BenchmarkError("proof terminal transition binding is invalid")
+        elif any(transition_fields.values()):
+            raise BenchmarkError("non-proof terminal declares a proof transition")
+        terminal_uid = str(trace.get("terminal_event_uid") or "")
+        if proof_terminal and terminal_uid != transition_fields["terminal_transition_event_uid"]:
+            raise BenchmarkError("proof terminal boundary moved during finalization")
+        terminal_indexes = [
+            index
+            for index, event in enumerate(events)
+            if str(event.get("event_uid") or "") == terminal_uid
+        ]
+        if len(terminal_indexes) != 1:
+            raise BenchmarkError("decision trace has no unique terminal event")
+        terminal_index = terminal_indexes[0]
+        terminal_event = events[terminal_index]
+        if (
+            terminal_event.get("stage") != "policy"
+            or terminal_event.get("actor") != "terminal_authority_evaluator"
+            or str(terminal_event.get("disposition_after") or "").lower() != proof_disposition
+        ):
+            raise BenchmarkError("decision trace terminal authority event is invalid")
+        if proof_terminal:
+            details = terminal_event.get("details")
+            details = details if isinstance(details, Mapping) else {}
+            archived_authority = _as_dict(item.get("terminal_authority_decision"))
+            if (
+                str(terminal_event.get("event_hash") or "")
+                != transition_fields["terminal_transition_event_hash"]
+                or str(details.get("terminal_transition_level") or "")
+                != transition_fields["terminal_transition_level"]
+                or str(details.get("terminal_authority_sha256") or "")
+                != transition_fields["terminal_transition_authority_sha256"]
+                or set(details) != {"terminal_transition_level", "terminal_authority_sha256"}
+                or str(terminal_event.get("reason_code") or "")
+                != str(archived_authority.get("reason_code") or "")
+                or list(terminal_event.get("call_ids") or [])
+                or list(terminal_event.get("tool_call_ids") or [])
+                or int(terminal_event.get("token_delta") or 0) != 0
+            ):
+                raise BenchmarkError("proof terminal transition event is invalid")
+
+        for index, event in enumerate(events):
+            calls = [str(value) for value in event.get("call_ids") or [] if str(value)]
+            tools = [str(value) for value in event.get("tool_call_ids") or [] if str(value)]
+            traced_call_ids.extend(calls)
+            traced_tool_call_ids.extend(tools)
+            for ref in event.get("output_refs") or []:
+                value = str(ref or "")
+                if value.startswith("model_events/") and value.endswith(".json"):
+                    referenced_model_digests.add(Path(value).stem)
+            if index > terminal_index:
+                post_terminal_call_ids.extend(calls)
+                post_terminal_tool_call_ids.extend(tools)
+                if int(event.get("token_delta") or 0) != 0:
+                    raise BenchmarkError("decision trace records tokens after terminal authority")
+
+        if not proof_terminal:
+            continue
+        policy_refs = [
+            str(value)
+            for value in terminal_event.get("input_refs") or []
+            if str(value).startswith("evidence_objects/")
+        ]
+        if len(policy_refs) != 1:
+            raise BenchmarkError("proof terminal has no unique policy evidence")
+        evidence_path = _safe_trace_source_path(
+            run_dir, policy_refs[0], context="terminal policy evidence"
+        )
+        valid_evidence, _ = verify_evidence_object(evidence_path)
+        evidence = _load_json_object(evidence_path)
+        if (
+            not valid_evidence
+            or evidence_path.stem != str(evidence.get("sha256") or "")
+            or evidence.get("kind") != "terminal_policy_input"
+            or evidence.get("producer") != "terminal_authority_evaluator"
+        ):
+            raise BenchmarkError("proof terminal policy evidence is invalid")
+        payload = evidence.get("payload")
+        if not isinstance(payload, Mapping):
+            raise BenchmarkError("proof terminal policy payload is invalid")
+        if any(payload.get(field) != item.get(field) for field in _P6_V4_POLICY_FIELDS):
+            raise BenchmarkError("proof terminal report and policy evidence disagree")
+        policy_carrier = dict(payload)
+        state_projection = payload.get("issue")
+        if isinstance(state_projection, Mapping):
+            policy_carrier.update(state_projection)
+        projected_authority = (
+            TerminalAuthorityEvaluator()
+            .evaluate(
+                policy_carrier,
+                operation="audit",
+            )
+            .to_dict()
+        )
+        if projected_authority != _as_dict(item.get("terminal_authority_decision")):
+            raise BenchmarkError("proof trace does not reverify TerminalAuthority v4")
+        if disposition == "confirmed":
+            if not _has_complete_deterministic_proof(policy_carrier):
+                raise BenchmarkError("confirmed trace does not reverify promotion")
+            confirmed_trace_v4_count += 1
+
+    coverage_rows = manifest.get("coverage_traces")
+    if not isinstance(coverage_rows, Mapping):
+        raise BenchmarkError("decision-trace coverage manifest is malformed")
+    for audit_uid, raw_row in sorted(coverage_rows.items()):
+        if not isinstance(raw_row, Mapping):
+            raise BenchmarkError("decision-trace coverage row is malformed")
+        relative = str(raw_row.get("path") or "")
+        path = _safe_trace_source_path(run_dir, relative, context="archived coverage trace")
+        valid, _ = verify_coverage_trace(_load_json_object(path))
+        coverage_value = _load_json_object(path)
+        if (
+            not valid
+            or str(coverage_value.get("audit_unit_uid") or "") != str(audit_uid)
+            or str(coverage_value.get("document_sha256") or "")
+            != str(raw_row.get("document_sha256") or "")
+        ):
+            raise BenchmarkError("archived coverage trace is invalid")
+        events = coverage_value.get("events")
+        if not isinstance(events, list) or any(not isinstance(event, Mapping) for event in events):
+            raise BenchmarkError("archived coverage events are malformed")
+        for event in events:
+            traced_call_ids.extend(
+                str(call_id) for call_id in event.get("call_ids") or [] if str(call_id)
+            )
+
+    if len(traced_call_ids) != len(set(traced_call_ids)):
+        raise BenchmarkError("decision trace duplicates physical call identities")
+    call_trace_conserved = set(traced_call_ids) == set(usage_call_ids)
+    tool_usage_count = sum(int(row.get("tool_call_count") or 0) for row in usage_rows)
+    tool_trace_conserved = (
+        len(traced_tool_call_ids) == len(set(traced_tool_call_ids))
+        and len(traced_tool_call_ids) == tool_usage_count
+    )
+    model_digests = manifest.get("model_event_sha256")
+    if not isinstance(model_digests, list) or any(
+        not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+        for value in model_digests
+    ):
+        raise BenchmarkError("decision-trace model-event identities are invalid")
+    model_trace_conserved = referenced_model_digests == set(model_digests)
+    for digest in model_digests:
+        path = _safe_trace_source_path(
+            run_dir,
+            f"model_events/{digest}.json",
+            context="archived model event",
+        )
+        valid, _ = verify_model_event(path)
+        model_value = _load_json_object(path)
+        if (
+            not valid
+            or path.stem != str(model_value.get("sha256") or "")
+            or str(model_value.get("validation_cluster_uid") or "") not in by_cluster
+        ):
+            raise BenchmarkError("archived model event is invalid")
+
+    passed = bool(
+        confirmed_report_v4_count == len(confirmed)
+        and confirmed_trace_v4_count == len(confirmed)
+        and not post_terminal_call_ids
+        and not post_terminal_tool_call_ids
+        and call_trace_conserved
+        and tool_trace_conserved
+        and model_trace_conserved
+    )
+    return {
+        "terminal_trace_count": len(by_cluster),
+        "confirmed_terminal_count": len(confirmed),
+        "confirmed_v4_report_count": confirmed_report_v4_count,
+        "confirmed_v4_trace_count": confirmed_trace_v4_count,
+        "post_terminal_model_call_count": len(post_terminal_call_ids),
+        "post_terminal_tool_call_count": len(post_terminal_tool_call_ids),
+        "call_trace_conservation_passed": call_trace_conserved,
+        "tool_trace_conservation_passed": tool_trace_conserved,
+        "model_event_trace_conservation_passed": model_trace_conserved,
+        "passed": passed,
+    }
+
+
+def build_p6_answer_free_producer_metrics(
+    *,
+    report_path: Path,
+    run_dir: Path,
+    provider_contract: ProviderRuntimeContract,
+) -> Dict[str, Any]:
+    """Deterministically recompute P6 producer metrics without loading Truth.
+
+    Only the frozen report and its already archived usage/trace sidecars are
+    inputs.  Callers cannot supply usage totals, model identity, queue state,
+    or conservation results.
+    """
+
+    report = _load_json_object(report_path)
+    if report.get("answer_material_present") is not False:
+        raise BenchmarkError("answer-free producer report is not answer isolated")
+    usage_rows = _read_archived_usage_events(run_dir)
+    if not usage_rows:
+        raise BenchmarkError("answer-free producer usage sidecar is missing")
+    trace_artifact = _archived_decision_trace_artifact(report, run_dir)
+    terminal_authority = _p6_terminal_authority_conservation(
+        report=report,
+        run_dir=run_dir,
+        usage_rows=usage_rows,
+    )
+    usage_accounting = aggregate_usage_ledger(report, usage_spans=usage_rows)
+    totals = _as_dict(usage_accounting.get("totals"))
+    admission_conservation = _p6_admission_conservation(
+        report,
+        physical_call_count=int(usage_accounting.get("call_count") or 0),
+    )
+    retry_conservation = _p6_retry_conservation(report, usage_rows=usage_rows)
+    manifest = _as_dict(report.get("run_manifest"))
+    summary = _as_dict(report.get("summary"))
+    model_identity = _provider_model_identity_metrics(
+        usage_rows,
+        expected_model=provider_contract.model,
+        expected_response_model=provider_contract.response_model,
+        expected_response_models=provider_contract.accepted_response_models,
+    )
+    metrics: Dict[str, Any] = {
+        "schema_version": P6_ANSWER_FREE_PRODUCER_METRICS_SCHEMA_VERSION,
+        "answer_material_present": False,
+        "formal_benchmark": False,
+        "release_eligible": False,
+        "tokens": int(totals.get("total_tokens") or 0),
+        "queue_empty": manifest.get("validation_queue_drained") is True,
+        "provider_usage_coverage": float(usage_accounting.get("provider_usage_coverage") or 0.0),
+        "estimated_provider_call_count": sum(
+            row.get("provider_reported") is not True or row.get("conservative_charge") is True
+            for row in usage_rows
+        ),
+        "failed_or_unknown_call_count": sum(row.get("outcome") != "success" for row in usage_rows),
+        "budget_violation_count": sum(row.get("budget_violation") is True for row in usage_rows),
+        "token_conservation_passed": usage_accounting.get("conservation_passed") is True,
+        "telemetry_complete_rate": float(usage_accounting.get("telemetry_complete") is True),
+        "protocol_anomaly_count": int(summary.get("validator_protocol_exhausted_count") or 0)
+        + len(usage_accounting.get("errors") or []),
+        "candidate_funnel": candidate_funnel(report),
+        "usage_accounting": usage_accounting,
+        "p6_admission_conservation": admission_conservation,
+        "p6_retry_conservation": retry_conservation,
+        "p6_terminal_authority": terminal_authority,
+        **model_identity,
+    }
+    metrics["p6_conservation"] = _p6_usage_conservation(
+        report=report,
+        score=metrics,
+        usage_rows=usage_rows,
+        model_identity=model_identity,
+        decision_trace_artifact=trace_artifact,
+        expected_model=provider_contract.model,
+        expected_response_model=provider_contract.response_model,
+    )
+    metrics["content_sha256"] = _canonical_object_sha256(metrics)
+    return metrics
+
+
+def _p6_answer_free_gate_failures(metrics: Mapping[str, Any]) -> List[str]:
+    """Evaluate only answer-free producer invariants before post-freeze scoring."""
+
+    failures: List[str] = []
+    usage = _as_dict(metrics.get("usage_accounting"))
+    totals = _as_dict(usage.get("totals"))
+    if metrics.get("queue_empty") is not True:
+        failures.append("queue_not_drained")
+    if (
+        usage.get("complete") is not True
+        or usage.get("conservation_passed") is not True
+        or float(usage.get("provider_usage_coverage") or 0.0) != 1.0
+        or int(usage.get("call_count") or 0) < 1
+        or int(metrics.get("estimated_provider_call_count") or 0) != 0
+        or int(metrics.get("failed_or_unknown_call_count") or 0) != 0
+        or int(metrics.get("budget_violation_count") or 0) != 0
+        or metrics.get("token_conservation_passed") is not True
+    ):
+        failures.append("accounting_conservation_failure")
+    if (
+        float(metrics.get("provider_response_model_coverage") or 0.0) != 1.0
+        or int(metrics.get("provider_response_model_missing_count") or 0) != 0
+        or int(metrics.get("provider_response_model_mismatch_count") or 0) != 0
+        or int(metrics.get("requested_model_mismatch_count") or 0) != 0
+        or int(metrics.get("provider_response_model_successful_call_count") or 0) < 1
+        or metrics.get("provider_response_model_counts_conserved") is not True
+        or sum(
+            int(value)
+            for value in _as_dict(metrics.get("provider_response_model_counts")).values()
+            if isinstance(value, int) and not isinstance(value, bool)
+        )
+        != int(metrics.get("provider_response_model_successful_call_count") or 0)
+    ):
+        failures.append("provider_identity_mismatch")
+    if (
+        float(metrics.get("telemetry_complete_rate") or 0.0) != 1.0
+        or int(metrics.get("protocol_anomaly_count") or 0) != 0
+    ):
+        failures.append("component_metrics_incomplete")
+    admission = _as_dict(metrics.get("p6_admission_conservation"))
+    if (
+        admission.get("enabled") is not True
+        or admission.get("request_conservation_passed") is not True
+        or admission.get("zero_call_denial_conservation_passed") is not True
+    ):
+        failures.append("accounting_conservation_failure")
+    retry_conservation = _as_dict(metrics.get("p6_retry_conservation"))
+    if retry_conservation.get("passed") is not True:
+        failures.append("accounting_conservation_failure")
+    terminal_authority = _as_dict(metrics.get("p6_terminal_authority"))
+    if terminal_authority.get("passed") is not True:
+        failures.append("terminal_state_inconsistent")
+    try:
+        validate_usage_conservation(
+            _as_dict(metrics.get("p6_conservation")), require_model_calls=True
+        )
+    except P6ProtocolError:
+        failures.append("accounting_conservation_failure")
+    return list(dict.fromkeys(failures))
 
 
 def _usage_events_source_path(report: Mapping[str, Any], scan_root: Path) -> Optional[Path]:
@@ -1936,6 +2735,34 @@ def _archive_decision_trace_artifacts(
                 raise BenchmarkError(
                     f"{collection_name}[{index}] terminal event does not match the trace"
                 )
+            disposition = str(raw_item.get("candidate_disposition") or "").lower()
+            original_disposition = str(
+                raw_item.get("finding_root_original_disposition") or ""
+            ).lower()
+            proof_terminal = disposition in {"confirmed", "rejected_with_proof"} or (
+                disposition == "deduplicated_alias"
+                and original_disposition in {"confirmed", "rejected_with_proof"}
+            )
+            transition_fields = (
+                "terminal_transition_event_uid",
+                "terminal_transition_event_hash",
+                "terminal_transition_authority_sha256",
+                "terminal_transition_level",
+                "terminal_transition_disposition",
+            )
+            if proof_terminal:
+                if any(
+                    not str(raw_item.get(field) or "")
+                    or str(raw_item.get(field) or "") != str(trace.get(field) or "")
+                    for field in transition_fields
+                ):
+                    raise BenchmarkError(
+                        f"{collection_name}[{index}] proof transition does not match the trace"
+                    )
+            elif any(str(raw_item.get(field) or "") for field in transition_fields):
+                raise BenchmarkError(
+                    f"{collection_name}[{index}] non-proof terminal declares a transition"
+                )
             if not str(raw_item.get("terminal_authority") or ""):
                 raise BenchmarkError(f"{collection_name}[{index}] has no terminal authority")
     if set(archived_traces) != report_clusters:
@@ -2035,6 +2862,30 @@ def _report_provenance(report: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _p6_scan_cold_producer_material_for_secret(
+    paths: Sequence[Path],
+    *,
+    credential_environment: Optional[Mapping[str, str]],
+) -> None:
+    """Scan selected producer inputs/outputs with the actual in-memory key bytes."""
+
+    if credential_environment is None or set(credential_environment) != {
+        P6_API_KEY_ENVIRONMENT_KEY
+    }:
+        raise _P6ProtectedCanaryError()
+    secret = credential_environment.get(P6_API_KEY_ENVIRONMENT_KEY)
+    if not isinstance(secret, str) or not secret:
+        raise _P6ProtectedCanaryError()
+    canaries = (secret.encode("utf-8"),)
+    try:
+        for path in paths:
+            if not path.exists() and not path.is_symlink():
+                continue
+            scan_regular_artifact_tree_for_canaries(path, canaries=canaries)
+    except (OSError, P6ProtocolError, ValueError) as exc:
+        raise _P6ProtectedCanaryError() from exc
+
+
 def _run_trial_in_workspace(
     spec: BenchmarkSpec,
     run_dir: Path,
@@ -2045,6 +2896,7 @@ def _run_trial_in_workspace(
     scan_depth: str = "fast",
     credential_environment: Optional[Mapping[str, str]] = None,
     candidate_revision: Optional[str] = None,
+    answer_free_producer: bool = False,
 ) -> Dict[str, Any]:
     started = time.monotonic()
     truth_path = spec.truth_path_for_mode(mode)
@@ -2266,7 +3118,7 @@ def _run_trial_in_workspace(
             )
             required_phases.append("scan")
             if mode == "pilot":
-                scan_failure_class = _p6_scan_provider_failure_class(
+                scan_failure_class = _p6_scan_failure_class(
                     provider_failure_marker,
                     return_code=scan_result.return_code,
                 )
@@ -2353,6 +3205,20 @@ def _run_trial_in_workspace(
         }
     _json_dump(run_dir / "tool-health.json", health)
     source_report = _locate_report(execution_root)
+    if mode == "pilot" and answer_free_producer:
+        prearchive_paths = [run_dir, source_report, scan_root]
+        trace_root = execution_root / ".zscope_snapshots"
+        if trace_root.exists() or trace_root.is_symlink():
+            prearchive_paths.append(trace_root)
+        generated_entries = execution_root / "entry_functions_list.json"
+        if generated_entries.exists() or generated_entries.is_symlink():
+            prearchive_paths.append(generated_entries)
+        if oci_output is not None:
+            prearchive_paths.append(oci_output)
+        _p6_scan_cold_producer_material_for_secret(
+            prearchive_paths,
+            credential_environment=credential_environment,
+        )
     report_path = run_dir / "report.json"
     shutil.copy2(source_report, report_path)
     archived_report = _load_json_object(report_path)
@@ -2390,106 +3256,129 @@ def _run_trial_in_workspace(
     shutil.copytree(scan_root, archived_scan_root)
     if scan_input_manifest(archived_scan_root) != input_manifest:
         raise BenchmarkError("archived scan input does not match the sealed input manifest")
-    truth_environment = dict(environment)
-    for key in set(provider_contract.required_environment_keys).union(
-        {PROVIDER_BASE_URL_ENVIRONMENT_KEY, PROVIDER_MODEL_ENVIRONMENT_KEY}
-    ):
-        truth_environment.pop(key, None)
-    truth_environment["Z_SCOPE_BENCHMARK_TRUTH"] = str(truth_path.resolve())
-    score_path = run_dir / "score.json"
-    score_argv = [
-        python,
-        "-m",
-        "zscope.cli.benchmark",
-        "_score",
-        "--report",
-        str(report_path),
-        "--output",
-        str(score_path),
-    ]
-    phase_seconds["score"] = _run_command(
-        score_argv,
-        cwd=repository_root(),
-        environment=truth_environment,
-        log_path=run_dir / "score.log",
-    )
-    phase_seconds["total"] = time.monotonic() - started
-    score = _load_json_object(score_path)
-    usage_rows = _read_archived_usage_events(run_dir) or []
-    model_identity = _provider_model_identity_metrics(
-        usage_rows,
-        expected_model=provider_contract.model,
-        expected_response_model=provider_contract.response_model,
-        expected_response_models=provider_contract.accepted_response_models,
-    )
-    score.update(model_identity)
-    score.setdefault("scan_wall_seconds", round(phase_seconds["scan"], 6))
-    score["wall_seconds"] = score["scan_wall_seconds"]
-    score["end_to_end_wall_seconds"] = round(phase_seconds["total"], 6)
-    score["timing_contract"] = {
-        "gate_metric": "scan_wall_seconds",
-        "legacy_gate_alias": "wall_seconds",
-        "end_to_end_metric": "end_to_end_wall_seconds",
-        "scan_wall_source": (
-            "report.summary.batch_wall_seconds"
-            if _as_dict(_load_json_object(report_path).get("summary")).get("batch_wall_seconds")
-            is not None
-            else "runner.phase_seconds.scan"
-        ),
-    }
-    telemetry = _as_dict(score.get("performance_telemetry"))
-    telemetry["validator_workers"] = effective.concurrency.validator_workers
-    telemetry["llm_max_inflight"] = effective.concurrency.llm_max_inflight
-    validation_profile = effective.scan.llm_profiles.validation
-    validation_llm = effective.llms.get(validation_profile, effective.llm)
-    telemetry["validation_llm_profile"] = validation_profile
-    telemetry["validation_endpoint_max_inflight"] = validation_llm.base_url_max_concurrent_requests
-    score["performance_telemetry"] = telemetry
     report = _load_json_object(report_path)
-    if mode == "pilot":
-        score["p6_conservation"] = _p6_usage_conservation(
-            report=report,
-            score=score,
-            usage_rows=usage_rows,
-            model_identity=model_identity,
-            decision_trace_artifact=decision_trace_artifact,
+    score_path: Optional[Path] = None
+    if answer_free_producer:
+        if mode != "pilot":
+            raise BenchmarkError("answer-free producer mode is restricted to P6 pilot")
+        metrics = build_p6_answer_free_producer_metrics(
+            report_path=report_path,
+            run_dir=run_dir,
+            provider_contract=provider_contract,
+        )
+        producer_metrics_path = run_dir / "producer-metrics.json"
+        _json_dump(producer_metrics_path, metrics)
+        _p6_scan_cold_producer_material_for_secret(
+            (run_dir,),
+            credential_environment=credential_environment,
+        )
+        phase_seconds["producer_metrics"] = 0.0
+        gate_failures = _p6_answer_free_gate_failures(metrics)
+        sealed_failures: List[str] = []
+    else:
+        truth_environment = dict(environment)
+        for key in set(provider_contract.required_environment_keys).union(
+            {PROVIDER_BASE_URL_ENVIRONMENT_KEY, PROVIDER_MODEL_ENVIRONMENT_KEY}
+        ):
+            truth_environment.pop(key, None)
+        truth_environment["Z_SCOPE_BENCHMARK_TRUTH"] = str(truth_path.resolve())
+        score_path = run_dir / "score.json"
+        score_argv = [
+            python,
+            "-m",
+            "zscope.cli.benchmark",
+            "_score",
+            "--report",
+            str(report_path),
+            "--output",
+            str(score_path),
+        ]
+        phase_seconds["score"] = _run_command(
+            score_argv,
+            cwd=repository_root(),
+            environment=truth_environment,
+            log_path=run_dir / "score.log",
+        )
+        score = _load_json_object(score_path)
+        usage_rows = _read_archived_usage_events(run_dir) or []
+        model_identity = _provider_model_identity_metrics(
+            usage_rows,
             expected_model=provider_contract.model,
             expected_response_model=provider_contract.response_model,
+            expected_response_models=provider_contract.accepted_response_models,
         )
-    _json_dump(score_path, score)
-    gate_failures = (
-        _gate_c(
-            score,
-            scan_depth=scan_depth,
-            require_release_rule_qualification=mode != "pilot",
+        score.update(model_identity)
+        score.setdefault("scan_wall_seconds", round(phase_seconds["scan"], 6))
+        score["wall_seconds"] = score["scan_wall_seconds"]
+        telemetry = _as_dict(score.get("performance_telemetry"))
+        telemetry["validator_workers"] = effective.concurrency.validator_workers
+        telemetry["llm_max_inflight"] = effective.concurrency.llm_max_inflight
+        validation_profile = effective.scan.llm_profiles.validation
+        validation_llm = effective.llms.get(validation_profile, effective.llm)
+        telemetry["validation_llm_profile"] = validation_profile
+        telemetry["validation_endpoint_max_inflight"] = (
+            validation_llm.base_url_max_concurrent_requests
         )
-        if spec.language == "c_cpp"
-        else []
-    )
-    if mode == "pilot" and (
-        model_identity["provider_response_model_coverage"] != 1.0
-        or model_identity["provider_response_model_missing_count"] != 0
-        or model_identity["provider_response_model_mismatch_count"] != 0
-        or model_identity["requested_model_mismatch_count"] != 0
-        or model_identity["provider_response_model_successful_call_count"] < 1
-    ):
-        gate_failures.append("provider_identity_mismatch")
-    if mode == "pilot":
-        try:
-            validate_usage_conservation(
-                _as_dict(score.get("p6_conservation")), require_model_calls=True
+        score["performance_telemetry"] = telemetry
+        if mode == "pilot":
+            score["p6_conservation"] = _p6_usage_conservation(
+                report=report,
+                score=score,
+                usage_rows=usage_rows,
+                model_identity=model_identity,
+                decision_trace_artifact=decision_trace_artifact,
+                expected_model=provider_contract.model,
+                expected_response_model=provider_contract.response_model,
             )
-        except P6ProtocolError:
-            gate_failures.append("accounting_conservation_failure")
-    gate_failures.extend(_truth_matcher_gate_failures(mode, score))
-    sealed_failures = _gate_c_sealed(score) if spec.language == "c_cpp" else []
+        metrics = score
+        gate_failures = (
+            _gate_c(
+                score,
+                scan_depth=scan_depth,
+                require_release_rule_qualification=mode != "pilot",
+            )
+            if spec.language == "c_cpp"
+            else []
+        )
+        if mode == "pilot" and (
+            model_identity["provider_response_model_coverage"] != 1.0
+            or model_identity["provider_response_model_missing_count"] != 0
+            or model_identity["provider_response_model_mismatch_count"] != 0
+            or model_identity["requested_model_mismatch_count"] != 0
+            or model_identity["provider_response_model_successful_call_count"] < 1
+        ):
+            gate_failures.append("provider_identity_mismatch")
+        if mode == "pilot":
+            try:
+                validate_usage_conservation(
+                    _as_dict(score.get("p6_conservation")), require_model_calls=True
+                )
+            except P6ProtocolError:
+                gate_failures.append("accounting_conservation_failure")
+        gate_failures.extend(_truth_matcher_gate_failures(mode, score))
+        sealed_failures = _gate_c_sealed(score) if spec.language == "c_cpp" else []
+    phase_seconds["total"] = time.monotonic() - started
+    if not answer_free_producer:
+        metrics["end_to_end_wall_seconds"] = round(phase_seconds["total"], 6)
+        metrics["timing_contract"] = {
+            "gate_metric": "scan_wall_seconds",
+            "legacy_gate_alias": "wall_seconds",
+            "end_to_end_metric": "end_to_end_wall_seconds",
+            "scan_wall_source": (
+                "report.summary.batch_wall_seconds"
+                if _as_dict(report.get("summary")).get("batch_wall_seconds") is not None
+                else "runner.phase_seconds.scan"
+            ),
+        }
+        assert score_path is not None
+        _json_dump(score_path, metrics)
     report_ablation = _as_dict(_as_dict(report.get("metadata")).get("benchmark_ablation"))
     if report_ablation:
         gate_failures.append("semantic/discovery ablation artifacts are not release eligible")
         sealed_failures.append("semantic/discovery ablation artifacts are not release eligible")
     artifact_names = [
         "report.json",
-        "score.json",
+        "producer-metrics.json" if answer_free_producer else "score.json",
         "input-manifest.json",
         "tool-health.json",
         "validator-replay-bundle.json",
@@ -2506,16 +3395,18 @@ def _run_trial_in_workspace(
         "run": run_number,
         "completed": True,
         "formal_benchmark": mode == "formal",
-        "release_eligible": _run_release_eligible(mode, score, gate_failures),
-        "queue_empty": bool(score.get("queue_empty")),
+        "release_eligible": _run_release_eligible(mode, metrics, gate_failures),
+        "answer_free_producer": answer_free_producer,
+        "queue_empty": bool(metrics.get("queue_empty")),
         "gate_failures": gate_failures,
         "sealed_gate_failures": sealed_failures,
         "completeness": {
             "report_present": True,
-            "score_present": True,
+            "score_present": not answer_free_producer,
+            "producer_metrics_present": answer_free_producer,
             "summary_present": True,
             "backend_health_present": True,
-            "queue_empty": bool(score.get("queue_empty")),
+            "queue_empty": bool(metrics.get("queue_empty")),
             "backend_valid": health["ok"],
             "source_truth_isolated": True,
             "input_manifest_present": True,
@@ -2523,7 +3414,7 @@ def _run_trial_in_workspace(
             "decision_trace_artifact_present": decision_trace_artifact is not None,
         },
         "phase_seconds": {key: round(value, 4) for key, value in phase_seconds.items()},
-        "metrics": score,
+        "metrics": metrics,
         "input_manifest_sha256": input_manifest["manifest_sha256"],
         "input_files": input_manifest["files"],
         "validator_replay_bundle": {
@@ -2542,7 +3433,11 @@ def _run_trial_in_workspace(
             "health_argv": health_argv,
             "index_argv": build_index_argv,
             "scan_argv": scan_argv,
-            "score_argv": [python, "-m", "zscope.cli.benchmark", "_score"],
+            **(
+                {}
+                if answer_free_producer
+                else {"score_argv": [python, "-m", "zscope.cli.benchmark", "_score"]}
+            ),
         },
         "workspace": {
             "temporary": True,
@@ -2587,11 +3482,13 @@ def _run_trial(
     scan_depth: str = "fast",
     credential_environment: Optional[Mapping[str, str]] = None,
     candidate_revision: Optional[str] = None,
+    answer_free_producer: bool = False,
 ) -> Dict[str, Any]:
     parent = _benchmark_work_parent(spec.language)
     workspace = Path(
         tempfile.mkdtemp(prefix=f"zscope-benchmark-{spec.language}-{run_number:02d}-", dir=parent)
     )
+    protected_canary_failure = False
     try:
         kwargs: Dict[str, Any] = {
             "mode": mode,
@@ -2602,9 +3499,23 @@ def _run_trial(
             kwargs["credential_environment"] = credential_environment
         if candidate_revision is not None:
             kwargs["candidate_revision"] = candidate_revision
+        if answer_free_producer:
+            kwargs["answer_free_producer"] = True
         return _run_trial_in_workspace(spec, run_dir, run_number, **kwargs)
+    except _P6ProtectedCanaryError:
+        protected_canary_failure = True
+        try:
+            metadata = run_dir.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                run_dir.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(run_dir, ignore_errors=True)
+        raise
     finally:
-        if not (run_dir / "summary.json").is_file():
+        if not protected_canary_failure and not (run_dir / "summary.json").is_file():
             if mode == "pilot":
                 _archive_pilot_interrupted_diagnostics(workspace, run_dir)
             else:
@@ -2767,6 +3678,7 @@ def _aggregate(
     *,
     scan_depth: str = "fast",
     git_revision: Optional[str] = None,
+    answer_free_producer: bool = False,
 ) -> Dict[str, Any]:
     git_sha, git_tree = _git_identity(git_revision)
     numeric_keys = sorted(
@@ -2826,7 +3738,9 @@ def _aggregate(
         # needs-review findings have independent confirmation.  P7/formal
         # retains dynamic confirmed-TP/recall and Arm-A requirements.
         depth_gates = _pilot_range_gates(scan_depth)
-    aggregate_gate_failures = _gate_metrics(aggregate_gate_metrics, depth_gates)
+    aggregate_gate_failures = (
+        [] if answer_free_producer else _gate_metrics(aggregate_gate_metrics, depth_gates)
+    )
     if (
         formal
         and truth_contracts
@@ -2855,6 +3769,7 @@ def _aggregate(
         # This artifact attests the Range formal gate only. Product/default
         # release additionally consumes an independent balanced attestation.
         "release_eligible": formal and passed,
+        "answer_free_producer": answer_free_producer,
         "git_sha": git_sha,
         "git_tree": git_tree,
         "benchmark_policy": DEFAULT_BENCHMARK_POLICY.as_dict(),
@@ -3031,7 +3946,12 @@ def _default_output(language: str, mode: str) -> Path:
 
 
 def benchmark_plan(
-    language: str, mode: str, runs: int, *, scan_depth: str = "fast"
+    language: str,
+    mode: str,
+    runs: int,
+    *,
+    scan_depth: str = "fast",
+    answer_free_producer: bool = False,
 ) -> Dict[str, Any]:
     spec = SPECS[language]
     isolation = oci_capability(
@@ -3045,7 +3965,8 @@ def benchmark_plan(
         "scan_depth": scan_depth,
         "fixture": str(spec.fixture_root),
         "config": str(spec.config_path),
-        "truth_stage": "score_only",
+        "truth_stage": "post_freeze_score" if answer_free_producer else "score_only",
+        "answer_free_producer": answer_free_producer,
         "required_tools": list(spec.required_tools if mode != "smoke" else spec.required_tools[:1]),
         "scan_input": preview_scan_input(spec.fixture_root, language),
         "isolation": {
@@ -3059,7 +3980,20 @@ def benchmark_plan(
         "stages": (
             ["fixture", "config", "truth", "build", "deterministic-structure"]
             if mode == "smoke"
-            else ["copy", "config", "build", "health", "index", "scan", "score", "gate"]
+            else (
+                [
+                    "copy",
+                    "config",
+                    "build",
+                    "health",
+                    "index",
+                    "scan",
+                    "producer_metrics",
+                    "freeze_external",
+                ]
+                if answer_free_producer
+                else ["copy", "config", "build", "health", "index", "scan", "score", "gate"]
+            )
         ),
     }
 
@@ -3072,6 +4006,7 @@ def run_benchmark(
     output: Optional[Path] = None,
     dry_run: bool = False,
     scan_depth: str = "fast",
+    answer_free_producer: Optional[bool] = None,
 ) -> Dict[str, Any]:
     if language not in SPECS:
         raise BenchmarkError(f"unsupported language: {language}")
@@ -3079,6 +4014,10 @@ def run_benchmark(
         raise BenchmarkError(f"unsupported mode: {mode}")
     if mode == "pilot" and language != "c_cpp":
         raise BenchmarkError("pilot mode is restricted to the C/C++ Range benchmark")
+    if answer_free_producer is None:
+        answer_free_producer = mode == "pilot"
+    if answer_free_producer and mode != "pilot":
+        raise BenchmarkError("answer-free producer mode is restricted to P6 pilot")
     if scan_depth not in {"fast", "balanced", "deep"}:
         raise BenchmarkError("scan depth must be fast, balanced, or deep")
     run_count = 1 if mode != "formal" else (runs or MIN_FORMAL_RUNS)
@@ -3101,9 +4040,15 @@ def run_benchmark(
                 default="provider_identity_mismatch",
             )
             raise BenchmarkError(failure_class, failure_class=failure_class) from exc
-    plan = benchmark_plan(language, mode, run_count, scan_depth=scan_depth)
+    plan = benchmark_plan(
+        language,
+        mode,
+        run_count,
+        scan_depth=scan_depth,
+        answer_free_producer=answer_free_producer,
+    )
     if dry_run:
-        return {"dry_run": True, **plan}
+        return {"dry_run": True, "answer_free_producer": answer_free_producer, **plan}
     if mode in {"formal", "pilot"}:
         capability = oci_capability(
             runtime=os.environ.get("Z_SCOPE_BENCHMARK_OCI_RUNTIME", ""),
@@ -3140,7 +4085,8 @@ def run_benchmark(
             ) from exc
     destination = (output or _default_output(language, mode)).resolve()
     destination.mkdir(parents=True, exist_ok=False)
-    _validate_truth(spec.truth_path_for_mode(mode))
+    if not answer_free_producer:
+        _validate_truth(spec.truth_path_for_mode(mode))
     if mode == "smoke":
         scan_root = destination / "scan-input"
         manifest = copy_scan_input(spec.fixture_root, scan_root, language)
@@ -3198,6 +4144,7 @@ def run_benchmark(
                     scan_depth=scan_depth,
                     credential_environment=credential_environment,
                     candidate_revision=candidate_revision,
+                    answer_free_producer=answer_free_producer,
                 )
             )
     finally:
@@ -3209,6 +4156,7 @@ def run_benchmark(
         mode,
         scan_depth=scan_depth,
         git_revision=candidate_revision if mode == "pilot" else None,
+        answer_free_producer=answer_free_producer,
     )
     if mode in {"trial", "pilot"}:
         aggregate["release_eligible"] = False

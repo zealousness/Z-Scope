@@ -11,9 +11,17 @@ from scripts.check_p4_hypothesis_package import (
 )
 
 
-def _wheel(path: Path, *, omit_schema: bool = False, forbidden_import: str = "") -> None:
+def _wheel(
+    path: Path,
+    *,
+    omit_module: str = "",
+    omit_schema: bool = False,
+    forbidden_import: str = "",
+) -> None:
     with zipfile.ZipFile(path, "w") as archive:
         for name in REQUIRED_MODULES:
+            if name == omit_module:
+                continue
             source = ""
             if forbidden_import and name.endswith("runtime.py"):
                 source = f"import {forbidden_import}\n"
@@ -37,6 +45,14 @@ def test_p4_wheel_gate_rejects_missing_schema(tmp_path: Path) -> None:
     path = tmp_path / "missing.whl"
     _wheel(path, omit_schema=True)
     assert any("missing P4 schema" in value for value in wheel_errors(path))
+
+
+def test_p4_wheel_gate_rejects_missing_resource_proof(tmp_path: Path) -> None:
+    path = tmp_path / "missing-resource-proof.whl"
+    resource_proof = PREFIX + "resource_proof.py"
+    _wheel(path, omit_module=resource_proof)
+
+    assert any(resource_proof in value for value in wheel_errors(path))
 
 
 def test_p4_wheel_gate_rejects_authority_import(tmp_path: Path) -> None:

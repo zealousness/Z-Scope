@@ -1,8 +1,14 @@
 import json
 
+import pytest
+
 from zscope.agents.base import JsonOutputSpec, JsonToolAgent
 from zscope.framework.base import AgentResponse
 from zscope.framework.llm_client import LLMClient
+from zscope.framework.llm_usage import (
+    P6BalancedTokenAdmissionError,
+    ScanTokenUsageLedger,
+)
 
 
 class LoopGuardAgent(JsonToolAgent):
@@ -16,6 +22,114 @@ class LoopGuardAgent(JsonToolAgent):
 
     def run(self, input_data):
         return AgentResponse(success=True, data={})
+
+
+def _p6_client(*, supports_structured_output: bool = False) -> LLMClient:
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    ledger.enable_p6_balanced_admission()
+    return LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+        supports_structured_output=supports_structured_output,
+        token_usage_ledger=ledger,
+    )
+
+
+def test_json_tool_agent_propagates_p6_token_admission(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    agent = LoopGuardAgent(client)
+
+    def deny(*_args, **_kwargs):
+        raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
+
+    monkeypatch.setattr(agent, "_run_tool_conversation", deny)
+
+    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
+        agent._run_json_conversation(
+            [{"role": "user", "content": "start"}],
+            extractor=lambda content, result, conversation: None,
+            trace_label="unit",
+            parse_label="unit payload",
+            retry_prompt="retry",
+        )
+
+    assert raised.value.failure_class == "p6_token_hard_limit"
+
+
+def test_json_tool_agent_sanitizes_broad_p6_failure(monkeypatch, caplog) -> None:
+    canary = "PRIVATE_EXCEPTION_BODY_MUST_NOT_LEAK"
+    agent = LoopGuardAgent(_p6_client())
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(canary)
+
+    monkeypatch.setattr(agent, "_run_tool_conversation", fail)
+    response = agent._run_json_conversation(
+        [{"role": "user", "content": "start"}],
+        extractor=lambda content, result, conversation: None,
+        trace_label="unit",
+        parse_label="unit payload",
+        retry_prompt="retry",
+    )
+
+    assert response.success is False
+    assert response.error == "class=internal_failure; count=1"
+    assert response.metadata == {"failure_class": "internal_failure", "failure_count": 1}
+    assert canary not in caplog.text
+    assert "class=internal_failure; count=1" in caplog.text
+
+
+def test_json_tool_agent_preserves_non_p6_broad_failure_detail(monkeypatch) -> None:
+    canary = "ordinary-debug-detail"
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    agent = LoopGuardAgent(client)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(canary)
+
+    monkeypatch.setattr(agent, "_run_tool_conversation", fail)
+    response = agent._run_json_conversation(
+        [{"role": "user", "content": "start"}],
+        extractor=lambda content, result, conversation: None,
+        trace_label="unit",
+        parse_label="unit payload",
+        retry_prompt="retry",
+    )
+
+    assert response.error == canary
+
+
+def test_json_repair_sanitizes_initial_and_fallback_p6_failures(caplog) -> None:
+    canary = "PRIVATE_REPAIR_EXCEPTION_BODY_MUST_NOT_LEAK"
+    agent = LoopGuardAgent(_p6_client(supports_structured_output=True))
+    calls = []
+
+    def fail(*_args, **kwargs):
+        calls.append(kwargs)
+        raise RuntimeError(canary)
+
+    result = agent._call_json_repair_completion(
+        fail,
+        [{"role": "user", "content": "repair"}],
+        final_tool_schema=agent._final_json_tool_schema(_payload_spec()),
+        json_output_spec=_payload_spec(),
+        trace_label="unit",
+        trace_iteration=1,
+    )
+
+    assert result is None
+    assert len(calls) == 2
+    assert canary not in caplog.text
+    assert "class=internal_failure; count=1" in caplog.text
 
 
 def test_json_tool_agent_does_not_retry_after_tool_loop_guard(monkeypatch) -> None:

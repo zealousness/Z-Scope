@@ -37,7 +37,7 @@
     "phases/P3-security-spec-mining-and-review.md": "4eb9fa3c8163571bae0143ac50d1f5115329096ce70c15c92c843c8f48663205",
     "phases/P4-hypothesis-driven-hunting.md": "ed77aed8a01443699828fecaed9ddc818564556de21cf6af5d2e9ea791d2ba93",
     "phases/P5-runtime-cutover.md": "ec36ad15fda5495a8e7217ec83fd26a07855073a2795c5246c9f2cea6d72b583",
-    "phases/P6-pilot-validation.md": "59a32daba5bc4c660b9c801289edfb1348b7d439c2e849a7d1926d6bf64b1bcc",
+    "phases/P6-pilot-validation.md": "19cc6c0fb286179007b917a9ea50e0fff75add16876c8ea5150368f1734a2f02",
     "phases/P7-formal-validation-and-rollout.md": "6447ebd34b93033fa6afe3e910a5a51d463da91575a875a8f5f2d227a9b33b20",
     "acceptance/evidence-index.schema.json": "3a48044dc7f68832fcb33431f8ee7c0e5c163d79bbaf34c994e0db37f3c428f3",
     "acceptance/runtime-reachability-manifest.json": "f8ac37ede0af7ef15aeb4a5aae30005ad83f51e9bc0cc6525530ed2a69761409",

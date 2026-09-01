@@ -62,26 +62,28 @@ tests:
 - `fast`只运行确定性/backend候选与Proof Engine，不运行Hunter；`balanced`/`deep`还接收candidate-blind Hunter产生的强制未确认hypothesis。所有producer结束后冻结全局Ledger，再按cluster执行一次authority closure。
 - default、resume、maintain与单入口扫描都先把程序事实、内置/用户语义编译为qualification-backed authoritative SecuritySpec；冲突、过期、证据不可解析和不完整Java能力fail closed。
 - Hunter只选择系统预绑定的offer/action并经公共Registrar写入live Ledger；它不读取live Candidate内容、Finding-root或历史verdict，也不具proof/terminal authority。
-- Proof Engine把SecurityObligation编译成ProofObligation/action，独立Checker从冻结IR重算；每个required executable clause都必须有Checker结果。缺失、冲突或unknown统一为needs-review，不回退到旧Validator。
+- Proof Engine 先生成内容寻址的 `FrozenProofState`，唯一绑定原始 SecurityObligation、Proof IR、依赖、required/open clauses、root manifest 和输入哈希。V1/V2/V3、Hunter attached proof、resume 和 replay 都调用同一 `ProofKernel` reducer 得到 `ProofClosureEvaluation`；每个 required executable clause 都必须有 Checker 结果，不得跨 obligation 累积证据。缺失、冲突或 unknown 统一为 needs-review，不回退到旧 Validator。
 - Finding attribution 显式区分 `discovered_by` 集合与 `decided_by`/`decision_level`，因此“规则发现、LLM 判定”和“LLM 独占发现”不会混为一类。
 - Rule engine 和 alert verifier 将规则或外部告警转换为相同的验证/报告语义。
 
 ## 必须保持的不变量
 
 - 候选不得因调度边界、超时或阶段失败而静默丢失；未深挖候选必须保留可审计状态。
-- `confirmed`、`rejected_with_proof`、`needs_review` 的含义不能混淆，退出策略只消费约定视图。
+- `confirmed`、`rejected_with_proof`、`needs_review` 的含义不能混淆，退出策略只消费约定视图。`fact_plan_complete` 只表示请求的事实已收集，不等于 `proof_closure_status=complete`，也不具有 promotion authority。
 - 去重必须保留 occurrence、替代证据和来源，不能仅按文本或行号合并。
 - 确定性 proof、LLM 判断和引擎失败必须在元数据中可区分。
 - 完整且无冲突的Checker closure才能确认或拒绝。正反proof冲突只按subject、decision region、scope、quantifier、dependency freshness与Checker结果程序化比较；无法消解保持`needs_review`，模型不能投票裁决。
 - `RequiredFactPlan`从obligation与decision slice派生本地工作，但事实只有经统一registry/provider/Checker接纳才可关闭clause。`FunctionIRGraph v1`只从唯一、完整的Clang CFG函数段构建稳定block/statement/event、真实边、入口/全部出口和代码/backend hash；候选自己的同一行inspection记录不能充当CFG。构建使用scan-local single-flight，失败暴露具体capability原因。
 - `FactCapabilityRegistry` 是 V3 可执行性的唯一权威。它按当前 subject、decision region、Function IR 和 backend coverage 产生有限 `EvidenceAction`；普通 call graph、间接 callee（兼容名 `query_pointer_alias`）和 SVF bug-signature 查询只能形成 observation，不能关闭 lockset/HB/cleanup/ownership/path clause。没有 action 的 cluster 以 `V3_NOT_ELIGIBLE_NO_EXECUTABLE_GAP` 留在 needs-review。
 - 并发、资源、路径/guard和contract/type provider只提出严格`EvidenceCertificate v2`；独立Checker从冻结`ProgramProofIR v2`与obligation/action重算谓词，校验scope、量词、CFG/出口、assumption allowlist和code/IR/backend/dependency hash。入口参数绑定还独立校验完整签名域、参数数量、身份和slot；全称命题覆盖不完整时必须unknown且witness为空。`legacy_preview`只能读取，不能关闭live clause。
-- V3 模型不能构造 fact、引用或自由参数，只能选择系统提供的 action ID。系统执行固定 verifier、自动绑定 subject/region/code/backend hash，把证书写回 decision slice，并立即调用 `TerminalAuthorityEvaluator`；完整正/反 proof 通过程序终态钩子在当前工具轮结束后停止，不再调用模型。重复 action 被拒绝，连续两轮没有系统接纳的 fact 即停止，50 轮只是安全上限。逐调用 `new_fact_count` 只统计实际写入 decision slice 的事实。
-- 旧`EvidenceClaimRequest`、旧proof字段与普通观察只用于历史trace/replay分类，不能晋级。Proof artifacts进入不可变CAS，唯一terminal event冻结authoritative SecuritySpec/Hunter/Proof refs、最终outcome与完整性状态。
-- `RuntimeAuthorityManifest v1`绑定代码树、配置、backend、三类artifact root、registry/checker/provider revision、trace schema和cache epoch；任一不一致阻止resume/maintain复用。
+- V2 请求身份由 `fact_kind + subject + function + fixed params + evidence snapshot hash` 组成：完全重复才零调用，对象、参数或证据变化的 refined request 必须重新执行，一次 `no_match` 不得永久耗尽整个 fact kind。
+- V3 模型不能构造 fact、引用或自由参数，只能选择系统提供的 action ID。系统执行固定 verifier后把新事实写回同一 `FrozenProofState`，再运行完整 reducer；单个事实或 fact plan 完成不能直接设置 promotion eligible。只有完整 closure 能生成 `PromotionCertificate v1`，`TerminalAuthority v4` 只接受该证书。形成正/反终态后程序立即停止当前 cluster 的后续模型与工具调用。
+- `audit_observations` 是与 finding status 独立的守恒集合。只有具体代码锚点、稳定缺陷族、可证伪 obligation 且未被反证的线索才可进入 canonical `needs_review`；宽泛模式、无具体对象或无可执行 proof plan 的项进入 audit。分类必须在评分前依据 answer-free eligibility contract 完成，with-needs-review 始终包含全部 canonical `needs_review`。
+- P6/v4 同时提升 runtime、prompt、cache 和 proof revision。旧 `TerminalAuthorityDecision v3`、`EvidenceClaimRequest`、proof 字段、certificate、checkpoint/cache 和普通观察只能历史审计，不能授权新的 live/resume confirmation；恢复必须按 v4 从原始 obligation 完整重建与重验，无法重建时保持 `needs_review`。
+- Proof artifacts 进入不可变 CAS，唯一 terminal event 冻结 authoritative SecuritySpec/Hunter/Proof refs、`PromotionCertificate v1`、最终 outcome 与完整性状态。`RuntimeAuthorityManifest v1` 绑定代码树、配置、backend、三类 artifact root、registry/checker/provider/runtime/prompt/proof revision、trace schema 和 cache epoch；任一不一致阻止 resume/maintain 复用。
 - selected action未知、重复、跨obligation、参数不匹配或内容hash篡改必须整项拒绝；proof闭合后新增模型/工具调用数必须为0。
 - Hunter只能写hypothesis/observation并强制未确认；其prompt不得包含Candidate Ledger内容、候选/规则身份、benchmark、truth或历史verdict。
-- 已启用阶段因超时、取消或工具失败未能覆盖全部审计单元时，已有结果仍需保存并标记 `completeness=partial`；未启用的阶段不构成 partial。token 成本只在 Benchmark 完成后评价。
+- 已启用阶段因超时、取消或工具失败未能覆盖全部审计单元时，已有结果仍需保存并标记 `completeness=partial`；未启用的阶段不构成 partial。普通扫描和其他 Benchmark 的 token 成本在运行后评价；显式启用的 P6 cold balanced 是唯一例外，会在 provider 调用前按固定 `10,500,000 / 11,999,999` 软硬水位执行保守准入。
 - 外部告警适配后仍需遵守统一 issue identity、证据和报告 schema。
 - 规则 ID/alias 全局唯一；YAML 不执行代码，未知字段、语言错配、重复 ID、缺失 Skill 和能力错配必须在构建 CodeIndex、启动外部工具或调用 LLM 之前失败。
 - 确定性候选必须携带已登记canonical `rule_id`；其语言、CWE、defect class和Skill不得与descriptor冲突，被禁用的候选不得进入ledger、Proof Engine或报告。

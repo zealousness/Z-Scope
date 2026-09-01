@@ -13,6 +13,39 @@ from typing import Iterable, Mapping, Sequence
 
 DOMAINS = ("product", "truth_fixture", "scorer")
 
+# P6 owns a benchmark *control plane* alongside the product changes that it
+# qualifies.  These files orchestrate isolated runs, provider/runtime binding,
+# recovery, and evidence validation; they do not define Range answers or the
+# frozen legacy/v16 matching semantics.  Keep this list deliberately narrow so
+# adding another benchmark module requires an explicit governance decision.
+#
+# ``zscope/benchmarking/runner.py`` is shared with the legacy scorer wrapper,
+# but P6 modifies only its producer/telemetry paths.  The byte-exact
+# ``score_artifact`` function remains frozen by
+# ``tests/test_p6_balanced_orchestrator.py`` while the canonical scorer engines
+# below continue to classify as ``scorer``.
+PRODUCT_COMPATIBLE_P6_CONTROL_PLANE_PATHS = frozenset(
+    {
+        "scripts/external_benchmark.py",
+        "zscope/benchmarking/isolation.py",
+        "zscope/benchmarking/provider_runtime.py",
+        "zscope/benchmarking/runner.py",
+    }
+)
+PRODUCT_COMPATIBLE_P6_CONTROL_PLANE_PREFIXES = (
+    ".github/actions/classify-p6-job-failure/",
+    ".github/actions/validate-p6-artifact/",
+    ".github/workflows/p6-",
+    "containers/p6/",
+    "scripts/download_p6_",
+    "scripts/p6_",
+    "scripts/project_p6_",
+    "scripts/qualify_p6_",
+    "scripts/run_p6_",
+    "scripts/validate_p6_",
+    "zscope/benchmarking/p6_",
+)
+
 
 def _normalized(path: str) -> str:
     value = path.strip().replace("\\", "/")
@@ -27,6 +60,11 @@ def classify_path(path: str) -> str | None:
     value = _normalized(path)
     if not value:
         return None
+
+    if value in PRODUCT_COMPATIBLE_P6_CONTROL_PLANE_PATHS or value.startswith(
+        PRODUCT_COMPATIBLE_P6_CONTROL_PLANE_PREFIXES
+    ):
+        return "product"
 
     scorer_prefixes = (
         "zscope/benchmarking/",

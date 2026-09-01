@@ -12,6 +12,7 @@ from zscope.benchmarking import runner as benchmark_runner
 from zscope.cli import cli as cli_module
 from zscope.framework import provider_failure_marker
 from zscope.framework.llm_client import LLMClient, ProviderFailureError
+from zscope.framework.llm_usage import P6BalancedTokenAdmissionError
 
 
 class _Response:
@@ -191,6 +192,41 @@ def test_p6_cli_catch_reserves_exit_two_for_a_complete_marker(
         )
 
 
+def test_p6_cli_token_admission_failure_uses_fixed_body_free_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = tmp_path / "zscope.yaml"
+    config.write_text("config_version: 2\n", encoding="utf-8")
+    marker = tmp_path / provider_runtime.P6_PROVIDER_FAILURE_FILENAME
+    monkeypatch.setattr(
+        provider_failure_marker,
+        "P6_PROVIDER_FAILURE_CONTAINER_PATH",
+        marker.as_posix(),
+    )
+    monkeypatch.setattr(
+        cli_module.ConfigLoader,
+        "load",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            P6BalancedTokenAdmissionError("p6_token_hard_limit")
+        ),
+    )
+
+    with caplog.at_level("ERROR", logger="zscope.cli"):
+        result = CliRunner().invoke(
+            cli_module.main,
+            ["--config", str(config), "--p6-pilot"],
+        )
+
+    assert result.exit_code == 2
+    assert not marker.exists()
+    assert [record.getMessage() for record in caplog.records] == [
+        "Analysis failed: p6_token_hard_limit"
+    ]
+    assert all(record.exc_info is None for record in caplog.records)
+
+
 def test_p6_runner_rejects_marker_on_success_and_malformed_marker(
     tmp_path: Path,
 ) -> None:
@@ -241,16 +277,39 @@ def test_p6_provider_failure_marker_rejects_replacement_between_lstat_and_open(
         provider_runtime.load_p6_provider_failure_marker(marker)
 
 
-def test_p6_runner_accepts_exit_two_without_marker_as_non_provider_partial(
+def test_p6_runner_rejects_exit_two_without_marker_before_archiving(
     tmp_path: Path,
 ) -> None:
     assert (
-        benchmark_runner._p6_scan_provider_failure_class(
+        benchmark_runner._p6_scan_failure_class(
             tmp_path / provider_runtime.P6_PROVIDER_FAILURE_FILENAME,
             return_code=2,
         )
+        == "accounting_conservation_failure"
+    )
+
+
+@pytest.mark.parametrize("return_code", [0, 1])
+def test_p6_runner_accepts_normal_scanner_exit_without_marker(
+    tmp_path: Path,
+    return_code: int,
+) -> None:
+    assert (
+        benchmark_runner._p6_scan_failure_class(
+            tmp_path / provider_runtime.P6_PROVIDER_FAILURE_FILENAME,
+            return_code=return_code,
+        )
         is None
     )
+
+
+def test_p6_token_admission_failure_has_fixed_body_free_contract() -> None:
+    failure = P6BalancedTokenAdmissionError("p6_token_hard_limit")
+
+    assert failure.failure_class == "p6_token_hard_limit"
+    assert str(failure) == P6BalancedTokenAdmissionError.MESSAGE
+    assert failure.__cause__ is None
+    assert failure.__context__ is None
 
 
 def test_p6_scanner_uses_hidden_flag_without_key_or_marker_environment() -> None:

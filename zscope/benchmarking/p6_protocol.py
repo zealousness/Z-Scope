@@ -20,8 +20,14 @@ import zipfile
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Dict, Iterable, List, Mapping, NoReturn, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
-from zscope.benchmarking.provider_runtime import P6_PROVIDER_MODEL, P6_PROVIDER_RESPONSE_MODEL
+from zscope.benchmarking.provider_runtime import (
+    P6_PROVIDER_ACCEPTED_RESPONSE_MODELS,
+    P6_PROVIDER_MODEL,
+    P6_PROVIDER_PROBE_SCHEMA_VERSION,
+    P6_PROVIDER_RESPONSE_MODEL,
+)
 
 
 FAILURE_DIAGNOSTIC_SCHEMA_VERSION = "zscope.p6-failure-diagnostic.v1"
@@ -35,6 +41,10 @@ STAGE_ARTIFACT_SCHEMA_VERSION = "zscope.p6-stage-artifact.v1"
 ARTIFACT_ROOT_SCHEMA_VERSION = "zscope.p6-artifact-root.v1"
 TOOLCHAIN_EVIDENCE_SCHEMA_VERSION = "zscope.p6-toolchain-oci-evidence.v1"
 QUALIFICATION_OCI_RECEIPT_SCHEMA_VERSION = "zscope.p6-qualification-oci-receipt.v1"
+FINAL_EVIDENCE_MANIFEST_SCHEMA_VERSION = "zscope.p6-final-evidence-manifest.v1"
+IMAGE_PROVENANCE_SCHEMA_VERSION = "zscope.p6-local-image-provenance.v1"
+PROXY_PROVISION_SCHEMA_VERSION = "zscope.p6-local-proxy-provision.v2"
+EXPECTED_PROXY_ATTESTATION_SCHEMA_VERSION = "zscope.p6-expected-proxy-attestation.v2"
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -42,6 +52,20 @@ ATTEMPT_RE = re.compile(r"^p6-[a-z0-9][a-z0-9._-]{2,127}$")
 RUN_ID_RE = re.compile(r"^[1-9][0-9]*$")
 IMAGE_ID_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
 MAX_PROTOCOL_ARTIFACT_BYTES = 64 * 1024 * 1024
+MAX_FINAL_EVIDENCE_FILES = 4096
+P6_ARTIFACT_CANARY_CATEGORIES: Tuple[str, ...] = (
+    "source",
+    "truth",
+    "expected",
+    "scorer",
+    "prompt",
+    "response",
+    "model-output",
+)
+P6_PYTHON_BASE_IMAGE_DIGEST = (
+    "sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a"
+)
+P6_PYTHON_BASE_IMAGE_REF = f"docker.io/library/python@{P6_PYTHON_BASE_IMAGE_DIGEST}"
 
 P6_FAILURE_STAGE_ORDER: Tuple[str, ...] = (
     "entry_input",
@@ -70,6 +94,7 @@ P6_EXECUTION_STAGE_ORDER: Tuple[str, ...] = (
     "evidence_action_canary",
     "cold_fast",
     "cold_balanced",
+    "balanced_quality_gate",
     "cold_deep",
     "conservation",
     "qualification_seal",
@@ -95,6 +120,7 @@ EXECUTION_STAGE_TO_FAILURE_STAGE: Dict[str, str] = {
     "evidence_action_canary": "evidence_action",
     "cold_fast": "candidates",
     "cold_balanced": "planner_hunter",
+    "balanced_quality_gate": "report_finding",
     "cold_deep": "proof_provider_checker",
     "conservation": "usage_trace",
     "qualification_seal": "artifact_seal",
@@ -247,6 +273,7 @@ FAILURE_CLASS_TO_EXECUTION_STAGES.update(
         "quality_no_progress_gate_failed": (
             "cold_fast",
             "cold_balanced",
+            "balanced_quality_gate",
             "cold_deep",
         ),
         "queue_not_drained": (
@@ -273,6 +300,10 @@ FAILURE_CLASS_TO_EXECUTION_STAGES.update(
             "evidence_pr",
         ),
         "artifact_integrity_failure": (
+            "cold_fast",
+            "cold_balanced",
+            "cold_deep",
+            "balanced_quality_gate",
             "qualification_seal",
             "final_evidence_seal",
             "evidence_pr",
@@ -501,6 +532,7 @@ _PROVIDER_PROBE_FIELDS = frozenset(
         "provider_identity_sha256",
         "config_sha256",
         "model",
+        "response_model",
         "usage_conservation",
     }
 )
@@ -518,6 +550,10 @@ _TOOLCHAIN_EVIDENCE_FIELDS = frozenset(
         "image_ref",
         "image_digest",
         "image_id",
+        "image_provenance_sha256",
+        "image_provenance_content_sha256",
+        "proxy_provision_sha256",
+        "proxy_provision_content_sha256",
         "runtime_source_sha256",
         "oci_execution_sha256",
         "rootless_verified",
@@ -530,6 +566,154 @@ _TOOLCHAIN_EVIDENCE_FIELDS = frozenset(
         "evidence_sha256",
     }
 )
+_FINAL_EVIDENCE_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "control_plane_commit",
+        "candidate_git_sha",
+        "workflow_run_id",
+        "workflow_run_attempt",
+        "attempt_id",
+        "artifacts",
+        "phase_status",
+        "formal_benchmark",
+        "release_eligible",
+        "evidence_sha256",
+    }
+)
+_FINAL_EVIDENCE_ARTIFACT_FIELDS = frozenset({"path", "sha256"})
+_IMAGE_PROVENANCE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "git_revision",
+        "platform",
+        "base_image_ref",
+        "base_image_digest",
+        "runtime_lock_sha256",
+        "containerfile_sha256",
+        "python_requirements_sha256",
+        "image_ref",
+        "image_digest",
+        "image_id",
+        "toolchain_probe",
+        "credential_material_present",
+        "formal_evidence",
+        "release_eligible",
+        "content_sha256",
+    }
+)
+_PROXY_PROVISION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "created",
+        "image_ref",
+        "image_id",
+        "provider_identity_sha256",
+        "network_name",
+        "egress_network_name",
+        "network_names",
+        "network_aliases_sha256",
+        "proxy_container",
+        "proxy_container_id",
+        "endpoint_origin",
+        "endpoint_host",
+        "network_policy_sha256",
+        "relay_sha256",
+        "relay_projection_sha256",
+        "upstreams_sha256",
+        "upstream_count",
+        "command_projection_sha256",
+        "expected_environment_sha256",
+        "credential_environment_keys",
+        "security_projection_sha256",
+        "log_driver_projection_sha256",
+        "image_inspect_projection_sha256",
+        "proxy_inspect_projection_sha256",
+        "formal_evidence",
+        "release_eligible",
+        "content_sha256",
+    }
+)
+_EXPECTED_PROXY_ATTESTATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "workflow_run_id",
+        "workflow_run_attempt",
+        "attempt_id",
+        "control_plane_commit",
+        "candidate_sha256",
+        "candidate_git_sha",
+        "candidate_git_tree",
+        "toolchain_evidence_sha256",
+        "toolchain_evidence_content_sha256",
+        "image_provenance_sha256",
+        "image_provenance_content_sha256",
+        "proxy_provision_sha256",
+        "proxy_provision_content_sha256",
+        "image_ref",
+        "image_id",
+        "provider_identity_sha256",
+        "network_name",
+        "egress_network_name",
+        "network_names",
+        "network_aliases_sha256",
+        "proxy_container",
+        "proxy_container_id",
+        "endpoint_origin",
+        "endpoint_host",
+        "network_policy_sha256",
+        "relay_sha256",
+        "relay_projection_sha256",
+        "upstreams_sha256",
+        "upstream_count",
+        "command_projection_sha256",
+        "expected_environment_sha256",
+        "credential_environment_keys",
+        "security_projection_sha256",
+        "log_driver_projection_sha256",
+        "image_inspect_projection_sha256",
+        "proxy_inspect_projection_sha256",
+        "formal_evidence",
+        "release_eligible",
+        "content_sha256",
+    }
+)
+_TOOLCHAIN_PROVENANCE_LINEAGE_FIELDS = frozenset(
+    {
+        "workflow_run_id",
+        "workflow_run_attempt",
+        "attempt_id",
+        "control_plane_commit",
+        "candidate_sha256",
+        "candidate_git_sha",
+        "candidate_git_tree",
+        "provider_identity_sha256",
+        "image_ref",
+        "image_id",
+        "proxy_container",
+        "proxy_container_id",
+        "network_name",
+        "egress_network_name",
+        "network_policy_sha256",
+        "endpoint_origin",
+    }
+)
+_P6_TOOLCHAIN_TOOLS: Tuple[str, ...] = (
+    "python3",
+    "cmake",
+    "gcc",
+    "clang",
+    "clangd",
+    "gclang",
+    "get-bc",
+    "llvm-link",
+    "llvm-nm",
+    "wpa",
+    "saber",
+    "cc",
+)
+_P6_VERSIONED_TOOLS = frozenset({"python3", "cmake", "gcc", "clang", "clangd"})
+_SAFE_OCI_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _QUALIFICATION_OCI_EVIDENCE_FIELDS = frozenset(
     {
         "schema_version",
@@ -693,6 +877,155 @@ def read_regular_file_once(path: Path, *, max_bytes: int = MAX_PROTOCOL_ARTIFACT
         os.close(descriptor)
 
 
+def derive_p6_artifact_canaries(
+    *,
+    workflow_run_id: str,
+    workflow_run_attempt: int,
+    candidate_git_sha: str,
+) -> Tuple[bytes, ...]:
+    """Derive every public, run-bound answer-material canary category."""
+
+    if RUN_ID_RE.fullmatch(workflow_run_id) is None:
+        raise P6ProtocolError("P6 artifact canary run identity is invalid")
+    if (
+        isinstance(workflow_run_attempt, bool)
+        or not isinstance(workflow_run_attempt, int)
+        or workflow_run_attempt < 1
+    ):
+        raise P6ProtocolError("P6 artifact canary attempt identity is invalid")
+    if COMMIT_RE.fullmatch(candidate_git_sha) is None:
+        raise P6ProtocolError("P6 artifact canary candidate identity is invalid")
+    return tuple(
+        (
+            f"zscope-p6-{category}-canary-v1:{workflow_run_id}:"
+            f"{workflow_run_attempt}:{candidate_git_sha}"
+        ).encode("utf-8")
+        for category in P6_ARTIFACT_CANARY_CATEGORIES
+    )
+
+
+def scan_regular_artifact_tree_for_canaries(
+    root: Path,
+    *,
+    canaries: Sequence[bytes],
+    max_files: int = MAX_FINAL_EVIDENCE_FILES,
+    max_total_bytes: int = MAX_PROTOCOL_ARTIFACT_BYTES * 16,
+) -> None:
+    """Fail closed if a stable, link-free file/tree contains a literal canary.
+
+    Files are streamed through no-follow descriptors and revalidated after the
+    read.  Directory identities and complete member snapshots are checked before
+    and after recursion, so a concurrent pathname replacement cannot bypass the
+    scan.  No canary value is included in an exception.
+    """
+
+    if isinstance(max_files, bool) or not isinstance(max_files, int) or max_files < 1:
+        raise P6ProtocolError("P6 artifact scan file bound is invalid")
+    if (
+        isinstance(max_total_bytes, bool)
+        or not isinstance(max_total_bytes, int)
+        or max_total_bytes < 1
+    ):
+        raise P6ProtocolError("P6 artifact scan byte bound is invalid")
+    normalized: Tuple[bytes, ...] = tuple(
+        value for value in canaries if isinstance(value, bytes) and value
+    )
+    if len(normalized) != len(canaries) or len(normalized) != len(set(normalized)):
+        raise P6ProtocolError("P6 artifact scan canary set is invalid")
+    if not normalized:
+        raise P6ProtocolError("P6 artifact scan requires a protected canary")
+    overlap = max(len(value) for value in normalized) - 1
+    file_count = 0
+    total_bytes = 0
+    folded_paths: set[str] = set()
+
+    def scan_file(path: Path) -> None:
+        nonlocal file_count, total_bytes
+        file_count += 1
+        if file_count > max_files:
+            raise P6ProtocolError("P6 artifact scan file bound exceeded")
+        try:
+            before = path.lstat()
+        except OSError as exc:
+            raise P6ProtocolError("P6 artifact changed before protected scan") from exc
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise P6ProtocolError("P6 artifact scan encountered a link or special file")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as exc:
+            raise P6ProtocolError("P6 artifact cannot be opened for protected scan") from exc
+        try:
+            opened = os.fstat(descriptor)
+            if _stat_identity(opened) != _stat_identity(before):
+                raise P6ProtocolError("P6 artifact changed before protected scan")
+            tail = b""
+            size = 0
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                total_bytes += len(chunk)
+                if total_bytes > max_total_bytes:
+                    raise P6ProtocolError("P6 artifact scan byte bound exceeded")
+                window = tail + chunk
+                if any(value in window for value in normalized):
+                    raise P6ProtocolError("P6 protected canary detected in artifact")
+                tail = window[-overlap:] if overlap else b""
+            completed = os.fstat(descriptor)
+            if size != completed.st_size or _stat_identity(completed) != _stat_identity(opened):
+                raise P6ProtocolError("P6 artifact changed during protected scan")
+        finally:
+            os.close(descriptor)
+        try:
+            after = path.lstat()
+        except OSError as exc:
+            raise P6ProtocolError("P6 artifact changed after protected scan") from exc
+        if _stat_identity(after) != _stat_identity(before):
+            raise P6ProtocolError("P6 artifact changed after protected scan")
+
+    def visit(path: Path, prefix: PurePosixPath) -> None:
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise P6ProtocolError("P6 artifact tree is unavailable") from exc
+        if stat.S_ISREG(metadata.st_mode):
+            scan_file(path)
+            return
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise P6ProtocolError("P6 artifact scan encountered a link or special file")
+        before, entries = _directory_snapshot(path)
+        for name in sorted(entries):
+            relative = (prefix / name).as_posix() if prefix.parts else name
+            folded = relative.casefold()
+            if folded in folded_paths:
+                raise P6ProtocolError("P6 artifact scan paths are not portable and unique")
+            folded_paths.add(folded)
+            encoded_relative = relative.encode("utf-8")
+            if any(value in encoded_relative for value in normalized):
+                raise P6ProtocolError("P6 protected canary detected in artifact")
+            target = path / name
+            if entries[name][0] == stat.S_IFDIR:
+                visit(target, prefix / name)
+            else:
+                scan_file(target)
+        try:
+            after = path.lstat()
+        except OSError as exc:
+            raise P6ProtocolError("P6 artifact tree changed during protected scan") from exc
+        _, final_entries = _directory_snapshot(path)
+        if _directory_identity(after) != _directory_identity(before) or entries != final_entries:
+            raise P6ProtocolError("P6 artifact tree changed during protected scan")
+
+    visit(root.absolute(), PurePosixPath())
+
+
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(read_regular_file_once(path)).hexdigest()
 
@@ -727,6 +1060,100 @@ def load_json_bytes_strict(payload: bytes, *, name: str = "protocol artifact") -
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise P6ProtocolError(f"protocol artifact is not strict UTF-8 JSON: {name}") from exc
+
+
+def _stat_identity(value: os.stat_result) -> Tuple[int, int, int, int, int, int, int]:
+    return (
+        stat.S_IFMT(value.st_mode),
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+        value.st_nlink,
+    )
+
+
+def _directory_identity(value: os.stat_result) -> Tuple[int, int, int]:
+    return (stat.S_IFMT(value.st_mode), value.st_dev, value.st_ino)
+
+
+def _directory_snapshot(path: Path) -> Tuple[os.stat_result, Dict[str, Tuple[int, ...]]]:
+    try:
+        directory = path.lstat()
+    except OSError as exc:
+        raise P6ProtocolError(f"P6 evidence payload directory is unavailable: {path}") from exc
+    if stat.S_ISLNK(directory.st_mode) or not stat.S_ISDIR(directory.st_mode):
+        raise P6ProtocolError(f"P6 evidence payload root must be a real directory: {path}")
+    rows: Dict[str, Tuple[int, ...]] = {}
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                name = entry.name
+                if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+                    raise P6ProtocolError("P6 evidence payload contains a non-canonical name")
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                except OSError as exc:
+                    raise P6ProtocolError("P6 evidence payload changed during enumeration") from exc
+                if stat.S_ISLNK(metadata.st_mode) or not (
+                    stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)
+                ):
+                    raise P6ProtocolError(
+                        f"P6 evidence payload contains a link or special file: {entry.path}"
+                    )
+                rows[name] = (
+                    _directory_identity(metadata)
+                    if stat.S_ISDIR(metadata.st_mode)
+                    else _stat_identity(metadata)
+                )
+    except OSError as exc:
+        raise P6ProtocolError(f"P6 evidence payload cannot be enumerated: {path}") from exc
+    return directory, rows
+
+
+def _read_regular_tree_once(root: Path, *, excluded_relative_path: str) -> Dict[str, bytes]:
+    """Read one immutable, link-free payload tree through bounded file reads."""
+
+    root = root.absolute()
+    result: Dict[str, bytes] = {}
+    folded_paths: set[str] = set()
+    excluded_seen = False
+    file_count = 0
+
+    def visit(directory: Path, prefix: PurePosixPath) -> None:
+        nonlocal excluded_seen, file_count
+        before, entries = _directory_snapshot(directory)
+        for name in sorted(entries):
+            relative = (prefix / name).as_posix() if prefix.parts else name
+            folded = relative.casefold()
+            if folded in folded_paths:
+                raise P6ProtocolError("P6 evidence payload paths are not portable and unique")
+            folded_paths.add(folded)
+            target = directory / name
+            kind = entries[name][0]
+            if kind == stat.S_IFDIR:
+                visit(target, prefix / name)
+                continue
+            file_count += 1
+            if file_count > MAX_FINAL_EVIDENCE_FILES:
+                raise P6ProtocolError("P6 evidence payload file count is invalid")
+            if relative == excluded_relative_path:
+                excluded_seen = True
+                continue
+            result[relative] = read_regular_file_once(target)
+        try:
+            after = directory.lstat()
+        except OSError as exc:
+            raise P6ProtocolError("P6 evidence payload changed during secure read") from exc
+        _, final_entries = _directory_snapshot(directory)
+        if _directory_identity(before) != _directory_identity(after) or entries != final_entries:
+            raise P6ProtocolError("P6 evidence payload changed during secure read")
+
+    visit(root, PurePosixPath())
+    if not excluded_seen:
+        raise P6ProtocolError("P6 final evidence manifest is outside the payload tree")
+    return result
 
 
 def write_json_exclusive(path: Path, payload: Mapping[str, Any]) -> None:
@@ -976,6 +1403,123 @@ def _expect_non_release(value: Mapping[str, Any]) -> None:
         raise P6ProtocolError("P6 protocol objects are permanently non-formal and non-release")
 
 
+def _expect_manifest_relative_path(value: Any) -> str:
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise P6ProtocolError("P6 final evidence artifact path is invalid")
+    pure = PurePosixPath(value)
+    if (
+        pure.is_absolute()
+        or not pure.parts
+        or any(part in {"", ".", ".."} for part in pure.parts)
+        or pure.as_posix() != value
+        or ":" in pure.parts[0]
+    ):
+        raise P6ProtocolError("P6 final evidence artifact path is invalid")
+    return value
+
+
+def validate_final_evidence_manifest(
+    manifest_path: Path,
+    *,
+    payload_root: Path,
+    expected_run_id: Optional[str] = None,
+    expected_run_attempt: Optional[int] = None,
+    expected_attempt_id: Optional[str] = None,
+    expected_control_plane_commit: Optional[str] = None,
+    expected_candidate_git_sha: Optional[str] = None,
+    expected_candidate_sha256: Optional[str] = None,
+) -> bytes:
+    """Validate a complete final payload tree and return the manifest bytes read.
+
+    The returned bytes are the same no-follow read used for every validation
+    decision, so finalization can publish them without reopening the pathname.
+    """
+
+    manifest_path = manifest_path.absolute()
+    payload_root = payload_root.absolute()
+    if manifest_path.parent != payload_root or manifest_path.name != "final-evidence-manifest.json":
+        raise P6ProtocolError("P6 final evidence manifest location is invalid")
+    manifest_bytes = read_regular_file_once(manifest_path)
+    raw = load_json_bytes_strict(manifest_bytes, name=str(manifest_path))
+    if not isinstance(raw, Mapping):
+        raise P6ProtocolError("P6 final evidence manifest must be an object")
+    value = dict(raw)
+    _expect_exact_fields(value, _FINAL_EVIDENCE_MANIFEST_FIELDS, name="P6 final evidence manifest")
+    if value.get("schema_version") != FINAL_EVIDENCE_MANIFEST_SCHEMA_VERSION:
+        raise P6ProtocolError("P6 final evidence manifest schema version is invalid")
+    run_id, run_attempt, attempt_id = _expect_run_identity(value)
+    control_plane_commit = _expect_commit(
+        value.get("control_plane_commit"), name="final evidence control-plane commit"
+    )
+    candidate_git_sha = _expect_commit(
+        value.get("candidate_git_sha"), name="final evidence candidate Git commit"
+    )
+    candidate_sha256 = hashlib.sha256(candidate_git_sha.encode("utf-8")).hexdigest()
+    if expected_run_id is not None and run_id != expected_run_id:
+        raise P6ProtocolError("P6 final evidence workflow run ID is invalid")
+    if expected_run_attempt is not None and run_attempt != expected_run_attempt:
+        raise P6ProtocolError("P6 final evidence workflow run attempt is invalid")
+    if expected_attempt_id is not None and attempt_id != expected_attempt_id:
+        raise P6ProtocolError("P6 final evidence attempt ID is invalid")
+    if (
+        expected_control_plane_commit is not None
+        and control_plane_commit != expected_control_plane_commit
+    ):
+        raise P6ProtocolError("P6 final evidence control-plane commit is invalid")
+    if expected_candidate_git_sha is not None and candidate_git_sha != expected_candidate_git_sha:
+        raise P6ProtocolError("P6 final evidence candidate Git commit is invalid")
+    if expected_candidate_sha256 is not None:
+        _expect_sha256(expected_candidate_sha256, name="expected final candidate SHA-256")
+        if candidate_sha256 != expected_candidate_sha256:
+            raise P6ProtocolError("P6 final evidence candidate SHA-256 is invalid")
+    phases = value.get("phase_status")
+    if (
+        not isinstance(phases, Mapping)
+        or set(phases) != set(P6_CHECKPOINT_STAGE_ORDER)
+        or any(phases.get(stage) != "completed" for stage in P6_CHECKPOINT_STAGE_ORDER)
+    ):
+        raise P6ProtocolError("P6 final evidence phase status is invalid")
+    if value.get("formal_benchmark") is not False or value.get("release_eligible") is not False:
+        raise P6ProtocolError("P6 final evidence must remain non-formal and non-release")
+    claimed = _expect_sha256(value.get("evidence_sha256"), name="final evidence manifest hash")
+    unhashed = dict(value)
+    unhashed.pop("evidence_sha256")
+    if claimed != canonical_sha256(unhashed):
+        raise P6ProtocolError("P6 final evidence manifest hash is invalid")
+
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise P6ProtocolError("P6 final evidence artifact manifest is invalid")
+    declared: Dict[str, str] = {}
+    folded: set[str] = set()
+    for row in artifacts:
+        if not isinstance(row, Mapping):
+            raise P6ProtocolError("P6 final evidence artifact row is invalid")
+        _expect_exact_fields(
+            row, _FINAL_EVIDENCE_ARTIFACT_FIELDS, name="P6 final evidence artifact row"
+        )
+        relative = _expect_manifest_relative_path(row.get("path"))
+        path_folded = relative.casefold()
+        if relative == manifest_path.name or path_folded in folded:
+            raise P6ProtocolError("P6 final evidence artifact paths are not unique")
+        folded.add(path_folded)
+        declared[relative] = _expect_sha256(
+            row.get("sha256"), name="final evidence artifact SHA-256"
+        )
+
+    actual = _read_regular_tree_once(payload_root, excluded_relative_path=manifest_path.name)
+    if set(declared) != set(actual):
+        missing = sorted(set(declared) - set(actual))
+        extra = sorted(set(actual) - set(declared))
+        raise P6ProtocolError(
+            f"P6 final evidence payload member set is invalid; missing={missing}; extra={extra}"
+        )
+    for relative, payload in actual.items():
+        if hashlib.sha256(payload).hexdigest() != declared[relative]:
+            raise P6ProtocolError(f"P6 final evidence payload hash is invalid: {relative}")
+    return manifest_bytes
+
+
 def zero_usage_conservation() -> Mapping[str, Any]:
     return {
         "physical_call_count": 0,
@@ -1022,7 +1566,7 @@ def validate_usage_conservation(
         value.get("provider_usage_coverage") != 1.0
         or value.get("requested_model") != P6_PROVIDER_MODEL
         or value.get("requested_model_coverage") != 1.0
-        or value.get("response_model") != P6_PROVIDER_RESPONSE_MODEL
+        or value.get("response_model") not in P6_PROVIDER_ACCEPTED_RESPONSE_MODELS
         or value.get("response_model_coverage") != 1.0
         or value.get("queue_empty") is not True
     ):
@@ -1081,7 +1625,7 @@ def validate_provider_probe(value: Mapping[str, Any]) -> None:
 
     _expect_exact_fields(value, _PROVIDER_PROBE_FIELDS, name="P6 provider probe")
     if (
-        value.get("schema_version") != "zscope.p6-provider-probe.v1"
+        value.get("schema_version") != P6_PROVIDER_PROBE_SCHEMA_VERSION
         or value.get("stage") != "provider"
         or value.get("passed") is not True
         or value.get("call_count") != 1
@@ -1089,6 +1633,7 @@ def validate_provider_probe(value: Mapping[str, Any]) -> None:
         or value.get("provider_usage_coverage") != 1.0
         or value.get("estimated_provider_call_count") != 0
         or value.get("model") != P6_PROVIDER_MODEL
+        or value.get("response_model") not in P6_PROVIDER_ACCEPTED_RESPONSE_MODELS
     ):
         raise P6ProtocolError("P6 provider probe invariants are invalid")
     _expect_sha256(value.get("provider_identity_sha256"), name="provider probe identity")
@@ -1096,7 +1641,10 @@ def validate_provider_probe(value: Mapping[str, Any]) -> None:
     conservation = validate_usage_conservation(
         value.get("usage_conservation"), require_model_calls=True
     )
-    if conservation["physical_call_count"] != 1:
+    if (
+        conservation["physical_call_count"] != 1
+        or conservation["response_model"] != value["response_model"]
+    ):
         raise P6ProtocolError("P6 provider probe call conservation is invalid")
     answer_free_projection(value)
 
@@ -1108,7 +1656,8 @@ def provider_probe_projection(value: Mapping[str, Any], *, file_sha256: str) -> 
         "artifact_sha256": file_sha256,
         "provider_identity_sha256": value["provider_identity_sha256"],
         "config_sha256": value["config_sha256"],
-        "model": P6_PROVIDER_MODEL,
+        "model": value["model"],
+        "response_model": value["response_model"],
         "call_count": 1,
         "provider_usage_coverage": 1.0,
         "estimated_provider_call_count": 0,
@@ -1181,6 +1730,16 @@ def validate_toolchain_evidence(
     ):
         raise P6ProtocolError("P6 toolchain OCI image identity is invalid")
     _expect_sha256(value.get("runtime_source_sha256"), name="runtime source root")
+    _expect_sha256(value.get("image_provenance_sha256"), name="image provenance file hash")
+    _expect_sha256(
+        value.get("image_provenance_content_sha256"),
+        name="image provenance content hash",
+    )
+    _expect_sha256(value.get("proxy_provision_sha256"), name="proxy provision file hash")
+    _expect_sha256(
+        value.get("proxy_provision_content_sha256"),
+        name="proxy provision content hash",
+    )
     _expect_sha256(value.get("oci_execution_sha256"), name="OCI execution SHA-256")
     for name in (
         "rootless_verified",
@@ -1198,6 +1757,414 @@ def validate_toolchain_evidence(
     if claimed != canonical_sha256(unhashed):
         raise P6ProtocolError("P6 toolchain evidence hash is invalid")
     answer_free_projection(value)
+
+
+def _validate_image_provenance_value(value: Mapping[str, Any]) -> None:
+    _expect_exact_fields(value, _IMAGE_PROVENANCE_FIELDS, name="P6 image provenance")
+    if (
+        value.get("schema_version") != IMAGE_PROVENANCE_SCHEMA_VERSION
+        or value.get("platform") != "linux/amd64"
+        or value.get("base_image_ref") != P6_PYTHON_BASE_IMAGE_REF
+        or value.get("base_image_digest") != P6_PYTHON_BASE_IMAGE_DIGEST
+        or value.get("credential_material_present") is not False
+    ):
+        raise P6ProtocolError("P6 image provenance schema or fixed identity is invalid")
+    _expect_commit(value.get("git_revision"), name="image provenance Git revision")
+    for name in (
+        "runtime_lock_sha256",
+        "containerfile_sha256",
+        "python_requirements_sha256",
+    ):
+        _expect_sha256(value.get(name), name=f"image provenance {name}")
+    image_ref = value.get("image_ref")
+    image_digest = value.get("image_digest")
+    image_id = value.get("image_id")
+    if (
+        not isinstance(image_ref, str)
+        or image_ref.count("@sha256:") != 1
+        or not isinstance(image_digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None
+        or image_ref.rsplit("@", 1)[1] != image_digest
+        or not isinstance(image_id, str)
+        or IMAGE_ID_RE.fullmatch(image_id) is None
+    ):
+        raise P6ProtocolError("P6 image provenance OCI identity is invalid")
+    probe = value.get("toolchain_probe")
+    if not isinstance(probe, Mapping) or set(probe) != {
+        "schema_version",
+        "required_tools",
+        "paths",
+        "versions",
+        "missing_shared_libraries",
+        "passed",
+    }:
+        raise P6ProtocolError("P6 image provenance toolchain probe is invalid")
+    paths = probe.get("paths")
+    versions = probe.get("versions")
+    missing = probe.get("missing_shared_libraries")
+    if (
+        probe.get("schema_version") != "zscope.p6-toolchain-probe.v1"
+        or probe.get("required_tools") != list(_P6_TOOLCHAIN_TOOLS)
+        or not isinstance(paths, Mapping)
+        or set(paths) != set(_P6_TOOLCHAIN_TOOLS)
+        or any(
+            not isinstance(paths.get(name), str)
+            or not str(paths[name]).startswith("/")
+            or "\x00" in str(paths[name])
+            for name in _P6_TOOLCHAIN_TOOLS
+        )
+        or not isinstance(versions, Mapping)
+        or set(versions) != set(_P6_VERSIONED_TOOLS)
+        or any(
+            not isinstance(versions.get(name), str)
+            or not versions[name]
+            or len(versions[name]) > 256
+            for name in _P6_VERSIONED_TOOLS
+        )
+        or not isinstance(missing, Mapping)
+        or set(missing) != {"wpa", "saber"}
+        or missing.get("wpa") != []
+        or missing.get("saber") != []
+        or probe.get("passed") is not True
+    ):
+        raise P6ProtocolError("P6 image provenance toolchain probe is invalid")
+    _expect_non_release(value)
+    claimed = _expect_sha256(value.get("content_sha256"), name="image provenance content SHA-256")
+    unsigned = dict(value)
+    unsigned.pop("content_sha256")
+    if claimed != canonical_sha256(unsigned):
+        raise P6ProtocolError("P6 image provenance content hash is invalid")
+
+
+def _validate_endpoint_origin(value: Any, *, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise P6ProtocolError(f"{name} is invalid")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise P6ProtocolError(f"{name} is invalid") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or port not in {None, 443}
+    ):
+        raise P6ProtocolError(f"{name} is invalid")
+    return value
+
+
+def _validate_proxy_provision_value(value: Mapping[str, Any]) -> None:
+    _expect_exact_fields(value, _PROXY_PROVISION_FIELDS, name="P6 proxy provision")
+    if (
+        value.get("schema_version") != PROXY_PROVISION_SCHEMA_VERSION
+        or not isinstance(value.get("created"), bool)
+        or value.get("credential_environment_keys") != []
+    ):
+        raise P6ProtocolError("P6 proxy provision schema is invalid")
+    image_ref = value.get("image_ref")
+    if (
+        not isinstance(image_ref, str)
+        or image_ref.count("@sha256:") != 1
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", image_ref.rsplit("@", 1)[1]) is None
+        or not isinstance(value.get("image_id"), str)
+        or IMAGE_ID_RE.fullmatch(str(value.get("image_id"))) is None
+    ):
+        raise P6ProtocolError("P6 proxy provision image identity is invalid")
+    for field, name in (
+        ("provider_identity_sha256", "proxy provider identity"),
+        ("network_policy_sha256", "proxy network policy"),
+        ("network_aliases_sha256", "proxy network aliases"),
+        ("relay_sha256", "proxy relay source"),
+        ("relay_projection_sha256", "proxy relay projection"),
+        ("upstreams_sha256", "proxy upstream set"),
+        ("command_projection_sha256", "proxy command projection"),
+        ("expected_environment_sha256", "proxy environment projection"),
+        ("security_projection_sha256", "proxy security projection"),
+        ("log_driver_projection_sha256", "proxy log-driver projection"),
+        ("image_inspect_projection_sha256", "proxy image inspection projection"),
+        ("proxy_inspect_projection_sha256", "proxy inspection projection"),
+    ):
+        _expect_sha256(value.get(field), name=name)
+    for field in ("network_name", "egress_network_name", "proxy_container"):
+        item = value.get(field)
+        if not isinstance(item, str) or _SAFE_OCI_NAME_RE.fullmatch(item) is None:
+            raise P6ProtocolError(f"P6 proxy provision {field} is invalid")
+    if value.get("network_name") == value.get("egress_network_name"):
+        raise P6ProtocolError("P6 proxy provision network separation is invalid")
+    if value.get("network_names") != sorted(
+        [str(value["network_name"]), str(value["egress_network_name"])]
+    ):
+        raise P6ProtocolError("P6 proxy provision network set is invalid")
+    proxy_id = value.get("proxy_container_id")
+    if not isinstance(proxy_id, str) or re.fullmatch(r"[0-9a-f]{64}", proxy_id) is None:
+        raise P6ProtocolError("P6 proxy provision container identity is invalid")
+    origin = _validate_endpoint_origin(value.get("endpoint_origin"), name="proxy endpoint origin")
+    endpoint_host = value.get("endpoint_host")
+    parsed = urlsplit(origin)
+    if (
+        not isinstance(endpoint_host, str)
+        or endpoint_host != parsed.hostname
+        or len(endpoint_host) > 253
+    ):
+        raise P6ProtocolError("P6 proxy provision endpoint host is invalid")
+    upstream_count = value.get("upstream_count")
+    if (
+        isinstance(upstream_count, bool)
+        or not isinstance(upstream_count, int)
+        or upstream_count < 1
+    ):
+        raise P6ProtocolError("P6 proxy provision upstream count is invalid")
+    _expect_non_release(value)
+    claimed = _expect_sha256(value.get("content_sha256"), name="proxy provision content SHA-256")
+    unsigned = dict(value)
+    unsigned.pop("content_sha256")
+    if claimed != canonical_sha256(unsigned):
+        raise P6ProtocolError("P6 proxy provision content hash is invalid")
+
+
+def validate_expected_proxy_attestation(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate one immutable cross-job proxy identity expectation.
+
+    The object intentionally repeats the security-relevant subset of the raw
+    provision receipt.  This prevents a later job from accepting a same-name
+    container, image, network, command, or relay replacement merely because a
+    fresh live inspection is internally self-consistent.
+    """
+
+    _expect_exact_fields(
+        value,
+        _EXPECTED_PROXY_ATTESTATION_FIELDS,
+        name="P6 expected proxy attestation",
+    )
+    if value.get("schema_version") != EXPECTED_PROXY_ATTESTATION_SCHEMA_VERSION:
+        raise P6ProtocolError("P6 expected proxy attestation schema is invalid")
+    _expect_run_identity(value)
+    _expect_commit(value.get("control_plane_commit"), name="proxy attestation control-plane commit")
+    candidate_git_sha = _expect_commit(
+        value.get("candidate_git_sha"), name="proxy attestation candidate commit"
+    )
+    _expect_commit(value.get("candidate_git_tree"), name="proxy attestation candidate tree")
+    candidate_sha256 = _expect_sha256(
+        value.get("candidate_sha256"), name="proxy attestation candidate SHA-256"
+    )
+    if candidate_sha256 != hashlib.sha256(candidate_git_sha.encode("utf-8")).hexdigest():
+        raise P6ProtocolError("P6 expected proxy attestation candidate binding is invalid")
+    for field, name in (
+        ("toolchain_evidence_sha256", "toolchain evidence file"),
+        ("toolchain_evidence_content_sha256", "toolchain evidence content"),
+        ("image_provenance_sha256", "image provenance file"),
+        ("image_provenance_content_sha256", "image provenance content"),
+        ("proxy_provision_sha256", "proxy provision file"),
+        ("proxy_provision_content_sha256", "proxy provision content"),
+        ("provider_identity_sha256", "provider identity"),
+        ("network_policy_sha256", "network policy"),
+        ("network_aliases_sha256", "network aliases"),
+        ("relay_sha256", "relay source"),
+        ("relay_projection_sha256", "relay projection"),
+        ("upstreams_sha256", "upstream set"),
+        ("command_projection_sha256", "command projection"),
+        ("expected_environment_sha256", "environment projection"),
+        ("security_projection_sha256", "security projection"),
+        ("log_driver_projection_sha256", "log-driver projection"),
+        ("image_inspect_projection_sha256", "image inspection projection"),
+        ("proxy_inspect_projection_sha256", "proxy inspection projection"),
+    ):
+        _expect_sha256(value.get(field), name=f"proxy attestation {name}")
+    image_ref = value.get("image_ref")
+    image_id = value.get("image_id")
+    if (
+        not isinstance(image_ref, str)
+        or re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", image_ref) is None
+        or not isinstance(image_id, str)
+        or IMAGE_ID_RE.fullmatch(image_id) is None
+    ):
+        raise P6ProtocolError("P6 expected proxy attestation image identity is invalid")
+    for field in ("network_name", "egress_network_name", "proxy_container"):
+        item = value.get(field)
+        if not isinstance(item, str) or _SAFE_OCI_NAME_RE.fullmatch(item) is None:
+            raise P6ProtocolError(f"P6 expected proxy attestation {field} is invalid")
+    if value.get("network_name") == value.get("egress_network_name") or value.get(
+        "network_names"
+    ) != sorted([str(value["network_name"]), str(value["egress_network_name"])]):
+        raise P6ProtocolError("P6 expected proxy attestation network set is invalid")
+    proxy_id = value.get("proxy_container_id")
+    if not isinstance(proxy_id, str) or re.fullmatch(r"[0-9a-f]{64}", proxy_id) is None:
+        raise P6ProtocolError("P6 expected proxy attestation container identity is invalid")
+    origin = _validate_endpoint_origin(
+        value.get("endpoint_origin"), name="proxy attestation endpoint origin"
+    )
+    if value.get("endpoint_host") != urlsplit(origin).hostname:
+        raise P6ProtocolError("P6 expected proxy attestation endpoint host is invalid")
+    upstream_count = value.get("upstream_count")
+    if (
+        isinstance(upstream_count, bool)
+        or not isinstance(upstream_count, int)
+        or upstream_count < 1
+        or value.get("credential_environment_keys") != []
+    ):
+        raise P6ProtocolError("P6 expected proxy attestation boundary is invalid")
+    _expect_non_release(value)
+    claimed = _expect_sha256(value.get("content_sha256"), name="proxy attestation content SHA-256")
+    unsigned = dict(value)
+    unsigned.pop("content_sha256")
+    if claimed != canonical_sha256(unsigned):
+        raise P6ProtocolError("P6 expected proxy attestation content hash is invalid")
+    return copy.deepcopy(dict(value))
+
+
+def validate_proxy_provision(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Public closed-schema validator for a raw local proxy receipt."""
+
+    _validate_proxy_provision_value(value)
+    return copy.deepcopy(dict(value))
+
+
+def load_expected_proxy_attestation(
+    path: Path,
+    *,
+    expected_file_sha256: str,
+) -> Mapping[str, Any]:
+    """Load an expected attestation once and bind its exact serialized bytes."""
+
+    _expect_sha256(expected_file_sha256, name="proxy attestation file SHA-256")
+    raw = read_regular_file_once(path.absolute())
+    if hashlib.sha256(raw).hexdigest() != expected_file_sha256:
+        raise P6ProtocolError("P6 expected proxy attestation file hash is invalid")
+    value = load_json_bytes_strict(raw, name=str(path))
+    if not isinstance(value, Mapping):
+        raise P6ProtocolError("P6 expected proxy attestation must contain one object")
+    return validate_expected_proxy_attestation(value)
+
+
+def validate_toolchain_provenance_files(
+    toolchain_evidence: Mapping[str, Any],
+    image_provenance_path: Path,
+    proxy_provision_path: Path,
+    *,
+    expected_lineage: Mapping[str, Any],
+    _source_file_bytes: Optional[Tuple[bytes, bytes]] = None,
+) -> Mapping[str, Mapping[str, Any]]:
+    """Cross-bind restored raw toolchain receipts to one expected attempt lineage."""
+
+    _expect_exact_fields(
+        expected_lineage,
+        _TOOLCHAIN_PROVENANCE_LINEAGE_FIELDS,
+        name="P6 expected toolchain provenance lineage",
+    )
+    run_id, run_attempt, attempt_id = _expect_run_identity(expected_lineage)
+    control_plane_commit = _expect_commit(
+        expected_lineage.get("control_plane_commit"),
+        name="expected toolchain control-plane commit",
+    )
+    candidate_git_sha = _expect_commit(
+        expected_lineage.get("candidate_git_sha"), name="expected candidate Git commit"
+    )
+    candidate_git_tree = _expect_commit(
+        expected_lineage.get("candidate_git_tree"), name="expected candidate Git tree"
+    )
+    candidate_sha256 = _expect_sha256(
+        expected_lineage.get("candidate_sha256"), name="expected candidate SHA-256"
+    )
+    if candidate_sha256 != hashlib.sha256(candidate_git_sha.encode("utf-8")).hexdigest():
+        raise P6ProtocolError("P6 expected candidate commit binding is invalid")
+    provider_identity = _expect_sha256(
+        expected_lineage.get("provider_identity_sha256"),
+        name="expected provider identity",
+    )
+    network_policy = _expect_sha256(
+        expected_lineage.get("network_policy_sha256"),
+        name="expected network policy",
+    )
+    image_ref = expected_lineage.get("image_ref")
+    image_id = expected_lineage.get("image_id")
+    if (
+        not isinstance(image_ref, str)
+        or image_ref.count("@sha256:") != 1
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", image_ref.rsplit("@", 1)[1]) is None
+        or not isinstance(image_id, str)
+        or IMAGE_ID_RE.fullmatch(image_id) is None
+    ):
+        raise P6ProtocolError("P6 expected image identity is invalid")
+    for field in ("network_name", "egress_network_name", "proxy_container"):
+        item = expected_lineage.get(field)
+        if not isinstance(item, str) or _SAFE_OCI_NAME_RE.fullmatch(item) is None:
+            raise P6ProtocolError(f"P6 expected {field} is invalid")
+    proxy_container_id = expected_lineage.get("proxy_container_id")
+    if (
+        not isinstance(proxy_container_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", proxy_container_id) is None
+    ):
+        raise P6ProtocolError("P6 expected proxy container identity is invalid")
+    endpoint_origin = _validate_endpoint_origin(
+        expected_lineage.get("endpoint_origin"), name="expected proxy endpoint origin"
+    )
+
+    validate_toolchain_evidence(
+        toolchain_evidence,
+        expected_run_id=run_id,
+        expected_run_attempt=run_attempt,
+        expected_attempt_id=attempt_id,
+        expected_control_plane_commit=control_plane_commit,
+        expected_candidate_sha256=candidate_sha256,
+        expected_git_sha=candidate_git_sha,
+        expected_git_tree=candidate_git_tree,
+    )
+    if (
+        toolchain_evidence.get("image_ref") != image_ref
+        or toolchain_evidence.get("image_id") != image_id
+    ):
+        raise P6ProtocolError("P6 toolchain evidence expected image lineage is invalid")
+
+    if _source_file_bytes is None:
+        provenance_bytes = read_regular_file_once(image_provenance_path.absolute())
+        proxy_bytes = read_regular_file_once(proxy_provision_path.absolute())
+    else:
+        provenance_bytes, proxy_bytes = _source_file_bytes
+        if not provenance_bytes or not proxy_bytes:
+            raise P6ProtocolError("P6 raw toolchain provenance bytes are invalid")
+    if hashlib.sha256(provenance_bytes).hexdigest() != toolchain_evidence.get(
+        "image_provenance_sha256"
+    ):
+        raise P6ProtocolError("P6 image provenance file hash binding is invalid")
+    if hashlib.sha256(proxy_bytes).hexdigest() != toolchain_evidence.get("proxy_provision_sha256"):
+        raise P6ProtocolError("P6 proxy provision file hash binding is invalid")
+    provenance_raw = load_json_bytes_strict(provenance_bytes, name=str(image_provenance_path))
+    proxy_raw = load_json_bytes_strict(proxy_bytes, name=str(proxy_provision_path))
+    if not isinstance(provenance_raw, Mapping) or not isinstance(proxy_raw, Mapping):
+        raise P6ProtocolError("P6 raw toolchain provenance must contain objects")
+    provenance = dict(provenance_raw)
+    proxy = dict(proxy_raw)
+    _validate_image_provenance_value(provenance)
+    _validate_proxy_provision_value(proxy)
+    if provenance.get("content_sha256") != toolchain_evidence.get(
+        "image_provenance_content_sha256"
+    ):
+        raise P6ProtocolError("P6 image provenance content hash binding is invalid")
+    if proxy.get("content_sha256") != toolchain_evidence.get("proxy_provision_content_sha256"):
+        raise P6ProtocolError("P6 proxy provision content hash binding is invalid")
+    image_digest = image_ref.rsplit("@", 1)[1]
+    if (
+        provenance.get("git_revision") != candidate_git_sha
+        or provenance.get("image_ref") != image_ref
+        or provenance.get("image_digest") != image_digest
+        or provenance.get("image_id") != image_id
+        or proxy.get("image_ref") != image_ref
+        or proxy.get("image_id") != image_id
+        or proxy.get("provider_identity_sha256") != provider_identity
+        or proxy.get("network_name") != expected_lineage["network_name"]
+        or proxy.get("egress_network_name") != expected_lineage["egress_network_name"]
+        or proxy.get("proxy_container") != expected_lineage["proxy_container"]
+        or proxy.get("proxy_container_id") != proxy_container_id
+        or proxy.get("network_policy_sha256") != network_policy
+        or proxy.get("endpoint_origin") != endpoint_origin
+    ):
+        raise P6ProtocolError("P6 raw toolchain provenance lineage is invalid")
+    return {"image_provenance": provenance, "proxy_provision": proxy}
 
 
 def seal_toolchain_evidence(draft: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1223,6 +2190,10 @@ def toolchain_evidence_projection(
         "image_ref": value["image_ref"],
         "image_digest": value["image_digest"],
         "image_id": value["image_id"],
+        "image_provenance_sha256": value["image_provenance_sha256"],
+        "image_provenance_content_sha256": value["image_provenance_content_sha256"],
+        "proxy_provision_sha256": value["proxy_provision_sha256"],
+        "proxy_provision_content_sha256": value["proxy_provision_content_sha256"],
         "runtime_source_sha256": value["runtime_source_sha256"],
         "oci_execution_sha256": value["oci_execution_sha256"],
     }
@@ -1236,6 +2207,8 @@ def validate_qualification_oci_receipt(
     expected_network_name: str,
     expected_endpoint_origin: str,
     expected_image: str,
+    expected_image_id: str,
+    expected_proxy_container_id: str,
     expected_runtime_source_sha256: str,
     expected_workflow_run_id: str,
     expected_workflow_run_attempt: int,
@@ -1280,6 +2253,13 @@ def validate_qualification_oci_receipt(
         or re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", expected_image) is None
     ):
         raise P6ProtocolError("P6 qualification image identity is invalid")
+    if not isinstance(expected_image_id, str) or IMAGE_ID_RE.fullmatch(expected_image_id) is None:
+        raise P6ProtocolError("P6 qualification image ID is invalid")
+    if (
+        not isinstance(expected_proxy_container_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_proxy_container_id) is None
+    ):
+        raise P6ProtocolError("P6 qualification proxy container ID is invalid")
 
     executions = value.get("executions")
     if not isinstance(executions, list) or not 1 <= len(executions) <= 64:
@@ -1301,6 +2281,8 @@ def validate_qualification_oci_receipt(
             or execution.get("network_name") != expected_network_name
             or execution.get("endpoint_origin") != expected_endpoint_origin
             or execution.get("image") != expected_image
+            or execution.get("image_id") != expected_image_id
+            or execution.get("proxy_container_id") != expected_proxy_container_id
             or execution.get("runtime_source_mounted") is not True
             or execution.get("runtime_source_sha256") != runtime_source
             or execution.get("errors") != []
@@ -1330,7 +2312,7 @@ def validate_qualification_oci_receipt(
             if (
                 phase.get("provider_identity_sha256") != provider_identity
                 or phase.get("image") != expected_image
-                or phase.get("image_id") != execution.get("image_id")
+                or phase.get("image_id") != expected_image_id
                 or phase.get("network_name") != expected_network_name
                 or phase.get("p6_cleanup_scope_verified") is not True
                 or phase.get("p6_workflow_run_id") != expected_workflow_run_id
@@ -2126,6 +3108,7 @@ def validate_pilot_aggregate(
         "cold_runs": 1,
         "all_completed": True,
         "passed": True,
+        "answer_free_producer": True,
     }
     if any(value.get(key) != item for key, item in expected.items()):
         _pilot_failure("artifact_integrity_failure")
@@ -2137,6 +3120,7 @@ def validate_pilot_aggregate(
         run.get("completed") is not True
         or run.get("formal_benchmark") is not False
         or run.get("release_eligible") is not False
+        or run.get("answer_free_producer") is not True
     ):
         _pilot_failure("artifact_integrity_failure")
     if run.get("queue_empty") is not True:
@@ -2156,27 +3140,52 @@ def validate_pilot_aggregate(
         usage.get("complete") is not True
         or usage.get("conservation_passed") is not True
         or float(usage.get("provider_usage_coverage") or 0.0) != 1.0
-        or int(totals.get("estimated_or_conservative_calls") or 0) != 0
-        or int(totals.get("failed_or_unknown_calls") or 0) != 0
-        or int(totals.get("budget_violation_count") or 0) != 0
+        or int(metrics.get("estimated_provider_call_count") or 0) != 0
+        or int(metrics.get("failed_or_unknown_call_count") or 0) != 0
+        or int(metrics.get("budget_violation_count") or 0) != 0
     ):
         _pilot_failure("accounting_conservation_failure")
-    if int(totals.get("call_count") or 0) < 1:
+    if int(usage.get("call_count") or 0) < 1:
         _pilot_failure("provider_usage_unverifiable")
     if metrics.get("token_conservation_passed") is not True:
         _pilot_failure("accounting_conservation_failure")
     if float(metrics.get("provider_usage_coverage") or 0.0) != 1.0:
         _pilot_failure("provider_usage_unverifiable")
+    response_model_counts = metrics.get("provider_response_model_counts")
+    successful_response_count = metrics.get("provider_response_model_successful_call_count")
+    accepted_response_models = {P6_PROVIDER_MODEL, P6_PROVIDER_RESPONSE_MODEL}
+    response_counts_valid = bool(
+        isinstance(response_model_counts, Mapping)
+        and set(response_model_counts) == accepted_response_models
+        and not isinstance(successful_response_count, bool)
+        and isinstance(successful_response_count, int)
+        and successful_response_count > 0
+        and all(
+            not isinstance(count, bool) and isinstance(count, int) and count >= 0
+            for count in response_model_counts.values()
+        )
+        and sum(response_model_counts.values()) == successful_response_count
+    )
     if (
         float(metrics.get("provider_response_model_coverage") or 0.0) != 1.0
         or int(metrics.get("provider_response_model_missing_count") or 0) != 0
         or int(metrics.get("provider_response_model_mismatch_count") or 0) != 0
         or int(metrics.get("requested_model_mismatch_count") or 0) != 0
+        or metrics.get("provider_response_model_counts_conserved") is not True
+        or not response_counts_valid
     ):
         _pilot_failure("provider_identity_mismatch")
     if float(metrics.get("telemetry_complete_rate") or 0.0) != 1.0:
         _pilot_failure("component_metrics_incomplete")
     if int(metrics.get("protocol_anomaly_count") or 0) != 0:
+        _pilot_failure("terminal_state_inconsistent")
+    terminal_authority = metrics.get("p6_terminal_authority")
+    if (
+        not isinstance(terminal_authority, Mapping)
+        or terminal_authority.get("passed") is not True
+        or int(terminal_authority.get("post_terminal_model_call_count") or 0) != 0
+        or int(terminal_authority.get("post_terminal_tool_call_count") or 0) != 0
+    ):
         _pilot_failure("terminal_state_inconsistent")
     funnel = metrics.get("candidate_funnel")
     v3 = funnel.get("v3_investigation") if isinstance(funnel, Mapping) else None
@@ -2206,7 +3215,7 @@ def validate_pilot_aggregate(
         )
     except P6ProtocolError:
         _pilot_failure("accounting_conservation_failure")
-    if conservation["physical_call_count"] != int(totals["call_count"]):
+    if conservation["physical_call_count"] != int(usage["call_count"]):
         _pilot_failure("accounting_conservation_failure")
     git_sha = value.get("git_sha")
     git_tree = value.get("git_tree")
@@ -2292,10 +3301,10 @@ def validate_pilot_aggregate(
         "git_sha": git_sha,
         "git_tree": git_tree,
         "provider_identity_sha256": provider_identity,
-        "call_count": int(totals["call_count"]),
+        "call_count": int(usage["call_count"]),
         "provider_usage_coverage": 1.0,
         "provider_response_model_coverage": 1.0,
-        "estimated_provider_call_count": 0,
+        "estimated_provider_call_count": int(conservation["estimated_call_count"]),
         "queue_empty": True,
         "token_conservation_passed": True,
         "telemetry_complete_rate": 1.0,
@@ -2757,10 +3766,13 @@ __all__ = [
     "FAILURE_CLASS_TO_STAGE",
     "EXECUTION_STAGE_TO_FAILURE_STAGE",
     "FAILURE_DIAGNOSTIC_SCHEMA_VERSION",
+    "EXPECTED_PROXY_ATTESTATION_SCHEMA_VERSION",
+    "FINAL_EVIDENCE_MANIFEST_SCHEMA_VERSION",
     "P6ProtocolError",
     "P6_CHECKPOINT_STAGE_ORDER",
     "P6_EXECUTION_STAGE_ORDER",
     "P6_FAILURE_STAGE_ORDER",
+    "P6_ARTIFACT_CANARY_CATEGORIES",
     "P6_WORKFLOW_PATH",
     "QUALIFICATION_OCI_RECEIPT_SCHEMA_VERSION",
     "REPAIR_RECEIPT_SCHEMA_VERSION",
@@ -2777,17 +3789,23 @@ __all__ = [
     "cold_cache_identities_sha256",
     "combine_usage_conservation",
     "diagnose_pilot",
+    "derive_p6_artifact_canaries",
     "emit_workflow_failure",
     "load_json_strict",
+    "load_expected_proxy_attestation",
     "load_stage_results",
     "public_failure_annotation",
     "record_stage_result",
     "require_pilot_request",
     "seal_toolchain_evidence",
     "sha256_file",
+    "scan_regular_artifact_tree_for_canaries",
     "validate_checkpoint",
     "validate_answer_free_artifact",
+    "validate_final_evidence_manifest",
     "validate_failure_diagnostic",
+    "validate_expected_proxy_attestation",
+    "validate_proxy_provision",
     "validate_repair_receipt",
     "validate_repair_receipt_bundle",
     "validate_qualification_oci_receipt",
@@ -2796,6 +3814,7 @@ __all__ = [
     "validate_stage_result",
     "validate_stage_sequence",
     "validate_toolchain_evidence",
+    "validate_toolchain_provenance_files",
     "validate_usage_conservation",
     "write_json_exclusive",
     "zero_usage_conservation",

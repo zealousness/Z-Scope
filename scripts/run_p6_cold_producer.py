@@ -79,6 +79,7 @@ def run_cold_producer(*, scan_depth: str, output: Path, failure_marker: Path) ->
             runs=1,
             output=output,
             scan_depth=scan_depth,
+            answer_free_producer=True,
         )
     except BenchmarkError as exc:
         candidate = exc.failure_class

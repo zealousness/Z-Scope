@@ -24,6 +24,7 @@ from ...common.validator_protocol import (
 )
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient, ProviderFailureError
+from ...framework.llm_usage import P6BalancedTokenAdmissionError
 from ...tools.policy import ToolPolicy
 
 
@@ -111,6 +112,15 @@ class ProofEngineAgent(JsonToolAgent):
             allowed_refs=allowed_refs,
         )
         if response is None or result is None:
+            if isinstance(response, dict) and response == self._p6_internal_failure_metadata():
+                metadata.update(self._p6_internal_failure_metadata())
+                self._finalize_metadata(metadata)
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error=self._p6_internal_failure_marker(),
+                    metadata=metadata,
+                )
             self._finalize_metadata(metadata)
             return AgentResponse(
                 success=False,
@@ -318,12 +328,21 @@ class ProofEngineAgent(JsonToolAgent):
             executed.add(action_id)
             try:
                 outcome = evidence_action_executor(action_id)
+            except P6BalancedTokenAdmissionError:
+                raise
             except Exception as exc:
-                outcome = {
-                    "status": "unknown",
-                    "reason_code": "evidence_action_executor_error",
-                    "error": f"{type(exc).__name__}: {exc}"[:500],
-                }
+                if self._p6_answer_free_failure_mode():
+                    outcome = {
+                        "status": "unknown",
+                        "reason_code": "evidence_action_executor_error",
+                        **self._p6_internal_failure_metadata(),
+                    }
+                else:
+                    outcome = {
+                        "status": "unknown",
+                        "reason_code": "evidence_action_executor_error",
+                        "error": f"{type(exc).__name__}: {exc}"[:500],
+                    }
             if not isinstance(outcome, dict):
                 outcome = {
                     "status": "unknown",
@@ -380,7 +399,7 @@ class ProofEngineAgent(JsonToolAgent):
                         else "investigation_exhausted"
                     ),
                 }
-            return {
+            public_outcome = {
                 "success": True,
                 "action_id": action_id,
                 "status": outcome.get("status"),
@@ -389,6 +408,9 @@ class ProofEngineAgent(JsonToolAgent):
                 "certificate_ref": outcome.get("certificate_ref"),
                 "terminal_authority": authority,
             }
+            if outcome.get("failure_class") == "internal_failure":
+                public_outcome.update(self._p6_internal_failure_metadata())
+            return public_outcome
 
         def start_model_iteration(iteration: int) -> bool:
             nonlocal consecutive_no_fact_iterations
@@ -440,6 +462,7 @@ class ProofEngineAgent(JsonToolAgent):
                     }
             return {"valid": True, "payload": parsed.to_dict()}
 
+        p6_session_failure = False
         try:
             result = self._run_tool_conversation(
                 messages,
@@ -459,8 +482,17 @@ class ProofEngineAgent(JsonToolAgent):
                 replay_identical_tool_result=False,
                 preserve_reasoning_metadata=True,
             )
+        except P6BalancedTokenAdmissionError:
+            raise
         except Exception as exc:
-            logger.warning("Proof Engine action-selection session failed: %s", exc)
+            if self._p6_answer_free_failure_mode():
+                logger.warning(
+                    "Proof Engine action-selection session failed: %s",
+                    self._p6_internal_failure_marker(),
+                )
+                p6_session_failure = True
+            else:
+                logger.warning("Proof Engine action-selection session failed: %s", exc)
             result = {}
         metadata = self._initial_metadata(input_data)
         self._merge_conversation_metadata(metadata, result)
@@ -477,6 +509,15 @@ class ProofEngineAgent(JsonToolAgent):
                 "validator_no_new_evidence_fact_stop": no_progress_stop,
             }
         )
+        if p6_session_failure:
+            metadata.update(self._p6_internal_failure_metadata())
+            self._finalize_metadata(metadata)
+            return AgentResponse(
+                success=False,
+                data={},
+                error=self._p6_internal_failure_marker(),
+                metadata=metadata,
+            )
         parsed, failure_class = self._extract_v3_result(
             result,
             candidate_uid=candidate_uid,
@@ -582,9 +623,17 @@ class ProofEngineAgent(JsonToolAgent):
             }
         try:
             response = chat_completion(messages, **kwargs)
+        except P6BalancedTokenAdmissionError:
+            raise
         except ProviderFailureError:
             raise
         except Exception as exc:
+            if self._p6_answer_free_failure_mode():
+                logger.warning(
+                    "Proof Engine v3 direct completion failed: %s",
+                    self._p6_internal_failure_marker(),
+                )
+                return self._p6_internal_failure_metadata(), None
             logger.warning("Proof Engine v3 direct completion failed: %s", exc)
             return None, None
         choices = response.get("choices") or []

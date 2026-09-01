@@ -121,6 +121,45 @@ def test_canonical_projection_does_not_hide_review_related_to_confirmed() -> Non
         "ISSUE_CONFIRMED",
         "ISSUE_REVIEW",
     ]
+    assert views["default"]["is_subset_of_with_needs_review"] is True
+    assert with_review["contains_all_default"] is True
+    assert with_review["contains_all_canonical_needs_review"] is True
+
+
+def test_canonical_projection_keeps_shadow_audit_out_of_both_security_views() -> None:
+    confirmed = {
+        "id": "ISSUE_CONFIRMED",
+        "candidate_disposition": "confirmed",
+        "validation_cluster_uid": "VAL_confirmed",
+    }
+    review = {
+        "id": "ISSUE_REVIEW",
+        "candidate_disposition": "needs_review",
+        "validation_status": "needs_review",
+        "validation_cluster_uid": "VAL_review",
+    }
+    audit = {
+        "id": "AUDIT_ONLY",
+        "candidate_disposition": "shadow_observation",
+        # A stale legacy status must not leak an audit observation back into
+        # the with-needs-review security projection.
+        "validation_status": "needs_review",
+        "validation_cluster_uid": "VAL_audit",
+    }
+
+    views = build_report_views(
+        [confirmed],
+        [review, audit],
+        canonical_projection=True,
+    )
+
+    assert [item["id"] for item in views["default"]["issues"]] == ["ISSUE_CONFIRMED"]
+    assert [item["id"] for item in views["with_needs_review"]["issues"]] == [
+        "ISSUE_CONFIRMED",
+        "ISSUE_REVIEW",
+    ]
+    assert views["with_needs_review"]["included_needs_review_count"] == 1
+    assert views["with_needs_review"]["contains_all_canonical_needs_review"] is True
 
 
 def test_build_report_views_treats_null_related_observations_as_empty() -> None:
@@ -368,6 +407,98 @@ def test_parallel_combined_report_does_not_fall_back_when_frozen_outcomes_are_em
     assert findings_for_view(report, "default") == []
     assert findings_for_view(report, "with_needs_review") == []
     assert report["run_manifest"]["report_invariant_status"]["canonical_projection"] is True
+
+
+def test_parallel_combined_report_separates_review_and_audit_with_terminal_conservation(
+    monkeypatch,
+) -> None:
+    def finalize_trace(_self, issue, *, view_memberships):
+        issue["decision_trace_ref"] = f"trace:{issue['validation_cluster_uid']}"
+        issue["decision_trace_view_memberships"] = list(view_memberships)
+        return issue
+
+    # TerminalAuthority v4 is covered independently.  Keep this report-level
+    # integration focused on the final frozen projection and its conservation
+    # without manufacturing a proof envelope in the fixture.
+    monkeypatch.setattr(
+        "zscope.orchestration.decision_trace.DecisionTraceStore.finalize_issue",
+        finalize_trace,
+    )
+
+    class FrozenLedger:
+        @staticmethod
+        def freeze():
+            return {
+                "outcomes": [
+                    {
+                        "validation_cluster_uid": "VAL_REVIEW_ONLY",
+                        "terminal_disposition": "needs_review",
+                        "status": "needs_review",
+                        "issue": {
+                            "id": "REVIEW_ONLY",
+                            "candidate_uid": "CAND_REVIEW_ONLY",
+                            "occurrence_uid": "OCC_REVIEW_ONLY",
+                            "validation_cluster_uid": "VAL_REVIEW_ONLY",
+                            "function": "review_sink",
+                            "location": "src/review.c:11",
+                            "category": "bounds",
+                            "source_identity": "review_length",
+                        },
+                    },
+                    {
+                        "validation_cluster_uid": "VAL_AUDIT_ONLY",
+                        "terminal_disposition": "shadow_observation",
+                        "status": "uncertain",
+                        "issue": {
+                            "id": "AUDIT_ONLY",
+                            "candidate_uid": "CAND_AUDIT_ONLY",
+                            "occurrence_uid": "OCC_AUDIT_ONLY",
+                            "validation_cluster_uid": "VAL_AUDIT_ONLY",
+                            "function": "audit_sink",
+                            "location": "src/audit.c:22",
+                            "category": "generic",
+                            "source_identity": "broad_pattern",
+                            # A stale legacy field must not make this item
+                            # actionable after its terminal disposition is
+                            # frozen as audit-only.
+                            "validation_status": "needs_review",
+                        },
+                    },
+                ],
+                "summary": {
+                    "validation_group_count": 2,
+                    "terminal_validation_count": 2,
+                    "nonterminal_validation_count": 0,
+                },
+            }
+
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.max_workers = 1
+    analyzer._candidate_ledger = FrozenLedger()
+    results = {
+        "entry": ParallelAnalysisResult(
+            function_name="entry",
+            verdict="no_issue_found",
+        )
+    }
+
+    report = analyzer.generate_combined_report(results)
+
+    assert findings_for_view(report, "default") == []
+    assert [item["id"] for item in findings_for_view(report, "with_needs_review")] == [
+        "REVIEW_ONLY"
+    ]
+    assert [item["id"] for item in report["metadata"]["audit_observations"]] == ["AUDIT_ONLY"]
+    terminal = {
+        item["id"]: item["candidate_disposition"] for item in report["candidate_terminal_states"]
+    }
+    assert terminal == {
+        "AUDIT_ONLY": "shadow_observation",
+        "REVIEW_ONLY": "needs_review",
+    }
+    assert report["summary"]["needs_review_issues"] == 1
+    assert report["summary"]["audit_observations"] == 1
+    assert len(report["candidate_terminal_states"]) == 2
 
 
 def test_review_view_coalesces_88_equivalent_entry_occurrences() -> None:

@@ -177,9 +177,9 @@ class TerminalAuthorityEvaluator:
             state = None
             closure = None
 
-        if (state is not None or closure is not None or isinstance(raw_promotion, Mapping)) and not (
-            isinstance(raw_input, Mapping)
-        ):
+        if (
+            state is not None or closure is not None or isinstance(raw_promotion, Mapping)
+        ) and not (isinstance(raw_input, Mapping)):
             protocol_or_engine_failure = True
 
         if (

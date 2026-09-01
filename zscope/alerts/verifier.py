@@ -205,12 +205,16 @@ class AlertVerifier:
                 "checker_result_refs": [],
                 "root_manifest_sha256": "",
             }
-        elif set(proof_input) != {
-            "schema_version",
-            "proof_ir",
-            "proof_obligation",
-            "selected_action_uids",
-        } or proof_input.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION:
+        elif (
+            set(proof_input)
+            != {
+                "schema_version",
+                "proof_ir",
+                "proof_obligation",
+                "selected_action_uids",
+            }
+            or proof_input.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION
+        ):
             proof_decision = {
                 "schema_version": "zscope.proof-kernel-evaluation.v1",
                 "proof_kernel_mode": PROOF_KERNEL_MODE,

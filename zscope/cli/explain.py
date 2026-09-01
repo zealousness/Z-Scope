@@ -359,12 +359,17 @@ def _policy_replay(trace: Mapping[str, Any], snapshot_root: Path) -> Dict[str, A
         return _failed_policy_replay(expected, "terminal_authority_v4_unavailable")
 
     raw = issue.get("proof_kernel_input")
-    if not isinstance(raw, Mapping) or set(raw) != {
-        "schema_version",
-        "proof_ir",
-        "proof_obligation",
-        "selected_action_uids",
-    } or raw.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION:
+    if (
+        not isinstance(raw, Mapping)
+        or set(raw)
+        != {
+            "schema_version",
+            "proof_ir",
+            "proof_obligation",
+            "selected_action_uids",
+        }
+        or raw.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION
+    ):
         return _failed_policy_replay(expected, "proof_kernel_input_unavailable")
     selected = raw.get("selected_action_uids")
     live_selected = issue.get("proof_kernel_live_selected_action_uids")

@@ -1,5 +1,7 @@
 import threading
+from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,7 @@ from zscope.config.config import (
 )
 from zscope.config.function_entry import FunctionEntry
 from zscope.core.analysis import analyzer as analyzer_module
+from zscope.framework.llm_usage import P6BalancedTokenAdmissionError
 from zscope.orchestration import parallel_analyzer as parallel_module
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 from zscope.orchestration.candidates import CandidateTicket
@@ -57,6 +60,105 @@ def _config(tmp_path: Path) -> ZScopeConfig:
         ),
         concurrency=ConcurrencyConfig(entry_workers=3),
     )
+
+
+def _p6_usage_snapshot() -> dict:
+    return {
+        "consumed_tokens": 100,
+        "reserved_tokens": 0,
+        "active_reservation_count": 0,
+        "event_count": 1,
+        "persisted_event_count": 1,
+        "rejected_before_model_count": 0,
+        "usage_attribution": {"totals": {"request_count": 1}},
+        "p6_balanced_admission": {
+            "enabled": True,
+            "request_count": 1,
+            "admitted_request_count": 1,
+            "denied_request_count": 0,
+        },
+    }
+
+
+def test_p6_security_spec_zero_call_accepts_unchanged_ledger() -> None:
+    snapshot = _p6_usage_snapshot()
+
+    ParallelAnalyzer._assert_p6_security_spec_zero_call(snapshot, deepcopy(snapshot))
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("event_count",), 2),
+        (("reserved_tokens",), 1),
+        (("p6_balanced_admission", "request_count"), 2),
+        (("p6_balanced_admission", "denied_request_count"), 1),
+        (("usage_attribution", "totals", "request_count"), 2),
+    ],
+)
+def test_p6_security_spec_zero_call_rejects_any_model_ledger_change(path, value) -> None:
+    before = _p6_usage_snapshot()
+    after = deepcopy(before)
+    cursor = after
+    for key in path[:-1]:
+        cursor = cursor[key]
+    cursor[path[-1]] = value
+
+    with pytest.raises(RuntimeError, match="^p6_security_spec_zero_call_invariant_failed$"):
+        ParallelAnalyzer._assert_p6_security_spec_zero_call(before, after)
+
+
+def test_required_hunter_hard_token_denial_fails_closed_and_propagates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    parallel = ParallelAnalyzer(_config(tmp_path), code_index=FakeCodeIndex())
+    parallel._security_semantic_map = object()
+    parallel._security_spec_runtime_result = {"root_manifest_sha256": "a" * 64}
+
+    def deny(*_args, **_kwargs):
+        raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
+
+    monkeypatch.setattr(parallel, "_run_hypothesis_hunter", deny)
+
+    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
+        parallel._run_authoritative_hunter(SimpleNamespace(name="balanced"))
+
+    assert raised.value.failure_class == "p6_token_hard_limit"
+    assert parallel._security_runtime_state["status"] == "failed_closed"
+    assert parallel._security_runtime_state["failures"] == [{"reason": "p6_token_hard_limit"}]
+    assert parallel._security_runtime_state["hypothesis_hunter_runtime"]["status"] == (
+        "failed_closed"
+    )
+    assert parallel._security_runtime_state["hypothesis_hunter_runtime"]["reason"] == (
+        "p6_token_hard_limit"
+    )
+
+
+def test_parallel_entry_batch_propagates_p6_hard_token_admission(
+    tmp_path: Path, monkeypatch
+) -> None:
+    parallel = ParallelAnalyzer(_config(tmp_path), code_index=FakeCodeIndex())
+    monkeypatch.setattr(
+        parallel,
+        "_prepare_authoritative_security_runtime",
+        lambda _entries, _profile: None,
+    )
+    monkeypatch.setattr(
+        parallel,
+        "_run_project_deterministic_fact_pass",
+        lambda _entries: None,
+    )
+
+    def deny(_entry):
+        raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
+
+    monkeypatch.setattr(parallel, "_analyze_single_entry", deny)
+
+    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
+        parallel.analyze_function_entries([FunctionEntry(function_name="entry")])
+
+    assert raised.value.failure_class == "p6_token_hard_limit"
+    assert parallel._cancellation_token.reason == "p6_token_hard_limit"
 
 
 def test_analyzer_initializes_java_project_file_rule_cache(tmp_path: Path) -> None:

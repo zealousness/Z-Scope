@@ -131,6 +131,78 @@ def test_programmatic_terminal_stops_after_current_tool_round(monkeypatch) -> No
     assert result["api_call_count"] == 1
 
 
+def test_programmatic_terminal_skips_later_tools_from_same_model_response(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+    executed = []
+    terminal = {}
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append((list(messages), kwargs))
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "proof_action",
+                                "type": "function",
+                                "function": {"name": "prove", "arguments": "{}"},
+                            },
+                            {
+                                "id": "post_proof_action",
+                                "type": "function",
+                                "function": {"name": "inspect_more", "arguments": "{}"},
+                            },
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+
+    def execute(name, _args):
+        executed.append(name)
+        if name == "prove":
+            terminal.update({"type": "result", "value": 9})
+        return {"success": True}
+
+    setattr(execute, "_zscope_programmatic_terminal_payload", lambda: dict(terminal) or None)
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[
+            {"type": "function", "function": {"name": "prove", "parameters": {}}},
+            {
+                "type": "function",
+                "function": {"name": "inspect_more", "parameters": {}},
+            },
+        ],
+        tool_executor=execute,
+        terminal_tool_name="emit_result",
+        terminal_tool_handler=lambda payload: {
+            "valid": payload.get("type") == "result",
+            "payload": payload,
+        },
+        terminal_tool_required=True,
+        max_iterations=50,
+    )
+
+    assert len(calls) == 1
+    assert executed == ["prove"]
+    assert result["programmatic_terminal"] is True
+    assert result["tool_call_count"] == 1
+    assert result["api_call_count"] == 1
+
+
 def test_run_conversation_stops_on_valid_terminal_tool(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",

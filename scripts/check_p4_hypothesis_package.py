@@ -22,6 +22,7 @@ REQUIRED_MODULES = {
         "models.py",
         "planner.py",
         "qualification.py",
+        "resource_proof.py",
         "runtime.py",
         "store.py",
     )

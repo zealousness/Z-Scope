@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.local/schemas/p6-proof-promotion-qualification-v1.schema.json",
+  "title": "P6 proof/promotion successor qualification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "requires_independent_review",
+    "authorizes_phase_completion",
+    "answer_free",
+    "network",
+    "llm_calls",
+    "protocol_identity",
+    "qualification_dependencies",
+    "source_sha256",
+    "case_counts",
+    "acceptance",
+    "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.p6-proof-promotion-successor-qualification.v1"},
+    "status": {"const": "local_candidate_qualified"},
+    "requires_independent_review": {"const": true},
+    "authorizes_phase_completion": {"const": false},
+    "answer_free": {"const": true},
+    "network": {"const": false},
+    "llm_calls": {"const": 0},
+    "protocol_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_authority_schema_version",
+        "runtime_authority_protocol_revision",
+        "runtime_cache_epoch",
+        "frozen_proof_state_schema",
+        "proof_closure_evaluation_schema",
+        "promotion_certificate_schema",
+        "terminal_authority_decision_schema",
+        "hypothesis_hunter_mode",
+        "hypothesis_hunter_effect"
+      ],
+      "properties": {
+        "runtime_authority_schema_version": {"const": "zscope.runtime-authority-manifest.v1"},
+        "runtime_authority_protocol_revision": {"const": 2},
+        "runtime_cache_epoch": {"const": "zscope.runtime-authority.p6-proof-v4"},
+        "frozen_proof_state_schema": {"const": "zscope.frozen-proof-state.v1"},
+        "proof_closure_evaluation_schema": {"const": "zscope.proof-closure-evaluation.v1"},
+        "promotion_certificate_schema": {"const": "zscope.promotion-certificate.v1"},
+        "terminal_authority_decision_schema": {"const": "zscope.terminal-authority-decision.v4"},
+        "hypothesis_hunter_mode": {"const": "active"},
+        "hypothesis_hunter_effect": {"const": "candidate_registration_only"}
+      }
+    },
+    "qualification_dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "p2_corpus_file_sha256",
+        "p3_security_spec_qualification_sha256",
+        "p4_hypothesis_qualification_sha256"
+      ],
+      "properties": {
+        "p2_corpus_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "p3_security_spec_qualification_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "p4_hypothesis_qualification_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "source_sha256": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "case_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "p2_case_count",
+        "complete_confirmation_count",
+        "incomplete_needs_review_count",
+        "safe_false_confirmation_count",
+        "complete_counterproof_rejection_count",
+        "fact_complete_without_proof_not_promoted_count",
+        "tampered_promotion_fail_closed_count",
+        "cross_obligation_fail_closed_count",
+        "legacy_v3_fail_closed_count",
+        "resource_exact_leak_binding_count",
+        "resource_cleanup_binding_count",
+        "resource_ownership_escape_rejected_count"
+      ],
+      "properties": {
+        "p2_case_count": {"type": "integer", "minimum": 120},
+        "complete_confirmation_count": {"type": "integer", "minimum": 40},
+        "incomplete_needs_review_count": {"type": "integer", "minimum": 80},
+        "safe_false_confirmation_count": {"const": 0},
+        "complete_counterproof_rejection_count": {"type": "integer", "minimum": 1},
+        "fact_complete_without_proof_not_promoted_count": {"type": "integer", "minimum": 1},
+        "tampered_promotion_fail_closed_count": {"type": "integer", "minimum": 1},
+        "cross_obligation_fail_closed_count": {"type": "integer", "minimum": 1},
+        "legacy_v3_fail_closed_count": {"type": "integer", "minimum": 1},
+        "resource_exact_leak_binding_count": {"type": "integer", "minimum": 1},
+        "resource_cleanup_binding_count": {"type": "integer", "minimum": 1},
+        "resource_ownership_escape_rejected_count": {"type": "integer", "minimum": 6}
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "reason_code"],
+      "properties": {
+        "passed": {"const": true},
+        "reason_code": {"const": "local_candidate_successor_requires_independent_review"}
+      }
+    },
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

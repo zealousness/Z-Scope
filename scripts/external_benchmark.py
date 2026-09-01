@@ -67,6 +67,11 @@ from zscope.benchmarking.isolation import (
     require_release_isolation,
 )
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
+from zscope.benchmarking.provider_runtime import (
+    ProviderRuntimeContract,
+    ProviderRuntimeError,
+    reject_conflicting_provider_identity_environment,
+)
 from zscope.benchmarking.replay_bundle import (
     REPLAY_BUNDLE_SCHEMA_VERSION,
     ReplayBundleError,
@@ -1316,8 +1321,6 @@ def _write_formal_container_config(
     for raw_profile in llms.values():
         if not isinstance(raw_profile, dict):
             raise BenchmarkIsolationError("formal external LLM profile must be an object")
-        raw_profile["base_urls"] = ["${Z_SCOPE_LLM_BASE_URL}"]
-        raw_profile["models"] = ["${Z_SCOPE_LLM_MODEL}"]
         raw_profile["api_key"] = "${Z_SCOPE_API_KEY}"
     destination.write_text(
         yaml.safe_dump(loaded, allow_unicode=True, sort_keys=False),
@@ -1348,18 +1351,11 @@ def _write_formal_runtime_override(destination: Path) -> None:
 
 
 def _formal_oci_environment(run_env: Mapping[str, str]) -> dict[str, str]:
-    environment = {
+    return {
         str(key): str(value)
         for key, value in run_env.items()
         if "GROUND_TRUTH" not in str(key).upper() and "BENCHMARK_TRUTH" not in str(key).upper()
     }
-    if not environment.get("Z_SCOPE_LLM_BASE_URL", "").strip():
-        environment["Z_SCOPE_LLM_BASE_URL"] = environment.get(
-            "Z_SCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        )
-    if not environment.get("Z_SCOPE_LLM_MODEL", "").strip():
-        environment["Z_SCOPE_LLM_MODEL"] = environment.get("Z_SCOPE_MODEL", "glm-5")
-    return environment
 
 
 def _run_formal_full_zscope_oci(
@@ -1407,6 +1403,20 @@ def _run_formal_full_zscope_oci(
             container_config,
             compile_commands_present=(sealed_project / "compile_commands.json").is_file(),
         )
+        try:
+            provider_contract = ProviderRuntimeContract.from_config_file(container_config)
+            reject_conflicting_provider_identity_environment(
+                provider_contract,
+                environment,
+            )
+        except ProviderRuntimeError:
+            raise BenchmarkIsolationError(
+                "formal OCI provider runtime contract is invalid"
+            ) from None
+        if provider_contract.required_environment_keys != ("Z_SCOPE_API_KEY",):
+            raise BenchmarkIsolationError(
+                "formal OCI provider runtime contract must require only Z_SCOPE_API_KEY"
+            )
         container_config_text = container_config.read_text(encoding="utf-8")
         forbidden_config_values = {
             suite_root.resolve().as_posix(),
@@ -1444,6 +1454,7 @@ def _run_formal_full_zscope_oci(
             artifact_output=artifact_output,
             cache_output=cache_output,
             environment=environment,
+            provider_contract=provider_contract,
         )
         executor.preflight()
         phase = executor.execute_phase(
