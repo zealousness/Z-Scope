@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import re
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 from ..identity import stable_id
@@ -41,13 +42,15 @@ def _ref_catalog_for_sources(
         return ()
     placeholders = ",".join("?" for _ in source_ids)
     rows = index.connection.execute(
-        f"SELECT s.section_id, s.source_id, s.heading_path_json, s.start_line, s.end_line, s.excerpt, d.relative_path, d.content_digest "
+        f"SELECT s.section_id, s.source_id, s.heading_path_json, s.start_line, s.end_line, s.excerpt, "
+        f"s.fragment_index, s.fragment_count, s.char_start, s.char_end, d.relative_path, d.content_digest "
         f"FROM sections s JOIN documents d ON d.source_id=s.source_id WHERE s.source_id IN ({placeholders}) "
         "ORDER BY s.source_id, s.start_line, s.section_id",
         tuple(source_ids),
     ).fetchall()
-    return tuple(
-        {
+    result = []
+    for row in rows:
+        item = {
             "schema_version": "zscope.document-ref.v1",
             "ref_id": stable_id("docref", row["source_id"], row["section_id"]),
             "source_id": row["source_id"],
@@ -61,8 +64,11 @@ def _ref_catalog_for_sources(
             "resolvable": True,
             "excerpt": str(row["excerpt"]),
         }
-        for row in rows
-    )
+        for name in ("fragment_index", "fragment_count", "char_start", "char_end"):
+            if row[name] is not None:
+                item[name] = int(row[name])
+        result.append(item)
+    return tuple(result)
 
 
 def _allowed_subject_ids(project_id: str, sections: Sequence[Mapping[str, Any]]) -> Tuple[str, ...]:
@@ -82,12 +88,10 @@ def _allowed_subject_ids(project_id: str, sections: Sequence[Mapping[str, Any]])
     return tuple(sorted(values))
 
 
-def _sections_for_sources(
-    index: SourceIndex, source_ids: Sequence[str], max_source_chars: Optional[int]
-) -> Tuple[Dict[str, Any], ...]:
+def _sections_for_sources(index: SourceIndex, source_ids: Sequence[str]) -> Tuple[Dict[str, Any], ...]:
     """Project bounded source sections into the Compiler input envelope."""
 
-    if not source_ids or (max_source_chars is not None and max_source_chars <= 0):
+    if not source_ids:
         return ()
     placeholders = ",".join("?" for _ in source_ids)
     rows = index.connection.execute(
@@ -101,19 +105,11 @@ def _sections_for_sources(
     ).fetchall():
         links.setdefault(str(row["source_id"]), []).append(str(row["target"]))
     selected = []
-    used = 0
     for row in rows:
         excerpt = str(row["excerpt"])
         # Keep whole sections only; truncating text would invalidate its
         # source digest and make later DocumentRef resolution ambiguous.
-        cost = len(excerpt)
-        if max_source_chars is not None and selected and used + cost > max_source_chars:
-            break
-        if max_source_chars is not None and not selected and cost > max_source_chars:
-            excerpt = excerpt[:max_source_chars]
-            cost = len(excerpt)
-        selected.append(
-            {
+        item = {
                 "schema_version": "zscope.document-section.v1",
                 "section_id": row["section_id"],
                 "source_id": row["source_id"],
@@ -128,8 +124,10 @@ def _sections_for_sources(
                 "normative_terms": json.loads(row["normative_terms_json"]),
                 "link_targets": links.get(str(row["source_id"]), []),
             }
-        )
-        used += cost
+        for name in ("fragment_index", "fragment_count", "char_start", "char_end"):
+            if row[name] is not None:
+                item[name] = int(row[name])
+        selected.append(item)
     return tuple(selected)
 
 
@@ -143,10 +141,9 @@ def build_ingest_workset(
     removed_source_ids: Sequence[str] = (),
     target_page_ids: Optional[Sequence[str]] = None,
     allowed_existing_pages: Sequence[str] = (),
-    max_pages: Optional[int] = None,
-    max_source_chars: Optional[int] = None,
-    max_output_chars: Optional[int] = None,
+    max_constraints: Optional[int] = None,
     max_wall_seconds: Optional[int] = None,
+    initial: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Create a fixed-schema workset from accepted source IDs only."""
 
@@ -170,17 +167,12 @@ def build_ingest_workset(
         raise ValueError(
             "added_source_ids, changed_source_ids and removed_source_ids must be disjoint"
         )
-    requested_page_ids = (
-        target_page_ids
-        if target_page_ids is not None
-        else (stable_id("page", source_manifest.project_id, "project"),)
-    )
-    page_ids = tuple(dict.fromkeys(str(item) for item in requested_page_ids if str(item)))
-    if not page_ids:
-        raise ValueError("target_page_ids must not be empty")
+    # Page-target arguments remain accepted for configuration/API compatibility
+    # but are intentionally absent from the constraint-only compiler envelope.
+    _ = (target_page_ids, allowed_existing_pages)
     active_source_ids = tuple(sorted(set(added) | set(changed)))
     refs = _refs_for_sources(source_index, active_source_ids)
-    source_sections = _sections_for_sources(source_index, active_source_ids, max_source_chars)
+    source_sections = _sections_for_sources(source_index, active_source_ids)
     ref_catalog = _ref_catalog_for_sources(source_index, active_source_ids)
     allowed_subject_ids = _allowed_subject_ids(source_manifest.project_id, source_sections)
     result = {
@@ -198,20 +190,18 @@ def build_ingest_workset(
         "added_source_ids": list(added),
         "changed_source_ids": list(changed),
         "removed_source_ids": list(removed),
-        "target_page_ids": list(page_ids),
         "allowed_source_refs": list(refs),
         "source_ref_catalog": list(ref_catalog),
         "source_sections": list(source_sections),
         "allowed_subject_ids": list(allowed_subject_ids),
-        "allowed_existing_pages": list(dict.fromkeys(str(item) for item in allowed_existing_pages)),
         "limits": {
-            "max_pages": max_pages,
-            "max_source_chars": max_source_chars,
-            "max_output_chars": max_output_chars,
+            "max_constraints": max_constraints,
             "max_wall_seconds": max_wall_seconds,
         },
         "created_at": _now(),
     }
+    if initial is not None:
+        result["initial"] = bool(initial)
     from ..schema import SchemaValidationError, validate_instance
 
     try:
@@ -219,3 +209,219 @@ def build_ingest_workset(
     except SchemaValidationError as exc:
         raise ValueError("invalid IngestWorkset: " + "; ".join(exc.errors)) from exc
     return result
+
+
+def build_llm_input_projection(workset: Mapping[str, Any]) -> Dict[str, Any]:
+    """Project one document Workset into the model-facing input.
+
+    Compiler calls are intentionally document-scoped.  The full Workset is an
+    orchestration and validation envelope; it must never be serialized to the
+    model.  A projection contains only the relative document path, a stable
+    human title, the deterministic change kind and source excerpts.  Identity,
+    allowlists and limits remain program-owned and are checked against the
+    original Workset when the terminal tool is submitted.
+    """
+
+    if not isinstance(workset, Mapping):
+        raise TypeError("workset must be a mapping")
+
+    def _ids(name: str) -> list[str]:
+        value = workset.get(name, ())
+        if isinstance(value, str):
+            value = (value,)
+        if not isinstance(value, (list, tuple, set)):
+            return []
+        if isinstance(value, set):
+            value = sorted(value, key=str)
+        return list(dict.fromkeys(str(item) for item in value if str(item)))
+
+    added = _ids("added_source_ids")
+    changed = _ids("changed_source_ids")
+    removed = _ids("removed_source_ids")
+
+    active_source_ids = tuple(dict.fromkeys((*added, *changed)))
+    if not active_source_ids:
+        if removed:
+            raise ValueError("removed sources do not enter the Wiki Compiler")
+        raise ValueError("noop Worksets do not enter the Wiki Compiler")
+    if len(active_source_ids) != 1:
+        raise ValueError("build_llm_input_projection requires exactly one Markdown document")
+    source_id = active_source_ids[0]
+
+    # The analyzer may explicitly mark a bootstrap compilation (for example,
+    # when the parent revision is only a deterministic skeleton).  Standalone
+    # callers retain the base-revision fallback for compatibility.
+    initial_marker = workset.get("initial")
+    if initial_marker is True or (
+        initial_marker is not False
+        and added
+        and not changed
+        and not workset.get("base_revision_id")
+    ):
+        change = "initial"
+    elif added or changed or removed:
+        change = "incremental"
+    else:
+        change = "noop"
+
+    catalog = {
+        str(item.get("ref_id")): item
+        for item in workset.get("source_ref_catalog", ())
+        if isinstance(item, Mapping) and str(item.get("ref_id", ""))
+    }
+    sections = []
+    active_source_set = {source_id}
+    for raw in workset.get("source_sections", ()):
+        if not isinstance(raw, Mapping):
+            raise ValueError("source section must be an object")
+        section_source_id = str(raw.get("source_id", ""))
+        section_id = str(raw.get("section_id", ""))
+        if not section_source_id or not section_id:
+            raise ValueError("source section lacks source_id or section_id")
+        if section_source_id not in active_source_set:
+            raise ValueError(
+                f"source section source_id is outside active delta: {section_source_id}"
+            )
+        ref_id = stable_id("docref", section_source_id, section_id)
+        ref = catalog.get(ref_id)
+        if ref is None:
+            raise ValueError(f"source section ref is missing from catalog: {ref_id}")
+        if str(ref.get("source_id", "")) != section_source_id:
+            raise ValueError(f"source ref source_id mismatch: {ref_id}")
+        if not str(ref.get("relative_path", "")):
+            raise ValueError(f"source ref lacks relative_path: {ref_id}")
+        section_projection = {
+                "ref_id": ref_id,
+                "heading_path": [str(item) for item in raw.get("heading_path", ())],
+                "start_line": int(raw.get("start_line", 0)),
+                "end_line": int(raw.get("end_line", 0)),
+                "text": str(raw.get("excerpt", "")),
+            }
+        for name in ("fragment_index", "fragment_count", "char_start", "char_end"):
+            if raw.get(name) is not None:
+                section_projection[name] = int(raw[name])
+        sections.append(section_projection)
+
+    sections.sort(
+        key=lambda item: (
+            item["start_line"],
+            item["end_line"],
+            item["ref_id"],
+        )
+    )
+    ref = next(
+        (
+            item
+            for item in workset.get("source_ref_catalog", ())
+            if isinstance(item, Mapping) and str(item.get("source_id", "")) == source_id
+        ),
+        None,
+    )
+    if ref is None:
+        raise ValueError(f"source document is missing from ref catalog: {source_id}")
+    file_path = str(ref.get("relative_path", "")).strip()
+    if not file_path:
+        raise ValueError(f"source document has no relative path: {source_id}")
+    normalized_path = file_path.replace("\\", "/")
+    path_obj = PurePosixPath(normalized_path)
+    if (
+        path_obj.is_absolute()
+        or re.match(r"^[A-Za-z]:/", normalized_path)
+        or ".." in path_obj.parts
+        or re.search(r"[\x00-\x1f\x7f]", normalized_path)
+    ):
+        raise ValueError(f"source document path is not project-relative: {file_path}")
+    file_path = normalized_path
+    while file_path.startswith("./"):
+        file_path = file_path[2:]
+    if not file_path:
+        raise ValueError(f"source document path is invalid: {source_id}")
+    # The project title is intentionally program-owned.  Callers may provide a
+    # display title in a private Workset field; project_id is the stable
+    # fallback used by the normal ingestion path.
+    title = str(
+        workset.get("title")
+        or workset.get("project_title")
+        or workset.get("project_id")
+        or file_path
+    ).strip()
+    if not title:
+        title = file_path
+    if len(title) > 240 or re.search(r"[\x00-\x1f\x7f]", title):
+        raise ValueError("source document title is invalid")
+    return {
+        "file_path": file_path,
+        "title": title,
+        "change": change,
+        "sections": sections,
+    }
+
+
+def split_workset_by_document(workset: Mapping[str, Any]) -> Tuple[Dict[str, Any], ...]:
+    """Return one validation Workset per added/changed Markdown document.
+
+    The parent Workset remains the publication boundary.  Child Worksets only
+    narrow source/ref/subject allowlists so an individual model call cannot
+    cite another document.  ``removed_source_ids`` are deliberately omitted;
+    removed-only changes are handled deterministically by ``WikiCompiler``.
+    """
+
+    if not isinstance(workset, Mapping):
+        raise TypeError("workset must be a mapping")
+
+    def _ids(name: str) -> Tuple[str, ...]:
+        value = workset.get(name, ())
+        if isinstance(value, str):
+            value = (value,)
+        if not isinstance(value, (list, tuple, set)):
+            return ()
+        return tuple(dict.fromkeys(str(item) for item in value if str(item)))
+
+    added = _ids("added_source_ids")
+    changed = _ids("changed_source_ids")
+    active = tuple(dict.fromkeys((*added, *changed)))
+    if not active:
+        return ()
+    catalog = {
+        str(item.get("ref_id")): item
+        for item in workset.get("source_ref_catalog", ())
+        if isinstance(item, Mapping) and str(item.get("ref_id", ""))
+    }
+    children = []
+    from ..schema import SchemaValidationError, validate_instance
+
+    for source_id in sorted(active):
+        child = dict(workset)
+        child["workset_id"] = stable_id("workset", str(workset.get("workset_id", "")), source_id)
+        child["added_source_ids"] = [source_id] if source_id in added else []
+        child["changed_source_ids"] = [source_id] if source_id in changed else []
+        child["removed_source_ids"] = []
+        refs = {
+            str(ref.get("ref_id"))
+            for ref in catalog.values()
+            if str(ref.get("source_id", "")) == source_id
+        }
+        child["allowed_source_refs"] = sorted(refs)
+        child["source_ref_catalog"] = [
+            ref
+            for ref in workset.get("source_ref_catalog", ())
+            if isinstance(ref, Mapping) and str(ref.get("ref_id", "")) in refs
+        ]
+        child["source_sections"] = [
+            section
+            for section in workset.get("source_sections", ())
+            if isinstance(section, Mapping) and str(section.get("source_id", "")) == source_id
+        ]
+        child["allowed_subject_ids"] = list(
+            _allowed_subject_ids(str(workset.get("project_id", "")), child["source_sections"])
+        )
+        try:
+            validate_instance(child, "zscope.wiki-ingest-workset.v1")
+        except SchemaValidationError as exc:
+            raise ValueError("invalid document Workset: " + "; ".join(exc.errors)) from exc
+        children.append(child)
+    return tuple(children)
+
+
+# Descriptive alias for callers that prefer a builder-style API.
+build_document_worksets = split_workset_by_document

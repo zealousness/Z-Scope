@@ -49,7 +49,7 @@ def _config(root: Path, *, state_dir: str = "var/wiki") -> dict:
                 "max_file_bytes": 300,
                 "max_files": 100,
                 "max_total_bytes": 100000,
-                "max_context_tokens": 512,
+                "max_constraints": 8,
             },
         },
         "scan": {"task": ""},
@@ -88,7 +88,7 @@ def test_wiki_cli_discover_build_status_and_query(tmp_path: Path) -> None:
     assert json.loads(rebuilt.output)["sections"] > 0
 
 
-def test_wiki_cli_config_closes_overrides_limits_state_and_query_budget(
+def test_wiki_cli_config_closes_overrides_limits_and_query_budget(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "project"
@@ -127,8 +127,8 @@ def test_wiki_cli_config_closes_overrides_limits_state_and_query_budget(
             "600",
         ],
     )
-    assert query.exit_code == 2
-    assert "must not exceed 512" in query.output
+    assert query.exit_code == 0, query.output
+    assert json.loads(query.output)["selection"]["max_tokens"] == 600
 
 
 def test_wiki_cli_custom_state_dir_does_not_change_its_own_manifest(

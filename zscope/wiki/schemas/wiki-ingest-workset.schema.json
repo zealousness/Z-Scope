@@ -12,12 +12,10 @@
     "added_source_ids",
     "changed_source_ids",
     "removed_source_ids",
-    "target_page_ids",
     "allowed_source_refs",
     "source_ref_catalog",
     "source_sections",
     "allowed_subject_ids",
-    "allowed_existing_pages",
     "limits",
     "created_at"
   ],
@@ -68,15 +66,6 @@
         "pattern": "^docsrc_[a-z0-9_:-]+$"
       }
     },
-    "target_page_ids": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "pattern": "^page_[a-z0-9_:-]+$"
-      }
-    },
     "allowed_source_refs": {
       "type": "array",
       "uniqueItems": true,
@@ -109,41 +98,27 @@
         "maxLength": 300
       }
     },
-    "allowed_existing_pages": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "pattern": "^page_[a-z0-9_:-]+$"
-      }
-    },
     "limits": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "max_pages",
-        "max_source_chars",
-        "max_output_chars",
+        "max_constraints",
         "max_wall_seconds"
       ],
       "properties": {
-      "max_pages": {
+      "max_constraints": {
         "type": ["integer", "null"],
         "minimum": 1
-      },
-      "max_source_chars": {
-        "type": ["integer", "null"],
-        "minimum": 1024
-      },
-      "max_output_chars": {
-        "type": ["integer", "null"],
-        "minimum": 1024
       },
       "max_wall_seconds": {
         "type": ["integer", "null"],
         "minimum": 1
       }
       }
+    },
+    "initial": {
+      "type": "boolean",
+      "description": "Program-owned bootstrap marker for the first document compilation."
     },
     "created_at": {
       "type": "string",

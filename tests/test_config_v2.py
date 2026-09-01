@@ -174,12 +174,12 @@ def test_project_wiki_config_is_strict_and_root_relative(tmp_path: Path) -> None
             "exclude": ["legacy/**"],
             "classify": {"explanatory": ["docs/contracts/**/*.md"], "generated": ["artifacts/**"]},
         },
-        "max_context_tokens": 1200,
+        "max_constraints": 12,
     }
     config = ConfigLoader.load(str(_write(tmp_path, data)))
     assert config.project.wiki.mode == "shadow"
     assert config.project.wiki.auto_maintain is True
-    assert config.project.wiki.max_context_tokens == 1200
+    assert config.project.wiki.max_constraints == 12
     assert config.project.wiki.document_exclude == ["legacy/**"]
     assert config.project.wiki.explanatory_overrides == ["docs/contracts/**/*.md"]
 
@@ -188,35 +188,26 @@ def test_project_wiki_limits_default_to_unlimited_without_changing_llm_profile(t
     config = ConfigLoader.load(str(_write(tmp_path, _config(tmp_path))))
 
     wiki = config.project.wiki
-    assert wiki.max_context_tokens is None
     assert wiki.compiler_max_tokens is None
-    assert wiki.max_source_chars is None
-    assert wiki.max_output_chars is None
     assert wiki.max_wall_seconds is None
-    assert wiki.max_pages is None
+    assert wiki.max_constraints is None
     assert config.llms["default"].max_tokens == 4096
 
 
 def test_project_wiki_accepts_explicit_local_limits(tmp_path: Path) -> None:
     data = _config(tmp_path)
     data["project"]["wiki"] = {
-        "max_context_tokens": 5000,
         "compiler_max_tokens": 6000,
-        "max_source_chars": 7000,
-        "max_output_chars": 8000,
         "max_wall_seconds": 9000,
-        "max_pages": 10,
+        "max_constraints": 10,
     }
 
     config = ConfigLoader.load(str(_write(tmp_path, data)))
 
     wiki = config.project.wiki
-    assert wiki.max_context_tokens == 5000
     assert wiki.compiler_max_tokens == 6000
-    assert wiki.max_source_chars == 7000
-    assert wiki.max_output_chars == 8000
     assert wiki.max_wall_seconds == 9000
-    assert wiki.max_pages == 10
+    assert wiki.max_constraints == 10
 
 
 def test_project_wiki_rejects_absolute_state_dir(tmp_path: Path) -> None:

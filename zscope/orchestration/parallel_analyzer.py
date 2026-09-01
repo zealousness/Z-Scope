@@ -2157,7 +2157,6 @@ class ParallelAnalyzer:
                 "incremental_fact_count": 0,
                 "wiki_context_injected": False,
                 "selected_constraint_ids": {},
-                "selected_page_ids": {},
                 "selected_source_ref_ids": {},
                 "fallback_reasons": {},
             }

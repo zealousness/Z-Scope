@@ -1331,7 +1331,7 @@
                     <h3 class="font-semibold text-slate-950">并发资源</h3>
                     <p class="text-xs subtle-text">全部为正整数，请按机器容量、endpoint 限流和 LLM 额度调整。</p>
                     <div class="grid grid-cols-2 gap-3">
-                        <template x-for="field in ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'llm_max_inflight']" :key="field">
+                        <template x-for="field in ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'wiki_compiler_workers', 'llm_max_inflight']" :key="field">
                             <label class="form-control"><span class="label-text" x-text="field"></span><input type="number" min="1" class="input input-bordered input-sm" x-model.number="configForm.concurrency[field]" @input="markConfigDirty()"></label>
                         </template>
                         <label class="form-control" x-show="configForm.project.language === 'c_cpp'"><span class="label-text">svf_workers</span><input type="number" min="1" class="input input-bordered input-sm" x-model.number="configForm.concurrency.svf_workers" @input="markConfigDirty()"></label>
@@ -1592,6 +1592,7 @@
                         investigator_workers: 1,
                         evidence_completion_workers: 2,
                         index_workers: 4,
+                        wiki_compiler_workers: 4,
                         svf_workers: 2,
                         llm_max_inflight: 4,
                     },
@@ -2143,6 +2144,7 @@
                         investigator_workers: concurrency.investigator_workers ?? 1,
                         evidence_completion_workers: concurrency.evidence_completion_workers ?? 2,
                         index_workers: concurrency.index_workers ?? 4,
+                        wiki_compiler_workers: concurrency.wiki_compiler_workers ?? 4,
                         svf_workers: concurrency.svf_workers ?? 2,
                         llm_max_inflight: concurrency.llm_max_inflight ?? 4,
                     };
@@ -2194,7 +2196,7 @@
                     cfg.project.entry_discovery.interface_files = this.textToList(this.configForm.entryDiscovery.interface_files);
                     cfg.indexing.backend = this.configForm.indexing.backend || (cfg.project.language === 'java' ? 'java_unified' : 'unified');
                     cfg.scan.task = this.configForm.scan.task || '';
-                    ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'llm_max_inflight'].forEach(key => {
+                    ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'wiki_compiler_workers', 'llm_max_inflight'].forEach(key => {
                         cfg.concurrency[key] = Math.max(1, Number(this.configForm.concurrency[key]) || 1);
                     });
                     if (cfg.project.language === 'c_cpp') {

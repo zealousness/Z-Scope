@@ -10,14 +10,15 @@ from ...framework.llm_client import LLMClient
 from ...orchestration.specs import SpecRegistry
 from ..schema import get_schema_registry
 from .changeset import validate_changeset
+from .compiler import program_summary
+from .workset import build_llm_input_projection
 
-PROMPT_VERSION = "zscope.wiki-compiler.agent.v1"
-FINAL_TOOL_NAME = "emit_wiki_changeset"
+PROMPT_VERSION = "zscope.constraint-compiler.agent.v3"
+FINAL_TOOL_NAME = "emit_project_constraints"
 MAX_ATTEMPTS = 5
 
-
 class LLMWikiCompilerProvider:
-    """Turn one bounded workset into a validated WikiChangeSet.
+    """Turn one bounded workset into validated documented constraints.
 
     The provider receives only the program-created workset projection.  Source
     text retrieval remains a separate allowlisted runtime concern; arbitrary
@@ -52,14 +53,32 @@ class LLMWikiCompilerProvider:
                 return [materialize(child, resolving) for child in value]
             return value
 
-        parameters = materialize(registry.get("zscope.wiki-changeset.v1"))
+        proposal = materialize(registry.get("zscope.project-constraint-proposal.v1"))
+        # ``schema_version`` is a program-owned provenance field.  Keep it in
+        # the persisted proposal contract, but do not ask the model to emit it
+        # in the terminal tool payload.
+        if isinstance(proposal, dict):
+            proposal.get("properties", {}).pop("schema_version", None)
+            required = proposal.get("required", [])
+            proposal["required"] = [item for item in required if item != "schema_version"]
+        parameters = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["constraint_proposals"],
+            "properties": {
+                "constraint_proposals": {
+                    "type": "array",
+                    "items": proposal,
+                },
+            },
+        }
         return {
             "type": "function",
             "function": {
                 "name": FINAL_TOOL_NAME,
                 "description": (
-                    "Submit the complete validated zscope.wiki-changeset.v1 result. "
-                    "This is the only accepted final output channel."
+                    "Submit only semantic project constraint proposals. "
+                    "The program creates the validated zscope.wiki-changeset.v1 envelope."
                 ),
                 "parameters": parameters,
             },
@@ -71,11 +90,95 @@ class LLMWikiCompilerProvider:
         workset: Mapping[str, Any],
     ) -> Dict[str, Any]:
         try:
-            candidate = dict(payload)
+            candidate = self._changeset_from_terminal_payload(payload, workset)
             candidate["compiler"] = self._compiler_metadata()
             return {"valid": True, "payload": validate_changeset(candidate, workset)}
         except Exception as exc:
             return {"valid": False, "error": str(exc)}
+
+    @staticmethod
+    def _changeset_from_terminal_payload(
+        payload: Mapping[str, Any], workset: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Build the program-owned ChangeSet envelope around LLM proposals."""
+
+        if not isinstance(payload, Mapping):
+            raise ValueError("final tool payload must be an object")
+        unknown = set(payload) - {
+            "constraint_proposals",
+        }
+        if unknown:
+            raise ValueError(
+                "final tool payload contains program-owned or unknown fields: "
+                + ", ".join(sorted(str(item) for item in unknown))
+            )
+        proposals = payload.get("constraint_proposals")
+        if not isinstance(proposals, list):
+            raise ValueError("constraint_proposals must be an array")
+        materialized_proposals = []
+        for proposal in proposals:
+            if not isinstance(proposal, Mapping):
+                materialized_proposals.append(proposal)
+                continue
+            if "schema_version" in proposal:
+                raise ValueError("schema_version is program-owned and must not be submitted")
+            item = dict(proposal)
+            item["schema_version"] = "zscope.project-constraint-proposal.v1"
+            materialized_proposals.append(item)
+        proposals = materialized_proposals
+        active_sources = list(workset.get("added_source_ids", ())) + list(
+            workset.get("changed_source_ids", ())
+        )
+        ref_to_source = {
+            str(item.get("ref_id")): str(item.get("source_id"))
+            for item in workset.get("source_ref_catalog", ())
+            if isinstance(item, Mapping)
+        }
+        used_by_source: Dict[str, set[str]] = {str(source): set() for source in active_sources}
+        for proposal in proposals:
+            if not isinstance(proposal, Mapping):
+                continue
+            for ref in proposal.get("source_refs", ()):
+                source = ref_to_source.get(str(ref))
+                if source in used_by_source:
+                    used_by_source[source].add(str(ref))
+        source_results = [
+            {
+                "source_ref": source_id,
+                "extraction_status": (
+                    "constraints_found"
+                    if used_by_source[str(source_id)]
+                    else "no_constraints_found"
+                ),
+                "source_refs_used": sorted(used_by_source[str(source_id)]),
+                "reason": (
+                    "documented constraints extracted"
+                    if used_by_source[str(source_id)]
+                    else "no_constraints_found"
+                ),
+            }
+            for source_id in active_sources
+        ] or [
+            {
+                "source_ref": "docsrc_none",
+                "extraction_status": "no_constraints_found",
+                "source_refs_used": [],
+                "reason": "empty_workset",
+            }
+        ]
+        return {
+            "schema_version": "zscope.wiki-changeset.v1",
+            "workset_id": workset["workset_id"],
+            "base_revision_id": workset.get("base_revision_id"),
+            "outcome": "changed" if proposals else "background_only",
+            "source_results": source_results,
+            "constraint_proposals": list(proposals),
+            "summary": program_summary(
+                "changed" if proposals else "background_only",
+                len(proposals),
+                source_results,
+            ),
+        }
 
     def _compiler_metadata(self) -> Dict[str, Any]:
         return {
@@ -121,7 +224,11 @@ class LLMWikiCompilerProvider:
                 {"role": "system", "content": self._system_prompt()},
                 {
                     "role": "user",
-                    "content": json.dumps(dict(workset), ensure_ascii=False, sort_keys=True),
+                    "content": json.dumps(
+                        build_llm_input_projection(workset),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                 },
             ],
             **request,

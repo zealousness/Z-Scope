@@ -15,18 +15,16 @@ from zscope.wiki.store.revision_store import WikiStore
 FIXTURE = Path(__file__).parent / "fixtures" / "wiki_project"
 
 
-def test_revision_lint_passes_and_detects_unresolved_ref(tmp_path: Path) -> None:
+def test_revision_lint_passes_and_detects_tampered_index(tmp_path: Path) -> None:
     manifest = build_source_manifest(FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z")
     with WikiStore(tmp_path / "wiki") as store:
         result = store.build_skeleton(FIXTURE, manifest)
         assert lint_revision(store, result.revision_id).passed
-        row = store.connection.execute("SELECT page_id, markdown FROM pages WHERE revision_id=? LIMIT 1", (result.revision_id,)).fetchone()
-        broken = str(row["markdown"]) + "\n- [docref_missing]\n"
-        store.connection.execute("UPDATE pages SET markdown=? WHERE revision_id=? AND page_id=?", (broken, result.revision_id, row["page_id"]))
-        store.connection.commit()
+        index = store.revisions_root / result.revision_id / "index.md"
+        index.write_text(index.read_text(encoding="utf-8") + "\n## 篡改\n", encoding="utf-8")
         linted = lint_revision(store, result.revision_id)
         assert not linted.passed
-        assert "unresolved_ref:docref_missing" in linted.errors
+        assert "index_heading_sequence" in linted.errors
 
 
 def test_revision_lint_detects_audit_event_chain_tampering(tmp_path: Path) -> None:
@@ -48,7 +46,7 @@ def test_revision_lint_validates_index_and_log_projection(tmp_path: Path) -> Non
         index_text = index_path.read_text(encoding="utf-8")
         assert "schema_version: \"zscope.wiki-index.v1\"" in index_text
         assert "## 维护信息" in index_text
-        assert "(pages/" in index_text
+        assert "(pages/" not in index_text
         store.log_path.write_text("tampered\n", encoding="utf-8")
         linted = lint_revision(store, result.revision_id)
         assert "log_projection_mismatch" in linted.errors
@@ -63,7 +61,7 @@ def test_revision_lint_rejects_untrusted_revision_id_before_path_access(
     assert linted.errors == ("invalid_revision_id",)
 
 
-def test_revision_lint_rejects_index_symlink_and_unsafe_db_slug(
+def test_revision_lint_rejects_index_symlink(
     tmp_path: Path,
 ) -> None:
     manifest = build_source_manifest(
@@ -81,20 +79,9 @@ def test_revision_lint_rejects_index_symlink_and_unsafe_db_slug(
             index_path.symlink_to(outside)
         except OSError:
             pytest.skip("symlink creation is unavailable")
-        row = store.connection.execute(
-            "SELECT page_id FROM pages WHERE revision_id=? ORDER BY page_id LIMIT 1",
-            (result.revision_id,),
-        ).fetchone()
-        store.connection.execute(
-            "UPDATE pages SET canonical_slug=? WHERE revision_id=? AND page_id=?",
-            ("../../outside", result.revision_id, row["page_id"]),
-        )
-        store.connection.commit()
-
         linted = lint_revision(store, result.revision_id)
 
     assert "index_unsafe" in linted.errors
-    assert f"page_slug_unsafe:{row['page_id']}" in linted.errors
 
 
 def test_audit_replay_rejects_control_text_long_lines_and_chain_reset(

@@ -112,6 +112,22 @@
         "minLength": 1,
         "maxLength": 512
       }
+    },
+    "fragment_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "fragment_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "char_start": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "char_end": {
+      "type": "integer",
+      "minimum": 1
     }
   }
 }

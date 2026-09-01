@@ -53,7 +53,6 @@ def _settings(ctx: click.Context) -> Dict[str, Any]:
         "max_file_bytes": int(getattr(wiki, "max_file_bytes", 10 * 1024 * 1024)),
         "max_files": int(getattr(wiki, "max_files", 10_000)),
         "max_total_bytes": int(getattr(wiki, "max_total_bytes", 100 * 1024 * 1024)),
-        "max_context_tokens": getattr(wiki, "max_context_tokens", None),
     }
     values["state"] = resolve_project_state_root(values["root"], values["state_dir"])
     ctx.obj["wiki_settings"] = values
@@ -170,12 +169,9 @@ def lint(ctx: click.Context) -> None:
 @click.pass_context
 def query(ctx: click.Context, subject: tuple[str, ...], candidate_file: str, fact_kind: str, max_tokens: Optional[int]) -> None:
     settings = _settings(ctx)
-    configured_limit = settings["max_context_tokens"]
-    selected_limit = configured_limit if max_tokens is None else max_tokens
+    selected_limit = max_tokens
     if selected_limit is not None and selected_limit < 256:
         raise click.UsageError("--max-tokens must be at least 256")
-    if configured_limit is not None and selected_limit is not None and selected_limit > configured_limit:
-        raise click.UsageError(f"--max-tokens must not exceed {configured_limit}")
     result = wiki_query(
         settings["root"],
         subjects=list(subject),

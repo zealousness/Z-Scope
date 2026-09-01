@@ -95,35 +95,51 @@ def _section_features(text: str) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tupl
 
 def _bounded_chunks(
     lines: Sequence[str], start: int, end: int, max_chars: int
-) -> List[Tuple[int, int, str]]:
+) -> List[Tuple[int, int, str, int, int]]:
     """Split a section at paragraph/line boundaries while preserving locations."""
 
     if start > end:
-        return [(start, start, "")]
-    chunks: List[Tuple[int, int, str]] = []
+        return [(start, start, "", 0, 0)]
+    chunks: List[Tuple[int, int, str, int, int]] = []
     chunk_start = start
     chunk_lines: List[str] = []
     chunk_size = 0
+    section_offset = 0
+    chunk_offset = 0
     for line_no in range(start, end + 1):
         line = lines[line_no - 1]
         addition = len(line) + (1 if chunk_lines else 0)
-        # Prefer a paragraph boundary, but hard split an unusually long line.
         if chunk_lines and chunk_size + addition > max_chars:
-            chunks.append((chunk_start, line_no - 1, "\n".join(chunk_lines).strip()))
+            text = "\n".join(chunk_lines).strip()
+            chunks.append((chunk_start, line_no - 1, text, chunk_offset, chunk_offset + len(text)))
             chunk_start = line_no
             chunk_lines = []
             chunk_size = 0
-        if len(line) > max_chars and not chunk_lines:
-            # A single physical line cannot be split without overlapping the
-            # line locator; retain a bounded excerpt for that exceptional case.
-            chunks.append((line_no, line_no, line[:max_chars]))
+            chunk_offset = section_offset
+        if len(line) > max_chars:
+            if chunk_lines:
+                text = "\n".join(chunk_lines).strip()
+                chunks.append((chunk_start, line_no - 1, text, chunk_offset, chunk_offset + len(text)))
+                chunk_lines = []
+                chunk_size = 0
+            for offset in range(0, len(line), max_chars):
+                text = line[offset : offset + max_chars]
+                chunks.append(
+                    (line_no, line_no, text, section_offset + offset, section_offset + offset + len(text))
+                )
             chunk_start = line_no + 1
+            section_offset += len(line) + (1 if line_no < end else 0)
+            chunk_offset = section_offset
             continue
+        if not chunk_lines:
+            chunk_offset = section_offset
         chunk_lines.append(line)
         chunk_size += len(line) + (1 if len(chunk_lines) > 1 else 0)
+        section_offset += len(line) + (1 if line_no < end else 0)
     if chunk_lines or not chunks:
-        chunks.append((chunk_start, end, "\n".join(chunk_lines).strip()))
-    return [(s, max(s, e), text) for s, e, text in chunks if text]
+        text = "\n".join(chunk_lines).strip()
+        chunks.append((chunk_start, end, text, chunk_offset, chunk_offset + len(text)))
+    return [(s, max(s, e), text, cs, ce) for s, e, text, cs, ce in chunks if text]
 
 
 def _language(text: str) -> str:
@@ -185,7 +201,8 @@ def parse_markdown(
                 stack.pop()
             stack.append((level, title))
             path = tuple(item[1] for item in stack)[-8:]
-        for chunk_start, chunk_end, raw in _bounded_chunks(lines, start, end, max_excerpt_chars):
+        chunks = _bounded_chunks(lines, start, end, max_excerpt_chars)
+        for fragment_index, (chunk_start, chunk_end, raw, char_start, char_end) in enumerate(chunks):
             number += 1
             symbols, modules, normative, links = _section_features(raw)
             sections.append(
@@ -197,11 +214,15 @@ def parse_markdown(
                     start_line=chunk_start,
                     end_line=max(chunk_start, chunk_end),
                     text_digest=_digest(raw),
-                    excerpt=raw[:max_excerpt_chars] or title,
+                    excerpt=raw or title,
                     symbols=symbols,
                     module_hints=modules,
                     normative_terms=normative,
                     link_targets=links,
+                    fragment_index=fragment_index if len(chunks) > 1 else None,
+                    fragment_count=len(chunks) if len(chunks) > 1 else None,
+                    char_start=char_start if len(chunks) > 1 else None,
+                    char_end=char_end if len(chunks) > 1 else None,
                 )
             )
     modules = tuple(sorted(set(item.lower() for item in _MODULE.findall(all_text))))

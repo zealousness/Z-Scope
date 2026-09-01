@@ -187,7 +187,7 @@ def test_wiki_control_rejects_symlinked_state_directory(tmp_path: Path) -> None:
     assert list(outside.iterdir()) == []
 
 
-def test_wiki_query_discards_tampered_page_projection_and_uses_source(
+def test_wiki_query_discards_tampered_revision_projection_and_uses_source(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -196,8 +196,8 @@ def test_wiki_query_discards_tampered_page_projection_and_uses_source(
     manifest = build_source_manifest(project, project_id="fixture")
     with WikiStore(state) as store:
         result = store.build_skeleton(project, manifest)
-        page = next((store.revisions_root / result.revision_id / "pages").rglob("*.md"))
-        page.write_text(page.read_text(encoding="utf-8") + "\n篡改。\n", encoding="utf-8")
+        index = store.revisions_root / result.revision_id / "index.md"
+        index.write_text(index.read_text(encoding="utf-8") + "\n篡改。\n", encoding="utf-8")
 
     context = wiki_query(
         project,

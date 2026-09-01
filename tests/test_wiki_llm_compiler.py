@@ -12,7 +12,11 @@ from zscope.wiki.compiler.llm_compiler import (
     LLMWikiCompilerProvider,
     MAX_ATTEMPTS,
 )
-from zscope.wiki.compiler.workset import build_ingest_workset
+from zscope.wiki.compiler.workset import (
+    build_ingest_workset,
+    build_llm_input_projection,
+    split_workset_by_document,
+)
 from zscope.wiki.source_index import SourceIndex
 from zscope.wiki.source_manifest import build_source_manifest
 
@@ -30,25 +34,7 @@ class FakeLLM:
     @staticmethod
     def _payload(workset):
         return {
-            "schema_version": "zscope.wiki-changeset.v1",
-            "workset_id": workset["workset_id"],
-            "base_revision_id": workset["base_revision_id"],
-            "outcome": "background_only",
-            "source_results": [
-                {
-                    "source_ref": workset["added_source_ids"][0],
-                    "extraction_status": "no_constraints_found",
-                    "source_refs_used": [],
-                    "constraint_ids": [],
-                    "reason": "background",
-                }
-            ],
-            "page_changes": [],
             "constraint_proposals": [],
-            "edge_proposals": [],
-            "retire_proposals": [],
-            "unresolved_conflicts": [],
-            "summary": "background only",
         }
 
     def run_conversation_with_tools(self, messages, **kwargs):
@@ -56,12 +42,6 @@ class FakeLLM:
         self.kwargs = kwargs
         workset = json.loads(messages[-1]["content"])
         payload = self._payload(workset)
-        payload["compiler"] = {
-            "kind": "llm",
-            "identity": "model-controlled",
-            "prompt_version": "forged",
-            "model": "forged-model",
-        }
         validation = kwargs["terminal_tool_handler"](payload)
         return {
             "terminal_tool_valid": validation["valid"],
@@ -107,6 +87,7 @@ def _tool_response(payload, call_index):
 
 def test_llm_provider_validates_structured_changeset_without_network(tmp_path: Path) -> None:
     index, workset = _build_workset(tmp_path)
+    workset = split_workset_by_document(workset)[0]
     llm = FakeLLM()
     result = LLMWikiCompilerProvider(llm)(workset)
     assert result["outcome"] == "background_only"
@@ -114,31 +95,152 @@ def test_llm_provider_validates_structured_changeset_without_network(tmp_path: P
     assert result["compiler"] == {
         "kind": "llm",
         "identity": "zscope.wiki.openai-compatible.v1",
-        "prompt_version": "zscope.wiki-compiler.agent.v1",
+        "prompt_version": "zscope.constraint-compiler.agent.v3",
         "model": "fake-wiki-model",
     }
     assert llm.messages[0]["content"] == SpecRegistry().get_agent("wiki_compiler").to_prompt_block()
-    assert "[[page_id|中文标题]]" in llm.messages[0]["content"]
-    assert FINAL_TOOL_NAME in llm.messages[0]["content"]
+    assert "emit_project_constraints" in llm.messages[0]["content"]
+    assert "normalized_value" in llm.messages[0]["content"]
     assert "max_tokens" not in llm.kwargs
     assert llm.kwargs["max_iterations"] == MAX_ATTEMPTS == 5
     assert llm.kwargs["temperature"] == 0.0
     assert llm.kwargs["terminal_tool_name"] == FINAL_TOOL_NAME
     assert llm.kwargs["terminal_tool_required"] is True
+    projection = json.loads(llm.messages[-1]["content"])
+    assert set(projection) == {"file_path", "title", "change", "sections"}
+    assert projection["file_path"] == "docs/api-limits-legacy.md"
+    assert projection["title"] == workset["project_id"]
+    assert projection["change"] == "initial"
+    assert len(projection["sections"]) == len(workset["source_sections"])
+    assert all(
+        set(section)
+        == {
+            "ref_id",
+            "heading_path",
+            "start_line",
+            "end_line",
+            "text",
+        }
+        for section in projection["sections"]
+    )
+    assert [section["start_line"] for section in projection["sections"]] == [1, 3]
+    for forbidden in (
+        "allowed_source_refs",
+        "allowed_subject_ids",
+        "source_ref_catalog",
+        "source_sections",
+        "workset_id",
+        "base_revision_id",
+        "source_manifest_digest",
+        "limits",
+    ):
+        assert forbidden not in projection
+    assert all(
+        not any(forbidden in section for forbidden in (
+            "allowed_source_refs",
+            "allowed_subject_ids",
+            "source_ref_catalog",
+            "source_sections",
+            "workset_id",
+            "base_revision_id",
+            "source_manifest_digest",
+            "limits",
+        ))
+        for section in projection["sections"]
+    )
     tool_schema = llm.kwargs["tools_schema"][0]
     assert tool_schema["function"]["name"] == FINAL_TOOL_NAME
     assert "$ref" not in json.dumps(tool_schema)
-    assert workset["limits"] == {
-        "max_pages": None,
-        "max_source_chars": None,
-        "max_output_chars": None,
-        "max_wall_seconds": None,
+    assert tool_schema["function"]["parameters"]["required"] == ["constraint_proposals"]
+    assert "workset_id" not in tool_schema["function"]["parameters"]["properties"]
+    assert "summary" not in tool_schema["function"]["parameters"]["properties"]
+    proposal_schema = tool_schema["function"]["parameters"]["properties"]["constraint_proposals"]["items"]
+    assert "schema_version" not in proposal_schema["properties"]
+    assert "schema_version" not in proposal_schema["required"]
+    assert "subject_kind" in proposal_schema["properties"]
+    assert proposal_schema["properties"]["subject_kind"]["enum"] == [
+        "project", "module", "api", "symbol", "resource", "lock", "type", "configuration", "topic"
+    ]
+    tool_text = json.dumps(tool_schema)
+    for forbidden in ("page_changes", "edge_proposals", "normalized_value", "page_refs", "status", "authority", "allowed_subject_kinds"):
+        assert forbidden not in tool_text
+    assert workset["limits"] == {"max_constraints": None, "max_wall_seconds": None}
+    index.close()
+
+
+def test_terminal_handler_adds_program_owned_proposal_schema_version(tmp_path: Path) -> None:
+    index, workset = _build_workset(tmp_path)
+    workset = split_workset_by_document(workset)[0]
+    ref_id = workset["allowed_source_refs"][0]
+    payload = {
+        "constraint_proposals": [
+            {
+                "subject_id": "api:parse_byte",
+                "subject_kind": "api",
+                "kind": "input_range",
+                "statement": "parse_byte accepts values from 0 to 255.",
+                "normativity": "required",
+                "source_refs": [ref_id],
+            }
+        ]
     }
+    validation = LLMWikiCompilerProvider._changeset_from_terminal_payload(payload, workset)
+    assert validation["constraint_proposals"][0]["schema_version"] == "zscope.project-constraint-proposal.v1"
+    index.close()
+
+
+def test_llm_input_projection_derives_incremental_change_and_section_refs(
+    tmp_path: Path,
+) -> None:
+    index, workset = _build_workset(tmp_path)
+    source_id = workset["added_source_ids"][0]
+    incremental = dict(workset)
+    incremental["base_revision_id"] = "wikirev_existing"
+    incremental["added_source_ids"] = []
+    incremental["changed_source_ids"] = [source_id]
+    incremental["source_sections"] = [
+        item for item in workset["source_sections"] if item["source_id"] == source_id
+    ]
+    incremental["source_ref_catalog"] = [
+        item for item in workset["source_ref_catalog"] if item["source_id"] == source_id
+    ]
+    projection = build_llm_input_projection(incremental)
+
+    assert projection["change"] == "incremental"
+    assert projection["sections"]
+    assert all(section["ref_id"].startswith("docref_") for section in projection["sections"])
+    index.close()
+
+
+def test_llm_input_projection_rejects_removed_sources(
+    tmp_path: Path,
+) -> None:
+    index, workset = _build_workset(tmp_path)
+    removed_source_id = workset["added_source_ids"][0]
+    active_source_id = workset["added_source_ids"][1]
+    projection_input = dict(workset)
+    projection_input["base_revision_id"] = "wikirev_existing"
+    projection_input["added_source_ids"] = []
+    projection_input["changed_source_ids"] = []
+    projection_input["removed_source_ids"] = [removed_source_id]
+    projection_input["source_sections"] = [
+        item
+        for item in workset["source_sections"]
+        if item["source_id"] == active_source_id
+    ]
+    projection_input["source_ref_catalog"] = [
+        item
+        for item in workset["source_ref_catalog"]
+        if item["source_id"] == active_source_id
+    ]
+    with pytest.raises(ValueError, match="removed sources"):
+        build_llm_input_projection(projection_input)
     index.close()
 
 
 def test_llm_provider_applies_explicit_compiler_completion_limit(tmp_path: Path) -> None:
     index, workset = _build_workset(tmp_path)
+    workset = split_workset_by_document(workset)[0]
     llm = FakeLLM()
 
     LLMWikiCompilerProvider(llm, max_tokens=6000)(workset)
@@ -147,11 +249,30 @@ def test_llm_provider_applies_explicit_compiler_completion_limit(tmp_path: Path)
     index.close()
 
 
+def test_final_tool_rejects_model_summary_and_program_generates_one(tmp_path: Path) -> None:
+    index, workset = _build_workset(tmp_path)
+    workset = split_workset_by_document(workset)[0]
+    llm = FakeLLM()
+    provider = LLMWikiCompilerProvider(llm)
+
+    invalid = provider._validate_terminal_payload(
+        {"constraint_proposals": [], "summary": "model-authored text"},
+        workset,
+    )
+    assert invalid["valid"] is False
+    assert "unknown" in invalid["error"]
+
+    result = provider(workset)
+    assert result["summary"] == "No documented constraints found."
+    index.close()
+
+
 def test_llm_provider_accepts_valid_final_tool_after_two_repairs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     index, workset = _build_workset(tmp_path)
+    workset = split_workset_by_document(workset)[0]
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid/v1",
@@ -169,6 +290,7 @@ def test_llm_provider_accepts_valid_final_tool_after_two_repairs(
     result = LLMWikiCompilerProvider(client, max_tokens=6000)(workset)
 
     assert result["outcome"] == "background_only"
+    assert result["summary"] == "No documented constraints found."
     assert len(calls) == 3
     assert all(call_kwargs["max_tokens"] == 6000 for _, call_kwargs in calls)
     assert all(call_kwargs["temperature"] == 0.0 for _, call_kwargs in calls)
@@ -186,6 +308,7 @@ def test_llm_provider_stops_after_configured_failed_attempts(
     tmp_path: Path,
 ) -> None:
     index, workset = _build_workset(tmp_path)
+    workset = split_workset_by_document(workset)[0]
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid/v1",

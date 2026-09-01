@@ -10,12 +10,10 @@
     "scope",
     "kind",
     "statement",
-    "normalized_value",
     "authority",
     "normativity",
     "status",
     "source_refs",
-    "page_refs",
     "conflicts_with",
     "source_manifest_digest",
     "created_revision_id"
@@ -120,16 +118,6 @@
       "minLength": 1,
       "maxLength": 2000
     },
-    "normalized_value": {
-      "type": [
-        "object",
-        "array",
-        "string",
-        "number",
-        "boolean",
-        "null"
-      ]
-    },
     "authority": {
       "const": "documented_contract"
     },
@@ -161,14 +149,6 @@
       "items": {
         "type": "string",
         "pattern": "^docref_[a-z0-9_:-]+$"
-      }
-    },
-    "page_refs": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "pattern": "^page_[a-z0-9_:-]+$"
       }
     },
     "conflicts_with": {

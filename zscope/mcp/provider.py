@@ -423,13 +423,10 @@ class ZScopeMcpProvider:
                         or re.search(r"[\x00-\x1f\x7f]", candidate_file)
                     ):
                         raise ValueError("candidate_file must be project-root relative")
-                    configured_limit = wiki.max_context_tokens
                     raw_max_tokens = arguments.get("max_tokens")
-                    max_tokens = configured_limit if raw_max_tokens is None else int(raw_max_tokens)
+                    max_tokens = None if raw_max_tokens is None else int(raw_max_tokens)
                     if max_tokens is not None and max_tokens < 256:
                         raise ValueError("max_tokens must be at least 256")
-                    if configured_limit is not None and max_tokens is not None and max_tokens > configured_limit:
-                        raise ValueError(f"max_tokens must not exceed {configured_limit}")
                     data = wiki_query(
                         root,
                         subjects=[item.strip() for item in subjects],

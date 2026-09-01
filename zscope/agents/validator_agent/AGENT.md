@@ -56,16 +56,28 @@ Project Wiki context, when present in `ValidatorEvidenceSlice v3`, is the
 optional top-level `project_knowledge` object with schema
 `zscope.validator-project-knowledge.v1`. It contains `resolution_mode`
 (`wiki`, `source_fallback`, or `none`), a pinned revision/manifest digest,
-candidate `target`, bounded `constraints`, `page_excerpts`,
-`source_excerpts`, `conflicts`, `unknowns`, and a `selection` budget trace.
+candidate `target`, bounded `constraints`, `source_excerpts`, `conflicts`,
+`unknowns`, and a `selection` budget trace.
 Use only IDs whose payload is also registered in `evidence_ref_catalog`.
 Treat Wiki constraints as documented auxiliary context: they can identify a
 project/API precondition, range, ownership, or lock contract, but they are not
 deterministic proof.
-`source_fallback` and `none` never contain Wiki constraints/pages. A
+`source_fallback` and `none` never contain compiled constraints. A
 recommended/descriptive/unknown statement, stale/conflicted item, or missing
 document is not negative evidence. If code evidence conflicts with a
 documented contract, code facts take priority and requests one allowed deterministic fact.
+
+The model-facing `project_knowledge` is a compact projection. Its top-level
+fields are `resolution_mode`, `wiki_revision_id`, `target`, `constraints`,
+`source_excerpts`, `conflicts`, `omitted_constraint_count`,
+`omitted_source_excerpt_count`, and `fallback_reason`. The two omitted counts
+report context candidates intentionally left out by program-owned selection;
+they are not evidence of a contract or vulnerability. `target` includes `project_id`, `module_ids`,
+`subject_ids`, `obligation_kinds`, `candidate_file`, and `function_name`.
+Each constraint includes `constraint_id`, `kind`, `subject_id`,
+`subject_kind`, `statement`, `authority`, `normativity`, and `source_refs`.
+Manifest/context digests and selection internals remain program-owned audit
+data and are not part of this model projection.
 - Reject dead code, generic robustness advice, policy disagreement, and
   "could be safer" candidates without a concrete source-to-sink path.
 - The current analysis entry in the evidence pack is the selected scan root.

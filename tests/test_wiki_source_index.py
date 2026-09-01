@@ -89,6 +89,23 @@ def test_no_hit_returns_none_and_does_not_fill_budget(tmp_path: Path) -> None:
         index.close()
 
 
+def test_search_none_max_results_returns_all_ranked_hits(tmp_path: Path) -> None:
+    index = _index(tmp_path)
+    try:
+        obligation = ConstraintObligation(
+            project_id="fixture",
+            subject_ids=("parse_byte",),
+            obligation_kind="input_range",
+            candidate_file="src/parser.c",
+        )
+        bounded = index.search(obligation, max_results=1, max_documents=None)
+        unbounded = index.search(obligation, max_results=None, max_documents=None)
+        assert len(bounded) == 1
+        assert len(unbounded) >= len(bounded)
+    finally:
+        index.close()
+
+
 def test_schema_tables_and_rebuild_are_stable(tmp_path: Path) -> None:
     path = tmp_path / "source-index.db"
     index = SourceIndex(path)

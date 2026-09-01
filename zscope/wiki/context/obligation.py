@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+import re
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 
@@ -50,6 +51,26 @@ def _clean_items(values: Any) -> Tuple[str, ...]:
     return tuple(result)
 
 
+def _candidate_file(value: Mapping[str, Any], target: Mapping[str, Any]) -> str:
+    direct = (
+        target.get("candidate_file")
+        or target.get("relative_file")
+        or target.get("file_path")
+        or target.get("file")
+        or value.get("candidate_file")
+        or value.get("relative_file")
+        or value.get("file_path")
+        or value.get("file")
+    )
+    if direct:
+        normalized = str(direct).replace("\\", "/").lstrip("/")
+        if normalized != "unknown.md":
+            return normalized
+    location = str(target.get("location") or value.get("location") or "").strip()
+    match = re.match(r"^(.*?):\d+(?::\d+)?$", location.replace("\\", "/"))
+    return match.group(1).lstrip("/") if match else ""
+
+
 @dataclass(frozen=True)
 class ConstraintObligation:
     """Stable, bounded query projection of a Validator candidate."""
@@ -69,16 +90,10 @@ class ConstraintObligation:
     def from_mapping(cls, value: Mapping[str, Any]) -> "ConstraintObligation":
         target = value.get("target") if isinstance(value.get("target"), Mapping) else value
         project_id = str(value.get("project_id") or target.get("project_id") or "").strip()
-        candidate_file = str(
-            target.get("candidate_file")
-            or target.get("relative_file")
-            or target.get("file_path")
-            or value.get("candidate_file")
-            or value.get("relative_file")
-            or ""
-        ).replace("\\", "/").lstrip("/")
+        candidate_file = _candidate_file(value, target)
         raw_kind = str(
-            target.get("obligation_kind")
+            (target.get("obligation_kinds") or [None])[0]
+            or target.get("obligation_kind")
             or target.get("fact_kind")
             or target.get("missing_fact_kind")
             or value.get("obligation_kind")
