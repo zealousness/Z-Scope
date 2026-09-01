@@ -1,14 +1,28 @@
-"""Single terminal authority for validation-cluster dispositions.
+"""Single v4 terminal authority for validation-cluster dispositions.
 
-This module does not trust a model verdict or a legacy proof field.  It accepts
-only a strict decision emitted after the Proof Checker replays frozen facts.
+Live and resume decisions require an exact content-addressed chain:
+``FrozenProofState -> ProofClosureEvaluation -> PromotionCertificate``.
+Legacy v3 decisions remain readable for offline audit, but can never authorize
+a new terminal transition.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import re
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Literal, Mapping, Optional
+
+from .proof_kernel.closure import (
+    FrozenProofState,
+    PromotionCertificate,
+    ProofClosureEvaluation,
+    validate_promotion_binding,
+)
+
+
+TERMINAL_AUTHORITY_DECISION_V4 = "zscope.terminal-authority-decision.v4"
+LEGACY_TERMINAL_AUTHORITY_DECISION_V3 = "zscope.terminal-authority-decision.v3"
+
+AuthorityOperation = Literal["live", "resume", "audit"]
 
 
 @dataclass(frozen=True)
@@ -22,18 +36,98 @@ class TerminalAuthorityDecision:
     checker_result_refs: tuple[str, ...] = ()
     proof_root_sha256: str = ""
     integrity_status: str = ""
+    proof_state_sha256: str = ""
+    closure_evaluation_sha256: str = ""
+    obligation_uid: str = ""
+    obligation_sha256: str = ""
+    proof_ir_uid: str = ""
+    proof_ir_sha256: str = ""
+    validation_cluster_uid: str = ""
+    promotion_certificate: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"schema_version": "zscope.terminal-authority-decision.v3", **asdict(self)}
+        value = {"schema_version": TERMINAL_AUTHORITY_DECISION_V4, **asdict(self)}
+        # Terminal decisions are persisted in JSON and then audited again.
+        # Keep the materialized projection JSON-canonical so a round trip does
+        # not turn tuple-valued refs into a false integrity mismatch.
+        value["checker_result_refs"] = list(self.checker_result_refs)
+        return value
+
+
+def terminal_decision_from_promotion(
+    *,
+    frozen_state: FrozenProofState | Mapping[str, Any],
+    closure_evaluation: ProofClosureEvaluation | Mapping[str, Any],
+    promotion_certificate: PromotionCertificate | Mapping[str, Any],
+) -> TerminalAuthorityDecision:
+    """Build the only v4 decision capable of changing a live terminal state."""
+
+    valid, reason = validate_promotion_binding(
+        frozen_state=frozen_state,
+        closure_evaluation=closure_evaluation,
+        promotion_certificate=promotion_certificate,
+    )
+    if not valid:
+        raise ValueError(reason)
+    state = (
+        frozen_state
+        if isinstance(frozen_state, FrozenProofState)
+        else FrozenProofState.from_mapping(frozen_state)
+    )
+    closure = (
+        closure_evaluation
+        if isinstance(closure_evaluation, ProofClosureEvaluation)
+        else ProofClosureEvaluation.from_mapping(closure_evaluation)
+    )
+    promotion = (
+        promotion_certificate
+        if isinstance(promotion_certificate, PromotionCertificate)
+        else PromotionCertificate.from_mapping(promotion_certificate)
+    )
+    if promotion.disposition == "confirmed":
+        reason_code = "CONFIRMED_DETERMINISTIC_PROOF"
+    elif promotion.disposition == "rejected_with_proof":
+        reason_code = "REJECTED_DETERMINISTIC_COUNTERPROOF"
+    else:  # pragma: no cover - PromotionCertificate validates this first.
+        raise ValueError("promotion_disposition_invalid")
+    return TerminalAuthorityDecision(
+        terminal=True,
+        disposition=promotion.disposition,
+        reason_code=reason_code,
+        authority="zscope.proof-checker",
+        checker_result_refs=promotion.checker_result_refs,
+        proof_root_sha256=promotion.proof_root_sha256,
+        integrity_status="verified",
+        proof_state_sha256=state.content_sha256,
+        closure_evaluation_sha256=closure.content_sha256,
+        obligation_uid=promotion.obligation_uid,
+        obligation_sha256=promotion.obligation_sha256,
+        proof_ir_uid=promotion.proof_ir_uid,
+        proof_ir_sha256=promotion.proof_ir_sha256,
+        validation_cluster_uid=promotion.validation_cluster_uid,
+        promotion_certificate=promotion.to_dict(),
+    )
+
+
+def _bound_incomplete_closure(
+    state: FrozenProofState,
+    closure: ProofClosureEvaluation,
+) -> bool:
+    return bool(
+        closure.proof_state_sha256 == state.content_sha256
+        and closure.obligation_uid == state.obligation_uid
+        and closure.obligation_sha256 == state.obligation_sha256
+        and closure.proof_ir_uid == state.proof_ir_uid
+        and closure.proof_ir_sha256 == state.proof_ir_sha256
+        and closure.proof_root_sha256 == state.root_manifest_sha256
+        and closure.checker_result_refs == state.checker_result_refs
+        and closure.disposition == "needs_review"
+        and closure.complete is False
+    )
 
 
 class TerminalAuthorityEvaluator:
-    """Return the Proof Engine terminal or an explicit next action.
-
-    Pre-P5 issue flags, model verdicts and legacy certificate previews are not
-    proof.  Live callers must attach a programmatically constructed
-    ``proof_kernel_terminal_authority_decision``.
-    """
+    """Authorize v4 promotion or return an explicit fail-closed decision."""
 
     def evaluate(
         self,
@@ -42,89 +136,144 @@ class TerminalAuthorityEvaluator:
         model_result: Optional[Mapping[str, Any]] = None,
         has_executable_action: bool = False,
         protocol_or_engine_failure: bool = False,
+        operation: AuthorityOperation = "live",
     ) -> TerminalAuthorityDecision:
+        if operation not in {"live", "resume", "audit"}:
+            raise ValueError("terminal_authority_operation_invalid")
+
+        raw_state = issue.get("proof_kernel_frozen_state")
+        raw_closure = issue.get("proof_kernel_closure_evaluation")
+        raw_promotion = issue.get("proof_kernel_promotion_certificate")
         engine_decision = issue.get("proof_kernel_terminal_authority_decision")
-        if isinstance(engine_decision, Mapping):
-            schema_version = str(engine_decision.get("schema_version") or "")
-            authority = str(engine_decision.get("authority") or "")
-            disposition = str(engine_decision.get("disposition") or "")
-            reason = str(engine_decision.get("reason_code") or "")
-            terminal = engine_decision.get("terminal") is True
-            checker_refs = tuple(
-                str(value)
-                for value in engine_decision.get("checker_result_refs") or []
-                if str(value)
-            )
-            proof_root = str(engine_decision.get("proof_root_sha256") or "")
-            integrity_status = str(engine_decision.get("integrity_status") or "")
-            allowed = {
-                "confirmed": "CONFIRMED_DETERMINISTIC_PROOF",
-                "rejected_with_proof": "REJECTED_DETERMINISTIC_COUNTERPROOF",
-                "needs_review": None,
-            }
-            reason_allowed = (
-                reason == allowed.get(disposition)
-                if allowed.get(disposition) is not None
-                else reason
-                in {
-                    "NEEDS_REVIEW_OPEN_CLAUSES",
-                    "NEEDS_REVIEW_EVIDENCE_CONFLICT",
-                    "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",
-                }
-            )
-            proof_integrity_valid = bool(
-                disposition == "needs_review"
-                or (
-                    integrity_status == "verified"
-                    and checker_refs
-                    and all(re.fullmatch(r"sha256:[0-9a-f]{64}", ref) for ref in checker_refs)
-                    and re.fullmatch(r"[0-9a-f]{64}", proof_root)
+
+        state: Optional[FrozenProofState] = None
+        closure: Optional[ProofClosureEvaluation] = None
+        try:
+            if isinstance(raw_state, Mapping):
+                state = FrozenProofState.from_mapping(raw_state)
+            if isinstance(raw_closure, Mapping):
+                closure = ProofClosureEvaluation.from_mapping(raw_closure)
+        except (KeyError, TypeError, ValueError):
+            protocol_or_engine_failure = True
+            state = None
+            closure = None
+
+        if state is not None and closure is not None and isinstance(raw_promotion, Mapping):
+            try:
+                authorized = terminal_decision_from_promotion(
+                    frozen_state=state,
+                    closure_evaluation=closure,
+                    promotion_certificate=raw_promotion,
                 )
+            except (KeyError, TypeError, ValueError):
+                protocol_or_engine_failure = True
+            else:
+                # A materialized decision must be the exact deterministic
+                # projection. A missing decision is fine: this evaluator owns
+                # the projection from the promotion chain.
+                if engine_decision is None or (
+                    isinstance(engine_decision, Mapping)
+                    and dict(engine_decision) == authorized.to_dict()
+                ):
+                    return authorized
+                protocol_or_engine_failure = True
+
+        if (
+            isinstance(engine_decision, Mapping)
+            and str(engine_decision.get("schema_version") or "")
+            == LEGACY_TERMINAL_AUTHORITY_DECISION_V3
+        ):
+            return TerminalAuthorityDecision(
+                terminal=True,
+                disposition="needs_review",
+                reason_code=(
+                    "NEEDS_REVIEW_LEGACY_AUTHORITY_AUDIT_ONLY"
+                    if operation == "audit"
+                    else "NEEDS_REVIEW_LEGACY_AUTHORITY_NOT_AUTHORIZED"
+                ),
+                authority="terminal_authority_evaluator",
+                integrity_status="legacy_audit_only",
+                conflict_resolution={
+                    "status": "historical_only",
+                    "recorded_disposition": str(engine_decision.get("disposition") or ""),
+                    "model_vote_used": False,
+                },
             )
-            if (
-                terminal
-                and schema_version == "zscope.terminal-authority-decision.v3"
-                and authority in {"zscope.proof-checker", "zscope.proof-checker-conflict-resolver"}
-                and disposition in allowed
-                and reason_allowed
-                and proof_integrity_valid
-            ):
-                conflict = engine_decision.get("conflict_resolution")
+
+        if state is not None and closure is not None and _bound_incomplete_closure(state, closure):
+            if has_executable_action:
                 return TerminalAuthorityDecision(
-                    True,
-                    disposition,
-                    reason,
-                    authority,
-                    conflict_resolution=(dict(conflict) if isinstance(conflict, Mapping) else None),
-                    checker_result_refs=checker_refs,
-                    proof_root_sha256=proof_root,
-                    integrity_status=integrity_status,
+                    terminal=False,
+                    disposition="needs_review",
+                    reason_code="V0_UNRESOLVED",
+                    authority="terminal_authority_evaluator",
+                    next_action="continue_validation",
+                    checker_result_refs=closure.checker_result_refs,
+                    proof_root_sha256=closure.proof_root_sha256,
+                    integrity_status=closure.integrity_status,
+                    proof_state_sha256=state.content_sha256,
+                    closure_evaluation_sha256=closure.content_sha256,
+                    obligation_uid=state.obligation_uid,
+                    obligation_sha256=state.obligation_sha256,
+                    proof_ir_uid=state.proof_ir_uid,
+                    proof_ir_sha256=state.proof_ir_sha256,
+                    validation_cluster_uid=state.validation_cluster_uid,
                 )
+            reason_code = (
+                "NEEDS_REVIEW_EVIDENCE_CONFLICT"
+                if closure.reason_code == "programmatic_proof_conflict"
+                else "NEEDS_REVIEW_OPEN_CLAUSES"
+            )
+            if closure.integrity_status != "verified" or closure.failure_codes:
+                reason_code = "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE"
+            return TerminalAuthorityDecision(
+                terminal=True,
+                disposition="needs_review",
+                reason_code=reason_code,
+                authority="terminal_authority_evaluator",
+                checker_result_refs=closure.checker_result_refs,
+                proof_root_sha256=closure.proof_root_sha256,
+                integrity_status=closure.integrity_status,
+                proof_state_sha256=state.content_sha256,
+                closure_evaluation_sha256=closure.content_sha256,
+                obligation_uid=state.obligation_uid,
+                obligation_sha256=state.obligation_sha256,
+                proof_ir_uid=state.proof_ir_uid,
+                proof_ir_sha256=state.proof_ir_sha256,
+                validation_cluster_uid=state.validation_cluster_uid,
+            )
 
         result = model_result if isinstance(model_result, Mapping) else {}
         verdict = str(result.get("verdict") or issue.get("model_verdict") or "").lower()
-        if has_executable_action:
+        if has_executable_action and not protocol_or_engine_failure:
             return TerminalAuthorityDecision(
-                False,
-                "needs_review",
-                "V0_UNRESOLVED",
-                "terminal_authority_evaluator",
+                terminal=False,
+                disposition="needs_review",
+                reason_code="V0_UNRESOLVED",
+                authority="terminal_authority_evaluator",
                 next_action="continue_validation",
             )
         if protocol_or_engine_failure:
             reason = "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE"
         elif verdict == "rejected":
             reason = "NEEDS_REVIEW_MODEL_REJECT_NO_PROOF"
-        elif verdict == "verified":
-            reason = "NEEDS_REVIEW_OPEN_CLAUSES"
         else:
             reason = "NEEDS_REVIEW_OPEN_CLAUSES"
         return TerminalAuthorityDecision(
-            True,
-            "needs_review",
-            reason,
-            "terminal_authority_evaluator",
+            terminal=True,
+            disposition="needs_review",
+            reason_code=reason,
+            authority="terminal_authority_evaluator",
         )
 
     def replay(self, issue: Mapping[str, Any], model_result: Mapping[str, Any]) -> Dict[str, Any]:
-        return self.evaluate(issue, model_result=model_result).to_dict()
+        return self.evaluate(issue, model_result=model_result, operation="audit").to_dict()
+
+
+__all__ = [
+    "LEGACY_TERMINAL_AUTHORITY_DECISION_V3",
+    "TERMINAL_AUTHORITY_DECISION_V4",
+    "TerminalAuthorityDecision",
+    "TerminalAuthorityEvaluator",
+    "terminal_decision_from_promotion",
+]

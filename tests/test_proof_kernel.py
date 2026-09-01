@@ -3,6 +3,11 @@ from pathlib import Path
 
 import pytest
 
+from zscope.core.validation.authority import (
+    TERMINAL_AUTHORITY_DECISION_V4,
+    TerminalAuthorityEvaluator,
+    terminal_decision_from_promotion,
+)
 from zscope.core.validation.function_ir import FunctionIRGraph
 from zscope.core.validation.proof_kernel import (
     PREDICATE_REGISTRY,
@@ -15,7 +20,9 @@ from zscope.core.validation.proof_kernel import (
     build_evidence_action,
     build_proof_clause,
     build_proof_obligation,
+    freeze_proof_state,
     program_proof_ir_from_graph,
+    reduce_proof_closure,
 )
 from zscope.core.validation.proof_kernel.canonical import content_sha256, seal_mapping
 from zscope.core.validation.proof_kernel.models import validate_certificate_envelope
@@ -539,6 +546,274 @@ def test_authoritative_closure_requires_verified_true_for_every_required_clause(
     ]
     assert evaluation.decision == "needs_review"
     assert evaluation.reason_code == "open_or_unknown_proof_clause"
+
+
+def test_v4_promotion_binds_state_closure_obligation_ir_and_root() -> None:
+    proof_ir, obligation, _ = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=proof_ir,
+        obligation=obligation,
+    )
+
+    assert evaluation.closure_evaluation.complete is True
+    assert evaluation.closure_evaluation.disposition == "confirmed"
+    assert evaluation.promotion_certificate is not None
+    promotion = evaluation.promotion_certificate
+    assert promotion.obligation_uid == obligation["obligation_uid"]
+    assert promotion.obligation_sha256 == obligation["content_sha256"]
+    assert promotion.proof_ir_uid == proof_ir["proof_ir_uid"]
+    assert promotion.proof_ir_sha256 == proof_ir["content_sha256"]
+    assert promotion.proof_root_sha256 == evaluation.root_manifest_sha256
+
+    issue = {
+        "proof_kernel_frozen_state": evaluation.frozen_state.to_dict(),
+        "proof_kernel_closure_evaluation": evaluation.closure_evaluation.to_dict(),
+        "proof_kernel_promotion_certificate": promotion.to_dict(),
+    }
+    authority = TerminalAuthorityEvaluator().evaluate(issue)
+
+    assert authority.disposition == "confirmed"
+    assert authority.reason_code == "CONFIRMED_DETERMINISTIC_PROOF"
+    assert authority.to_dict()["schema_version"] == TERMINAL_AUTHORITY_DECISION_V4
+    assert authority.proof_state_sha256 == evaluation.frozen_state.content_sha256
+    assert authority.closure_evaluation_sha256 == evaluation.closure_evaluation.content_sha256
+
+
+def test_v4_materialized_decision_must_equal_promotion_projection() -> None:
+    proof_ir, obligation, _ = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=proof_ir,
+        obligation=obligation,
+    )
+    assert evaluation.promotion_certificate is not None
+    expected = terminal_decision_from_promotion(
+        frozen_state=evaluation.frozen_state,
+        closure_evaluation=evaluation.closure_evaluation,
+        promotion_certificate=evaluation.promotion_certificate,
+    ).to_dict()
+    tampered = {**expected, "proof_root_sha256": "f" * 64}
+
+    authority = TerminalAuthorityEvaluator().evaluate(
+        {
+            "proof_kernel_frozen_state": evaluation.frozen_state.to_dict(),
+            "proof_kernel_closure_evaluation": evaluation.closure_evaluation.to_dict(),
+            "proof_kernel_promotion_certificate": evaluation.promotion_certificate.to_dict(),
+            "proof_kernel_terminal_authority_decision": tampered,
+        }
+    )
+
+    assert authority.disposition == "needs_review"
+    assert authority.reason_code == "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE"
+
+
+def test_v4_tampered_and_cross_obligation_promotions_fail_closed() -> None:
+    proof_ir, obligation, _ = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=proof_ir,
+        obligation=obligation,
+    )
+    assert evaluation.promotion_certificate is not None
+    tampered = evaluation.promotion_certificate.to_dict()
+    tampered["obligation_uid"] = "POBL_cross_obligation"
+    authority = TerminalAuthorityEvaluator().evaluate(
+        {
+            "proof_kernel_frozen_state": evaluation.frozen_state.to_dict(),
+            "proof_kernel_closure_evaluation": evaluation.closure_evaluation.to_dict(),
+            "proof_kernel_promotion_certificate": tampered,
+        }
+    )
+    assert authority.disposition == "needs_review"
+    assert authority.reason_code == "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE"
+
+    other_proof_ir, other_obligation, _ = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B0"},
+        {"path_exists": True},
+    )
+    other = ProofKernelEngine().evaluate(
+        proof_ir=other_proof_ir,
+        obligation=other_obligation,
+    )
+    assert other.promotion_certificate is not None
+    cross = TerminalAuthorityEvaluator().evaluate(
+        {
+            "proof_kernel_frozen_state": evaluation.frozen_state.to_dict(),
+            "proof_kernel_closure_evaluation": evaluation.closure_evaluation.to_dict(),
+            "proof_kernel_promotion_certificate": other.promotion_certificate.to_dict(),
+        }
+    )
+    assert cross.disposition == "needs_review"
+    assert cross.reason_code == "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE"
+
+
+def test_reducer_detects_checker_result_rebinding_after_freeze() -> None:
+    proof_ir, obligation, _ = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    engine = ProofKernelEngine()
+    evaluation = engine.evaluate(proof_ir=proof_ir, obligation=obligation)
+    rebound = dict(evaluation.check_results[0])
+    rebound_body = dict(rebound)
+    rebound_body.pop("check_uid")
+    rebound_body.pop("content_sha256")
+    rebound_body["obligation_uid"] = "POBL_cross_obligation"
+    rebound = seal_mapping(rebound_body, uid_field="check_uid", prefix="PCHECK_")
+
+    closure = reduce_proof_closure(
+        frozen_state=evaluation.frozen_state,
+        proof_ir=proof_ir,
+        obligation=obligation,
+        action_catalog=engine.action_catalog(proof_ir=proof_ir, obligation=obligation),
+        check_results=(rebound,),
+    )
+
+    assert closure.complete is False
+    assert closure.disposition == "needs_review"
+    assert closure.integrity_status == "invalid"
+    assert "checker_result_content_mismatch" in closure.failure_codes
+    assert "checker_result_binding_mismatch" in closure.failure_codes
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "failure"),
+    [
+        ("subject_uid", "SUBJECT_CROSS", "catalog_action_subject_mismatch"),
+        ("decision_region_uid", "REGION_CROSS", "catalog_action_region_mismatch"),
+    ],
+)
+def test_frozen_state_rejects_action_rebound_to_another_subject_or_region(
+    field, replacement, failure
+) -> None:
+    proof_ir, obligation, actions = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    action_body = dict(actions[0])
+    action_body.pop("action_uid")
+    action_body.pop("content_sha256")
+    action_body[field] = replacement
+    rebound = seal_mapping(action_body, uid_field="action_uid", prefix="EVACTION_")
+
+    with pytest.raises(ValueError, match=failure):
+        freeze_proof_state(
+            proof_ir=proof_ir,
+            obligation=obligation,
+            action_catalog=(rebound,),
+            selected_action_uids=(rebound["action_uid"],),
+            check_results=(),
+            checker_result_refs=(),
+            root_manifest_sha256="a" * 64,
+        )
+
+
+def test_frozen_state_rejects_action_with_rebound_source_sink_anchor() -> None:
+    proof_ir, obligation, actions = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    action_body = dict(actions[0])
+    action_body.pop("action_uid")
+    action_body.pop("content_sha256")
+    action_body["fixed_parameters"] = {
+        "source_node_uid": "B2",
+        "sink_node_uid": "B1",
+    }
+    rebound = seal_mapping(action_body, uid_field="action_uid", prefix="EVACTION_")
+
+    with pytest.raises(ValueError, match="catalog_action_anchor_mismatch"):
+        freeze_proof_state(
+            proof_ir=proof_ir,
+            obligation=obligation,
+            action_catalog=(rebound,),
+            selected_action_uids=(rebound["action_uid"],),
+            check_results=(),
+            checker_result_refs=(),
+            root_manifest_sha256="a" * 64,
+        )
+
+
+def test_reducer_rejects_cross_obligation_action_catalog_splice() -> None:
+    proof_ir, obligation, _ = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    engine = ProofKernelEngine()
+    evaluation = engine.evaluate(proof_ir=proof_ir, obligation=obligation)
+    clause = obligation["confirmation_clauses"][0]
+    other_obligation = build_proof_obligation(
+        validation_cluster_uid="VAL_CROSS_OBLIGATION",
+        defect_family="neutral_family",
+        subject_uid="SUBJECT_CROSS_OBLIGATION",
+        decision_region_uid="REGION_CROSS_OBLIGATION",
+        confirmation_clauses=(clause,),
+        counterproof_clauses=(),
+        dependency_hashes=proof_ir["dependency_hashes"],
+    )
+    spec = PREDICATE_REGISTRY[clause["predicate_id"]]
+    cross_action = build_evidence_action(
+        obligation=other_obligation,
+        clause=clause,
+        proof_ir=proof_ir,
+        provider_id=spec.provider_id,
+        verifier_id=spec.verifier_id,
+    )
+
+    closure = reduce_proof_closure(
+        frozen_state=evaluation.frozen_state,
+        proof_ir=proof_ir,
+        obligation=obligation,
+        action_catalog=(cross_action,),
+        check_results=evaluation.check_results,
+    )
+
+    assert closure.complete is False
+    assert closure.disposition == "needs_review"
+    assert closure.integrity_status == "invalid"
+    assert "action_catalog_binding_mismatch" in closure.failure_codes
+    assert "action_catalog_semantic_binding_mismatch" in closure.failure_codes
+
+
+def test_evaluation_projection_replaces_state_and_removes_stale_promotion() -> None:
+    proof_ir, obligation, actions = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+        roles=("confirmation", "counterproof"),
+    )
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=proof_ir,
+        obligation=obligation,
+        selected_action_uids=(actions[0]["action_uid"],),
+    )
+    assert evaluation.promotion_certificate is None
+    issue = {
+        "proof_kernel_promotion_certificate": {"stale": True},
+        "proof_kernel_terminal_authority_decision": {"stale": True},
+    }
+
+    evaluation.apply_to_issue(issue)
+
+    assert issue["proof_kernel_frozen_state"] == evaluation.frozen_state.to_dict()
+    assert issue["proof_kernel_closure_evaluation"] == (evaluation.closure_evaluation.to_dict())
+    assert "proof_kernel_promotion_certificate" not in issue
+    assert "proof_kernel_terminal_authority_decision" not in issue
 
 
 def test_authoritative_closure_rejects_required_non_executable_clause() -> None:
