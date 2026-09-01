@@ -64,7 +64,7 @@ export LLVM_CC_NAME=clang-18
 export Z_SCOPE_API_KEY='your-secret-from-a-secret-store'
 ```
 
-通用 `zscope-benchmark` 不会搜索或自动读取 `test/range/zscope.local.env`。trial/formal 若由操作者加载该未跟踪文件，文件只应包含 `Z_SCOPE_API_KEY`。P6 `pilot` 不读取进程中已有的 key，而要求 runner 级 `Z_SCOPE_P6_API_KEY_FILE` 指向绝对路径；显式文件解析器通过 no-follow 单一文件描述符读取，只接受一个非空 `Z_SCOPE_API_KEY`（允许空行、注释和可选 `export`），并拒绝额外/重复键、symlink、非普通文件、读取期间替换和过宽权限。sealed runner 上该文件必须位于 Linux/WSL 原生私有文件系统并设为 `0600`；Windows/DrvFS 上的仓库文件不能直接作为凭据文件，必须由受控步骤复制到 WSL 原生私有路径并收紧权限。真实 bearer 只临时进入受控 OCI `run` 子进程环境，并通过不含值的 `--env Z_SCOPE_API_KEY` 复制到 scanner 环境；不得写入 argv、`$GITHUB_ENV`、挂载的 env 文件、原始日志或 artifact。preflight、inspect 和 cleanup 子进程不得继承 bearer。
+通用 `zscope-benchmark` 不会搜索或自动读取 `test/range/zscope.local.env`。trial/formal 若由操作者加载该未跟踪文件，文件只应包含 `Z_SCOPE_API_KEY`。P6 `pilot` 不读取进程中已有的 key，而要求 runner 级 `Z_SCOPE_P6_API_KEY_FILE` 指向绝对路径；显式文件解析器通过 no-follow 单一文件描述符读取，只接受一个非空 `Z_SCOPE_API_KEY`（允许空行、注释和可选 `export`），并拒绝额外/重复键、symlink、非普通文件、读取期间替换和过宽权限。sealed runner 上该文件必须位于 Linux/WSL 原生私有文件系统并设为 `0600`；Windows/DrvFS 上的仓库文件不能直接作为凭据文件，必须由受控步骤复制到 WSL 原生私有路径并收紧权限。真实 bearer 只写入 sealed anonymous memfd，并由 rootless Podman 的 `--preserve-fds=1` 作为 FD 3 交给固定 wrapper；wrapper 在 scanner 子进程内设置 `Z_SCOPE_API_KEY`，OCI `run` 的 argv 与 `Config.Env` 都不含 key 或 credential-shaped 键。正式 preflight 必须先用随机 canary 实际验证该匿名 FD 通道，并固定 `--log-driver=none`。bearer 不得进入 `$GITHUB_ENV`、挂载 env 文件、原始日志或 artifact；preflight、inspect、cleanup 与 reviewer 子进程也不得继承 bearer。
 
 非 dry-run 的 `pilot` CLI 成功终态只向 stdout 输出固定的 `zscope.p6-cli-summary.v1` 完成摘要；包含 issue、评分和调用明细的完整 aggregate 只保留在显式输出目录的 `aggregate.json` 中，不得复制到操作者或 Actions 日志。trial/formal 的既有 JSON stdout 接口保持兼容。
 
@@ -93,9 +93,9 @@ zscope-benchmark run --language c_cpp --mode smoke
 
 在 WSL 中，trial 会把 scan-input、构建目录、索引和 Z-SCOPE 状态放到 WSL 原生文件系统的临时工作区，结束后只把密封输入、日志、报告和评分结果导出到 `benchmark-artifacts/`。可用绝对路径环境变量 `Z_SCOPE_BENCHMARK_WORK_ROOT` 覆盖临时根；C/C++ 会拒绝 `/mnt/<drive>`，避免 DrvFS I/O 进入正式性能结果。
 
-pilot、formal 与 sealed 还必须在 rootless Podman/Docker 容器中执行 scanner。只读挂载 answer-free scan-input、配置和工具链，只写挂载输出；不得挂载 Z-SCOPE 源码 checkout、`test/`、truth、scorer 或私有 env 文件，容器工作目录也不能位于源码树中。runner 从 resolved config 构造包含 endpoint/model/config hash/required env keys/identity hash 的 `ProviderRuntimeContract`；network policy 从该 contract 取得 endpoint。runner 必须保存 runtime、cwd、mount、provider 环境键名和 network-policy evidence，并在隔离能力缺失或越界挂载时 fail closed；OCI inspect 的 `Config.Env` 值仅在内存中验证，持久化摘要先替换为键名，phase 日志只保存固定结构的 return-code 摘要，不保存 stdout/stderr。`runtime run` 临界区把 SIGTERM/SIGINT 转为内部中断，`finally` 中先暂时屏蔽二次信号、`rm --force`、清除 credential 引用，再恢复原处理器；直接 `KeyboardInterrupt` 走同一路径。SIGKILL 无法被进程捕获，不在该进程内清理保证之内，runner 运维仍须有独立 orphan cleanup。评分在 scanner 容器退出并完成强制清理后由独立进程完成。
+pilot、formal 与 sealed 还必须在 rootless Podman/Docker 容器中执行 scanner。只读挂载 answer-free scan-input、配置和工具链，只写挂载输出；不得挂载 Z-SCOPE 源码 checkout、`test/`、truth、scorer 或私有 env 文件，容器工作目录也不能位于源码树中。runner 从 resolved config 构造包含 endpoint/model/config hash/required env keys/identity hash 的 `ProviderRuntimeContract`；network policy 从该 contract 取得 endpoint。runner 必须保存 runtime、cwd、mount、所需 provider 键名契约和 network-policy evidence，并在隔离能力缺失或越界挂载时 fail closed；OCI inspect 必须证明 `Config.Env` 中不存在 credential-like 键或值，持久化摘要只保留固定安全布尔量和键名契约。phase 日志只保存固定结构的 return-code 摘要，不保存 stdout/stderr。`runtime run` 临界区把 SIGTERM/SIGINT 转为内部中断，`finally` 中先暂时屏蔽二次信号、`rm --force`、清除 credential 引用，再恢复原处理器；直接 `KeyboardInterrupt` 走同一路径。SIGKILL 无法被进程捕获，不在该进程内清理保证之内，runner 运维仍须有独立 orphan cleanup。评分在 scanner 容器退出并完成强制清理后由独立进程完成。
 
-受保护的 formal 环境必须配置 `Z_SCOPE_BENCHMARK_OCI_IMAGE`（`repository@sha256:<64-hex>`）、`Z_SCOPE_BENCHMARK_OCI_NETWORK` 和 `Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER`。该 internal network 在启动 scanner 前只能包含一个带 policy digest 的透明模型 endpoint proxy；它是 L4/网络边界，不声称改写 HTTPS Authorization、限制 URL path 或拒绝 HTTP redirect。preflight 与每个 phase 都重新 inspect 同一 proxy ID、role/policy 标签和唯一网络成员，任一漂移即 fail closed。scanner inspect 必须证明声明的 provider 环境键存在、值非空且没有额外 credential-like 键，但 evidence 只保留键名。缺少变量、rootless 证明、镜像 digest 或实际 inspect 证据都会直接阻断运行。
+受保护的 formal 环境必须配置 `Z_SCOPE_BENCHMARK_OCI_IMAGE`（`repository@sha256:<64-hex>`）、`Z_SCOPE_BENCHMARK_OCI_NETWORK` 和 `Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER`。该 internal network 在启动 scanner 前只能包含一个带 policy digest 的透明模型 endpoint proxy；它是 L4/网络边界，不声称改写 HTTPS Authorization、限制 URL path 或拒绝 HTTP redirect。preflight 与每个 phase 都重新 inspect 同一 proxy ID、role/policy 标签和唯一网络成员，任一漂移即 fail closed。scanner inspect 必须证明 `Config.Env` 不含 bearer 或任何 credential-like 键；真实键值可用性由随机 `--preserve-fds=1` canary 和 scanner 启动后的固定 pre-model 投影证明。持久化 evidence 只记录布尔结果和所需键名契约，绝不记录值。缺少凭据文件路径、匿名 FD 能力、rootless 证明、镜像 digest 或实际 inspect 证据都会直接阻断运行。
 
 Podman 4.x 的 `network inspect` 可能不返回容器成员。此时 runner 必须额外使用带精确 network filter 的 `podman ps --all --format json` 重建成员快照，并验证每个返回容器都显式绑定目标网络；若两个来源都提供成员，则集合必须一致。成员快照进入 evidence hash，缺失 ID、网络归属、唯一 proxy 或执行阶段 scanner/proxy 二元成员关系时继续 fail closed。
 
@@ -210,15 +210,93 @@ P6 不合并不同 attempt 的 usage、trace、指标或 wall time，也不能�
 一次 cold producer。只有内容、lineage 和文件 SHA-256 全部重新校验的 complete checkpoint 可以做一次
 byte-exact、zero-call finalize。
 
-P6 的质量门禁使用显式 `with_review` 视图：单次 cold depth 的
-`median_with_review_recall` 必须至少为 85%，同时仍要求 provider usage、归因、队列排空、token 守恒、
-telemetry 和协议异常门禁全部通过。P6 artifact 仍同时报告 confirmed 与 with-review 两种视图，但不会把
-`needs_review` 伪装为独立确认，也不会用 `median_confirmed_tp`/`median_confirmed_recall` 阻塞这个
-non-release pilot。动态 confirmed TP/recall、Arm-A delta、五轮稳定性和发布资格只属于 P7 formal；
-safe/fixed/near-miss 中的 false confirmation 仍是 P6 的零容忍 soundness blocker。
-本次 Hunter concurrency、Prompt 或 Proof Catalog 变化由确定性
+本地 WSL 与 sealed runner 共用 `containers/p6/runtime-lock.json` 和
+`containers/p6/Containerfile`。基础镜像精确锁定 Python 3.13.15 的
+`docker.io/library/python@sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a`，
+LLVM/SVF 下载逐个校验 SHA-256；构建后还必须以实际 image digest、image ID、Git revision、lock、
+Containerfile、Python requirements 和完整工具链 probe 生成严格 image provenance。标准本地入口为：
+
+构建只在本地不存在该基础镜像时拉取，并且 `FROM` 仍是上述精确 digest；不得使用 tag 漂移或
+`--pull=always`。因此全新 rootless store 与已预热 sealed runner 使用同一内容身份。
+
+```bash
+python scripts/p6_local_runtime.py build-image \
+  --git-revision "$CANDIDATE_SHA" --output image-provenance.json
+python scripts/p6_local_runtime.py provision-proxy \
+  --image "$(python -c 'import json;print(json.load(open("image-provenance.json"))["image_ref"])')" \
+  --image-provenance image-provenance.json \
+  --network zscope-p6-internal --egress-network zscope-p6-egress \
+  --proxy-container zscope-p6-relay --output proxy-provenance.json
+```
+
+proxy 是无凭据的透明 L4 TCP/TLS relay：上游只接受预解析的 literal IP allowlist，内部网络固定
+`--internal`、精确 policy labels 与唯一 alias；API key 只由 FD 3 wrapper 在 scanner 子进程内设置，不能进入 OCI `Config.Env`，也不能进入
+proxy argv、环境、label、日志或 provenance。重复 provision 必须逐项重验现有 network/container 后
+幂等返回，任何 label、alias、上游或 image provenance 差异都 fail closed。
+
+P6 cold producer 固定为 answer-free 模式，只从冻结 report 与归档 usage/trace sidecar 确定性生成
+`producer-metrics.json`，不得验证或读取 Truth，也不得产生 `score.json` 或 scorer argv。Balanced producer
+完成后，共享 orchestrator 会先从这些原始 sidecar 重新计算 metrics、逐字段比对、交叉绑定
+provider/runtime/config/OCI/cache/attempt projection，再冻结 report；只有冻结成功后的独立阶段才可分别运行
+legacy v15 与 Truth v16 scorer。Scanner、修复模型、
+provider probe 和冻结 producer 都不得可达 Truth、expected 或 Scorer；质量 gate 从已验证的 producer
+projection 读取 `formal_benchmark=false` 与 `release_eligible=false`，不接受 gate 自我声明。`zscope.p6-balanced-quality-gate.v1`
+通过哈希绑定冻结 report、两份 score、producer projection、usage ledger 和全部 runtime lineage。
+
+硬门禁全部使用整数及交叉乘法，不依赖四舍五入浮点：
+
+| 评分契约 | 视图 | P6 合入硬门禁 | 非阻塞挑战目标 |
+|---|---|---|---|
+| Legacy v15 | default | `TP >= 82/136` 且 `TP >= 4 * raw_FP` | `TP >= 96/136` 且 `TP >= 9 * raw_FP` |
+| Legacy v15 | with-needs-review | `TP >= 125/136` 且 `TP >= raw_FP` | `TP >= 125/136` 且 `2 * TP >= 3 * raw_FP` |
+| Truth v16 product | default | `TP >= 37/61` 且 `TP >= 4 * raw_FP` | `TP >= 43/61` 且 `TP >= 9 * raw_FP` |
+| Truth v16 product | with-needs-review | `TP = 61/61` 且 `TP >= raw_FP` | `TP = 61/61` 且 `2 * TP >= 3 * raw_FP` |
+
+Truth v16 的 75 个 design-risk 项单独计分与守恒，不进入 61 个 product 项的召回或准确率分母。
+default 匹配集必须是 with-needs-review 的子集，with-needs-review 必须包含全部 canonical
+`needs_review`；audit observation 不可在评分后按 Truth 隐藏 FP。挑战目标只记录、不阻塞；任一硬门禁、
+provider usage 100%、队列排空、token/tool/trace/finding/terminal 守恒、post-proof 零调用或
+safe/fixed/near-miss 零 false-confirmation 失败都会阻止 P6。
+
+两份 score 和冻结 lineage 全部通过严格校验、但质量硬门禁未通过时，trusted post-score 进程可额外写出
+`zscope.p6-balanced-quality-aggregate.v1`。它只包含两视图的整数 TP/FN/raw FP、独立 design-risk 计数、
+usage 和 invariant 布尔值，不包含 matched ID/hash、源码位置、expected、Truth 行或模型正文；malformed、
+tampered 或绑定不完整的输入不得生成该文件。该 aggregate 只用于 answer-free 修复分流，不属于成功的
+八文件 quality bundle，也不能提供给 scanner、修复模型或独立 reviewer。
+
+选定 cold balanced attempt 的全部扫描调用及其重试必须严格小于 12,000,000 tokens，即最多
+11,999,999。P6 调度器在 10,500,000 软水位停止启动低价值线索，并在每批前为全部在途请求预留
+最大输出；`used + reserved_inflight` 可能超过 11,999,999 时禁止启动该批。这是 P6-only
+admission；probe、canary、qualification 和独立审核单独记账，普通产品扫描仍只做运行后成本度量。
+本次把 runtime、Prompt、cache 和 proof revision 同时提升到 P6/v4。旧 TerminalAuthority v3、proof/certificate、
+checkpoint 与 cache 只作历史审计，不得授权新的 live/resume confirmation；只有能从原始 obligation 完整重建并按
+v4 重验的记录才能被当前 candidate 使用，否则保持 `needs_review`。本次 Hunter concurrency、Prompt 或 Proof Catalog 变化由确定性
 `qualification-artifact.v2.json` 重新执行 120 个 answer-isolated P4 单元；历史
 `qualification-artifact.json` 继续只读保留并维持既有 P4 review lineage，不能用新 artifact 改写旧审核。
+
+所有零网络门禁和 P2/P4/P5 successor qualification 通过后、完整 Range 扫描之前，必须先在原生 WSL
+Ubuntu 对开放 synthetic C 正反例执行一次 DeepSeek 单点回放。该回放固定
+`llm_max_inflight=1`、同一冻结 `deepseek-v4-flash` provider contract、每条调用最多一次相同输入
+transport retry 与一次 bounded contract regeneration；不得包含 Range ID、fixture、Truth、expected 或
+Scorer。provider 返回的 model 可以是 contract 明确列出的请求名或部署响应别名，其他身份一律 fail closed。
+从 WSL checkout 执行的标准命令为：
+
+```bash
+p6_replay_root="$(mktemp -d)"
+python3 scripts/run_p6_synthetic_replay.py \
+  --config "$PWD/test/range/zscope.benchmark.yaml" \
+  --api-key-file /tmp/zscope-p6-key.env \
+  --work-root "$p6_replay_root/work" \
+  --output "$p6_replay_root/result.json"
+```
+
+`/tmp/zscope-p6-key.env` 必须是 WSL 原生文件系统中的普通 `0600` 文件，且只含
+`Z_SCOPE_API_KEY`。单点回放失败时先用同一开放场景修复并重跑 focused 与回放；不得跳过它直接消耗
+完整 balanced 配额，也不得把真实网络调用加入零网络 pytest。
+
+推送 P6 代码 PR 之前，必须先在当前 WSL Ubuntu 上用 digest-pinned `python:3.13`、新 run ID、空 cache、
+rootless OCI 和冻结 `deepseek-v4-flash` provider 完成一次 cold balanced。只有同一冻结 report 的 legacy v15 和
+Truth v16 硬门禁、守恒与 token 门禁全部通过，才允许推送 PR 并在合并后的 sealed self-hosted runner 上执行 workflow。
 
 执行顺序固定为：E0/候选/配置准入；无源码和 fixture 的 deepseek-v4-flash 单调用探针；Linux 工具链、
 动态库、rootless OCI 和 cold-cache preflight；零模型 policy replay 与 certificate reverify；匿名
@@ -298,7 +376,12 @@ Claude/DSH 会把 E0 已使用的 link-free route 配置复制到调用独有的
 manifest/root 与每个文件内容 hash 进入 Prompt；bundle 不上传，review artifact 只保留 packet、严格
 decision、accepted Prompt/material hash 和不含正文的 raw binding。Claude provider outer envelope、
 duplicate JSON keys、超限 stdout，以及 initial/final Prompt 或 correction command identity 不一致均
-fail closed。
+fail closed。该临时 allowlist 的总字节上限精确为 4,194,304 bytes（4 MiB），用于容纳 hash-bound 的
+实际 Proof/runtime/report/CLI、sealed OCI、schema 与 synthetic replay 源码面；Truth、Scorer 和 review
+packet 仍不得进入 allowlist。每文件、文件数、
+Prompt、CLI stdout 和 artifact 的既有独立上限不随之扩大。逐调用账本使用
+`observed_model_identity` 与 `model_observation_source` 区分 provider 回报和 sealed command 绑定；
+Codex 的 `sealed_command` 不得在 aggregate 中升级宣称为 provider-returned actual model。
 
 三份审核通过后，独立 `final_evidence_seal` job 才能构造 complete checkpoint；entry、provider、
 toolchain、五个 offline producer（policy replay、certificate reverify、hidden holdout、safe-pair、canary）、三档 cold projection、qualification、三份 decision 与最终 aggregate

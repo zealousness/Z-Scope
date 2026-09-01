@@ -18,6 +18,7 @@ from ..reporting.schema import (
     engine_failure_terminal_states,
     finding_status,
     needs_review_count,
+    report_invariant_status as compute_report_invariant_status,
     scan_outcome,
     terminal_candidate_identity,
 )
@@ -123,6 +124,27 @@ class ReportAssembler:
                 "Validation lifecycle did not close; nonterminal groups were excluded from security findings."
             )
         state["observations"] = observations
+        # Canonical lifecycle outcomes are already frozen terminal records.
+        # Re-annotation may fill report-only envelope fields for historical
+        # snapshots, but it must not replace an authority-issued identity and
+        # make the public view diverge from its terminal source of truth.
+        frozen_observation_identities = [
+            {
+                key: deepcopy(item[key])
+                for key in (
+                    "candidate_uid",
+                    "occurrence_uid",
+                    "validation_cluster_uid",
+                    "obligation_uid",
+                    "evidence_hash",
+                    "decision_evidence_hash",
+                    "context_signature",
+                )
+                if item.get(key) not in (None, "")
+            }
+            for item in observations
+            if isinstance(item, dict)
+        ]
         annotate_issue_collection(
             [issue for issue in observations if isinstance(issue, dict)],
             default_disposition="needs_review",
@@ -132,6 +154,11 @@ class ReportAssembler:
             entry_function=identity_kwargs["entry_function"],
             run_id=identity_kwargs["run_id"],
         )
+        for observation, frozen_identity in zip(
+            (item for item in observations if isinstance(item, dict)),
+            frozen_observation_identities,
+        ):
+            observation.update(frozen_identity)
         self.resolve_issue_locations(all_issues)
         self.resolve_issue_locations(observations)
         for observation in observations:
@@ -200,11 +227,26 @@ class ReportAssembler:
                 item for item in state.get("observations", []) if isinstance(item, dict)
             ],
         )
+        canonical_report_views = build_report_views(
+            [dict(item) for item in all_issues if isinstance(item, dict)],
+            [dict(item) for item in state.get("observations", []) if isinstance(item, dict)],
+            canonical_projection=True,
+        )
+        canonical_default = canonical_report_views.get("default")
+        canonical_default_items = (
+            canonical_default.get("issues") if isinstance(canonical_default, dict) else None
+        )
+        canonical_with_review = canonical_report_views.get("with_needs_review")
+        canonical_with_review_items = (
+            canonical_with_review.get("issues") if isinstance(canonical_with_review, dict) else None
+        )
         invariant_status = self._report_invariant_status(
             all_issues,
             state.get("observations", []),
             terminal_states,
             True,
+            canonical_default_items,
+            canonical_with_review_items,
         )
         if "validation_queue_drained" in state and not bool(state.get("validation_queue_drained")):
             invariant_status["valid"] = False
@@ -240,6 +282,7 @@ class ReportAssembler:
             needs_review_governance=governance,
         )
         final_report.metadata = metadata
+        final_report.report_views = canonical_report_views
         final_report.run_manifest["canonical_validation_group_count"] = int(
             invariant_status["canonical_validation_group_count"]
         )
@@ -250,6 +293,12 @@ class ReportAssembler:
                     "validation_group_alias_count",
                     "validator_invocation_count",
                     "rejected_with_proof_count",
+                    "deduplicated_alias_count",
+                    "shadow_observation_count",
+                    "audit_observation_count",
+                    "operational_obligation_count",
+                    "terminal_outcome_count",
+                    "unknown_terminal_disposition_count",
                     "cluster_fragmentation_count",
                 )
             }
@@ -517,6 +566,17 @@ class ReportAssembler:
                         "impact_level",
                         "confidence",
                         "validation_status",
+                        "decision_trace_ref",
+                        "decision_trace_sha256",
+                        "terminal_event_uid",
+                        "terminal_transition_event_uid",
+                        "terminal_transition_event_hash",
+                        "terminal_transition_authority_sha256",
+                        "terminal_transition_level",
+                        "terminal_transition_disposition",
+                        "terminal_authority",
+                        "terminal_reason_codes",
+                        "open_clause_ids",
                         "evidence_pack",
                         "evidence_refs",
                     )
@@ -646,93 +706,17 @@ class ReportAssembler:
         observations: List[Any],
         terminal_states: List[Dict[str, Any]],
         canonical_enabled: bool,
+        default_items: List[Any] | None = None,
+        with_needs_review_items: List[Any] | None = None,
     ) -> Dict[str, Any]:
-        default_count = sum(1 for item in issues if isinstance(item, dict))
-        review_count = sum(
-            1
-            for item in observations
-            if isinstance(item, dict)
-            and str(item.get("candidate_disposition") or "").lower() == "needs_review"
+        return compute_report_invariant_status(
+            issues,
+            observations,
+            terminal_states,
+            canonical_projection=canonical_enabled,
+            default_items=default_items,
+            with_needs_review_items=with_needs_review_items,
         )
-        terminal_confirmed = sum(
-            1
-            for item in terminal_states
-            if str(item.get("candidate_disposition") or "").lower() == "confirmed"
-        )
-        terminal_review = sum(
-            1
-            for item in terminal_states
-            if str(item.get("candidate_disposition") or "").lower() == "needs_review"
-        )
-        reportable_terminal_states = [
-            item
-            for item in terminal_states
-            if str(item.get("candidate_disposition") or "").lower() != "shadow_observation"
-        ]
-        clusters = {
-            str(item.get("validation_cluster_uid") or "")
-            for item in reportable_terminal_states
-            if item.get("validation_cluster_uid")
-        }
-        security_terminal_count = sum(
-            1
-            for item in reportable_terminal_states
-            if str(item.get("record_role") or "") != "operational_obligation"
-        )
-        terminal_items = [item for item in terminal_states if isinstance(item, dict)]
-        open_completion_count = sum(
-            1
-            for item in terminal_items
-            if str(item.get("evidence_completion_status") or "").lower()
-            in {"requested", "running", "queued"}
-            or str(item.get("evidence_completion_terminal_status") or "").lower()
-            in {"requested", "running", "queued"}
-        )
-        open_validation_count = sum(
-            1
-            for item in terminal_items
-            if str(item.get("status") or "").lower() in {"pending", "queued", "planned", "running"}
-        )
-        obligation_uids = {
-            str(item.get("obligation_uid") or item.get("candidate_uid") or "")
-            for item in reportable_terminal_states
-            if str(item.get("record_role") or "") != "operational_obligation"
-        }
-        valid = not canonical_enabled or (
-            default_count == terminal_confirmed
-            and review_count == terminal_review
-            and len(clusters) == security_terminal_count
-            and open_completion_count == 0
-            and open_validation_count == 0
-        )
-        return {
-            "valid": valid,
-            "canonical_projection": canonical_enabled,
-            "default_confirmed_count": default_count,
-            "terminal_confirmed_count": terminal_confirmed,
-            "displayed_review_count": review_count,
-            "terminal_review_count": terminal_review,
-            "shadow_observation_count": sum(
-                1
-                for item in terminal_states
-                if str(item.get("candidate_disposition") or "").lower() == "shadow_observation"
-            ),
-            "canonical_validation_group_count": len(clusters),
-            "validation_group_alias_count": sum(
-                len(item.get("alias_occurrence_uids") or []) for item in terminal_items
-            ),
-            "validator_invocation_count": sum(
-                int(item.get("validation_attempt_count") or 0) for item in terminal_items
-            ),
-            "rejected_with_proof_count": sum(
-                1
-                for item in terminal_items
-                if str(item.get("candidate_disposition") or "").lower() == "rejected_with_proof"
-            ),
-            "cluster_fragmentation_count": max(0, len(clusters) - len(obligation_uids)),
-            "open_evidence_completion_count": open_completion_count,
-            "open_validation_group_count": open_validation_count,
-        }
 
     @staticmethod
     def _unresolved_candidate_observations(

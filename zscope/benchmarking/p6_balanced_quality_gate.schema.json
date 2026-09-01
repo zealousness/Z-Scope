@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/p6_balanced_quality_gate.schema.json",
+  "title": "Z-SCOPE P6 balanced non-release quality gate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "bindings", "artifacts", "legacy_v15", "truth_v16",
+    "cross_view", "balanced_scan_usage", "producer_invariants", "invariants",
+    "hard_gate_passed", "challenge_passed", "formal_benchmark",
+    "release_eligible", "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.p6-balanced-quality-gate.v1"},
+    "bindings": {"$ref": "#/$defs/bindings"},
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bindings", "frozen_manifest", "legacy_score", "producer_projection", "report", "usage_evidence", "v16_score"],
+      "properties": {
+        "bindings": {"$ref": "#/$defs/artifact"},
+        "frozen_manifest": {"$ref": "#/$defs/artifact"},
+        "legacy_score": {"$ref": "#/$defs/artifact"},
+        "producer_projection": {"$ref": "#/$defs/artifact"},
+        "report": {"$ref": "#/$defs/artifact"},
+        "usage_evidence": {"$ref": "#/$defs/artifact"},
+        "v16_score": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "legacy_v15": {"$ref": "#/$defs/twoViews"},
+    "truth_v16": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "design_risk"],
+      "properties": {
+        "product": {"$ref": "#/$defs/twoViews"},
+        "design_risk": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["default", "with_needs_review"],
+          "properties": {
+            "default": {"$ref": "#/$defs/designView"},
+            "with_needs_review": {"$ref": "#/$defs/designView"}
+          }
+        }
+      }
+    },
+    "cross_view": {"$ref": "#/$defs/crossView"},
+    "balanced_scan_usage": {"$ref": "#/$defs/usage"},
+    "producer_invariants": {"$ref": "#/$defs/producerInvariants"},
+    "invariants": {"$ref": "#/$defs/invariants"},
+    "hard_gate_passed": {"const": true},
+    "challenge_passed": {"type": "boolean"},
+    "formal_benchmark": {"const": false},
+    "release_eligible": {"const": false},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitObject": {"type": "string", "pattern": "^[0-9a-f]{40}$|^[0-9a-f]{64}$"},
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["sha256"],
+      "properties": {"sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "bindings": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "git_commit", "git_tree", "candidate_sha256", "provider_identity_sha256",
+        "runtime_sha256", "config_sha256", "oci_image_digest",
+        "cold_cache_identity", "selected_attempt_id"
+      ],
+      "properties": {
+        "git_commit": {"$ref": "#/$defs/gitObject"},
+        "git_tree": {"$ref": "#/$defs/gitObject"},
+        "candidate_sha256": {"$ref": "#/$defs/sha256"},
+        "provider_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_sha256": {"$ref": "#/$defs/sha256"},
+        "config_sha256": {"$ref": "#/$defs/sha256"},
+        "oci_image_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "cold_cache_identity": {"$ref": "#/$defs/sha256"},
+        "selected_attempt_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "decision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tp", "actionable_precision_cross_product", "passed"],
+      "properties": {
+        "tp": {"type": "boolean"},
+        "actionable_precision_cross_product": {"type": "boolean"},
+        "passed": {"type": "boolean"}
+      }
+    },
+    "view": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "ground_truth_count", "true_positives", "false_negatives",
+        "false_positives_raw", "actionable_denominator", "matched_sha256",
+        "hard", "challenge"
+      ],
+      "properties": {
+        "ground_truth_count": {"type": "integer", "minimum": 0},
+        "true_positives": {"type": "integer", "minimum": 0},
+        "false_negatives": {"type": "integer", "minimum": 0},
+        "false_positives_raw": {"type": "integer", "minimum": 0},
+        "actionable_denominator": {"type": "integer", "minimum": 0},
+        "matched_sha256": {"$ref": "#/$defs/sha256"},
+        "hard": {"$ref": "#/$defs/decision"},
+        "challenge": {"$ref": "#/$defs/decision"}
+      }
+    },
+    "twoViews": {
+      "type": "object", "additionalProperties": false,
+      "required": ["default", "with_needs_review"],
+      "properties": {
+        "default": {"$ref": "#/$defs/view"},
+        "with_needs_review": {"$ref": "#/$defs/view"}
+      }
+    },
+    "designView": {
+      "type": "object", "additionalProperties": false,
+      "required": ["truth_count", "true_positives", "false_negatives", "matched_sha256", "counting_contract"],
+      "properties": {
+        "truth_count": {"const": 75},
+        "true_positives": {"type": "integer", "minimum": 0, "maximum": 75},
+        "false_negatives": {"type": "integer", "minimum": 0, "maximum": 75},
+        "matched_sha256": {"$ref": "#/$defs/sha256"},
+        "counting_contract": {"const": "separate_from_product_quality_gates"}
+      }
+    },
+    "crossView": {
+      "type": "object", "additionalProperties": false,
+      "required": ["legacy_v15", "truth_v16_product"],
+      "properties": {"legacy_v15": {"const": true}, "truth_v16_product": {"const": true}}
+    },
+    "dimensions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["call", "finding", "terminal", "token", "tool", "trace"],
+      "properties": {
+        "call": {"const": true}, "finding": {"const": true},
+        "terminal": {"const": true}, "token": {"const": true},
+        "tool": {"const": true}, "trace": {"const": true}
+      }
+    },
+    "usageGates": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "usage_complete", "usage_coverage", "no_estimated_calls", "model_identity",
+        "queue_drained", "token_ledger_matches_score", "token_conservation", "token_limit",
+        "admission_conservation", "no_hard_limit_denials", "retry_bounds"
+      ],
+      "properties": {
+        "usage_complete": {"const": true}, "usage_coverage": {"const": true},
+        "no_estimated_calls": {"const": true}, "model_identity": {"const": true},
+        "queue_drained": {"const": true}, "token_ledger_matches_score": {"const": true},
+        "token_conservation": {"const": true}, "token_limit": {"const": true},
+        "admission_conservation": {"const": true}, "no_hard_limit_denials": {"const": true},
+        "retry_bounds": {"const": true}
+      }
+    },
+    "usage": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "total_tokens", "maximum_tokens", "provider_usage_coverage",
+        "estimated_call_count", "provider_response_model_missing_count",
+        "provider_response_model_mismatch_count", "requested_model_mismatch_count",
+        "admission_request_count", "admission_admitted_count", "admission_denied_count",
+        "soft_watermark_denied_count", "hard_limit_denied_count",
+        "retry_conservation", "dimensions", "gates", "passed"
+      ],
+      "properties": {
+        "total_tokens": {"type": "integer", "minimum": 0, "maximum": 11999999},
+        "maximum_tokens": {"const": 11999999},
+        "provider_usage_coverage": {"const": 1.0},
+        "estimated_call_count": {"const": 0},
+        "provider_response_model_missing_count": {"const": 0},
+        "provider_response_model_mismatch_count": {"const": 0},
+        "requested_model_mismatch_count": {"const": 0},
+        "admission_request_count": {"type": "integer", "minimum": 0},
+        "admission_admitted_count": {"type": "integer", "minimum": 0},
+        "admission_denied_count": {"type": "integer", "minimum": 0},
+        "soft_watermark_denied_count": {"type": "integer", "minimum": 0},
+        "hard_limit_denied_count": {"const": 0},
+        "retry_conservation": {
+          "type": "object", "additionalProperties": false,
+          "required": [
+            "maximum_transport_retries", "maximum_contract_regenerations",
+            "logical_call_chain_count", "physical_attempt_count",
+            "pre_model_rejection_count", "transport_retry_count",
+            "maximum_observed_attempt_index", "contract_regeneration_operation_count",
+            "maximum_observed_contract_regenerations"
+          ],
+          "properties": {
+            "maximum_transport_retries": {"const": 1},
+            "maximum_contract_regenerations": {"const": 1},
+            "logical_call_chain_count": {"type": "integer", "minimum": 0},
+            "physical_attempt_count": {"type": "integer", "minimum": 0},
+            "pre_model_rejection_count": {"type": "integer", "minimum": 0},
+            "transport_retry_count": {"type": "integer", "minimum": 0},
+            "maximum_observed_attempt_index": {"type": "integer", "minimum": 0, "maximum": 2},
+            "contract_regeneration_operation_count": {"type": "integer", "minimum": 0},
+            "maximum_observed_contract_regenerations": {"type": "integer", "minimum": 0, "maximum": 1}
+          }
+        },
+        "dimensions": {"$ref": "#/$defs/dimensions"},
+        "gates": {"$ref": "#/$defs/usageGates"},
+        "passed": {"const": true}
+      }
+    },
+    "producerInvariants": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "git_commit", "git_tree", "candidate", "provider", "runtime", "oci_image",
+        "cold_cache", "selected_attempt", "formal_benchmark_false", "release_eligible_false"
+      ],
+      "properties": {
+        "git_commit": {"const": true}, "git_tree": {"const": true},
+        "candidate": {"const": true}, "provider": {"const": true},
+        "runtime": {"const": true}, "oci_image": {"const": true},
+        "cold_cache": {"const": true}, "selected_attempt": {"const": true},
+        "formal_benchmark_false": {"const": true}, "release_eligible_false": {"const": true}
+      }
+    },
+    "invariants": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "scanner_answer_isolated", "queue_drained", "report_view_membership_conserved",
+        "terminal_outcome_conserved", "default_is_subset_of_with_needs_review",
+        "v16_design_risk_separate", "formal_benchmark_false", "release_eligible_false"
+      ],
+      "properties": {
+        "scanner_answer_isolated": {"const": true}, "queue_drained": {"const": true},
+        "report_view_membership_conserved": {"const": true},
+        "terminal_outcome_conserved": {"const": true},
+        "default_is_subset_of_with_needs_review": {"const": true},
+        "v16_design_risk_separate": {"const": true},
+        "formal_benchmark_false": {"const": true}, "release_eligible_false": {"const": true}
+      }
+    }
+  }
+}

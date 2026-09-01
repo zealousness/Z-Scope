@@ -1,9 +1,36 @@
 import hashlib
 import json
+from functools import lru_cache
 from pathlib import Path
 
+from scripts.p2_proof_corpus import build_case
 from zscope.benchmarking.postscore_trace import build_postscore_decision_trace
+from zscope.core.validation.authority import TerminalAuthorityEvaluator
+from zscope.core.validation.proof_kernel import ProofKernelEngine
 from zscope.orchestration.decision_trace import DecisionTraceStore
+
+
+@lru_cache(maxsize=1)
+def _confirmed_v4_bundle() -> dict:
+    case = build_case("concurrency", 0)
+    evaluation = ProofKernelEngine().evaluate(
+        proof_ir=case["program_proof_ir"],
+        obligation=case["proof_obligation"],
+    )
+    carrier = {}
+    evaluation.apply_to_issue(carrier)
+    authority = TerminalAuthorityEvaluator().evaluate(carrier, operation="live").to_dict()
+    carrier["proof_kernel_terminal_authority_decision"] = authority
+    carrier["terminal_authority_decision"] = authority
+    return carrier
+
+
+def _needs_review_v4_bundle() -> dict:
+    authority = TerminalAuthorityEvaluator().evaluate({}, operation="live").to_dict()
+    return {
+        "proof_kernel_terminal_authority_decision": authority,
+        "terminal_authority_decision": authority,
+    }
 
 
 def test_postscore_trace_joins_review_tp_and_fn_without_mutating_product_trace(
@@ -14,15 +41,7 @@ def test_postscore_trace_joins_review_tp_and_fn_without_mutating_product_trace(
         "candidate_uid": "CAND_REVIEW",
         "validation_cluster_uid": "VAL_REVIEW",
         "candidate_disposition": "needs_review",
-        "terminal_authority_decision": {
-            "schema_version": "zscope.terminal-authority-decision.v3",
-            "terminal": True,
-            "disposition": "needs_review",
-            "reason_code": "NEEDS_REVIEW_OPEN_CLAUSES",
-            "authority": "zscope.proof-checker",
-            "next_action": "",
-            "conflict_resolution": None,
-        },
+        **_needs_review_v4_bundle(),
         "missing_fact_kinds": ["lockset"],
         "location": {"file": "src/demo.c", "function": "unsafe_lock", "line": 10},
     }
@@ -111,16 +130,13 @@ def test_postscore_fp_is_diagnostic_and_does_not_assert_product_error(tmp_path: 
         "candidate_disposition": "confirmed",
         "proof_coverage": "complete",
         "decision_proof": {"coverage": "complete", "polarity": "positive"},
-        "terminal_authority_decision": {
-            "schema_version": "zscope.terminal-authority-decision.v3",
-            "terminal": True,
-            "disposition": "confirmed",
-            "reason_code": "CONFIRMED_DETERMINISTIC_PROOF",
-            "authority": "zscope.proof-checker",
-            "next_action": "",
-            "conflict_resolution": None,
-        },
+        **_confirmed_v4_bundle(),
     }
+    store.record_terminal_transition(
+        issue,
+        level="V1",
+        authority=issue["terminal_authority_decision"],
+    )
     store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
     report = {
         "report_views": {"default": {"issues": [issue]}, "with_needs_review": {"issues": [issue]}},

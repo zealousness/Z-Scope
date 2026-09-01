@@ -18,6 +18,15 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from ..core.validation.authority import (
+    TERMINAL_AUTHORITY_DECISION_V4,
+    TerminalAuthorityEvaluator,
+)
+from ..core.validation.proof_kernel.closure import (
+    FrozenProofState,
+    ProofClosureEvaluation,
+)
+
 
 FINDING_ROOT_VERSION = "zscope.finding-root.v2"
 _DISPLAY_DISPOSITIONS = frozenset({"confirmed", "needs_review"})
@@ -86,9 +95,11 @@ def project_finding_roots(
     groups = [sorted(indices) for indices in grouped_indices.values()]
 
     # Attach an unresolved display group to a proved confirmed root only when
-    # both describe the same structural root and the review group has no
-    # counterproof/conflict.  This is intentionally stricter than grouping two
-    # outcomes with the same disposition.
+    # both describe the same structural root, the review group has no
+    # counterproof/conflict, and TerminalAuthority v4 can independently
+    # reconstruct the confirmed transition from the sealed promotion chain.
+    # Legacy decision_proof/v3 objects are audit material and never authorize
+    # a cross-disposition attachment.
     confirmed_by_attachment_key: Dict[str, int] = {}
     for group_index, indices in enumerate(groups):
         members = [copied[index] for index in indices]
@@ -319,21 +330,22 @@ def _base_structural_identity(item: Mapping[str, Any]) -> Optional[Dict[str, Any
 def _candidate_merge_key(item: Mapping[str, Any], *, include_disposition: bool) -> str:
     if _merge_block_reason(item):
         return ""
+    proof_equivalence = _proof_equivalence_contract(item)
     candidate_uid = str(item.get("candidate_uid") or "")
-    family = _family(item)
-    file_path = _file_path(item)
-    function = _function(item)
-    shape = _shape(item)
-    if not all((candidate_uid, family, file_path, function, shape)):
+    base = _base_structural_identity(item)
+    anchor = _root_anchor(item)
+    if not proof_equivalence or not candidate_uid or base is None or not anchor:
         return ""
     payload: Dict[str, Any] = {
         "contract": "same_candidate_uid",
         "candidate_uid": candidate_uid,
-        "family": family,
-        "file": file_path,
-        "function": function,
-        "shape": shape,
+        "proof_equivalence": proof_equivalence,
+        **base,
+        "anchor": anchor,
     }
+    call_path = _call_path_identity(item)
+    if call_path:
+        payload["call_path"] = call_path
     _add_disposition_contract(payload, item, include_disposition=include_disposition)
     return _stable_json(payload)
 
@@ -341,31 +353,85 @@ def _candidate_merge_key(item: Mapping[str, Any], *, include_disposition: bool) 
 def _structured_sink_merge_key(item: Mapping[str, Any], *, include_disposition: bool) -> str:
     if _merge_block_reason(item):
         return ""
+    proof_equivalence = _proof_equivalence_contract(item)
     base = _base_structural_identity(item)
     sink = _structured_sink_anchor(_obligation(item).get("sink_uid"))
-    if base is None or not sink:
+    if not proof_equivalence or base is None or not sink:
         return ""
     payload: Dict[str, Any] = {
         "contract": "same_structured_sink",
+        "proof_equivalence": proof_equivalence,
         **base,
         "sink": sink,
     }
+    call_path = _call_path_identity(item)
+    if call_path:
+        payload["call_path"] = call_path
     _add_disposition_contract(payload, item, include_disposition=include_disposition)
     return _stable_json(payload)
+
+
+def _root_anchor(item: Mapping[str, Any]) -> Dict[str, Any]:
+    sink = _structured_sink_anchor(_obligation(item).get("sink_uid"))
+    if sink:
+        return {"kind": "sink", "value": sink}
+    region = _decision_region(item)
+    if region:
+        return {"kind": "decision_region", "value": region}
+    return {}
+
+
+def _call_path_identity(item: Mapping[str, Any]) -> str:
+    """Keep distinct explicit call paths in distinct finding roots."""
+
+    paths: set[str] = set()
+
+    def add(value: Any) -> None:
+        if isinstance(value, (list, tuple)):
+            if value and all(not isinstance(member, (list, tuple, Mapping)) for member in value):
+                paths.add(_stable_json([str(member).strip().lower() for member in value]))
+            else:
+                for member in value:
+                    add(member)
+        elif isinstance(value, Mapping):
+            paths.add(_stable_json(value))
+        elif value not in (None, ""):
+            paths.add(re.sub(r"\s+", "", str(value)).lower())
+
+    add(item.get("call_path"))
+    add(item.get("call_paths"))
+    add(item.get("entry_paths"))
+    for occurrence in item.get("occurrences") or []:
+        if isinstance(occurrence, Mapping):
+            add(occurrence.get("call_paths"))
+    pack = item.get("evidence_pack")
+    if isinstance(pack, Mapping):
+        add(pack.get("call_path"))
+        add(pack.get("call_paths"))
+        nested = pack.get("path")
+        if isinstance(nested, Mapping):
+            add(nested.get("call_path"))
+            add(nested.get("call_paths"))
+    return _stable_json(sorted(paths)) if paths else ""
 
 
 def _decision_region_merge_key(item: Mapping[str, Any], *, include_disposition: bool) -> str:
     if _merge_block_reason(item):
         return ""
+    proof_equivalence = _proof_equivalence_contract(item)
     base = _base_structural_identity(item)
     region = _decision_region(item)
-    if base is None or not region.startswith("REGION_"):
+    if not proof_equivalence or base is None or not region.startswith("REGION_"):
         return ""
     payload: Dict[str, Any] = {
         "contract": "same_decision_region_subject",
+        "proof_equivalence": proof_equivalence,
         **base,
         "region": region,
     }
+    call_path = _call_path_identity(item)
+    if call_path:
+        payload["call_path"] = call_path
     _add_disposition_contract(payload, item, include_disposition=include_disposition)
     return _stable_json(payload)
 
@@ -431,15 +497,139 @@ def _merge_block_reason(item: Mapping[str, Any]) -> str:
     return ""
 
 
-def _has_complete_deterministic_proof(item: Mapping[str, Any]) -> bool:
-    proof = item.get("decision_proof")
-    proof = proof if isinstance(proof, Mapping) else {}
-    return (
-        str(proof.get("outcome") or "").lower() in {"confirm", "confirmed", "verified"}
-        and str(proof.get("completeness") or "").lower() == "complete"
-        and bool(proof.get("producer_engine"))
-        and bool(proof.get("fact_ids"))
+def _exact_v4_authority(item: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return only an exact, independently recomputed materialized v4 decision."""
+
+    recorded = item.get("terminal_authority_decision")
+    engine_recorded = item.get("proof_kernel_terminal_authority_decision")
+    if not (
+        isinstance(recorded, Mapping)
+        and recorded.get("schema_version") == TERMINAL_AUTHORITY_DECISION_V4
+        and isinstance(engine_recorded, Mapping)
+        and engine_recorded.get("schema_version") == TERMINAL_AUTHORITY_DECISION_V4
+    ):
+        return None
+    projected = TerminalAuthorityEvaluator().evaluate(item, operation="audit").to_dict()
+    if dict(recorded) != projected or dict(engine_recorded) != projected:
+        return None
+    return projected
+
+
+def _proof_equivalence_contract(item: Mapping[str, Any]) -> str:
+    """Return an exact proof/object/path identity suitable for aliasing.
+
+    Structural similarity is intentionally insufficient.  Missing call-path or
+    v4 proof material leaves the row unkeyed so two independent obligations can
+    never be collapsed merely because they share a family, sink, or source
+    location.
+    """
+
+    try:
+        state = FrozenProofState.from_mapping(
+            item.get("proof_kernel_frozen_state")  # type: ignore[arg-type]
+        )
+        closure = ProofClosureEvaluation.from_mapping(
+            item.get("proof_kernel_closure_evaluation")  # type: ignore[arg-type]
+        )
+    except (KeyError, TypeError, ValueError):
+        return ""
+    authority = _exact_v4_authority(item)
+    if authority is None:
+        return ""
+    disposition = _disposition(item)
+    call_path = _call_path_identity(item)
+    cluster_uid = str(item.get("validation_cluster_uid") or "")
+    subject = _merge_subject_identity(_subject_identity(item))
+    state_subject = _merge_subject_identity(state.subject_uid)
+    region = _decision_region(item)
+    if not (
+        authority.get("terminal") is True
+        and authority.get("integrity_status") == "verified"
+        and authority.get("disposition") == disposition
+        and authority.get("proof_state_sha256") == state.content_sha256
+        and authority.get("closure_evaluation_sha256") == closure.content_sha256
+        and authority.get("proof_root_sha256") == state.root_manifest_sha256
+        and authority.get("validation_cluster_uid") == state.validation_cluster_uid
+        and closure.proof_state_sha256 == state.content_sha256
+        and closure.obligation_uid == state.obligation_uid
+        and closure.obligation_sha256 == state.obligation_sha256
+        and closure.proof_ir_uid == state.proof_ir_uid
+        and closure.proof_ir_sha256 == state.proof_ir_sha256
+        and closure.proof_root_sha256 == state.root_manifest_sha256
+        and closure.checker_result_refs == state.checker_result_refs
+        and str(item.get("proof_kernel_root_manifest_sha256") or "") == state.root_manifest_sha256
+        and cluster_uid
+        and cluster_uid == state.validation_cluster_uid
+        and subject
+        and subject == state_subject
+        and region
+        and region == state.decision_region_uid
+        and call_path
+    ):
+        return ""
+    obligation = _obligation(item)
+    outer_obligation_uid = str(obligation.get("obligation_uid") or "")
+    outer_obligation_sha256 = str(obligation.get("content_sha256") or "")
+    if outer_obligation_uid and outer_obligation_uid != state.obligation_uid:
+        return ""
+    if outer_obligation_sha256 and outer_obligation_sha256 != state.obligation_sha256:
+        return ""
+    return _stable_json(
+        {
+            "schema_version": "zscope.proof-equivalence-root.v1",
+            "obligation_uid": state.obligation_uid,
+            "obligation_sha256": state.obligation_sha256,
+            "proof_ir_uid": state.proof_ir_uid,
+            "proof_ir_sha256": state.proof_ir_sha256,
+            "proof_state_sha256": state.content_sha256,
+            "closure_evaluation_sha256": closure.content_sha256,
+            "proof_root_sha256": state.root_manifest_sha256,
+            "subject_uid": state.subject_uid,
+            "decision_region_uid": state.decision_region_uid,
+            "call_path": call_path,
+        }
     )
+
+
+def _has_complete_deterministic_proof(item: Mapping[str, Any]) -> bool:
+    """Return whether a sealed v4 promotion independently authorizes confirmation.
+
+    This deliberately does not consult ``decision_proof``.  It also rejects a
+    materialized legacy/mismatched authority decision even when a promotion
+    bundle happens to be present beside it.
+    """
+
+    projected = _exact_v4_authority(item)
+    if projected is None:
+        return False
+    if not (
+        projected.get("schema_version") == TERMINAL_AUTHORITY_DECISION_V4
+        and projected.get("terminal") is True
+        and projected.get("disposition") == "confirmed"
+        and projected.get("integrity_status") == "verified"
+        and isinstance(projected.get("promotion_certificate"), Mapping)
+    ):
+        return False
+
+    promotion = projected["promotion_certificate"]
+    cluster = str(item.get("validation_cluster_uid") or "")
+    if cluster and cluster != str(promotion.get("validation_cluster_uid") or ""):
+        return False
+    subject = _merge_subject_identity(_subject_identity(item))
+    promoted_subject = _merge_subject_identity(str(promotion.get("subject_uid") or ""))
+    if subject and subject != promoted_subject:
+        return False
+    region = _decision_region(item)
+    if region and region != str(promotion.get("decision_region_uid") or ""):
+        return False
+    obligation = _obligation(item)
+    obligation_uid = str(obligation.get("obligation_uid") or "")
+    obligation_sha256 = str(obligation.get("content_sha256") or "")
+    if obligation_uid and obligation_uid != str(promotion.get("obligation_uid") or ""):
+        return False
+    if obligation_sha256 and obligation_sha256 != str(promotion.get("obligation_sha256") or ""):
+        return False
+    return True
 
 
 def _group_merge_contract(group: Sequence[Mapping[str, Any]]) -> str:
@@ -591,11 +781,13 @@ def _subject_identity(item: Mapping[str, Any]) -> str:
     proof = proof if isinstance(proof, Mapping) else {}
     obligation = _obligation(item)
     return str(
-        proof.get("subject_identity")
-        or obligation.get("subject_uid")
+        obligation.get("subject_uid")
         or item.get("resource_identity")
         or item.get("source_identity")
         or item.get("resource")
+        # Historical reports may only contain this field.  It is identity
+        # material, never proof authority (see _has_complete_deterministic_proof).
+        or proof.get("subject_identity")
         or ""
     )
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -24,23 +23,14 @@ from zscope.benchmarking.isolation import (
     P6_OCI_LABEL_WORKFLOW_RUN_ATTEMPT,
     P6_OCI_LABEL_WORKFLOW_RUN_ID,
     P6OciCleanupScope,
+    oci_runtime_environment,
 )
 
 
-_CONTAINER_ID_RE = re.compile(r"[0-9a-f]{12,64}\Z")
+_CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}\Z")
 _CONTAINER_NAME_RE = re.compile(r"zscope-benchmark-([A-Za-z0-9_.-]{1,32})-[0-9a-f]{12}\Z")
 _REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _POSITIVE_INTEGER_RE = re.compile(r"[1-9][0-9]*\Z")
-_SECRET_MARKERS = (
-    "API_KEY",
-    "AUTHORIZATION",
-    "BEARER",
-    "CREDENTIAL",
-    "PASSWORD",
-    "PRIVATE_KEY",
-    "SECRET",
-    "TOKEN",
-)
 ProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -49,17 +39,7 @@ class P6OciCleanupError(RuntimeError):
 
 
 def _safe_environment() -> dict[str, str]:
-    result = dict(os.environ)
-    for key in tuple(result):
-        upper = key.upper()
-        if (
-            key == "Z_SCOPE_P6_API_KEY_FILE"
-            or "GROUND_TRUTH" in upper
-            or "BENCHMARK_TRUTH" in upper
-            or any(marker in upper for marker in _SECRET_MARKERS)
-        ):
-            result.pop(key, None)
-    return result
+    return oci_runtime_environment()
 
 
 def _invoke(
@@ -111,7 +91,7 @@ def _list_ids(
     runtime_path: str,
     labels: Mapping[str, str],
 ) -> list[str]:
-    argv = [runtime_path, "ps", "--all"]
+    argv = [runtime_path, "ps", "--all", "--no-trunc"]
     for key, value in sorted(labels.items()):
         argv.extend(("--filter", f"label={key}={value}"))
     argv.extend(("--format", "{{.ID}}"))
@@ -162,7 +142,7 @@ def _validated_container_id(
     phase = normalized_labels.get(P6_OCI_LABEL_PHASE, "")
     if (
         _CONTAINER_ID_RE.fullmatch(container_id) is None
-        or not container_id.startswith(listed_id)
+        or container_id != listed_id
         or name_match is None
         or name_match.group(1) != phase
         or _POSITIVE_INTEGER_RE.fullmatch(run_id) is None

@@ -133,6 +133,11 @@ def test_python_39_314_constraints_and_ci_are_declared() -> None:
         assert f'lock: "py{suffix}"' in workflow
     assert "scripts/check_mypy_baseline.py" in workflow
     assert "scripts/check_black_baseline.py" in workflow
+    assert "scripts/qualify_p6_proof_promotion.py --check" in workflow
+    assert "scripts/check_p4_hypothesis_package.py dist/zscope-*.whl" in workflow
+    assert "scripts/check_p5_runtime_authority_package.py dist/zscope-*.whl" in workflow
+    assert "tests/test_p6_proof_promotion_qualification.py" in workflow
+    assert "tests/test_audit_eligibility.py" in workflow
     assert "test/range/benchmark test/java_range/benchmark" in workflow
     assert "zscope scripts test tests tools" not in workflow
     assert "scan_git_history_secrets.py --ref HEAD" in workflow

@@ -37,6 +37,12 @@ OPERATIONAL_DISPOSITIONS = {
     "engine_failed",
     "interrupted",
 }
+NON_REVIEW_TERMINAL_DISPOSITIONS = {
+    "confirmed",
+    "rejected_with_proof",
+    "deduplicated_alias",
+    "shadow_observation",
+}
 
 
 def issue_dicts(items: Iterable[Any]) -> List[Dict[str, Any]]:
@@ -61,7 +67,7 @@ def needs_review_observations(items: Iterable[Any]) -> List[Dict[str, Any]]:
         if (
             str(issue.get("record_role") or "") != "operational_obligation"
             and str(issue.get("candidate_disposition") or "").lower()
-            not in OPERATIONAL_DISPOSITIONS
+            not in OPERATIONAL_DISPOSITIONS | NON_REVIEW_TERMINAL_DISPOSITIONS
             and (
                 str(issue.get("validation_status") or "").lower() in NEEDS_REVIEW_STATUSES
                 or str(issue.get("candidate_disposition") or "").lower()
@@ -573,6 +579,20 @@ def _record_fingerprint(record: Dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _view_membership_identity(issue: Dict[str, Any]) -> Tuple[str, ...]:
+    for field in (
+        "finding_root_uid",
+        "validation_cluster_uid",
+        "candidate_uid",
+        "run_issue_uid",
+        "id",
+    ):
+        value = str(issue.get(field) or "")
+        if value:
+            return (field, value)
+    return ("canonical_issue", canonical_issue_key(issue))
+
+
 def attach_related_needs_review(
     default_issues: List[Dict[str, Any]],
     review_issues: List[Dict[str, Any]],
@@ -670,12 +690,20 @@ def build_report_views(
         canonical_review=review_issues,
         attached_count=attached_review_count,
     )
+    default_fingerprints = {_view_membership_identity(item) for item in default_issues}
+    with_review_fingerprints = {_view_membership_identity(item) for item in with_review}
+    review_fingerprints = {_view_membership_identity(item) for item in review_issues}
+    default_subset = default_fingerprints <= with_review_fingerprints
+    canonical_review_included = (
+        review_fingerprints <= with_review_fingerprints if canonical_projection else True
+    )
     return {
         DEFAULT_REPORT_VIEW: {
             "label": "Default",
             "description": "Verified/reportable issues only.",
             "issue_count": len(default_issues),
             "included_needs_review_count": 0,
+            "is_subset_of_with_needs_review": default_subset,
             "issues": default_issues,
             "issues_by_severity": group_by_severity(default_issues),
         },
@@ -686,6 +714,8 @@ def build_report_views(
             "included_needs_review_count": review_count,
             "independent_needs_review_count": len(independent_review_issues),
             "attached_needs_review_count": attached_review_count,
+            "contains_all_default": default_subset,
+            "contains_all_canonical_needs_review": canonical_review_included,
             "needs_review_governance": governance,
             "issues": with_review,
             "issues_by_severity": group_by_severity(with_review),

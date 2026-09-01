@@ -12,6 +12,10 @@ from zscope.common.validator_protocol import (
     validator_result_v3_failure_class,
 )
 from zscope.framework.llm_client import ProviderFailureError
+from zscope.framework.llm_usage import (
+    P6BalancedTokenAdmissionError,
+    ScanTokenUsageLedger,
+)
 
 
 def _slice() -> dict:
@@ -84,6 +88,12 @@ def _input(evidence_slice=None) -> dict:
         "validation_pass": "initial",
         "evidence_slice": evidence_slice or _slice(),
     }
+
+
+def _p6_ledger() -> ScanTokenUsageLedger:
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    ledger.enable_p6_balanced_admission()
+    return ledger
 
 
 def test_validator_v3_provider_schema_encodes_missing_fact_coherence() -> None:
@@ -198,6 +208,157 @@ def test_proof_engine_propagates_typed_systemic_provider_failure() -> None:
 
     assert raised.value.failure_class == "provider_protocol_incompatible"
     assert len(llm.calls) == 1
+
+
+def test_proof_engine_propagates_p6_token_admission_from_direct_completion() -> None:
+    class DeniedLLM(_DirectLLM):
+        def chat_completion(self, messages, **kwargs):
+            self.calls.append((messages, kwargs))
+            raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
+
+    llm = DeniedLLM([])
+
+    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
+        ProofEngineAgent(llm, []).run(_input())
+
+    assert raised.value.failure_class == "p6_token_hard_limit"
+    assert len(llm.calls) == 1
+
+
+def test_proof_engine_propagates_p6_token_admission_from_action_session() -> None:
+    class DeniedActionLLM:
+        models = ["unit-model"]
+
+        @staticmethod
+        def run_conversation_with_tools(**_kwargs):
+            raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
+
+    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
+        ProofEngineAgent(DeniedActionLLM(), []).investigate(
+            {**_input(), "validation_pass": "investigation_synthesis"},
+            evidence_actions=[{"action_id": "ACTION_1"}],
+            evidence_action_executor=lambda _action_id: {"status": "unknown"},
+        )
+
+    assert raised.value.failure_class == "p6_token_hard_limit"
+
+
+def test_proof_engine_does_not_convert_action_admission_to_unknown_evidence() -> None:
+    class ExecutesActionLLM:
+        models = ["unit-model"]
+
+        @staticmethod
+        def run_conversation_with_tools(**kwargs):
+            return kwargs["tool_executor"](
+                "execute_proof_evidence_action",
+                {"action_id": "ACTION_1"},
+            )
+
+    def deny(_action_id):
+        raise P6BalancedTokenAdmissionError("p6_token_hard_limit")
+
+    with pytest.raises(P6BalancedTokenAdmissionError) as raised:
+        ProofEngineAgent(ExecutesActionLLM(), []).investigate(
+            {**_input(), "validation_pass": "investigation_synthesis"},
+            evidence_actions=[{"action_id": "ACTION_1"}],
+            evidence_action_executor=deny,
+        )
+
+    assert raised.value.failure_class == "p6_token_hard_limit"
+
+
+def test_proof_engine_sanitizes_p6_direct_completion_failure(caplog) -> None:
+    canary = "PRIVATE_DIRECT_EXCEPTION_BODY_MUST_NOT_LEAK"
+
+    class FailingLLM(_DirectLLM):
+        def chat_completion(self, messages, **kwargs):
+            self.calls.append((messages, kwargs))
+            raise RuntimeError(canary)
+
+    llm = FailingLLM([])
+    llm.token_usage_ledger = _p6_ledger()
+    response = ProofEngineAgent(llm, []).run(_input())
+
+    assert response.success is False
+    assert response.error == "class=internal_failure; count=1"
+    assert response.metadata["failure_class"] == "internal_failure"
+    assert response.metadata["failure_count"] == 1
+    assert canary not in caplog.text
+    assert "class=internal_failure; count=1" in caplog.text
+
+
+def test_proof_engine_sanitizes_p6_action_session_failure(caplog) -> None:
+    canary = "PRIVATE_SESSION_EXCEPTION_BODY_MUST_NOT_LEAK"
+
+    class FailingActionLLM:
+        models = ["unit-model"]
+        token_usage_ledger = _p6_ledger()
+
+        @staticmethod
+        def run_conversation_with_tools(**_kwargs):
+            raise RuntimeError(canary)
+
+    response = ProofEngineAgent(FailingActionLLM(), []).investigate(
+        {**_input(), "validation_pass": "investigation_synthesis"},
+        evidence_actions=[{"action_id": "ACTION_1"}],
+        evidence_action_executor=lambda _action_id: {"status": "unknown"},
+    )
+
+    assert response.success is False
+    assert response.error == "class=internal_failure; count=1"
+    assert response.metadata["failure_class"] == "internal_failure"
+    assert response.metadata["failure_count"] == 1
+    assert canary not in caplog.text
+    assert "class=internal_failure; count=1" in caplog.text
+
+
+def test_proof_engine_sanitizes_p6_evidence_action_failure() -> None:
+    canary = "PRIVATE_ACTION_EXCEPTION_BODY_MUST_NOT_LEAK"
+
+    class ExecutesFailingActionLLM:
+        models = ["unit-model"]
+        token_usage_ledger = _p6_ledger()
+
+        def __init__(self):
+            self.outcome = None
+
+        def run_conversation_with_tools(self, **kwargs):
+            self.outcome = kwargs["tool_executor"](
+                "execute_proof_evidence_action",
+                {"action_id": "ACTION_1"},
+            )
+            return {
+                "terminal_tool_payload": _result(
+                    **{
+                        "pass": "investigation_synthesis",
+                        "verdict": "uncertain",
+                        "evidence_refs": [],
+                        "stop_reason": "investigation_exhausted",
+                    }
+                ),
+                "terminal_tool_valid": True,
+                "conversation": [],
+                "iterations": 1,
+                "tool_call_count": 1,
+            }
+
+    def fail(_action_id):
+        raise RuntimeError(canary)
+
+    llm = ExecutesFailingActionLLM()
+    response = ProofEngineAgent(llm, []).investigate(
+        {**_input(), "validation_pass": "investigation_synthesis"},
+        evidence_actions=[{"action_id": "ACTION_1"}],
+        evidence_action_executor=fail,
+    )
+
+    assert response.success is True
+    assert llm.outcome["status"] == "unknown"
+    assert llm.outcome["reason_code"] == "evidence_action_executor_error"
+    assert llm.outcome["failure_class"] == "internal_failure"
+    assert llm.outcome["failure_count"] == 1
+    assert canary not in json.dumps(llm.outcome)
+    assert canary not in json.dumps(response.metadata)
 
 
 @pytest.mark.parametrize(

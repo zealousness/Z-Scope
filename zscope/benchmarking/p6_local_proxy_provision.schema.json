@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/p6_local_proxy_provision.schema.json",
+  "title": "Z-SCOPE P6 credential-free local model proxy provision receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "created", "image_ref", "image_id", "provider_identity_sha256",
+    "network_name", "egress_network_name", "network_names", "network_aliases_sha256",
+    "proxy_container", "proxy_container_id", "endpoint_origin", "endpoint_host",
+    "network_policy_sha256", "relay_sha256", "relay_projection_sha256",
+    "upstreams_sha256", "upstream_count", "command_projection_sha256",
+    "expected_environment_sha256", "credential_environment_keys",
+    "security_projection_sha256", "log_driver_projection_sha256",
+    "image_inspect_projection_sha256", "proxy_inspect_projection_sha256",
+    "formal_evidence", "release_eligible", "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.p6-local-proxy-provision.v2"},
+    "created": {"type": "boolean"},
+    "image_ref": {"type": "string", "pattern": "^.+@sha256:[0-9a-f]{64}$"},
+    "image_id": {"type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$"},
+    "provider_identity_sha256": {"$ref": "#/$defs/sha256"},
+    "network_name": {"$ref": "#/$defs/ociName"},
+    "egress_network_name": {"$ref": "#/$defs/ociName"},
+    "network_names": {
+      "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/ociName"}
+    },
+    "network_aliases_sha256": {"$ref": "#/$defs/sha256"},
+    "proxy_container": {"$ref": "#/$defs/ociName"},
+    "proxy_container_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "endpoint_origin": {
+      "type": "string",
+      "pattern": "^https://[^/?#]+/?$"
+    },
+    "endpoint_host": {"type": "string", "minLength": 1, "maxLength": 253},
+    "network_policy_sha256": {"$ref": "#/$defs/sha256"},
+    "relay_sha256": {"$ref": "#/$defs/sha256"},
+    "relay_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "upstreams_sha256": {"$ref": "#/$defs/sha256"},
+    "upstream_count": {"type": "integer", "minimum": 1},
+    "command_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "expected_environment_sha256": {"$ref": "#/$defs/sha256"},
+    "credential_environment_keys": {"const": []},
+    "security_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "log_driver_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "image_inspect_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "proxy_inspect_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "formal_evidence": {"const": false},
+    "release_eligible": {"const": false},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "ociName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    }
+  }
+}

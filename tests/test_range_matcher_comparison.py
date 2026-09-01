@@ -41,7 +41,9 @@ def _finding(uid: str) -> dict:
     }
 
 
-def test_archived_matcher_comparison_projects_before_rescoring(tmp_path: Path) -> None:
+def test_archived_matcher_comparison_never_infers_alias_without_v4_proof_root(
+    tmp_path: Path,
+) -> None:
     report_path = tmp_path / "report.json"
     truth_path = tmp_path / "truth.json"
     legacy_path = tmp_path / "legacy-score.json"
@@ -107,8 +109,8 @@ def test_archived_matcher_comparison_projects_before_rescoring(tmp_path: Path) -
     assert report_path.read_bytes() == before
     assert score["matcher_version"] == MATCHER_VERSION
     assert score["finding_root_projection"]["schema_version"] == FINDING_ROOT_VERSION
-    assert score["finding_root_projection"]["finding_root_alias_count"] == 1
-    assert score["report_views"]["default"]["report_issue_count"] == 1
+    assert score["finding_root_projection"]["finding_root_alias_count"] == 0
+    assert score["report_views"]["default"]["report_issue_count"] == 2
     assert score["report_views"]["default"]["true_positives"] == 0
     assert comparison["release_eligible"] is False
     assert comparison["views"]["default"]["legacy_only_truth_ids"] == ["STATE-1"]

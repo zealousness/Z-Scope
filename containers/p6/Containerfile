@@ -1,0 +1,83 @@
+ARG PYTHON_BASE_IMAGE=docker.io/library/python@sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a
+
+FROM ${PYTHON_BASE_IMAGE} AS gllvm-builder
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git golang-go \
+    && rm -rf /var/lib/apt/lists/*
+RUN GOBIN=/opt/gllvm go install github.com/SRI-CSL/gllvm/cmd/...@v1.3.1 \
+    && test -x /opt/gllvm/gclang \
+    && test -x /opt/gllvm/gclang++ \
+    && test -x /opt/gllvm/get-bc
+
+FROM ${PYTHON_BASE_IMAGE}
+
+ARG ZSCOPE_GIT_REVISION
+ARG ZSCOPE_RUNTIME_LOCK_SHA256
+ARG ZSCOPE_CONTAINERFILE_SHA256
+
+LABEL org.opencontainers.image.title="Z-SCOPE P6 Range toolchain" \
+      org.opencontainers.image.revision="${ZSCOPE_GIT_REVISION}" \
+      org.opencontainers.image.base.name="docker.io/library/python:3.13" \
+      org.opencontainers.image.base.digest="sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a" \
+      io.zscope.p6-runtime-lock-sha256="${ZSCOPE_RUNTIME_LOCK_SHA256}" \
+      io.zscope.p6-containerfile-sha256="${ZSCOPE_CONTAINERFILE_SHA256}"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH=/opt/llvm/bin:/opt/svf/bin:/usr/local/bin:${PATH} \
+    LD_LIBRARY_PATH=/opt/llvm/lib:/opt/svf/lib \
+    LLVM_COMPILER_PATH=/opt/llvm/bin \
+    LLVM_CC_NAME=clang \
+    LLVM_CXX_NAME=clang++ \
+    LLVM_LINK_NAME=llvm-link \
+    LLVM_AR_NAME=llvm-ar
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       binutils build-essential ca-certificates cmake curl git \
+       libncurses6 libtinfo6 libz3-4 libzstd1 unzip xz-utils zip zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=gllvm-builder /opt/gllvm/gclang /usr/local/bin/gclang
+COPY --from=gllvm-builder /opt/gllvm/gclang++ /usr/local/bin/gclang++
+COPY --from=gllvm-builder /opt/gllvm/get-bc /usr/local/bin/get-bc
+
+ARG LLVM_ARCHIVE_URL=https://github.com/SVF-tools/SVF/releases/download/SVF-3.2/llvm-18.1.0-ubuntu20-rtti-x86-64.tar.gz
+ARG LLVM_ARCHIVE_SHA256=b7752da03a298493357975aa54bd79b58eaafefae480747a6de1b92a466d88fb
+RUN set -eu; \
+    curl --fail --location --proto '=https' --tlsv1.2 \
+      "$LLVM_ARCHIVE_URL" -o /tmp/llvm.tar.gz; \
+    printf '%s  %s\n' "$LLVM_ARCHIVE_SHA256" /tmp/llvm.tar.gz | sha256sum --check --strict; \
+    mkdir -p /tmp/llvm-unpack; \
+    tar -xzf /tmp/llvm.tar.gz -C /tmp/llvm-unpack; \
+    llvm_bin="$(find /tmp/llvm-unpack -type f -path '*/bin/clang' -print | sort)"; \
+    test "$(printf '%s\n' "$llvm_bin" | sed '/^$/d' | wc -l)" -eq 1; \
+    llvm_root="${llvm_bin%/bin/clang}"; \
+    mv "$llvm_root" /opt/llvm; \
+    rm -rf /tmp/llvm.tar.gz /tmp/llvm-unpack
+
+ARG SVF_ARCHIVE_URL=https://github.com/SVF-tools/SVF/releases/download/SVF-3.2/SVF-3.2-ubuntu-24.04-x86_64.zip
+ARG SVF_ARCHIVE_SHA256=ad44622798179c7a507c0b8ed58c5bc46ecb0ebf9f8e22913b0141dce23771d9
+RUN set -eu; \
+    curl --fail --location --proto '=https' --tlsv1.2 \
+      "$SVF_ARCHIVE_URL" -o /tmp/svf.zip; \
+    printf '%s  %s\n' "$SVF_ARCHIVE_SHA256" /tmp/svf.zip | sha256sum --check --strict; \
+    mkdir -p /tmp/svf-unpack; \
+    unzip -q /tmp/svf.zip -d /tmp/svf-unpack; \
+    svf_bin="$(find /tmp/svf-unpack -type f -path '*/bin/wpa' -print | sort)"; \
+    test "$(printf '%s\n' "$svf_bin" | sed '/^$/d' | wc -l)" -eq 1; \
+    svf_root="${svf_bin%/bin/wpa}"; \
+    test -x "$svf_root/bin/saber"; \
+    mv "$svf_root" /opt/svf; \
+    rm -rf /tmp/svf.zip /tmp/svf-unpack; \
+    printf '%s\n' /opt/llvm/lib /opt/svf/lib > /etc/ld.so.conf.d/zscope-p6.conf; \
+    ldconfig
+
+COPY requirements/release/py313.txt /opt/zscope/requirements/py313.txt
+RUN python3 -m pip install --no-cache-dir --require-hashes \
+      -r /opt/zscope/requirements/py313.txt
+
+COPY containers/p6/verify_toolchain.py /opt/zscope/verify_toolchain.py
+RUN python3 /opt/zscope/verify_toolchain.py --check
+
+WORKDIR /zscope-input
+CMD ["python3", "--version"]

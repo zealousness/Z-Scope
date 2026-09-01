@@ -1,14 +1,26 @@
 import hashlib
 import json
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from pathlib import Path
+
+import pytest
 
 from zscope.cli.explain import main as explain_main
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.core.validation.claim_verifier import EvidenceClaimRequest, EvidenceClaimVerifier
+from zscope.core.validation.proof_kernel import (
+    ProofKernelEngine,
+    build_proof_clause,
+    build_proof_obligation,
+)
 from zscope.orchestration.decision_trace import (
+    DecisionTraceError,
     DecisionTraceStore,
+    audit_terminal_reason_codes,
     load_decision_trace,
+    terminal_reason_codes,
     verify_decision_trace,
     verify_evidence_object,
     verify_coverage_trace,
@@ -20,17 +32,92 @@ from scripts.reverify_v3_trace import reverify_trace_root
 from scripts.p2_proof_corpus import build_corpus
 
 
-def _authority(disposition: str) -> dict:
-    reason = {
-        "confirmed": "CONFIRMED_DETERMINISTIC_PROOF",
-        "rejected_with_proof": "REJECTED_DETERMINISTIC_COUNTERPROOF",
-        "needs_review": "NEEDS_REVIEW_OPEN_CLAUSES",
-    }[disposition]
+@lru_cache(maxsize=3)
+def _frozen_authority_bundle(disposition: str) -> dict:
+    if disposition == "needs_review":
+        authority = TerminalAuthorityEvaluator().evaluate({}, operation="live").to_dict()
+        return {
+            "proof_kernel_terminal_authority_decision": authority,
+            "terminal_authority_decision": authority,
+        }
+
+    case = build_corpus()["cases"][0]
+    proof_ir = case["program_proof_ir"]
+    original_obligation = case["proof_obligation"]
+    if disposition == "confirmed":
+        obligation = original_obligation
+    elif disposition == "rejected_with_proof":
+        original_clause = original_obligation["confirmation_clauses"][0]
+        counterproof = build_proof_clause(
+            role="counterproof",
+            provider_family=original_clause["provider_family"],
+            predicate_id=original_clause["predicate_id"],
+            fact_kind=original_clause["fact_kind"],
+            quantifier=original_clause["quantifier"],
+            expected_value=original_clause["expected_value"],
+            parameters=original_clause["parameters"],
+        )
+        obligation = build_proof_obligation(
+            validation_cluster_uid="VAL_DECISION_TRACE_COUNTERPROOF",
+            defect_family="neutral_decision_trace_counterproof",
+            subject_uid="SUBJECT_DECISION_TRACE_COUNTERPROOF",
+            decision_region_uid="REGION_DECISION_TRACE_COUNTERPROOF",
+            confirmation_clauses=(),
+            counterproof_clauses=(counterproof,),
+            dependency_hashes=proof_ir["dependency_hashes"],
+        )
+    else:  # pragma: no cover - test helper contract
+        raise ValueError(disposition)
+    evaluation = ProofKernelEngine().evaluate(proof_ir=proof_ir, obligation=obligation)
+    carrier = {}
+    evaluation.apply_to_issue(carrier)
+    selected_action_uids = [str(value["action_uid"]) for value in evaluation.actions]
+    carrier.update(
+        {
+            "proof_kernel_input": evaluation.authority_inputs()["proof_kernel_input"],
+            "proof_kernel_live_selected_action_uids": selected_action_uids,
+            "proof_kernel_checker_results": [dict(value) for value in evaluation.check_results],
+            "proof_kernel_artifact_refs": list(evaluation.artifact_refs),
+            "proof_kernel_checker_result_refs": list(evaluation.checker_result_refs),
+            "proof_kernel_root_manifest_sha256": evaluation.root_manifest_sha256,
+        }
+    )
+    authority = TerminalAuthorityEvaluator().evaluate(carrier, operation="live").to_dict()
+    assert authority["disposition"] == disposition
+    carrier["proof_kernel_terminal_authority_decision"] = authority
+    carrier["terminal_authority_decision"] = authority
+    return carrier
+
+
+def _authority_bundle(disposition: str) -> dict:
+    return deepcopy(_frozen_authority_bundle(disposition))
+
+
+def _record_live_transition(
+    store: DecisionTraceStore,
+    issue: dict,
+    *,
+    level: str = "V1",
+) -> None:
+    event, created = store.record_terminal_transition(
+        issue,
+        level=level,
+        authority=issue["terminal_authority_decision"],
+    )
+    assert created is True
+    assert issue["terminal_transition_event_uid"] == event["event_uid"]
+
+
+def _legacy_authority(disposition: str) -> dict:
     return {
         "schema_version": "zscope.terminal-authority-decision.v3",
         "terminal": True,
         "disposition": disposition,
-        "reason_code": reason,
+        "reason_code": {
+            "confirmed": "CONFIRMED_DETERMINISTIC_PROOF",
+            "rejected_with_proof": "REJECTED_DETERMINISTIC_COUNTERPROOF",
+            "needs_review": "NEEDS_REVIEW_OPEN_CLAUSES",
+        }[disposition],
         "authority": "zscope.proof-checker",
         "next_action": "",
         "conflict_resolution": None,
@@ -108,7 +195,7 @@ def test_terminal_event_freezes_authoritative_security_spec_without_second_termi
     issue = {
         "validation_cluster_uid": "VAL_P3",
         "candidate_disposition": "needs_review",
-        "terminal_authority_decision": _authority("needs_review"),
+        **_authority_bundle("needs_review"),
     }
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
@@ -141,7 +228,7 @@ def test_terminal_event_attaches_active_hunter_refs_without_second_terminal(
     issue = {
         "validation_cluster_uid": "VAL_P4",
         "candidate_disposition": "needs_review",
-        "terminal_authority_decision": _authority("needs_review"),
+        **_authority_bundle("needs_review"),
     }
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
@@ -276,6 +363,7 @@ def test_interrupted_v3_trace_can_be_reclassified_without_model_or_truth(tmp_pat
     assert result["truth_inputs"] == 0
     assert result["terminal_trace_count"] == 0
     assert result["classification_counts"] == {"legacy_claim_preview_not_replayed": 1}
+    assert result["passed"] is False
 
 
 def test_strict_proof_trace_reverify_recomputes_from_frozen_ir(tmp_path: Path) -> None:
@@ -293,7 +381,7 @@ def test_strict_proof_trace_reverify_recomputes_from_frozen_ir(tmp_path: Path) -
             store.put_evidence(
                 kind=kind,
                 payload=case[key],
-                producer="zscope.proof-kernel.v2",
+                producer="zscope.proof-kernel.v4",
             )
         )
     store.append_event(
@@ -310,6 +398,7 @@ def test_strict_proof_trace_reverify_recomputes_from_frozen_ir(tmp_path: Path) -
     assert result["llm_calls"] == 0
     assert result["truth_inputs"] == 0
     assert result["classification_counts"] == {"valid_certificate": 1}
+    assert result["passed"] is True
 
 
 def test_terminal_and_view_events_preserve_root_alias_trace(tmp_path: Path) -> None:
@@ -321,7 +410,7 @@ def test_terminal_and_view_events_preserve_root_alias_trace(tmp_path: Path) -> N
         "validation_status": "validated",
         "proof_coverage": "complete",
         "decision_proof": {"coverage": "complete", "polarity": "positive"},
-        "terminal_authority_decision": _authority("confirmed"),
+        **_authority_bundle("confirmed"),
         "finding_root_uid": "ROOT_1",
     }
     alias = {
@@ -331,6 +420,7 @@ def test_terminal_and_view_events_preserve_root_alias_trace(tmp_path: Path) -> N
         "finding_root_uid": "ROOT_1",
         "finding_root_primary_validation_cluster_uid": "VAL_1",
     }
+    _record_live_transition(store, confirmed)
     store.finalize_issue(confirmed, view_memberships=("default", "with_needs_review"))
     store.finalize_issue(alias, view_memberships=("excluded",))
 
@@ -347,6 +437,129 @@ def test_terminal_and_view_events_preserve_root_alias_trace(tmp_path: Path) -> N
         )
         == 1
     )
+
+
+def test_terminal_transition_exact_replay_and_drift_fail_closed(tmp_path: Path) -> None:
+    store = DecisionTraceStore(tmp_path)
+    issue = {
+        "candidate_uid": "CAND_TRANSITION",
+        "validation_cluster_uid": "VAL_TRANSITION",
+        "candidate_disposition": "confirmed",
+        "validation_status": "validated",
+        **_authority_bundle("confirmed"),
+    }
+    authority = issue["terminal_authority_decision"]
+
+    event, created = store.record_terminal_transition(
+        issue,
+        level="V2",
+        authority=authority,
+    )
+    replay, replay_created = store.record_terminal_transition(
+        issue,
+        level="V2",
+        authority=authority,
+    )
+
+    assert created is True
+    assert replay_created is False
+    assert replay == event
+    with pytest.raises(DecisionTraceError, match="replay_drift"):
+        store.record_terminal_transition(issue, level="V3", authority=authority)
+
+    tampered = deepcopy(issue)
+    tampered["terminal_transition_event_hash"] = "f" * 64
+    with pytest.raises(DecisionTraceError, match="replay_drift"):
+        store.record_terminal_transition(tampered, level="V2", authority=authority)
+
+
+def test_proof_terminal_requires_a_persisted_live_transition(tmp_path: Path) -> None:
+    store = DecisionTraceStore(tmp_path)
+    issue = {
+        "candidate_uid": "CAND_NO_TRANSITION",
+        "validation_cluster_uid": "VAL_NO_TRANSITION",
+        "candidate_disposition": "confirmed",
+        "validation_status": "validated",
+        **_authority_bundle("confirmed"),
+    }
+
+    with pytest.raises(DecisionTraceError, match="no exact live transition"):
+        store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
+
+
+def test_terminal_transition_persistence_failure_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = DecisionTraceStore(tmp_path)
+    issue = {
+        "candidate_uid": "CAND_WRITE_FAILURE",
+        "validation_cluster_uid": "VAL_WRITE_FAILURE",
+        "candidate_disposition": "confirmed",
+        "validation_status": "validated",
+        **_authority_bundle("confirmed"),
+    }
+    monkeypatch.setattr(store, "_write", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(DecisionTraceError, match="decision_trace_write_failed"):
+        store.record_terminal_transition(
+            issue,
+            level="V1",
+            authority=issue["terminal_authority_decision"],
+        )
+
+    assert not issue.get("terminal_transition_event_uid")
+    assert store.trace("VAL_WRITE_FAILURE").get("terminal_transition_event_uid") in {None, ""}
+
+
+def test_proven_alias_preserves_the_original_immutable_transition(tmp_path: Path) -> None:
+    store = DecisionTraceStore(tmp_path)
+    alias = {
+        "candidate_uid": "CAND_PROVEN_ALIAS",
+        "validation_cluster_uid": "VAL_PROVEN_ALIAS",
+        "candidate_disposition": "confirmed",
+        "validation_status": "validated",
+        **_authority_bundle("confirmed"),
+    }
+    _record_live_transition(store, alias, level="V3")
+    transition_projection = {
+        key: alias[key]
+        for key in (
+            "terminal_transition_event_uid",
+            "terminal_transition_event_hash",
+            "terminal_transition_authority_sha256",
+            "terminal_transition_level",
+            "terminal_transition_disposition",
+        )
+    }
+    alias.update(
+        {
+            "candidate_disposition": "deduplicated_alias",
+            "status": "deduplicated_alias",
+            "validation_status": "deduplicated_alias",
+            "finding_root_original_disposition": "confirmed",
+            "finding_root_uid": "ROOT_PROVEN_ALIAS",
+            "finding_root_primary_validation_cluster_uid": "VAL_PRIMARY",
+        }
+    )
+
+    store.finalize_issue(alias, view_memberships=("excluded",))
+
+    assert {key: alias[key] for key in transition_projection} == transition_projection
+    trace = store.trace("VAL_PROVEN_ALIAS")
+    policy_events = [event for event in trace["events"] if event["stage"] == "policy"]
+    assert [event["event_uid"] for event in policy_events] == [
+        transition_projection["terminal_transition_event_uid"]
+    ]
+    assert (
+        trace["terminal_transition_event_hash"]
+        == transition_projection["terminal_transition_event_hash"]
+    )
+    assert trace["terminal_disposition"] == "deduplicated_alias"
+    assert {event["reason_code"] for event in trace["events"] if event["stage"] == "report"} == {
+        "ROOT_ALIAS",
+        "VIEW_EXCLUDED",
+    }
 
 
 def test_report_projection_attaches_trace_to_every_terminal_finding(tmp_path: Path) -> None:
@@ -367,7 +580,7 @@ def test_report_projection_attaches_trace_to_every_terminal_finding(tmp_path: Pa
                 if disposition == "confirmed"
                 else "rejected" if disposition == "rejected_with_proof" else "needs_review"
             ),
-            "terminal_authority_decision": _authority(disposition),
+            **_authority_bundle(disposition),
         }
         if disposition in {"confirmed", "rejected_with_proof"}:
             issue["proof_coverage"] = "complete"
@@ -375,6 +588,7 @@ def test_report_projection_attaches_trace_to_every_terminal_finding(tmp_path: Pa
                 "coverage": "complete",
                 "polarity": "positive" if disposition == "confirmed" else "negative",
             }
+            _record_live_transition(store, issue)
         outcomes.append(
             {
                 "validation_cluster_uid": cluster,
@@ -541,6 +755,24 @@ def test_terminal_authority_never_accepts_model_rejection_without_counterproof()
     assert unclosed_verified.reason_code == "NEEDS_REVIEW_OPEN_CLAUSES"
 
 
+def test_legacy_v3_terminal_is_audit_only_and_cannot_create_live_trace(tmp_path: Path) -> None:
+    issue = {
+        "candidate_uid": "CAND_LEGACY",
+        "validation_cluster_uid": "VAL_LEGACY",
+        "candidate_disposition": "confirmed",
+        "validation_status": "validated",
+        "terminal_authority_decision": _legacy_authority("confirmed"),
+    }
+
+    assert terminal_reason_codes(issue) == ("NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE",)
+    assert audit_terminal_reason_codes(issue) == ("CONFIRMED_DETERMINISTIC_PROOF",)
+    with pytest.raises(DecisionTraceError, match="TerminalAuthorityDecision v4"):
+        DecisionTraceStore(tmp_path).finalize_issue(
+            issue,
+            view_memberships=("default", "with_needs_review"),
+        )
+
+
 def test_terminal_authority_ignores_legacy_conflict_proofs() -> None:
     evaluator = TerminalAuthorityEvaluator()
     base = {
@@ -586,9 +818,10 @@ def test_explain_and_policy_replay_are_offline_and_hash_verified(tmp_path: Path,
         "validation_status": "validated",
         "proof_coverage": "complete",
         "decision_proof": {"coverage": "complete", "polarity": "positive"},
-        "terminal_authority_decision": _authority("confirmed"),
+        **_authority_bundle("confirmed"),
     }
     store.bind_candidate("VAL_1", candidate_uids=("CAND_1",))
+    _record_live_transition(store, issue)
     store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
     manifest = store.snapshot()
     report_path = tmp_path / "report.json"
@@ -623,8 +856,8 @@ def test_explain_and_policy_replay_are_offline_and_hash_verified(tmp_path: Path,
         == 0
     )
     replay = json.loads(capsys.readouterr().out)
-    assert replay["matches_frozen_terminal"] is False
-    assert replay["policy_issue"] == "proof_kernel_artifacts_unavailable"
+    assert replay["matches_frozen_terminal"] is True
+    assert replay["policy_issue"] == "none"
 
 
 def test_no_candidate_audit_unit_has_coverage_trace(tmp_path: Path) -> None:
@@ -673,7 +906,7 @@ def test_usage_sidecar_is_hash_bound_and_token_conserved(tmp_path: Path, capsys)
         "candidate_uid": "CAND_1",
         "validation_cluster_uid": "VAL_1",
         "candidate_disposition": "needs_review",
-        "terminal_authority_decision": _authority("needs_review"),
+        **_authority_bundle("needs_review"),
     }
     store.finalize_issue(issue, view_memberships=("with_needs_review",))
     manifest = store.snapshot()
@@ -765,3 +998,47 @@ def test_nested_cluster_usage_is_bound_to_decision_trace(tmp_path: Path) -> None
     assert binding["reason_code"] == "LLM_USAGE_BOUND"
     assert binding["call_ids"] == ["CALL_NESTED_MODEL"]
     assert binding["details"]["call_kind"] == "v3_tool_dependency"
+
+
+def test_decision_trace_io_failures_expose_only_fixed_classes(monkeypatch, tmp_path) -> None:
+    secret = "PRIVATE_SOURCE_AND_EXPECTED_ANSWER_MUST_NOT_LEAK"
+    store = DecisionTraceStore(tmp_path, scan_uid="SCAN_FAILURE_SAFE")
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError(secret)
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            "zscope.orchestration.decision_trace._atomic_write_json",
+            fail_write,
+        )
+        store._write(tmp_path / "trace.json", {})
+
+    manifest = store.snapshot()
+    assert manifest["errors"] == ["decision_trace_write_failed"]
+    assert manifest["error_counts"] == {"decision_trace_write_failed": 1}
+    assert secret not in json.dumps(manifest, ensure_ascii=False, sort_keys=True)
+
+    def fail_read(*_args, **_kwargs):
+        raise OSError(secret)
+
+    with monkeypatch.context() as context:
+        context.setattr(Path, "read_text", fail_read)
+        with pytest.raises(DecisionTraceError) as raised:
+            load_decision_trace(tmp_path / "trace.json")
+        evidence_result = verify_evidence_object(tmp_path / "evidence.json")
+        model_result = verify_model_event(tmp_path / "model.json")
+
+    serialized = json.dumps(
+        {
+            "load": str(raised.value),
+            "evidence": evidence_result,
+            "model": model_result,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert secret not in serialized
+    assert str(raised.value) == "decision_trace_load_failed"
+    assert evidence_result == (False, "evidence_object_load_failed")
+    assert model_result == (False, "model_event_load_failed")

@@ -37,7 +37,13 @@ PROVIDER_MODEL_ENVIRONMENT_KEY = "Z_SCOPE_LLM_MODEL"
 P6_PROVIDER_BASE_URL = "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1"
 P6_PROVIDER_MODEL = "deepseek-v4-flash"
 P6_PROVIDER_RESPONSE_MODEL = "deepseek-v4-flash-ga-260731"
+P6_PROVIDER_ACCEPTED_RESPONSE_MODELS = tuple(
+    sorted({P6_PROVIDER_MODEL, P6_PROVIDER_RESPONSE_MODEL})
+)
+P6_PROVIDER_PROBE_SCHEMA_VERSION = "zscope.p6-provider-probe.v2"
 P6_MAX_CONCURRENT_CALLS = 8
+P6_MAX_TRANSPORT_RETRIES = 1
+P6_MAX_CONTRACT_REGENERATIONS = 1
 
 _ENV_REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 _ENV_ASSIGNMENT_RE = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\Z")
@@ -480,7 +486,7 @@ def require_p6_provider_contract(config_path: Path) -> ProviderRuntimeContract:
         or type(profile.get("max_tokens")) is not int
         or profile.get("max_tokens") != 8192
         or type(profile.get("max_retries")) is not int
-        or profile.get("max_retries") != 2
+        or profile.get("max_retries") != P6_MAX_TRANSPORT_RETRIES
         or profile.get("retry_until_available") is not False
         or profile.get("supports_structured_output") is not False
         or profile.get("require_exact_response_model") is not True
@@ -710,8 +716,10 @@ def probe_provider(
         raise ProviderProbeError("provider_protocol_incompatible") from exc
     if not isinstance(payload, Mapping):
         raise ProviderProbeError("provider_protocol_incompatible")
-    if not contract.accepts_response_model(payload.get("model")):
+    actual_response_model = payload.get("model")
+    if not contract.accepts_response_model(actual_response_model):
         raise ProviderProbeError("provider_identity_mismatch")
+    assert isinstance(actual_response_model, str)
     usage = payload.get("usage")
     prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, Mapping) else None
     completion_tokens = usage.get("completion_tokens") if isinstance(usage, Mapping) else None
@@ -754,7 +762,12 @@ def probe_provider(
         "provider_usage_coverage": 1.0,
         "requested_model": contract.model,
         "requested_model_coverage": 1.0,
-        "response_model": contract.response_model,
+        # This is the provider payload identity observed on the wire.  Never
+        # replace it with the configured response-model expectation: both the
+        # requested gateway alias and its frozen versioned deployment are
+        # accepted identities, and downstream evidence must retain which one
+        # the provider actually returned.
+        "response_model": actual_response_model,
         "response_model_coverage": 1.0,
         "queue_empty": True,
         "dimensions": {
@@ -770,7 +783,7 @@ def probe_provider(
         },
     }
     return {
-        "schema_version": "zscope.p6-provider-probe.v1",
+        "schema_version": P6_PROVIDER_PROBE_SCHEMA_VERSION,
         "stage": "provider",
         "passed": True,
         "call_count": 1,
@@ -779,6 +792,7 @@ def probe_provider(
         "provider_identity_sha256": contract.identity_sha256,
         "config_sha256": contract.config_sha256,
         "model": contract.model,
+        "response_model": actual_response_model,
         "usage_conservation": conservation,
     }
 

@@ -22,10 +22,12 @@ from zscope.benchmarking.p6_protocol import (
     artifact_root_sha256,
     build_qualification_from_projections,
     build_stage_artifact,
+    derive_p6_artifact_canaries,
     seal_toolchain_evidence,
     emit_workflow_failure,
     public_failure_annotation,
     record_stage_result,
+    scan_regular_artifact_tree_for_canaries,
     canonical_sha256,
     validate_answer_free_artifact,
     validate_checkpoint,
@@ -79,7 +81,7 @@ def _provider_probe() -> dict[str, object]:
             "conserved": True,
         }
     return {
-        "schema_version": "zscope.p6-provider-probe.v1",
+        "schema_version": "zscope.p6-provider-probe.v2",
         "stage": "provider",
         "passed": True,
         "call_count": 1,
@@ -88,6 +90,7 @@ def _provider_probe() -> dict[str, object]:
         "provider_identity_sha256": "7" * 64,
         "config_sha256": "6" * 64,
         "model": "deepseek-v4-flash",
+        "response_model": "deepseek-v4-flash-ga-260731",
         "usage_conservation": usage,
     }
 
@@ -107,6 +110,10 @@ def _toolchain_evidence() -> dict[str, object]:
         "image_ref": "registry.invalid/zscope@sha256:" + "3" * 64,
         "image_digest": "sha256:" + "3" * 64,
         "image_id": "sha256:" + "4" * 64,
+        "image_provenance_sha256": "7" * 64,
+        "image_provenance_content_sha256": "8" * 64,
+        "proxy_provision_sha256": "9" * 64,
+        "proxy_provision_content_sha256": "a" * 64,
         "runtime_source_sha256": "5" * 64,
         "oci_execution_sha256": "6" * 64,
         "rootless_verified": True,
@@ -251,23 +258,35 @@ def _pilot_aggregate(
             "complete": True,
             "conservation_passed": True,
             "provider_usage_coverage": 1.0,
+            "call_count": 3,
             "totals": {
-                "call_count": 3,
-                "estimated_or_conservative_calls": 0,
-                "failed_or_unknown_calls": 0,
-                "budget_violation_count": 0,
+                "total_tokens": 3,
             },
         },
+        "estimated_provider_call_count": 0,
+        "failed_or_unknown_call_count": 0,
+        "budget_violation_count": 0,
         "token_conservation_passed": True,
         "provider_usage_coverage": 1.0,
         "provider_response_model_coverage": 1.0,
         "provider_response_model_missing_count": 0,
         "provider_response_model_mismatch_count": 0,
         "requested_model_mismatch_count": 0,
+        "provider_response_model_successful_call_count": 3,
+        "provider_response_model_counts": {
+            "deepseek-v4-flash": 0,
+            "deepseek-v4-flash-ga-260731": 3,
+        },
+        "provider_response_model_counts_conserved": True,
         "telemetry_complete_rate": 1.0,
         "protocol_anomaly_count": 0,
         "candidate_funnel": {"v3_investigation": {"eligible": 2, "entered": 2}},
         "p6_conservation": _usage_conservation(),
+        "p6_terminal_authority": {
+            "passed": True,
+            "post_terminal_model_call_count": 0,
+            "post_terminal_tool_call_count": 0,
+        },
     }
     return {
         "language": "cpp",
@@ -278,6 +297,7 @@ def _pilot_aggregate(
         "cold_runs": 1,
         "all_completed": True,
         "passed": True,
+        "answer_free_producer": True,
         "git_sha": git_sha,
         "git_tree": git_tree,
         "runs": [
@@ -285,6 +305,7 @@ def _pilot_aggregate(
                 "completed": True,
                 "formal_benchmark": False,
                 "release_eligible": False,
+                "answer_free_producer": True,
                 "queue_empty": True,
                 "gate_failures": [],
                 "metrics": metrics,
@@ -308,6 +329,7 @@ def _pilot_aggregate(
 
 
 def _materialize_checkpoint(root: Path, *, complete: bool = True) -> tuple[dict, Path]:
+    candidate_sha256 = hashlib.sha256(("1" * 40).encode()).hexdigest()
     stages = list(P6_CHECKPOINT_STAGE_ORDER if complete else P6_CHECKPOINT_STAGE_ORDER[:4])
     artifacts_root = root / "stage-artifacts"
     artifacts_root.mkdir(parents=True)
@@ -319,7 +341,7 @@ def _materialize_checkpoint(root: Path, *, complete: bool = True) -> tuple[dict,
             attempt_id="p6-33260000001-2",
             control_plane_commit="c" * 40,
             stage=stage,
-            candidate_sha256="1" * 64,
+            candidate_sha256=candidate_sha256,
             policy_sha256="2" * 64,
             plan_sha256="3" * 64,
             input_sha256="4" * 64,
@@ -351,7 +373,7 @@ def _materialize_checkpoint(root: Path, *, complete: bool = True) -> tuple[dict,
         "status": "complete" if complete else "partial",
         "completed_stages": stages,
         "stage_artifacts": rows,
-        "candidate_sha256": "1" * 64,
+        "candidate_sha256": candidate_sha256,
         "policy_sha256": "2" * 64,
         "plan_sha256": "3" * 64,
         "input_sha256": "4" * 64,
@@ -413,8 +435,34 @@ def test_complete_checkpoint_requires_restoration_and_partial_is_diagnostic_only
 
 def _finalize_fixture(tmp_path: Path) -> tuple[argparse.Namespace, bytes, Path]:
     checkpoint, artifact_root = _materialize_checkpoint(tmp_path)
-    payload = tmp_path / "final-evidence.json"
-    payload_bytes = b'{"schema_version":"zscope.p6-final-evidence.v1","passed":true}\n'
+    candidate_sha256 = hashlib.sha256(("1" * 40).encode()).hexdigest()
+    payload_root = tmp_path / "payload"
+    payload_root.mkdir()
+    evidence = payload_root / "evidence.json"
+    evidence_bytes = b'{"schema_version":"zscope.p6-synthetic-evidence.v1"}\n'
+    evidence.write_bytes(evidence_bytes)
+    manifest = {
+        "schema_version": "zscope.p6-final-evidence-manifest.v1",
+        "control_plane_commit": "c" * 40,
+        "candidate_git_sha": "1" * 40,
+        "workflow_run_id": "33260000001",
+        "workflow_run_attempt": 2,
+        "attempt_id": "p6-33260000001-2",
+        "artifacts": [
+            {
+                "path": "evidence.json",
+                "sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+            }
+        ],
+        "phase_status": {stage: "completed" for stage in P6_CHECKPOINT_STAGE_ORDER},
+        "formal_benchmark": False,
+        "release_eligible": False,
+    }
+    manifest["evidence_sha256"] = canonical_sha256(manifest)
+    payload = payload_root / "final-evidence-manifest.json"
+    payload_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
+    )
     payload.write_bytes(payload_bytes)
     final_path = artifact_root / "final_evidence_seal.json"
     final_artifact = build_stage_artifact(
@@ -423,7 +471,7 @@ def _finalize_fixture(tmp_path: Path) -> tuple[argparse.Namespace, bytes, Path]:
         attempt_id="p6-33260000001-2",
         control_plane_commit="c" * 40,
         stage="final_evidence_seal",
-        candidate_sha256="1" * 64,
+        candidate_sha256=candidate_sha256,
         policy_sha256="2" * 64,
         plan_sha256="3" * 64,
         input_sha256="4" * 64,
@@ -467,7 +515,7 @@ def _finalize_fixture(tmp_path: Path) -> tuple[argparse.Namespace, bytes, Path]:
         workflow_run_attempt=2,
         attempt_id="p6-33260000001-2",
         control_plane_commit="c" * 40,
-        candidate_sha256="1" * 64,
+        candidate_sha256=candidate_sha256,
         policy_sha256="2" * 64,
         plan_sha256="3" * 64,
         input_sha256="4" * 64,
@@ -486,7 +534,7 @@ def test_finalize_uses_single_payload_read_when_path_is_exchanged(
     monkeypatch, tmp_path: Path
 ) -> None:
     args, original_bytes, payload = _finalize_fixture(tmp_path)
-    secure_read = p6_cli.read_regular_file_once
+    secure_read = p6_protocol.read_regular_file_once
 
     def exchange_after_read(path: Path, **kwargs):
         data = secure_read(path, **kwargs)
@@ -496,7 +544,7 @@ def test_finalize_uses_single_payload_read_when_path_is_exchanged(
             os.replace(replacement, payload)
         return data
 
-    monkeypatch.setattr(p6_cli, "read_regular_file_once", exchange_after_read)
+    monkeypatch.setattr(p6_protocol, "read_regular_file_once", exchange_after_read)
     assert p6_cli._finalize_checkpoint(args) == 0
     assert args.output.read_bytes() == original_bytes
     assert payload.read_bytes() != original_bytes
@@ -750,7 +798,45 @@ def test_qualification_binds_physical_provider_probe_and_global_usage() -> None:
         attempt_id="p6-33260000001-2",
     )
     assert qualification["provider_probe"]["artifact_sha256"] == "0" * 64
+    assert qualification["provider_probe"]["response_model"] == "deepseek-v4-flash-ga-260731"
     assert qualification["usage_conservation"]["physical_call_count"] == 13
+
+    requested_alias = copy.deepcopy(probe)
+    requested_alias["response_model"] = "deepseek-v4-flash"
+    requested_alias["usage_conservation"]["response_model"] = "deepseek-v4-flash"
+    alias_qualification = build_qualification_from_projections(
+        projections=projections,
+        projection_file_sha256s={
+            "fast": "b" * 64,
+            "balanced": "c" * 64,
+            "deep": "d" * 64,
+        },
+        cache_identity_sha256s={
+            depth: _depth_cache_sha256(depth) for depth in ("fast", "balanced", "deep")
+        },
+        candidate_sha256=toolchain["candidate_sha256"],
+        policy_sha256="e" * 64,
+        offline_evidence_sha256="f" * 64,
+        offline_usage_conservation=_usage_conservation(3),
+        provider_probe=requested_alias,
+        provider_probe_file_sha256="0" * 64,
+        toolchain_evidence=toolchain,
+        toolchain_evidence_file_sha256="8" * 64,
+        control_plane_commit="c" * 40,
+        attempt_id="p6-33260000001-2",
+    )
+    assert alias_qualification["provider_probe"]["response_model"] == "deepseek-v4-flash"
+
+    tampered_actual = copy.deepcopy(probe)
+    tampered_actual["response_model"] = "unfrozen-provider-deployment"
+    tampered_actual["usage_conservation"]["response_model"] = "unfrozen-provider-deployment"
+    with pytest.raises(P6ProtocolError, match="probe invariants"):
+        validate_provider_probe(tampered_actual)
+
+    mismatched_actual = copy.deepcopy(probe)
+    mismatched_actual["response_model"] = "deepseek-v4-flash"
+    with pytest.raises(P6ProtocolError, match="call conservation"):
+        validate_provider_probe(mismatched_actual)
 
     mismatched = copy.deepcopy(probe)
     mismatched["provider_identity_sha256"] = "1" * 64
@@ -836,6 +922,33 @@ def test_answer_gate_rejects_contaminated_key_and_canary(tmp_path: Path) -> None
     clean.write_text(json.dumps({"value": "private-marker"}), encoding="utf-8")
     with pytest.raises(P6ProtocolError, match="protected canary"):
         validate_answer_free_artifact(clean, canaries=("private-marker",))
+
+
+@pytest.mark.parametrize("category_index", range(7))
+def test_literal_artifact_scanner_rejects_each_actual_canary_in_a_benign_field(
+    tmp_path: Path, category_index: int
+) -> None:
+    canaries = derive_p6_artifact_canaries(
+        workflow_run_id="33260000001",
+        workflow_run_attempt=2,
+        candidate_git_sha="1" * 40,
+    )
+    payload = tmp_path / "payload.json"
+    payload.write_bytes(b'{"details":"' + canaries[category_index] + b'"}\n')
+
+    with pytest.raises(P6ProtocolError, match="protected canary"):
+        scan_regular_artifact_tree_for_canaries(payload, canaries=canaries)
+
+
+def test_literal_artifact_scanner_detects_an_actual_key_across_read_chunks(
+    tmp_path: Path,
+) -> None:
+    key = b"actual-key-canary-that-must-never-land"
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"x" * (1024 * 1024 - 5) + key + b"tail")
+
+    with pytest.raises(P6ProtocolError, match="protected canary"):
+        scan_regular_artifact_tree_for_canaries(payload, canaries=(key,))
 
 
 def test_workflow_failure_is_typed_and_materializes_all_skips(tmp_path: Path) -> None:

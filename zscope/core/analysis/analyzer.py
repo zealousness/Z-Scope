@@ -17,7 +17,7 @@ import uuid
 from collections import deque
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, cast
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, cast
 
 from ...config.config import ZScopeConfig, minimum_optional_positive_seconds
 from ...config.function_entry import FunctionEntry
@@ -4353,11 +4353,11 @@ class Analyzer:
             ).hexdigest(),
             revisions={
                 "security_spec_compiler": SecuritySpecCompiler.compiler_version,
-                "hypothesis_hunter": "hypothesis-hunter.v3",
-                "proof_registry": "proof-kernel.v2",
+                "hypothesis_hunter": "hypothesis-hunter.v4",
+                "proof_registry": "proof-kernel.v4",
                 "proof_checker": "proof-checker.v2",
                 "proof_provider": "proof-provider.v2",
-                "terminal_authority": "terminal-authority.v3",
+                "terminal_authority": "terminal-authority.v4",
             },
         )
         state["runtime_authority_manifest"] = runtime_authority
@@ -4499,8 +4499,18 @@ class Analyzer:
                 and item.get("budget_reached")
             ),
             "diff_focus": dict(state.get("diff_focus", {})),
-            "audit_observation_count": len(state.get("observations", [])),
-            "audit_observations": list(state.get("observations", [])),
+            **self._audit_observation_metadata(state),
+        }
+
+    @staticmethod
+    def _audit_observation_metadata(state: Mapping[str, Any]) -> Dict[str, Any]:
+        """Export the pre-score audit bucket, never the actionable review view."""
+
+        raw = state.get("audit_observations")
+        observations = list(raw) if isinstance(raw, list) else []
+        return {
+            "audit_observation_count": len(observations),
+            "audit_observations": observations,
         }
 
     @staticmethod

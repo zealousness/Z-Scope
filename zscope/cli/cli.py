@@ -17,6 +17,7 @@ from ..framework.conversation_recorder import enable_conversation_recording
 from ..framework.llm_client import ProviderFailureError
 from ..framework import provider_failure_marker
 from ..framework.llm_usage import (
+    P6BalancedTokenAdmissionError,
     ensure_scan_token_usage_ledger,
     scan_token_usage_snapshot,
 )
@@ -281,6 +282,8 @@ def main(
     try:
         zscope_config = ConfigLoader.load(str(config), scan_depth=scan_depth)
         logger.info(f"Loaded configuration from: {config}")
+        if p6_pilot and zscope_config.scan.depth == "balanced":
+            ensure_scan_token_usage_ledger(zscope_config).enable_p6_balanced_admission()
         if task_id:
             click.echo(f"Task ID: {task_id}")
         if verbose:
@@ -774,6 +777,14 @@ def main(
             logger.error("P6 provider failure marker write failed")
         logger.error("Analysis failed: provider request failed")
         sys.exit(exit_code)
+    except P6BalancedTokenAdmissionError as exc:
+        # P6 admission failures expose only their frozen class.  In
+        # particular, never let the generic exception handler serialize an
+        # exception body or traceback into scanner logs.
+        if not p6_pilot:
+            raise
+        logger.error("Analysis failed: %s", exc.failure_class)
+        sys.exit(2)
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
         sys.exit(2)

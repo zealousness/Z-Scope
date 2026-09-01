@@ -299,9 +299,9 @@ C/C++ 确定性引擎对外保留 `RegexCandidateGenerator`、`ClangAstCfgCandid
 
 ### 5.4 Scan-wide token 计量
 
-public v2 提供 `fast / balanced / deep`，档位决定启用的分析阶段、规划风险阈值和 V3 调查范围。产品运行时没有 scan-wide token 硬上限，也没有 `scan.max_llm_tokens`；2M/12M/30M 等数值只属于 Range Benchmark policy，在完整扫描结束后评价成本是否符合预期，绝不参与请求准入或提前终止。
+public v2 提供 `fast / balanced / deep`，档位决定启用的分析阶段、规划风险阈值和 V3 调查范围。普通产品运行时没有 scan-wide token 硬上限，也没有 `scan.max_llm_tokens`；2M/12M/30M 等数值通常只属于 Range Benchmark 运行后成本度量。唯一的请求准入例外是 P6 cold balanced：为保证选定 attempt 严格低于 12,000,000 tokens，P6 调度器在 10,500,000 软水位停止启动低价值线索，并在每批前以 `used + reserved_inflight <= 11,999,999` 做保守准入。该规则不改变产品 CLI 的普通运行语义。
 
-`ScanTokenUsageLedger` 在每次真实 HTTP attempt 前登记安全估算，仅用于连接中断且 provider usage 缺失时保守计量。provider 返回后按原始 prompt+completion 结算，cached/reasoning 只作子项统计；重试、repair 和 fallback 分别计量。它不会缩短 completion allowance、拒绝新调用或取消在途请求。
+`ScanTokenUsageLedger` 在每次真实 HTTP attempt 前登记安全估算，仅用于连接中断且 provider usage 缺失时保守计量。provider 返回后按原始 prompt+completion 结算，cached/reasoning 只作子项统计；重试、repair 和 fallback 分别计量。普通扫描下它不缩短 completion allowance、拒绝新调用或取消在途请求；只有显式启用的 P6 cold balanced 控制面会按上述固定软/硬水位在 provider 调用前 fail closed，且不会取消已在途请求。
 
 每个 `LLMUsageEvent` 记录 agent、stage、candidate/cluster、model、finish reason、prompt/completion/cached/reasoning、provider/estimated、retry/repair、工具次数与新增事实数，不包含 prompt 或思维正文。报告按 agent/stage 聚合并验证 call 级守恒。Benchmark 再读取这些完成后的事实做成本门禁。
 
@@ -339,20 +339,24 @@ Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根�
 | 模块 | 职责 |
 |------|------|
 | `zscope/core/validation/evidence.py` | 构造冻结 evidence slice、SecurityObligation 与 action 请求所需证据 |
-| `zscope/core/validation/runner.py` | 编译 obligation/action、调用 Checker、停止已闭合 cluster 并由 TerminalAuthority 写 outcome |
+| `zscope/core/validation/runner.py` | 冻结 obligation/action、调用唯一 ProofKernel reducer、停止已闭合 cluster 并由 TerminalAuthority v4 写 outcome |
 | `zscope/core/validation/pipeline.py` | 应用 suppression、baseline、history feedback 和诊断 score；不能以模型意见晋级 |
 
 这层的设计目标是让所有候选都先保持“待证明”的形态，再由统一的 Proof Engine 门禁决定是否形成 `confirmed`、`rejected_with_proof` 或 `needs_review`。规则置信度、历史 disposition、模型 verdict 和诊断 score 都不能绕过 Checker closure。
 
-Proof Engine 仍可使用 bounded v3 evidence slice 作为模型适配器输入，但它只允许选择系统预绑定的 EvidenceAction ID。每个 required executable clause 必须有独立 Checker 结果；未选择 action、缺少 coverage、Java Preview 能力不完整或 predicate 不可执行时保持 `needs_review`，不能回退到旧 Validator 或启发式确认。
+Proof Engine 把原始 obligation、Proof IR、依赖、required/open clauses、root manifest 与输入哈希冻结为唯一 `FrozenProofState`。V1/V2/V3、Hunter attached proof、resume 与 replay 只能调用同一 ProofKernel reducer 产生 `ProofClosureEvaluation`；不得跨 obligation 累积 Checker 结果。`fact_plan_complete` 仅表示请求的事实收集完成，不等于 proof closure，也不能晋级终态。模型仍只能选择系统预绑定的 EvidenceAction ID；未选 action、缺少 coverage、Java Preview 能力不完整或 predicate 不可执行时保持 `needs_review`。
 
 Proof Kernel 把唯一、完整的 `FunctionIRGraph v1` 转换为语言中立 `ProgramProofIR v2`，并把 `ProofObligation`、固定参数 `EvidenceAction v2`、provider 提出的 `EvidenceCertificate v2` 和独立 Checker 重算的 `ProofCheckResult` 写入不可变 CAS 与 Decision Trace。四组 provider 不能产出终态或自证 coverage；只有 Checker 对冻结 IR、subject、region、scope、量词、CFG/出口、assumption allowlist 及 code/IR/backend/dependency hash 全部复算一致后才会形成 accepted fact。缺字段的早期同名证书仅为 `legacy_preview`，不能关闭 live clause；`zscope-explain reverify` 与 `alert-verify` 都从冻结 IR 离线重算。
 
-P5 候选中 Proof Engine 固定为不可配置的 `authoritative`。`TerminalAuthorityDecision v3` 只接纳当前运行从严格 proof input 重算得到的 Checker refs、proof root 和 `integrity_status=verified`；旧 certificate、旧 proof 字段、compat bridge 或模型文本都保持 needs-review。完整正证、反证或确定 needs-review 后程序立即停止当前 cluster 的后续模型/工具调用。每个 cluster 恰好写一个 terminal event，同时冻结 active SecuritySpec/Hunter/Proof refs、最终 disposition、reason code 和完整性状态。
+P6/v4 中 Proof Engine 固定为不可配置的 `authoritative`。只有完整 obligation closure 才能签发 `PromotionCertificate v1`，`TerminalAuthority v4` 只接纳该证书及当前运行重算的 Checker refs、proof root 和 `integrity_status=verified`。V3 取得新 fact 后必须回到同一 `FrozenProofState` 重算全部 closure，不能直接设置 promotion eligible。完整正证、反证或确定 needs-review 后程序立即停止当前 cluster 的后续模型/工具调用。
+
+P6/v4 同时提升 runtime、prompt、cache 与 proof revision。旧 `TerminalAuthorityDecision v3`、certificate、proof 字段、compat bridge、cache/checkpoint 只可读取和审计，不得授权新的 live/resume confirmation；恢复时必须从原始 obligation 按 v4 完整重建与重验，无法重建的记录保持 `needs_review`。每个 cluster 恰好写一个 terminal event，同时冻结 active SecuritySpec/Hunter/Proof refs、promotion certificate、最终 disposition、reason code 和完整性状态。
 
 Security Spec Kernel 在 `zscope/semantics/security_specs/` 维护严格对象、13 类有限 DSL、内容寻址存储、qualification、review hash chain 与 authoritative compiler。确定性程序事实优先；模型适配器只在 unknown audit unit 上选择系统提供的 subject/scope/evidence/predicate/slot ID，且最高产生 `proposed`。运行时按 `spec_uid`只取最高有效 revision，且只有 qualification-backed `stable`、revision/freshness/evidence/dependency 均有效的规格可参与 live compilation；冲突、过期依赖、未知字段、空 scope 或证据不可解析一律 fail closed。Web Review Center 因缺少可信 reviewer identity继续固定只读，review/apply-import返回403，compile preview必须绑定实际scan facts且仍非权威。
 
 Hypothesis Hunter 在 `zscope/orchestration/hypothesis_hunter/`维护严格攻击面单元、局部coverage key、系统生成offer、一次结构化选择和独立CAS。Hunter没有repository tool，也看不到live Candidate内容、Finding-root或历史 verdict，只能选择投影内的offer、fact、evidence与EvidenceAction ID；key和scalar在序列化前后都执行Unicode归一化泄漏检查。合格 hypothesis 经公共 `CandidateRegistrar`写入live Ledger时始终强制未确认，随后只由 Proof Engine 关闭。fast固定不运行Hunter；balanced/deep可运行Hunter；alert-verify只加载冻结proof且不运行Hunter或模型。
+
+Finding-root 之外保留独立的 `audit_observations`守恒集合。具体代码锚点、稳定缺陷族、可证伪 obligation 且未被反证的项才可进入 canonical `needs_review`；宽泛模式、无具体对象或无可执行 proof plan 的线索留在 audit。这个分类发生在任何 benchmark 评分之前，只依赖 answer-free eligibility contract；with-needs-review 视图始终包含全部 canonical `needs_review`。
 
 ### 5.7 持久化与反馈平面
 
@@ -512,7 +516,7 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 
 ### 9.3 三态 TerminalAuthority
 
-TerminalAuthority 只根据完整Checker closure返回：
+TerminalAuthority v4 只根据同一 `FrozenProofState` 重算的完整 Checker closure 和有效 `PromotionCertificate v1` 返回：
 
 | disposition | 含义 | 默认处理 |
 |---------|------|----------|

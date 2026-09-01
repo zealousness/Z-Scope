@@ -25,8 +25,12 @@ from ...common.cancellation import (
 from ...common.issue_identity import canonical_issue_key, deduplicate_issues
 from ...config.function_entry import FunctionEntry
 from ...framework.llm_client import LLMClient, ProviderFailureError
+from ...framework.llm_usage import (
+    P6BalancedTokenAdmissionError,
+    llm_usage_attribution_scope,
+)
 from ...orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
-from ...orchestration.decision_trace import ensure_decision_trace_store
+from ...orchestration.decision_trace import DecisionTraceError, ensure_decision_trace_store
 from ...orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
     DECISION_CONTEXT_VERSION,
@@ -59,6 +63,7 @@ def _as_dict(value: Any) -> Dict[str, Any]:
 
 
 from .pipeline import ValidationOutcome, ValidationPipeline
+from .audit_eligibility import evaluate_audit_eligibility
 from .evidence_completion import EvidenceCompletionQueue
 from .fact_capabilities import (
     EvidenceAction,
@@ -95,6 +100,9 @@ class _ValidationWorkerResult:
     error: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     evidence_pack: Dict[str, Any] = field(default_factory=dict)
+    admission_failure_class: str = ""
+    admission_request_denied: bool = False
+    provider_failure_class: str = ""
 
 
 class ValidationResultCache:
@@ -261,6 +269,10 @@ class ValidationRunner:
         self._validator_result_cache = result_cache or ValidationResultCache(
             self._validator_result_cache_size
         )
+        self._validation_prompt_contract = self._build_validation_prompt_contract()
+        self._validation_prompt_contract_sha256 = self._stable_hash(
+            self._validation_prompt_contract
+        )
         self._validation_environment_fingerprint = self._build_validation_environment_fingerprint()
         compile_commands_path = getattr(code_index, "compile_commands_path", None)
         ir_enabled = self._scan_depth() in {"balanced", "deep"}
@@ -306,7 +318,7 @@ class ValidationRunner:
                 "validator_protocol": VALIDATOR_PROTOCOL_V3,
                 "model_identity_sha256": self._stable_hash(model_identity),
                 "provider_identity_sha256": self._stable_hash(provider_urls),
-                "prompt_contract_sha256": self._validation_environment_fingerprint,
+                "prompt_contract_sha256": self._validation_prompt_contract_sha256,
             }
         )
         self._terminal_authority = TerminalAuthorityEvaluator()
@@ -332,6 +344,7 @@ class ValidationRunner:
         token_delta: int = 0,
         details: Optional[Dict[str, Any]] = None,
         dedupe_key: str = "",
+        required: bool = False,
     ) -> None:
         cluster_uid = self._trace_cluster_uid(issue)
         if not cluster_uid:
@@ -355,9 +368,16 @@ class ValidationRunner:
                 open_clause_ids=tuple(self._open_clause_ids(issue)),
                 details=details,
                 dedupe_key=dedupe_key,
+                require_persistence=required,
             )
-        except Exception as exc:
-            logger.warning("Decision trace append failed for %s: %s", cluster_uid, exc)
+        except Exception:
+            if required:
+                raise
+            logger.warning(
+                "Decision trace append failed for %s class=%s",
+                cluster_uid,
+                "decision_trace_append_failed",
+            )
 
     @staticmethod
     def _trace_state(issue: Dict[str, Any]) -> Dict[str, Any]:
@@ -423,20 +443,31 @@ class ValidationRunner:
         evidence_refs: tuple[str, ...] = (),
     ) -> None:
         events = self._cluster_usage_events(issue)[usage_start:]
-        call_ids = tuple(
+        all_call_ids = tuple(
             str(value.get("call_id") or "") for value in events if value.get("call_id")
         )
-        token_delta = sum(int(value.get("total_tokens") or 0) for value in events)
+        cluster_uid = self._trace_cluster_uid(issue)
+        bound_call_ids = self._decision_trace_store.bound_call_ids(cluster_uid)
+        call_ids = tuple(value for value in all_call_ids if value not in bound_call_ids)
+        token_delta = sum(
+            int(value.get("total_tokens") or 0)
+            for value in events
+            if str(value.get("call_id") or "") in call_ids
+        )
+        bound_tool_call_ids = self._decision_trace_store.bound_tool_call_ids(cluster_uid)
+        trace_tool_call_ids = tuple(
+            value for value in tool_call_ids if value not in bound_tool_call_ids
+        )
         ref = self._decision_trace_store.put_model_event(
-            call_identity=f"{self._trace_cluster_uid(issue)}:{stage}:{usage_start}",
+            call_identity=f"{cluster_uid}:{stage}:{usage_start}",
             stage=stage,
-            validation_cluster_uid=self._trace_cluster_uid(issue),
+            validation_cluster_uid=cluster_uid,
             structured_input=structured_input,
             structured_output=structured_output,
-            call_ids=call_ids,
+            call_ids=all_call_ids,
             tool_call_ids=tool_call_ids,
             prompt_revision=VALIDATOR_PROTOCOL_V3,
-            prompt_hash=self._validation_environment_fingerprint,
+            prompt_hash=self._rendered_validation_prompt_schema_sha256(structured_input),
         )
         self._trace_event(
             issue,
@@ -445,7 +476,7 @@ class ValidationRunner:
             reason_code=reason_code,
             output_refs=(ref, *evidence_refs),
             call_ids=call_ids,
-            tool_call_ids=tool_call_ids,
+            tool_call_ids=trace_tool_call_ids,
             token_delta=token_delta,
             details={
                 "verdict": validation_verdict(structured_output),
@@ -489,6 +520,7 @@ class ValidationRunner:
                 prepared.append(item)
 
         prepared = self._assign_v3_investigation_budget(prepared)
+        prepared = self._order_balanced_validation_work(prepared)
 
         if self._scan_depth() == "fast":
             for item in prepared:
@@ -503,7 +535,7 @@ class ValidationRunner:
             parent_token.raise_if_cancelled()
         if validation_workers <= 1 and self.scheduler is None:
             validator_agent = self._build_proof_engine_agent() if prepared else None
-            for item in prepared:
+            for position, item in enumerate(prepared):
                 if parent_token is not None:
                     parent_token.raise_if_cancelled()
                 result = self._validate_with_deadline(
@@ -512,6 +544,32 @@ class ValidationRunner:
                     validator_agent=validator_agent,
                 )
                 self._apply_validation_worker_result(state, result)
+                if result.provider_failure_class:
+                    state["pending_new_issues"] = [
+                        pending.raw_issue for pending in prepared[position:]
+                    ]
+                    state["validation_provider_failure_batch_admitted_count"] = 1
+                    state["validation_provider_failure_batch_settled_count"] = 1
+                    state["validation_provider_failure_unstarted_count"] = max(
+                        0, len(prepared) - position - 1
+                    )
+                    state["validation_queue_drained"] = False
+                    raise ProviderFailureError(result.provider_failure_class)
+                if result.admission_failure_class == "p6_token_hard_limit":
+                    for unstarted in prepared[position + 1 :]:
+                        self._apply_validation_worker_result(
+                            state,
+                            _ValidationWorkerResult(
+                                index=unstarted.index,
+                                raw_issue=unstarted.raw_issue,
+                                issue_func=unstarted.issue_func,
+                                success=False,
+                                error="p6_token_hard_limit",
+                                evidence_pack=dict(unstarted.evidence_pack),
+                                admission_failure_class="p6_token_hard_limit",
+                            ),
+                        )
+                    break
         elif prepared:
             logger.info(
                 "Validating %d issue(s) with %d validator worker(s).",
@@ -521,6 +579,7 @@ class ValidationRunner:
             results: Dict[int, _ValidationWorkerResult] = {}
             executor: Optional[ThreadPoolExecutor] = None
             hard_cancelled = False
+            provider_failure_class = ""
             future_to_item: Dict[Future[Any], _PreparedValidation] = {}
             if self.scheduler is None:
                 executor = ThreadPoolExecutor(
@@ -528,69 +587,125 @@ class ValidationRunner:
                     thread_name_prefix="zscope-validator",
                 )
             try:
-                for item in prepared:
-                    if parent_token is not None:
-                        parent_token.raise_if_cancelled()
-                    if self.scheduler is not None:
-                        future = self.scheduler.submit(
-                            VALIDATOR_ROLE,
-                            self._validate_with_deadline,
-                            item,
-                            parent_token=parent_token,
-                            priority=int(item.raw_issue.get("priority_score") or 0),
-                        )
-                    else:
-                        assert executor is not None
-                        future = executor.submit(
-                            self._validate_with_deadline,
-                            item,
-                            parent_token=parent_token,
-                        )
-                    future_to_item[future] = item
-
-                pending = set(future_to_item)
-                while pending:
-                    if parent_token is not None and parent_token.is_cancelled():
-                        hard_cancelled = True
-                        self._cancel_validation_futures(pending)
-                        parent_token.raise_if_cancelled()
-
-                    wait_timeout = self._cancellation_poll_seconds(parent_token)
-                    completed, pending = wait(
-                        pending,
-                        timeout=wait_timeout,
-                        return_when=FIRST_COMPLETED,
-                    )
-                    if parent_token is not None and parent_token.is_cancelled():
-                        hard_cancelled = True
-                        self._cancel_validation_futures(pending)
-                        parent_token.raise_if_cancelled()
-
-                    for future in completed:
-                        item = future_to_item[future]
-                        try:
-                            results[item.index] = future.result()
-                        except CancellationError:
-                            hard_cancelled = True
-                            self._cancel_validation_futures(pending)
-                            raise
-                        except ProviderFailureError:
-                            hard_cancelled = True
-                            self._cancel_validation_futures(pending)
-                            raise
-                        except Exception as exc:
-                            logger.exception(
-                                "Validation worker crashed for issue %s in function %s.",
-                                item.raw_issue.get("id"),
-                                item.issue_func,
+                for batch_start in range(0, len(prepared), validation_workers):
+                    batch = prepared[batch_start : batch_start + validation_workers]
+                    future_to_item = {}
+                    for item in batch:
+                        if parent_token is not None:
+                            parent_token.raise_if_cancelled()
+                        if self.scheduler is not None:
+                            future = self.scheduler.submit(
+                                VALIDATOR_ROLE,
+                                self._validate_with_deadline,
+                                item,
+                                parent_token=parent_token,
+                                priority=self._balanced_scheduler_priority(item),
                             )
-                            results[item.index] = _ValidationWorkerResult(
-                                index=item.index,
-                                raw_issue=item.raw_issue,
-                                issue_func=item.issue_func,
+                        else:
+                            assert executor is not None
+                            future = executor.submit(
+                                self._validate_with_deadline,
+                                item,
+                                parent_token=parent_token,
+                            )
+                        future_to_item[future] = item
+
+                    pending = set(future_to_item)
+                    while pending:
+                        if parent_token is not None and parent_token.is_cancelled():
+                            hard_cancelled = True
+                            self._cancel_validation_futures(pending)
+                            parent_token.raise_if_cancelled()
+
+                        wait_timeout = self._cancellation_poll_seconds(parent_token)
+                        completed, pending = wait(
+                            pending,
+                            timeout=wait_timeout,
+                            return_when=FIRST_COMPLETED,
+                        )
+                        if parent_token is not None and parent_token.is_cancelled():
+                            hard_cancelled = True
+                            self._cancel_validation_futures(pending)
+                            parent_token.raise_if_cancelled()
+
+                        for future in completed:
+                            item = future_to_item[future]
+                            try:
+                                results[item.index] = future.result()
+                            except CancellationError:
+                                hard_cancelled = True
+                                self._cancel_validation_futures(pending)
+                                raise
+                            except P6BalancedTokenAdmissionError:
+                                # Admission is handled inside
+                                # ``_validate_with_deadline``.  If it ever
+                                # escapes, it must not be relabeled as a
+                                # validation worker crash.
+                                hard_cancelled = True
+                                self._cancel_validation_futures(pending)
+                                raise
+                            except ProviderFailureError as exc:
+                                # ``_validate_with_deadline`` normally converts
+                                # this typed boundary into a worker result.  Keep
+                                # the fallback answer-free and, crucially, let
+                                # the other futures in this already-admitted
+                                # batch settle before stopping the next batch.
+                                results[item.index] = _ValidationWorkerResult(
+                                    index=item.index,
+                                    raw_issue=item.raw_issue,
+                                    issue_func=item.issue_func,
+                                    success=False,
+                                    error=exc.failure_class,
+                                    evidence_pack=dict(item.evidence_pack),
+                                    provider_failure_class=exc.failure_class,
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Validation worker crashed for issue %s in function %s class=%s.",
+                                    item.raw_issue.get("id"),
+                                    item.issue_func,
+                                    "validation_worker_failure",
+                                )
+                                results[item.index] = _ValidationWorkerResult(
+                                    index=item.index,
+                                    raw_issue=item.raw_issue,
+                                    issue_func=item.issue_func,
+                                    success=False,
+                                    error="validation_worker_failure",
+                                )
+                    batch_provider_failures = [
+                        results[item.index]
+                        for item in batch
+                        if results[item.index].provider_failure_class
+                    ]
+                    if batch_provider_failures:
+                        first_failure = min(
+                            batch_provider_failures,
+                            key=lambda value: int(value.index),
+                        )
+                        provider_failure_class = first_failure.provider_failure_class
+                        state["validation_provider_failure_batch_admitted_count"] = len(batch)
+                        state["validation_provider_failure_batch_settled_count"] = len(batch)
+                        state["validation_provider_failure_unstarted_count"] = max(
+                            0,
+                            len(prepared) - batch_start - len(batch),
+                        )
+                        break
+                    if any(
+                        results[item.index].admission_failure_class == "p6_token_hard_limit"
+                        for item in batch
+                    ):
+                        for unstarted in prepared[batch_start + len(batch) :]:
+                            results[unstarted.index] = _ValidationWorkerResult(
+                                index=unstarted.index,
+                                raw_issue=unstarted.raw_issue,
+                                issue_func=unstarted.issue_func,
                                 success=False,
-                                error=str(exc),
+                                error="p6_token_hard_limit",
+                                evidence_pack=dict(unstarted.evidence_pack),
+                                admission_failure_class="p6_token_hard_limit",
                             )
+                        break
                 if parent_token is not None:
                     parent_token.raise_if_cancelled()
             except CancellationError:
@@ -604,7 +719,17 @@ class ValidationRunner:
                         cancel_futures=hard_cancelled,
                     )
             for item in prepared:
-                self._apply_validation_worker_result(state, results[item.index])
+                applied_result = results.get(item.index)
+                if applied_result is not None:
+                    self._apply_validation_worker_result(state, applied_result)
+            if provider_failure_class:
+                state["pending_new_issues"] = [
+                    item.raw_issue
+                    for item in prepared
+                    if item.index not in results or results[item.index].provider_failure_class
+                ]
+                state["validation_queue_drained"] = False
+                raise ProviderFailureError(provider_failure_class)
 
         state["pending_new_issues"] = []
         state["validation_queue_drained"] = True
@@ -677,7 +802,16 @@ class ValidationRunner:
         token = parent_token.child() if parent_token is not None else CancellationToken()
         started = time.monotonic()
         try:
-            with bind_cancellation_token(token):
+            with (
+                bind_cancellation_token(token),
+                llm_usage_attribution_scope(
+                    stage=self._validation_usage_stage(item),
+                    call_kind=self._validation_usage_call_kind(item),
+                    candidate_uid=str(item.raw_issue.get("candidate_uid") or ""),
+                    finding_uid=str(item.raw_issue.get("id") or ""),
+                    validation_cluster_uid=str(item.raw_issue.get("validation_cluster_uid") or ""),
+                ),
+            ):
                 token.raise_if_cancelled()
                 result = self._validate_prepared_issue(
                     item,
@@ -690,6 +824,34 @@ class ValidationRunner:
             # the inherited scan/entry token (including an explicit parent
             # deadline) is authoritative cancellation.
             raise
+        except P6BalancedTokenAdmissionError as exc:
+            # The sealed P6 ledger rejected this call before provider I/O.
+            # Preserve a typed, answer-free result so the batch can collect
+            # every in-flight worker and drain the queue normally.
+            result = _ValidationWorkerResult(
+                index=item.index,
+                raw_issue=item.raw_issue,
+                issue_func=item.issue_func,
+                success=False,
+                error=exc.failure_class,
+                evidence_pack=dict(item.evidence_pack),
+                admission_failure_class=exc.failure_class,
+                admission_request_denied=True,
+            )
+        except ProviderFailureError as exc:
+            # A systemic provider failure stops admission of the *next* batch,
+            # not collection of siblings that were already admitted.  Store a
+            # fixed class-only marker and return it to the batch collector;
+            # provider bodies and exception text never enter state or logs.
+            result = _ValidationWorkerResult(
+                index=item.index,
+                raw_issue=item.raw_issue,
+                issue_func=item.issue_func,
+                success=False,
+                error=exc.failure_class,
+                evidence_pack=dict(item.evidence_pack),
+                provider_failure_class=exc.failure_class,
+            )
         elapsed = max(0.0, time.monotonic() - started)
         self._record_validation_budget(item, result, soft_budget, elapsed)
         return result
@@ -847,6 +1009,150 @@ class ValidationRunner:
         ]
 
     @staticmethod
+    def _balanced_priority_class(item: _PreparedValidation) -> tuple[int, str, Dict[str, Any]]:
+        """Rank Validator work without consulting Truth, expected, or model prose."""
+
+        issue = item.raw_issue
+        closure = issue.get("proof_kernel_closure_evaluation")
+        closure = closure if isinstance(closure, Mapping) else {}
+        evidence_closure = issue.get("evidence_closure_state")
+        evidence_closure = evidence_closure if isinstance(evidence_closure, Mapping) else {}
+        missing = [str(value) for value in closure.get("missing_clause_uids") or [] if str(value)]
+        checked = [str(value) for value in closure.get("checked_clause_uids") or [] if str(value)]
+        fact_missing = [
+            str(value) for value in evidence_closure.get("missing_fact_kinds") or [] if str(value)
+        ]
+        fact_resolved = [
+            str(value) for value in evidence_closure.get("resolved_fact_kinds") or [] if str(value)
+        ]
+        near_closure = bool(
+            (checked and len(missing) <= 1) or (fact_resolved and len(fact_missing) <= 1)
+        )
+        proof_input = issue.get("proof_kernel_input")
+        proof_input = proof_input if isinstance(proof_input, Mapping) else {}
+        obligation = proof_input.get("proof_obligation")
+        obligation = obligation if isinstance(obligation, Mapping) else {}
+        negative_evidence = issue.get("negative_evidence")
+        high_value_counterproof = bool(
+            obligation.get("counterproof_clauses")
+            or (isinstance(negative_evidence, list) and negative_evidence)
+            or issue.get("counterproof_plan")
+            or issue.get("proof_conflict_requires_v3")
+        )
+        try:
+            confidence = float(issue.get("confidence") or issue.get("rule_confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        low_value = bool(
+            str(issue.get("candidate_disposition") or "") == "shadow_observation"
+            or str(issue.get("finding_kind") or "") == "audit_only"
+            or str(issue.get("audit_status") or "") == "audit_only"
+            or (
+                confidence < 0.35
+                and not checked
+                and not fact_resolved
+                and not (issue.get("positive_evidence") or [])
+            )
+        )
+        if near_closure:
+            rank, label = 0, "near_closure"
+        elif high_value_counterproof:
+            rank, label = 1, "high_value_counterproof"
+        elif low_value:
+            rank, label = 3, "low_value_audit"
+        else:
+            rank, label = 2, "standard"
+        return (
+            rank,
+            label,
+            {
+                "near_closure": near_closure,
+                "high_value_counterproof": high_value_counterproof,
+                "low_value": low_value,
+                "truth_fields_consulted": False,
+            },
+        )
+
+    def _order_balanced_validation_work(
+        self,
+        prepared: List[_PreparedValidation],
+    ) -> List[_PreparedValidation]:
+        if self._scan_depth() != "balanced" or not prepared:
+            return prepared
+        decorated = []
+        for item in prepared:
+            rank, label, basis = self._balanced_priority_class(item)
+            item.raw_issue["balanced_validation_priority"] = {
+                "rank": rank,
+                "class": label,
+                "basis": basis,
+            }
+            stable_uid = str(
+                item.raw_issue.get("validation_cluster_uid")
+                or item.raw_issue.get("candidate_uid")
+                or item.raw_issue.get("id")
+                or ""
+            )
+            decorated.append(((rank, stable_uid, int(item.index)), item))
+        return [item for _key, item in sorted(decorated, key=lambda value: value[0])]
+
+    @staticmethod
+    def _balanced_scheduler_priority(item: _PreparedValidation) -> int:
+        priority = item.raw_issue.get("balanced_validation_priority")
+        priority = priority if isinstance(priority, Mapping) else {}
+        try:
+            rank = int(priority.get("rank", 2))
+            risk = int(item.raw_issue.get("risk_score") or 0)
+        except (TypeError, ValueError):
+            rank, risk = 2, 0
+        return (4 - max(0, min(3, rank))) * 1000 + max(0, min(999, risk))
+
+    def _p6_balanced_admission_enabled(self) -> bool:
+        """Return whether the current scan uses the sealed P6 admission policy."""
+
+        ledger = getattr(self.config, "scan_token_usage_ledger", None)
+        snapshot = getattr(ledger, "snapshot", None)
+        if not callable(snapshot):
+            return False
+        try:
+            ledger_snapshot = snapshot()
+            admission = (
+                ledger_snapshot.get("p6_balanced_admission")
+                if isinstance(ledger_snapshot, Mapping)
+                else None
+            )
+            return bool(isinstance(admission, Mapping) and admission.get("enabled") is True)
+        except Exception:
+            return False
+
+    def _validation_usage_stage(self, item: _PreparedValidation) -> str:
+        """Preserve the stable stage dimension for balanced scheduling."""
+
+        priority = item.raw_issue.get("balanced_validation_priority")
+        priority = priority if isinstance(priority, Mapping) else {}
+        if self._p6_balanced_admission_enabled() and priority.get("class") == "low_value_audit":
+            return "active_discovery"
+        return "validation"
+
+    def _validation_usage_call_kind(self, item: _PreparedValidation) -> str:
+        """Mark only explicitly classified P6 low-value audit work.
+
+        SecuritySpec and Hunter calls also use semantic/discovery stages, but
+        they are not low-value merely because of that attribution.  The token
+        ledger's soft watermark therefore keys exclusively on this fixed
+        answer-free scheduler class.
+        """
+
+        priority = item.raw_issue.get("balanced_validation_priority")
+        priority = priority if isinstance(priority, Mapping) else {}
+        if (
+            priority.get("class") == "low_value_audit"
+            and self._validation_usage_stage(item) == "active_discovery"
+        ):
+            return "p6_low_value_audit"
+        return ""
+
+    @staticmethod
     def _v3_risk_basis(item: _PreparedValidation) -> Dict[str, Any]:
         """Explain eligibility using only candidate and project-graph facts."""
 
@@ -996,8 +1302,11 @@ class ValidationRunner:
             if isinstance(attribution, dict):
                 attribution["decided_by"] = "proof_engine"
                 attribution["decision_level"] = "V0"
+            outcome = self._classify_final_needs_review(state, raw_issue, outcome)
             if outcome.report_bucket:
                 state[outcome.report_bucket].append(raw_issue)
+            if outcome.memory_status:
+                self.remember_validation_result(raw_issue, outcome.memory_status)
             self._update_candidate_ledger(state, raw_issue)
 
     def _close_open_checker_outcome_without_model(
@@ -1036,8 +1345,20 @@ class ValidationRunner:
             attribution["decided_by"] = "proof_engine"
             attribution["decision_level"] = "V0"
         state["validator_avoided_count"] = int(state.get("validator_avoided_count", 0) or 0) + 1
-        state["observations"].append(raw_issue)
-        self.remember_validation_result(raw_issue, "needs_review")
+        outcome = self._classify_final_needs_review(
+            state,
+            raw_issue,
+            ValidationOutcome(
+                report_bucket="observations",
+                memory_status="needs_review",
+                verdict="needs_review",
+                final_score=0.0,
+            ),
+        )
+        if outcome.report_bucket:
+            state[outcome.report_bucket].append(raw_issue)
+        if outcome.memory_status:
+            self.remember_validation_result(raw_issue, outcome.memory_status)
         self._update_candidate_ledger(state, raw_issue)
 
     def _run_fact_first_prevalidation(
@@ -1059,10 +1380,10 @@ class ValidationRunner:
                 validator_data={"verdict": "uncertain"},
                 validation_evidence=evidence_pack,
             )
-        except Exception as exc:
+        except Exception:
             issue["fact_first_resolution"] = {
                 "status": "provider_error",
-                "error": f"{type(exc).__name__}: {exc}"[:500],
+                "failure_class": "deterministic_fact_provider_failed",
             }
             return None, None
         issue["fact_first_resolution"] = {
@@ -1147,10 +1468,10 @@ class ValidationRunner:
                 validator_data={"verdict": "uncertain"},
                 validation_evidence=evidence_pack,
             )
-        except Exception as exc:
+        except Exception:
             issue["proof_kernel_fact_first"] = {
                 "status": "provider_error",
-                "error": f"{type(exc).__name__}: {exc}"[:500],
+                "failure_class": "deterministic_fact_provider_failed",
             }
             return
         issue["proof_kernel_fact_first"] = {
@@ -1326,12 +1647,17 @@ class ValidationRunner:
         raw = issue.get("proof_kernel_input")
         if raw is None:
             return
-        if not isinstance(raw, Mapping) or set(raw) != {
-            "schema_version",
-            "proof_ir",
-            "proof_obligation",
-            "selected_action_uids",
-        } or raw.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw)
+            != {
+                "schema_version",
+                "proof_ir",
+                "proof_obligation",
+                "selected_action_uids",
+            }
+            or raw.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION
+        ):
             issue["proof_kernel_decision"] = {
                 "proof_kernel_mode": self._PROOF_KERNEL_TERMINAL_MODE,
                 "disposition": "needs_review",
@@ -1677,6 +2003,19 @@ class ValidationRunner:
         raw_issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
         attached_authority = self._terminal_authority.evaluate(raw_issue)
         if attached_authority.disposition in {"confirmed", "rejected_with_proof"}:
+            self._trace_event(
+                raw_issue,
+                stage="V0",
+                actor="proof_kernel",
+                reason_code=(
+                    "NEGATIVE_PROOF_COMPLETE"
+                    if attached_authority.disposition == "rejected_with_proof"
+                    else "POSITIVE_PROOF_COMPLETE"
+                ),
+                output_refs=(evidence_ref,),
+                dedupe_key=f"v0-proof:{self._trace_cluster_uid(raw_issue)}",
+                required=True,
+            )
             self._mark_terminal_transition(raw_issue, "V0", attached_authority)
             attached_outcome = self._validation_outcome_from_proof_authority(
                 raw_issue, attached_authority
@@ -2134,6 +2473,7 @@ class ValidationRunner:
                 "protocol": self._VALIDATION_CACHE_PROTOCOL,
                 "decision_context_version": DECISION_CONTEXT_VERSION,
                 "environment": self._validation_environment_fingerprint,
+                "rendered_prompt_contract_sha256": self._validation_prompt_contract_sha256,
                 "validation_cluster_uid": validation_cluster_uid,
             }
             stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
@@ -2164,6 +2504,7 @@ class ValidationRunner:
             "protocol": self._VALIDATION_CACHE_PROTOCOL,
             "decision_context_version": DECISION_CONTEXT_VERSION,
             "environment": self._validation_environment_fingerprint,
+            "rendered_prompt_contract_sha256": self._validation_prompt_contract_sha256,
             "validation_cluster_uid": validation_cluster_uid,
             "candidate_uid": stable_id,
             "category": issue.get("defect_class")
@@ -2226,6 +2567,10 @@ class ValidationRunner:
         if not llm_ref:
             llm_ref = str(getattr(validator_cfg, "llm_ref", "") or "default")
         client = self.llm_clients.get(llm_ref) or self.llm_clients.get("default")
+        prompt_contract_sha256 = getattr(self, "_validation_prompt_contract_sha256", "")
+        if not prompt_contract_sha256:
+            prompt_contract = self._build_validation_prompt_contract()
+            prompt_contract_sha256 = self._stable_hash(prompt_contract)
         payload = {
             "protocol": self._VALIDATION_CACHE_PROTOCOL,
             "decision_context_version": DECISION_CONTEXT_VERSION,
@@ -2236,10 +2581,118 @@ class ValidationRunner:
             "llm_client": self._llm_identity(client),
             "validator_contract": getattr(validator_cfg, "contract", None),
             "validator_prompt_version": getattr(validator_cfg, "prompt_version", None),
+            # Bind the content that is actually rendered for the Proof Engine,
+            # not merely a caller-maintained prompt-version label.  This also
+            # covers a project-local ``.zscope/agents/proof_engine/AGENT.md``
+            # override because ``attach_agent_contract`` has already resolved
+            # the effective project SpecRegistry entry.
+            "rendered_prompt_contract_sha256": prompt_contract_sha256,
             "tool_policy": self._tool_policy_identity(),
             "effective_rules_sha256": self._effective_rules_sha256(),
         }
         return self._stable_hash(payload)
+
+    def _build_validation_prompt_contract(self) -> Dict[str, Any]:
+        """Freeze the effective Proof Engine prompt/schema contract.
+
+        A prompt-version string is not a content binding: an AGENT.md edit, a
+        project override, or a strict response-schema edit could otherwise
+        reuse a result produced under a different model contract.  Render the
+        exact system-contract sections used by ``ToolCallingAgent`` and one
+        canonical v3 user prompt, and bind the provider-facing schema/delivery
+        mode.  Per-call traces add the frozen evidence slice below.
+        """
+
+        context: Dict[str, Any] = {}
+        try:
+            self.attach_agent_contract(context, "proof_engine")
+            binding_status = "bound"
+        except Exception:
+            # Runtime invocation will fail closed at the same contract
+            # boundary.  Keep fingerprint construction answer-free and avoid
+            # serializing exception bodies into cache or trace identities.
+            context = {}
+            binding_status = "binding_failure"
+        profiles = getattr(getattr(self.config, "scan", None), "llm_profiles", None)
+        llm_ref = str(getattr(profiles, "validation", "") or "")
+        if not llm_ref:
+            validator_cfg = next(
+                (
+                    agent
+                    for agent in (
+                        getattr(getattr(self.config, "project", None), "agents", None) or []
+                    )
+                    if getattr(agent, "name", "") == "proof_engine"
+                ),
+                None,
+            )
+            llm_ref = str(getattr(validator_cfg, "llm_ref", "") or "default")
+        client = self.llm_clients.get(llm_ref) or self.llm_clients.get("default")
+        return {
+            "binding_status": binding_status,
+            "system_prompt": self._compose_validation_system_prompt(context),
+            "user_prompt": ProofEngineAgent._validator_v3_prompt({}, "initial"),
+            "response_schema": validator_result_schema_v3(),
+            "schema_delivery": (
+                "strict_json_schema"
+                if bool(getattr(client, "supports_structured_output", False))
+                else "terminal_tool"
+            ),
+            "terminal_tool_name": "emit_validator_result_v3",
+        }
+
+    @staticmethod
+    def _compose_validation_system_prompt(context: Mapping[str, Any]) -> str:
+        """Mirror ``ToolCallingAgent._compose_system_prompt`` exactly."""
+
+        system_prompt = str(context.get("agent_contract") or "")
+        workflow_context = context.get("workflow_context")
+        if workflow_context:
+            system_prompt += f"\n\n[Workflow Contract]\n{workflow_context}"
+        skill_contracts = context.get("skill_contracts")
+        if skill_contracts:
+            system_prompt += f"\n\n[Loaded Skill Contracts]\n{skill_contracts}"
+        return system_prompt
+
+    def _rendered_validation_prompt_schema_sha256(
+        self,
+        structured_input: Mapping[str, Any],
+    ) -> str:
+        """Hash the exact v3 prompt/schema rendered for one model event."""
+
+        evidence_slice = structured_input.get("evidence_slice")
+        if not isinstance(evidence_slice, dict):
+            return self._validation_prompt_contract_sha256
+        validation_pass = str(structured_input.get("validation_pass") or "initial")
+        obligation = evidence_slice.get("obligation")
+        obligation = obligation if isinstance(obligation, Mapping) else {}
+        candidate_uid = str(
+            structured_input.get("finding_uid") or obligation.get("candidate_uid") or ""
+        )
+        cluster_uid = str(
+            structured_input.get("validation_cluster_uid")
+            or obligation.get("validation_cluster_uid")
+            or ""
+        )
+        catalog = evidence_slice.get("evidence_ref_catalog")
+        allowed_refs = sorted(str(value) for value in catalog) if isinstance(catalog, dict) else []
+        return self._stable_hash(
+            {
+                "system_prompt": self._compose_validation_system_prompt(structured_input),
+                "user_prompt": ProofEngineAgent._validator_v3_prompt(
+                    evidence_slice,
+                    validation_pass,
+                ),
+                "response_schema": validator_result_schema_v3(
+                    candidate_uid=candidate_uid,
+                    validation_cluster_uid=cluster_uid,
+                    expected_pass=validation_pass,
+                    allowed_evidence_refs=allowed_refs,
+                ),
+                "schema_delivery": self._validation_prompt_contract.get("schema_delivery"),
+                "terminal_tool_name": "emit_validator_result_v3",
+            }
+        )
 
     def _effective_rules_sha256(self) -> str:
         provenance = getattr(self.config, "rule_catalog_provenance", None)
@@ -2357,6 +2810,13 @@ class ValidationRunner:
     ) -> None:
         self._accumulate_token_metadata(state, result.metadata)
         raw_issue = result.raw_issue
+        if result.provider_failure_class:
+            self._apply_provider_failure_marker(state, result)
+            return
+        if result.admission_failure_class:
+            self._apply_p6_token_admission_result(state, result)
+            self._update_candidate_ledger(state, raw_issue)
+            return
         if not result.success:
             self._handle_validation_failure(state, raw_issue, result.issue_func, result.error)
             self._update_candidate_ledger(state, raw_issue)
@@ -2389,6 +2849,13 @@ class ValidationRunner:
         raw_issue["terminal_authority_decision"] = authority.to_dict()
         raw_issue["terminal_authority"] = authority.authority
         raw_issue["terminal_reason_codes"] = [authority.reason_code]
+        if authority.disposition in {"confirmed", "rejected_with_proof"}:
+            transition_level = str(raw_issue.get("terminal_transition_level") or "") or {
+                "initial": "V1",
+                "evidence_recheck": "V2",
+                "investigation_synthesis": "V3",
+            }.get(str(val_data.get("pass") or "initial"), "V1")
+            self._mark_terminal_transition(raw_issue, transition_level, authority)
         if authority.disposition == "needs_review" and outcome.memory_status != "needs_review":
             raw_issue["candidate_disposition"] = "needs_review"
             raw_issue["validation_status"] = "needs_review"
@@ -2407,12 +2874,124 @@ class ValidationRunner:
             raw_issue.get("candidate_disposition") or outcome.memory_status or "needs_review"
         )
         self._record_validator_attribution(raw_issue, val_data, outcome)
+        outcome = self._classify_final_needs_review(state, raw_issue, outcome)
         if outcome.report_bucket:
             state[outcome.report_bucket].append(raw_issue)
         if outcome.memory_status:
             self.remember_validation_result(raw_issue, outcome.memory_status)
         self._update_candidate_ledger(state, raw_issue)
         self._log_validation_outcome(raw_issue, val_data, verdict, outcome.final_score)
+
+    def _apply_provider_failure_marker(
+        self,
+        state: Dict[str, Any],
+        result: _ValidationWorkerResult,
+    ) -> None:
+        """Retain one body-free provider failure as an unresolved obligation.
+
+        Successful siblings in the same admitted batch are applied normally.
+        This issue remains in ``pending_new_issues`` so a bounded resume can
+        request only the failed/unstarted obligations; it is not projected as
+        a finding, an audit observation, or an engine-produced terminal.
+        """
+
+        failure_class = str(result.provider_failure_class or "")
+        issue = result.raw_issue
+        issue["validation_provider_failure_class"] = failure_class
+        issue["validation_provider_failure_count"] = 1
+        counts = state.setdefault("validation_provider_failure_counts", {})
+        if isinstance(counts, dict):
+            counts[failure_class] = int(counts.get(failure_class, 0) or 0) + 1
+        state["validation_provider_failure_count"] = (
+            int(state.get("validation_provider_failure_count", 0) or 0) + 1
+        )
+        state["validation_provider_failure_settled_count"] = (
+            int(state.get("validation_provider_failure_settled_count", 0) or 0) + 1
+        )
+        self._trace_event(
+            issue,
+            stage="validation",
+            actor="provider_runtime",
+            reason_code="VALIDATION_PROVIDER_FAILURE",
+            details={"failure_class": failure_class, "failure_count": 1},
+            dedupe_key=(
+                f"validation-provider-failure:{failure_class}:" f"{self._trace_cluster_uid(issue)}"
+            ),
+        )
+
+    def _apply_p6_token_admission_result(
+        self,
+        state: Dict[str, Any],
+        result: _ValidationWorkerResult,
+    ) -> None:
+        """Close one pre-provider P6 budget refusal without engine failure.
+
+        A soft refusal is authorized only for work already classified by the
+        answer-free scheduler as low-value audit.  A hard refusal leaves the
+        unstarted obligation canonical ``needs_review``.  Neither path calls
+        a provider, exposes an exception body, nor forges proof closure.
+        """
+
+        issue = result.raw_issue
+        failure_class = str(result.admission_failure_class or "")
+        priority = issue.get("balanced_validation_priority")
+        priority = priority if isinstance(priority, Mapping) else {}
+        soft_audit = bool(
+            failure_class == "p6_token_soft_watermark"
+            and priority.get("class") == "low_value_audit"
+        )
+        issue.pop("model_verdict", None)
+        issue["p6_token_admission_reason"] = failure_class
+        issue["p6_token_admission_request_denied"] = result.admission_request_denied
+        issue["p6_token_provider_calls"] = 0
+        issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
+        authority = self._terminal_authority.evaluate(issue, operation="live")
+        issue["proof_kernel_terminal_authority_decision"] = authority.to_dict()
+        issue["terminal_authority_decision"] = authority.to_dict()
+        issue["terminal_authority"] = authority.authority
+        issue["terminal_reason_codes"] = [authority.reason_code]
+        if soft_audit:
+            issue["candidate_disposition"] = "shadow_observation"
+            issue["policy_disposition"] = "shadow_observation"
+            issue["validation_status"] = "uncertain"
+            issue["finding_kind"] = "audit_only"
+            issue["audit_status"] = "audit_only"
+            issue["audit_reason_codes"] = ["P6_TOKEN_SOFT_WATERMARK"]
+            bucket = state.setdefault("audit_observations", [])
+            if isinstance(bucket, list) and not any(value is issue for value in bucket):
+                bucket.append(issue)
+            state["audit_observation_count"] = int(state.get("audit_observation_count", 0) or 0) + 1
+        else:
+            # A hard denial (or an impossible soft/classification mismatch)
+            # cannot hide an unresolved obligation from with-needs-review.
+            issue["candidate_disposition"] = "needs_review"
+            issue["policy_disposition"] = "needs_review"
+            issue["validation_status"] = "needs_review"
+            issue["finding_kind"] = "needs_review"
+            bucket = state.setdefault("observations", [])
+            if isinstance(bucket, list) and not any(value is issue for value in bucket):
+                bucket.append(issue)
+            self.remember_validation_result(issue, "needs_review")
+        counts = state.setdefault("p6_token_admission_counts", {})
+        if isinstance(counts, dict):
+            counts[failure_class] = int(counts.get(failure_class, 0) or 0) + 1
+        if result.admission_request_denied:
+            denied = state.setdefault("p6_token_admission_denied_request_counts", {})
+            if isinstance(denied, dict):
+                denied[failure_class] = int(denied.get(failure_class, 0) or 0) + 1
+        self._trace_event(
+            issue,
+            stage="validation",
+            actor="p6_balanced_token_admission",
+            reason_code=("P6_TOKEN_SOFT_WATERMARK" if soft_audit else "P6_TOKEN_HARD_LIMIT"),
+            details={
+                "failure_class": failure_class,
+                "admission_request_denied": result.admission_request_denied,
+                "provider_calls": 0,
+                "terminal_disposition": str(issue.get("candidate_disposition") or ""),
+            },
+            dedupe_key=(f"p6-token-admission:{failure_class}:" f"{self._trace_cluster_uid(issue)}"),
+        )
 
     @staticmethod
     def _record_validator_attribution(
@@ -2475,9 +3054,13 @@ class ValidationRunner:
             "terminal_transition_level": str(issue.get("terminal_transition_level") or ""),
         }
 
-    @staticmethod
-    def _mark_terminal_transition(issue: Dict[str, Any], level: str, authority: Any) -> bool:
-        """Freeze the first program-authorized terminal transition level."""
+    def _mark_terminal_transition(
+        self,
+        issue: Dict[str, Any],
+        level: str,
+        authority: Any,
+    ) -> bool:
+        """Freeze and persist the first program-authorized v4 transition."""
 
         if str(level) not in {"V0", "V1", "V2", "V3"}:
             return False
@@ -2485,11 +3068,15 @@ class ValidationRunner:
         terminal = bool(getattr(authority, "terminal", False))
         if not terminal or disposition not in {"confirmed", "rejected_with_proof"}:
             return False
-        if str(issue.get("terminal_transition_level") or ""):
-            return False
-        issue["terminal_transition_level"] = str(level)
-        issue["terminal_transition_disposition"] = disposition
-        return True
+        authority_dict = authority.to_dict()
+        issue["terminal_authority_decision"] = dict(authority_dict)
+        issue["proof_kernel_terminal_authority_decision"] = dict(authority_dict)
+        _, created = self._decision_trace_store.record_terminal_transition(
+            issue,
+            level=str(level),
+            authority=authority_dict,
+        )
+        return created
 
     @staticmethod
     def _attach_validator_missing_fact_request(
@@ -2757,6 +3344,65 @@ class ValidationRunner:
         status = str(issue.get("validation_status") or issue.get("status") or disposition).lower()
         marker(issue, disposition=disposition, status=status)
 
+    def _classify_final_needs_review(
+        self,
+        state: Dict[str, Any],
+        issue: Dict[str, Any],
+        outcome: ValidationOutcome,
+    ) -> ValidationOutcome:
+        """Separate actionable review obligations before report projection.
+
+        This answer-free classifier runs after product validation but before a
+        candidate enters either the report bucket or terminal ledger.  Audit
+        observations remain terminally accounted for without inflating the
+        user-actionable ``with-needs-review`` view.
+        """
+
+        disposition = str(issue.get("candidate_disposition") or outcome.memory_status or "")
+        if disposition != "needs_review" or outcome.memory_status == "engine_failed":
+            return outcome
+        has_v4_envelope = bool(
+            isinstance(issue.get("proof_kernel_frozen_state"), Mapping)
+            and isinstance(issue.get("proof_kernel_closure_evaluation"), Mapping)
+        )
+        # Outside the sealed P6 admission mode, retain compatibility for old
+        # reports/checkpoints that predate the v4 proof envelope.  P6 has no
+        # such escape hatch: every unresolved candidate must satisfy the same
+        # answer-free eligibility contract before entering the actionable
+        # with-needs-review view.  Missing or malformed v4 inputs therefore
+        # evaluate as unqualified and are terminally conserved as audit-only.
+        if not has_v4_envelope and not self._p6_balanced_admission_enabled():
+            return outcome
+        evaluation = evaluate_audit_eligibility(issue)
+        issue["audit_eligibility"] = evaluation.to_dict()
+        if evaluation.needs_review_eligible:
+            return outcome
+        issue["candidate_disposition"] = "shadow_observation"
+        issue["policy_disposition"] = "shadow_observation"
+        issue["validation_status"] = "uncertain"
+        issue["finding_kind"] = "audit_only"
+        issue["audit_status"] = "audit_only"
+        issue["audit_reason_codes"] = list(evaluation.reason_codes)
+        existing_reasons = [
+            str(value) for value in issue.get("terminal_reason_codes") or [] if str(value)
+        ]
+        issue["terminal_reason_codes"] = list(
+            dict.fromkeys([*existing_reasons, *evaluation.reason_codes])
+        )
+        policy = issue.get("validator_policy_outcome")
+        if isinstance(policy, dict):
+            policy["policy_disposition"] = "shadow_observation"
+        audit = state.setdefault("audit_observations", [])
+        if isinstance(audit, list) and not any(value is issue for value in audit):
+            audit.append(issue)
+        state["audit_observation_count"] = int(state.get("audit_observation_count", 0) or 0) + 1
+        return ValidationOutcome(
+            report_bucket=None,
+            memory_status=None,
+            verdict="uncertain",
+            final_score=outcome.final_score,
+        )
+
     def _normalize_worker_response(
         self,
         item: _PreparedValidation,
@@ -3010,10 +3656,9 @@ class ValidationRunner:
         elif batch.has_evidence_delta:
             item.raw_issue["proof_kernel_v2_reentry_status"] = "no_exact_action_in_frozen_catalog"
         proof_authority = self._terminal_authority.evaluate(item.raw_issue)
-        proof_became_terminal = self._mark_terminal_transition(
-            item.raw_issue,
-            "V2",
-            proof_authority,
+        proof_is_terminal = bool(
+            proof_authority.terminal
+            and proof_authority.disposition in {"confirmed", "rejected_with_proof"}
         )
         item.raw_issue["validator_fact_resolution"] = {
             "fact_kinds": [value.fact_kind for value in batch.resolutions],
@@ -3071,13 +3716,14 @@ class ValidationRunner:
                     f"provider:{value.fact_kind}:{status}:"
                     f"{batch.evidence_delta_hash or 'no-delta'}"
                 ),
+                required=proof_is_terminal,
             )
-        if proof_became_terminal:
+        if proof_is_terminal:
             token_metadata["validator_fact_resolution_proof_count"] = (
                 int(token_metadata.get("validator_fact_resolution_proof_count", 0) or 0) + 1
             )
             item.raw_issue["validator_v2_stop_reason"] = "decision_complete"
-            proof_disposition = str(item.raw_issue.get("candidate_disposition") or "")
+            proof_disposition = str(proof_authority.disposition or "")
             self._trace_event(
                 item.raw_issue,
                 stage="provider",
@@ -3089,7 +3735,9 @@ class ValidationRunner:
                 ),
                 output_refs=(resolution_ref,),
                 dedupe_key=f"fact-proof:{batch.evidence_delta_hash}",
+                required=True,
             )
+            self._mark_terminal_transition(item.raw_issue, "V2", proof_authority)
             return self._terminal_from_prior_for_v3(
                 item,
                 val_data,
@@ -3321,12 +3969,36 @@ class ValidationRunner:
             parameter.name for parameter in inspect.signature(investigate).parameters.values()
         }.issuperset({"evidence_actions", "evidence_action_executor"})
         action_by_id = {value.action_id: value for value in actions}
+        executed_v3_action_ids: List[str] = []
+        pending_v3_terminal: Optional[Dict[str, Any]] = None
+        post_terminal_action_attempted = False
         if supports_evidence_actions:
 
             def execute_evidence_action(action_id: str) -> Dict[str, Any]:
+                nonlocal pending_v3_terminal
+                nonlocal post_terminal_action_attempted
+                if pending_v3_terminal is not None:
+                    post_terminal_action_attempted = True
+                    return {
+                        "status": "unknown",
+                        "reason_code": "post_terminal_action_forbidden",
+                        "verified_fact": None,
+                        "newly_accepted": False,
+                        "terminal_authority": pending_v3_terminal["authority"].to_dict(),
+                    }
                 current_authority = self._terminal_authority.evaluate(item.raw_issue)
                 if current_authority.disposition in {"confirmed", "rejected_with_proof"}:
-                    self._mark_terminal_transition(item.raw_issue, "V3", current_authority)
+                    pending_v3_terminal = {
+                        "authority": current_authority,
+                        "cause_refs": (),
+                        "action_id": "",
+                        "usage_call_ids": tuple(
+                            str(value.get("call_id") or "")
+                            for value in self._cluster_usage_events(item.raw_issue)[usage_start:]
+                            if str(value.get("call_id") or "")
+                        ),
+                        "executed_action_ids": tuple(executed_v3_action_ids),
+                    }
                     return {
                         "status": "unknown",
                         "reason_code": "terminal_authority_already_closed",
@@ -3341,6 +4013,7 @@ class ValidationRunner:
                         "reason_code": "unknown_evidence_action",
                         "verified_fact": None,
                     }
+                executed_v3_action_ids.append(action.action_id)
                 remaining_before = set(self._remaining_fact_kinds(item.raw_issue))
                 if action.fact_kind not in remaining_before:
                     authority = self._terminal_authority.evaluate(
@@ -3448,7 +4121,10 @@ class ValidationRunner:
                         )
                     ),
                 )
-                self._mark_terminal_transition(item.raw_issue, "V3", authority)
+                proof_is_terminal = bool(
+                    authority.terminal
+                    and authority.disposition in {"confirmed", "rejected_with_proof"}
+                )
                 self._trace_event(
                     item.raw_issue,
                     stage="verifier",
@@ -3470,6 +4146,18 @@ class ValidationRunner:
                     },
                     dedupe_key=f"evidence-action:{action.action_id}",
                 )
+                if proof_is_terminal:
+                    pending_v3_terminal = {
+                        "authority": authority,
+                        "cause_refs": (certificate_ref, *proof_refs),
+                        "action_id": action.action_id,
+                        "usage_call_ids": tuple(
+                            str(value.get("call_id") or "")
+                            for value in self._cluster_usage_events(item.raw_issue)[usage_start:]
+                            if str(value.get("call_id") or "")
+                        ),
+                        "executed_action_ids": tuple(executed_v3_action_ids),
+                    }
                 payload = result.to_dict()
                 payload["certificate_ref"] = certificate_ref
                 payload["proof_artifact_refs"] = proof_refs
@@ -3484,51 +4172,124 @@ class ValidationRunner:
             token_metadata,
             getattr(response, "metadata", {}) or {},
         )
-        if not response.success or not isinstance(response.data, dict):
-            item.raw_issue["validator_v3_stop_reason"] = "investigation_exhausted"
-            if response.error:
-                item.raw_issue["validator_v3_error"] = str(response.error)[:500]
-            terminal = self._terminal_uncertain_v3_result(
-                item,
-                val_data,
-                validation_pass="investigation_synthesis",
-                stop_reason="investigation_exhausted",
-                reasoning="Targeted V3 investigation failed without a valid decision.",
+        selected_action_ids = tuple(executed_v3_action_ids)
+
+        def bind_pending_terminal(structured_output: Dict[str, Any]) -> bool:
+            """Bind the terminal-producing call, then freeze the proof boundary."""
+
+            if pending_v3_terminal is None:
+                return False
+            observed_usage_call_ids = tuple(
+                str(value.get("call_id") or "")
+                for value in self._cluster_usage_events(item.raw_issue)[usage_start:]
+                if str(value.get("call_id") or "")
             )
+            if (
+                post_terminal_action_attempted
+                or observed_usage_call_ids != pending_v3_terminal["usage_call_ids"]
+                or selected_action_ids != pending_v3_terminal["executed_action_ids"]
+            ):
+                raise DecisionTraceError("post_proof_call_detected")
             self._record_model_trace(
                 item.raw_issue,
                 stage="V3",
                 structured_input=investigation_input,
-                structured_output=terminal,
+                structured_output=structured_output,
                 usage_start=usage_start,
                 reason_code="V3_STOP_NO_REMAINING_ACTION",
+                tool_call_ids=selected_action_ids,
             )
+            pending_authority = pending_v3_terminal["authority"]
+            self._trace_event(
+                item.raw_issue,
+                stage="V3",
+                actor="proof_kernel",
+                reason_code=(
+                    "NEGATIVE_PROOF_COMPLETE"
+                    if pending_authority.disposition == "rejected_with_proof"
+                    else "POSITIVE_PROOF_COMPLETE"
+                ),
+                output_refs=tuple(pending_v3_terminal["cause_refs"]),
+                details={"action_id": str(pending_v3_terminal["action_id"] or "")},
+                dedupe_key=(
+                    f"v3-proof:{self._trace_cluster_uid(item.raw_issue)}:"
+                    f"{pending_v3_terminal['action_id'] or 'preclosed'}"
+                ),
+                required=True,
+            )
+            self._mark_terminal_transition(item.raw_issue, "V3", pending_authority)
+            return True
+
+        if not response.success or not isinstance(response.data, dict):
+            if response.error:
+                item.raw_issue["validator_v3_error"] = str(response.error)[:500]
+            if pending_v3_terminal is not None:
+                item.raw_issue["validator_v3_stop_reason"] = "decision_complete"
+                terminal = self._terminal_from_prior_for_v3(
+                    item,
+                    val_data,
+                    validation_pass="investigation_synthesis",
+                    stop_reason="decision_complete",
+                    reasoning=(
+                        "The program-owned proof closed before the model response failed; "
+                        "no post-terminal work is authorized."
+                    ),
+                )
+                bind_pending_terminal(terminal)
+            else:
+                item.raw_issue["validator_v3_stop_reason"] = "investigation_exhausted"
+                terminal = self._terminal_uncertain_v3_result(
+                    item,
+                    val_data,
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_exhausted",
+                    reasoning="Targeted V3 investigation failed without a valid decision.",
+                )
+                self._record_model_trace(
+                    item.raw_issue,
+                    stage="V3",
+                    structured_input=investigation_input,
+                    structured_output=terminal,
+                    usage_start=usage_start,
+                    reason_code="V3_STOP_NO_REMAINING_ACTION",
+                    tool_call_ids=selected_action_ids,
+                )
             return terminal
         revised = dict(response.data)
         if str(revised.get("schema_version") or "") != "zscope.validator-result.v3":
-            item.raw_issue["validator_v3_stop_reason"] = "malformed_output"
-            terminal = self._terminal_uncertain_v3_result(
-                item,
-                val_data,
-                validation_pass="investigation_synthesis",
-                stop_reason="malformed_output",
-                reasoning="Targeted V3 investigation returned a non-v3 result.",
-            )
-            self._record_model_trace(
-                item.raw_issue,
-                stage="V3",
-                structured_input=investigation_input,
-                structured_output=terminal,
-                usage_start=usage_start,
-                reason_code="V3_STOP_NO_REMAINING_ACTION",
-            )
+            if pending_v3_terminal is not None:
+                item.raw_issue["validator_v3_stop_reason"] = "decision_complete"
+                terminal = self._terminal_from_prior_for_v3(
+                    item,
+                    val_data,
+                    validation_pass="investigation_synthesis",
+                    stop_reason="decision_complete",
+                    reasoning=(
+                        "The program-owned proof closed before malformed model output; "
+                        "no post-terminal work is authorized."
+                    ),
+                )
+                bind_pending_terminal(terminal)
+            else:
+                item.raw_issue["validator_v3_stop_reason"] = "malformed_output"
+                terminal = self._terminal_uncertain_v3_result(
+                    item,
+                    val_data,
+                    validation_pass="investigation_synthesis",
+                    stop_reason="malformed_output",
+                    reasoning="Targeted V3 investigation returned a non-v3 result.",
+                )
+                self._record_model_trace(
+                    item.raw_issue,
+                    stage="V3",
+                    structured_input=investigation_input,
+                    structured_output=terminal,
+                    usage_start=usage_start,
+                    reason_code="V3_STOP_NO_REMAINING_ACTION",
+                    tool_call_ids=selected_action_ids,
+                )
             return terminal
         response_metadata = getattr(response, "metadata", {}) or {}
-        selected_action_ids = tuple(
-            str(value.get("action_id") or "")
-            for value in response_metadata.get("validator_evidence_actions") or []
-            if isinstance(value, Mapping) and str(value.get("action_id") or "")
-        )
         self._apply_v3_investigation_facts(
             item.raw_issue,
             revised,
@@ -3562,34 +4323,50 @@ class ValidationRunner:
                     validation_cluster_uid=str(item.raw_issue.get("validation_cluster_uid") or ""),
                     new_fact_count=accepted_fact_count,
                 )
-        revised = self._reconcile_v3_missing_fact(
-            item,
-            validator_agent,
-            revised,
-            token_metadata,
-        )
-        self._record_model_trace(
-            item.raw_issue,
-            stage="V3",
-            structured_input=investigation_input,
-            structured_output=revised,
-            usage_start=usage_start,
-            reason_code=(
-                "V3_STOP_MAX_ITERATIONS"
-                if int((getattr(response, "metadata", {}) or {}).get("iterations", 0) or 0)
-                >= (item.v3_max_iterations or 50)
-                else (
-                    "V3_STOP_NO_PROGRESS"
-                    if bool(
-                        (getattr(response, "metadata", {}) or {}).get(
-                            "validator_no_new_evidence_fact_stop"
+        model_trace_recorded = False
+        if pending_v3_terminal is not None:
+            model_trace_recorded = bind_pending_terminal(revised)
+        elif isinstance(revised.get("missing_fact_request"), Mapping):
+            self._record_model_trace(
+                item.raw_issue,
+                stage="V3",
+                structured_input=investigation_input,
+                structured_output=revised,
+                usage_start=usage_start,
+                reason_code="V3_STOP_NO_REMAINING_ACTION",
+                tool_call_ids=selected_action_ids,
+            )
+            model_trace_recorded = True
+        if pending_v3_terminal is None:
+            revised = self._reconcile_v3_missing_fact(
+                item,
+                validator_agent,
+                revised,
+                token_metadata,
+            )
+        if not model_trace_recorded:
+            self._record_model_trace(
+                item.raw_issue,
+                stage="V3",
+                structured_input=investigation_input,
+                structured_output=revised,
+                usage_start=usage_start,
+                reason_code=(
+                    "V3_STOP_MAX_ITERATIONS"
+                    if int((getattr(response, "metadata", {}) or {}).get("iterations", 0) or 0)
+                    >= (item.v3_max_iterations or 50)
+                    else (
+                        "V3_STOP_NO_PROGRESS"
+                        if bool(
+                            (getattr(response, "metadata", {}) or {}).get(
+                                "validator_no_new_evidence_fact_stop"
+                            )
                         )
+                        else "V3_STOP_NO_REMAINING_ACTION"
                     )
-                    else "V3_STOP_NO_REMAINING_ACTION"
-                )
-            ),
-            tool_call_ids=selected_action_ids,
-        )
+                ),
+                tool_call_ids=selected_action_ids,
+            )
         item.raw_issue.setdefault("validator_pass_history", []).append(
             {
                 "pass": "investigation_synthesis",
@@ -3711,10 +4488,9 @@ class ValidationRunner:
         elif batch.has_evidence_delta:
             item.raw_issue["proof_kernel_v3_reentry_status"] = "no_exact_action_in_frozen_catalog"
         proof_authority = self._terminal_authority.evaluate(item.raw_issue)
-        proof_became_terminal = self._mark_terminal_transition(
-            item.raw_issue,
-            "V3",
-            proof_authority,
+        proof_is_terminal = bool(
+            proof_authority.terminal
+            and proof_authority.disposition in {"confirmed", "rejected_with_proof"}
         )
         closure = item.raw_issue.get("evidence_closure_state")
         if isinstance(closure, dict):
@@ -3733,7 +4509,68 @@ class ValidationRunner:
                 "fact_uids": list(fact_slice.get("fact_uids") or []),
                 "closure_hash": str(closure.get("closure_hash") or ""),
             }
-        if proof_became_terminal:
+        resolution_ref = self._decision_trace_store.put_evidence(
+            kind="fact_resolution_batch",
+            payload={
+                "resolutions": [
+                    {
+                        "fact_kind": value.fact_kind,
+                        "status": value.status,
+                        "terminal_status": value.terminal_status,
+                        "miss_reason": value.miss_reason,
+                    }
+                    for value in batch.resolutions
+                ],
+                "evidence_delta": batch.evidence_delta,
+                "evidence_delta_hash": batch.evidence_delta_hash,
+                "proof_added": batch.proof_added,
+            },
+            producer="evidence_completion_queue",
+            require_persistence=proof_is_terminal,
+        )
+        for value in batch.resolutions:
+            status = str(value.terminal_status or value.status or "").lower()
+            self._trace_event(
+                item.raw_issue,
+                stage="provider",
+                actor="evidence_completion_queue",
+                reason_code={
+                    "resolved": "FACT_VERIFIED_TRUE",
+                    "no_match": "PROVIDER_NO_MATCH",
+                    "unsupported": "FACT_UNKNOWN",
+                    "timeout": "PROVIDER_TIMEOUT",
+                    "provider_error": "PROVIDER_ERROR",
+                    "conflicting": "FACT_CONFLICTING",
+                    "duplicate_request": "FACT_UNKNOWN",
+                }.get(status, "FACT_UNKNOWN"),
+                output_refs=(resolution_ref,),
+                details={
+                    "fact_kind": value.fact_kind,
+                    "status": value.status,
+                    "terminal_status": value.terminal_status,
+                    "miss_reason": value.miss_reason,
+                },
+                dedupe_key=(
+                    f"v3-provider:{value.fact_kind}:{status}:"
+                    f"{batch.evidence_delta_hash or 'no-delta'}"
+                ),
+                required=proof_is_terminal,
+            )
+        if proof_is_terminal:
+            self._trace_event(
+                item.raw_issue,
+                stage="provider",
+                actor="terminal_authority_evaluator",
+                reason_code=(
+                    "NEGATIVE_PROOF_COMPLETE"
+                    if proof_authority.disposition == "rejected_with_proof"
+                    else "POSITIVE_PROOF_COMPLETE"
+                ),
+                output_refs=(resolution_ref,),
+                dedupe_key=f"v3-fact-proof:{batch.evidence_delta_hash}",
+                required=True,
+            )
+            self._mark_terminal_transition(item.raw_issue, "V3", proof_authority)
             return self._terminal_from_prior_for_v3(
                 item,
                 val_data,
@@ -3752,33 +4589,59 @@ class ValidationRunner:
                 stop_reason="no_evidence_gain",
                 reasoning="The final V3 fact request produced no new deterministic evidence.",
             )
-        response = validator_agent.run(
-            self._validator_input(
-                item.raw_issue,
-                item.issue_code,
-                item.evidence_pack,
-                validation_pass="investigation_synthesis",
-                evidence_delta=batch.evidence_delta,
-            )
+        final_input = self._validator_input(
+            item.raw_issue,
+            item.issue_code,
+            item.evidence_pack,
+            validation_pass="investigation_synthesis",
+            evidence_delta=batch.evidence_delta,
         )
+        final_usage_start = len(self._cluster_usage_events(item.raw_issue))
+        response = validator_agent.run(final_input)
         self._merge_response_metadata(token_metadata, getattr(response, "metadata", {}) or {})
         if not response.success or not isinstance(response.data, dict):
-            return self._terminal_uncertain_v3_result(
+            terminal = self._terminal_uncertain_v3_result(
                 item,
                 val_data,
                 validation_pass="investigation_synthesis",
                 stop_reason="no_evidence_gain",
                 reasoning="The final V3 evidence synthesis did not return a valid decision.",
             )
+            self._record_model_trace(
+                item.raw_issue,
+                stage="V3",
+                structured_input=final_input,
+                structured_output=terminal,
+                usage_start=final_usage_start,
+                reason_code="V3_STOP_NO_REMAINING_ACTION",
+            )
+            return terminal
         revised = dict(response.data)
         if str(revised.get("schema_version") or "") != "zscope.validator-result.v3":
-            return self._terminal_uncertain_v3_result(
+            terminal = self._terminal_uncertain_v3_result(
                 item,
                 val_data,
                 validation_pass="investigation_synthesis",
                 stop_reason="malformed_output",
                 reasoning="The final V3 evidence synthesis returned a non-v3 result.",
             )
+            self._record_model_trace(
+                item.raw_issue,
+                stage="V3",
+                structured_input=final_input,
+                structured_output=terminal,
+                usage_start=final_usage_start,
+                reason_code="V3_STOP_NO_REMAINING_ACTION",
+            )
+            return terminal
+        self._record_model_trace(
+            item.raw_issue,
+            stage="V3",
+            structured_input=final_input,
+            structured_output=revised,
+            usage_start=final_usage_start,
+            reason_code="V3_STOP_NO_REMAINING_ACTION",
+        )
         return revised
 
     def _model_result_requires_review(

@@ -87,7 +87,7 @@ def test_range_provider_config_is_exact_and_bounded() -> None:
         "api_key": "${Z_SCOPE_API_KEY}",
         "base_url_max_concurrent_requests": 8,
         "max_tokens": 8192,
-        "max_retries": 2,
+        "max_retries": 1,
         "retry_until_available": False,
         "supports_structured_output": False,
         "require_exact_response_model": True,
@@ -566,7 +566,9 @@ def test_neutral_probe_validates_model_usage_and_never_returns_response_body() -
     result = probe_provider(contract, api_key="private", transport=transport)
 
     assert result["passed"] is True
+    assert result["schema_version"] == "zscope.p6-provider-probe.v2"
     assert result["model"] == "deepseek-v4-flash"
+    assert result["response_model"] == "deepseek-v4-flash-ga-260731"
     assert result["provider_usage_coverage"] == 1.0
     assert result["estimated_provider_call_count"] == 0
     assert result["usage_conservation"]["physical_call_count"] == 1
@@ -597,6 +599,8 @@ def test_neutral_probe_accepts_the_exact_requested_gateway_alias() -> None:
     )
 
     assert result["passed"] is True
+    assert result["response_model"] == "deepseek-v4-flash"
+    assert result["usage_conservation"]["response_model"] == "deepseek-v4-flash"
 
 
 def test_neutral_probe_redirect_handler_never_reissues_authorization() -> None:

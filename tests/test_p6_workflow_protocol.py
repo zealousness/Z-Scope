@@ -26,6 +26,7 @@ from zscope.benchmarking.p6_protocol import (
 
 WORKFLOW = Path(".github/workflows/p6-pilot-validation.yml")
 RECOVERY_WORKFLOW = Path(".github/workflows/p6-pilot-finalize-recovery.yml")
+SANITIZER_ACTION = Path(".github/actions/validate-p6-artifact/action.yml")
 ENTRY_GATE = Path("docs/design/zscope-2.0-security-architecture/acceptance/p6-entry-gate.json")
 
 
@@ -57,15 +58,27 @@ def _workflow() -> tuple[str, dict]:
     return text, value
 
 
-def test_dispatcher_binds_immutable_control_plane_and_candidate_only() -> None:
+def test_dispatcher_binds_control_candidate_and_exact_local_wsl_evidence() -> None:
     text, workflow = _workflow()
 
     assert set(workflow["on"]["workflow_dispatch"]["inputs"]) == {
         "control_plane_commit",
         "candidate_sha",
+        "local_evidence_commit",
+        "local_quality_gate_sha256",
     }
+    assert all(
+        value["required"] == "true"
+        for value in workflow["on"]["workflow_dispatch"]["inputs"].values()
+    )
     assert "P6_CONTROL_PLANE_COMMIT: ${{ inputs.control_plane_commit }}" in text
     assert "P6_CANDIDATE_COMMIT: ${{ inputs.candidate_sha }}" in text
+    assert "P6_LOCAL_EVIDENCE_COMMIT: ${{ inputs.local_evidence_commit }}" in text
+    assert "P6_LOCAL_QUALITY_GATE_SHA256: ${{ inputs.local_quality_gate_sha256 }}" in text
+    assert (
+        "P6_LOCAL_QUALITY_GATE_PATH: "
+        ".github/evidence/p6/local-balanced-quality-gate.json" in text
+    )
     for job in workflow["jobs"].values():
         for step in job.get("steps", []):
             assert "${{ inputs." not in step.get("run", "")
@@ -85,6 +98,95 @@ def test_dispatcher_binds_immutable_control_plane_and_candidate_only() -> None:
         assert f"inputs.{name.lower()}" not in text
 
 
+def test_entry_fails_closed_before_provider_work_without_exact_local_wsl_gate() -> None:
+    _, workflow = _workflow()
+    entry_steps = workflow["jobs"]["entry"]["steps"]
+    evidence = next(
+        step
+        for step in entry_steps
+        if step.get("name")
+        == "Require immutable passed local WSL balanced evidence before provider work"
+    )
+    evidence_index = entry_steps.index(evidence)
+    secret_index = next(
+        index
+        for index, step in enumerate(entry_steps)
+        if step.get("name")
+        == "Verify runner-owned secret and frozen-input authority before any model call"
+    )
+    cleanup_index = next(
+        index
+        for index, step in enumerate(entry_steps)
+        if step.get("name") == "Remove exact-label stale P6 scanners before any secret is loaded"
+    )
+    assert evidence_index < cleanup_index < secret_index
+
+    script = evidence["run"]
+    for exact_binding in (
+        "parent_row != [evidence_commit, tested_commit]",
+        '"merge-base", "--is-ancestor", evidence_commit, control_commit',
+        'evidence_change != [f"A\\t{evidence_path}"]',
+        'candidate_change != [f"A\\t{evidence_path}"]',
+        "candidate_tree != evidence_tree",
+        '"100644", "blob"',
+        "hashlib.sha256(evidence_bytes).hexdigest() != expected_digest",
+        "load_json_strict(evidence_file)",
+        "validate_quality_gate(gate)",
+        'gate.get("hard_gate_passed") is not True',
+        'gate.get("formal_benchmark") is not False',
+        'gate.get("release_eligible") is not False',
+        '"git_commit": tested_commit',
+        '"git_tree": tested_tree',
+        '"candidate_sha256": tested_sha256',
+        '"provider_identity_sha256": contract.identity_sha256',
+        '"runtime_sha256": runtime_sha256',
+        '"config_sha256": contract.config_sha256',
+    ):
+        assert exact_binding in script
+    assert "require_p6_provider_contract(" in script
+    assert "prepare_p6_runtime_source(" in script
+    assert "git_revision=candidate_commit" in script
+    assert "if ! validate_local_evidence >/dev/null 2>&1; then" in script
+    assert "input_binding_failure" in script
+    assert "|| true" not in script
+    assert "continue-on-error" not in evidence
+
+    seal = next(
+        step for step in entry_steps if step.get("name") == "Seal answer-free entry evidence"
+    )["run"]
+    assert "import hashlib" in seal
+    assert "hashlib.sha256(candidate.encode" in seal
+
+    identities = entry_steps[0]["run"]
+    assert '[[ "$P6_LOCAL_EVIDENCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]' in identities
+    assert '[[ "$P6_LOCAL_QUALITY_GATE_SHA256" =~ ^[0-9a-f]{64}$ ]]' in identities
+    for job_name in (
+        "provider_probe",
+        "anonymous_qualification",
+        "safe_pair_validation",
+        "evidence_action_canary",
+        "cold_fast",
+        "cold_balanced",
+        "cold_deep",
+        "product_architecture_review",
+        "proof_security_review",
+        "independent_benchmark_review",
+    ):
+        pending = [job_name]
+        seen: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current == "entry":
+                break
+            if current in seen:
+                continue
+            seen.add(current)
+            needs = workflow["jobs"][current].get("needs", [])
+            pending.extend(needs if isinstance(needs, list) else [needs])
+        else:
+            raise AssertionError(f"{job_name} can run without the local evidence entry gate")
+
+
 def test_workflow_is_one_sequential_non_release_pilot() -> None:
     _, workflow = _workflow()
     jobs = workflow["jobs"]
@@ -96,9 +198,9 @@ def test_workflow_is_one_sequential_non_release_pilot() -> None:
     assert workflow["env"]["P6_MAX_CONCURRENT_CALLS"] == "8"
     assert workflow["env"]["Z_SCOPE_BENCHMARK_OCI_RUNTIME"] == "podman"
     expected_needs = {
-        "provider_probe": {"entry"},
-        "toolchain_oci": {"provider_probe"},
-        "policy_replay": {"toolchain_oci"},
+        "toolchain_oci": {"entry"},
+        "provider_probe": {"entry", "toolchain_oci"},
+        "policy_replay": {"provider_probe"},
         "certificate_reverify": {"policy_replay"},
         "anonymous_qualification": {"certificate_reverify", "toolchain_oci"},
         "safe_pair_validation": {"anonymous_qualification", "toolchain_oci"},
@@ -113,17 +215,27 @@ def test_workflow_is_one_sequential_non_release_pilot() -> None:
         },
         "cold_fast": {"offline_qualification", "toolchain_oci"},
         "cold_balanced": {"cold_fast", "toolchain_oci"},
-        "cold_deep": {"cold_balanced", "toolchain_oci"},
-        "product_architecture_review": {"qualification_seal", "entry"},
+        "balanced_quality_gate": {"cold_balanced"},
+        "cold_deep": {"balanced_quality_gate", "toolchain_oci"},
+        "product_architecture_review": {
+            "qualification_seal",
+            "balanced_quality_gate",
+            "entry",
+            "toolchain_oci",
+        },
         "proof_security_review": {
             "product_architecture_review",
             "qualification_seal",
+            "balanced_quality_gate",
             "entry",
+            "toolchain_oci",
         },
         "independent_benchmark_review": {
             "proof_security_review",
             "qualification_seal",
+            "balanced_quality_gate",
             "entry",
+            "toolchain_oci",
         },
         "finalize": {"final_evidence_seal"},
     }
@@ -135,7 +247,12 @@ def test_workflow_is_one_sequential_non_release_pilot() -> None:
     assert jobs["policy_replay"]["timeout-minutes"] == "30"
     assert jobs["certificate_reverify"]["timeout-minutes"] == "30"
     assert jobs["offline_qualification"]["timeout-minutes"] == "30"
-    for job in ("anonymous_qualification", "safe_pair_validation", "evidence_action_canary"):
+    assert jobs["balanced_quality_gate"]["timeout-minutes"] == "30"
+    for job in (
+        "anonymous_qualification",
+        "safe_pair_validation",
+        "evidence_action_canary",
+    ):
         assert jobs[job]["timeout-minutes"] == "180"
     for job in (
         "product_architecture_review",
@@ -213,8 +330,296 @@ def test_workflow_runs_real_frozen_qualification_and_candidate_bound_cold_scans(
     assert '"stdout_persisted": False' in text
     assert '"stderr_persisted": False' in text
     assert "expected_probe" not in text
-    assert text.count("--toolchain-evidence restored/toolchain/toolchain-evidence.json") == 8
+    assert text.count("--toolchain-evidence restored/toolchain/toolchain-evidence.json") == 9
     assert "provider_response_model_coverage" not in text or "seal-qualification" in text
+
+
+def test_balanced_quality_scoring_is_post_freeze_truth_isolated_and_hard_gated() -> None:
+    _, workflow = _workflow()
+    balanced = workflow["jobs"]["cold_balanced"]
+    quality = workflow["jobs"]["balanced_quality_gate"]
+
+    balanced_script = "\n".join(step.get("run", "") for step in balanced["steps"])
+    quality_script = "\n".join(step.get("run", "") for step in quality["steps"])
+    assert "scripts/p6_balanced_orchestrator.py freeze" in balanced_script
+    assert "--aggregate p6-balanced/aggregate.json" in balanced_script
+    assert "--producer-metrics p6-balanced/run-01/producer-metrics.json" in balanced_script
+    assert "--output p6-balanced-frozen" in balanced_script
+    assert "python3 - <<'PY'" not in balanced_script
+    assert "score_range_v5.py" not in balanced_script
+    assert "Z_SCOPE_BENCHMARK_TRUTH" not in balanced_script
+    assert "score.json" not in balanced_script
+
+    assert quality["needs"] == ["cold_balanced"]
+    assert "--producer-job 'one isolated cold balanced pilot'" in quality_script
+    assert '--artifact-id "$BALANCED_ID"' in quality_script
+    assert '--artifact-digest "sha256:$BALANCED_DIGEST"' in quality_script
+    assert "scripts/p6_balanced_orchestrator.py score" in quality_script
+    assert "--output quality-candidate" in quality_script
+    assert "scripts/p6_balanced_orchestrator.py revalidate" in quality_script
+    assert "--restored-bundle quality-candidate" in quality_script
+    assert "--receipt quality-revalidation-receipt.json" in quality_script
+    assert "--frozen-root restored/balanced/p6-balanced-frozen" in quality_script
+    assert "--legacy-truth test/range/benchmark/ground_truth.json" in quality_script
+    assert "--v16-truth test/range/benchmark/v16/ground_truth.json" in quality_script
+    assert "zscope.cli.benchmark _score" not in quality_script
+    assert "scripts/score_range_v5.py score" not in quality_script
+    assert "python3 - <<'PY'" not in quality_script
+    assert "scripts/p6_balanced_quality_gate.py" not in quality_script
+    assert "--producer-projection restored/balanced/p6-balanced-projection.json" in (quality_script)
+    assert "quality_no_progress_gate_failed" in quality_script
+    assert "run_p6_cold_producer.py" not in quality_script
+
+    upload = next(step for step in quality["steps"] if step.get("id") == "upload")
+    assert upload["with"]["path"].splitlines() == [
+        "control/quality",
+        "control/quality-revalidation-receipt.json",
+    ]
+    assert workflow["jobs"]["cold_deep"]["needs"] == [
+        "balanced_quality_gate",
+        "toolchain_oci",
+    ]
+
+    benchmark_steps = workflow["jobs"]["independent_benchmark_review"]["steps"]
+    benchmark_review = "\n".join(step.get("run", "") for step in benchmark_steps)
+    benchmark_packet = next(
+        step["run"]
+        for step in benchmark_steps
+        if step.get("name") == "Build the independent-benchmark packet without reviewer credentials"
+    )
+    assert "build-common-evidence" in benchmark_review
+    assert "evidence/common-review-evidence.json" in benchmark_packet
+    assert "evidence/p6-balanced-quality-gate.json" in benchmark_review
+    assert "evidence/p6-balanced-bindings.json" in benchmark_packet
+    assert "evidence/p6-balanced-frozen-manifest.json" in benchmark_packet
+    assert "evidence/p6-balanced-producer-projection.json" in benchmark_packet
+    assert "evidence/p6-balanced-quality-revalidation-receipt.json" in benchmark_packet
+    assert "frozen-report" not in benchmark_packet
+    assert "legacy-score" not in benchmark_packet
+    assert "v16-score" not in benchmark_packet
+    assert "matched" not in benchmark_packet
+    assert "scripts/p6_balanced_orchestrator.py revalidate" in benchmark_review
+    final_seal = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["final_evidence_seal"]["steps"]
+    )
+    assert "checkpoint-run/payload/quality/p6-balanced-quality-gate.json" in final_seal
+    assert "checkpoint-run/payload/quality/frozen-report.json" in final_seal
+    assert "checkpoint-run/payload/quality-revalidation-receipt.json" in final_seal
+    assert "--restored-bundle restored/quality-artifact/quality" in final_seal
+    assert "cmp -s restored/quality-artifact/quality-revalidation-receipt.json" in final_seal
+
+
+def test_toolchain_binds_exact_image_provenance_and_proxy_before_loading_key() -> None:
+    _, workflow = _workflow()
+    toolchain = workflow["jobs"]["toolchain_oci"]
+    script = "\n".join(step.get("run", "") for step in toolchain["steps"])
+    assert "Z_SCOPE_P6_OCI_IMAGE_PROVENANCE_FILE" in script
+    assert 'load_image_provenance(Path("image-provenance.json"))' in script
+    assert 'Path("containers/p6/Containerfile").read_bytes()' in script
+    assert 'Path("containers/p6/runtime-lock.json").read_bytes()' in script
+    assert 'Path("requirements/release/py313.txt").read_bytes()' in script
+    assert "IMAGE_LABEL_BASE_DIGEST" in script
+    assert "IMAGE_LABEL_CONTAINERFILE" in script
+    assert "IMAGE_LABEL_LOCK" in script
+    assert "IMAGE_LABEL_REVISION" in script
+    assert "provision_transparent_proxy(" in script
+    assert "Z_SCOPE_BENCHMARK_OCI_EGRESS_NETWORK" in script
+    assert "load_explicit_api_key_file(" not in script
+    assert '"Z_SCOPE_API_KEY": "p6-preflight-credential-not-forwarded"' in script
+    assert "provider_credentials=False" in script
+    assert "image_provenance_sha256" in script
+    assert "proxy_provision_sha256" in script
+    assert "import stat" in script
+    assert "stat.S_ISREG" in script
+    assert "canonical_sha256, load_json_strict" in script
+    assert 'load_json_strict(root / "discarded-preflight.log")' in script
+
+    upload = next(
+        step
+        for step in toolchain["steps"]
+        if step.get("uses") == "./control/.github/actions/upload-artifact-retry"
+    )
+    assert "control/image-provenance.json" in upload["with"]["path"]
+    assert "control/proxy-provision.json" in upload["with"]["path"]
+    assert "control/toolchain-evidence.json" in upload["with"]["path"]
+
+
+def test_every_model_executor_closes_proxy_attestation_before_credentials() -> None:
+    text, workflow = _workflow()
+    action = SANITIZER_ACTION.read_text(encoding="utf-8")
+    model_steps = {
+        "provider_probe": "Execute one constant source-free request",
+        "anonymous_qualification": "Execute frozen hidden-holdout harness against the current candidate",
+        "safe_pair_validation": "Execute frozen safe-pair dual-scan harness against the current candidate",
+        "evidence_action_canary": "Prepare answer-free EvidenceAction input and invoke the sealed candidate harness",
+        "cold_fast": "Execute fast from a new empty cache root",
+        "cold_balanced": "Execute balanced from a new empty cache root",
+        "cold_deep": "Execute deep from a new empty cache root",
+        "product_architecture_review": "Invoke exact Claude Code 2.1.233 glm-5.3 high identity",
+        "proof_security_review": "Invoke exact DSH 0.1.0-rc.6 DeepSeek v4 Pro max identity",
+        "independent_benchmark_review": "Invoke exact Codex CLI 0.144.4 GPT-5.6-Sol xhigh identity",
+    }
+    for job_name, invocation_name in model_steps.items():
+        steps = workflow["jobs"][job_name]["steps"]
+        invocation_index = next(
+            index for index, step in enumerate(steps) if step.get("name") == invocation_name
+        )
+        attestation_index, attestation_step = next(
+            (index, step)
+            for index, step in enumerate(steps)
+            if step.get("uses") == "./control/.github/actions/validate-p6-artifact"
+            and step.get("with", {}).get("expected-proxy-attestation")
+        )
+        assert attestation_index < invocation_index
+        if job_name.endswith("_review"):
+            packet_index = next(
+                index
+                for index, step in enumerate(steps)
+                if "packet without reviewer credentials" in step.get("name", "")
+            )
+            assert attestation_index < packet_index < invocation_index
+        assert attestation_step["with"]["require-key"] == "false"
+        assert attestation_step["with"]["byte-scan-only"] == "true"
+        assert attestation_step["with"]["paths"].splitlines() == [
+            "restored/toolchain/image-provenance.json",
+            "restored/toolchain/proxy-provision.json",
+            "restored/toolchain/toolchain-evidence.json",
+        ]
+        restore_script = "\n".join(step.get("run", "") for step in steps[:attestation_index])
+        for member in (
+            "--required-member image-provenance.json",
+            "--required-member proxy-provision.json",
+            "--required-member toolchain-evidence.json",
+        ):
+            assert member in restore_script
+
+    for contract_name in (
+        "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE",
+        "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256",
+    ):
+        assert contract_name in action
+        assert contract_name in text
+    protocol_source = Path("zscope/benchmarking/p6_protocol.py").read_text(encoding="utf-8")
+    assert (
+        'EXPECTED_PROXY_ATTESTATION_SCHEMA_VERSION = "zscope.p6-expected-proxy-attestation.v2"'
+        in protocol_source
+    )
+    assert "build_expected_proxy_attestation(" in action
+    assert "zscope.p6-expected-proxy-attestation.v1" not in action
+    assert "zscope.p6-expected-proxy-attestation.v1" not in text
+    assert text.count("load_expected_proxy_attestation(") == 9
+    assert '"candidate_git_tree": candidate_tree' in action
+    assert "validate_expected_proxy_attestation(payload)" in action
+    assert "_validate_proxy_inspection" not in action
+    assert '"schema_version": "zscope.p6-expected-proxy-attestation' not in action
+    assert "read_regular_file_once(output.absolute())" in action
+    assert action.index("write_expected_proxy_attestation(control)") < action.index(
+        "scanner_environment = load_explicit_api_key_file(key_file)"
+    )
+    for key_load in re.finditer(r'key_file = os\.environ\["Z_SCOPE_P6_API_KEY_FILE"\]', text):
+        strict_load = text.rfind("load_expected_proxy_attestation(", 0, key_load.start())
+        assert strict_load > 0
+        assert key_load.start() - strict_load < 2_000
+    provider_call = text.index("value = run_p6_provider_probe(")
+    assert text.rfind("load_expected_proxy_attestation(", 0, provider_call) > 0
+    for reviewer_call in re.finditer(r"run_reviewer\(", text):
+        strict_load = text.rfind("load_expected_proxy_attestation(", 0, reviewer_call.start())
+        assert strict_load > 0
+        assert reviewer_call.start() - strict_load < 2_000
+
+    review_source = Path("zscope/benchmarking/p6_review.py").read_text(encoding="utf-8")
+    reviewer_environment = review_source.split("def _reviewer_environment(", 1)[1].split(
+        "\ndef ", 1
+    )[0]
+    assert "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE" not in reviewer_environment
+    assert "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256" not in reviewer_environment
+
+
+def test_qualification_and_final_seal_cross_bind_execution_proxy_lineage() -> None:
+    _, workflow = _workflow()
+    qualification = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["qualification_seal"]["steps"]
+    )
+    final_seal = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["final_evidence_seal"]["steps"]
+    )
+    for script in (qualification, final_seal):
+        assert 'attestation["proxy_provision_sha256"]' in script
+        assert 'attestation["image_provenance_sha256"]' in script
+        assert 'attestation["provider_identity_sha256"]' in script
+    assert 'receipt["proxy_container_id"] != attestation["proxy_container_id"]' in final_seal
+    assert 'receipt["network_policy_sha256"]' in final_seal
+    assert 'depth["oci_image_ref"] != attestation["image_ref"]' in final_seal
+    assert 'depth["oci_image_id"] != attestation["image_id"]' in final_seal
+
+
+def test_toolchain_and_final_manifest_are_cross_validated_at_every_trust_boundary() -> None:
+    text, workflow = _workflow()
+    recovery = RECOVERY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert text.count("validate-toolchain-provenance-files") == 3
+    assert recovery.count("validate-toolchain-provenance-files") == 1
+    assert text.count("validate-final-evidence-manifest") == 2
+    assert recovery.count("validate-final-evidence-manifest") == 1
+
+    expected_toolchain_flags = (
+        "--toolchain-evidence",
+        "--image-provenance",
+        "--proxy-provision",
+        "--workflow-run-id",
+        "--workflow-run-attempt",
+        "--attempt-id",
+        "--control-plane-commit",
+        "--candidate-commit",
+        "--candidate-tree",
+        "--candidate-sha256",
+        "--provider-identity-sha256",
+        "--image-ref",
+        "--image-id",
+        "--proxy-container",
+        "--proxy-container-id",
+        "--network-name",
+        "--egress-network-name",
+        "--network-policy-sha256",
+        "--endpoint-origin",
+    )
+    for job_name in ("toolchain_oci", "final_evidence_seal", "finalize"):
+        scripts = [
+            step.get("run", "")
+            for step in workflow["jobs"][job_name]["steps"]
+            if "validate-toolchain-provenance-files" in step.get("run", "")
+        ]
+        assert len(scripts) == 1, job_name
+        for flag in expected_toolchain_flags:
+            assert flag in scripts[0], (job_name, flag)
+    for flag in expected_toolchain_flags:
+        assert flag in recovery
+
+    for script in (text, recovery):
+        for flag in (
+            "--manifest",
+            "--payload-root",
+            "--workflow-run-id",
+            "--workflow-run-attempt",
+            "--attempt-id",
+            "--control-plane-commit",
+            "--candidate-commit",
+            "--candidate-sha256",
+        ):
+            assert flag in script
+    assert recovery.index("validate-final-evidence-manifest") < recovery.index(
+        "validate-toolchain-provenance-files"
+    )
+    assert 'image_id="$($Z_SCOPE_BENCHMARK_OCI_RUNTIME image inspect' in text
+    assert 'proxy_id="$($Z_SCOPE_BENCHMARK_OCI_RUNTIME container inspect' in text
+    assert (
+        'provenance = load_json_strict(Path("restored/checkpoint/payload/image-provenance.json"))'
+        in recovery
+    )
+    assert (
+        'proxy = load_json_strict(Path("restored/checkpoint/payload/proxy-provision.json"))'
+        in recovery
+    )
 
 
 def test_artifacts_are_sanitized_and_restored_by_exact_id_and_digest() -> None:
@@ -237,11 +642,15 @@ def test_artifacts_are_sanitized_and_restored_by_exact_id_and_digest() -> None:
     for step in downloader_steps:
         assert step["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
         run = step.get("run", "")
-        assert run.count("--run-attempt") == run.count("scripts/download_p6_run_artifact.py")
-        assert run.count("--control-plane-commit") == run.count(
-            "scripts/download_p6_run_artifact.py"
-        )
-        assert run.count("--candidate-commit") == run.count("scripts/download_p6_run_artifact.py")
+        logical_lines = run.replace("\\\n", " ").splitlines()
+        download_commands = [
+            line for line in logical_lines if "python3 scripts/download_p6_run_artifact.py" in line
+        ]
+        assert len(download_commands) == run.count("scripts/download_p6_run_artifact.py")
+        for command in download_commands:
+            assert "--run-attempt" in command
+            assert "--control-plane-commit" in command
+            assert "--candidate-commit" in command
     forbidden_uploads = {
         "p6-fast",
         "p6-balanced",
@@ -258,7 +667,8 @@ def test_artifacts_are_sanitized_and_restored_by_exact_id_and_digest() -> None:
             path = str(step["with"]["path"])
             for forbidden in forbidden_uploads:
                 assert path.strip() != forbidden
-            assert "aggregate.json" not in path
+            if path.strip() != "control/quality-failure-aggregate.json":
+                assert "aggregate.json" not in path
             assert ".log" not in path
 
     scanner_jobs = {
@@ -273,8 +683,12 @@ def test_artifacts_are_sanitized_and_restored_by_exact_id_and_digest() -> None:
         "offline_qualification",
         "cold_fast",
         "cold_balanced",
+        "balanced_quality_gate",
         "cold_deep",
         "qualification_seal",
+        "product_architecture_review",
+        "proof_security_review",
+        "independent_benchmark_review",
         "final_evidence_seal",
         "finalize",
         "failure_evidence",
@@ -293,10 +707,209 @@ def test_artifacts_are_sanitized_and_restored_by_exact_id_and_digest() -> None:
 
     sanitizer = Path(".github/actions/validate-p6-artifact/action.yml").read_text(encoding="utf-8")
     assert "load_explicit_api_key_file" in sanitizer
-    assert "--canary-env" in sanitizer and "Z_SCOPE_API_KEY" in sanitizer
+    assert "byte-scan-only" in sanitizer
+    assert "P6_SANITIZED_ARTIFACT_BYTE_SCAN_ONLY" in sanitizer
+    assert "if byte_scan_only:" in sanitizer
+    assert "--canary-env" not in sanitizer
+    assert "child.update" not in sanitizer
+    assert "Z_SCOPE_API_KEY" not in str(
+        re.search(r"child = \{.*?\n        \}", sanitizer, re.DOTALL).group(0)
+    )
+    assert 'sysconfig.get_config_var("LIBDIR")' in sanitizer
+    assert '"LD_LIBRARY_PATH": str(libdir)' in sanitizer
+    assert 'os.environ.get("LD_LIBRARY_PATH"' not in sanitizer
+    assert "scan_regular_artifact_tree_for_canaries" in sanitizer
+    assert "derive_p6_artifact_canaries" in sanitizer
+    assert 'strict_bool("P6_SANITIZED_ARTIFACT_REQUIRE_KEY")' in sanitizer
+    assert 'strict_bool("P6_SANITIZED_ARTIFACT_BYTE_SCAN_ONLY")' in sanitizer
     assert "stdout=subprocess.DEVNULL" in sanitizer
     assert "stderr=subprocess.DEVNULL" in sanitizer
-    assert '"LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", "")' in sanitizer
+
+
+def test_byte_only_scans_cover_frozen_quality_and_each_reviewer_upload() -> None:
+    _, workflow = _workflow()
+
+    balanced_steps = workflow["jobs"]["cold_balanced"]["steps"]
+    balanced_scan = next(
+        step
+        for step in balanced_steps
+        if step.get("uses") == "./control/.github/actions/validate-p6-artifact"
+        and step.get("with", {}).get("byte-scan-only") == "true"
+        and "p6-balanced-frozen" in step.get("with", {}).get("paths", "")
+    )
+    assert balanced_scan["with"]["paths"].splitlines() == [
+        "p6-balanced-projection.json",
+        "p6-balanced-frozen",
+    ]
+
+    quality_steps = workflow["jobs"]["balanced_quality_gate"]["steps"]
+    quality_scan = next(
+        step
+        for step in quality_steps
+        if step.get("uses") == "./control/.github/actions/validate-p6-artifact"
+        and step.get("with", {}).get("byte-scan-only") == "true"
+        and "quality" in step.get("with", {}).get("paths", "").splitlines()
+    )
+    assert quality_scan["with"]["paths"].splitlines() == [
+        "quality",
+        "quality-revalidation-receipt.json",
+    ]
+
+    for job_name in (
+        "product_architecture_review",
+        "proof_security_review",
+        "independent_benchmark_review",
+    ):
+        steps = workflow["jobs"][job_name]["steps"]
+        upload_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("uses") == "./control/.github/actions/upload-artifact-retry"
+        )
+        scan = next(
+            step
+            for step in steps[:upload_index]
+            if step.get("uses") == "./control/.github/actions/validate-p6-artifact"
+            and step.get("with", {}).get("byte-scan-only") == "true"
+            and "review" in step.get("with", {}).get("paths", "").splitlines()
+        )
+        assert "review" in scan["with"]["paths"].splitlines()
+
+
+def test_quality_receipt_is_outside_bundle_and_strictly_revalidated_on_recovery() -> None:
+    _, workflow = _workflow()
+    quality_upload = next(
+        step
+        for step in workflow["jobs"]["balanced_quality_gate"]["steps"]
+        if step.get("id") == "upload"
+    )["with"]["path"]
+    assert quality_upload.splitlines() == [
+        "control/quality",
+        "control/quality-revalidation-receipt.json",
+    ]
+
+    independent_upload = next(
+        step
+        for step in workflow["jobs"]["independent_benchmark_review"]["steps"]
+        if step.get("uses") == "./control/.github/actions/upload-artifact-retry"
+    )["with"]["path"]
+    assert "packet/quality-artifact/quality/p6-balanced-quality-gate.json" in independent_upload
+    assert "packet/quality-artifact/quality-revalidation-receipt.json" in independent_upload
+    assert "packet/quality-artifact/quality/frozen-report.json" not in independent_upload
+    assert "packet/quality-artifact/quality/legacy-score.json" not in independent_upload
+    assert "packet/quality-artifact/quality/v16-score.json" not in independent_upload
+    assert "control/packet/quality-artifact\n" not in independent_upload
+
+    final_script = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["final_evidence_seal"]["steps"]
+    )
+    for member in (
+        "quality/bindings.json",
+        "quality/frozen-manifest.json",
+        "quality/frozen-report.json",
+        "quality/legacy-score.json",
+        "quality/p6-balanced-quality-gate.json",
+        "quality/producer-projection.json",
+        "quality/usage-evidence.json",
+        "quality/v16-score.json",
+        "quality-revalidation-receipt.json",
+    ):
+        assert f"--required-member {member}" in final_script
+    assert "scripts/p6_balanced_orchestrator.py revalidate" in final_script
+    assert "payload/quality/usage-evidence.json" in final_script
+    assert "payload/quality-revalidation-receipt.json" in final_script
+
+    failure = workflow["jobs"]["failure_evidence"]
+    restore_step = next(
+        step
+        for step in failure["steps"]
+        if "longest continuous successful producer prefix" in step.get("name", "")
+    )
+    assert restore_step["env"]["QUALITY_RESULT"] == ("${{ needs.balanced_quality_gate.result }}")
+    assert restore_step["env"]["QUALITY_ID"] == (
+        "${{ needs.balanced_quality_gate.outputs.artifact_id }}"
+    )
+    restore = restore_step["run"]
+    assert "scripts/p6_balanced_orchestrator.py revalidate" in restore
+    assert "--restored-bundle failure-evidence/restored/quality-artifact/quality" in restore
+    assert (
+        "cmp -s failure-evidence/restored/quality-artifact/quality-revalidation-receipt.json"
+        in restore
+    )
+    assert "balanced_quality_gate >> failure-evidence/prefix-stages.txt" in restore
+
+    recovery = RECOVERY_WORKFLOW.read_text(encoding="utf-8")
+    assert "--required-member payload/quality/usage-evidence.json" in recovery
+    assert "--required-member payload/quality-revalidation-receipt.json" in recovery
+    assert "validate_quality_revalidation_receipt" in recovery
+
+
+def test_quality_hard_gate_failure_exports_only_one_closed_aggregate() -> None:
+    _, workflow = _workflow()
+    quality = workflow["jobs"]["balanced_quality_gate"]
+    score = next(step for step in quality["steps"] if step.get("id") == "score")
+    assert '--failure-aggregate "$aggregate"' in score["run"]
+    assert "aggregate=quality-failure-aggregate.json" in score["run"]
+    assert "failure_aggregate_present=true" in score["run"]
+
+    scan = next(step for step in quality["steps"] if step.get("id") == "aggregate_scan")
+    assert scan["if"] == (
+        "${{ failure() && steps.score.outputs.failure_aggregate_present == 'true' }}"
+    )
+    assert scan["with"] == {
+        "paths": "quality-failure-aggregate.json",
+        "stage": "artifact_seal",
+        "require-key": "false",
+        "byte-scan-only": "true",
+    }
+    upload = next(step for step in quality["steps"] if step.get("id") == "upload_failure_aggregate")
+    assert "steps.aggregate_scan.outcome == 'success'" in upload["if"]
+    assert upload["with"]["path"] == "control/quality-failure-aggregate.json"
+    assert quality["outputs"]["failure_aggregate_artifact_id"] == (
+        "${{ steps.upload_failure_aggregate.outputs.artifact-id }}"
+    )
+    assert quality["outputs"]["failure_aggregate_artifact_digest"] == (
+        "${{ steps.upload_failure_aggregate.outputs.artifact-digest }}"
+    )
+
+    success_upload = next(step for step in quality["steps"] if step.get("id") == "upload")
+    assert "quality-failure-aggregate" not in success_upload["with"]["path"]
+    for job_name in (
+        "product_architecture_review",
+        "proof_security_review",
+        "independent_benchmark_review",
+    ):
+        reviewer = "\n".join(step.get("run", "") for step in workflow["jobs"][job_name]["steps"])
+        assert "quality-failure-aggregate" not in reviewer
+
+    failure = workflow["jobs"]["failure_evidence"]
+    restore = next(
+        step
+        for step in failure["steps"]
+        if "longest continuous successful producer prefix" in step.get("name", "")
+    )
+    assert restore["env"]["QUALITY_FAILURE_AGGREGATE_ID"] == (
+        "${{ needs.balanced_quality_gate.outputs.failure_aggregate_artifact_id }}"
+    )
+    assert restore["env"]["QUALITY_FAILURE_AGGREGATE_DIGEST"] == (
+        "${{ needs.balanced_quality_gate.outputs.failure_aggregate_artifact_digest }}"
+    )
+    assert '--required-member "$member"' in restore["run"]
+    assert "quality-failure-aggregate.json" in restore["run"]
+    restored_scan = next(
+        step
+        for step in failure["steps"]
+        if step.get("name") == "Byte-scan the optionally restored quality failure aggregate"
+    )
+    assert restored_scan["with"]["paths"] == (
+        "failure-evidence/quality-failure-aggregate/quality-failure-aggregate.json"
+    )
+    failure_upload = next(
+        step
+        for step in failure["steps"]
+        if step.get("uses") == "./control/.github/actions/upload-artifact-retry"
+    )
+    assert failure_upload["with"]["path"] == "control/failure-evidence"
 
 
 def test_failure_path_is_answer_free_and_non_finalizable() -> None:
@@ -465,6 +1078,115 @@ def test_three_tool_free_reviewers_have_exact_identity_and_ephemeral_material() 
         assert "test/range/" not in uploaded
 
 
+def test_three_reviewers_share_one_strict_common_evidence_contract() -> None:
+    text, workflow = _workflow()
+    assert text.count("build-common-evidence") == 3
+    expected_common_flags = {
+        "--qualification packet/evidence/qualification.json",
+        "--e0-lineage packet/evidence/e0-lineage.json",
+        "--quality-bundle-root packet/quality-artifact/quality",
+        "--quality-revalidation-receipt packet/quality-artifact/quality-revalidation-receipt.json",
+        "--successor-qualification packet/evidence/successor-qualification.json",
+        "--output packet/evidence/common-review-evidence.json",
+    }
+    for job_name in (
+        "product_architecture_review",
+        "proof_security_review",
+        "independent_benchmark_review",
+    ):
+        job = workflow["jobs"][job_name]
+        build = next(
+            step for step in job["steps"] if "build-common-evidence" in step.get("run", "")
+        )
+        for flag in expected_common_flags:
+            assert flag in build["run"]
+        assert (
+            "--artifact evidence/common-review-evidence.json="
+            "packet/evidence/common-review-evidence.json"
+        ) in build["run"]
+        assert (
+            "--artifact evidence/p6-balanced-quality-revalidation-receipt.json="
+            "packet/evidence/p6-balanced-quality-revalidation-receipt.json"
+        ) in build["run"]
+        restore = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Restore the exact qualification artifact"
+        )
+        assert restore["env"]["QUALITY_ID"] == (
+            "${{ needs.balanced_quality_gate.outputs.artifact_id }}"
+        )
+        assert "--required-member quality-revalidation-receipt.json" in restore["run"]
+        upload = next(
+            step
+            for step in job["steps"]
+            if step.get("uses") == "./control/.github/actions/upload-artifact-retry"
+        )
+        assert "control/packet/evidence/common-review-evidence.json" in upload["with"]["path"]
+        assert "control/packet/evidence/successor-qualification.json" in upload["with"]["path"]
+        assert (
+            "control/packet/evidence/p6-balanced-quality-revalidation-receipt.json"
+            in upload["with"]["path"]
+        )
+    final_script = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["final_evidence_seal"]["steps"]
+    )
+    assert final_script.count("/packet/evidence checkpoint-run/payload/reviews/") == 3
+
+
+def test_reviewer_usage_is_conserved_bound_and_excluded_from_scan_token_gate() -> None:
+    _, workflow = _workflow()
+    seal_script = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["final_evidence_seal"]["steps"]
+    )
+    assert 'rows[role]["review_artifact_sha256"]' in seal_script
+    assert 'review_set["reviewer_usage_conservation"]' in seal_script
+    for invariant in (
+        'conservation["provider_usage_coverage"] != 1.0',
+        'conservation["missing_usage_call_count"] != 0',
+        'conservation["mismatched_model_call_count"] != 0',
+        'conservation["estimated_call_count"] != 0',
+        'conservation["call_conservation_passed"] is not True',
+        'conservation["token_conservation_passed"] is not True',
+        'conservation["included_in_balanced_scan_token_gate"] is not False',
+    ):
+        assert invariant in seal_script
+    assert "sha256sum restored/product-review/decision.json" not in seal_script
+    assert "sha256sum restored/proof-review/decision.json" not in seal_script
+    assert "sha256sum restored/benchmark-review/decision.json" not in seal_script
+
+
+def test_review_failures_use_fixed_typed_markers() -> None:
+    _, workflow = _workflow()
+    for job_name in (
+        "product_architecture_review",
+        "proof_security_review",
+        "independent_benchmark_review",
+    ):
+        job = workflow["jobs"][job_name]
+        invoke = next(step for step in job["steps"] if "run_reviewer" in step.get("run", ""))
+        assert "run_reviewer_with_failure_marker" in invoke["run"]
+        assert 'failure_marker=Path(os.environ["P6_REVIEW_FAILURE_MARKER"])' in invoke["run"]
+        assert "str(exc)" not in invoke["run"]
+        classify = next(step for step in job["steps"] if step.get("id") == "classify")
+        assert classify["with"]["marker"] == invoke["env"]["P6_REVIEW_FAILURE_MARKER"]
+
+
+def test_final_and_recovery_revalidation_receipts_bind_the_exact_source_identity() -> None:
+    _, workflow = _workflow()
+    for job_name in ("final_evidence_seal", "finalize"):
+        script = "\n".join(step.get("run", "") for step in workflow["jobs"][job_name]["steps"])
+        assert "identity=BalancedRunIdentity(" in script
+        assert 'workflow_run_id=os.environ["GITHUB_RUN_ID"]' in script
+        assert 'attempt_id=os.environ["P6_ATTEMPT_ID"]' in script
+        assert "candidate_git_tree=candidate_tree" in script
+    recovery = RECOVERY_WORKFLOW.read_text(encoding="utf-8")
+    assert "identity=BalancedRunIdentity(" in recovery
+    assert 'workflow_run_id=os.environ["P6_SOURCE_RUN_ID"]' in recovery
+    assert 'workflow_run_attempt=int(os.environ["P6_SOURCE_RUN_ATTEMPT"])' in recovery
+    assert 'control_plane_commit=os.environ["P6_SOURCE_CONTROL_PLANE_COMMIT"]' in recovery
+
+
 def test_complete_checkpoint_precedes_a_model_free_byte_exact_finalize() -> None:
     text, workflow = _workflow()
     seal = workflow["jobs"]["final_evidence_seal"]
@@ -542,13 +1264,25 @@ def test_zero_call_recovery_requires_exact_prior_complete_checkpoint() -> None:
         "checkpoint_artifact_id",
         "checkpoint_artifact_digest",
     }
-    assert workflow["concurrency"]["group"] == "p6-pilot-validation"
+    assert workflow["concurrency"] == {
+        "group": (
+            "p6-finalize-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}-"
+            "${{ inputs.checkpoint_artifact_id }}-${{ inputs.checkpoint_artifact_digest }}"
+        ),
+        "cancel-in-progress": "false",
+    }
     script = "\n".join(step.get("run", "") for step in workflow["jobs"]["finalize"]["steps"])
     assert "--allow-prior-complete-checkpoint" in script
     assert '--current-run-id "$GITHUB_RUN_ID"' in script
     assert "--current-run-attempt" in script
     assert "--artifact-id" in script and "--artifact-digest" in script
     assert "--required-member checkpoint.json" in script
+    assert "--required-member payload/image-provenance.json" in script
+    assert "--required-member payload/proxy-provision.json" in script
+    assert "--required-member payload/quality/frozen-report.json" in script
+    assert "--required-member payload/quality/legacy-score.json" in script
+    assert "--required-member payload/quality/v16-score.json" in script
+    assert "validate_quality_gate_bundle" in script
     assert "finalize-checkpoint" in script
     assert "probe-p6" not in script and "run_reviewer" not in script
     restore = next(
@@ -564,14 +1298,42 @@ def test_zero_call_recovery_requires_exact_prior_complete_checkpoint() -> None:
     assert "source_head_sha" not in text and "--head-sha" not in text
     assert "Checkout immutable control plane only" in text
     assert "path: candidate" not in text
-    assert (
-        "source-${{ env.P6_SOURCE_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-"
-        "${{ env.P6_SOURCE_RUN_ID }}-${{ env.P6_SOURCE_RUN_ATTEMPT }}"
-    ) in text
-    assert (
-        "recovery-${{ env.P6_RECOVERY_CONTROL_PLANE_COMMIT }}-"
-        "${{ github.run_id }}-${{ github.run_attempt }}"
-    ) in text
+    steps = workflow["jobs"]["finalize"]["steps"]
+    consume = next(
+        step
+        for step in steps
+        if step.get("name") == "Fail closed if this exact checkpoint was already consumed"
+    )
+    restore_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Restore exact complete checkpoint from the protected source attempt"
+    )
+    assert steps.index(consume) < restore_index
+    assert "/actions/artifacts?{query}" in consume["run"]
+    assert 'os.environ["P6_CONSUMPTION_ARTIFACT_NAME"]' in consume["run"]
+    assert 'os.environ["P6_CONSUMPTION_RECEIPT_NAME"]' in consume["run"]
+    assert "if artifacts:" in consume["run"]
+    formal_upload = next(step for step in steps if step.get("id") == "non_release_artifact")
+    assert formal_upload["with"]["name"] == "${{ env.P6_CONSUMPTION_ARTIFACT_NAME }}"
+    receipt = next(
+        step
+        for step in steps
+        if step.get("name") == "Seal the immutable single-consumption receipt"
+    )
+    for binding in (
+        "source_run_id",
+        "source_run_attempt",
+        "checkpoint_artifact_id",
+        "checkpoint_artifact_digest",
+        "formal_artifact_id",
+        "formal_artifact_digest",
+        "recovery_workflow_run_id",
+        "content_sha256",
+    ):
+        assert f'"{binding}"' in receipt["run"]
+    receipt_upload = next(step for step in steps if step.get("id") == "consumption_receipt")
+    assert receipt_upload["with"]["name"] == "${{ env.P6_CONSUMPTION_RECEIPT_NAME }}"
 
 
 def test_formal_artifact_names_are_run_and_attempt_immutable() -> None:
@@ -598,7 +1360,8 @@ def test_review_credentials_exist_only_in_the_exact_invocation_steps() -> None:
         steps = workflow["jobs"][job_name]["steps"]
         invoke = next(step for step in steps if "run_reviewer" in step.get("run", ""))
         assert "build-review-material" not in invoke["run"]
-        assert not invoke.get("env")
+        assert set(invoke.get("env", {})) == {"P6_REVIEW_FAILURE_MARKER"}
+        assert "${{ runner.temp }}" in invoke["env"]["P6_REVIEW_FAILURE_MARKER"]
         build = next(step for step in steps if "build-review-material" in step.get("run", ""))
         validate = next(step for step in steps if "validate_review_artifact" in step.get("run", ""))
         assert not build.get("env")
@@ -637,11 +1400,25 @@ def test_control_plane_never_executes_or_imports_candidate_on_host() -> None:
             assert "python3 $P6_CANDIDATE_ROOT" not in run
 
 
-def test_candidate_and_control_tree_are_identical_for_the_first_pilot_protocol() -> None:
+def test_candidate_is_exact_normal_merge_of_tested_tree_plus_evidence() -> None:
     text, _ = _workflow()
 
     assert 'test "$P6_CANDIDATE_COMMIT" = "$P6_CONTROL_PLANE_COMMIT"' in text
-    assert "git -C \"$P6_CANDIDATE_ROOT\" rev-parse 'HEAD^{tree}'" in text
+    assert (
+        "test \"$(git rev-parse 'HEAD^{tree}')\" = "
+        '"$(git -C "$P6_CANDIDATE_ROOT" rev-parse \'HEAD^{tree}\')"'
+    ) in text
+    assert "len(candidate_parents) != 3" in text
+    assert "evidence_commit not in candidate_parents[1:]" in text
+    assert "parent_row != [evidence_commit, tested_commit]" in text
+    assert '"merge-base", "--is-ancestor", evidence_commit, control_commit' in text
+    assert "candidate_tree != evidence_tree" in text
+    assert 'candidate_change != [f"A\\t{evidence_path}"]' in text
+    assert (
+        'control_object="$(git rev-parse "${P6_CONTROL_PLANE_COMMIT}:${protected_path}")"' in text
+    )
+    assert 'candidate_object="$(git rev-parse "${P6_CANDIDATE_COMMIT}:${protected_path}")"' in text
+    assert 'test "$control_object" = "$candidate_object"' in text
 
 
 def test_failure_boundary_tracks_each_offline_stage_independently() -> None:
@@ -679,6 +1456,7 @@ def test_every_p6_producer_exports_one_always_typed_failure_result() -> None:
         "offline_qualification": "cold_fast",
         "cold_fast": "cold_fast",
         "cold_balanced": "cold_balanced",
+        "balanced_quality_gate": "balanced_quality_gate",
         "cold_deep": "cold_deep",
         "qualification_seal": "qualification_seal",
         "product_architecture_review": "product_architecture_review",
@@ -760,7 +1538,7 @@ def test_final_checkpoint_uses_review_schema_validation_before_generic_answer_fr
     assert "find checkpoint-run/payload -type f -name '*.json'" in script
     assert "*/reviews/*" in script
     assert 'if "/payload/reviews/" in f"/{relative}"' in action
-    assert "literal_canaries" in action
+    assert "derive_p6_artifact_canaries" in action
 
 
 def test_checkpoint_lineage_comes_from_restored_evidence_not_source_files() -> None:
@@ -814,7 +1592,9 @@ def test_upload_tree_rejects_a_symlinked_directory_member(tmp_path: Path) -> Non
         discover_regular_files(control, [str(payload)])
 
 
-def test_upload_tree_revalidates_the_exact_resolved_regular_member(tmp_path: Path) -> None:
+def test_upload_tree_revalidates_the_exact_resolved_regular_member(
+    tmp_path: Path,
+) -> None:
     control = tmp_path / "control"
     control.mkdir()
     member = control / "payload.json"
@@ -837,7 +1617,29 @@ def test_upload_gate_scans_every_live_reviewer_credential_namespace() -> None:
         "OPENAI_API_KEY",
     ):
         assert f'"{name}"' in action
-    assert "literal_canaries" in action
+    assert "encoded_canaries" in action
+
+
+def test_upload_and_freeze_scan_all_run_bound_answer_material_canaries() -> None:
+    action = Path(".github/actions/validate-p6-artifact/action.yml").read_text(encoding="utf-8")
+    protocol = Path("zscope/benchmarking/p6_protocol.py").read_text(encoding="utf-8")
+    freeze_cli = Path("scripts/p6_balanced_orchestrator.py").read_text(encoding="utf-8")
+
+    for category in (
+        "source",
+        "truth",
+        "expected",
+        "scorer",
+        "prompt",
+        "response",
+        "model-output",
+    ):
+        assert f'"{category}"' in protocol
+    assert "derive_p6_artifact_canaries(" in action
+    assert "scan_regular_artifact_tree_for_canaries(path" in action
+    assert 'os.environ.get("P6_SOURCE_RUN_ID")' in action
+    assert 'os.environ.get("P6_SOURCE_RUN_ATTEMPT")' in action
+    assert "derive_p6_artifact_canaries(" in freeze_cli
 
 
 @pytest.mark.parametrize(
@@ -901,6 +1703,38 @@ def test_cold_producer_maps_unknown_exceptions_to_internal_failure(
         "failure_count": 1,
     }
     assert "secret" not in marker.read_text(encoding="utf-8")
+
+
+def test_cold_producer_forces_answer_free_scanning_before_external_freeze(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    observed: dict[str, object] = {}
+
+    def succeed(*args: object, **kwargs: object) -> dict[str, object]:
+        observed["args"] = args
+        observed["kwargs"] = kwargs
+        return {}
+
+    monkeypatch.setattr(run_p6_cold_producer, "run_benchmark", succeed)
+    marker = tmp_path / "p6-cold-balanced-failure.json"
+
+    assert (
+        run_p6_cold_producer.run_cold_producer(
+            scan_depth="balanced",
+            output=tmp_path / "output",
+            failure_marker=marker,
+        )
+        == 0
+    )
+    assert observed["args"] == ("c_cpp", "pilot")
+    assert observed["kwargs"] == {
+        "runs": 1,
+        "output": tmp_path / "output",
+        "scan_depth": "balanced",
+        "answer_free_producer": True,
+    }
+    assert not marker.exists()
 
 
 def test_entry_lineage_projection_binds_the_exact_successful_e0_gate() -> None:

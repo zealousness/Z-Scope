@@ -654,14 +654,14 @@ def test_llm_client_falls_back_to_another_base_url_after_rate_limit(monkeypatch)
     ]
 
 
-def test_llm_client_retries_transient_errors_until_service_recovers(
+def test_llm_client_retry_until_available_remains_bounded(
     monkeypatch,
 ) -> None:
     client = LLMClient(
         api_key="test",
         base_url="http://recovering.example/v1",
         models=["unit-model"],
-        max_retries=0,
+        max_retries=1,
         retry_until_available=True,
     )
     calls = []
@@ -675,10 +675,10 @@ def test_llm_client_retries_transient_errors_until_service_recovers(
     monkeypatch.setattr(client.session, "post", fake_post)
     monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
 
-    result = client.chat_completion([{"role": "user", "content": "hello"}])
+    with pytest.raises(ProviderFailureError):
+        client.chat_completion([{"role": "user", "content": "hello"}])
 
-    assert result["choices"][0]["message"]["content"] == "ok"
-    assert len(calls) == 3
+    assert len(calls) == 2
 
 
 def test_llm_client_closes_streaming_response_on_success(monkeypatch) -> None:
@@ -733,7 +733,7 @@ def test_llm_client_retries_one_isolated_401_after_prior_success(monkeypatch) ->
         api_key="test",
         base_url="http://auth.example/v1",
         models=["unit-model"],
-        max_retries=0,
+        max_retries=1,
     )
     responses = [
         _FakeResponse(),
@@ -785,7 +785,7 @@ def test_llm_client_retries_repeated_401_only_once(monkeypatch) -> None:
         api_key="test",
         base_url="http://auth.example/v1",
         models=["unit-model"],
-        max_retries=0,
+        max_retries=1,
     )
     statuses = [200, 401, 401, 200]
     calls = []
@@ -813,7 +813,7 @@ def test_llm_client_retries_isolated_400_once_after_prior_success(monkeypatch) -
         api_key="test",
         base_url="http://client-response.example/v1",
         models=["unit-model"],
-        max_retries=0,
+        max_retries=1,
     )
     statuses = [200, 400, 200]
     calls = []
@@ -838,7 +838,7 @@ def test_llm_client_retries_repeated_400_only_once(monkeypatch) -> None:
         api_key="test",
         base_url="http://client-response.example/v1",
         models=["unit-model"],
-        max_retries=0,
+        max_retries=1,
     )
     statuses = [200, 400, 400, 200]
     calls = []
@@ -863,7 +863,7 @@ def test_llm_client_retries_first_400_once_without_prior_success(monkeypatch) ->
         api_key="test",
         base_url="http://client-response.example/v1",
         models=["unit-model"],
-        max_retries=0,
+        max_retries=1,
     )
     calls = []
 
@@ -887,7 +887,7 @@ def test_first_400_then_success_preserves_exact_payload_and_usage_conservation(
         api_key="test",
         base_url="http://client-response.example/v1",
         models=["unit-model"],
-        max_retries=0,
+        max_retries=1,
         token_usage_ledger=ledger,
     )
     statuses = [400, 200]
@@ -909,6 +909,35 @@ def test_first_400_then_success_preserves_exact_payload_and_usage_conservation(
     assert snapshot["events"][0]["outcome"] == "success"
     assert snapshot["rejected_before_model_count"] == 1
     assert snapshot["rejected_before_model_reasons"] == {"provider_http_client_error": 1}
+
+
+@pytest.mark.parametrize("failure", [429, "timeout"], ids=["http-429", "timeout"])
+def test_p6_single_endpoint_transport_is_bounded_to_exactly_two_attempts(
+    monkeypatch, failure
+) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://bounded.example/v1",
+        models=["unit-model"],
+        max_retries=1,
+    )
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs["json"]))
+        if failure == "timeout":
+            raise requests.exceptions.Timeout("private timeout detail")
+        return _FakeResponse(status_code=429, text="private rate limit detail")
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(llm_client_module.random, "uniform", lambda _a, _b: 0.0)
+
+    with pytest.raises(ProviderFailureError):
+        client.chat_completion([{"role": "user", "content": "same request"}])
+
+    assert len(calls) == 2
+    assert calls[0][1] == calls[1][1]
 
 
 def test_llm_client_closes_current_thread_session(monkeypatch) -> None:

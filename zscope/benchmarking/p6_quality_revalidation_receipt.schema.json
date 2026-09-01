@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.dev/schemas/p6_quality_revalidation_receipt.schema.json",
+  "title": "Z-SCOPE P6 authoritative quality revalidation receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "source_control_plane_commit", "identity",
+    "canonical_source_sha256s", "input_bundle_sha256s",
+    "output_bundle_sha256s", "quality_gate_content_sha256", "byte_exact",
+    "authority", "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.p6-quality-revalidation-receipt.v1"},
+    "source_control_plane_commit": {"$ref": "#/$defs/git"},
+    "identity": {"$ref": "#/$defs/identity"},
+    "canonical_source_sha256s": {"$ref": "#/$defs/sources"},
+    "input_bundle_sha256s": {"$ref": "#/$defs/bundle"},
+    "output_bundle_sha256s": {"$ref": "#/$defs/bundle"},
+    "quality_gate_content_sha256": {"$ref": "#/$defs/sha256"},
+    "byte_exact": {"const": true},
+    "authority": {"const": "canonical_recalculation"},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_run_id", "workflow_run_attempt", "attempt_id",
+        "control_plane_commit", "candidate_git_sha", "candidate_git_tree"
+      ],
+      "properties": {
+        "workflow_run_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "workflow_run_attempt": {"type": "integer", "minimum": 1},
+        "attempt_id": {"type": "string", "pattern": "^p6-[a-z0-9][a-z0-9._-]{2,127}$"},
+        "control_plane_commit": {"$ref": "#/$defs/git"},
+        "candidate_git_sha": {"$ref": "#/$defs/git"},
+        "candidate_git_tree": {"$ref": "#/$defs/git"}
+      }
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "legacy_scorer_entry", "legacy_scorer_engine", "v16_scorer",
+        "quality_gate", "quality_gate_schema", "orchestrator",
+        "orchestrator_cli", "revalidation_receipt_schema", "legacy_truth",
+        "v16_truth"
+      ],
+      "properties": {
+        "legacy_scorer_entry": {"$ref": "#/$defs/sha256"},
+        "legacy_scorer_engine": {"$ref": "#/$defs/sha256"},
+        "v16_scorer": {"$ref": "#/$defs/sha256"},
+        "quality_gate": {"$ref": "#/$defs/sha256"},
+        "quality_gate_schema": {"$ref": "#/$defs/sha256"},
+        "orchestrator": {"$ref": "#/$defs/sha256"},
+        "orchestrator_cli": {"$ref": "#/$defs/sha256"},
+        "revalidation_receipt_schema": {"$ref": "#/$defs/sha256"},
+        "legacy_truth": {"$ref": "#/$defs/sha256"},
+        "v16_truth": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bindings", "frozen_manifest", "legacy_score", "producer_projection",
+        "report", "usage_evidence", "v16_score", "quality_gate"
+      ],
+      "properties": {
+        "bindings": {"$ref": "#/$defs/sha256"},
+        "frozen_manifest": {"$ref": "#/$defs/sha256"},
+        "legacy_score": {"$ref": "#/$defs/sha256"},
+        "producer_projection": {"$ref": "#/$defs/sha256"},
+        "report": {"$ref": "#/$defs/sha256"},
+        "usage_evidence": {"$ref": "#/$defs/sha256"},
+        "v16_score": {"$ref": "#/$defs/sha256"},
+        "quality_gate": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

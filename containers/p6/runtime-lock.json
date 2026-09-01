@@ -1,0 +1,64 @@
+{
+  "schema_version": "zscope.p6-runtime-lock.v1",
+  "platform": "linux/amd64",
+  "base_image": {
+    "ref": "docker.io/library/python@sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a",
+    "digest": "sha256:de8ba566572ebcb35cbd10e03f5f351cad00a0d0d50a11e084f1a0fd24a0c41a",
+    "python_version": "3.13.15"
+  },
+  "archives": [
+    {
+      "name": "llvm-18.1.0-ubuntu20-rtti-x86-64.tar.gz",
+      "url": "https://github.com/SVF-tools/SVF/releases/download/SVF-3.2/llvm-18.1.0-ubuntu20-rtti-x86-64.tar.gz",
+      "sha256": "b7752da03a298493357975aa54bd79b58eaafefae480747a6de1b92a466d88fb",
+      "format": "tar.gz"
+    },
+    {
+      "name": "SVF-3.2-ubuntu-24.04-x86_64.zip",
+      "url": "https://github.com/SVF-tools/SVF/releases/download/SVF-3.2/SVF-3.2-ubuntu-24.04-x86_64.zip",
+      "sha256": "ad44622798179c7a507c0b8ed58c5bc46ecb0ebf9f8e22913b0141dce23771d9",
+      "format": "zip"
+    }
+  ],
+  "gllvm": {
+    "module": "github.com/SRI-CSL/gllvm",
+    "version": "v1.3.1",
+    "commands": [
+      "gclang",
+      "gclang++",
+      "get-bc"
+    ]
+  },
+  "debian_packages": [
+    "binutils",
+    "build-essential",
+    "ca-certificates",
+    "cmake",
+    "curl",
+    "git",
+    "golang-go",
+    "libncurses6",
+    "libtinfo6",
+    "libz3-4",
+    "libzstd1",
+    "unzip",
+    "xz-utils",
+    "zip",
+    "zlib1g"
+  ],
+  "python_requirements": "requirements/release/py313.txt",
+  "required_tools": [
+    "python3",
+    "cmake",
+    "gcc",
+    "clang",
+    "clangd",
+    "gclang",
+    "get-bc",
+    "llvm-link",
+    "llvm-nm",
+    "wpa",
+    "saber",
+    "cc"
+  ]
+}

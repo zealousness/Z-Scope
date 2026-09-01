@@ -8,11 +8,13 @@ from zscope.core.validation.proof_kernel import (
     ProofKernelEngine,
 )
 from zscope.core.validation.runner import ValidationRunner
+from zscope.orchestration.decision_trace import DecisionTraceStore
 
 
-def _runner_without_runtime() -> ValidationRunner:
+def _runner_without_runtime(tmp_path) -> ValidationRunner:
     runner = object.__new__(ValidationRunner)
     runner._terminal_authority = TerminalAuthorityEvaluator()
+    runner._decision_trace_store = DecisionTraceStore(tmp_path)
     return runner
 
 
@@ -21,11 +23,13 @@ def _open_corpus_issue() -> tuple[dict, str]:
     proof_ir = case["program_proof_ir"]
     obligation = case["proof_obligation"]
     action_uid = str(
-        ProofKernelEngine()
-        .action_catalog(proof_ir=proof_ir, obligation=obligation)[0]["action_uid"]
+        ProofKernelEngine().action_catalog(proof_ir=proof_ir, obligation=obligation)[0][
+            "action_uid"
+        ]
     )
     return (
         {
+            "validation_cluster_uid": "VAL_P6_V4_REENTRY",
             "proof_kernel_input": {
                 "schema_version": PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
                 "proof_ir": proof_ir,
@@ -38,8 +42,8 @@ def _open_corpus_issue() -> tuple[dict, str]:
     )
 
 
-def test_v3_reentry_reduces_the_same_frozen_obligation() -> None:
-    runner = _runner_without_runtime()
+def test_v3_reentry_reduces_the_same_frozen_obligation(tmp_path) -> None:
+    runner = _runner_without_runtime(tmp_path)
     issue, action_uid = _open_corpus_issue()
     original_input = issue["proof_kernel_input"]
     original_obligation = original_input["proof_obligation"]
@@ -62,8 +66,8 @@ def test_v3_reentry_reduces_the_same_frozen_obligation() -> None:
     assert authority.disposition in {"confirmed", "rejected_with_proof"}
 
 
-def test_terminal_authority_stops_post_terminal_v3_work() -> None:
-    runner = _runner_without_runtime()
+def test_terminal_authority_stops_post_terminal_v3_work(tmp_path) -> None:
+    runner = _runner_without_runtime(tmp_path)
     issue, action_uid = _open_corpus_issue()
     assert runner._reenter_frozen_proof_obligation(issue, action_uid=action_uid)
     item = SimpleNamespace(raw_issue=issue)
@@ -117,20 +121,18 @@ def test_fact_plan_completion_does_not_authorize_promotion() -> None:
     assert issue["fact_plan_complete"] is True
     assert issue["v3_evidence_closure"]["reason"] == "fact_plan_complete"
     assert issue["candidate_promotion_eligible"] is False
-    assert issue["candidate_promotion_reason"] == (
-        "fact_plan_complete_requires_proof_closure"
-    )
+    assert issue["candidate_promotion_reason"] == ("fact_plan_complete_requires_proof_closure")
 
 
-def test_terminal_transition_records_only_the_first_true_terminal() -> None:
+def test_terminal_transition_records_only_the_first_true_terminal(tmp_path) -> None:
     issue: dict = {}
     open_authority = TerminalAuthorityEvaluator().evaluate({}, operation="live")
-    closed_issue, action_uid = _open_corpus_issue()
-    runner = _runner_without_runtime()
-    assert runner._reenter_frozen_proof_obligation(closed_issue, action_uid=action_uid)
-    closed_authority = runner._terminal_authority.evaluate(closed_issue, operation="live")
+    issue, action_uid = _open_corpus_issue()
+    runner = _runner_without_runtime(tmp_path)
+    assert runner._reenter_frozen_proof_obligation(issue, action_uid=action_uid)
+    closed_authority = runner._terminal_authority.evaluate(issue, operation="live")
 
-    assert ValidationRunner._mark_terminal_transition(issue, "V1", open_authority) is False
-    assert ValidationRunner._mark_terminal_transition(issue, "V3", closed_authority) is True
-    assert ValidationRunner._mark_terminal_transition(issue, "V2", closed_authority) is False
+    assert runner._mark_terminal_transition(issue, "V1", open_authority) is False
+    assert runner._mark_terminal_transition(issue, "V3", closed_authority) is True
+    assert runner._mark_terminal_transition(issue, "V3", closed_authority) is False
     assert issue["terminal_transition_level"] == "V3"

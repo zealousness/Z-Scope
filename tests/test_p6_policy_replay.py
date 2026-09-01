@@ -45,6 +45,11 @@ def _trace_root(tmp_path: Path) -> Path:
     issue["terminal_authority_decision"] = authority
     cluster_uid = str(issue["validation_cluster_uid"])
     store.bind_candidate(cluster_uid, candidate_uids=("CAND_1",))
+    store.record_terminal_transition(
+        issue,
+        level="V1",
+        authority=authority,
+    )
     store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
     store.snapshot()
     return tmp_path

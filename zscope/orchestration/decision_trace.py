@@ -1,9 +1,10 @@
 """Content-addressed, per-cluster decision traces.
 
-The trace is an audit sidecar, never a decision authority.  Product stages
-append structured events while the existing Candidate Ledger, proof pipeline,
-and report views remain authoritative.  This separation lets a trace failure
-degrade observability without silently changing a security disposition.
+Ordinary trace events are an audit sidecar and never decide a disposition.
+The live v4 proof-transition event is stricter: it freezes the exact point at
+which TerminalAuthority changed the security state, so its policy evidence and
+hash-chain persistence are required and fail closed.  Report finalization may
+only reuse that boundary while adding view and root projections.
 """
 
 from __future__ import annotations
@@ -72,6 +73,8 @@ VALIDATION_REASON_CODES = frozenset(
         "V3_STOP_NO_REMAINING_ACTION",
         "V3_STOP_MAX_ITERATIONS",
         "LLM_USAGE_BOUND",
+        "P6_TOKEN_SOFT_WATERMARK",
+        "P6_TOKEN_HARD_LIMIT",
     }
 )
 TERMINAL_REASON_CODES = frozenset(
@@ -314,6 +317,7 @@ class DecisionTraceStore:
         self._evidence_refs: set[str] = set()
         self._model_event_refs: set[str] = set()
         self._errors: list[str] = []
+        self._error_counts: Dict[str, int] = {}
 
     @property
     def trace_dir(self) -> Path:
@@ -354,6 +358,7 @@ class DecisionTraceStore:
         producer: str,
         dependency_hashes: Sequence[str] = (),
         locations: Sequence[Mapping[str, Any]] = (),
+        require_persistence: bool = False,
     ) -> str:
         body = {
             "schema_version": EVIDENCE_OBJECT_SCHEMA_VERSION,
@@ -368,7 +373,16 @@ class DecisionTraceStore:
         path = self.evidence_dir / f"{digest}.json"
         with self._lock:
             if not path.exists():
-                self._write(path, record)
+                persisted = self._write(path, record)
+                if require_persistence and not persisted:
+                    raise DecisionTraceError("decision_trace_write_failed")
+            elif require_persistence:
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise DecisionTraceError("decision_trace_evidence_invalid") from exc
+                if existing != record:
+                    raise DecisionTraceError("decision_trace_evidence_invalid")
             self._evidence_refs.add(digest)
         return f"evidence_objects/{digest}.json"
 
@@ -426,6 +440,7 @@ class DecisionTraceStore:
         parent_event_uids: Sequence[str] = (),
         details: Optional[Mapping[str, Any]] = None,
         dedupe_key: str = "",
+        require_persistence: bool = False,
     ) -> Dict[str, Any]:
         cluster_uid = str(validation_cluster_uid or "").strip()
         if not cluster_uid:
@@ -477,8 +492,39 @@ class DecisionTraceStore:
             events.append(event)
             trace["trace_root_sha256"] = event_hash
             trace["updated_at"] = payload["recorded_at"]
-            self._persist_trace(cluster_uid)
+            if not self._persist_trace(cluster_uid) and require_persistence:
+                events.pop()
+                trace["trace_root_sha256"] = str(prior.get("event_hash") or "") if prior else ""
+                if prior is None:
+                    trace.pop("updated_at", None)
+                else:
+                    trace["updated_at"] = str(prior.get("recorded_at") or "")
+                raise DecisionTraceError("decision_trace_write_failed")
             return deepcopy(event)
+
+    def bound_call_ids(self, validation_cluster_uid: str) -> set[str]:
+        """Return physical model calls already causally bound to one trace."""
+
+        with self._lock:
+            return {
+                str(call_id)
+                for event in self._trace(str(validation_cluster_uid)).get("events") or []
+                if isinstance(event, Mapping)
+                for call_id in event.get("call_ids") or []
+                if str(call_id)
+            }
+
+    def bound_tool_call_ids(self, validation_cluster_uid: str) -> set[str]:
+        """Return tool calls already causally bound to one trace."""
+
+        with self._lock:
+            return {
+                str(call_id)
+                for event in self._trace(str(validation_cluster_uid)).get("events") or []
+                if isinstance(event, Mapping)
+                for call_id in event.get("tool_call_ids") or []
+                if str(call_id)
+            }
 
     def record_coverage_event(
         self,
@@ -532,42 +578,10 @@ class DecisionTraceStore:
             self._write(path, trace)
             return deepcopy(event)
 
-    def finalize_issue(
+    def _terminal_policy_material(
         self,
-        issue: Dict[str, Any],
-        *,
-        view_memberships: Sequence[str],
-    ) -> Dict[str, Any]:
-        cluster_uid = str(issue.get("validation_cluster_uid") or "").strip()
-        if not cluster_uid:
-            return issue
-        disposition = _disposition(issue)
-        terminal_authority = issue.get("terminal_authority_decision")
-        terminal_authority = terminal_authority if isinstance(terminal_authority, Mapping) else {}
-        security_terminal = disposition in {
-            "confirmed",
-            "validated",
-            "rejected",
-            "rejected_with_proof",
-            "needs_review",
-        }
-        operational = str(issue.get("record_role") or "") == "operational_obligation"
-        if security_terminal and not operational:
-            if _live_v4_authority(issue) is None:
-                raise DecisionTraceError(
-                    "security terminal requires an exact live TerminalAuthorityDecision v4 "
-                    "projection from the bound Proof Engine state"
-                )
-        explicit_reasons = issue.get("terminal_reason_codes")
-        reasons = (
-            tuple(str(value) for value in explicit_reasons if str(value) in TERMINAL_REASON_CODES)
-            if isinstance(explicit_reasons, list) and _disposition(issue) != "deduplicated_alias"
-            else ()
-        ) or terminal_reason_codes(issue)
-        terminal_reason = next(
-            (value for value in reasons if value not in {"ROOT_ALIAS", "VIEW_EXCLUDED"}),
-            reasons[0],
-        )
+        issue: Mapping[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         security_spec_mode = str(
             issue.get("security_spec_mode")
             or self.identity.get("security_spec_mode")
@@ -604,64 +618,298 @@ class DecisionTraceStore:
                 "reason_code": "hypothesis_hunter_manifest_unavailable",
             }
         )
-        policy_ref = self.put_evidence(
-            kind="terminal_policy_input",
-            payload={
-                "issue": self._state_projection(issue),
-                "terminal_authority_decision": _sanitize(
-                    issue.get("terminal_authority_decision") or {}
-                ),
-                "proof_kernel_mode": str(issue.get("proof_kernel_mode") or "authoritative"),
-                "proof_kernel_input": _sanitize(issue.get("proof_kernel_input") or {}),
-                "proof_kernel_live_selected_action_uids": _sanitize(
-                    issue.get("proof_kernel_live_selected_action_uids") or []
-                ),
-                "proof_kernel_artifact_refs": _sanitize(
-                    issue.get("proof_kernel_artifact_refs") or []
-                ),
-                "proof_kernel_checker_results": _sanitize(
-                    issue.get("proof_kernel_checker_results") or []
-                ),
-                "proof_kernel_checker_result_refs": _sanitize(
-                    issue.get("proof_kernel_checker_result_refs") or []
-                ),
-                "proof_kernel_frozen_state": _sanitize(
-                    issue.get("proof_kernel_frozen_state") or {}
-                ),
-                "proof_kernel_closure_evaluation": _sanitize(
-                    issue.get("proof_kernel_closure_evaluation") or {}
-                ),
-                "proof_kernel_promotion_certificate": _sanitize(
-                    issue.get("proof_kernel_promotion_certificate") or {}
-                ),
-                "proof_kernel_root_manifest_sha256": str(
-                    issue.get("proof_kernel_root_manifest_sha256") or ""
-                ),
-                "proof_kernel_decision": _sanitize(
-                    issue.get("proof_kernel_decision")
-                    or issue.get("proof_kernel_terminal_authority_decision")
-                    or {}
-                ),
-                "proof_kernel_terminal_authority_decision": _sanitize(
-                    issue.get("proof_kernel_terminal_authority_decision") or {}
-                ),
-                "security_spec_mode": security_spec_mode,
-                "security_spec_artifact_refs": security_spec_artifact_refs,
-                "security_spec_decision": security_spec_decision,
-                "hypothesis_hunter_mode": hypothesis_hunter_mode,
-                "hypothesis_hunter_artifact_refs": hypothesis_hunter_artifact_refs,
-                "hypothesis_hunter_decision": hypothesis_hunter_decision,
-            },
-            producer="terminal_authority_evaluator",
-        )
+        details = {
+            "security_spec_mode": security_spec_mode,
+            "security_spec_artifact_refs": security_spec_artifact_refs,
+            "security_spec_decision": security_spec_decision,
+            "hypothesis_hunter_mode": hypothesis_hunter_mode,
+            "hypothesis_hunter_artifact_refs": hypothesis_hunter_artifact_refs,
+            "hypothesis_hunter_decision": hypothesis_hunter_decision,
+        }
+        payload = {
+            "issue": self._state_projection(issue),
+            "terminal_authority_decision": _sanitize(
+                issue.get("terminal_authority_decision") or {}
+            ),
+            "proof_kernel_mode": str(issue.get("proof_kernel_mode") or "authoritative"),
+            "proof_kernel_input": _sanitize(issue.get("proof_kernel_input") or {}),
+            "proof_kernel_live_selected_action_uids": _sanitize(
+                issue.get("proof_kernel_live_selected_action_uids") or []
+            ),
+            "proof_kernel_artifact_refs": _sanitize(issue.get("proof_kernel_artifact_refs") or []),
+            "proof_kernel_checker_results": _sanitize(
+                issue.get("proof_kernel_checker_results") or []
+            ),
+            "proof_kernel_checker_result_refs": _sanitize(
+                issue.get("proof_kernel_checker_result_refs") or []
+            ),
+            "proof_kernel_frozen_state": _sanitize(issue.get("proof_kernel_frozen_state") or {}),
+            "proof_kernel_closure_evaluation": _sanitize(
+                issue.get("proof_kernel_closure_evaluation") or {}
+            ),
+            "proof_kernel_promotion_certificate": _sanitize(
+                issue.get("proof_kernel_promotion_certificate") or {}
+            ),
+            "proof_kernel_root_manifest_sha256": str(
+                issue.get("proof_kernel_root_manifest_sha256") or ""
+            ),
+            "proof_kernel_decision": _sanitize(
+                issue.get("proof_kernel_decision")
+                or issue.get("proof_kernel_terminal_authority_decision")
+                or {}
+            ),
+            "proof_kernel_terminal_authority_decision": _sanitize(
+                issue.get("proof_kernel_terminal_authority_decision") or {}
+            ),
+            **details,
+        }
+        return payload, details
+
+    @staticmethod
+    def _apply_terminal_transition_projection(
+        issue: Dict[str, Any],
+        *,
+        level: str,
+        authority: Mapping[str, Any],
+        event: Mapping[str, Any],
+        authority_sha256: str,
+    ) -> None:
+        disposition = str(authority.get("disposition") or "")
+        reason_code = str(authority.get("reason_code") or "")
+        issue["terminal_authority_decision"] = deepcopy(dict(authority))
+        issue["proof_kernel_terminal_authority_decision"] = deepcopy(dict(authority))
+        issue["terminal_authority"] = str(authority.get("authority") or "")
+        issue["terminal_reason_codes"] = [reason_code]
+        issue["candidate_disposition"] = disposition
+        issue["policy_disposition"] = disposition
+        issue["validation_status"] = "validated" if disposition == "confirmed" else "rejected"
+        issue["terminal_transition_level"] = level
+        issue["terminal_transition_disposition"] = disposition
+        issue["terminal_transition_event_uid"] = str(event.get("event_uid") or "")
+        issue["terminal_transition_event_hash"] = str(event.get("event_hash") or "")
+        issue["terminal_transition_authority_sha256"] = authority_sha256
+        issue["terminal_event_uid"] = str(event.get("event_uid") or "")
+
+    def record_terminal_transition(
+        self,
+        issue: Dict[str, Any],
+        *,
+        level: str,
+        authority: Mapping[str, Any] | Any,
+    ) -> tuple[Dict[str, Any], bool]:
+        """Persist the first live v4 proof closure before any later work.
+
+        The report finalizer may add views and aliases, but it cannot mint or
+        move this boundary.  Exact replay returns the same event; any level,
+        authority, disposition, or hash drift fails closed.
+        """
+
+        cluster_uid = str(issue.get("validation_cluster_uid") or "").strip()
+        normalized_level = str(level or "")
+        if not cluster_uid:
+            raise DecisionTraceError("terminal_transition_cluster_missing")
+        if normalized_level not in {"V0", "V1", "V2", "V3"}:
+            raise DecisionTraceError("terminal_transition_level_invalid")
+        to_dict = getattr(authority, "to_dict", None)
+        raw_authority = to_dict() if callable(to_dict) else authority
+        if not isinstance(raw_authority, Mapping):
+            raise DecisionTraceError("terminal_transition_authority_invalid")
+        authority_dict = deepcopy(dict(raw_authority))
+        disposition = str(authority_dict.get("disposition") or "")
+        reason_code = str(authority_dict.get("reason_code") or "")
+        if (
+            str(authority_dict.get("schema_version") or "") != TERMINAL_AUTHORITY_DECISION_V4
+            or authority_dict.get("terminal") is not True
+            or disposition not in {"confirmed", "rejected_with_proof"}
+            or reason_code not in TERMINAL_REASON_CODES
+        ):
+            raise DecisionTraceError("terminal_transition_authority_invalid")
+        recorded = issue.get("terminal_authority_decision")
+        materialized = issue.get("proof_kernel_terminal_authority_decision")
+        if not isinstance(recorded, Mapping) or dict(recorded) != authority_dict:
+            raise DecisionTraceError("terminal_transition_authority_binding_invalid")
+        if not isinstance(materialized, Mapping) or dict(materialized) != authority_dict:
+            raise DecisionTraceError("terminal_transition_authority_binding_invalid")
+
+        carrier = deepcopy(issue)
+        carrier["candidate_disposition"] = disposition
+        carrier["policy_disposition"] = disposition
+        carrier["validation_status"] = "validated" if disposition == "confirmed" else "rejected"
+        if _live_v4_authority(carrier) != authority_dict:
+            raise DecisionTraceError("terminal_transition_authority_revalidation_failed")
+        authority_sha256 = _sha256(authority_dict)
+
         with self._lock:
+            trace = self._trace(cluster_uid)
+            existing_uid = str(trace.get("terminal_transition_event_uid") or "")
+            if existing_uid:
+                matches = [
+                    event
+                    for event in trace.get("events") or []
+                    if isinstance(event, Mapping)
+                    and str(event.get("event_uid") or "") == existing_uid
+                ]
+                if len(matches) != 1:
+                    raise DecisionTraceError("terminal_transition_event_invalid")
+                existing = dict(matches[0])
+                details = existing.get("details")
+                details = details if isinstance(details, Mapping) else {}
+                expected_issue_projection = {
+                    "terminal_transition_event_uid": existing_uid,
+                    "terminal_transition_event_hash": str(existing.get("event_hash") or ""),
+                    "terminal_transition_authority_sha256": authority_sha256,
+                    "terminal_transition_level": normalized_level,
+                    "terminal_transition_disposition": disposition,
+                }
+                if (
+                    existing.get("stage") != "policy"
+                    or existing.get("actor") != "terminal_authority_evaluator"
+                    or str(trace.get("terminal_transition_event_hash") or "")
+                    != str(existing.get("event_hash") or "")
+                    or str(trace.get("terminal_transition_authority_sha256") or "")
+                    != authority_sha256
+                    or str(trace.get("terminal_transition_level") or "") != normalized_level
+                    or str(trace.get("terminal_transition_disposition") or "") != disposition
+                    or str(existing.get("reason_code") or "") != reason_code
+                    or str(existing.get("disposition_after") or "") != disposition
+                    or str(details.get("terminal_transition_level") or "") != normalized_level
+                    or str(details.get("terminal_authority_sha256") or "") != authority_sha256
+                    or set(details) != {"terminal_transition_level", "terminal_authority_sha256"}
+                    or len(existing.get("input_refs") or []) != 1
+                    or list(existing.get("call_ids") or [])
+                    or list(existing.get("tool_call_ids") or [])
+                    or int(existing.get("token_delta") or 0) != 0
+                    or any(
+                        str(issue.get(key) or "") and str(issue.get(key) or "") != value
+                        for key, value in expected_issue_projection.items()
+                    )
+                ):
+                    raise DecisionTraceError("terminal_transition_replay_drift")
+                self._apply_terminal_transition_projection(
+                    issue,
+                    level=normalized_level,
+                    authority=authority_dict,
+                    event=existing,
+                    authority_sha256=authority_sha256,
+                )
+                return deepcopy(existing), False
+            if any(
+                isinstance(event, Mapping)
+                and event.get("stage") == "policy"
+                and str(event.get("reason_code") or "") in TERMINAL_REASON_CODES
+                for event in trace.get("events") or []
+            ):
+                raise DecisionTraceError("cluster_already_has_terminal_event")
+
+            payload, _ = self._terminal_policy_material(carrier)
+            policy_ref = self.put_evidence(
+                kind="terminal_policy_input",
+                payload=payload,
+                producer="terminal_authority_evaluator",
+                require_persistence=True,
+            )
+            event = self.append_event(
+                cluster_uid,
+                stage="policy",
+                actor="terminal_authority_evaluator",
+                reason_code=reason_code,
+                after_state=self._state_projection(carrier),
+                input_refs=(policy_ref,),
+                disposition_after=disposition,
+                open_clause_ids=self._open_clause_ids(carrier),
+                details={
+                    "terminal_transition_level": normalized_level,
+                    "terminal_authority_sha256": authority_sha256,
+                },
+                require_persistence=True,
+            )
+            trace["terminal_transition_event_uid"] = event["event_uid"]
+            trace["terminal_transition_event_hash"] = event["event_hash"]
+            trace["terminal_transition_authority_sha256"] = authority_sha256
+            trace["terminal_transition_level"] = normalized_level
+            trace["terminal_transition_disposition"] = disposition
+            trace["terminal_disposition"] = disposition
+            trace["terminal_event_uid"] = event["event_uid"]
+            trace["terminal_authority"] = reason_code
+            trace["terminal_reason_codes"] = [reason_code]
+            if not self._persist_trace(cluster_uid):
+                raise DecisionTraceError("decision_trace_write_failed")
+
+        self._apply_terminal_transition_projection(
+            issue,
+            level=normalized_level,
+            authority=authority_dict,
+            event=event,
+            authority_sha256=authority_sha256,
+        )
+        return deepcopy(event), True
+
+    def finalize_issue(
+        self,
+        issue: Dict[str, Any],
+        *,
+        view_memberships: Sequence[str],
+    ) -> Dict[str, Any]:
+        cluster_uid = str(issue.get("validation_cluster_uid") or "").strip()
+        if not cluster_uid:
+            return issue
+        disposition = _disposition(issue)
+        original_disposition = str(issue.get("finding_root_original_disposition") or "").lower()
+        proven_alias = bool(
+            disposition == "deduplicated_alias"
+            and original_disposition in {"confirmed", "rejected_with_proof"}
+            and str(issue.get("terminal_transition_event_uid") or "")
+        )
+        proof_disposition = original_disposition if proven_alias else disposition
+        terminal_authority = issue.get("terminal_authority_decision")
+        terminal_authority = terminal_authority if isinstance(terminal_authority, Mapping) else {}
+        security_terminal = proof_disposition in {
+            "confirmed",
+            "validated",
+            "rejected",
+            "rejected_with_proof",
+            "needs_review",
+        }
+        operational = str(issue.get("record_role") or "") == "operational_obligation"
+        if security_terminal and not operational:
+            authority_carrier = dict(issue)
+            if proven_alias:
+                authority_carrier["candidate_disposition"] = proof_disposition
+                authority_carrier["policy_disposition"] = proof_disposition
+                authority_carrier["validation_status"] = (
+                    "validated" if proof_disposition == "confirmed" else "rejected"
+                )
+            if _live_v4_authority(authority_carrier) is None:
+                raise DecisionTraceError(
+                    "security terminal requires an exact live TerminalAuthorityDecision v4 "
+                    "projection from the bound Proof Engine state"
+                )
+        explicit_reasons = issue.get("terminal_reason_codes")
+        reasons = (
+            tuple(str(value) for value in explicit_reasons if str(value) in TERMINAL_REASON_CODES)
+            if isinstance(explicit_reasons, list) and _disposition(issue) != "deduplicated_alias"
+            else ()
+        ) or terminal_reason_codes(issue)
+        terminal_reason = next(
+            (value for value in reasons if value not in {"ROOT_ALIAS", "VIEW_EXCLUDED"}),
+            reasons[0],
+        )
+        policy_payload, policy_details = self._terminal_policy_material(issue)
+        with self._lock:
+            transition_uid = str(issue.get("terminal_transition_event_uid") or "")
             existing_terminal = next(
                 (
                     deepcopy(event)
                     for event in reversed(self._trace(cluster_uid)["events"])
                     if event.get("stage") == "policy"
-                    and event.get("reason_code") == terminal_reason
-                    and str(event.get("disposition_after") or "") == _disposition(issue)
+                    and (
+                        str(event.get("event_uid") or "") == transition_uid
+                        if transition_uid
+                        else (
+                            event.get("reason_code") == terminal_reason
+                            and str(event.get("disposition_after") or "") == disposition
+                        )
+                    )
                 ),
                 None,
             )
@@ -674,25 +922,55 @@ class DecisionTraceStore:
             ]
         if prior_terminal_events and existing_terminal is None:
             raise DecisionTraceError("cluster already has a different terminal event")
-        terminal = existing_terminal or self.append_event(
-            cluster_uid,
-            stage="policy",
-            actor="terminal_authority_evaluator",
-            reason_code=terminal_reason,
-            after_state=self._state_projection(issue),
-            input_refs=(policy_ref,),
-            disposition_after=_disposition(issue),
-            open_clause_ids=self._open_clause_ids(issue),
-            details={
-                "security_spec_mode": security_spec_mode,
-                "security_spec_artifact_refs": security_spec_artifact_refs,
-                "security_spec_decision": security_spec_decision,
-                "hypothesis_hunter_mode": hypothesis_hunter_mode,
-                "hypothesis_hunter_artifact_refs": hypothesis_hunter_artifact_refs,
-                "hypothesis_hunter_decision": hypothesis_hunter_decision,
-            },
-            dedupe_key=f"terminal:{terminal_reason}:{_disposition(issue)}",
-        )
+        proof_terminal = proof_disposition in {
+            "confirmed",
+            "validated",
+            "rejected",
+            "rejected_with_proof",
+        }
+        if proof_terminal and not operational:
+            transition_uid = str(issue.get("terminal_transition_event_uid") or "")
+            transition_hash = str(issue.get("terminal_transition_event_hash") or "")
+            authority_sha256 = str(issue.get("terminal_transition_authority_sha256") or "")
+            transition_level = str(issue.get("terminal_transition_level") or "")
+            if (
+                existing_terminal is None
+                or str(existing_terminal.get("event_uid") or "") != transition_uid
+                or str(existing_terminal.get("event_hash") or "") != transition_hash
+                or transition_level not in {"V0", "V1", "V2", "V3"}
+                or authority_sha256 != _sha256(terminal_authority)
+            ):
+                raise DecisionTraceError("proof terminal has no exact live transition event")
+            transition_details = existing_terminal.get("details")
+            transition_details = (
+                transition_details if isinstance(transition_details, Mapping) else {}
+            )
+            if (
+                str(transition_details.get("terminal_transition_level") or "") != transition_level
+                or str(transition_details.get("terminal_authority_sha256") or "")
+                != authority_sha256
+                or str(issue.get("terminal_transition_disposition") or "") != proof_disposition
+            ):
+                raise DecisionTraceError("proof terminal transition binding is invalid")
+            terminal = existing_terminal
+        else:
+            policy_ref = self.put_evidence(
+                kind="terminal_policy_input",
+                payload=policy_payload,
+                producer="terminal_authority_evaluator",
+            )
+            terminal = existing_terminal or self.append_event(
+                cluster_uid,
+                stage="policy",
+                actor="terminal_authority_evaluator",
+                reason_code=terminal_reason,
+                after_state=self._state_projection(issue),
+                input_refs=(policy_ref,),
+                disposition_after=_disposition(issue),
+                open_clause_ids=self._open_clause_ids(issue),
+                details=policy_details,
+                dedupe_key=f"terminal:{terminal_reason}:{_disposition(issue)}",
+            )
         root_uid = str(issue.get("finding_root_uid") or "")
         if root_uid:
             is_alias = _disposition(issue) == "deduplicated_alias"
@@ -733,7 +1011,9 @@ class DecisionTraceStore:
             trace = self._trace(cluster_uid)
             trace["terminal_disposition"] = _disposition(issue)
             trace["terminal_event_uid"] = terminal["event_uid"]
-            trace["terminal_authority"] = str(terminal_reason)
+            trace["terminal_authority"] = str(
+                terminal.get("reason_code") if proof_terminal else terminal_reason
+            )
             trace["terminal_reason_codes"] = list(reasons)
             trace["view_memberships"] = sorted(
                 {str(value) for value in view_memberships if str(value)}
@@ -751,7 +1031,9 @@ class DecisionTraceStore:
         issue["decision_trace_ref"] = path
         issue["decision_trace_sha256"] = trace_hash
         issue["terminal_event_uid"] = terminal["event_uid"]
-        issue["terminal_authority"] = terminal_reason
+        issue["terminal_authority"] = str(
+            terminal.get("reason_code") if proof_terminal else terminal_reason
+        )
         issue["terminal_reason_codes"] = list(reasons)
         issue["open_clause_ids"] = self._open_clause_ids(issue)
         return issue
@@ -791,6 +1073,7 @@ class DecisionTraceStore:
                 "evidence_object_sha256": sorted(self._evidence_refs),
                 "model_event_sha256": sorted(self._model_event_refs),
                 "errors": list(self._errors),
+                "error_counts": dict(sorted(self._error_counts.items())),
             }
             usage = self._usage_binding()
             manifest["llm_usage_events"] = usage
@@ -924,11 +1207,11 @@ class DecisionTraceStore:
                     if resolved.is_file():
                         file_sha = hashlib.sha256(resolved.read_bytes()).hexdigest()
                     elif events:
-                        missing.append("usage_sidecar_unreadable:FileNotFoundError")
+                        missing.append("usage_sidecar_unreadable")
                 else:
                     missing.append("usage_sidecar_outside_trace_root")
-            except OSError as exc:
-                missing.append(f"usage_sidecar_unreadable:{type(exc).__name__}")
+            except OSError:
+                missing.append("usage_sidecar_unreadable")
         conservation_valid = (
             not missing
             and not duplicates
@@ -976,6 +1259,11 @@ class DecisionTraceStore:
                 "terminal_event_uid": "",
                 "terminal_authority": "",
                 "terminal_reason_codes": [],
+                "terminal_transition_event_uid": "",
+                "terminal_transition_event_hash": "",
+                "terminal_transition_authority_sha256": "",
+                "terminal_transition_level": "",
+                "terminal_transition_disposition": "",
                 "view_memberships": [],
                 "finding_root": {},
                 "trace_root_sha256": "",
@@ -1005,22 +1293,29 @@ class DecisionTraceStore:
             )
             self._persist_trace(validation_cluster_uid)
 
-    def _persist_trace(self, cluster_uid: str) -> None:
+    def _persist_trace(self, cluster_uid: str) -> bool:
         trace = self._trace(cluster_uid)
         document_body = dict(trace)
         document_body.pop("document_sha256", None)
         trace["document_sha256"] = _sha256(document_body)
         path = self.trace_dir / _artifact_name(cluster_uid)
         self._trace_paths[cluster_uid] = path.relative_to(self.root).as_posix()
-        self._write(path, trace)
+        return self._write(path, trace)
 
-    def _write(self, path: Path, value: Mapping[str, Any]) -> None:
+    def _write(self, path: Path, value: Mapping[str, Any]) -> bool:
         try:
             _atomic_write_json(path, value)
-        except OSError as exc:
-            message = f"{type(exc).__name__}: {exc}"
-            if message not in self._errors:
-                self._errors.append(message)
+        except OSError:
+            # Never persist an exception body here: filesystem errors may
+            # contain a private source path, secret-bearing filename, or an
+            # injected answer canary.  The manifest needs only the stable
+            # failure class and its occurrence count to fail closed.
+            failure_class = "decision_trace_write_failed"
+            if failure_class not in self._errors:
+                self._errors.append(failure_class)
+            self._error_counts[failure_class] = self._error_counts.get(failure_class, 0) + 1
+            return False
+        return True
 
     @staticmethod
     def _open_clause_ids(issue: Mapping[str, Any]) -> list[str]:
@@ -1164,7 +1459,7 @@ def load_decision_trace(path: Path) -> Dict[str, Any]:
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise DecisionTraceError(f"cannot load decision trace: {exc}") from exc
+        raise DecisionTraceError("decision_trace_load_failed") from exc
     if not isinstance(value, dict):
         raise DecisionTraceError("decision trace must be a JSON object")
     valid, reason = verify_decision_trace(value)
@@ -1176,8 +1471,8 @@ def load_decision_trace(path: Path) -> Dict[str, Any]:
 def verify_evidence_object(path: Path) -> tuple[bool, str]:
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return False, str(exc)
+    except (OSError, json.JSONDecodeError):
+        return False, "evidence_object_load_failed"
     if not isinstance(value, dict):
         return False, "evidence object must be an object"
     digest = str(value.pop("sha256", ""))
@@ -1189,8 +1484,8 @@ def verify_evidence_object(path: Path) -> tuple[bool, str]:
 def verify_model_event(path: Path) -> tuple[bool, str]:
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return False, str(exc)
+    except (OSError, json.JSONDecodeError):
+        return False, "model_event_load_failed"
     if not isinstance(value, dict):
         return False, "model event must be an object"
     digest = str(value.pop("sha256", ""))

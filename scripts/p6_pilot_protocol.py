@@ -30,6 +30,7 @@ from zscope.benchmarking.p6_protocol import (
     build_qualification_from_projections,
     diagnose_pilot,
     emit_workflow_failure,
+    load_expected_proxy_attestation,
     load_json_strict,
     load_json_bytes_strict,
     load_stage_results,
@@ -42,11 +43,13 @@ from zscope.benchmarking.p6_protocol import (
     validate_pilot_aggregate,
     validate_checkpoint,
     validate_answer_free_artifact,
+    validate_final_evidence_manifest,
     validate_repair_receipt,
     validate_repair_receipt_bundle,
     validate_qualification_oci_receipt,
     validate_safe_zip,
     validate_toolchain_evidence,
+    validate_toolchain_provenance_files,
     validate_usage_conservation,
     write_json_exclusive,
     zero_usage_conservation,
@@ -263,15 +266,53 @@ def _qualification_oci_context(
     )
     contract = require_p6_provider_contract(Path("test/range/zscope.benchmark.yaml"))
     policy = OciNetworkPolicy.from_provider_contract(os.environ, contract)
+    attestation_path_text = str(
+        os.environ.get("Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE") or ""
+    )
+    attestation_file_sha256 = str(
+        os.environ.get("Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256") or ""
+    )
+    if not attestation_path_text or not Path(attestation_path_text).is_absolute():
+        raise P6ProtocolError("P6 qualification expected proxy attestation is unavailable")
+    attestation = load_expected_proxy_attestation(
+        Path(attestation_path_text), expected_file_sha256=attestation_file_sha256
+    )
     repository = str(os.environ.get("GITHUB_REPOSITORY") or "").strip()
     if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise P6ProtocolError("P6 qualification repository identity is invalid")
+    if (
+        attestation.get("toolchain_evidence_sha256") != actual_digest
+        or attestation.get("toolchain_evidence_content_sha256") != toolchain.get("evidence_sha256")
+        or attestation.get("image_provenance_sha256") != toolchain.get("image_provenance_sha256")
+        or attestation.get("image_provenance_content_sha256")
+        != toolchain.get("image_provenance_content_sha256")
+        or attestation.get("proxy_provision_sha256") != toolchain.get("proxy_provision_sha256")
+        or attestation.get("proxy_provision_content_sha256")
+        != toolchain.get("proxy_provision_content_sha256")
+        or attestation.get("workflow_run_id") != args.workflow_run_id
+        or attestation.get("workflow_run_attempt") != args.workflow_run_attempt
+        or attestation.get("attempt_id") != args.attempt_id
+        or attestation.get("control_plane_commit") != args.control_plane_commit
+        or attestation.get("candidate_git_sha") != candidate_commit
+        or attestation.get("candidate_sha256") != candidate_sha256
+        or attestation.get("provider_identity_sha256") != contract.identity_sha256
+        or attestation.get("network_policy_sha256") != policy.policy_sha256
+        or attestation.get("network_name") != policy.network_name
+        or attestation.get("endpoint_origin") != policy.endpoint_origin
+        or attestation.get("image_ref") != toolchain.get("image_ref")
+        or attestation.get("image_id") != toolchain.get("image_id")
+    ):
+        raise P6ProtocolError("P6 qualification expected proxy attestation binding is invalid")
     return {
         "provider_identity_sha256": contract.identity_sha256,
         "network_policy_sha256": policy.policy_sha256,
         "network_name": policy.network_name,
         "endpoint_origin": policy.endpoint_origin,
         "image": str(toolchain["image_ref"]),
+        "image_id": str(attestation["image_id"]),
+        "proxy_container_id": str(attestation["proxy_container_id"]),
+        "expected_proxy_attestation_sha256": attestation_file_sha256,
+        "expected_proxy_attestation_content_sha256": str(attestation["content_sha256"]),
         "runtime_source_sha256": str(toolchain["runtime_source_sha256"]),
         "toolchain_evidence_sha256": actual_digest,
         "workflow_run_id": args.workflow_run_id,
@@ -297,6 +338,8 @@ def _validate_qualification_oci_binding(
         expected_network_name=context["network_name"],
         expected_endpoint_origin=context["endpoint_origin"],
         expected_image=context["image"],
+        expected_image_id=context["image_id"],
+        expected_proxy_container_id=context["proxy_container_id"],
         expected_runtime_source_sha256=context["runtime_source_sha256"],
         expected_workflow_run_id=context["workflow_run_id"],
         expected_workflow_run_attempt=int(context["workflow_run_attempt"]),
@@ -629,7 +672,15 @@ def _finalize_checkpoint(args: argparse.Namespace) -> int:
     if not isinstance(stage_value, Mapping):
         raise P6ProtocolError("P6 final stage artifact must be an object")
     source = args.payload.absolute()
-    source_bytes = read_regular_file_once(source)
+    source_bytes = validate_final_evidence_manifest(
+        source,
+        payload_root=source.parent,
+        expected_run_id=args.workflow_run_id,
+        expected_run_attempt=args.workflow_run_attempt,
+        expected_attempt_id=args.attempt_id,
+        expected_control_plane_commit=args.control_plane_commit,
+        expected_candidate_sha256=args.candidate_sha256,
+    )
     source_value = load_json_bytes_strict(source_bytes, name="P6 final evidence payload")
     answer_free_projection(source_value, canaries=_canaries_from_args(args))
     if hashlib.sha256(source_bytes).hexdigest() != stage_value.get("payload_sha256"):
@@ -660,6 +711,53 @@ def _finalize_checkpoint(args: argparse.Namespace) -> int:
     except FileExistsError as exc:
         raise P6ProtocolError("refusing to overwrite immutable P6 checkpoint finalization") from exc
     print("p6_checkpoint_zero_call_finalized")
+    return 0
+
+
+def _validate_final_manifest(args: argparse.Namespace) -> int:
+    validate_final_evidence_manifest(
+        args.manifest.absolute(),
+        payload_root=args.payload_root.absolute(),
+        expected_run_id=args.workflow_run_id,
+        expected_run_attempt=args.workflow_run_attempt,
+        expected_attempt_id=args.attempt_id,
+        expected_control_plane_commit=args.control_plane_commit,
+        expected_candidate_git_sha=args.candidate_commit,
+        expected_candidate_sha256=args.candidate_sha256,
+    )
+    print("p6_final_evidence_manifest_valid")
+    return 0
+
+
+def _validate_toolchain_provenance(args: argparse.Namespace) -> int:
+    toolchain = load_json_strict(args.toolchain_evidence.absolute())
+    if not isinstance(toolchain, Mapping):
+        raise P6ProtocolError("P6 toolchain evidence must be an object")
+    expected_lineage = {
+        "workflow_run_id": args.workflow_run_id,
+        "workflow_run_attempt": args.workflow_run_attempt,
+        "attempt_id": args.attempt_id,
+        "control_plane_commit": args.control_plane_commit,
+        "candidate_sha256": args.candidate_sha256,
+        "candidate_git_sha": args.candidate_commit,
+        "candidate_git_tree": args.candidate_tree,
+        "provider_identity_sha256": args.provider_identity_sha256,
+        "image_ref": args.image_ref,
+        "image_id": args.image_id,
+        "proxy_container": args.proxy_container,
+        "proxy_container_id": args.proxy_container_id,
+        "network_name": args.network_name,
+        "egress_network_name": args.egress_network_name,
+        "network_policy_sha256": args.network_policy_sha256,
+        "endpoint_origin": args.endpoint_origin,
+    }
+    validate_toolchain_provenance_files(
+        toolchain,
+        args.image_provenance.absolute(),
+        args.proxy_provision.absolute(),
+        expected_lineage=expected_lineage,
+    )
+    print("p6_toolchain_provenance_files_valid")
     return 0
 
 
@@ -989,6 +1087,8 @@ def _validate_policy_replay_artifact(
         )
         or sum(terminal_counts.values()) != trace_count
         or sum(policy_counts.values()) != trace_count
+        or dict(terminal_counts) != {"true": trace_count}
+        or dict(policy_counts) != {"none": trace_count}
     ):
         raise P6ProtocolError("P6 policy replay accounting is invalid")
     return actual, zero_usage_conservation()
@@ -1069,7 +1169,7 @@ def _validate_reverify_receipt(
     }
     if (
         counts["cluster_count"] < 1
-        or counts["terminal_trace_count"] > counts["cluster_count"]
+        or counts["terminal_trace_count"] != counts["cluster_count"]
         or counts["v3_entered_cluster_count"] > counts["cluster_count"]
         or counts["v3_entered_with_empty_required_facts"] > counts["v3_entered_cluster_count"]
         or counts["verifier_cluster_count"] > counts["cluster_count"]
@@ -1574,6 +1674,39 @@ def _parser() -> argparse.ArgumentParser:
     finalize.add_argument("--canary-env", action="append", default=[])
     add_lineage_arguments(finalize)
     finalize.set_defaults(handler=_finalize_checkpoint)
+
+    final_manifest = commands.add_parser("validate-final-evidence-manifest")
+    final_manifest.add_argument("--manifest", required=True, type=Path)
+    final_manifest.add_argument("--payload-root", required=True, type=Path)
+    final_manifest.add_argument("--workflow-run-id", required=True)
+    final_manifest.add_argument("--workflow-run-attempt", required=True, type=int)
+    final_manifest.add_argument("--attempt-id", required=True)
+    final_manifest.add_argument("--control-plane-commit", required=True, type=_git_object)
+    final_manifest.add_argument("--candidate-commit", required=True, type=_git_object)
+    final_manifest.add_argument("--candidate-sha256", required=True, type=_sha256)
+    final_manifest.set_defaults(handler=_validate_final_manifest)
+
+    toolchain_provenance = commands.add_parser("validate-toolchain-provenance-files")
+    toolchain_provenance.add_argument("--toolchain-evidence", required=True, type=Path)
+    toolchain_provenance.add_argument("--image-provenance", required=True, type=Path)
+    toolchain_provenance.add_argument("--proxy-provision", required=True, type=Path)
+    toolchain_provenance.add_argument("--workflow-run-id", required=True)
+    toolchain_provenance.add_argument("--workflow-run-attempt", required=True, type=int)
+    toolchain_provenance.add_argument("--attempt-id", required=True)
+    toolchain_provenance.add_argument("--control-plane-commit", required=True, type=_git_object)
+    toolchain_provenance.add_argument("--candidate-commit", required=True, type=_git_object)
+    toolchain_provenance.add_argument("--candidate-tree", required=True, type=_git_object)
+    toolchain_provenance.add_argument("--candidate-sha256", required=True, type=_sha256)
+    toolchain_provenance.add_argument("--provider-identity-sha256", required=True, type=_sha256)
+    toolchain_provenance.add_argument("--image-ref", required=True)
+    toolchain_provenance.add_argument("--image-id", required=True)
+    toolchain_provenance.add_argument("--proxy-container", required=True)
+    toolchain_provenance.add_argument("--proxy-container-id", required=True)
+    toolchain_provenance.add_argument("--network-name", required=True)
+    toolchain_provenance.add_argument("--egress-network-name", required=True)
+    toolchain_provenance.add_argument("--network-policy-sha256", required=True, type=_sha256)
+    toolchain_provenance.add_argument("--endpoint-origin", required=True)
+    toolchain_provenance.set_defaults(handler=_validate_toolchain_provenance)
 
     validate_receipt = commands.add_parser("validate-repair-receipt")
     validate_receipt.add_argument("--receipt", required=True, type=Path)

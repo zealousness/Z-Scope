@@ -41,6 +41,8 @@ def _qualification_oci_receipt() -> tuple[dict, dict[str, str]]:
         "network": "6" * 64,
         "runtime": "7" * 64,
         "image": "registry.example/zscope@sha256:" + "8" * 64,
+        "image_id": "sha256:" + "9" * 64,
+        "proxy_container_id": "4" * 64,
         "network_name": "p6-model-only",
         "endpoint_origin": "https://models.example:443",
         "workflow_run_id": "12345",
@@ -48,7 +50,7 @@ def _qualification_oci_receipt() -> tuple[dict, dict[str, str]]:
         "attempt_id": "p6-12345-2",
         "repository": "example/zscope",
     }
-    image_id = "sha256:" + "9" * 64
+    image_id = identity["image_id"]
     mounts = [
         {
             "source": "/sealed/p6-input",
@@ -143,7 +145,7 @@ def _qualification_oci_receipt() -> tuple[dict, dict[str, str]]:
         "endpoint_origin": identity["endpoint_origin"],
         "provider_identity_sha256": identity["provider"],
         "proxy_credential_metadata_safe": True,
-        "proxy_container_id": "4" * 64,
+        "proxy_container_id": identity["proxy_container_id"],
         "proxy_running": True,
         "execution_verified": True,
         "actual_inspection_collected": True,
@@ -179,6 +181,8 @@ def _validate_qualification_receipt(receipt: dict, identity: dict[str, str]) -> 
         expected_network_name=identity["network_name"],
         expected_endpoint_origin=identity["endpoint_origin"],
         expected_image=identity["image"],
+        expected_image_id=identity["image_id"],
+        expected_proxy_container_id=identity["proxy_container_id"],
         expected_runtime_source_sha256=identity["runtime"],
         expected_workflow_run_id=identity["workflow_run_id"],
         expected_workflow_run_attempt=int(identity["workflow_run_attempt"]),
@@ -217,6 +221,14 @@ def test_qualification_oci_receipt_binds_inspected_secret_and_isolation_boundary
         ),
         (
             lambda execution, phase: execution.__setitem__("network_policy_sha256", "0" * 64),
+            "lineage",
+        ),
+        (
+            lambda execution, phase: execution.__setitem__("proxy_container_id", "0" * 64),
+            "lineage",
+        ),
+        (
+            lambda execution, phase: execution.__setitem__("image_id", "sha256:" + "0" * 64),
             "lineage",
         ),
         (
@@ -355,9 +367,17 @@ def _stage(stage: str, status: str = "completed", **updates: object) -> dict:
             "terminal_state_inconsistent",
             "post_proof_call",
             "silent_rejection_without_proof",
-            "quality_no_progress_gate_failed",
         )
         for stage in ("cold_fast", "cold_balanced", "cold_deep")
+    ]
+    + [
+        ("quality_no_progress_gate_failed", stage)
+        for stage in (
+            "cold_fast",
+            "cold_balanced",
+            "balanced_quality_gate",
+            "cold_deep",
+        )
     ]
     + [
         (failure_class, stage)

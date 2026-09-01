@@ -48,6 +48,23 @@ class NullCodeIndex:
         return None
 
 
+def test_workflow_metadata_exports_only_the_pre_score_audit_bucket() -> None:
+    actionable = {"candidate_uid": "CAND_REVIEW", "candidate_disposition": "needs_review"}
+    audit = {"candidate_uid": "CAND_AUDIT", "candidate_disposition": "shadow_observation"}
+
+    exported = Analyzer._audit_observation_metadata(
+        {
+            "observations": [actionable],
+            "audit_observations": [audit],
+        }
+    )
+
+    assert exported == {
+        "audit_observation_count": 1,
+        "audit_observations": [audit],
+    }
+
+
 def test_java_entry_lookup_keeps_the_qualified_method_identifier() -> None:
     entry_function = "demo.Controller.load:java.lang.String(java.lang.String)"
     descriptor = "java.lang.String(java.lang.String)"

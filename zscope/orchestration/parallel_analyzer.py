@@ -28,6 +28,7 @@ from ..core.validation.runner import ValidationResultCache
 from ..core.validation.fact_capabilities import FunctionIRFactService
 from ..framework.llm_client import LLMClient
 from ..framework.llm_usage import (
+    P6BalancedTokenAdmissionError,
     ensure_scan_token_usage_ledger,
     scan_token_usage_snapshot,
 )
@@ -308,6 +309,10 @@ class ParallelAnalyzer:
                     time.time() - semantics_started,
                 )
                 self._run_project_deterministic_fact_pass(entries)
+        except P6BalancedTokenAdmissionError:
+            scheduler.shutdown(wait=True, cancel_futures=True)
+            self._scheduler = None
+            raise
         except Exception:
             scheduler.shutdown(wait=True, cancel_futures=True)
             self._scheduler = None
@@ -345,6 +350,14 @@ class ParallelAnalyzer:
                         logger.warning(
                             f"[{completed}/{total}] {entry.function_name}: Cancelled due to interrupt"
                         )
+                    except P6BalancedTokenAdmissionError as exc:
+                        self._cancellation_token.cancel(exc.failure_class)
+                        scheduler.shutdown(wait=True, cancel_futures=True)
+                        logger.error(
+                            "[entry-worker] stage=analysis; class=%s; count=1",
+                            exc.failure_class,
+                        )
+                        raise
                     except Exception as e:
                         logger.error(f"[{completed}/{total}] {entry.function_name}: ERROR - {e}")
                         results[self._entry_result_key(entry)] = ParallelAnalysisResult(
@@ -465,6 +478,8 @@ class ParallelAnalyzer:
             ):
                 try:
                     scheduler.shutdown(wait=True)
+                except P6BalancedTokenAdmissionError:
+                    raise
                 except Exception:
                     pass
 
@@ -833,6 +848,8 @@ class ParallelAnalyzer:
                     warn_missing=False,
                     file_path=file_hint,
                 )
+            except P6BalancedTokenAdmissionError:
+                raise
             except Exception as exc:
                 state["failures"].append(
                     {
@@ -858,6 +875,8 @@ class ParallelAnalyzer:
                 route_list.append((entry_identity, call_path))
             try:
                 callees = self.code_index.get_callees(function, limit=1_000_000)
+            except P6BalancedTokenAdmissionError:
+                raise
             except Exception as exc:
                 state["failures"].append(
                     {
@@ -914,6 +933,8 @@ class ParallelAnalyzer:
                     # never a lossy task-router filter.
                     allowed_skills=None,
                 )
+            except P6BalancedTokenAdmissionError:
+                raise
             except Exception as exc:
                 state["failures"].append(
                     {
@@ -982,6 +1003,7 @@ class ParallelAnalyzer:
     ) -> None:
         """Build scan facts, compile SecuritySpecs, and expose only compiled semantics."""
 
+        usage_before = scan_token_usage_snapshot(self.base_config)
         self._cancellation_token.raise_if_cancelled()
         started = time.monotonic()
         snapshot_dir = Path(self.base_config.analysis.snapshot_dir)
@@ -1070,6 +1092,10 @@ class ParallelAnalyzer:
         semantic_store = SQLiteSecurityMapStore(snapshot_dir / "security_map.db")
         semantic_store.save_map(semantic_map)
         semantic_store.export_json(semantic_map, snapshot_dir / "security_semantic_map.json")
+        self._assert_p6_security_spec_zero_call(
+            usage_before,
+            scan_token_usage_snapshot(self.base_config),
+        )
         self._security_semantic_map = semantic_map
         self._security_spec_runtime_result = spec_runtime
         self._shared_semantic_overlay = compiled_overlay
@@ -1099,6 +1125,44 @@ class ParallelAnalyzer:
                 },
             }
         )
+
+    @staticmethod
+    def _assert_p6_security_spec_zero_call(
+        before: Mapping[str, Any],
+        after: Mapping[str, Any],
+    ) -> None:
+        """Fail closed if P6 SecuritySpec compilation touches the model ledger."""
+
+        before_admission = before.get("p6_balanced_admission")
+        if not isinstance(before_admission, Mapping) or not bool(before_admission.get("enabled")):
+            return
+        after_admission = after.get("p6_balanced_admission")
+        if not isinstance(after_admission, Mapping):
+            raise RuntimeError("p6_security_spec_zero_call_invariant_failed")
+
+        def projection(
+            snapshot: Mapping[str, Any], admission: Mapping[str, Any]
+        ) -> tuple[Any, ...]:
+            attribution = snapshot.get("usage_attribution")
+            totals = attribution.get("totals") if isinstance(attribution, Mapping) else {}
+            if not isinstance(totals, Mapping):
+                totals = {}
+            return (
+                bool(admission.get("enabled")),
+                int(snapshot.get("consumed_tokens", 0) or 0),
+                int(snapshot.get("reserved_tokens", 0) or 0),
+                int(snapshot.get("active_reservation_count", 0) or 0),
+                int(snapshot.get("event_count", 0) or 0),
+                int(snapshot.get("persisted_event_count", 0) or 0),
+                int(snapshot.get("rejected_before_model_count", 0) or 0),
+                int(admission.get("request_count", 0) or 0),
+                int(admission.get("admitted_request_count", 0) or 0),
+                int(admission.get("denied_request_count", 0) or 0),
+                int(totals.get("request_count", 0) or 0),
+            )
+
+        if projection(before, before_admission) != projection(after, after_admission):
+            raise RuntimeError("p6_security_spec_zero_call_invariant_failed")
 
     @staticmethod
     def _compiled_local_pattern_semantics(
@@ -1167,6 +1231,32 @@ class ParallelAnalyzer:
                     "llm_discovery_call_count": int(coverage.get("llm_call_count", 0) or 0),
                 }
             )
+        except P6BalancedTokenAdmissionError as exc:
+            state["status"] = "failed_closed"
+            state.setdefault("failures", []).append({"reason": exc.failure_class})
+            state["hypothesis_hunter_runtime"] = {
+                "schema_version": "zscope.hypothesis-hunter-runtime-result.v1",
+                "mode": "active",
+                "active_product_effect": "candidate_registration_only",
+                "status": "failed_closed",
+                "reason": exc.failure_class,
+            }
+            self._decision_trace_store.update_identity(
+                {
+                    "hypothesis_hunter_mode": "active",
+                    "hypothesis_hunter_artifact_refs": [],
+                    "hypothesis_hunter_decision": {
+                        "active_product_effect": "candidate_registration_only",
+                        "reason_code": exc.failure_class,
+                        "coverage_summary": {},
+                    },
+                }
+            )
+            logger.error(
+                "[hypothesis-hunter] stage=active_discovery; class=%s; count=1",
+                exc.failure_class,
+            )
+            raise
         except Exception as exc:
             state["status"] = "failed_closed"
             state.setdefault("failures", []).append({"reason": f"{type(exc).__name__}: {exc}"})
@@ -1389,6 +1479,8 @@ class ParallelAnalyzer:
                 warn_missing=False,
                 file_path=str(entry.file_path or ""),
             )
+        except P6BalancedTokenAdmissionError:
+            raise
         except Exception as exc:
             logger.debug(
                 "Unable to estimate scheduling cost for '%s': %s",
@@ -1453,6 +1545,8 @@ class ParallelAnalyzer:
                     )
                 except TypeError:
                     matches = identity_finder(resolved.lookup_query())
+                except P6BalancedTokenAdmissionError:
+                    raise
                 except Exception as exc:
                     logger.debug(
                         "Unable to query entry identity for %s: %s",
@@ -1492,6 +1586,8 @@ class ParallelAnalyzer:
                         impl = getter(resolved.lookup_query(), include_context=False)
                     except TypeError:
                         impl = getter(resolved.lookup_query())
+                except P6BalancedTokenAdmissionError:
+                    raise
                 except Exception as exc:
                     logger.debug(
                         "Unable to resolve entry identity for %s: %s",
@@ -1708,6 +1804,8 @@ class ParallelAnalyzer:
                 diff_focus=entry.diff_focus,
                 metadata=budget_metadata,
             )
+        except P6BalancedTokenAdmissionError:
+            raise
         except Exception as e:
             duration = time.monotonic() - start_time
             budget_metadata = self._entry_budget_metadata(
@@ -2041,10 +2139,15 @@ class ParallelAnalyzer:
             for item in canonical_outcomes
             if str(item.get("candidate_disposition") or "").lower() == "confirmed"
         ]
-        all_observations = [
+        canonical_needs_review = [
             item
             for item in canonical_outcomes
             if str(item.get("candidate_disposition") or "").lower() == "needs_review"
+        ]
+        canonical_audit_observations = [
+            item
+            for item in canonical_outcomes
+            if str(item.get("candidate_disposition") or "").lower() == "shadow_observation"
         ]
         all_terminal_states = [
             {
@@ -2057,7 +2160,8 @@ class ParallelAnalyzer:
 
         interrupted = bool(getattr(self, "_interrupted", False))
         unique_issues = list(all_issues)
-        unique_observations = list(all_observations)
+        unique_observations = list(canonical_needs_review)
+        unique_audit_observations = list(canonical_audit_observations)
         unique_terminal_states = [
             dict(item)
             for item in coalesce_terminal_candidates(all_terminal_states)
@@ -2339,11 +2443,11 @@ class ParallelAnalyzer:
             ).hexdigest(),
             revisions={
                 "security_spec_compiler": SecuritySpecCompiler.compiler_version,
-                "hypothesis_hunter": "hypothesis-hunter.v3",
-                "proof_registry": "proof-kernel.v2",
+                "hypothesis_hunter": "hypothesis-hunter.v4",
+                "proof_registry": "proof-kernel.v4",
                 "proof_checker": "proof-checker.v2",
                 "proof_provider": "proof-provider.v2",
-                "terminal_authority": "terminal-authority.v3",
+                "terminal_authority": "terminal-authority.v4",
             },
         )
         combined_report = {
@@ -2359,7 +2463,7 @@ class ParallelAnalyzer:
                 "functions_failed": error_result_count,
                 "total_issues": len(unique_issues),
                 "unique_issues": len(unique_issues),
-                "audit_observations": len(unique_observations),
+                "audit_observations": len(unique_audit_observations),
                 "deferred_entry_count": len(getattr(self, "deferred_entry_candidates", []) or []),
                 "needs_review_issues": int(
                     with_review_view.get("included_needs_review_count") or 0
@@ -2445,8 +2549,8 @@ class ParallelAnalyzer:
                 },
                 "rollout": rollout_runtime_policy(base_config),
                 "llm_usage": scan_token_usage,
-                "audit_observation_count": len(unique_observations),
-                "audit_observations": unique_observations,
+                "audit_observation_count": len(unique_audit_observations),
+                "audit_observations": unique_audit_observations,
                 "report_view_summary": view_summary,
                 "diff_relevance_summary": diff_relevance_summary,
                 "diff_impact_coverage": diff_coverage,
@@ -2985,6 +3089,8 @@ class ParallelAnalyzer:
             return {}
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+        except P6BalancedTokenAdmissionError:
+            raise
         except Exception as exc:
             logger.debug("Unable to read diff coverage metadata from %s: %s", path, exc)
             return {}

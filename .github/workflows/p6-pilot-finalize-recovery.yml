@@ -26,7 +26,7 @@ on:
         required: true
 
 concurrency:
-  group: p6-pilot-validation
+  group: p6-finalize-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}-${{ inputs.checkpoint_artifact_id }}-${{ inputs.checkpoint_artifact_digest }}
   cancel-in-progress: false
 
 permissions:
@@ -46,6 +46,8 @@ env:
   P6_CANDIDATE_COMMIT: ${{ inputs.candidate_sha }}
   P6_CHECKPOINT_ARTIFACT_ID: ${{ inputs.checkpoint_artifact_id }}
   P6_CHECKPOINT_ARTIFACT_DIGEST: ${{ inputs.checkpoint_artifact_digest }}
+  P6_CONSUMPTION_ARTIFACT_NAME: p6-non-release-evidence-consumed-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}-${{ inputs.checkpoint_artifact_id }}-${{ inputs.checkpoint_artifact_digest }}
+  P6_CONSUMPTION_RECEIPT_NAME: p6-finalize-consumption-receipt-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}-${{ inputs.checkpoint_artifact_id }}-${{ inputs.checkpoint_artifact_digest }}
   PYTHONPATH: ${{ github.workspace }}/control
 
 jobs:
@@ -78,6 +80,57 @@ jobs:
       - uses: ./control/.github/actions/setup-p6-python
         with:
           checkout-path: control
+      - name: Fail closed if this exact checkpoint was already consumed
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >/dev/null 2>&1
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+          expected_names = (
+              os.environ["P6_CONSUMPTION_ARTIFACT_NAME"],
+              os.environ["P6_CONSUMPTION_RECEIPT_NAME"],
+          )
+          if (
+              not token
+              or any(not name or len(name.encode("utf-8")) > 255 for name in expected_names)
+          ):
+              raise SystemExit(2)
+          for name in expected_names:
+              query = urllib.parse.urlencode({"name": name, "per_page": "100"})
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repository}/actions/artifacts?{query}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = response.read(1024 * 1024 + 1)
+              if len(payload) > 1024 * 1024:
+                  raise SystemExit(2)
+              parsed = json.loads(payload)
+              artifacts = parsed.get("artifacts") if isinstance(parsed, dict) else None
+              if (
+                  not isinstance(artifacts, list)
+                  or not isinstance(parsed.get("total_count"), int)
+                  or parsed["total_count"] != len(artifacts)
+                  or any(
+                      not isinstance(row, dict) or row.get("name") != name
+                      for row in artifacts
+                  )
+              ):
+                  raise SystemExit(2)
+              if artifacts:
+                  raise SystemExit(2)
+          PY
       - name: Restore exact complete checkpoint from the protected source attempt
         env:
           Z_SCOPE_P6_ENVIRONMENT: sealed-benchmark
@@ -106,14 +159,119 @@ jobs:
             --required-member stage-artifacts/final_evidence_seal.json \
             --required-member payload/entry-evidence.json \
             --required-member payload/provider-probe.json \
+            --required-member payload/image-provenance.json \
+            --required-member payload/proxy-provision.json \
             --required-member payload/toolchain-evidence.json \
             --required-member payload/qualification.json \
+            --required-member payload/quality/bindings.json \
+            --required-member payload/quality/frozen-manifest.json \
+            --required-member payload/quality/frozen-report.json \
+            --required-member payload/quality/legacy-score.json \
+            --required-member payload/quality/p6-balanced-quality-gate.json \
+            --required-member payload/quality/producer-projection.json \
+            --required-member payload/quality/usage-evidence.json \
+            --required-member payload/quality/v16-score.json \
+            --required-member payload/quality-revalidation-receipt.json \
             --required-member payload/p6-independent-reviews.json \
             --required-member payload/final-evidence-manifest.json \
             --required-member payload/reviews/product-architecture/decision.json \
             --required-member payload/reviews/proof-security/decision.json \
             --required-member payload/reviews/independent-benchmark/decision.json \
             --output-dir restored/checkpoint
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          from scripts.p6_balanced_quality_gate import validate_quality_gate_bundle
+          from zscope.benchmarking.p6_balanced_orchestrator import (
+              BalancedRunIdentity,
+              validate_quality_revalidation_receipt,
+          )
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          validate_quality_gate_bundle(Path("restored/checkpoint/payload/quality"))
+          candidate_tree = subprocess.run(
+              ["git", "rev-parse", f"{os.environ['P6_CANDIDATE_COMMIT']}^{{tree}}"],
+              check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+          ).stdout.strip()
+          validate_quality_revalidation_receipt(
+              load_json_strict(Path("restored/checkpoint/payload/quality-revalidation-receipt.json")),
+              identity=BalancedRunIdentity(
+                  workflow_run_id=os.environ["P6_SOURCE_RUN_ID"],
+                  workflow_run_attempt=int(os.environ["P6_SOURCE_RUN_ATTEMPT"]),
+                  attempt_id=(
+                      f"p6-{os.environ['P6_SOURCE_RUN_ID']}-"
+                      f"{os.environ['P6_SOURCE_RUN_ATTEMPT']}"
+                  ),
+                  control_plane_commit=os.environ["P6_SOURCE_CONTROL_PLANE_COMMIT"],
+                  candidate_git_sha=os.environ["P6_CANDIDATE_COMMIT"],
+                  candidate_git_tree=candidate_tree,
+              ),
+          )
+          PY
+          source_attempt_id="p6-${P6_SOURCE_RUN_ID}-${P6_SOURCE_RUN_ATTEMPT}"
+          candidate_sha="$(printf %s "$P6_CANDIDATE_COMMIT" | sha256sum | awk '{print $1}')"
+          python3 scripts/p6_pilot_protocol.py validate-final-evidence-manifest \
+            --manifest restored/checkpoint/payload/final-evidence-manifest.json \
+            --payload-root restored/checkpoint/payload \
+            --workflow-run-id "$P6_SOURCE_RUN_ID" \
+            --workflow-run-attempt "$P6_SOURCE_RUN_ATTEMPT" \
+            --attempt-id "$source_attempt_id" \
+            --control-plane-commit "$P6_SOURCE_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --candidate-sha256 "$candidate_sha" >/dev/null 2>&1
+          mapfile -t trusted_provider < <(python3 - <<'PY'
+          import os
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          from zscope.benchmarking.isolation import OciNetworkPolicy
+          from zscope.benchmarking.provider_runtime import ProviderRuntimeContract
+          source = os.environ["P6_SOURCE_CONTROL_PLANE_COMMIT"]
+          result = subprocess.run(
+              ["git", "show", f"{source}:test/range/zscope.benchmark.yaml"],
+              check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+          )
+          with tempfile.TemporaryDirectory(prefix="p6-source-config-") as directory:
+              path = Path(directory) / "zscope.benchmark.yaml"
+              path.write_bytes(result.stdout)
+              contract = ProviderRuntimeContract.from_config_file(path)
+          policy = OciNetworkPolicy.from_provider_contract(os.environ, contract)
+          print(contract.identity_sha256)
+          print(policy.endpoint_origin)
+          PY
+          )
+          mapfile -t bound_dynamic < <(python3 - <<'PY'
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import load_json_strict
+          provenance = load_json_strict(Path("restored/checkpoint/payload/image-provenance.json"))
+          proxy = load_json_strict(Path("restored/checkpoint/payload/proxy-provision.json"))
+          print(provenance["image_ref"])
+          print(provenance["image_id"])
+          print(proxy["proxy_container_id"])
+          print(proxy["network_policy_sha256"])
+          PY
+          )
+          test "${#trusted_provider[@]}" = 2
+          test "${#bound_dynamic[@]}" = 4
+          python3 scripts/p6_pilot_protocol.py validate-toolchain-provenance-files \
+            --toolchain-evidence restored/checkpoint/payload/toolchain-evidence.json \
+            --image-provenance restored/checkpoint/payload/image-provenance.json \
+            --proxy-provision restored/checkpoint/payload/proxy-provision.json \
+            --workflow-run-id "$P6_SOURCE_RUN_ID" \
+            --workflow-run-attempt "$P6_SOURCE_RUN_ATTEMPT" \
+            --attempt-id "$source_attempt_id" \
+            --control-plane-commit "$P6_SOURCE_CONTROL_PLANE_COMMIT" \
+            --candidate-commit "$P6_CANDIDATE_COMMIT" \
+            --candidate-tree "$(git rev-parse "${P6_CANDIDATE_COMMIT}^{tree}")" \
+            --candidate-sha256 "$candidate_sha" \
+            --provider-identity-sha256 "${trusted_provider[0]}" \
+            --image-ref "${bound_dynamic[0]}" --image-id "${bound_dynamic[1]}" \
+            --proxy-container "$Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER" \
+            --proxy-container-id "${bound_dynamic[2]}" \
+            --network-name "$Z_SCOPE_BENCHMARK_OCI_NETWORK" \
+            --egress-network-name "$Z_SCOPE_BENCHMARK_OCI_EGRESS_NETWORK" \
+            --network-policy-sha256 "${bound_dynamic[3]}" \
+            --endpoint-origin "${trusted_provider[1]}" >/dev/null 2>&1
       - name: Strict byte-exact finalization with source-attempt lineage
         run: |
           set -euo pipefail
@@ -178,11 +336,68 @@ jobs:
       - uses: ./control/.github/actions/upload-artifact-retry
         id: non_release_artifact
         with:
-          name: p6-non-release-evidence-source-${{ env.P6_SOURCE_CONTROL_PLANE_COMMIT }}-${{ env.P6_CANDIDATE_COMMIT }}-${{ env.P6_SOURCE_RUN_ID }}-${{ env.P6_SOURCE_RUN_ATTEMPT }}-recovery-${{ env.P6_RECOVERY_CONTROL_PLANE_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ env.P6_CONSUMPTION_ARTIFACT_NAME }}
           path: control/non-release-evidence
+      - name: Seal the immutable single-consumption receipt
+        env:
+          P6_FORMAL_ARTIFACT_ID: ${{ steps.non_release_artifact.outputs.artifact-id }}
+          P6_FORMAL_ARTIFACT_DIGEST: ${{ steps.non_release_artifact.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from zscope.benchmarking.p6_protocol import canonical_sha256, write_json_exclusive
+
+          artifact_id = os.environ["P6_FORMAL_ARTIFACT_ID"]
+          artifact_digest = os.environ["P6_FORMAL_ARTIFACT_DIGEST"]
+          if not artifact_id.isdigit() or int(artifact_id) < 1:
+              raise SystemExit(2)
+          if len(artifact_digest) != 64 or any(
+              character not in "0123456789abcdef" for character in artifact_digest
+          ):
+              raise SystemExit(2)
+          receipt = {
+              "schema_version": "zscope.p6-finalize-consumption-receipt.v1",
+              "source_run_id": os.environ["P6_SOURCE_RUN_ID"],
+              "source_run_attempt": int(os.environ["P6_SOURCE_RUN_ATTEMPT"]),
+              "source_control_plane_commit": os.environ[
+                  "P6_SOURCE_CONTROL_PLANE_COMMIT"
+              ],
+              "recovery_control_plane_commit": os.environ[
+                  "P6_RECOVERY_CONTROL_PLANE_COMMIT"
+              ],
+              "candidate_git_sha": os.environ["P6_CANDIDATE_COMMIT"],
+              "checkpoint_artifact_id": os.environ["P6_CHECKPOINT_ARTIFACT_ID"],
+              "checkpoint_artifact_digest": os.environ[
+                  "P6_CHECKPOINT_ARTIFACT_DIGEST"
+              ],
+              "recovery_workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "recovery_workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "formal_artifact_name": os.environ["P6_CONSUMPTION_ARTIFACT_NAME"],
+              "formal_artifact_id": artifact_id,
+              "formal_artifact_digest": artifact_digest,
+              "formal_benchmark": False,
+              "release_eligible": False,
+          }
+          receipt["content_sha256"] = canonical_sha256(receipt)
+          write_json_exclusive(Path("p6-finalize-consumption-receipt.json"), receipt)
+          PY
+      - uses: ./control/.github/actions/validate-p6-artifact
+        with:
+          paths: p6-finalize-consumption-receipt.json
+          stage: artifact_seal
+          require-key: "false"
+      - uses: ./control/.github/actions/upload-artifact-retry
+        id: consumption_receipt
+        with:
+          name: ${{ env.P6_CONSUMPTION_RECEIPT_NAME }}
+          path: control/p6-finalize-consumption-receipt.json
       - name: Report fixed non-release recovery outcome
         run: |
           set -euo pipefail
           test -n '${{ steps.non_release_artifact.outputs.artifact-id }}'
           test -n '${{ steps.non_release_artifact.outputs.artifact-digest }}'
+          test -n '${{ steps.consumption_receipt.outputs.artifact-id }}'
+          test -n '${{ steps.consumption_receipt.outputs.artifact-digest }}'
           echo 'P6 zero-call recovery complete: formal_benchmark=false; release_eligible=false'

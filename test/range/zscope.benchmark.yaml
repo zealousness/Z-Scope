@@ -11,7 +11,7 @@ llms:
     api_key: ${Z_SCOPE_API_KEY}
     base_url_max_concurrent_requests: 8
     max_tokens: 8192
-    max_retries: 2
+    max_retries: 1
     retry_until_available: false
     # The gateway accepts response_format/json_schema but does not reliably
     # honor the full Validator object contract.  Use the verified forced
