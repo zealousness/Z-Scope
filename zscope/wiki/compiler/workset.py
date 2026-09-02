@@ -153,7 +153,14 @@ def build_ingest_workset(
     changed = tuple(dict.fromkeys(str(item) for item in changed_source_ids))
     removed = tuple(dict.fromkeys(str(item) for item in removed_source_ids))
     all_changed = set(added) | set(changed) | set(removed)
-    if not all_changed:
+    # An explicitly supplied ``initial=False`` empty delta is a real no-op:
+    # callers use it for a manifest-only freshness refresh when accepted
+    # Markdown did not change.  Preserve the empty sets so the deterministic
+    # compiler can publish the existing Wiki content without invoking an LLM.
+    # The historical default (no delta and no explicit initial marker) still
+    # bootstraps all accepted sources for standalone initial worksets.
+    explicit_noop = not all_changed and initial is False
+    if not all_changed and not explicit_noop:
         all_changed = accepted
         added = tuple(sorted(accepted))
     # Added/changed sources must be present in the current accepted manifest.

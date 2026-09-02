@@ -214,7 +214,10 @@
             ]
           },
           "status": {
-            "const": "active"
+            "enum": [
+              "active",
+              "conflicted"
+            ]
           },
           "source_refs": {
             "type": "array",
@@ -223,6 +226,14 @@
             "items": {
               "type": "string",
               "pattern": "^docref_[a-z0-9_:-]+$"
+            }
+          },
+          "conflicts_with": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^constraint_[a-z0-9_:-]+$"
             }
           }
         }

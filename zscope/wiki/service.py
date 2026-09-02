@@ -54,8 +54,8 @@ def validate_project_knowledge(value: Mapping[str, Any]) -> Dict[str, Any]:
     if not set(selection.get("selected_source_ref_ids", ())) <= source_ids | {str(ref) for item in constraints for ref in item.get("source_refs", ())}:
         raise ValueError("selected source ref is absent from context")
     for item in constraints:
-        if item.get("status") != "active" or item.get("authority") != "documented_contract" or not item.get("source_refs"):
-            raise ValueError("only active documented constraints with source refs may enter context")
+        if item.get("status") not in {"active", "conflicted"} or item.get("authority") != "documented_contract" or not item.get("source_refs"):
+            raise ValueError("only active or conflicted documented constraints with source refs may enter context")
     return dict(value)
 
 
@@ -225,7 +225,7 @@ class ProjectKnowledgeService:
 
     @staticmethod
     def _constraint_matches(item: Mapping[str, Any], obligation: ConstraintObligation) -> bool:
-        if item.get("status") != "active" or item.get("authority") != "documented_contract":
+        if item.get("status") not in {"active", "conflicted"} or item.get("authority") != "documented_contract":
             return False
         kind = str(item.get("kind", ""))
         if obligation.obligation_kind not in {"", "unknown"} and kind != obligation.obligation_kind:
@@ -303,6 +303,63 @@ class ProjectKnowledgeService:
         if effective_compiler is None:
             effective_compiler = self._pinned_compiler_kind in {"llm", "mixed"}
         if matched_constraints and effective_compiler:
+            selected_ids = {
+                str(item.get("constraint_id")) for item in constraints
+                if item.get("constraint_id")
+            }
+            by_id = {
+                str(item.get("constraint_id")): item
+                for item in constraints
+                if item.get("constraint_id")
+            }
+            # Keep conflict semantics explicit in the Validator context.  A
+            # conflict is a connected group of selected competing constraints;
+            # it is context for adjudication, never proof by itself.
+            conflict_graph = {constraint_id: set() for constraint_id in selected_ids}
+            for item in constraints:
+                constraint_id = str(item.get("constraint_id") or "")
+                if item.get("status") != "conflicted" or constraint_id not in selected_ids:
+                    continue
+                for other_id in item.get("conflicts_with", ()) or ():
+                    other_id = str(other_id)
+                    if other_id in selected_ids and other_id != constraint_id:
+                        conflict_graph[constraint_id].add(other_id)
+                        conflict_graph[other_id].add(constraint_id)
+            conflicts = []
+            visited = set()
+            for start in sorted(conflict_graph):
+                if start in visited or not conflict_graph[start]:
+                    continue
+                stack = [start]
+                component = set()
+                while stack:
+                    current = stack.pop()
+                    if current in component:
+                        continue
+                    component.add(current)
+                    stack.extend(conflict_graph[current] - component)
+                visited.update(component)
+                if len(component) < 2:
+                    continue
+                source_refs = sorted({
+                    str(ref)
+                    for constraint_id in component
+                    for ref in by_id[constraint_id].get("source_refs", ())
+                    if ref
+                })
+                subject_ids = sorted({
+                    str((by_id[constraint_id].get("subject") or {}).get("canonical_id", ""))
+                    for constraint_id in component
+                    if isinstance(by_id[constraint_id].get("subject"), Mapping)
+                })
+                conflicts.append({
+                    "subject_id": subject_ids[0] if len(subject_ids) == 1 else ", ".join(subject_ids),
+                    "constraint_ids": sorted(component),
+                    "reason": "Conflicting documented constraints; resolve against source and code evidence.",
+                    "source_refs": source_refs,
+                })
+                if len(conflicts) >= 8:
+                    break
             constraint_items = []
             for item in constraints:
                 subject = item.get("subject") if isinstance(item.get("subject"), Mapping) else {}
@@ -317,6 +374,7 @@ class ProjectKnowledgeService:
                             "normativity",
                             "status",
                             "source_refs",
+                            "conflicts_with",
                         )
                         if key in item
                     }
@@ -338,7 +396,7 @@ class ProjectKnowledgeService:
                 "target": target,
                 "constraints": constraint_items,
                 "source_excerpts": [],
-                "conflicts": [],
+                "conflicts": conflicts,
                 "unknowns": [],
                 "selection": {"max_tokens": max_tokens, "estimated_tokens": sum(_tokens(str(item["statement"])) for item in constraint_items), "selected_constraint_ids": [item["constraint_id"] for item in constraint_items], "omitted_constraint_count": omitted_constraint_count, "omitted_source_excerpt_count": 0, "selected_source_ref_ids": selected_source_refs, "ranking_version": "documented-constraint-rank.v2", "fallback_reason": None},
             }

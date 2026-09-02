@@ -158,9 +158,7 @@ class ScanSessionRunner:
                 getattr(parallel_analyzer, "_interrupted", False)
             )
             if state.get("wiki_compile_completed") and can_close_session_resources:
-                Analyzer.close_project_knowledge_service(
-                    state.get("project_knowledge_service")
-                )
+                Analyzer.close_project_knowledge_service(state.get("project_knowledge_service"))
                 self._close_llm_clients(state.get("llm_clients") or {})
             code_index = state.get("code_index")
             if code_index:
@@ -604,9 +602,7 @@ class ScanSessionRunner:
 
         parallel_kwargs: Dict[str, Any] = {}
         if state.get("wiki_compile_completed"):
-            parallel_kwargs["project_knowledge_service"] = state.get(
-                "project_knowledge_service"
-            )
+            parallel_kwargs["project_knowledge_service"] = state.get("project_knowledge_service")
             parallel_kwargs["llm_clients"] = state.get("llm_clients")
         parallel_analyzer = ParallelAnalyzer(
             self.config,
@@ -762,14 +758,20 @@ class ScanSessionRunner:
             json.dumps(result, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        report_paths: List[Path] = [self.config.project.project_root]
+        markdown_report_path = self.config.project.project_root / "report.md"
+        report_paths: List[Path] = [persisted_report_path, markdown_report_path]
         if self.task_slug:
             persisted_report_path = self._report_path("report", ".json")
             persisted_report_path.write_text(
                 json.dumps(result, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
-            report_paths = [persisted_report_path]
+            task_markdown_path = self._report_path("report", ".md")
+            if markdown_report_path.is_file():
+                shutil.copy2(markdown_report_path, task_markdown_path)
+                report_paths = [persisted_report_path, task_markdown_path]
+            else:
+                report_paths = [persisted_report_path]
         elif result.get("error"):
             report_paths = [persisted_report_path]
         verdict = result.get("overall_verdict", "unknown")

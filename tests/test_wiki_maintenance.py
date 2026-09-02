@@ -281,6 +281,13 @@ def test_manifest_delta_refresh_keeps_revision_and_marks_changed_constraint_stal
             "summary": "seed",
         }
         seeded = store.apply_changeset(before_root, before, seed_workset, seed_constraint)
+        # Simulate a pruned revision projection while retaining the SQLite
+        # rows.  The maintenance path must still recover the old source
+        # digest so a changed document invalidates its constraints.
+        (state / "revisions" / seeded.revision_id / "source-manifest.json").unlink()
+        recovered = store.revision_manifest(seeded.revision_id)
+        assert recovered is not None
+        assert recovered["accepted"]
         new_index.rebuild(after_root, manifest=after)
         workset = build_ingest_workset(
             after,
@@ -300,6 +307,82 @@ def test_manifest_delta_refresh_keeps_revision_and_marks_changed_constraint_stal
             store.revision_manifest(refreshed.revision_id)["source_manifest_digest"]
             == after.source_manifest_digest
         )
+
+
+def test_maintenance_revision_preserves_parent_llm_compiler_identity(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    shutil.copytree(FIXTURE, project)
+    before = build_source_manifest(project, project_id="fixture")
+    state = tmp_path / "wiki"
+    with SourceIndex(tmp_path / "source.db") as index, WikiStore(state) as store:
+        index.rebuild(project, manifest=before)
+        skeleton = store.build_skeleton(project, before)
+        source_id = before.accepted[0].source_id
+        workset = build_ingest_workset(
+            before,
+            source_index=index,
+            base_revision_id=skeleton.revision_id,
+            added_source_ids=[source_id],
+            initial=True,
+        )
+        ref_id = next(
+            item["ref_id"]
+            for item in workset["source_ref_catalog"]
+            if item["source_id"] == source_id
+        )
+        llm_changeset = {
+            "schema_version": "zscope.wiki-changeset.v1",
+            "workset_id": workset["workset_id"],
+            "base_revision_id": skeleton.revision_id,
+            "outcome": "changed",
+            "source_results": [{
+                "source_ref": source_id,
+                "extraction_status": "constraints_found",
+                "source_refs_used": [ref_id],
+                "reason": "seed",
+            }],
+            "constraint_proposals": [{
+                "schema_version": "zscope.project-constraint-proposal.v1",
+                "subject_id": "api:parse_byte",
+                "subject_kind": "api",
+                "kind": "input_range",
+                "statement": "parse_byte accepts 0..255",
+                "normativity": "required",
+                "source_refs": [ref_id],
+            }],
+            "summary": "seed",
+            "compiler": {
+                "kind": "llm",
+                "identity": "zscope.wiki.openai-compatible.v1",
+                "prompt_version": "test",
+                "model": "test-model",
+            },
+        }
+        seeded = store.apply_changeset(project, before, workset, llm_changeset)
+        (project / "README.md").write_text(
+            (project / "README.md").read_text(encoding="utf-8") + "\nChanged.\n",
+            encoding="utf-8",
+        )
+        after = build_source_manifest(project, project_id="fixture")
+        index.rebuild(project, manifest=after)
+        delta = compare_manifests(before, after)
+        refresh_workset = build_ingest_workset(
+            after,
+            source_index=index,
+            base_revision_id=seeded.revision_id,
+            changed_source_ids=delta.changed_source_ids,
+        )
+        refreshed = store.compile_and_apply(
+            project,
+            after,
+            refresh_workset,
+            WikiCompiler(max_workers=1),
+        )
+        metadata = store.revision_metadata(refreshed.revision_id)
+        assert metadata["compiler"]["kind"] == "llm"
+        assert metadata["compiler"]["identity"] == "zscope.wiki.openai-compatible.v1"
 
 
 def test_analyzer_build_only_publishes_changed_manifest_revision(tmp_path: Path) -> None:
@@ -328,6 +411,117 @@ def test_analyzer_build_only_publishes_changed_manifest_revision(tmp_path: Path)
         assert active is not None
         assert active["revision_id"] != first.revision_id
         assert active["source_manifest_digest"] == current.source_manifest_digest
+
+
+def test_analyzer_reuses_existing_wiki_when_only_nonaccepted_delta_changed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Refresh the pin without invoking LLM for an empty accepted delta."""
+
+    project = tmp_path / "project"
+    shutil.copytree(FIXTURE, project)
+    state = project / ".zscope_knowledge" / "wiki"
+    before = build_source_manifest(project, project_id="fixture")
+
+    with SourceIndex(tmp_path / "source.db") as index, WikiStore(state) as store:
+        index.rebuild(project, manifest=before)
+        skeleton = store.build_skeleton(project, before)
+        readme = next(
+            item for item in before.accepted if item.relative_path == "README.md"
+        )
+        workset = build_ingest_workset(
+            before,
+            source_index=index,
+            base_revision_id=skeleton.revision_id,
+            added_source_ids=[readme.source_id],
+            initial=True,
+        )
+        ref_id = next(
+            item["ref_id"]
+            for item in workset["source_ref_catalog"]
+            if item["relative_path"] == "README.md"
+        )
+        seeded = store.apply_changeset(
+            project,
+            before,
+            workset,
+            {
+                "schema_version": "zscope.wiki-changeset.v1",
+                "workset_id": workset["workset_id"],
+                "base_revision_id": skeleton.revision_id,
+                "outcome": "changed",
+                "source_results": [
+                    {
+                        "source_ref": readme.source_id,
+                        "extraction_status": "constraints_found",
+                        "source_refs_used": [ref_id],
+                        "reason": "seed",
+                    }
+                ],
+                "constraint_proposals": [
+                    {
+                        "schema_version": "zscope.project-constraint-proposal.v1",
+                        "subject_id": "parse_byte",
+                        "subject_kind": "api",
+                        "kind": "input_range",
+                        "statement": "parse_byte accepts 0..255",
+                        "normativity": "required",
+                        "source_refs": [ref_id],
+                    }
+                ],
+                "summary": "seed",
+            },
+        )
+
+    # This generated Markdown is not an accepted source.  Its removal changes
+    # the broad manifest digest but leaves the accepted Markdown delta empty.
+    (project / "artifacts" / "scan-report.md").unlink()
+    current = build_source_manifest(project, project_id="fixture")
+    assert current.source_manifest_digest != before.source_manifest_digest
+    assert not compare_manifests(before, current).added_source_ids
+    assert not compare_manifests(before, current).changed_source_ids
+    assert not compare_manifests(before, current).removed_source_ids
+
+    calls = []
+
+    class FailingProvider:
+        def __init__(self, *_args, **_kwargs):
+            calls.append("constructed")
+            raise AssertionError(
+                "empty accepted delta must not construct an LLM provider"
+            )
+
+    monkeypatch.setattr(
+        "zscope.core.analysis.analyzer.LLMWikiCompilerProvider",
+        FailingProvider,
+    )
+    analyzer = _analyzer(
+        project,
+        mode="active",
+        auto_maintain=False,
+        compiler_enabled=True,
+    )
+    analyzer.llm_clients = {"wiki_compiler": object()}
+
+    service = analyzer._build_project_knowledge_service()
+    _close_service(service)
+
+    with WikiStore(state) as store:
+        active = store.active_revision()
+        assert active is not None
+        assert active["revision_id"] != seeded.revision_id
+        assert active["source_manifest_digest"] == current.source_manifest_digest
+        refreshed = store.connection.execute(
+            "SELECT constraint_json FROM constraints WHERE revision_id=?",
+            (active["revision_id"],),
+        ).fetchone()
+        assert refreshed is not None
+        assert (
+            json.loads(refreshed["constraint_json"])["statement"]
+            == "parse_byte accepts 0..255"
+        )
+    assert calls == []
 
 
 def test_analyzer_applies_document_exclusions_to_manifest_and_source_index(

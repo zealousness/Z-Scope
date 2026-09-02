@@ -584,13 +584,33 @@ class Analyzer:
                         (active.get("revision_id"),),
                     ).fetchone()
                 )
-                if not has_constraints:
-                    added_source_ids = tuple(sorted(str(item.source_id) for item in manifest.accepted))
+                accepted_delta_empty = bool(
+                    has_constraints
+                    and delta is not None
+                    and not delta.added_source_ids
+                    and not delta.changed_source_ids
+                    and not delta.removed_source_ids
+                )
+                if accepted_delta_empty:
+                    # A manifest can change because an excluded/unsupported
+                    # artifact was added or removed while the accepted
+                    # Markdown set remains identical.  Refresh the
+                    # program-owned manifest pin deterministically and reuse
+                    # the existing constraints; never turn an empty delta
+                    # into a full Compiler invocation.
+                    added_source_ids = ()
                     changed_source_ids = ()
+                    removed_source_ids = ()
+                elif not has_constraints:
+                    added_source_ids = tuple(
+                        sorted(str(item.source_id) for item in manifest.accepted)
+                    )
+                    changed_source_ids = ()
+                    removed_source_ids = delta.removed_source_ids if delta else ()
                 else:
                     added_source_ids = delta.added_source_ids if delta else ()
                     changed_source_ids = delta.changed_source_ids if delta else ()
-                removed_source_ids = delta.removed_source_ids if delta else ()
+                    removed_source_ids = delta.removed_source_ids if delta else ()
                 workset = build_ingest_workset(
                     manifest,
                     source_index=source_index,
@@ -599,14 +619,22 @@ class Analyzer:
                     changed_source_ids=changed_source_ids,
                     removed_source_ids=removed_source_ids,
                     max_wall_seconds=getattr(wiki, "max_wall_seconds", None),
-                    initial=not had_active_revision or not has_constraints,
+                    initial=(
+                        False
+                        if accepted_delta_empty
+                        else (not had_active_revision or not has_constraints)
+                    ),
                 )
                 compiler_workers = int(
                     getattr(getattr(config, "concurrency", None), "wiki_compiler_workers", 4)
                     or 4
                 )
                 compiler = WikiCompiler(max_workers=compiler_workers)
-                if bool(getattr(wiki, "compiler_enabled", False)) and compiler_client is not None:
+                if (
+                    not accepted_delta_empty
+                    and bool(getattr(wiki, "compiler_enabled", False))
+                    and compiler_client is not None
+                ):
                     compiler = WikiCompiler(
                         LLMWikiCompilerProvider(
                             compiler_client,

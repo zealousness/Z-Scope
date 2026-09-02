@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from zscope.wiki.service import ProjectKnowledgeService
+from zscope.wiki.service import ProjectKnowledgeService, validate_project_knowledge
 from zscope.wiki.identity import stable_id
 from zscope.wiki.source_index import SourceIndex
 from zscope.wiki.source_manifest import build_source_manifest
@@ -186,6 +186,68 @@ def test_active_wiki_selects_at_most_twenty_and_reports_omissions(tmp_path: Path
         assert len(context["constraints"]) == 20
         assert context["selection"]["omitted_constraint_count"] == 5
         assert context["selection"]["max_tokens"] == 4096
+    finally:
+        index.close()
+
+
+def test_active_wiki_injects_conflicted_constraints_with_conflict_summary(tmp_path: Path) -> None:
+    manifest = build_source_manifest(FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z")
+    index = SourceIndex(tmp_path / "source.db")
+    index.rebuild(FIXTURE, manifest=manifest)
+    ref_id = "docref_fixture:readme"
+    try:
+        service = ProjectKnowledgeService(
+            source_index=index,
+            source_manifest_digest=manifest.source_manifest_digest,
+            mode="active",
+            compiler_available=True,
+        )
+        service._pinned_revision_id = "wikirev_conflict"
+        service._pinned_refs = {ref_id: {"resolvable": True}}
+        service._pinned_constraints = (
+            {
+                "constraint_id": "constraint_range_a",
+                "kind": "input_range",
+                "subject": {"canonical_id": "parse_byte", "kind": "api"},
+                "statement": "parse_byte accepts 0..127",
+                "authority": "documented_contract",
+                "normativity": "required",
+                "status": "conflicted",
+                "source_refs": [ref_id],
+                "conflicts_with": ["constraint_range_b"],
+            },
+            {
+                "constraint_id": "constraint_range_b",
+                "kind": "input_range",
+                "subject": {"canonical_id": "parse_byte", "kind": "api"},
+                "statement": "parse_byte accepts 0..255",
+                "authority": "documented_contract",
+                "normativity": "required",
+                "status": "conflicted",
+                "source_refs": [ref_id],
+                "conflicts_with": ["constraint_range_a"],
+            },
+        )
+
+        context = service.resolve_for_candidate(
+            {
+                "project_id": "fixture",
+                "subject_id": "parse_byte",
+                "fact_kind": "input_range",
+                "relative_file": "src/parser.c",
+            }
+        )
+
+        assert context["resolution_mode"] == "wiki"
+        assert [item["status"] for item in context["constraints"]] == ["conflicted", "conflicted"]
+        assert context["constraints"][0]["conflicts_with"]
+        assert context["conflicts"] == [{
+            "subject_id": "parse_byte",
+            "constraint_ids": ["constraint_range_a", "constraint_range_b"],
+            "reason": "Conflicting documented constraints; resolve against source and code evidence.",
+            "source_refs": [ref_id],
+        }]
+        assert validate_project_knowledge(context)["conflicts"] == context["conflicts"]
     finally:
         index.close()
 

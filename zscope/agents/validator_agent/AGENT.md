@@ -63,8 +63,11 @@ Treat Wiki constraints as documented auxiliary context: they can identify a
 project/API precondition, range, ownership, or lock contract, but they are not
 deterministic proof.
 `source_fallback` and `none` never contain compiled constraints. A
-recommended/descriptive/unknown statement, stale/conflicted item, or missing
-document is not negative evidence. If code evidence conflicts with a
+recommended/descriptive/unknown statement, stale item, or missing document is
+not negative evidence. Conflicted constraints may be present in `constraints`
+with `status: "conflicted"` and are summarized in `conflicts`; treat them as
+an explicit ambiguity and compare each statement with source/code evidence,
+never as a resolved contract. If code evidence conflicts with a
 documented contract, code facts take priority and requests one allowed deterministic fact.
 
 The model-facing `project_knowledge` is a compact projection. Its top-level
@@ -76,6 +79,9 @@ they are not evidence of a contract or vulnerability. `target` includes `project
 `subject_ids`, `obligation_kinds`, `candidate_file`, and `function_name`.
 Each constraint includes `constraint_id`, `kind`, `subject_id`,
 `subject_kind`, `statement`, `authority`, `normativity`, and `source_refs`.
+Compiled constraints may also include `status` (`active` or `conflicted`) and
+`conflicts_with`; a conflicted constraint must not be treated as proof without
+code-backed adjudication.
 Manifest/context digests and selection internals remain program-owned audit
 data and are not part of this model projection.
 - Reject dead code, generic robustness advice, policy disagreement, and

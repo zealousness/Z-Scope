@@ -60,4 +60,6 @@ def test_validator_project_knowledge_projection_is_compact_and_repairs_candidate
     assert projection["target"]["subject_ids"] == []
     assert projection["constraints"][0]["subject_kind"] == "api"
     assert projection["constraints"][0]["subject_id"] == "parse_byte"
+    assert projection["constraints"][0]["status"] == "active"
+    assert projection["constraints"][0]["conflicts_with"] == []
     assert projection["omitted_source_excerpt_count"] == 0
