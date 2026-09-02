@@ -54,6 +54,22 @@ LIVE_IMPORT_EXEMPT_PREFIXES = (
     "zscope.cli.benchmark",
     "zscope.cli.config_cli",
 )
+GOVERNANCE_ONLY_LIVE_IMPORT_EXEMPT_MODULES = frozenset(
+    {
+        "zscope.orchestration.successor_review_evidence",
+        "zscope.orchestration.successor_review_integration",
+    }
+)
+
+
+def _live_import_denied(*, module: str, imported: str) -> bool:
+    """Keep benchmark imports isolated except for exact offline projectors."""
+
+    return (
+        imported.startswith(LIVE_DENIED_IMPORTS)
+        and not module.startswith(LIVE_IMPORT_EXEMPT_PREFIXES)
+        and module not in GOVERNANCE_ONLY_LIVE_IMPORT_EXEMPT_MODULES
+    )
 
 
 def _imports(source: str, *, module: str) -> Iterable[str]:
@@ -72,24 +88,87 @@ def _imports(source: str, *, module: str) -> Iterable[str]:
             yield imported
 
 
+def _governance_projector_imports(source: str, *, module: str) -> Iterable[str]:
+    """Resolve exact projector imports, including constant dynamic imports."""
+
+    tree = ast.parse(source, filename=module)
+    package = module.rpartition(".")[0]
+    imported_projectors: set[str] = set()
+    importlib_aliases = {"importlib"}
+    import_module_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        candidates: list[str] = []
+        if isinstance(node, ast.Import):
+            candidates.extend(alias.name for alias in node.names)
+            importlib_aliases.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "importlib"
+            )
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                parts = package.split(".")
+                base = ".".join(parts[: len(parts) - node.level + 1])
+                imported = f"{base}.{node.module}" if node.module else base
+            else:
+                imported = node.module or ""
+            candidates.append(imported)
+            candidates.extend(
+                f"{imported}.{alias.name}" if imported else alias.name
+                for alias in node.names
+                if alias.name != "*"
+            )
+            if imported == "importlib":
+                import_module_aliases.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name == "import_module"
+                )
+        elif (
+            isinstance(node, ast.Call)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            function = node.func
+            if (
+                isinstance(function, ast.Name)
+                and function.id in {"__import__", *import_module_aliases}
+            ) or (
+                isinstance(function, ast.Attribute)
+                and function.attr == "import_module"
+                and isinstance(function.value, ast.Name)
+                and function.value.id in importlib_aliases
+            ):
+                candidates.append(node.args[0].value)
+        imported_projectors.update(
+            candidate
+            for candidate in candidates
+            if candidate in GOVERNANCE_ONLY_LIVE_IMPORT_EXEMPT_MODULES
+        )
+    yield from sorted(imported_projectors)
+
+
 def source_import_errors(repo_root: Path) -> list[str]:
     errors: list[str] = []
     source_root = repo_root / "zscope"
     for path in sorted(source_root.rglob("*.py")):
         relative = path.relative_to(repo_root).with_suffix("")
         module = ".".join(relative.parts)
-        for imported in _imports(path.read_text(encoding="utf-8"), module=module):
+        source = path.read_text(encoding="utf-8")
+        for imported in _imports(source, module=module):
             if imported.startswith(REMOVED_MODULES):
                 errors.append(f"{relative.as_posix()}: imports removed module {imported}")
             if relative.parts[:2] == ("zscope", "compat") and imported.startswith(
                 COMPAT_DENIED_IMPORTS
             ):
                 errors.append(f"{relative.as_posix()}: compat imports live runtime {imported}")
-            if not module.startswith(LIVE_IMPORT_EXEMPT_PREFIXES) and imported.startswith(
-                LIVE_DENIED_IMPORTS
-            ):
+            if _live_import_denied(module=module, imported=imported):
                 errors.append(
                     f"{relative.as_posix()}: live runtime imports isolated package {imported}"
+                )
+        if module not in GOVERNANCE_ONLY_LIVE_IMPORT_EXEMPT_MODULES:
+            for imported in _governance_projector_imports(source, module=module):
+                errors.append(
+                    f"{relative.as_posix()}: imports governance-only projector {imported}"
                 )
     return errors
 
@@ -113,10 +192,11 @@ def wheel_errors(wheel_path: Path) -> list[str]:
             for imported in _imports(source, module=module):
                 if imported.startswith(REMOVED_MODULES):
                     errors.append(f"{name}: imports removed module {imported}")
-                if not module.startswith(LIVE_IMPORT_EXEMPT_PREFIXES) and imported.startswith(
-                    LIVE_DENIED_IMPORTS
-                ):
+                if _live_import_denied(module=module, imported=imported):
                     errors.append(f"{name}: live runtime imports isolated package {imported}")
+            if module not in GOVERNANCE_ONLY_LIVE_IMPORT_EXEMPT_MODULES:
+                for imported in _governance_projector_imports(source, module=module):
+                    errors.append(f"{name}: imports governance-only projector {imported}")
     return errors
 
 

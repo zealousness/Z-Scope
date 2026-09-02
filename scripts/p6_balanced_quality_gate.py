@@ -28,6 +28,12 @@ from zscope.benchmarking.provider_runtime import (
     P6_PROVIDER_MODEL,
     P6_PROVIDER_RESPONSE_MODEL,
 )
+from zscope.benchmarking.p6_sidecar_evidence import (
+    P6SidecarEvidenceError,
+    TRACE_SIDECAR_EVIDENCE_FILENAME,
+    USAGE_EVENTS_EVIDENCE_FILENAME,
+    validate_trace_sidecar_evidence,
+)
 from zscope.reporting.finding_roots import _has_complete_deterministic_proof
 
 
@@ -84,8 +90,11 @@ _BUNDLE_FILES = {
     "legacy_score": "legacy-score.json",
     "producer_projection": "producer-projection.json",
     "report": "frozen-report.json",
+    "trace_sidecars": TRACE_SIDECAR_EVIDENCE_FILENAME,
+    "usage_events": USAGE_EVENTS_EVIDENCE_FILENAME,
     "usage_evidence": "usage-evidence.json",
     "v16_score": "v16-score.json",
+    "v16_truth_partitions": "v16-truth-partitions.json",
 }
 _BUNDLE_GATE = "p6-balanced-quality-gate.json"
 
@@ -233,8 +242,11 @@ def validate_quality_gate(value: Mapping[str, Any]) -> None:
             "legacy_score",
             "producer_projection",
             "report",
+            "trace_sidecars",
+            "usage_events",
             "usage_evidence",
             "v16_score",
+            "v16_truth_partitions",
         },
         field="quality gate.artifacts",
     )
@@ -320,7 +332,7 @@ def validate_quality_gate(value: Mapping[str, Any]) -> None:
             raise P6BalancedQualityGateError("quality gate design-risk projection is invalid")
     cross_view = _boolean_map(
         root["cross_view"],
-        {"legacy_v15", "truth_v16_product"},
+        {"legacy_v15", "truth_v16_product", "truth_v16_design_risk"},
         field="quality gate.cross_view",
     )
     usage = _exact_fields(
@@ -358,7 +370,6 @@ def validate_quality_gate(value: Mapping[str, Any]) -> None:
                 "requested_model_mismatch_count",
             )
         )
-        or _integer(usage["hard_limit_denied_count"], field="hard admission denials") != 0
         or usage["passed"] is not True
     ):
         raise P6BalancedQualityGateError("quality gate usage evidence is invalid")
@@ -379,7 +390,7 @@ def validate_quality_gate(value: Mapping[str, Any]) -> None:
             "token_conservation",
             "token_limit",
             "admission_conservation",
-            "no_hard_limit_denials",
+            "hard_limit_denials_zero_call_conserved",
             "retry_bounds",
         },
         field="quality gate usage gates",
@@ -506,10 +517,15 @@ def validate_quality_gate_bundle(root: Path) -> dict[str, Any]:
         report=_load_object(paths["report"], field="report"),
         legacy_score=_load_object(paths["legacy_score"], field="legacy score"),
         v16_score=_load_object(paths["v16_score"], field="v16 score"),
+        v16_truth_partitions=_load_object(
+            paths["v16_truth_partitions"], field="v16 Truth partitions"
+        ),
         producer_projection=_load_object(paths["producer_projection"], field="producer projection"),
         bindings=_load_object(paths["bindings"], field="bindings"),
         frozen_manifest=_load_object(paths["frozen_manifest"], field="frozen manifest"),
         usage_evidence=_load_object(paths["usage_evidence"], field="usage evidence"),
+        usage_events_call_count=_usage_event_count(paths["usage_events"]),
+        trace_sidecars=_load_object(paths["trace_sidecars"], field="trace sidecars"),
         artifact_sha256s=artifact_sha256s,
     )
     if rebuilt != supplied:
@@ -557,6 +573,41 @@ def _load_object(path: Path, *, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise P6BalancedQualityGateError(f"{field} must contain a JSON object")
     return value
+
+
+def _usage_event_count(path: Path) -> int:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 256 * 1024 * 1024:
+        raise P6BalancedQualityGateError("usage event sidecar is invalid")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise P6BalancedQualityGateError("usage event sidecar is invalid") from exc
+    count = 0
+    call_ids: set[str] = set()
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise P6BalancedQualityGateError("usage event sidecar is invalid") from exc
+        count += 1
+        if (
+            not isinstance(row, Mapping)
+            or row.get("sequence") != count
+            or not isinstance(row.get("call_id"), str)
+            or not row["call_id"]
+            or row["call_id"] in call_ids
+            or any(
+                forbidden in row
+                for forbidden in ("prompt", "response", "source", "truth", "expected", "api_key")
+            )
+        ):
+            raise P6BalancedQualityGateError("usage event sidecar is invalid")
+        call_ids.add(str(row["call_id"]))
+    if count < 1:
+        raise P6BalancedQualityGateError("usage event sidecar is invalid")
+    return count
 
 
 def _validate_bindings(value: Mapping[str, Any]) -> dict[str, str]:
@@ -916,7 +967,12 @@ def _usage_evidence(
         and all(conserved.values()),
         "token_limit": total_tokens <= MAX_BALANCED_TOKENS,
         "admission_conservation": admission_conserved,
-        "no_hard_limit_denials": hard_denials == 0,
+        # A hard-limit refusal is an expected zero-call control-plane event,
+        # not an overshoot.  It is admissible only when the producer proves
+        # the complete request/reason ledger and that denied requests created
+        # no provider attempt.  Actual token overshoot and settled-call budget
+        # violations remain independently fail closed above.
+        "hard_limit_denials_zero_call_conserved": admission_conserved,
         "retry_bounds": retry_conserved,
     }
     return {
@@ -973,6 +1029,99 @@ def _strip_private_matched(value: dict[str, Any]) -> tuple[dict[str, Any], froze
     matched = value.pop("_matched")
     assert isinstance(matched, frozenset)
     return value, matched
+
+
+def _truth_id_commitment(truth_id: str) -> str:
+    return _sha256_value({"truth_id": truth_id})
+
+
+def _v16_partition_commitments(
+    partition_projection: Mapping[str, Any],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Revalidate the P6 control-plane disjoint Truth partition commitments.
+
+    The frozen Benchmark v5 scorer remains unchanged.  A separate post-score
+    projector emits one opaque commitment per exact partition member.  This
+    lets the gate reject unknown, duplicate, overlapping, or cross-partition
+    matched IDs without copying unmatched Truth IDs into the public gate.
+    """
+
+    root = _exact_fields(
+        partition_projection,
+        {
+            "schema_version",
+            "truth_sha256",
+            "product",
+            "design_risk",
+            "partitions_disjoint",
+            "union_member_count",
+            "union_member_commitments_sha256",
+            "answer_material_present",
+            "content_sha256",
+        },
+        field="v16 Truth partition projection",
+    )
+    unsigned = dict(root)
+    supplied = unsigned.pop("content_sha256", None)
+    if (
+        root.get("schema_version") != "zscope.p6-truth-partition-projection.v1"
+        or supplied != _sha256_value(unsigned)
+        or re.fullmatch(r"[0-9a-f]{64}", str(root.get("truth_sha256") or "")) is None
+        or root.get("partitions_disjoint") is not True
+        or root.get("answer_material_present") is not False
+        or _integer(root.get("union_member_count"), field="v16 partition union count")
+        != V16_PRODUCT_TRUTH_COUNT + V16_DESIGN_RISK_TRUTH_COUNT
+    ):
+        raise P6BalancedQualityGateError("v16 Truth partition commitment is invalid")
+
+    partitions: dict[str, frozenset[str]] = {}
+    expected_counts = {
+        "product": V16_PRODUCT_TRUTH_COUNT,
+        "design_risk": V16_DESIGN_RISK_TRUTH_COUNT,
+    }
+    for name, expected_count in expected_counts.items():
+        row = _exact_fields(
+            root[name],
+            {"member_count", "member_commitments", "member_commitments_sha256"},
+            field=f"v16 Truth partition projection.{name}",
+        )
+        count = _integer(row.get("member_count"), field=f"v16 {name} member count")
+        raw_members = row.get("member_commitments")
+        if (
+            count != expected_count
+            or not isinstance(raw_members, list)
+            or len(raw_members) != expected_count
+            or any(
+                not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in raw_members
+            )
+            or len(set(raw_members)) != expected_count
+            or row.get("member_commitments_sha256") != _sha256_value(sorted(raw_members))
+        ):
+            raise P6BalancedQualityGateError(f"v16 Truth {name} partition commitment is invalid")
+        partitions[name] = frozenset(raw_members)
+
+    product = partitions["product"]
+    design_risk = partitions["design_risk"]
+    union = sorted(product | design_risk)
+    if (
+        product & design_risk
+        or len(union) != V16_PRODUCT_TRUTH_COUNT + V16_DESIGN_RISK_TRUTH_COUNT
+        or root.get("union_member_commitments_sha256") != _sha256_value(union)
+    ):
+        raise P6BalancedQualityGateError("v16 Truth partitions are not disjoint and conserved")
+    return product, design_risk
+
+
+def _require_matched_partition(
+    matched: frozenset[str],
+    *,
+    allowed_commitments: frozenset[str],
+    field: str,
+) -> None:
+    commitments = {_truth_id_commitment(value) for value in matched}
+    if len(commitments) != len(matched) or not commitments.issubset(allowed_commitments):
+        raise P6BalancedQualityGateError(f"{field} contains a cross-partition or unknown ID")
 
 
 def _aggregate_view(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -1309,7 +1458,9 @@ def validate_quality_failure_aggregate(value: Mapping[str, Any]) -> None:
         ):
             raise P6BalancedQualityGateError("quality failure design-risk aggregate is invalid")
     cross = _exact_fields(
-        root["cross_view"], {"legacy_v15", "truth_v16_product"}, field="aggregate.cross_view"
+        root["cross_view"],
+        {"legacy_v15", "truth_v16_product", "truth_v16_design_risk"},
+        field="aggregate.cross_view",
     )
     if any(not isinstance(item, bool) for item in cross.values()):
         raise P6BalancedQualityGateError("quality failure cross-view aggregate is invalid")
@@ -1416,10 +1567,13 @@ def build_quality_gate(
     report: Mapping[str, Any],
     legacy_score: Mapping[str, Any],
     v16_score: Mapping[str, Any],
+    v16_truth_partitions: Mapping[str, Any],
     producer_projection: Mapping[str, Any],
     bindings: Mapping[str, Any],
     frozen_manifest: Mapping[str, Any],
     usage_evidence: Mapping[str, Any],
+    usage_events_call_count: int,
+    trace_sidecars: Mapping[str, Any],
     artifact_sha256s: Mapping[str, str],
 ) -> dict[str, Any]:
     """Build and validate the immutable P6 balanced quality gate object."""
@@ -1431,7 +1585,10 @@ def build_quality_gate(
         "report",
         "legacy_score",
         "v16_score",
+        "v16_truth_partitions",
         "producer_projection",
+        "trace_sidecars",
+        "usage_events",
         "usage_evidence",
     }:
         raise P6BalancedQualityGateError("artifact SHA-256 map must bind every bundle input")
@@ -1448,6 +1605,14 @@ def build_quality_gate(
             "candidate_git_sha",
             "candidate_git_tree",
             "attempt_id",
+            "llm_usage_events_sha256",
+            "llm_usage_events_call_count",
+            "trace_sidecars_sha256",
+            "trace_sidecar_member_count",
+            "trace_count",
+            "coverage_trace_count",
+            "evidence_object_count",
+            "model_event_count",
             "report_sha256",
             "bindings_sha256",
             "usage_evidence_sha256",
@@ -1462,7 +1627,7 @@ def build_quality_gate(
     frozen_unsigned = dict(frozen)
     frozen_content = frozen_unsigned.pop("content_sha256", None)
     if (
-        frozen.get("schema_version") != "zscope.p6-balanced-frozen-scan.v1"
+        frozen.get("schema_version") != "zscope.p6-balanced-frozen-scan.v3"
         or frozen_content != _sha256_value(frozen_unsigned)
         or frozen.get("candidate_git_sha") != frozen_bindings["git_commit"]
         or frozen.get("candidate_git_tree") != frozen_bindings["git_tree"]
@@ -1471,6 +1636,15 @@ def build_quality_gate(
         or frozen.get("bindings_sha256") != artifact_sha256s["bindings"]
         or frozen.get("usage_evidence_sha256") != artifact_sha256s["usage_evidence"]
         or frozen.get("projection_sha256") != artifact_sha256s["producer_projection"]
+        or frozen.get("llm_usage_events_sha256") != artifact_sha256s["usage_events"]
+        or frozen.get("trace_sidecars_sha256") != artifact_sha256s["trace_sidecars"]
+        or not isinstance(frozen.get("llm_usage_events_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", frozen["llm_usage_events_sha256"]) is None
+        or _integer(
+            frozen.get("llm_usage_events_call_count"),
+            field="frozen manifest usage call count",
+        )
+        < 1
         or frozen.get("answer_material_present") is not False
         or frozen.get("formal_benchmark") is not False
         or frozen.get("release_eligible") is not False
@@ -1483,6 +1657,14 @@ def build_quality_gate(
             "workflow_run_id",
             "workflow_run_attempt",
             "attempt_id",
+            "llm_usage_events_sha256",
+            "llm_usage_events_call_count",
+            "trace_sidecars_sha256",
+            "trace_sidecar_member_count",
+            "trace_count",
+            "coverage_trace_count",
+            "evidence_object_count",
+            "model_event_count",
             "score_fields",
             "answer_material_present",
             "formal_benchmark",
@@ -1518,11 +1700,25 @@ def build_quality_gate(
         "p6_terminal_authority",
     }
     if (
-        usage_row.get("schema_version") != "zscope.p6-balanced-usage-evidence.v1"
+        usage_row.get("schema_version") != "zscope.p6-balanced-usage-evidence.v3"
         or usage_content != _sha256_value(usage_unsigned)
         or usage_row.get("workflow_run_id") != frozen.get("workflow_run_id")
         or usage_row.get("workflow_run_attempt") != frozen.get("workflow_run_attempt")
         or usage_row.get("attempt_id") != frozen.get("attempt_id")
+        or usage_row.get("llm_usage_events_sha256") != frozen.get("llm_usage_events_sha256")
+        or usage_row.get("llm_usage_events_call_count") != frozen.get("llm_usage_events_call_count")
+        or usage_events_call_count != frozen.get("llm_usage_events_call_count")
+        or usage_row.get("trace_sidecars_sha256") != frozen.get("trace_sidecars_sha256")
+        or any(
+            usage_row.get(field) != frozen.get(field)
+            for field in (
+                "trace_sidecar_member_count",
+                "trace_count",
+                "coverage_trace_count",
+                "evidence_object_count",
+                "model_event_count",
+            )
+        )
         or usage_row.get("answer_material_present") is not False
         or usage_row.get("formal_benchmark") is not False
         or usage_row.get("release_eligible") is not False
@@ -1536,6 +1732,25 @@ def build_quality_gate(
             raise P6BalancedQualityGateError(
                 f"{field} score is not bound to the exact frozen report"
             )
+
+    try:
+        trace_payloads = validate_trace_sidecar_evidence(trace_sidecars)
+    except P6SidecarEvidenceError as exc:
+        raise P6BalancedQualityGateError("trace sidecar evidence is invalid") from exc
+    if len(trace_payloads) != frozen.get("trace_sidecar_member_count") or any(
+        trace_sidecars.get(field) != frozen.get(field)
+        for field in (
+            "trace_count",
+            "coverage_trace_count",
+            "evidence_object_count",
+            "model_event_count",
+        )
+    ):
+        raise P6BalancedQualityGateError("trace sidecar evidence count is invalid")
+
+    product_partition, design_risk_partition = _v16_partition_commitments(
+        v16_truth_partitions
+    )
 
     legacy_views = _mapping(legacy_score.get("report_views"), field="legacy.report_views")
     legacy_default, legacy_default_ids = _strip_private_matched(
@@ -1590,9 +1805,20 @@ def build_quality_gate(
             exact_tp=61,
         )
     )
+    _require_matched_partition(
+        v16_default_ids,
+        allowed_commitments=product_partition,
+        field="v16.product.default.matched",
+    )
+    _require_matched_partition(
+        v16_review_ids,
+        allowed_commitments=product_partition,
+        field="v16.product.with_needs_review.matched",
+    )
 
     design = _mapping(v16_score.get("design_risk"), field="v16.design_risk")
     design_projection: dict[str, Any] = {}
+    design_matched_ids: dict[str, frozenset[str]] = {}
     for name in ("default", "with_needs_review"):
         row = _mapping(design.get(name), field=f"v16.design_risk.{name}")
         truth_count = _integer(row.get("truth_count"), field=f"v16.design_risk.{name}.truth_count")
@@ -1617,10 +1843,24 @@ def build_quality_gate(
             "matched_sha256": _sha256_value(sorted(matched)),
             "counting_contract": "separate_from_product_quality_gates",
         }
+        design_matched_ids[name] = frozenset(matched)
+        _require_matched_partition(
+            design_matched_ids[name],
+            allowed_commitments=design_risk_partition,
+            field=f"v16.design_risk.{name}.matched",
+        )
+
+    if (v16_default_ids | v16_review_ids) & (
+        design_matched_ids["default"] | design_matched_ids["with_needs_review"]
+    ):
+        raise P6BalancedQualityGateError("v16 product and design-risk matched IDs overlap")
 
     default_subset = {
         "legacy_v15": legacy_default_ids.issubset(legacy_review_ids),
         "truth_v16_product": v16_default_ids.issubset(v16_review_ids),
+        "truth_v16_design_risk": design_matched_ids["default"].issubset(
+            design_matched_ids["with_needs_review"]
+        ),
     }
     report_invariants, confirmed_terminal_count = _report_invariants(report)
     usage = _usage_evidence(
@@ -1687,10 +1927,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--legacy-score", type=Path, required=True)
     parser.add_argument("--v16-score", type=Path, required=True)
+    parser.add_argument("--v16-truth-partitions", type=Path, required=True)
     parser.add_argument("--producer-projection", type=Path, required=True)
     parser.add_argument("--bindings", type=Path, required=True)
     parser.add_argument("--frozen-manifest", type=Path, required=True)
     parser.add_argument("--usage-evidence", type=Path, required=True)
+    parser.add_argument("--usage-events", type=Path, required=True)
+    parser.add_argument("--trace-sidecars", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--failure-aggregate", type=Path)
     return parser
@@ -1722,25 +1965,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = _load_object(args.report, field="report")
         legacy = _load_object(args.legacy_score, field="legacy score")
         v16 = _load_object(args.v16_score, field="v16 score")
+        v16_truth_partitions = _load_object(
+            args.v16_truth_partitions, field="v16 Truth partitions"
+        )
         producer = _load_object(args.producer_projection, field="producer projection")
         bindings = _load_object(args.bindings, field="bindings")
         frozen_manifest = _load_object(args.frozen_manifest, field="frozen manifest")
         usage_evidence = _load_object(args.usage_evidence, field="usage evidence")
+        trace_sidecars = _load_object(args.trace_sidecars, field="trace sidecars")
         result = build_quality_gate(
             report=report,
             legacy_score=legacy,
             v16_score=v16,
+            v16_truth_partitions=v16_truth_partitions,
             producer_projection=producer,
             bindings=bindings,
             frozen_manifest=frozen_manifest,
             usage_evidence=usage_evidence,
+            usage_events_call_count=_usage_event_count(args.usage_events),
+            trace_sidecars=trace_sidecars,
             artifact_sha256s={
                 "bindings": _sha256_file(args.bindings),
                 "frozen_manifest": _sha256_file(args.frozen_manifest),
                 "report": _sha256_file(args.report),
                 "legacy_score": _sha256_file(args.legacy_score),
                 "v16_score": _sha256_file(args.v16_score),
+                "v16_truth_partitions": _sha256_file(args.v16_truth_partitions),
                 "producer_projection": _sha256_file(args.producer_projection),
+                "trace_sidecars": _sha256_file(args.trace_sidecars),
+                "usage_events": _sha256_file(args.usage_events),
                 "usage_evidence": _sha256_file(args.usage_evidence),
             },
         )

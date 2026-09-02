@@ -14,6 +14,7 @@ from zscope.benchmarking.p6_balanced_orchestrator import (
     freeze_balanced_scan,
     revalidate_balanced_quality_bundle,
     score_frozen_balanced_scan,
+    verify_committed_local_balanced_evidence,
 )
 from zscope.benchmarking.p6_protocol import derive_p6_artifact_canaries
 
@@ -74,6 +75,16 @@ def _revalidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _verify_local_evidence(args: argparse.Namespace) -> int:
+    verify_committed_local_balanced_evidence(
+        repository_root=args.repository_root,
+        hosted_control_plane_commit=args.hosted_control_plane_commit,
+        evidence_commit=args.evidence_commit,
+        expected_receipt_sha256=args.receipt_sha256,
+    )
+    return 0
+
+
 def _add_identity(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workflow-run-id", required=True)
     parser.add_argument("--workflow-run-attempt", type=int, required=True)
@@ -116,6 +127,13 @@ def _parser() -> argparse.ArgumentParser:
     revalidate.add_argument("--output", type=Path, required=True)
     revalidate.add_argument("--receipt", type=Path, required=True)
     revalidate.set_defaults(handler=_revalidate)
+
+    local_evidence = commands.add_parser("verify-local-evidence")
+    local_evidence.add_argument("--repository-root", type=Path, default=Path("."))
+    local_evidence.add_argument("--hosted-control-plane-commit", required=True)
+    local_evidence.add_argument("--evidence-commit", required=True)
+    local_evidence.add_argument("--receipt-sha256", required=True)
+    local_evidence.set_defaults(handler=_verify_local_evidence)
     return parser
 
 

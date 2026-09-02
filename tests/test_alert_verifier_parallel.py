@@ -293,10 +293,11 @@ def test_alert_required_unknown_counterproof_cannot_confirm() -> None:
     result = verifier._verify_single(alert, 1)
 
     assert result["candidate_disposition"] == "needs_review"
-    assert result["proof_kernel_decision"]["reason_code"] == ("open_or_unknown_proof_clause")
+    assert result["proof_kernel_decision"]["reason_code"] == ("alert_verify_external_proof_unbound")
+    assert result["proof_kernel_decision"]["audit_reason_code"] == ("open_or_unknown_proof_clause")
 
 
-def test_alert_confirmed_proof_uses_v4_promotion_chain() -> None:
+def test_alert_confirmed_proof_remains_unbound_audit_only() -> None:
     verifier = AlertVerifier.__new__(AlertVerifier)
     verifier.terminal_authority = TerminalAuthorityEvaluator()
     alert = _alert(
@@ -314,19 +315,21 @@ def test_alert_confirmed_proof_uses_v4_promotion_chain() -> None:
 
     result = verifier._verify_single(alert, 1)
 
-    assert result["candidate_disposition"] == "confirmed"
+    assert result["candidate_disposition"] == "needs_review"
     assert result["terminal_authority_decision"]["schema_version"] == (
         "zscope.terminal-authority-decision.v4"
     )
     assert (
         result["proof_kernel_terminal_authority_decision"] == result["terminal_authority_decision"]
     )
-    assert result["proof_kernel_frozen_state"]["obligation_uid"]
-    assert result["proof_kernel_closure_evaluation"]["complete"] is True
-    assert result["proof_kernel_promotion_certificate"]["disposition"] == "confirmed"
+    assert result["proof_kernel_decision"]["disposition"] == "needs_review"
+    assert result["proof_kernel_decision"]["audit_disposition"] == "confirmed"
+    assert result["proof_kernel_reverification_status"] == "verified_unbound"
+    assert "proof_kernel_frozen_state" not in result
+    assert "proof_kernel_promotion_certificate" not in result
 
 
-def test_alert_counterproof_uses_v4_promotion_chain() -> None:
+def test_alert_counterproof_remains_unbound_audit_only() -> None:
     verifier = AlertVerifier.__new__(AlertVerifier)
     verifier.terminal_authority = TerminalAuthorityEvaluator()
     alert = _alert(
@@ -340,8 +343,33 @@ def test_alert_counterproof_uses_v4_promotion_chain() -> None:
 
     result = verifier._verify_single(alert, 1)
 
-    assert result["candidate_disposition"] == "rejected_with_proof"
+    assert result["candidate_disposition"] == "needs_review"
     assert result["terminal_authority_decision"]["schema_version"] == (
         "zscope.terminal-authority-decision.v4"
     )
-    assert result["proof_kernel_promotion_certificate"]["disposition"] == ("rejected_with_proof")
+    assert result["proof_kernel_decision"]["audit_disposition"] == "rejected_with_proof"
+    assert "proof_kernel_promotion_certificate" not in result
+
+
+def test_external_proof_cannot_be_retargeted_across_alert_occurrences() -> None:
+    verifier = AlertVerifier.__new__(AlertVerifier)
+    verifier.terminal_authority = TerminalAuthorityEvaluator()
+    proof_input = _terminal_path_proof_input(role="confirmation")
+
+    results = [
+        verifier._verify_single(
+            _alert(
+                idx,
+                raw={"properties": {"zscopeProofKernelInput": proof_input}},
+            ),
+            idx,
+        )
+        for idx in (1, 2)
+    ]
+
+    assert {result["candidate_disposition"] for result in results} == {"needs_review"}
+    assert {result["proof_kernel_decision"]["audit_disposition"] for result in results} == {
+        "confirmed"
+    }
+    assert len({result["candidate_uid"] for result in results}) == 2
+    assert all("proof_kernel_promotion_certificate" not in result for result in results)

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from threading import Barrier, Lock
 
 import pytest
 
+from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.core.validation.function_ir import FunctionIRGraph
-from zscope.core.validation.proof_kernel import ProofKernelEngine
+from zscope.core.validation.proof_kernel import ProofKernelEngine, program_proof_ir_from_graph
+from zscope.core.validation.runner import ValidationRunner
 from zscope.framework.llm_usage import P6BalancedTokenAdmissionError
 from zscope.orchestration.candidates import CandidateLedger, CandidateRegistrar
 from zscope.orchestration.hypothesis_hunter import (
@@ -17,7 +20,7 @@ from zscope.orchestration.hypothesis_hunter import (
     HypothesisArtifactStore,
     HypothesisHunterAgent,
     HypothesisHunterRuntime,
-    HypothesisProofCatalog,
+    HypothesisProofCatalog as _ProductionHypothesisProofCatalog,
     build_candidate_blind_projection,
     load_hypothesis_manifest_identity,
 )
@@ -28,6 +31,23 @@ from zscope.semantics.security_map import (
     SecurityEvent,
     SecuritySemanticMap,
 )
+
+
+class HypothesisProofCatalog(_ProductionHypothesisProofCatalog):
+    """Test catalog bound to the fixture semantic-map lineage by default."""
+
+    def __init__(
+        self,
+        graph_provider,
+        *,
+        project_uid: str = "PROJECT_NEUTRAL",
+        revision_uid: str = "b" * 40,
+    ) -> None:
+        super().__init__(
+            graph_provider,
+            project_uid=project_uid,
+            revision_uid=revision_uid,
+        )
 
 
 def _graph(*, complete: bool = True) -> FunctionIRGraph:
@@ -153,6 +173,117 @@ def _resource_graph(*, cleanup: bool) -> FunctionIRGraph:
     )
 
 
+def _qualified_bounds_graph(*, guarded: bool = False) -> FunctionIRGraph:
+    target = {
+        "parameters": [{"name": "fd", "type": "int", "line": 10}],
+        "call_assignments": [
+            {
+                "target": "n",
+                "callee": "recv",
+                "line": 12,
+                "result_type": "ssize_t",
+            }
+        ],
+        "call_exprs": [
+            {
+                "callee": "recv",
+                "line": 12,
+                "result_type": "ssize_t",
+                "argument_types": ["int"],
+                "argument_refs": [["fd"]],
+                "argument_ref_types": [{"fd": "int"}],
+            },
+            {
+                "callee": "memcpy",
+                "line": 14,
+                "result_type": "void *",
+                "argument_types": ["void *", "const void *", "size_t"],
+                "argument_refs": [["dst"], ["src"], ["n"]],
+                "argument_ref_types": [
+                    {"dst": "void *"},
+                    {"src": "const void *"},
+                    {"n": "ssize_t"},
+                ],
+            },
+        ],
+        "conversions": [
+            {
+                "cast_kind": "ImplicitCastExpr",
+                "line": 14,
+                "source_type": "ssize_t",
+                "target_type": "size_t",
+                "refs": ["n"],
+            }
+        ],
+        "terminating_guards": (
+            [
+                {
+                    "line": 13,
+                    "comparisons": [
+                        {
+                            "opcode": "<",
+                            "lhs_refs": ["n"],
+                            "rhs_refs": [],
+                            "lhs_integer_literals": [],
+                            "rhs_integer_literals": ["0"],
+                        }
+                    ],
+                    "terminates_then_branch": True,
+                }
+            ]
+            if guarded
+            else []
+        ),
+        "binary_ops": [],
+        "value_fact_coverage_complete": True,
+    }
+    value = FunctionIRGraph.from_clang_evidence(
+        {
+            "code_snapshot_sha256": "9" * 64,
+            "cfg_dump": {
+                "summary": {
+                    "parse_ok": True,
+                    "function": "copy_received",
+                    "function_section_unique": True,
+                    "entry_blocks": ["B2"],
+                    "exit_blocks": ["B0"],
+                    "blocks": [
+                        {
+                            "id": "B2",
+                            "label": "(ENTRY)",
+                            "successors": ["B1"],
+                            "predecessors": [],
+                            "statements": [],
+                        },
+                        {
+                            "id": "B1",
+                            "label": "",
+                            "successors": ["B0"],
+                            "predecessors": ["B2"],
+                            "statements": [
+                                "n = recv(fd, src, cap, 0)",
+                                "memcpy(dst, src, n)",
+                            ],
+                        },
+                        {
+                            "id": "B0",
+                            "label": "(EXIT)",
+                            "successors": [],
+                            "predecessors": ["B1"],
+                            "statements": [],
+                        },
+                    ],
+                }
+            },
+            "ast_dump": {"summary": {"parse_ok": True, "target_function": target}},
+        },
+        function="copy_received",
+        file="src/copy_received.c",
+    )
+    assert value is not None
+    return value
+
+
 def _semantic_map() -> SecuritySemanticMap:
     record = FunctionSecurityRecord(
         function_uid="FUNC_NEUTRAL_GATEWAY",
@@ -236,6 +367,34 @@ def _resource_semantic_map(
     return replace(baseline, functions=(record,))
 
 
+def _bounds_semantic_map(*, line: int = 14) -> SecuritySemanticMap:
+    baseline = _semantic_map()
+    event = SecurityEvent(
+        event_id="EVENT_BOUNDS",
+        family="memory_bounds",
+        kind="unbounded_copy_length",
+        function_uid="FUNC_COPY_RECEIVED",
+        file="src/copy_received.c",
+        line=line,
+        expression="memcpy(dst, src, n)",
+        evidence_ref="evidence:bounds:neutral",
+    )
+    record = replace(
+        baseline.functions[0],
+        function_uid="FUNC_COPY_RECEIVED",
+        index_name="copy_received",
+        function_name="copy_received",
+        file_path="src/copy_received.c",
+        signature="copy_received(int fd)",
+        code_hash="9" * 64,
+        entry_paths=(("ENTRY_EXTERNAL", "FUNC_COPY_RECEIVED"),),
+        callees=("recv", "memcpy"),
+        unresolved_callees=(),
+        events=(event,),
+    )
+    return replace(baseline, functions=(record,))
+
+
 def _semantic_map_with_function_count(count: int) -> SecuritySemanticMap:
     baseline = _semantic_map()
     template = baseline.functions[0]
@@ -282,6 +441,62 @@ def _planned_bundle():
     assert planned
     assert planned[0].offers
     return semantic_map, planned[0]
+
+
+@pytest.mark.parametrize(
+    ("graph_changes", "catalog_changes", "binding_changes"),
+    [
+        ({"file": "src/unrelated.c"}, {}, {}),
+        ({"function": "unrelated"}, {}, {}),
+        ({}, {"project_uid": "PROJECT_WRONG"}, {}),
+        ({}, {"revision_uid": "c" * 40}, {}),
+        ({}, {}, {"code_sha256": "0" * 64}),
+    ],
+    ids=("file", "function", "project", "revision", "record-code"),
+)
+def test_hunter_catalog_rejects_wrong_graph_or_record_lineage(
+    graph_changes: dict[str, str],
+    catalog_changes: dict[str, str],
+    binding_changes: dict[str, str],
+) -> None:
+    semantic_map = _semantic_map()
+    record = semantic_map.functions[0]
+    event = record.events[0]
+    graph = replace(_graph(), **graph_changes)
+    identity = AttackSurfacePlanner._provisional_identity(
+        semantic_map,
+        record,
+        event,
+        "untrusted_dataflow",
+    )
+    identity["graph_record_binding"] = {
+        **identity["graph_record_binding"],
+        **binding_changes,
+    }
+    catalog = HypothesisProofCatalog(lambda _record, _event: graph, **catalog_changes)
+
+    assert catalog.bundles(record, event, identity) == ()
+
+
+def test_hunter_catalog_seals_distinct_record_and_graph_code_domains() -> None:
+    semantic_map = _semantic_map()
+    graph = replace(_graph(), code_snapshot_sha256="d" * 64)
+    planned = AttackSurfacePlanner(risk_threshold=35).plan(
+        semantic_map,
+        proof_bundle_provider=HypothesisProofCatalog(lambda _record, _event: graph).bundles,
+    )
+
+    offer = planned[0].offers[0]
+    summary = next(
+        value
+        for value in offer["proof_ir"]["functions"][0]["wrapper_summaries"]
+        if value.get("summary_kind") == "hunter_graph_record_binding_v1"
+    )
+    assert offer["proof_ir"]["project_uid"] == semantic_map.project_id
+    assert offer["proof_ir"]["revision_uid"] == semantic_map.revision
+    assert summary["record_code_sha256"] == semantic_map.functions[0].code_hash
+    assert summary["graph_code_snapshot_sha256"] == graph.code_snapshot_sha256
+    assert summary["record_code_sha256"] != summary["graph_code_snapshot_sha256"]
 
 
 def test_statementless_proof_graph_is_one_unexecutable_unit_not_stage_failure() -> None:
@@ -334,7 +549,9 @@ def _select_report(unit, offers):
         "selected_offers": [
             {
                 "offer_uid": offer["offer_uid"],
-                "evidence_action_uids": [offer["evidence_actions"][0]["action_uid"]],
+                "evidence_action_uids": [
+                    value["action_uid"] for value in offer["evidence_actions"]
+                ],
                 "supporting_fact_refs": [],
                 "opposing_fact_refs": [],
                 "unknown_fact_refs": [],
@@ -390,7 +607,170 @@ def test_selected_action_path_rejects_duplicates_and_foreign_ids() -> None:
         )
 
 
-def test_only_complete_uncovered_resource_path_has_terminal_hunter_proof() -> None:
+def test_qualified_bounds_hunter_offer_requires_and_closes_all_four_clauses() -> None:
+    offer = (
+        AttackSurfacePlanner(risk_threshold=35)
+        .plan(
+            _bounds_semantic_map(),
+            proof_bundle_provider=HypothesisProofCatalog(
+                lambda record, event: _qualified_bounds_graph()
+            ).bundles,
+        )[0]
+        .offers[0]
+    )
+
+    obligation = offer["proof_obligation"]
+    assert obligation["subject_uid"] == "n"
+    assert obligation["open_clauses"] == []
+    assert {value["fact_kind"] for value in obligation["confirmation_clauses"]} == {
+        "source_controllability",
+        "source_sink_reachability",
+        "caller_contract",
+        "value_range",
+    }
+    assert len(offer["evidence_actions"]) == 4
+    partial = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=offer["proof_ir"],
+        obligation=obligation,
+        selected_action_uids=(offer["evidence_actions"][0]["action_uid"],),
+    )
+    assert partial.decision == "needs_review"
+    assert partial.promotion_certificate is None
+    complete = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=offer["proof_ir"],
+        obligation=obligation,
+        selected_action_uids=tuple(value["action_uid"] for value in offer["evidence_actions"]),
+    )
+    assert complete.decision == "confirmed"
+    assert complete.promotion_certificate is not None
+
+
+def test_guarded_bounds_hunter_event_stays_nonterminal() -> None:
+    offer = (
+        AttackSurfacePlanner(risk_threshold=35)
+        .plan(
+            _bounds_semantic_map(),
+            proof_bundle_provider=HypothesisProofCatalog(
+                lambda record, event: _qualified_bounds_graph(guarded=True)
+            ).bundles,
+        )[0]
+        .offers[0]
+    )
+    assert offer["proof_obligation"]["open_clauses"]
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=offer["proof_ir"],
+        obligation=offer["proof_obligation"],
+        selected_action_uids=tuple(value["action_uid"] for value in offer["evidence_actions"]),
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+def test_sole_qualified_bounds_option_on_another_line_stays_nonterminal() -> None:
+    offer = (
+        AttackSurfacePlanner(risk_threshold=35)
+        .plan(
+            _bounds_semantic_map(line=13),
+            proof_bundle_provider=HypothesisProofCatalog(
+                lambda record, event: _qualified_bounds_graph()
+            ).bundles,
+        )[0]
+        .offers[0]
+    )
+
+    assert offer["proof_obligation"]["open_clauses"]
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=offer["proof_ir"],
+        obligation=offer["proof_obligation"],
+        selected_action_uids=tuple(value["action_uid"] for value in offer["evidence_actions"]),
+    )
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [],
+        [
+            {
+                "event_uid": "SINK_EVENT",
+                "attributes": {"source_line": 14},
+            },
+            {
+                "event_uid": "SINK_EVENT",
+                "attributes": {"source_line": 14},
+            },
+        ],
+    ],
+)
+def test_qualified_option_with_missing_or_ambiguous_event_identity_fails_closed(
+    events: list[dict[str, object]],
+) -> None:
+    event = _bounds_semantic_map().functions[0].events[0]
+    option = {"sink_event_uid": "SINK_EVENT"}
+
+    assert (
+        HypothesisProofCatalog._options_for_event(
+            {"events": events},
+            [option],
+            event=event,
+            event_uid_key="sink_event_uid",
+        )
+        == []
+    )
+
+
+def test_qualified_option_uid_must_be_unique_in_option_domain() -> None:
+    graph = _qualified_bounds_graph()
+    summary = program_proof_ir_from_graph(
+        graph,
+        project_uid="PROJECT_TEST",
+        revision_uid="REV_TEST",
+    )["functions"][0]
+    sink = next(value for value in summary["events"] if value["attributes"]["source_line"] == 14)
+    event = _bounds_semantic_map().functions[0].events[0]
+    option = {"sink_event_uid": sink["event_uid"]}
+
+    assert (
+        HypothesisProofCatalog._options_for_event(
+            summary,
+            [option, dict(option)],
+            event=event,
+            event_uid_key="sink_event_uid",
+        )
+        == []
+    )
+
+
+def test_qualified_offer_carries_selected_frozen_statement_not_first_same_line_event() -> None:
+    graph = _qualified_bounds_graph()
+    sink_event = next(
+        value for value in graph.events if value.callee == "memcpy" and value.source_line == 14
+    )
+    unrelated = replace(
+        graph.events[0],
+        event_uid="EVENT_UNRELATED_SAME_LINE",
+        kind="branch_guard",
+        callee="",
+        source_line=14,
+    )
+    graph = replace(graph, events=(unrelated, *graph.events))
+
+    offer = (
+        AttackSurfacePlanner(risk_threshold=35)
+        .plan(
+            _bounds_semantic_map(),
+            proof_bundle_provider=HypothesisProofCatalog(lambda _record, _event: graph).bundles,
+        )[0]
+        .offers[0]
+    )
+
+    assert offer["location"]["statement_uid"] == sink_event.statement_uid
+    assert offer["location"]["start_line"] == 14
+
+
+def test_uncovered_resource_requires_compound_ownership_before_terminal_proof() -> None:
     planner = AttackSurfacePlanner(risk_threshold=35)
     unsafe = planner.plan(
         _resource_semantic_map(),
@@ -399,13 +779,13 @@ def test_only_complete_uncovered_resource_path_has_terminal_hunter_proof() -> No
         ).bundles,
     )[0].offers[0]
     assert unsafe["defect_family"] == "resource_leak"
-    assert unsafe["proof_obligation"]["open_clauses"] == []
+    assert len(unsafe["proof_obligation"]["open_clauses"]) == 1
     unsafe_result = ProofKernelEngine().evaluate_selected_actions(
         proof_ir=unsafe["proof_ir"],
         obligation=unsafe["proof_obligation"],
         selected_action_uids=(unsafe["evidence_actions"][0]["action_uid"],),
     )
-    assert unsafe_result.decision == "confirmed"
+    assert unsafe_result.decision == "needs_review"
 
     safe = (
         AttackSurfacePlanner(risk_threshold=35)
@@ -474,7 +854,7 @@ def test_resource_offer_binds_the_semantic_event_not_the_first_acquisition() -> 
             selected_action_uids=(second["evidence_actions"][0]["action_uid"],),
         )
         .decision
-        == "confirmed"
+        == "needs_review"
     )
 
     first = planner.plan(
@@ -698,13 +1078,23 @@ def test_resource_branch_cleanup_metamorphic(cleanup_on_both_paths: bool) -> Non
         selected_action_uids=(offer["evidence_actions"][0]["action_uid"],),
     )
 
-    assert result.decision == ("rejected_with_proof" if cleanup_on_both_paths else "confirmed")
+    assert result.decision == ("rejected_with_proof" if cleanup_on_both_paths else "needs_review")
 
 
 def test_hunt_report_rejects_free_parameters_and_cross_offer_actions() -> None:
     _, planned = _planned_bundle()
     report = _select_report(planned.audit_unit, planned.offers)
     report["selected_offers"][0]["parameters"] = {"path_exists": True}
+    valid, reason = validate_hunt_report(
+        report,
+        audit_unit=planned.audit_unit,
+        offers=planned.offers,
+    )
+    assert valid is False
+    assert reason == "hunt_report_selection_schema_mismatch"
+
+    report = _select_report(planned.audit_unit, planned.offers)
+    report["selected_offers"][0]["proof_obligation"] = dict(planned.offers[0]["proof_obligation"])
     valid, reason = validate_hunt_report(
         report,
         audit_unit=planned.audit_unit,
@@ -801,6 +1191,12 @@ def test_active_runtime_registers_live_unconfirmed_candidates_and_reuses_exact_c
     payload = live.records()[0].ticket.evidence["candidate_payload"]
     assert payload["function"] == "neutral_gateway"
     assert payload["location"]["function_uid"] == ("FUNC_NEUTRAL_GATEWAY")
+    assert payload["hypothesis_offer"]["offer_uid"] == payload["security_hypothesis"]["offer_uid"]
+    assert payload["proof_kernel_input"]["proof_ir"] == payload["hypothesis_offer"]["proof_ir"]
+    assert (
+        payload["proof_kernel_input"]["proof_obligation"]
+        == payload["hypothesis_offer"]["proof_obligation"]
+    )
     first_call_count = len(calls)
 
     second = HypothesisHunterRuntime(
@@ -823,6 +1219,84 @@ def test_active_runtime_registers_live_unconfirmed_candidates_and_reuses_exact_c
     assert identity["hypothesis_hunter_decision"]["active_product_effect"] == (
         "candidate_registration_only"
     )
+
+
+def test_live_entry_rebuilds_trimmed_hunter_input_from_offer_and_hypothesis(
+    tmp_path: Path,
+) -> None:
+    live = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
+    HypothesisHunterRuntime(
+        HypothesisArtifactStore(tmp_path / "hunter-rebuild"),
+        risk_threshold=35,
+        model_profile="test",
+    ).run(
+        _semantic_map(),
+        candidate_registrar=CandidateRegistrar(live),
+        proof_bundle_provider=HypothesisProofCatalog(lambda record, event: _graph()).bundles,
+        report_runner=lambda projection, unit, offers: _select_report(unit, offers),
+    )
+    issue = deepcopy(live.records()[0].ticket.evidence["candidate_payload"])
+    selected = list(issue["security_hypothesis"]["evidence_action_uids"])
+    issue["proof_kernel_input"]["selected_action_uids"] = []
+    issue["proof_kernel_terminal_authority_decision"] = {
+        "schema_version": "zscope.terminal-authority-decision.v4",
+        "terminal": True,
+        "disposition": "confirmed",
+    }
+    issue["terminal_transition_level"] = "V0"
+    runner = object.__new__(ValidationRunner)
+    runner._terminal_authority = TerminalAuthorityEvaluator()
+
+    assert runner._rebuild_live_proof_input(issue, {})
+    assert issue["proof_kernel_input"]["selected_action_uids"] == selected
+    assert issue["proof_kernel_input"]["proof_ir"] == issue["hypothesis_offer"]["proof_ir"]
+    assert issue["proof_kernel_input"]["proof_obligation"] == (
+        issue["hypothesis_offer"]["proof_obligation"]
+    )
+    assert issue["proof_kernel_input_origin"] == "hypothesis_hunter_offer_v4"
+    assert issue["proof_kernel_producer_binding_sha256"]
+    assert issue["proof_kernel_occurrence_binding_sha256"]
+    assert "terminal_transition_level" not in issue
+
+
+def test_live_entry_rejects_trimmed_hunter_hypothesis_and_clears_stale_authority(
+    tmp_path: Path,
+) -> None:
+    live = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
+    HypothesisHunterRuntime(
+        HypothesisArtifactStore(tmp_path / "hunter-tamper"),
+        risk_threshold=35,
+        model_profile="test",
+    ).run(
+        _semantic_map(),
+        candidate_registrar=CandidateRegistrar(live),
+        proof_bundle_provider=HypothesisProofCatalog(lambda record, event: _graph()).bundles,
+        report_runner=lambda projection, unit, offers: _select_report(unit, offers),
+    )
+    issue = deepcopy(live.records()[0].ticket.evidence["candidate_payload"])
+    issue["security_hypothesis"]["evidence_action_uids"] = []
+    issue["proof_kernel_promotion_certificate"] = {"disposition": "confirmed"}
+    issue["proof_kernel_terminal_authority_decision"] = {
+        "schema_version": "zscope.terminal-authority-decision.v4",
+        "terminal": True,
+        "disposition": "confirmed",
+    }
+    issue["terminal_authority_decision"] = dict(issue["proof_kernel_terminal_authority_decision"])
+    runner = object.__new__(ValidationRunner)
+    runner._terminal_authority = TerminalAuthorityEvaluator()
+
+    assert not runner._rebuild_live_proof_input(issue, {})
+    assert issue["proof_kernel_input_rebuild_status"] == "hunter_producer_binding_invalid"
+    assert issue["candidate_disposition"] == "needs_review"
+    for key in (
+        "proof_kernel_input",
+        "proof_kernel_frozen_state",
+        "proof_kernel_closure_evaluation",
+        "proof_kernel_promotion_certificate",
+        "proof_kernel_terminal_authority_decision",
+        "terminal_authority_decision",
+    ):
+        assert key not in issue
 
 
 def test_runtime_counterproof_is_audited_without_registering_a_candidate(tmp_path: Path) -> None:
@@ -852,7 +1326,13 @@ def test_runtime_collects_eight_concurrent_calls_and_isolates_one_failure(
     tmp_path: Path,
 ) -> None:
     semantic_map = _semantic_map_with_function_count(4)
-    catalog = HypothesisProofCatalog(lambda record, event: _graph())
+    catalog = HypothesisProofCatalog(
+        lambda record, event: replace(
+            _graph(),
+            function=record.function_name,
+            file=record.file_path,
+        )
+    )
     planned = AttackSurfacePlanner(risk_threshold=35).plan(
         semantic_map,
         proof_bundle_provider=catalog.bundles,
@@ -925,6 +1405,45 @@ def test_runtime_propagates_p6_hard_token_admission(tmp_path: Path) -> None:
         )
 
     assert raised.value.failure_class == "p6_token_hard_limit"
+    assert ledger.lifecycle_snapshot()["summary"]["total"] == 0
+
+
+def test_runtime_conserves_p6_soft_token_denial_as_zero_call_observation(
+    tmp_path: Path,
+) -> None:
+    catalog = HypothesisProofCatalog(lambda record, event: _graph())
+    ledger = CandidateLedger(project_id="PROJECT_NEUTRAL", revision="b" * 40)
+    calls = 0
+
+    def deny_before_provider(projection, unit, offers):
+        nonlocal calls
+        del projection, unit, offers
+        calls += 1
+        raise P6BalancedTokenAdmissionError("p6_token_soft_watermark")
+
+    result = HypothesisHunterRuntime(
+        HypothesisArtifactStore(tmp_path),
+        risk_threshold=35,
+        max_units=1,
+        max_concurrent_calls=8,
+    ).run(
+        _semantic_map(),
+        candidate_registrar=CandidateRegistrar(ledger),
+        proof_bundle_provider=catalog.bundles,
+        report_runner=deny_before_provider,
+    )
+
+    assert calls == 1
+    assert result["coverage_summary"]["llm_call_count"] == 0
+    assert result["coverage_summary"]["p6_soft_token_denied_count"] == 1
+    assert result["coverage_summary"]["coverage_status_counts"] == {
+        "complete": 0,
+        "partial": 1,
+        "failed": 0,
+    }
+    assert result["coverage_summary"]["reason_code_distribution"] == {
+        "p6_low_value_hunter_soft_watermark": 1
+    }
     assert ledger.lifecycle_snapshot()["summary"]["total"] == 0
 
 

@@ -14,6 +14,11 @@ from importlib import resources
 from typing import Any, Mapping
 
 from .decision_trace import DECISION_TRACE_SCHEMA_VERSION
+from .successor_runtime_review_status import (
+    SUCCESSOR_RUNTIME_REVIEW_MANIFEST,
+    SUCCESSOR_RUNTIME_REVIEW_STATUS,
+    current_successor_reviewed as _successor_runtime_reviewed,
+)
 
 
 RUNTIME_AUTHORITY_SCHEMA_VERSION = "zscope.runtime-authority-manifest.v1"
@@ -107,6 +112,15 @@ def _load_p5_release_status() -> dict[str, Any]:
 
 P5_RELEASE_MANIFEST = _load_p5_release_status()
 P5_RELEASE_STATUS = str(P5_RELEASE_MANIFEST.get("status") or "blocked")
+
+
+def current_successor_reviewed() -> bool:
+    """Return whether historical P5 and the current successor are both reviewed."""
+
+    return P5_RELEASE_STATUS == "complete" and _successor_runtime_reviewed()
+
+
+CURRENT_SUCCESSOR_REVIEWED = current_successor_reviewed()
 
 
 def build_runtime_authority_manifest(

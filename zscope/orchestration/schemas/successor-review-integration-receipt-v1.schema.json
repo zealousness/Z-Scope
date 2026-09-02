@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.local/schemas/successor-review-integration-receipt-v1.schema.json",
+  "title": "Deterministic current-successor review integration receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "candidate_git_sha", "candidate_git_tree",
+    "implementation_root_sha256", "successor_qualification_sha256",
+    "evidence_bundle_sha256", "projected_status_sha256",
+    "p6_qualification_file_sha256", "p6_qualification_content_sha256",
+    "p6_final_evidence_manifest_file_sha256", "review_set_sha256",
+    "p6_formal_benchmark", "p6_release_eligible", "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.successor-review-integration-receipt.v1"},
+    "candidate_git_sha": {"$ref": "#/$defs/gitObject"},
+    "candidate_git_tree": {"$ref": "#/$defs/gitObject"},
+    "implementation_root_sha256": {"$ref": "#/$defs/sha256"},
+    "successor_qualification_sha256": {"$ref": "#/$defs/sha256"},
+    "evidence_bundle_sha256": {"$ref": "#/$defs/sha256"},
+    "projected_status_sha256": {"$ref": "#/$defs/sha256"},
+    "p6_qualification_file_sha256": {"allOf": [{"$ref": "#/$defs/sha256"}], "description": "SHA-256 of the exact restored qualification.json file bytes."},
+    "p6_qualification_content_sha256": {"allOf": [{"$ref": "#/$defs/sha256"}], "description": "Validated semantic qualification_sha256 from qualification.json."},
+    "p6_final_evidence_manifest_file_sha256": {"allOf": [{"$ref": "#/$defs/sha256"}], "description": "SHA-256 of the exact validated final-evidence-manifest.json file bytes."},
+    "review_set_sha256": {"$ref": "#/$defs/sha256"},
+    "p6_formal_benchmark": {"const": false},
+    "p6_release_eligible": {"const": false},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitObject": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  }
+}

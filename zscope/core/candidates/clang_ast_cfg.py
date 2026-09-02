@@ -342,6 +342,7 @@ class ClangAstCfgCandidateGenerator(
         finding_kind: str = "clang_ast_cfg_candidate",
         audit_observation_reason: str = "",
         proofs: Optional[Dict[str, Any]] = None,
+        bind_unique_resource_acquisition: bool = False,
     ) -> None:
         should_emit, descriptor = resolve_emitter_descriptor(
             self.rule_policy,
@@ -379,6 +380,26 @@ class ClangAstCfgCandidateGenerator(
                 self._normalize_key(sink or rule),
             ]
         )
+        acquisition = (
+            self._unique_resource_acquisition_endpoint(
+                ast_cfg,
+                func_name=func_name,
+                file_path=file_path,
+            )
+            if bind_unique_resource_acquisition
+            else None
+        )
+        source_endpoint: Dict[str, Any] = {
+            "expression": source,
+            "file": file_path,
+            "line": self._line_from_text(source) or line.number,
+        }
+        if acquisition is not None:
+            # Keep the human-readable ``source`` on the issue for display, but
+            # bind the machine identity to the exact producer event.  The
+            # endpoint deliberately carries both ``api`` (for audit) and
+            # ``operation`` (part of CandidateEnvelope's frozen identity).
+            source_endpoint = dict(acquisition["source_endpoint"])
         evidence_pack = {
             "candidate_id": candidate_id,
             "candidate_source": "clang_ast_cfg",
@@ -389,11 +410,7 @@ class ClangAstCfgCandidateGenerator(
             "cwe": cwe,
             "skill": skill,
             "rule_confidence": confidence,
-            "source": {
-                "expression": source,
-                "file": file_path,
-                "line": self._line_from_text(source) or line.number,
-            },
+            "source": source_endpoint,
             "sink": {
                 "operation": sink,
                 "file": file_path,
@@ -415,6 +432,14 @@ class ClangAstCfgCandidateGenerator(
             "candidate_priority_group": priority_group,
             "validation_budget_class": validation_budget_class,
         }
+        if acquisition is not None:
+            evidence_pack.update(
+                {
+                    "resource_signature": acquisition["resource_signature"],
+                    "resource_identity": acquisition["resource_identity"],
+                    "source_endpoint": dict(acquisition["source_endpoint"]),
+                }
+            )
         if audit_observation_reason:
             evidence_pack["audit_observation_reason"] = audit_observation_reason
         reasoning = self._readable_reasoning(
@@ -466,8 +491,75 @@ class ClangAstCfgCandidateGenerator(
                 "proofs": dict(proofs or {}),
             }
         )
+        if acquisition is not None:
+            issues[-1].update(
+                {
+                    "resource_signature": acquisition["resource_signature"],
+                    "resource_identity": acquisition["resource_identity"],
+                    "source_endpoint": dict(acquisition["source_endpoint"]),
+                }
+            )
         if audit_observation_reason:
             issues[-1]["audit_observation_reason"] = audit_observation_reason
+
+    @classmethod
+    def _unique_resource_acquisition_endpoint(
+        cls,
+        ast_cfg: Dict[str, Any],
+        *,
+        func_name: str,
+        file_path: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return one exact producer-owned acquisition identity or fail closed.
+
+        Candidate prose is not an ownership identity.  Only a unique,
+        structured ``acquire`` event emitted by this checker may bind a live
+        resource obligation.  Missing, duplicate, or partially formed events
+        leave the candidate visible but intentionally unbound, so ProofKernel
+        cannot promote it from an ambiguous source.
+        """
+
+        raw_events = ast_cfg.get("events")
+        if not isinstance(raw_events, list):
+            return None
+        acquisitions = [
+            event
+            for event in raw_events
+            if isinstance(event, dict) and str(event.get("kind") or "").strip().lower() == "acquire"
+        ]
+        if len(acquisitions) != 1:
+            return None
+        event = acquisitions[0]
+        raw_resource = str(event.get("variable") or "").strip()
+        resource = cls._resource_expr(raw_resource)
+        # ``_resource_expr`` is also used for tolerant call-argument parsing.
+        # Identity binding is stricter: the full producer value must be the
+        # parsed access path, never merely start with one.
+        if not resource or re.sub(r"\s+", "", raw_resource) != resource:
+            return None
+        api = str(event.get("api") or "").strip()
+        if not cls._IDENT_RE.fullmatch(api):
+            return None
+        try:
+            source_line = int(event.get("line") or 0)
+        except (TypeError, ValueError):
+            return None
+        if source_line <= 0 or not str(func_name or "").strip() or not str(file_path or "").strip():
+            return None
+        endpoint = {
+            "kind": "resource_acquire",
+            "function": str(func_name).strip(),
+            "file": str(file_path).replace("\\", "/"),
+            "line": source_line,
+            "api": api,
+            "operation": api,
+            "resource": resource,
+        }
+        return {
+            "resource_signature": resource,
+            "resource_identity": resource,
+            "source_endpoint": endpoint,
+        }
 
     def _candidate_priority_group(self, defect_class: str, finding_kind: str = "") -> str:
         if str(finding_kind or "").lower() == "audit_observation":

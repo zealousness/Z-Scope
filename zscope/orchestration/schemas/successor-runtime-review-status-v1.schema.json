@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zscope.local/schemas/successor-runtime-review-status-v1.schema.json",
+  "title": "Current successor runtime independent-review status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "candidate_git_sha",
+    "candidate_git_tree",
+    "implementation_root_sha256",
+    "successor_qualification_sha256",
+    "p6_qualification_file_sha256",
+    "p6_qualification_content_sha256",
+    "p6_final_evidence_manifest_file_sha256",
+    "evidence_bundle_sha256",
+    "review_set_sha256",
+    "reviewer_roots",
+    "p6_formal_benchmark",
+    "p6_release_eligible",
+    "content_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "zscope.successor-runtime-review-status.v1"},
+    "status": {"enum": ["in_progress", "reviewed"]},
+    "candidate_git_sha": {"type": "string", "pattern": "^(?:|[0-9a-f]{40})$"},
+    "candidate_git_tree": {"type": "string", "pattern": "^(?:|[0-9a-f]{40})$"},
+    "implementation_root_sha256": {"$ref": "#/$defs/sha256"},
+    "successor_qualification_sha256": {"$ref": "#/$defs/sha256"},
+    "p6_qualification_file_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$", "description": "SHA-256 of the exact restored qualification.json file bytes."},
+    "p6_qualification_content_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$", "description": "Semantic qualification_sha256 validated from qualification.json content."},
+    "p6_final_evidence_manifest_file_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$", "description": "SHA-256 of the exact validated final-evidence-manifest.json file bytes."},
+    "evidence_bundle_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$"},
+    "review_set_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$"},
+    "reviewer_roots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product_architecture", "proof_security", "independent_benchmark"],
+      "properties": {
+        "product_architecture": {"$ref": "#/$defs/reviewerRoot"},
+        "proof_security": {"$ref": "#/$defs/reviewerRoot"},
+        "independent_benchmark": {"$ref": "#/$defs/reviewerRoot"}
+      }
+    },
+    "p6_formal_benchmark": {"const": false},
+    "p6_release_eligible": {"const": false},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "in_progress"}}},
+      "then": {
+        "properties": {
+          "candidate_git_sha": {"const": ""},
+          "candidate_git_tree": {"const": ""},
+          "p6_qualification_file_sha256": {"const": ""},
+          "p6_qualification_content_sha256": {"const": ""},
+          "p6_final_evidence_manifest_file_sha256": {"const": ""},
+          "evidence_bundle_sha256": {"const": ""},
+          "review_set_sha256": {"const": ""},
+          "reviewer_roots": {
+            "properties": {
+              "product_architecture": {"$ref": "#/$defs/emptyReviewerRoot"},
+              "proof_security": {"$ref": "#/$defs/emptyReviewerRoot"},
+              "independent_benchmark": {"$ref": "#/$defs/emptyReviewerRoot"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "reviewed"}}},
+      "then": {
+        "properties": {
+          "candidate_git_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "candidate_git_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "p6_qualification_file_sha256": {"$ref": "#/$defs/sha256"},
+          "p6_qualification_content_sha256": {"$ref": "#/$defs/sha256"},
+          "p6_final_evidence_manifest_file_sha256": {"$ref": "#/$defs/sha256"},
+          "evidence_bundle_sha256": {"$ref": "#/$defs/sha256"},
+          "review_set_sha256": {"$ref": "#/$defs/sha256"},
+          "reviewer_roots": {
+            "properties": {
+              "product_architecture": {"$ref": "#/$defs/reviewedReviewerRoot"},
+              "proof_security": {"$ref": "#/$defs/reviewedReviewerRoot"},
+              "independent_benchmark": {"$ref": "#/$defs/reviewedReviewerRoot"}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reviewerRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "artifact_sha256",
+        "packet_sha256",
+        "decision_sha256",
+        "raw_envelope_sha256",
+        "reviewer_identity_sha256",
+        "review_artifact_sha256",
+        "decision",
+        "blocker_count"
+      ],
+      "properties": {
+        "artifact_id": {"type": "string", "pattern": "^(?:|[1-9][0-9]*)$"},
+        "artifact_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$"},
+        "packet_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$"},
+        "decision_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$"},
+        "raw_envelope_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$"},
+        "reviewer_identity_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$"},
+        "review_artifact_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$"},
+        "decision": {"type": "string", "enum": ["", "approved"]},
+        "blocker_count": {
+          "oneOf": [
+            {"type": "null"},
+            {"const": 0}
+          ]
+        }
+      }
+    },
+    "emptyReviewerRoot": {
+      "allOf": [
+        {"$ref": "#/$defs/reviewerRoot"},
+        {
+          "properties": {
+            "artifact_id": {"const": ""},
+            "artifact_sha256": {"const": ""},
+            "packet_sha256": {"const": ""},
+            "decision_sha256": {"const": ""},
+            "raw_envelope_sha256": {"const": ""},
+            "reviewer_identity_sha256": {"const": ""},
+            "review_artifact_sha256": {"const": ""},
+            "decision": {"const": ""},
+            "blocker_count": {"const": null}
+          }
+        }
+      ]
+    },
+    "reviewedReviewerRoot": {
+      "allOf": [
+        {"$ref": "#/$defs/reviewerRoot"},
+        {
+          "properties": {
+            "artifact_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+            "artifact_sha256": {"$ref": "#/$defs/sha256"},
+            "packet_sha256": {"$ref": "#/$defs/sha256"},
+            "decision_sha256": {"$ref": "#/$defs/sha256"},
+            "raw_envelope_sha256": {"$ref": "#/$defs/sha256"},
+            "reviewer_identity_sha256": {"$ref": "#/$defs/sha256"},
+            "review_artifact_sha256": {"$ref": "#/$defs/sha256"},
+            "decision": {"const": "approved"},
+            "blocker_count": {"const": 0}
+          }
+        }
+      ]
+    }
+  },
+  "$comment": "Cross-role artifact/hash uniqueness, exact frozen reviewer identities, and the physical review-set relation are enforced by successor_runtime_review_status.py and successor_review_evidence.py."
+}

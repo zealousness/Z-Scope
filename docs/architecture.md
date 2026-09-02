@@ -131,6 +131,8 @@ flowchart TB
 
 P5 在不改变 P1 workflow step ID 的前提下完成运行时断代：SecuritySpecCompiler 取代旧语义模型，Hypothesis Hunter 取代旧主动发现，Proof Engine/Checker 取得唯一终态权威；`alert-verify` 只离线复验冻结 proof。旧报告、semantic snapshot 和 validation cache 因新 cache epoch 只能由 compat 或历史复核读取。主要模块为：
 
+历史 P5 release latch 只证明其原始 reviewed tree。当前实现另外计算排除可变 evidence JSON 的递归 package implementation root；scanner runtime、运行时 Prompt、rule、LLM adapter 或 Proof authority 的任一变化都会令 successor qualification 失效。确定性 successor qualification 可支持 non-release P6 验证，但报告 release gate 只有在 evidence-only current-successor status 精确绑定当前 candidate/tree、qualification/final evidence 与三份独立审核后才解除 `successor_review_not_current`；这不改变 P6 自身的非正式、不可发布属性。
+
 | 模块 | 主要文件 | 职责 |
 |------|----------|------|
 | Analysis | `zscope/core/analysis/analyzer.py` | 顶层协调器，装配 pipelines、agents、tools、workflow、budget、snapshot 与 agent policy |
@@ -299,7 +301,7 @@ C/C++ 确定性引擎对外保留 `RegexCandidateGenerator`、`ClangAstCfgCandid
 
 ### 5.4 Scan-wide token 计量
 
-public v2 提供 `fast / balanced / deep`，档位决定启用的分析阶段、规划风险阈值和 V3 调查范围。普通产品运行时没有 scan-wide token 硬上限，也没有 `scan.max_llm_tokens`；2M/12M/30M 等数值通常只属于 Range Benchmark 运行后成本度量。唯一的请求准入例外是 P6 cold balanced：为保证选定 attempt 严格低于 12,000,000 tokens，P6 调度器在 10,500,000 软水位停止启动低价值线索，并在每批前以 `used + reserved_inflight <= 11,999,999` 做保守准入。该规则不改变产品 CLI 的普通运行语义。
+public v2 提供 `fast / balanced / deep`，档位决定启用的分析阶段、规划风险阈值和 V3 调查范围。普通产品运行时没有 scan-wide token 硬上限，也没有 `scan.max_llm_tokens`；2M/12M/30M 等数值通常只属于 Range Benchmark 运行后成本度量。唯一的请求准入例外是 P6 cold balanced：为保证选定 attempt 严格低于 12,000,000 tokens，P6 调度器在 10,500,000 软水位停止启动低价值线索，并在每批前以 `used + reserved_inflight <= 11,999,999` 做保守准入。prompt 预留使用完整 request JSON 的 UTF-8 byte 上界，加固定 chat-template 基础和逐 message allowance；不能再用 chars/token 平均值作为正式准入依据。该规则不改变产品 CLI 的普通运行语义。
 
 `ScanTokenUsageLedger` 在每次真实 HTTP attempt 前登记安全估算，仅用于连接中断且 provider usage 缺失时保守计量。provider 返回后按原始 prompt+completion 结算，cached/reasoning 只作子项统计；重试、repair 和 fallback 分别计量。普通扫描下它不缩短 completion allowance、拒绝新调用或取消在途请求；只有显式启用的 P6 cold balanced 控制面会按上述固定软/硬水位在 provider 调用前 fail closed，且不会取消已在途请求。
 

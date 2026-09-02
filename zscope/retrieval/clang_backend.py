@@ -866,12 +866,14 @@ class ClangBackend(CodeBackend):
         return []
 
     def find_function_pointers(self, func_name: str) -> List[Dict[str, Any]]:
-        """通过 KnowledgeDB call_edges 中 call_type='indirect' 查找函数指针。"""
+        """Find exact indirect calls and typed callback-registration edges."""
         if not self._db:
             return []
         rows = self._db._conn.execute(
             "SELECT DISTINCT caller_name, caller_file, call_line "
-            "FROM call_edges WHERE callee_name = ? AND call_type = 'indirect' LIMIT 20",
+            "FROM call_edges WHERE callee_name = ? "
+            "AND call_type IN ('indirect', 'callback') "
+            "ORDER BY caller_file, call_line, caller_name LIMIT 20",
             (func_name,),
         ).fetchall()
         return [

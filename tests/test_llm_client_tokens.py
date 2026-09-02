@@ -1,6 +1,69 @@
 import json
 
-from zscope.framework.llm_client import LLMClient
+import pytest
+
+from zscope.framework.llm_client import LLMClient, ProviderFailureError
+
+
+def test_request_prompt_reservation_is_a_conservative_serialized_byte_bound() -> None:
+    messages = [
+        {"role": "system", "content": "严格检查"},
+        {
+            "role": "user",
+            "content": "int main(void) { return 0; }",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "inspect",
+                        "arguments": json.dumps({"path": "src/入口.c"}, ensure_ascii=False),
+                    }
+                }
+            ],
+        },
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "inspect",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            },
+        }
+    ]
+    response_format = {"type": "json_object"}
+    payload = {
+        "model": "deepseek-v4-flash",
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": {"type": "function", "function": {"name": "inspect"}},
+        "parallel_tool_calls": False,
+        "response_format": response_format,
+        "temperature": 0.1,
+        "max_tokens": 8192,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+    reserved = LLMClient._estimate_request_prompt_tokens(
+        messages,
+        tools=tools,
+        response_format=response_format,
+        request_payload=payload,
+    )
+
+    # Frozen accounting contract: 65,536 base plus 256 per message/tool item.
+    # The exact request includes tool_choice and streaming fields, so a future
+    # return to content-only chars/token heuristics fails at this seam.
+    assert reserved >= len(serialized) + 65_536 + 256 * (len(messages) + len(tools))
 
 
 def test_run_conversation_with_tools_accumulates_api_tokens(monkeypatch) -> None:
@@ -69,6 +132,69 @@ def test_run_conversation_with_tools_accumulates_api_tokens(monkeypatch) -> None
     assert result["cumulative_completion_tokens"] == 80
     assert result["cumulative_total_tokens"] == 380
     assert result["context_tokens"] < result["cumulative_total_tokens"]
+
+
+def test_strict_multiple_action_batch_fails_before_executing_any_sibling(
+    monkeypatch,
+    caplog,
+) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+        require_exact_response_model=True,
+    )
+    executed = []
+    canary = "PRIVATE_STRICT_SIBLING_MUST_NOT_EXECUTE"
+
+    monkeypatch.setattr(
+        client,
+        "chat_completion",
+        lambda *_args, **_kwargs: {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_one",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": json.dumps({"name": "one"}),
+                                },
+                            },
+                            {
+                                "id": canary,
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": json.dumps({"name": "two"}),
+                                },
+                            },
+                        ],
+                    },
+                }
+            ],
+            "model": "unit-model",
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+        },
+    )
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.run_conversation_with_tools(
+            messages=[{"role": "user", "content": "start"}],
+            tools_schema=[{"type": "function", "function": {"name": "lookup", "parameters": {}}}],
+            tool_executor=lambda name, args: executed.append((name, args)) or {"success": True},
+            max_iterations=2,
+        )
+
+    assert executed == []
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    assert str(raised.value) == ProviderFailureError.MESSAGE
+    assert canary not in caplog.text
 
 
 def test_programmatic_terminal_stops_after_current_tool_round(monkeypatch) -> None:
@@ -330,19 +456,92 @@ def test_invalid_terminal_tool_repairs_in_same_conversation(monkeypatch) -> None
         if message.get("role") == "tool" and message.get("terminal_tool_result")
     ]
     assert len(terminal_errors) == 1
-    assert "missing type" in terminal_errors[0]["content"]
+    assert "terminal_tool_payload_invalid" in terminal_errors[0]["content"]
     assert result["terminal_tool_valid"] is True
     assert result["terminal_tool_call_count"] == 2
     assert result["tool_call_count"] == 0
 
 
-def test_identical_invalid_terminal_calls_trigger_guard_on_third_call(monkeypatch) -> None:
+def test_terminal_tool_rejects_duplicate_argument_keys_without_leaking_body(
+    monkeypatch,
+    caplog,
+) -> None:
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid",
         models=["unit-model"],
     )
     calls = []
+    canary = "PRIVATE_TERMINAL_ARGUMENT_MUST_NOT_LEAK"
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append(list(messages))
+        arguments = (
+            '{"type":"result","private":"' + canary + '","private":"duplicate"}'
+            if len(calls) == 1
+            else json.dumps({"type": "result", "value": 7})
+        )
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"call_{len(calls)}",
+                                "type": "function",
+                                "function": {
+                                    "name": "emit_result",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[
+            {"type": "function", "function": {"name": "emit_result", "parameters": {}}},
+        ],
+        tool_executor=lambda name, args: {"success": True},
+        terminal_tool_name="emit_result",
+        terminal_tool_handler=lambda payload: {
+            "valid": payload.get("type") == "result",
+            "payload": payload,
+        },
+        terminal_tool_required=True,
+        max_iterations=3,
+    )
+
+    first_terminal_result = next(
+        message
+        for message in calls[1]
+        if message.get("role") == "tool" and message.get("terminal_tool_result")
+    )
+    assert "terminal_tool_arguments_invalid" in first_terminal_result["content"]
+    assert result["terminal_tool_valid"] is True
+    assert canary not in json.dumps(result)
+    assert canary not in caplog.text
+
+
+def test_identical_invalid_terminal_calls_trigger_guard_on_third_call(
+    monkeypatch,
+    caplog,
+) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+    canary = "PRIVATE_PROVIDER_TOOL_CALL_ID"
 
     def fake_chat_completion(messages, **kwargs):
         calls.append(list(messages))
@@ -355,7 +554,7 @@ def test_identical_invalid_terminal_calls_trigger_guard_on_third_call(monkeypatc
                         "content": "",
                         "tool_calls": [
                             {
-                                "id": f"call_{len(calls)}",
+                                "id": f"{canary}_{len(calls)}",
                                 "type": "function",
                                 "function": {
                                     "name": "emit_result",
@@ -379,7 +578,7 @@ def test_identical_invalid_terminal_calls_trigger_guard_on_third_call(monkeypatc
         terminal_tool_name="emit_result",
         terminal_tool_handler=lambda payload: {
             "valid": False,
-            "error": "invalid payload",
+            "error": "PRIVATE_HANDLER_BODY",
         },
         terminal_tool_required=True,
         max_iterations=10,
@@ -390,7 +589,23 @@ def test_identical_invalid_terminal_calls_trigger_guard_on_third_call(monkeypatc
     assert result["terminal_loop_guard_reason"] == "identical_invalid_terminal_call_limit"
     assert result["terminal_invalid_call_count"] == 3
     assert result["terminal_tool_call_count"] == 3
-    assert result["repeated_terminal_tool_call"]["repeat_count"] == 3
+    diagnostic = result["repeated_terminal_tool_call"]
+    assert diagnostic["repeat_count"] == 3
+    assert diagnostic["error"] == "terminal_tool_payload_invalid"
+    assert set(diagnostic["first_seen"]) == {
+        "iteration",
+        "arguments_sha256",
+        "error",
+    }
+    assert set(diagnostic["latest_seen"]) == {
+        "iteration",
+        "arguments_sha256",
+        "error",
+    }
+    assert canary not in json.dumps(diagnostic)
+    assert "PRIVATE_HANDLER_BODY" not in json.dumps(diagnostic)
+    assert canary not in caplog.text
+    assert "PRIVATE_HANDLER_BODY" not in caplog.text
     assert result["truncated"] is False
     assert "loop_guard_triggered" not in result
 
@@ -576,7 +791,75 @@ def test_xml_terminal_invoke_uses_terminal_handler(monkeypatch) -> None:
     assert result["terminal_tool_call_count"] == 1
 
 
-def test_mixed_terminal_and_regular_calls_reject_terminal_then_continue(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "xml_content",
+    [
+        '<invoke name="emit_result"><parameter name="value">7</parameter></invoke>',
+        (
+            '<invoke name="lookup"><parameter name="name">one</parameter></invoke>'
+            '<invoke name="lookup"><parameter name="name">two</parameter></invoke>'
+        ),
+    ],
+)
+def test_strict_provider_rejects_xml_invokes_before_any_execution(
+    monkeypatch,
+    caplog,
+    xml_content: str,
+) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+        require_exact_response_model=True,
+    )
+    executed = []
+    terminal_payloads = []
+    canary = "PRIVATE_XML_INVOKE_MUST_NOT_EXECUTE"
+
+    monkeypatch.setattr(
+        client,
+        "chat_completion",
+        lambda *_args, **_kwargs: {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": xml_content.replace("one", canary),
+                    },
+                }
+            ],
+            "model": "unit-model",
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+        },
+    )
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.run_conversation_with_tools(
+            messages=[{"role": "user", "content": "start"}],
+            tools_schema=[
+                {"type": "function", "function": {"name": "lookup", "parameters": {}}},
+                {
+                    "type": "function",
+                    "function": {"name": "emit_result", "parameters": {}},
+                },
+            ],
+            tool_executor=lambda name, args: executed.append((name, args)) or {"success": True},
+            terminal_tool_name="emit_result",
+            terminal_tool_handler=lambda payload: terminal_payloads.append(payload)
+            or {"valid": True, "payload": payload},
+            terminal_tool_required=True,
+            max_iterations=3,
+        )
+
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    assert str(raised.value) == ProviderFailureError.MESSAGE
+    assert executed == []
+    assert terminal_payloads == []
+    assert canary not in caplog.text
+
+
+def test_mixed_terminal_and_regular_calls_reject_entire_batch(monkeypatch) -> None:
     client = LLMClient(api_key="test", base_url="http://example.invalid", models=["unit-model"])
     calls = []
     executed = []
@@ -631,9 +914,9 @@ def test_mixed_terminal_and_regular_calls_reject_terminal_then_continue(monkeypa
         max_iterations=3,
     )
 
-    assert executed == ["lookup"]
+    assert executed == []
     assert result["terminal_tool_valid"] is True
-    assert result["tool_call_count"] == 1
+    assert result["tool_call_count"] == 0
     assert any(
         message.get("terminal_tool_result") for message in calls[1] if message.get("role") == "tool"
     )

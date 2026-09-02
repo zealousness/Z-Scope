@@ -16,7 +16,19 @@ from collections import OrderedDict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 from ..common.utils import is_likely_function_call_identifier
 from .knowledge_db import KnowledgeDB
@@ -1255,16 +1267,8 @@ class ClangExtractor:
             if not (collection_complete and defer_call_queries and call_work):
                 self.close_document(file_path)
 
-        local_function_names: set[str] = set()
-        if file_path.suffix.lower() == ".c":
-            counts: Dict[str, int] = {}
-            for row in func_rows:
-                if bool(row[7]):
-                    continue
-                local_name = str(row[0]).split("::")[-1]
-                counts[local_name] = counts.get(local_name, 0) + 1
-            local_function_names = {name for name, count in counts.items() if count == 1}
-        call_work = [(*work, local_function_names) for work in call_work]
+        local_function_targets = self._direct_callback_function_targets(file_path, func_rows)
+        call_work = [(*work, local_function_targets) for work in call_work]
         if not defer_call_queries:
             for work in call_work:
                 call_rows.extend(self._extract_deferred_call_edges(work))
@@ -1282,6 +1286,49 @@ class ClangExtractor:
             facts["_call_work"] = call_work
             facts["_deferred_document_path"] = file_path
         return facts
+
+    @staticmethod
+    def _direct_callback_function_names(
+        file_path: Path,
+        func_rows: Sequence[Tuple[Any, ...]],
+    ) -> set[str]:
+        return set(ClangExtractor._direct_callback_function_targets(file_path, func_rows))
+
+    @staticmethod
+    def _direct_callback_function_targets(
+        file_path: Path,
+        func_rows: Sequence[Tuple[Any, ...]],
+    ) -> Dict[str, str]:
+        """Map an unambiguous AST spelling to its exact indexed definition.
+
+        A direct C++ static method is represented by clangd as a simple
+        ``DeclRef`` while the index stores its qualified name.  Resolve it only
+        when exactly one non-declaration definition in the TU has that tail.
+        Overloads, a free function/method collision, duplicate definitions and
+        methods with the same tail all fail closed.
+        """
+
+        if Path(file_path).suffix.lower() not in {".c", ".cc", ".cpp", ".cxx", ".c++"}:
+            return {}
+        candidates: Dict[str, List[str]] = {}
+        for row in func_rows:
+            if len(row) < 8 or bool(row[7]):
+                continue
+            stored_name = str(row[0] or "")
+            if not stored_name:
+                continue
+            simple_name = stored_name.rsplit("::", 1)[-1]
+            candidates.setdefault(simple_name, []).append(stored_name)
+        result = {
+            simple_name: values[0] for simple_name, values in candidates.items() if len(values) == 1
+        }
+        # Preserve the existence of a local governed thread API even when
+        # overloads make its exact target ambiguous.  The callback extractor
+        # consumes key presence as a fail-closed collision marker and never
+        # emits this empty sentinel as a call target.
+        if "pthread_create" in candidates and "pthread_create" not in result:
+            result["pthread_create"] = ""
+        return result
 
     @staticmethod
     def _publish_tu_facts(
@@ -4628,24 +4675,174 @@ class ClangExtractor:
         end_line: int,
         call_rows: List[Tuple[Any, ...]],
         sym: Optional[Dict[str, Any]] = None,
-        known_local_functions: Optional[set[str]] = None,
+        known_local_functions: Optional[Union[Mapping[str, str], set[str]]] = None,
     ):
         """Extract call edges, preferring clangd's AST-backed call hierarchy."""
         hierarchy_count = self._extract_call_edges_from_call_hierarchy(
             file_path, caller_name, caller_file, start_line, call_rows, sym
         )
-        if hierarchy_count is not None:
-            return
-
-        self._extract_call_edges_by_regex(
+        if hierarchy_count is None:
+            self._extract_call_edges_by_regex(
+                file_path,
+                caller_name,
+                caller_file,
+                start_line,
+                end_line,
+                call_rows,
+                known_local_functions=known_local_functions,
+            )
+        self._extract_typed_thread_callback_edges(
             file_path,
             caller_name,
             caller_file,
             start_line,
             end_line,
             call_rows,
+            sym=sym,
             known_local_functions=known_local_functions,
         )
+
+    def _extract_typed_thread_callback_edges(
+        self,
+        file_path: Path,
+        caller_name: str,
+        caller_file: str,
+        start_line: int,
+        end_line: int,
+        call_rows: List[Tuple[Any, ...]],
+        *,
+        sym: Optional[Dict[str, Any]],
+        known_local_functions: Optional[Union[Mapping[str, str], set[str]]],
+    ) -> int:
+        """Index exact ``pthread_create`` direct callback symbols.
+
+        A callback argument is not an ordinary outgoing call, so clangd call
+        hierarchy does not reliably expose the reverse worker-to-creator edge.
+        Source text is used only as a cheap query gate.  The edge itself is
+        authorized exclusively by clangd's typed AST: the callee must be the
+        direct FunctionDecl ``pthread_create`` and argument 3 must be an exact
+        FunctionToPointerDecay of one unique local FunctionDecl.  Casts,
+        variables, aliases, address expressions and unknown symbols fail
+        closed.
+        """
+
+        if not sym or not known_local_functions:
+            return 0
+        if any(
+            str(name or "").rsplit("::", 1)[-1] == "pthread_create"
+            for name in known_local_functions
+        ):
+            # clangd's typed AST proves only that the spelling resolves to a
+            # FunctionDecl; it does not by itself prove POSIX provenance.  A
+            # translation-unit definition with the governed name shadows the
+            # external API contract and must not authorize a thread edge.
+            return 0
+        lines = self._read_source_lines(file_path)
+        if lines is None:
+            return 0
+        body = "".join(lines[max(0, start_line - 1) : max(start_line - 1, end_line)])
+        if not re.search(r"\bpthread_create\s*\(", self._mask_c_comments_and_literals(body)):
+            return 0
+        range_info = sym.get("range")
+        if not isinstance(range_info, dict):
+            location = sym.get("location")
+            range_info = location.get("range") if isinstance(location, dict) else None
+        if not isinstance(range_info, dict):
+            return 0
+        try:
+            ast = self.get_ast(file_path, range_info)
+        except Exception as exc:
+            logger.debug("Failed to query typed callback AST in %s: %s", caller_name, exc)
+            return 0
+        if not isinstance(ast, dict):
+            return 0
+
+        added = 0
+        seen: set[tuple[str, int]] = set()
+        for node in self._clangd_ast_nodes(ast):
+            if node.get("kind") != "Call" or node.get("role") != "expression":
+                continue
+            children = [value for value in node.get("children") or [] if isinstance(value, dict)]
+            if len(children) < 4:
+                continue
+            if self._clangd_direct_function_symbol(children[0]) != "pthread_create":
+                continue
+            callback_spelling = self._clangd_direct_function_symbol(children[3])
+            if isinstance(known_local_functions, Mapping):
+                callback = str(known_local_functions.get(callback_spelling) or "")
+            else:
+                callback = callback_spelling if callback_spelling in known_local_functions else ""
+            if not callback:
+                continue
+            raw_range = node.get("range")
+            raw_range = raw_range if isinstance(raw_range, dict) else {}
+            raw_start = raw_range.get("start")
+            raw_start = raw_start if isinstance(raw_start, dict) else {}
+            raw_line = raw_start.get("line")
+            if raw_line is None:
+                continue
+            try:
+                call_line = int(raw_line) + 1
+            except (TypeError, ValueError):
+                continue
+            if call_line < start_line or call_line > end_line:
+                continue
+            key = (callback, call_line)
+            if key in seen:
+                continue
+            seen.add(key)
+            call_rows.append(
+                (
+                    caller_name,
+                    caller_file,
+                    callback,
+                    caller_file,
+                    call_line,
+                    "callback",
+                    "thread_entry_function",
+                    "",
+                )
+            )
+            added += 1
+        return added
+
+    @classmethod
+    def _clangd_ast_nodes(cls, node: Any) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        if not isinstance(node, dict):
+            return result
+        result.append(node)
+        for child in node.get("children") or []:
+            result.extend(cls._clangd_ast_nodes(child))
+        return result
+
+    @staticmethod
+    def _clangd_direct_function_symbol(node: Mapping[str, Any]) -> str:
+        if (
+            node.get("kind") != "ImplicitCast"
+            or node.get("role") != "expression"
+            or node.get("detail") != "FunctionToPointerDecay"
+        ):
+            return ""
+        children = [value for value in node.get("children") or [] if isinstance(value, dict)]
+        expression_children = [value for value in children if value.get("role") == "expression"]
+        if len(expression_children) != 1:
+            return ""
+        ref = expression_children[0]
+        name = str(ref.get("detail") or "")
+        arcana = str(ref.get("arcana") or "")
+        if (
+            not name
+            or ref.get("kind") != "DeclRef"
+            or ref.get("role") != "expression"
+            or re.search(
+                rf"\b(?:Function|CXXMethod)\s+0x[0-9A-Fa-f]+\s+" rf"'{re.escape(name)}'(?:\s|$)",
+                arcana,
+            )
+            is None
+        ):
+            return ""
+        return name
 
     def _extract_deferred_call_edges(
         self,
@@ -4671,7 +4868,7 @@ class ClangExtractor:
                 int(end_line),
                 rows,
                 cast(Optional[Dict[str, Any]], sym),
-                cast(set[str], known_local_functions),
+                cast(Union[Mapping[str, str], set[str]], known_local_functions),
             )
         except Exception as exc:
             logger.debug("Failed to extract deferred calls in %s: %s", caller_name, exc)
@@ -4741,7 +4938,7 @@ class ClangExtractor:
         end_line: int,
         call_rows: List[Tuple[Any, ...]],
         *,
-        known_local_functions: Optional[set[str]] = None,
+        known_local_functions: Optional[Union[Mapping[str, str], set[str]]] = None,
     ):
         """Fallback call extraction for clangd versions without call hierarchy."""
         try:
@@ -4755,7 +4952,7 @@ class ClangExtractor:
                 file_path,
                 masked_source,
             )
-            local_functions = known_local_functions or set()
+            local_functions = set(known_local_functions or ())
 
             call_pattern = re.compile(r"\b([a-zA-Z_]\w*)\s*\(")
             seen: set[tuple[str, int]] = set()

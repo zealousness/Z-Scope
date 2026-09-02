@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.p2_proof_corpus import build_case
+import zscope.orchestration.candidates as candidate_ledger_module
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.decision_facts import (
     DECISION_CONTEXT_V33,
@@ -95,6 +96,19 @@ def _confirmed_v4_issue(cluster_uid: str) -> dict:
     return _terminal_v4_issue(cluster_uid)
 
 
+def _trust_test_producer_occurrence_binding(monkeypatch, issue: dict) -> None:
+    issue["proof_kernel_producer_binding_sha256"] = "a" * 64
+    issue["proof_kernel_occurrence_binding_sha256"] = "b" * 64
+    monkeypatch.setattr(
+        candidate_ledger_module,
+        "_has_exact_v4_producer_occurrence_binding",
+        lambda candidate: (
+            candidate.get("proof_kernel_producer_binding_sha256") == "a" * 64
+            and candidate.get("proof_kernel_occurrence_binding_sha256") == "b" * 64
+        ),
+    )
+
+
 def test_investigator_report_cannot_confirm_candidate() -> None:
     ledger = CandidateLedger()
     record, _ = ledger.add(
@@ -149,7 +163,7 @@ def test_main_validation_cannot_backfill_proof_terminal_without_exact_v4_authori
     )
 
 
-def test_main_validation_accepts_exact_v4_terminal_authority() -> None:
+def test_main_validation_accepts_exact_v4_terminal_authority(monkeypatch) -> None:
     ledger = CandidateLedger()
     ticket = _ticket(negative=["a guard may bound len"])
     ticket.evidence["validation_cluster_uid"] = "VAL_exact_v4"
@@ -159,6 +173,7 @@ def test_main_validation_accepts_exact_v4_terminal_authority() -> None:
         call_path=["entry", "sink"],
     )
     issue = _confirmed_v4_issue(record.validation_cluster_uid)
+    _trust_test_producer_occurrence_binding(monkeypatch, issue)
 
     assert (
         ledger.mark_issue_terminal(
@@ -172,7 +187,7 @@ def test_main_validation_accepts_exact_v4_terminal_authority() -> None:
     assert record.disposition == "confirmed"
 
 
-def test_main_validation_accepts_exact_v4_counterproof_terminal_authority() -> None:
+def test_main_validation_accepts_exact_v4_counterproof_terminal_authority(monkeypatch) -> None:
     ledger = CandidateLedger()
     ticket = _ticket(negative=["the path may be unreachable"])
     ticket.evidence["validation_cluster_uid"] = "VAL_exact_v4_counterproof"
@@ -185,6 +200,7 @@ def test_main_validation_accepts_exact_v4_counterproof_terminal_authority() -> N
         record.validation_cluster_uid,
         disposition="rejected_with_proof",
     )
+    _trust_test_producer_occurrence_binding(monkeypatch, issue)
 
     assert (
         ledger.mark_issue_terminal(
@@ -199,7 +215,7 @@ def test_main_validation_accepts_exact_v4_counterproof_terminal_authority() -> N
 
 
 @pytest.mark.parametrize("failure_kind", ["legacy", "stale", "cross_obligation", "forged"])
-def test_proof_terminal_lineage_mismatch_fails_closed(failure_kind: str) -> None:
+def test_proof_terminal_lineage_mismatch_fails_closed(monkeypatch, failure_kind: str) -> None:
     ledger = CandidateLedger()
     ticket = _ticket()
     ticket.evidence["validation_cluster_uid"] = "VAL_current"
@@ -228,6 +244,7 @@ def test_proof_terminal_lineage_mismatch_fails_closed(failure_kind: str) -> None
             **issue["proof_kernel_promotion_certificate"],
             "subject_uid": "forged-subject",
         }
+    _trust_test_producer_occurrence_binding(monkeypatch, issue)
 
     assert (
         ledger.mark_issue_terminal(
@@ -239,6 +256,33 @@ def test_proof_terminal_lineage_mismatch_fails_closed(failure_kind: str) -> None
     )
     assert record.disposition == "needs_review"
     assert record.terminal_issue["terminal_authority_decision"]["disposition"] == "needs_review"
+
+
+def test_self_sealed_v4_terminal_without_producer_occurrence_binding_fails_closed() -> None:
+    ledger = CandidateLedger()
+    ticket = _ticket()
+    ticket.evidence["validation_cluster_uid"] = "VAL_self_sealed_unbound"
+    record, _ = ledger.add(
+        ticket,
+        source="local_rule:entry",
+        call_path=["entry", "sink"],
+    )
+    issue = _confirmed_v4_issue(record.validation_cluster_uid)
+
+    assert (
+        ledger.mark_issue_terminal(
+            issue,
+            disposition="confirmed",
+            status="validated",
+        )
+        == 1
+    )
+    assert record.disposition == "needs_review"
+    assert record.terminal_issue["candidate_terminal_authority_failure_class"] == (
+        "terminal_authority_binding_invalid"
+    )
+    assert "proof_kernel_producer_binding_sha256" not in record.terminal_issue
+    assert "proof_kernel_occurrence_binding_sha256" not in record.terminal_issue
 
 
 def test_investigator_completion_cannot_close_validation_obligation() -> None:
@@ -484,7 +528,7 @@ def test_frozen_candidate_ledger_rejects_late_discovery() -> None:
         ledger.add(_ticket(), source="late")
 
 
-def test_validation_group_outcome_is_the_only_reportable_terminal_projection() -> None:
+def test_validation_group_outcome_is_the_only_reportable_terminal_projection(monkeypatch) -> None:
     ledger = CandidateLedger(project_id="demo", revision="rev")
     first, _ = ledger.add(
         _ticket(),
@@ -504,6 +548,7 @@ def test_validation_group_outcome_is_the_only_reportable_terminal_projection() -
     # A queued group is diagnostic state, not an actionable review row.
     assert ledger.lifecycle_snapshot()["outcomes"] == []
     confirmed = _confirmed_v4_issue(first.validation_cluster_uid)
+    _trust_test_producer_occurrence_binding(monkeypatch, confirmed)
     confirmed["description"] = "confirmed"
     assert ledger.mark_issue_terminal(confirmed, disposition="confirmed", status="validated") == 1
 

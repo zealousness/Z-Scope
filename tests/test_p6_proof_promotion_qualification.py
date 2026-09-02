@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
+import sys
+from pathlib import Path, PurePath
 
+import pytest
+import zscope
+
+from scripts.qualify_p6_proof_promotion import main as qualify_main
 from scripts.qualify_p6_proof_promotion import qualify
 from zscope.core.validation.proof_kernel.canonical import content_sha256
 from zscope.orchestration import proof_promotion_qualification as qualification
+from zscope.orchestration.successor_runtime_review_status import (
+    validate_successor_runtime_review_status,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +37,37 @@ def test_successor_replay_matches_packaged_local_candidate() -> None:
     assert packaged["network"] is False
     assert packaged["llm_calls"] == 0
     assert packaged["case_counts"]["safe_false_confirmation_count"] == 0
+
+
+def test_generator_atomically_reseals_qualification_and_in_progress_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    qualification_path = tmp_path / "qualification.json"
+    status_path = tmp_path / "status.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "qualify_p6_proof_promotion.py",
+            "--output",
+            str(qualification_path),
+            "--status-output",
+            str(status_path),
+        ],
+    )
+
+    assert qualify_main() == 0
+    generated = json.loads(qualification_path.read_text(encoding="utf-8"))
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert generated == qualify()
+    assert validate_successor_runtime_review_status(
+        status,
+        expected_implementation_root_sha256=generated["implementation_root_sha256"],
+        expected_successor_qualification_sha256=generated["content_sha256"],
+    ) == (True, "valid")
+    assert status["status"] == "in_progress"
+    assert status["candidate_git_sha"] == ""
+    assert status["review_set_sha256"] == ""
 
 
 def test_successor_artifact_conforms_to_strict_schema() -> None:
@@ -57,15 +96,29 @@ def test_successor_binds_every_live_promotion_and_view_surface() -> None:
         "zscope/cli/cli.py",
         "zscope/cli/explain.py",
         "zscope/core/analysis/analyzer.py",
+        "zscope/core/candidates/clang_ast_cfg.py",
+        "zscope/core/candidates/cpp_domains/concurrency_shared_state.py",
+        "zscope/core/candidates/cpp_domains/resource_lifecycle.py",
+        "zscope/core/candidates/regex.py",
         "zscope/core/validation/evidence_completion.py",
         "zscope/core/validation/runner.py",
+        "zscope/orchestration/candidate_envelope.py",
         "zscope/orchestration/candidates.py",
         "zscope/orchestration/parallel_analyzer.py",
+        "zscope/retrieval/clang_backend.py",
+        "zscope/retrieval/clang_extractor.py",
+        "zscope/retrieval/knowledge_db.py",
+        "zscope/benchmarking/runner.py",
+        "zscope/framework/llm_client.py",
+        "zscope/orchestration/successor_runtime_review_status.py",
         "zscope/reporting/assembler.py",
         "zscope/reporting/finding_roots.py",
         "zscope/reporting/report.py",
         "zscope/reporting/schema.py",
         "zscope/reporting/views.py",
+        "zscope/semantics/security_map.py",
+        "zscope/rules/builtin_catalog.yaml",
+        "zscope/rules/qualification_registry.yaml",
     }
 
     assert required.issubset(set(qualification.SOURCE_BOUND_PATHS))
@@ -77,10 +130,55 @@ def test_successor_source_bindings_are_package_local_and_answer_free() -> None:
     assert len(qualification.SOURCE_BOUND_PATHS) == len(set(qualification.SOURCE_BOUND_PATHS))
     assert all(path.startswith("zscope/") for path in qualification.SOURCE_BOUND_PATHS)
     assert set(qualification.current_source_hashes()) == set(qualification.SOURCE_BOUND_PATHS)
+    assert not (
+        set(qualification.IMPLEMENTATION_ROOT_EXCLUDED_PATHS)
+        & set(qualification.SOURCE_BOUND_PATHS)
+    )
     assert all(
         not any(token in f"/{path.casefold()}/" for token in forbidden)
         for path in qualification.SOURCE_BOUND_PATHS
     )
+    packaged = qualification.load_successor_qualification()
+    assert packaged["implementation_root_sha256"] == qualification.implementation_root_sha256(
+        packaged["source_sha256"]
+    )
+
+
+def test_successor_source_set_equals_every_regular_packaged_file_minus_explicit_exclusions() -> (
+    None
+):
+    package_root = Path(zscope.__file__).resolve().parent
+    all_regular = {
+        "zscope/" + path.relative_to(package_root).as_posix()
+        for path in package_root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    expected = {
+        path
+        for path in all_regular
+        if not qualification._implementation_path_excluded(path, name=PurePath(path).name)
+    }
+
+    assert set(qualification.SOURCE_BOUND_PATHS) == expected
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "zscope/retrieval/knowledge_db.py",
+        "zscope/semantics/security_map.py",
+    ),
+)
+def test_successor_rejects_missing_graph_lineage_source_binding(path: str) -> None:
+    generated = qualify()
+    assert path in generated["source_sha256"]
+    generated["source_sha256"].pop(path)
+    generated = _reseal(generated)
+
+    valid, reason = qualification.validate_successor_qualification(generated)
+
+    assert valid is False
+    assert reason == "successor_qualification_source_set_mismatch"
 
 
 def test_successor_rejects_authority_escalation_and_content_tamper() -> None:

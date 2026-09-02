@@ -16,7 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Mapping, Optional, Sequence, cast
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -99,7 +99,14 @@ class ClangToolingEvidenceProvider:
         if not shutil.which(ast_cmd[0]):
             evidence["status"] = "clang_not_found"
             return evidence
-        evidence["ast_dump"] = self._run_tool(ast_cmd, summary_kind="ast", func_name=func_name)
+        evidence["ast_dump"] = self._run_tool(
+            ast_cmd,
+            summary_kind="ast",
+            func_name=func_name,
+            source_path=source_path,
+            start_line=start_line,
+            end_line=end_line,
+        )
         evidence["cfg_dump"] = self._run_tool(cfg_cmd, summary_kind="cfg", func_name=func_name)
         evidence["status"] = "executed"
         with self._cache_lock:
@@ -217,6 +224,9 @@ class ClangToolingEvidenceProvider:
         *,
         summary_kind: str = "",
         func_name: str = "",
+        source_path: Optional[Path] = None,
+        start_line: int = 0,
+        end_line: int = 0,
     ) -> Dict[str, Any]:
         try:
             proc = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout)
@@ -237,41 +247,96 @@ class ClangToolingEvidenceProvider:
             # stdout is complete.  Appending those diagnostics makes valid
             # JSON unparsable and silently strips every AST-derived call and
             # source location from FunctionIR.
-            result["summary"] = self._summarize_ast_json(stdout, func_name=func_name)
+            result["summary"] = self._summarize_ast_json(
+                stdout,
+                func_name=func_name,
+                source_path=source_path,
+                start_line=start_line,
+                end_line=end_line,
+            )
         elif summary_kind == "cfg":
             result["summary"] = self._summarize_cfg_dump(output, func_name=func_name)
         return result
 
     @classmethod
-    def _summarize_ast_json(cls, output: str, *, func_name: str = "") -> Dict[str, Any]:
+    def _summarize_ast_json(
+        cls,
+        output: str,
+        *,
+        func_name: str = "",
+        source_path: Optional[Path] = None,
+        start_line: int = 0,
+        end_line: int = 0,
+    ) -> Dict[str, Any]:
         try:
             root = json.loads(output)
         except json.JSONDecodeError as exc:
             return {"parse_ok": False, "error": str(exc), "function": func_name}
         if not isinstance(root, dict):
             return {"parse_ok": False, "error": "AST root is not an object", "function": func_name}
+        source_offsets = cls._source_line_offsets(source_path)
+        declarations = cls._walk_function_declarations(root)
+        project_defined_names = frozenset(
+            str(node.get("name") or "")
+            for node, _qualified_name in declarations
+            if cls._function_decl_is_definition(node) and str(node.get("name") or "")
+        )
+        project_defined_identities = frozenset(
+            identity
+            for node, _qualified_name in declarations
+            if cls._function_decl_is_definition(node)
+            for _name, identity in (cls._declaration_identity(node),)
+            if identity
+        )
         functions: List[Dict[str, Any]] = []
-        target_summary: Dict[str, Any] = {}
-        for node in cls._walk_ast(root):
-            if node.get("kind") != "FunctionDecl":
+        target_definitions: List[Dict[str, Any]] = []
+        for node, qualified_name in declarations:
+            if node.get("kind") not in {"FunctionDecl", "CXXMethodDecl"}:
                 continue
             name = str(node.get("name") or "")
             if not name:
                 continue
-            summary = cls._summarize_function_decl(node)
+            summary = cls._summarize_function_decl(
+                node,
+                source_offsets=source_offsets,
+                qualified_name=qualified_name,
+                project_defined_names=project_defined_names,
+                project_defined_identities=project_defined_identities,
+            )
             functions.append(summary)
-            if func_name and name == func_name:
-                target_summary = summary
+            if not func_name or qualified_name != func_name:
+                continue
+            if not cls._function_decl_is_definition(node):
+                continue
+            line = int(summary.get("line") or 0)
+            finish = int(summary.get("end_line") or line)
+            if start_line and finish and finish < start_line:
+                continue
+            if end_line and line and line > end_line:
+                continue
+            target_definitions.append(summary)
+        target_summary = target_definitions[0] if len(target_definitions) == 1 else {}
         return {
             "parse_ok": True,
             "function": func_name,
             "function_count": len(functions),
             "functions": functions[:24],
+            "project_defined_function_names": sorted(project_defined_names),
+            "project_defined_function_declarations": sorted(project_defined_identities),
             "target_function": target_summary,
+            "target_function_unique": len(target_definitions) == 1,
         }
 
     @classmethod
-    def _summarize_function_decl(cls, node: Dict[str, Any]) -> Dict[str, Any]:
+    def _summarize_function_decl(
+        cls,
+        node: Dict[str, Any],
+        *,
+        source_offsets: Sequence[int] = (),
+        qualified_name: str = "",
+        project_defined_names: frozenset[str] = frozenset(),
+        project_defined_identities: frozenset[str] = frozenset(),
+    ) -> Dict[str, Any]:
         max_value_facts = 128
         parameters: List[Dict[str, Any]] = []
         var_decls: List[Dict[str, Any]] = []
@@ -283,14 +348,16 @@ class ClangToolingEvidenceProvider:
         unary_ops: List[Dict[str, Any]] = []
         return_count = 0
         if_count = 0
-        for child in cls._walk_ast(node):
+        located_nodes = cls._walk_ast_with_lines(node, source_offsets=source_offsets)
+        node_lines = {id(child): line for child, line in located_nodes}
+        for child, child_line in located_nodes:
             kind = str(child.get("kind") or "")
             if kind == "ParmVarDecl":
                 parameters.append(
                     {
                         "name": str(child.get("name") or ""),
                         "type": cls._qual_type(child),
-                        "line": cls._loc_line(child),
+                        "line": child_line,
                     }
                 )
             elif kind == "VarDecl":
@@ -298,7 +365,7 @@ class ClangToolingEvidenceProvider:
                     {
                         "name": str(child.get("name") or ""),
                         "type": cls._qual_type(child),
-                        "line": cls._loc_line(child),
+                        "line": child_line,
                         "storage_class": str(child.get("storageClass") or ""),
                     }
                 )
@@ -308,19 +375,31 @@ class ClangToolingEvidenceProvider:
                         call_assignments.append(
                             {
                                 "target": target,
-                                **cls._call_expr_summary(nested),
+                                **cls._call_expr_summary(
+                                    nested,
+                                    line=node_lines.get(id(nested), child_line),
+                                    project_defined_names=project_defined_names,
+                                    project_defined_identities=project_defined_identities,
+                                ),
                             }
                         )
                         break
             elif kind == "CallExpr":
-                call_exprs.append(cls._call_expr_summary(child))
+                call_exprs.append(
+                    cls._call_expr_summary(
+                        child,
+                        line=child_line,
+                        project_defined_names=project_defined_names,
+                        project_defined_identities=project_defined_identities,
+                    )
+                )
             elif kind == "BinaryOperator":
                 raw_inner = child.get("inner")
                 inner = raw_inner if isinstance(raw_inner, list) else []
                 binary_ops.append(
                     {
                         "opcode": str(child.get("opcode") or ""),
-                        "line": cls._loc_line(child),
+                        "line": child_line,
                         "type": cls._qual_type(child),
                         "refs": cls._decl_refs_in_node(child),
                     }
@@ -332,7 +411,12 @@ class ClangToolingEvidenceProvider:
                             call_assignments.append(
                                 {
                                     "target": targets[0],
-                                    **cls._call_expr_summary(nested),
+                                    **cls._call_expr_summary(
+                                        nested,
+                                        line=node_lines.get(id(nested), child_line),
+                                        project_defined_names=project_defined_names,
+                                        project_defined_identities=project_defined_identities,
+                                    ),
                                 }
                             )
                             break
@@ -340,7 +424,7 @@ class ClangToolingEvidenceProvider:
                 unary_ops.append(
                     {
                         "opcode": str(child.get("opcode") or ""),
-                        "line": cls._loc_line(child),
+                        "line": child_line,
                         "type": cls._qual_type(child),
                     }
                 )
@@ -356,7 +440,7 @@ class ClangToolingEvidenceProvider:
                 conversions.append(
                     {
                         "cast_kind": kind,
-                        "line": cls._loc_line(child),
+                        "line": child_line,
                         "source_type": cls._qual_type(source),
                         "target_type": cls._qual_type(child),
                         "refs": cls._decl_refs_in_node(child),
@@ -378,8 +462,9 @@ class ClangToolingEvidenceProvider:
             binary_ops,
         )
         return {
-            "name": str(node.get("name") or ""),
-            "line": cls._loc_line(node),
+            "name": qualified_name or str(node.get("name") or ""),
+            "line": cls._node_line(node, source_offsets=source_offsets),
+            "end_line": cls._node_end_line(node, source_offsets=source_offsets),
             "type": cls._qual_type(node),
             "storage_class": str(node.get("storageClass") or ""),
             "parameters": parameters[:max_value_facts],
@@ -394,19 +479,41 @@ class ClangToolingEvidenceProvider:
             "value_fact_coverage_complete": (
                 len(var_decls) <= 32
                 and all(len(values) <= max_value_facts for values in value_fact_collections)
+                and all(bool(value.get("callee_binding_complete")) for value in call_exprs)
             ),
             "return_count": return_count,
             "if_count": if_count,
         }
 
     @classmethod
-    def _call_expr_summary(cls, node: Dict[str, Any]) -> Dict[str, Any]:
+    def _call_expr_summary(
+        cls,
+        node: Dict[str, Any],
+        *,
+        line: int = 0,
+        project_defined_names: frozenset[str] = frozenset(),
+        project_defined_identities: frozenset[str] = frozenset(),
+    ) -> Dict[str, Any]:
         inner = node.get("inner") if isinstance(node.get("inner"), list) else []
         args = inner[1:] if inner else []
         argument_refs = [cls._decl_refs_in_node(arg) for arg in args if isinstance(arg, dict)]
+        callee, declaration_identity = cls._direct_call_decl_identity(node)
+        project_definition = bool(
+            callee
+            and callee in project_defined_names
+            and declaration_identity in project_defined_identities
+        )
         return {
-            "callee": cls._first_decl_ref_name(node),
-            "line": cls._loc_line(node),
+            "callee": callee,
+            "callee_decl_identity": declaration_identity,
+            "callee_binding_complete": bool(callee and declaration_identity),
+            "callee_decl_origin": (
+                ("translation_unit_definition" if project_definition else "external_declaration")
+                if callee and declaration_identity
+                else "unresolved"
+            ),
+            "callee_project_definition": project_definition,
+            "line": line or cls._loc_line(node),
             "result_type": cls._qual_type(node),
             "arg_count": len(args),
             "argument_kinds": [str(arg.get("kind") or "") for arg in args if isinstance(arg, dict)][
@@ -477,8 +584,10 @@ class ClangToolingEvidenceProvider:
             callee = str(call.get("callee") or "")
             if not callee:
                 continue
+            project_definition = call.get("callee_project_definition") is True
             arg_refs = cls._flat_arg_refs(call)
-            if callee not in cls._RESOURCE_RELEASES:
+            external_release = callee in cls._RESOURCE_RELEASES and not project_definition
+            if not external_release:
                 for arg in sorted(set(arg_refs) & set(released)):
                     facts.append(
                         {
@@ -495,24 +604,24 @@ class ClangToolingEvidenceProvider:
                             ),
                         }
                     )
-            if callee in cls._UNBOUNDED_COPY_SINKS:
+            if callee in cls._UNBOUNDED_COPY_SINKS and not project_definition:
                 facts.append(cls._matcher_fact("clang_ast_unbounded_copy_sink", "bounds", call))
-            elif callee in cls._COPY_SINKS:
+            elif callee in cls._COPY_SINKS and not project_definition:
                 facts.append(cls._matcher_fact("clang_ast_copy_size_relation", "bounds", call))
-            if callee in cls._FORMAT_SINKS:
+            if callee in cls._FORMAT_SINKS and not project_definition:
                 facts.append(
                     cls._matcher_fact("clang_ast_format_string_control", "format_string", call)
                 )
-            if callee in cls._COMMAND_SINKS:
+            if callee in cls._COMMAND_SINKS and not project_definition:
                 facts.append(
                     cls._matcher_fact("clang_ast_command_string_control", "command_injection", call)
                 )
-            if callee in cls._RESOURCE_ACQUIRES:
+            if callee in cls._RESOURCE_ACQUIRES and not project_definition:
                 acquire_count += 1
                 facts.append(
                     cls._matcher_fact("clang_ast_resource_acquire_call", "resource_lifecycle", call)
                 )
-            if callee in cls._RESOURCE_RELEASES:
+            if external_release:
                 release_count += 1
                 facts.append(
                     cls._matcher_fact("clang_ast_resource_release_call", "resource_lifecycle", call)
@@ -580,6 +689,8 @@ class ClangToolingEvidenceProvider:
     def _summarize_cfg_dump(cls, output: str, *, func_name: str = "") -> Dict[str, Any]:
         section, unique, section_error = cls._cfg_function_section(output, func_name=func_name)
         blocks: Dict[str, Dict[str, Any]] = {}
+        expression_nodes: Dict[str, Dict[str, Any]] = {}
+        expression_nodes_valid = True
         current = ""
         for raw in section.splitlines():
             line = raw.rstrip()
@@ -593,6 +704,7 @@ class ClangToolingEvidenceProvider:
                         "id": current,
                         "label": label.strip(),
                         "statements": [],
+                        "statement_nodes": [],
                         "successors": [],
                         "predecessors": [],
                     },
@@ -600,9 +712,21 @@ class ClangToolingEvidenceProvider:
                 continue
             if not current:
                 continue
-            stmt = re.match(r"\s*\d+:\s*(?P<code>.+)$", line)
+            stmt = re.match(r"\s*(?P<number>\d+):\s*(?P<code>.+)$", line)
             if stmt:
-                blocks[current]["statements"].append(stmt.group("code").strip())
+                code = stmt.group("code").strip()
+                ref = f"[{current}.{int(stmt.group('number'))}]"
+                if ref in expression_nodes:
+                    expression_nodes_valid = False
+                node = {
+                    "ref": ref,
+                    "block": current,
+                    "ordinal": len(blocks[current]["statement_nodes"]),
+                    "code": code,
+                }
+                expression_nodes[ref] = node
+                blocks[current]["statement_nodes"].append(node)
+                blocks[current]["statements"].append(code)
                 continue
             succ = re.search(r"\bSuccs\s*\([^)]*\):(?P<items>.*)$", line)
             if succ:
@@ -612,6 +736,10 @@ class ClangToolingEvidenceProvider:
             if pred:
                 blocks[current]["predecessors"].extend(cls._cfg_block_ids(pred.group("items")))
         block_list = list(blocks.values())
+        semantic_by_block, semantic_complete = cls._cfg_semantic_statements(
+            expression_nodes,
+            valid=expression_nodes_valid,
+        )
         return {
             "parse_ok": bool(blocks),
             "function": func_name,
@@ -626,6 +754,7 @@ class ClangToolingEvidenceProvider:
             ],
             "edge_count": sum(len(block.get("successors", [])) for block in block_list),
             "truncated": False,
+            "semantic_statements_complete": semantic_complete,
             "blocks": [
                 {
                     "id": block["id"],
@@ -633,10 +762,118 @@ class ClangToolingEvidenceProvider:
                     "successors": block.get("successors", []),
                     "predecessors": block.get("predecessors", []),
                     "statements": block.get("statements", []),
+                    "semantic_statements": semantic_by_block.get(block["id"], []),
                 }
                 for block in block_list
             ],
         }
+
+    @classmethod
+    def _cfg_semantic_statements(
+        cls,
+        nodes: Mapping[str, Mapping[str, Any]],
+        *,
+        valid: bool,
+    ) -> tuple[Dict[str, List[str]], bool]:
+        """Collapse ``debug.DumpCFG`` expression fragments into root statements.
+
+        Clang's numbered CFG entries form an expression DAG, not a list of C
+        statements.  Treating every fragment as a statement can turn a cast
+        annotation such as ``ssize_t (...)`` into a fabricated function call,
+        while losing the enclosing ``memcpy``/``pthread_create`` expression.
+        This reducer follows only Clang's explicit ``[B<n>.<m>]`` identities.
+        Missing references, duplicate identities and cycles fail closed.
+
+        Cast nodes are transparent here because their exact source/target
+        types remain bound by the typed AST summary.  The resulting text is
+        used only to bind a typed AST call/access to a reachable CFG node.
+        """
+
+        if not valid:
+            return {}, False
+        if not nodes:
+            return {}, True
+        reference_pattern = re.compile(r"\[B\d+\.\d+\]")
+        referenced: set[str] = set()
+        for value in nodes.values():
+            refs = reference_pattern.findall(str(value.get("code") or ""))
+            if any(ref not in nodes for ref in refs):
+                return {}, False
+            referenced.update(refs)
+
+        rendered: Dict[str, str] = {}
+        active: set[str] = set()
+
+        def render(ref: str) -> str:
+            if ref in rendered:
+                return rendered[ref]
+            if ref in active or ref not in nodes:
+                raise ValueError("invalid_cfg_expression_graph")
+            active.add(ref)
+            code = str(nodes[ref].get("code") or "").strip()
+            refs = reference_pattern.findall(code)
+            if len(refs) == 1 and cls._cfg_is_transparent_cast(code, refs[0]):
+                value = render(refs[0])
+            else:
+                value = code
+                for child_ref in dict.fromkeys(refs):
+                    child = render(child_ref)
+                    # The parentheses around a reference are semantic when
+                    # the preceding reference is a callee.  Stripping them
+                    # turns ``[callee]([arg])`` into ``freearg``.  Preserve
+                    # the CFG spelling and let transparent cast nodes remove
+                    # only their *own* redundant wrapper.
+                    value = value.replace(child_ref, child)
+                value = re.sub(
+                    r"(?<=[,(])(\s*)\(([0-9]+)\)(?=\s*[,)]\s*)",
+                    r"\1\2",
+                    value,
+                )
+            active.remove(ref)
+            if not value.strip() or reference_pattern.search(value):
+                raise ValueError("invalid_cfg_expression_projection")
+            rendered[ref] = value.strip()
+            return rendered[ref]
+
+        roots = [
+            ref
+            for ref, value in sorted(
+                nodes.items(),
+                key=lambda item: (
+                    str(item[1].get("block") or ""),
+                    int(item[1].get("ordinal") or 0),
+                ),
+            )
+            if ref not in referenced
+        ]
+        if not roots:
+            return {}, False
+        result: Dict[str, List[str]] = {}
+        try:
+            for ref in roots:
+                node = nodes[ref]
+                result.setdefault(str(node.get("block") or ""), []).append(render(ref))
+        except ValueError:
+            return {}, False
+        # Every CFG node belongs to exactly one rendered root expression.  A
+        # valid root plus a detached reference cycle must not make the partial
+        # projection look complete.
+        return result, len(rendered) == len(nodes)
+
+    @staticmethod
+    def _cfg_is_transparent_cast(code: str, ref: str) -> bool:
+        escaped = re.escape(ref)
+        return bool(
+            re.fullmatch(rf"\s*\(\s*{escaped}\s*\)\s*", code)
+            or re.fullmatch(
+                rf"\s*\(?\s*{escaped}\s*\)?\s*" rf"\((?:ImplicitCastExpr|CStyleCastExpr),.*\)\s*",
+                code,
+            )
+            or re.fullmatch(
+                rf"\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*{escaped}\s*" rf"\(CStyleCastExpr,.*\)\s*",
+                code,
+            )
+        )
 
     @staticmethod
     def _cfg_function_section(output: str, *, func_name: str) -> tuple[str, bool, str]:
@@ -691,6 +928,156 @@ class ClangToolingEvidenceProvider:
             for child in node:
                 result.extend(cls._walk_ast(child))
         return result
+
+    @classmethod
+    def _walk_function_declarations(
+        cls,
+        node: Any,
+        scope: tuple[str, ...] = (),
+    ) -> List[tuple[Dict[str, Any], str]]:
+        result: List[tuple[Dict[str, Any], str]] = []
+        if not isinstance(node, dict):
+            return result
+        kind = str(node.get("kind") or "")
+        name = str(node.get("name") or "")
+        next_scope = scope
+        if kind in {"NamespaceDecl", "RecordDecl", "CXXRecordDecl"} and name:
+            next_scope = (*scope, name)
+        if kind in {"FunctionDecl", "CXXMethodDecl"} and name:
+            qualified = "::".join((*scope, name)) if scope else name
+            result.append((node, qualified))
+        for child in node.get("inner") or []:
+            result.extend(cls._walk_function_declarations(child, next_scope))
+        return result
+
+    @staticmethod
+    def _function_decl_is_definition(node: Mapping[str, Any]) -> bool:
+        return any(
+            isinstance(child, dict) and child.get("kind") == "CompoundStmt"
+            for child in node.get("inner") or []
+        )
+
+    @staticmethod
+    def _source_line_offsets(source_path: Optional[Path]) -> tuple[int, ...]:
+        if source_path is None:
+            return ()
+        try:
+            raw = source_path.read_bytes()
+        except OSError:
+            return ()
+        offsets = [0]
+        offsets.extend(index + 1 for index, value in enumerate(raw) if value == 10)
+        return tuple(offsets)
+
+    @staticmethod
+    def _line_for_offset(offsets: Sequence[int], offset: Any) -> int:
+        if not offsets or not isinstance(offset, int) or offset < 0:
+            return 0
+        import bisect
+
+        return bisect.bisect_right(offsets, offset)
+
+    @classmethod
+    def _node_line(
+        cls,
+        node: Mapping[str, Any],
+        *,
+        source_offsets: Sequence[int] = (),
+        fallback: int = 0,
+    ) -> int:
+        loc = _as_dict(node.get("loc"))
+        range_data = _as_dict(node.get("range"))
+        begin = _as_dict(range_data.get("begin"))
+        for value in (loc.get("line"), begin.get("line")):
+            if isinstance(value, int) and value > 0:
+                return value
+        for value in (loc.get("offset"), begin.get("offset")):
+            line = cls._line_for_offset(source_offsets, value)
+            if line:
+                return line
+        return fallback
+
+    @classmethod
+    def _node_end_line(
+        cls,
+        node: Mapping[str, Any],
+        *,
+        source_offsets: Sequence[int] = (),
+    ) -> int:
+        range_data = _as_dict(node.get("range"))
+        end = _as_dict(range_data.get("end"))
+        value = end.get("line")
+        if isinstance(value, int) and value > 0:
+            return value
+        return cls._line_for_offset(source_offsets, end.get("offset")) or cls._node_line(
+            node,
+            source_offsets=source_offsets,
+        )
+
+    @classmethod
+    def _walk_ast_with_lines(
+        cls,
+        node: Any,
+        *,
+        source_offsets: Sequence[int],
+        inherited_line: int = 0,
+    ) -> List[tuple[Dict[str, Any], int]]:
+        result: List[tuple[Dict[str, Any], int]] = []
+        if not isinstance(node, dict):
+            return result
+        line = cls._node_line(node, source_offsets=source_offsets, fallback=inherited_line)
+        result.append((node, line))
+        for child in node.get("inner") or []:
+            result.extend(
+                cls._walk_ast_with_lines(
+                    child,
+                    source_offsets=source_offsets,
+                    inherited_line=line,
+                )
+            )
+        return result
+
+    @classmethod
+    def _direct_call_decl_identity(cls, node: Mapping[str, Any]) -> tuple[str, str]:
+        inner = node.get("inner") if isinstance(node.get("inner"), list) else []
+        if not inner or not isinstance(inner[0], dict):
+            return "", ""
+        callee_node: Mapping[str, Any] = inner[0]
+        while str(callee_node.get("kind") or "") in {
+            "ImplicitCastExpr",
+            "ParenExpr",
+            "CStyleCastExpr",
+        }:
+            children = [
+                value for value in callee_node.get("inner") or [] if isinstance(value, dict)
+            ]
+            if len(children) != 1:
+                return "", ""
+            callee_node = children[0]
+        if callee_node.get("kind") != "DeclRefExpr":
+            return "", ""
+        referenced = _as_dict(callee_node.get("referencedDecl"))
+        return cls._declaration_identity(referenced)
+
+    @classmethod
+    def _declaration_identity(cls, declaration: Mapping[str, Any]) -> tuple[str, str]:
+        declaration_kind = str(declaration.get("kind") or "")
+        if declaration_kind not in {"FunctionDecl", "CXXMethodDecl"}:
+            return "", ""
+        name = str(declaration.get("name") or "")
+        qual_type = cls._qual_type(dict(declaration))
+        if not name or not qual_type:
+            return "", ""
+        # Do not persist Clang's process-local pointer-shaped declaration id.
+        # Kind/name/type is deterministic across identical source artifacts;
+        # overloads have distinct function types.
+        identity = json.dumps(
+            {"kind": declaration_kind, "name": name, "type": qual_type},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return name, identity
 
     @classmethod
     def _first_decl_ref_name(cls, node: Any) -> str:

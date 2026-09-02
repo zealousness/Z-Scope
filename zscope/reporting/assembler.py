@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, cast
 
 from ..core.validation.pipeline import preserve_issue_location
 from ..orchestration.candidate_envelope import annotate_issue_collection
+from ..orchestration.runtime_authority import current_successor_reviewed
 from ..reporting.report import FinalReport, Issue, ReportGenerator
 from ..reporting.finding_roots import project_finding_roots
 from ..reporting.schema import (
@@ -427,6 +428,8 @@ class ReportAssembler:
             blockers.append("report_invariant_failed")
         if str(state.get("budget_exhaustion_policy") or "observe") != "observe":
             blockers.append("budget_policy_not_observe_only")
+        if not current_successor_reviewed():
+            blockers.append("successor_review_not_current")
         llm_usage = state.get("llm_usage")
         return {
             "validator_session_count": int(state.get("validator_session_count", 0) or 0),

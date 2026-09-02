@@ -42,6 +42,7 @@ from ..common.utils import extract_json_blocks
 from .conversation_recorder import ConversationSession, get_conversation_recorder
 from .llm_usage import (
     LLMUsageAttribution,
+    P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM,
     P6BalancedTokenAdmissionError,
     ScanTokenUsageLedger,
     TokenUsageReservation,
@@ -49,6 +50,17 @@ from .llm_usage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# P6 admission must be conservative without depending on a provider-specific
+# tokenizer.  OpenAI-compatible tokenizers cannot consume more tokens than
+# the UTF-8 byte stream they tokenize (byte fallback is the worst case).  The
+# frozen allowance covers provider chat-template sentinels which are not part
+# of the JSON request itself.  These constants are deliberately generous: the
+# admission contract prefers stopping early to crossing the 11,999,999-token
+# selected-attempt ceiling.
+_REQUEST_PROMPT_TEMPLATE_BASE_ALLOWANCE = P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM // 8
+_REQUEST_PROMPT_TEMPLATE_PER_ITEM_ALLOWANCE = 256
 
 
 PROVIDER_FAILURE_CLASSES = frozenset(
@@ -153,6 +165,10 @@ class _DuplicateProviderJsonKeyError(ValueError):
     """Internal marker for ambiguous provider-controlled JSON objects."""
 
 
+class _NonFiniteProviderJsonNumberError(ValueError):
+    """Internal marker for non-standard provider-controlled JSON numbers."""
+
+
 def _reject_duplicate_provider_json_keys(
     pairs: Sequence[tuple[str, Any]],
 ) -> Dict[str, Any]:
@@ -162,6 +178,11 @@ def _reject_duplicate_provider_json_keys(
             raise _DuplicateProviderJsonKeyError("duplicate provider JSON key")
         value[key] = item
     return value
+
+
+def _reject_nonfinite_provider_json_number(value: str) -> Any:
+    del value
+    raise _NonFiniteProviderJsonNumberError("non-finite provider JSON number")
 
 
 _ENDPOINT_CAPACITY_CONDITION = threading.Condition()
@@ -444,22 +465,39 @@ class LLMClient:
         *,
         tools: Optional[List[Dict[str, Any]]],
         response_format: Optional[Dict[str, Any]],
+        request_payload: Optional[Mapping[str, Any]] = None,
     ) -> int:
-        """Estimate the complete request prompt before the manager adds its safety margin."""
+        """Return a conservative upper bound for one serialized request prompt.
 
-        estimate = cls.estimate_tokens(messages)
-        protocol_payload: Dict[str, Any] = {}
+        The historical character heuristic remains useful as a lower-bound
+        sanity check, but it is not safe for formal admission.  The byte bound
+        includes messages, tools and response format exactly as JSON plus a
+        frozen allowance for provider chat-template framing.  Consequently an
+        admitted request reserves enough room even for byte-fallback
+        tokenization; the completion limit is reserved separately by the
+        scan-wide ledger.
+        """
+
+        heuristic = cls.estimate_tokens(messages)
+        serialized_payload: Dict[str, Any] = dict(request_payload or {})
+        serialized_payload["messages"] = messages
         if tools:
-            protocol_payload["tools"] = tools
+            serialized_payload["tools"] = tools
         if response_format:
-            protocol_payload["response_format"] = response_format
-        if protocol_payload:
-            rendered = json.dumps(protocol_payload, ensure_ascii=False, separators=(",", ":"))
-            estimate += int((len(rendered) + 3) / 3.8)
-        # Provider chat templates add role and message framing that is absent
-        # from the content-only estimator.
-        estimate += 8 * max(1, len(messages))
-        return max(1, estimate)
+            serialized_payload["response_format"] = response_format
+        rendered = json.dumps(
+            serialized_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        template_item_count = max(1, len(messages)) + len(tools or [])
+        conservative_bound = (
+            len(rendered)
+            + _REQUEST_PROMPT_TEMPLATE_BASE_ALLOWANCE
+            + _REQUEST_PROMPT_TEMPLATE_PER_ITEM_ALLOWANCE * template_item_count
+        )
+        return max(1, heuristic, conservative_bound)
 
     def _reserve_scan_usage(
         self,
@@ -472,6 +510,7 @@ class LLMClient:
         trace_agent: Optional[str],
         trace_label: Optional[str],
         usage_attribution: Optional[Mapping[str, Any]],
+        request_payload: Optional[Mapping[str, Any]] = None,
         call_chain_id: str = "",
         attempt_index: int = 1,
     ) -> Optional[TokenUsageReservation]:
@@ -509,6 +548,7 @@ class LLMClient:
                 messages,
                 tools=tools,
                 response_format=response_format,
+                request_payload=request_payload,
             ),
             max_completion_tokens,
             attribution=attribution,
@@ -570,7 +610,30 @@ class LLMClient:
         )
         return event.to_dict()
 
-    def _normalized_provider_usage(self, value: Any) -> Dict[str, Any]:
+    @staticmethod
+    def _provider_message_has_output(message: Mapping[str, Any]) -> bool:
+        """Return whether a successful provider message contains model output.
+
+        The predicate deliberately reduces the response to one boolean.  It is
+        used only to reject an impossible all-zero strict usage record and
+        never retains provider content in an exception, log, or ledger event.
+        """
+
+        content = message.get("content")
+        reasoning = message.get("reasoning_content") or message.get("reasoning")
+        return bool(
+            (isinstance(content, str) and content)
+            or (isinstance(reasoning, str) and reasoning)
+            or message.get("tool_calls")
+            or message.get("function_call")
+        )
+
+    def _normalized_provider_usage(
+        self,
+        value: Any,
+        *,
+        response_has_output: bool = False,
+    ) -> Dict[str, Any]:
         """Normalize OpenAI-compatible usage variants without retaining content."""
 
         if not isinstance(value, Mapping):
@@ -591,6 +654,8 @@ class LLMClient:
             assert isinstance(completion, int)
             assert isinstance(total, int)
             if total != prompt + completion:
+                raise _ProviderCallError("provider_protocol_usage_unverifiable")
+            if response_has_output and prompt == completion == total == 0:
                 raise _ProviderCallError("provider_protocol_usage_unverifiable")
 
             def optional_count(item: Any) -> int:
@@ -1194,6 +1259,13 @@ class LLMClient:
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = tool_choice if tool_choice is not None else "auto"
+                # The sealed P6 provider contract is an OpenAI-compatible
+                # tools endpoint.  Keep each response as one deterministic
+                # action/finalization boundary so a provider cannot batch a
+                # validator final call with another action.  Non-strict
+                # compatibility profiles do not receive this optional field.
+                if self.require_exact_response_model:
+                    payload["parallel_tool_calls"] = False
             if response_format:
                 payload["response_format"] = response_format
 
@@ -1244,6 +1316,7 @@ class LLMClient:
                         trace_agent=trace_agent,
                         trace_label=trace_label,
                         usage_attribution=usage_attribution,
+                        request_payload=payload,
                         call_chain_id=call_chain_id,
                         attempt_index=attempt,
                     )
@@ -1275,7 +1348,12 @@ class LLMClient:
                             "total_tokens": prompt_tokens + completion_tokens,
                             "estimated": True,
                         }
-                        normalized_provider_usage = self._normalized_provider_usage(provider_usage)
+                        normalized_provider_usage = self._normalized_provider_usage(
+                            provider_usage,
+                            response_has_output=self._provider_message_has_output(
+                                assembled_message
+                            ),
+                        )
                         if normalized_provider_usage:
                             usage.update(normalized_provider_usage)
                         duration_seconds = time.monotonic() - request_started
@@ -1375,7 +1453,12 @@ class LLMClient:
                             "total_tokens": prompt_tokens + completion_tokens,
                             "estimated": True,
                         }
-                        normalized_provider_usage = self._normalized_provider_usage(provider_usage)
+                        normalized_provider_usage = self._normalized_provider_usage(
+                            provider_usage,
+                            response_has_output=self._provider_message_has_output(
+                                assembled_message
+                            ),
+                        )
                         if normalized_provider_usage:
                             usage.update(normalized_provider_usage)
                         duration_seconds = time.monotonic() - request_started
@@ -1684,8 +1767,17 @@ class LLMClient:
             data = json.loads(
                 body,
                 object_pairs_hook=_reject_duplicate_provider_json_keys,
+                parse_constant=(
+                    _reject_nonfinite_provider_json_number
+                    if self.require_exact_response_model
+                    else None
+                ),
             )
-        except (json.JSONDecodeError, _DuplicateProviderJsonKeyError) as exc:
+        except (
+            json.JSONDecodeError,
+            _DuplicateProviderJsonKeyError,
+            _NonFiniteProviderJsonNumberError,
+        ) as exc:
             raise _ProviderCallError("provider_protocol_non_json") from exc
         if not isinstance(data, dict):
             raise _ProviderCallError("provider_protocol_invalid_response")
@@ -1703,7 +1795,22 @@ class LLMClient:
         message = raw_message or {}
         if not isinstance(message, dict):
             message = {"role": "assistant", "content": str(message)}
+        response_tool_protocol = (
+            "function_call"
+            if message.get("function_call") is not None
+            else ("tool_calls" if message.get("tool_calls") is not None else "")
+        )
         if self.require_exact_response_model:
+            self._validate_strict_provider_message(message, streaming=False)
+        message = self._canonicalize_legacy_function_call(
+            message,
+            streaming=False,
+        )
+        if self.require_exact_response_model:
+            # Validate the canonical shape as well.  The first validation above
+            # accepts the legacy ``function_call`` envelope; after conversion,
+            # the response must satisfy the same complete modern tool-call
+            # contract as a native ``tool_calls`` response.
             self._validate_strict_provider_message(message, streaming=False)
         message.setdefault("role", "assistant")
         message.setdefault("content", "")
@@ -1713,6 +1820,11 @@ class LLMClient:
         ):
             raise _ProviderCallError("provider_protocol_invalid_response")
         finish_reason = str(raw_finish_reason or "stop")
+        if self.require_exact_response_model:
+            self._validate_strict_tool_finish_reason(
+                finish_reason,
+                tool_protocol=response_tool_protocol,
+            )
         raw_usage = data.get("usage")
         usage: Dict[str, Any] = dict(raw_usage) if isinstance(raw_usage, dict) else {}
         raw_provider_response_model = data.get("model")
@@ -1741,14 +1853,30 @@ class LLMClient:
         }:
             raise _ProviderCallError("provider_protocol_invalid_response")
 
+    @staticmethod
+    def _validate_strict_tool_finish_reason(
+        finish_reason: str,
+        *,
+        tool_protocol: str,
+    ) -> None:
+        expected = {
+            "": "stop",
+            "tool_calls": "tool_calls",
+            "function_call": "function_call",
+        }.get(tool_protocol)
+        if expected is None or finish_reason != expected:
+            raise _ProviderCallError("provider_protocol_invalid_response")
+
     def _validate_strict_provider_message(
         self,
-        message: Mapping[str, Any],
+        message: Any,
         *,
         streaming: bool,
     ) -> None:
         """Reject ambiguous provider-controlled message shapes in P6 strict mode."""
 
+        if not isinstance(message, Mapping):
+            raise _ProviderCallError("provider_protocol_invalid_response")
         role = message.get("role")
         if role is not None and role != "assistant":
             raise _ProviderCallError("provider_protocol_invalid_response")
@@ -1757,22 +1885,132 @@ class LLMClient:
         content = message.get("content")
         if content is not None and not isinstance(content, str):
             raise _ProviderCallError("provider_protocol_invalid_response")
+        has_tool_calls = message.get("tool_calls") is not None
+        has_legacy_function_call = message.get("function_call") is not None
+        if has_tool_calls and has_legacy_function_call:
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        if has_legacy_function_call:
+            self._validate_legacy_function_call(
+                message.get("function_call"),
+                streaming=streaming,
+            )
         tool_calls = message.get("tool_calls")
-        if tool_calls is None:
+        if not has_tool_calls:
             return
         if not isinstance(tool_calls, list):
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        if len(tool_calls) > 1 or (not streaming and len(tool_calls) != 1):
+            # ``parallel_tool_calls=false`` is part of the sealed request, but
+            # it is only a provider hint.  Enforce the one-response/one-action
+            # boundary locally before any caller can execute a sibling call.
             raise _ProviderCallError("provider_protocol_invalid_response")
         for tool_call in tool_calls:
             if not isinstance(tool_call, Mapping):
                 raise _ProviderCallError("provider_protocol_invalid_response")
+            allowed_tool_keys = {"id", "type", "function", "index"}
+            if not set(tool_call) <= allowed_tool_keys:
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            index = tool_call.get("index")
+            if index is not None and (
+                isinstance(index, bool) or not isinstance(index, int) or index < 0
+            ):
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            tool_id = tool_call.get("id")
+            tool_type = tool_call.get("type")
             function = tool_call.get("function")
             if function is not None and not isinstance(function, Mapping):
                 raise _ProviderCallError("provider_protocol_invalid_response")
             if isinstance(function, Mapping):
+                if not set(function) <= {"name", "arguments"}:
+                    raise _ProviderCallError("provider_protocol_invalid_response")
                 for field in ("name", "arguments"):
                     item = function.get(field)
                     if item is not None and not isinstance(item, str):
                         raise _ProviderCallError("provider_protocol_invalid_response")
+            if streaming:
+                if tool_id is not None and (not isinstance(tool_id, str) or not tool_id):
+                    raise _ProviderCallError("provider_protocol_invalid_response")
+                if tool_type is not None and tool_type != "function":
+                    raise _ProviderCallError("provider_protocol_invalid_response")
+                if isinstance(function, Mapping):
+                    name = function.get("name")
+                    if name is not None and not name:
+                        raise _ProviderCallError("provider_protocol_invalid_response")
+                continue
+            if not isinstance(tool_id, str) or not tool_id or tool_type != "function":
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            if not isinstance(function, Mapping) or set(function) != {"name", "arguments"}:
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            if not function.get("name"):
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            try:
+                self._parse_terminal_tool_args(function.get("arguments"))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise _ProviderCallError("provider_protocol_invalid_response") from exc
+
+    @staticmethod
+    def _validate_legacy_function_call(value: Any, *, streaming: bool) -> None:
+        """Validate the deprecated OpenAI ``function_call`` response shape.
+
+        Streaming deltas may split the name and arguments across chunks, but
+        each fragment must still be an unambiguous string-only projection.
+        A complete non-stream response must contain exactly both fields.
+        """
+
+        if not isinstance(value, Mapping):
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        keys = set(value)
+        allowed = {"name", "arguments"}
+        if not keys or not keys <= allowed:
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        if not streaming and keys != allowed:
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        for field in keys:
+            item = value.get(field)
+            if not isinstance(item, str):
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            if field == "name" and not streaming and not item:
+                raise _ProviderCallError("provider_protocol_invalid_response")
+
+    @classmethod
+    def _canonicalize_legacy_function_call(
+        cls,
+        message: Mapping[str, Any],
+        *,
+        streaming: bool,
+    ) -> Dict[str, Any]:
+        """Return one modern canonical tool call for a legacy response.
+
+        The synthetic id is content-bound and carries no provider-controlled
+        body.  Mixed modern/legacy responses are always ambiguous and fail
+        closed, including for non-strict compatibility clients.
+        """
+
+        canonical = dict(message)
+        if "function_call" not in canonical:
+            return canonical
+        if canonical.get("function_call") is None:
+            canonical.pop("function_call", None)
+            return canonical
+        if canonical.get("tool_calls") is not None:
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        function_call = canonical.get("function_call")
+        cls._validate_legacy_function_call(function_call, streaming=streaming)
+        assert isinstance(function_call, Mapping)
+        name = str(function_call.get("name") or "")
+        arguments = str(function_call.get("arguments") or "")
+        if not streaming and not name:
+            raise _ProviderCallError("provider_protocol_invalid_response")
+        identity = hashlib.sha256((name + "\x00" + arguments).encode("utf-8")).hexdigest()[:24]
+        canonical.pop("function_call", None)
+        canonical["tool_calls"] = [
+            {
+                "id": f"call_legacy_{identity}",
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+        ]
+        return canonical
 
     def _write_curl_config(
         self,
@@ -1852,6 +2090,8 @@ class LLMClient:
         content_pieces: List[str] = []
         reasoning_pieces: List[str] = []
         tool_calls_map: Dict[Any, Dict[str, Any]] = {}
+        legacy_function_call: Dict[str, str] = {}
+        tool_protocol = ""
         finish_reason = "stop"
         finish_reason_seen = False
         provider_usage: Dict[str, Any] = {}
@@ -1939,11 +2179,32 @@ class LLMClient:
             if reasoning:
                 reasoning_pieces.append(str(reasoning))
 
+            if message_delta.get("function_call") is not None:
+                if tool_protocol == "tool_calls":
+                    raise _ProviderCallError("provider_protocol_invalid_response")
+                tool_protocol = "function_call"
+                legacy_delta = message_delta.get("function_call")
+                self._validate_legacy_function_call(legacy_delta, streaming=True)
+                assert isinstance(legacy_delta, Mapping)
+                for field in ("name", "arguments"):
+                    piece = legacy_delta.get(field)
+                    if isinstance(piece, str):
+                        legacy_function_call[field] = legacy_function_call.get(field, "") + piece
+
             tool_calls = message_delta.get("tool_calls") or []
+            if message_delta.get("tool_calls") is not None:
+                if tool_protocol == "function_call":
+                    raise _ProviderCallError("provider_protocol_invalid_response")
+                tool_protocol = "tool_calls"
             if isinstance(tool_calls, list):
                 for fallback_index, tool_call in enumerate(tool_calls):
                     if isinstance(tool_call, dict):
-                        self._merge_tool_call(tool_calls_map, tool_call, fallback_index)
+                        self._merge_tool_call(
+                            tool_calls_map,
+                            tool_call,
+                            fallback_index,
+                            strict=self.require_exact_response_model,
+                        )
 
             if choice.get("finish_reason") is not None:
                 if self.require_exact_response_model and finish_reason_seen:
@@ -1958,11 +2219,31 @@ class LLMClient:
                 "function_call",
             }:
                 raise _ProviderCallError("provider_protocol_invalid_response")
+            if tool_protocol == "tool_calls" and not tool_calls_map:
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            if tool_protocol == "function_call" and not legacy_function_call:
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            self._validate_strict_tool_finish_reason(
+                finish_reason,
+                tool_protocol=tool_protocol,
+            )
 
         assembled_message: Dict[str, Any] = {"role": "assistant"}
         if content_pieces:
             assembled_message["content"] = "".join(content_pieces)
-        if tool_calls_map:
+        if legacy_function_call:
+            if (
+                set(legacy_function_call) != {"name", "arguments"}
+                or not legacy_function_call["name"]
+            ):
+                raise _ProviderCallError("provider_protocol_invalid_response")
+            assembled_message["function_call"] = legacy_function_call
+            assembled_message = self._canonicalize_legacy_function_call(
+                assembled_message,
+                streaming=False,
+            )
+            assembled_message.setdefault("content", "")
+        elif tool_calls_map:
             assembled_message["tool_calls"] = [
                 tool_calls_map[key] for key in sorted(tool_calls_map.keys(), key=str)
             ]
@@ -1971,6 +2252,13 @@ class LLMClient:
             assembled_message.setdefault("content", "")
         if reasoning_pieces:
             assembled_message["reasoning_content"] = "".join(reasoning_pieces)
+
+        if self.require_exact_response_model:
+            # Streaming validation above intentionally permits partial deltas.
+            # Revalidate the assembled response as one complete message so a
+            # missing id/type/name/arguments fragment can never reach an agent
+            # or be accounted as a successful provider action.
+            self._validate_strict_provider_message(assembled_message, streaming=False)
 
         return assembled_message, finish_reason, provider_usage, provider_response_model
 
@@ -2030,8 +2318,16 @@ class LLMClient:
                 chunk = json.loads(
                     decoded_line,
                     object_pairs_hook=_reject_duplicate_provider_json_keys,
+                    parse_constant=(
+                        _reject_nonfinite_provider_json_number
+                        if self.require_exact_response_model
+                        else None
+                    ),
                 )
-            except _DuplicateProviderJsonKeyError as exc:
+            except (
+                _DuplicateProviderJsonKeyError,
+                _NonFiniteProviderJsonNumberError,
+            ) as exc:
                 raise _ProviderCallError("provider_protocol_invalid_response") from exc
             except json.JSONDecodeError as exc:
                 if self.require_exact_response_model:
@@ -2049,18 +2345,30 @@ class LLMClient:
         tool_calls_map: Dict[Any, Dict[str, Any]],
         tool_call: Dict[str, Any],
         fallback_index: int,
+        *,
+        strict: bool = False,
     ) -> None:
         idx = tool_call.get("index", fallback_index)
+        if strict and tool_calls_map and idx not in tool_calls_map:
+            raise _ProviderCallError("provider_protocol_invalid_response")
         existing = tool_calls_map.setdefault(idx, {})
 
         for key in ("id", "type", "index"):
             if tool_call.get(key) is not None:
+                if strict and key in existing and existing[key] != tool_call[key]:
+                    raise _ProviderCallError("provider_protocol_invalid_response")
                 existing[key] = tool_call[key]
 
         function_delta = tool_call.get("function")
         if isinstance(function_delta, dict):
             function = existing.setdefault("function", {})
             if function_delta.get("name"):
+                if (
+                    strict
+                    and function.get("name") is not None
+                    and function["name"] != function_delta["name"]
+                ):
+                    raise _ProviderCallError("provider_protocol_invalid_response")
                 function["name"] = function_delta["name"]
             if function_delta.get("arguments") is not None:
                 function["arguments"] = str(function.get("arguments", "")) + str(
@@ -2410,6 +2718,22 @@ class LLMClient:
             message = choice.get("message", {})
             finish_reason = choice.get("finish_reason")
             provider_model = response.get("model") or (self.models[0] if self.models else None)
+            if self.require_exact_response_model:
+                try:
+                    self._validate_strict_provider_message(message, streaming=False)
+                except _ProviderCallError as exc:
+                    raise ProviderFailureError(
+                        _public_provider_failure_class(exc.failure_class)
+                    ) from exc
+                # The P6 provider contract accepts only native, structured
+                # ``tool_calls``.  XML invoke tags are a legacy compatibility
+                # syntax: converting them into synthetic calls here would
+                # bypass the strict response validator (including its
+                # single-action batch rule) and could execute provider prose.
+                if not message.get("tool_calls") and "<invoke name=" in str(
+                    message.get("content") or ""
+                ):
+                    raise ProviderFailureError("provider_protocol_incompatible")
             last_finish_reason = finish_reason
             last_provider_model = provider_model
             last_message = message
@@ -2558,7 +2882,12 @@ class LLMClient:
 
             # --- XML Fallback (For GLM/Minimax models that emit raw text invoke tags) ---
             content = message.get("content", "")
-            if not final_iteration and not tool_calls and "<invoke name=" in content:
+            if (
+                not self.require_exact_response_model
+                and not final_iteration
+                and not tool_calls
+                and "<invoke name=" in content
+            ):
                 import uuid
 
                 invokes = re.finditer(r'<invoke name="([^"]+)">([\s\S]*?)(?:</invoke>|$)', content)
@@ -2663,31 +2992,34 @@ class LLMClient:
                 for terminal_call in terminal_calls:
                     terminal_id = terminal_call.get("id")
                     terminal_function = terminal_call.get("function", {})
-                    raw_terminal_args = terminal_function.get("arguments", "{}")
+                    raw_terminal_args = terminal_function.get("arguments")
                     try:
-                        terminal_args = self._parse_tool_args(raw_terminal_args)
+                        terminal_args = self._parse_terminal_tool_args(raw_terminal_args)
                         terminal_function["arguments"] = json.dumps(
                             terminal_args, ensure_ascii=False
                         )
-                    except Exception as exc:
+                    except (TypeError, ValueError, json.JSONDecodeError):
                         terminal_args = {}
                         terminal_function["arguments"] = json.dumps(terminal_args)
-                        exc_text = str(exc)
+                        terminal_failure_class = "terminal_tool_arguments_invalid"
                     else:
-                        exc_text = ""
+                        terminal_failure_class = ""
 
                     validation: Dict[str, Any] = {"valid": True, "payload": terminal_args}
-                    if exc_text:
-                        validation = {"valid": False, "error": exc_text}
+                    if terminal_failure_class:
+                        validation = {
+                            "valid": False,
+                            "error": terminal_failure_class,
+                        }
                     elif mixed_calls:
                         validation = {
                             "valid": False,
-                            "error": "The terminal final tool cannot be combined with other tool calls; retry it alone.",
+                            "error": "terminal_tool_mixed_calls",
                         }
                     elif duplicate_calls:
                         validation = {
                             "valid": False,
-                            "error": "Only one terminal final tool call is allowed in a conversation.",
+                            "error": "terminal_tool_duplicate_calls",
                         }
                     elif terminal_tool_handler:
                         try:
@@ -2696,8 +3028,16 @@ class LLMClient:
                                 validation = handled
                             else:
                                 validation = {"valid": bool(handled), "payload": terminal_args}
-                        except Exception as exc:
-                            validation = {"valid": False, "error": str(exc)}
+                        except Exception:
+                            validation = {
+                                "valid": False,
+                                "error": "terminal_tool_handler_failed",
+                            }
+                        if not validation.get("valid"):
+                            validation = {
+                                "valid": False,
+                                "error": "terminal_tool_payload_invalid",
+                            }
 
                     if validation.get("valid"):
                         terminal_payload = validation.get("payload", terminal_args)
@@ -2772,13 +3112,15 @@ class LLMClient:
                         terminal_tool_name,
                         terminal_args,
                         raw_arguments=raw_terminal_args,
-                        parse_failed=bool(exc_text),
+                        parse_failed=bool(terminal_failure_class),
                         error=validation_error,
                     )
+                    arguments_identity = hashlib.sha256(
+                        self._canonical_tool_argument_text(raw_terminal_args).encode("utf-8")
+                    ).hexdigest()
                     failure_record = {
                         "iteration": iterations,
-                        "tool_call_id": terminal_id,
-                        "arguments": raw_terminal_args if exc_text else terminal_args,
+                        "arguments_sha256": arguments_identity,
                         "error": error_result["error"],
                     }
                     identical_failures = terminal_failure_history.setdefault(
@@ -2804,7 +3146,7 @@ class LLMClient:
                         if guard_reason == "identical_invalid_terminal_call_limit":
                             repeated_terminal_tool_call = {
                                 "tool": terminal_tool_name,
-                                "arguments": failure_record["arguments"],
+                                "arguments_sha256": failure_record["arguments_sha256"],
                                 "error": error_result["error"],
                                 "repeat_count": len(identical_failures),
                                 "first_seen": identical_failures[0],
@@ -2861,7 +3203,14 @@ class LLMClient:
                                 repeated_terminal_tool_call
                             )
                         return result_payload
-                tool_calls = [call for call in tool_calls if call not in terminal_calls]
+                # A response that mixes or duplicates the authorization tool
+                # is rejected as one indivisible batch.  Do not execute a
+                # sibling action after observing an invalid final decision.
+                tool_calls = (
+                    []
+                    if mixed_calls or duplicate_calls
+                    else [call for call in tool_calls if call not in terminal_calls]
+                )
 
             for tool_call in tool_calls:
                 tool_id = tool_call.get("id")
@@ -3241,6 +3590,21 @@ class LLMClient:
         )
 
     @staticmethod
+    def _canonical_tool_argument_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError):
+            return f"invalid:{type(value).__name__}"
+
+    @staticmethod
     def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:
         return sum(
             1
@@ -3459,6 +3823,39 @@ class LLMClient:
                 continue
             return result
         return None
+
+    @staticmethod
+    def _parse_terminal_tool_args(value: Any) -> Dict[str, Any]:
+        """Parse final-tool arguments as one strict JSON object.
+
+        Unlike ordinary exploratory tool calls, a terminal authorization is
+        never repaired with ``literal_eval`` or heuristic extraction.  The
+        failure is body-free and duplicate/non-finite JSON is rejected.
+        """
+
+        if isinstance(value, dict):
+            try:
+                json.dumps(value, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("terminal_tool_arguments_invalid") from exc
+            return dict(value)
+        if not isinstance(value, str) or not value:
+            raise ValueError("terminal_tool_arguments_invalid")
+
+        def reject_constant(_value: str) -> Any:
+            raise ValueError("terminal_tool_arguments_invalid")
+
+        try:
+            parsed = json.loads(
+                value,
+                object_pairs_hook=_reject_duplicate_provider_json_keys,
+                parse_constant=reject_constant,
+            )
+        except (json.JSONDecodeError, _DuplicateProviderJsonKeyError, ValueError) as exc:
+            raise ValueError("terminal_tool_arguments_invalid") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("terminal_tool_arguments_invalid")
+        return parsed
 
     def _parse_tool_args(self, func_args_str: Any) -> Dict[str, Any]:
         """Parse tool arguments, with fallbacks for slightly malformed JSON."""

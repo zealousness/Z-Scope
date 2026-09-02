@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
+import pytest
+
 from scripts.p2_proof_corpus import build_corpus
+import zscope.core.validation.runner as validation_runner_module
+import zscope.orchestration.decision_trace as decision_trace_module
 from zscope.common.validator_protocol import ValidatorResultV3
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.core.validation.proof_kernel import (
@@ -9,6 +13,23 @@ from zscope.core.validation.proof_kernel import (
 )
 from zscope.core.validation.runner import ValidationRunner
 from zscope.orchestration.decision_trace import DecisionTraceStore
+
+
+@pytest.fixture(autouse=True)
+def _trust_p2_corpus_producer_boundary(monkeypatch) -> None:
+    """Keep these reducer mechanics tests independent of product provenance."""
+
+    verifier = lambda _candidate: True
+    monkeypatch.setattr(
+        validation_runner_module,
+        "has_exact_v4_producer_occurrence_binding",
+        verifier,
+    )
+    monkeypatch.setattr(
+        decision_trace_module,
+        "_has_exact_v4_producer_occurrence_binding",
+        verifier,
+    )
 
 
 def _runner_without_runtime(tmp_path) -> ValidationRunner:
@@ -136,3 +157,60 @@ def test_terminal_transition_records_only_the_first_true_terminal(tmp_path) -> N
     assert runner._mark_terminal_transition(issue, "V3", closed_authority) is True
     assert runner._mark_terminal_transition(issue, "V3", closed_authority) is False
     assert issue["terminal_transition_level"] == "V3"
+
+
+@pytest.mark.parametrize(
+    "persistence_marker",
+    (
+        "validator_cache_hit",
+        "resume_checkpoint_id",
+        "policy_replay_source",
+        "evidence_extension_checkpoint",
+    ),
+)
+def test_persisted_authority_marker_cannot_replace_live_producer_rebuild(
+    tmp_path,
+    persistence_marker,
+) -> None:
+    runner = _runner_without_runtime(tmp_path)
+    issue, action_uid = _open_corpus_issue()
+    assert runner._reenter_frozen_proof_obligation(issue, action_uid=action_uid)
+    stale_authority = runner._terminal_authority.evaluate(issue, operation="live")
+    assert stale_authority.terminal is True
+    issue["proof_kernel_terminal_authority_decision"] = stale_authority.to_dict()
+    issue["terminal_authority_decision"] = stale_authority.to_dict()
+    issue["terminal_transition_level"] = "V0"
+    issue[persistence_marker] = "PERSISTED_STALE_RECEIPT"
+
+    rebuilt = runner._rebuild_live_proof_input(issue, {})
+
+    assert rebuilt is False
+    assert issue["proof_kernel_input_rebuild_status"] == "legacy_or_unknown_candidate"
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert "proof_kernel_input" not in issue
+    assert "proof_kernel_promotion_certificate" not in issue
+    assert "proof_kernel_terminal_authority_decision" not in issue
+    assert "terminal_authority_decision" not in issue
+    assert "terminal_transition_level" not in issue
+
+
+def test_v2_v3_foreign_action_cannot_extend_frozen_obligation(tmp_path) -> None:
+    runner = _runner_without_runtime(tmp_path)
+    issue, action_uid = _open_corpus_issue()
+    original_input = issue["proof_kernel_input"]
+
+    assert not runner._reenter_frozen_proof_obligation(
+        issue,
+        action_uid="EVACTION_FOREIGN_OR_STALE",
+    )
+    assert issue["proof_kernel_input"] == original_input
+    assert issue["proof_kernel_v3_reentry_status"] == "proof_kernel_reentry_failed"
+    assert "proof_kernel_promotion_certificate" not in issue
+    foreign_authority = runner._terminal_authority.evaluate(issue, operation="live")
+    assert foreign_authority.disposition == "needs_review"
+    assert foreign_authority.promotion_certificate is None
+
+    assert runner._reenter_frozen_proof_obligation(issue, action_uid=action_uid)
+    assert issue["proof_kernel_input"]["selected_action_uids"] == [action_uid]
+    assert runner._terminal_authority.evaluate(issue, operation="live").terminal is True

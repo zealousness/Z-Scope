@@ -392,6 +392,7 @@ class RegexConcurrencySharedStateRules:
                         suggested_fix="Use a mutex or atomic operations for all reads and writes of the shared state.",
                         source=global_name,
                         sink=line.text.strip(),
+                        thread_object=global_name,
                         confidence=0.68,
                         positive=[f"line {line.number}: unsynchronized shared global access"],
                     )

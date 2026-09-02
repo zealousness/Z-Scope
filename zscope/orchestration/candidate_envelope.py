@@ -286,6 +286,80 @@ def _location_parts(
     return _project_relative_path(location, project_root), None
 
 
+def concrete_candidate_occurrence_anchor(
+    issue: Mapping[str, Any],
+) -> Optional[tuple[str, str, int]]:
+    """Return the exact file/function/line carried by one live occurrence.
+
+    This deliberately does not infer an anchor from prose, evidence text, or
+    the candidate display ID.  Proof consumers use it to bind the occurrence
+    to a sealed FunctionSecuritySummary.  Conflicting top-level/location
+    projections fail closed instead of letting a caller choose whichever
+    representation happens to match the proof artifact.
+
+    ``location.function_uid`` is not compared with ``function`` here: Hunter
+    locations use the security-map function identity while the live issue's
+    ``function`` is the concrete FunctionIR signature.  The Hunter-specific
+    sealed-location equality is checked by its consumer.
+    """
+
+    raw_file = issue.get("file")
+    raw_function = issue.get("function")
+    raw_line = issue.get("line")
+    if (
+        not isinstance(raw_file, str)
+        or not raw_file
+        or not isinstance(raw_function, str)
+        or not raw_function
+        or raw_line is None
+        or isinstance(raw_line, bool)
+    ):
+        return None
+    try:
+        line = int(raw_line)
+    except (TypeError, ValueError):
+        return None
+    if line <= 0:
+        return None
+
+    location = issue.get("location")
+    if isinstance(location, Mapping):
+        location_file = location.get("file")
+        location_line = location.get("start_line", location.get("line"))
+        if location_file is not None and location_file != raw_file:
+            return None
+        if location_line is not None:
+            if isinstance(location_line, bool):
+                return None
+            try:
+                if int(location_line) != line:
+                    return None
+            except (TypeError, ValueError):
+                return None
+    elif isinstance(location, str):
+        match = re.fullmatch(r"(.+?):(\d+)(?::\d+)?", location.strip())
+        if match is None or match.group(1) != raw_file or int(match.group(2)) != line:
+            return None
+    elif location is not None:
+        return None
+
+    for alias in ("file_path", "module_path"):
+        value = issue.get(alias)
+        if value is not None and value != raw_file:
+            return None
+    for alias in ("start_line",):
+        value = issue.get(alias)
+        if value is not None:
+            if isinstance(value, bool):
+                return None
+            try:
+                if int(value) != line:
+                    return None
+            except (TypeError, ValueError):
+                return None
+    return raw_file, raw_function, line
+
+
 def _evidence_pack(issue: Mapping[str, Any]) -> Dict[str, Any]:
     value = issue.get("evidence_pack")
     if not isinstance(value, Mapping):

@@ -39,7 +39,7 @@ tests:
 - 每个 terminal validation cluster 同时生成 `zscope.issue-decision-trace.v1`。报告 finding 只嵌入 trace ref/hash、唯一终态事件、终态权威、原因码和 open clauses；候选、模型结构化输入输出、provider/工具结果与 policy 输入保存在 snapshot 目录的内容寻址 sidecar 中。
 - 报告同时输出 effective scan depth、持久 rollout stage/enrollment/semantic-discovery mode、实际 token usage、按 agent/stage 的 usage、finish reason、补证转换、Security Semantic Map 路径/coverage、主动发现单元/独占发现和未覆盖区域。
 - Web `POST /api/scan` 与 MCP `zscope.scan.run` 只接受 `scan_depth` 覆盖并异步启动扫描；状态接口返回 effective depth、实际 token usage 和最终 completeness。MCP 同时提供 `zscope://reports/latest` 与 `zscope://rules/effective` 只读资源。接口不得接受任意命令、环境、cwd 或输出路径。
-- schema 层维护结构化报告兼容性。`zscope.finding-root.v2` 只在最终视图做非破坏性低噪声投影：同 candidate、同结构化 sink，或同 defect family/file/function/obligation shape/subject/decision region 的 finding 可选择一个 primary；全部 cluster、occurrence、来源和证据仍保存在 terminal records 与 alias 中。
+- schema 层维护结构化报告兼容性。`zscope.finding-root.v2` 只在最终视图做非破坏性低噪声投影：同 candidate、同结构化 sink，或同 defect family/file/function/obligation shape/subject/decision region 的 finding 可选择一个 primary；跨 detector/source 的两个不同 validation cluster 还必须分别通过完整 v4 authority 重验，并具有相同的 cluster-independent semantic proof root（精确 Proof IR、subject/object、clause contract、decision region 与 call path）。全部 cluster、occurrence、来源和证据仍保存在 terminal records 与 alias 中。
 - SARIF exporter 将完成后的报告转换为 SARIF v2.1.0，并保留稳定 fingerprint 和证据位置。
 - Web server 负责路由，services 负责配置、报告、反馈和索引状态等业务操作。
 - Web Security Specs Review Center 在 P3 固定只读：GET 提供列表、详情、编译/影响预览及规范 JSON/XLSX 导出；import 只做整包 dry-run。因为服务器没有可信 reviewer identity，review POST 与 apply-import 都明确返回 `403 reviewer_identity_unavailable`，不能匿名写入 store。
@@ -51,7 +51,7 @@ tests:
 - `report_views.default` 与 `report_views.with_needs_review` 的语义和计数必须一致且可复算。
 - `confirmed` 同时属于 default 与 with-needs-review，canonical `needs_review` 只属于后者；`audit_observations` 是独立、守恒的 shadow-observation 集合，既不进入 default，也不冒充 with-needs-review finding，但必须连同其 terminal trace 在报告 metadata 中保留。rejected 与 engine failure 同样保留 terminal trace。Finding-root 只做 primary/alias 展示投影，不能删除底层 cluster trace。
 - `zscope-explain` 只能读取冻结的 report/manifest/trace/evidence/usage。它在输出前验证事件链、trace 文档 hash、所有内容寻址引用与 usage sidecar；`policy-replay` 不调用模型，`reverify` 对严格 P2 证书必须加载冻结 ProgramProofIR、obligation、action 和 certificate 后重新运行独立 Checker，不能只检查证书 hash；代码 revision 变化时拒绝比较。
-- Finding-root 投影不得使用 benchmark truth、规则名、自由文本相似度或 LLM，也不得改变 Candidate Ledger/Validator identity；不能跨 defect family、函数、subject 或 decision region 合并，反证、blocking negative evidence 与事实冲突都会阻断合并。needs-review 只有在 required/missing fact 与阻断契约一致时才能合并。
+- Finding-root 投影不得使用 benchmark truth、规则名、自由文本相似度或 LLM，也不得改变 Candidate Ledger/Validator identity；不能跨 defect family、函数、subject、object、call path 或 decision region 合并，反证、blocking negative evidence 与事实冲突都会阻断合并。validation-cluster/obligation/state hash 本身含 detector-local cluster identity，不能冒充 semantic proof root；每个成员先独立重验其精确 v4 链，再投影 cluster-independent root。needs-review 只有在 required/missing fact 与阻断契约一致时才能合并。
 - live 报告不得注册 report-time semantic-dedup hook 或 LLM cache。历史报告展示只能调用 `zscope.compat.reports` 的只读副本，不得回流 Ledger、Proof 或 promotion。
 - 报告 schema 变更必须保持明确版本、向后兼容策略和对应测试。
 - SARIF location、rule、level、code flow 和 partial fingerprint 必须来自结构化 finding，不能从展示文本猜测。

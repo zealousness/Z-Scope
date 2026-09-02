@@ -8,14 +8,18 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.p2_proof_corpus import build_corpus
+import zscope.core.validation.runner as validation_runner_module
+import zscope.orchestration.decision_trace as decision_trace_module
 from zscope.common.cancellation import (
     CancellationError,
     CancellationToken,
     bind_cancellation_token,
 )
-from zscope.core.candidates.decision_facts import security_obligation_for
 from zscope.core.validation.pipeline import ValidationPipeline
 from zscope.core.validation.runner import ValidationResultCache, ValidationRunner
+from zscope.core.validation.audit_eligibility import (
+    has_exact_v4_producer_occurrence_binding,
+)
 from zscope.core.validation.fact_capabilities import EvidenceAction
 from zscope.core.validation.function_ir import FunctionIRGraph
 from zscope.core.validation.proof_kernel import (
@@ -32,6 +36,7 @@ from zscope.framework.llm_usage import (
     P6BalancedTokenAdmissionError,
     ScanTokenUsageLedger,
 )
+from zscope.orchestration.candidates import CandidateLedger, CandidateRegistrar
 from zscope.orchestration.decision_trace import DecisionTraceError, DecisionTraceStore
 from zscope.orchestration.scheduler import ScanScheduler
 
@@ -48,6 +53,22 @@ class FakeUserConfig:
 
     def get_finding_baseline(self, dedup_key):
         return self.baseline
+
+
+def _trust_test_producer_occurrence_binding(monkeypatch, issue: dict) -> None:
+    issue["proof_kernel_producer_binding_sha256"] = "a" * 64
+    issue["proof_kernel_occurrence_binding_sha256"] = "b" * 64
+    verifier = lambda _candidate: True
+    monkeypatch.setattr(
+        validation_runner_module,
+        "has_exact_v4_producer_occurrence_binding",
+        verifier,
+    )
+    monkeypatch.setattr(
+        decision_trace_module,
+        "_has_exact_v4_producer_occurrence_binding",
+        verifier,
+    )
 
 
 class FakeCodeIndex:
@@ -439,23 +460,32 @@ def test_governed_validator_candidate_freezes_composite_v4_after_evidence_pack()
     issue = _resource_proof_issue(cleanup=False)
     issue.update(
         {
-            "project_id": "PROJECT_TEST",
-            "revision": "REV_TEST",
-            "defect_class": "memory_leak",
-            "source_identity": "resource_target:4:resource_acquire:p",
-            "sink_identity": "resource_target:4:sink:p",
+            "line": 4,
+            "resource": "p",
+            "source": {
+                "file": "src/resource.c",
+                "function": "resource_target",
+                "line": 4,
+                "resource": "p",
+                "expression": "malloc",
+            },
+            "sink": {
+                "file": "src/resource.c",
+                "function": "resource_target",
+                "line": 4,
+                "resource": "p",
+                "operation": "exit",
+            },
+            "candidate_source": "clang_ast_cfg",
         }
     )
-    issue["security_obligation"] = security_obligation_for(
-        issue,
-        project_id=issue["project_id"],
-        revision=issue["revision"],
-        defect_family=issue["defect_class"],
-        source_uid=issue["source_identity"],
-        sink_uid=issue["sink_identity"],
-        subject_uid=issue["resource_identity"],
-    ).to_dict()
-    issue["security_obligation_v1"] = True
+    CandidateRegistrar(
+        CandidateLedger(project_id="PROJECT_TEST", revision="REV_TEST")
+    ).register_issues(
+        [issue],
+        source="clang_ast_cfg",
+        default_entry_identity="api_entry",
+    )
     runner = _runner(FakeValidatorAgent([]))
 
     prepared = runner._prepare_issue_for_validation(_state(issue), issue, 0)
@@ -470,6 +500,9 @@ def test_governed_validator_candidate_freezes_composite_v4_after_evidence_pack()
         "zscope.promotion-certificate.v1"
     )
     assert issue["proof_kernel_terminal_authority_decision"]["disposition"] == "confirmed"
+    assert len(issue["proof_kernel_producer_binding_sha256"]) == 64
+    assert len(issue["proof_kernel_occurrence_binding_sha256"]) == 64
+    assert has_exact_v4_producer_occurrence_binding(issue) is True
     obligation = issue["proof_kernel_input"]["proof_obligation"]
     assert obligation["open_clauses"] == []
     assert {value["fact_kind"] for value in obligation["confirmation_clauses"]} == {
@@ -477,6 +510,143 @@ def test_governed_validator_candidate_freezes_composite_v4_after_evidence_pack()
         "cleanup_coverage",
         "ownership_transfer",
     }
+
+
+def test_live_entry_discards_self_sealed_input_and_all_stale_terminal_projections() -> None:
+    stale = _closed_v4_issue(
+        candidate_disposition="confirmed",
+        validation_status="validated",
+        policy_disposition="confirmed",
+        finding_kind="confirmed",
+        terminal_transition_level="V0",
+        terminal_transition_disposition="confirmed",
+        terminal_transition_event_uid="EVENT_STALE",
+        terminal_transition_event_hash="a" * 64,
+        terminal_transition_authority_sha256="b" * 64,
+    )
+    stale_authority = {
+        "schema_version": "zscope.terminal-authority-decision.v4",
+        "terminal": True,
+        "disposition": "confirmed",
+    }
+    stale["proof_kernel_terminal_authority_decision"] = dict(stale_authority)
+    stale["terminal_authority_decision"] = dict(stale_authority)
+    stale["proof_kernel_evaluation"] = {"decision": "confirmed"}
+    stale["candidate_promotion_eligible"] = True
+    stale["candidate_promotion_reason"] = "stale"
+    stale["candidate_promotion_terminal_status"] = "confirmed"
+    runner = _runner(FakeValidatorAgent([]))
+
+    prepared = runner._prepare_issue_for_validation(_state(stale), stale, 0)
+
+    assert prepared is not None
+    assert stale["proof_kernel_input_rebuild_status"] == "legacy_or_unknown_candidate"
+    assert stale["candidate_disposition"] == "needs_review"
+    assert stale["validation_status"] == "needs_review"
+    for key in (
+        "proof_kernel_input",
+        "proof_kernel_frozen_state",
+        "proof_kernel_closure_evaluation",
+        "proof_kernel_promotion_certificate",
+        "proof_kernel_evaluation",
+        "proof_kernel_terminal_authority_decision",
+        "terminal_authority_decision",
+        "terminal_transition_level",
+        "terminal_transition_disposition",
+        "terminal_transition_event_uid",
+        "terminal_transition_event_hash",
+        "terminal_transition_authority_sha256",
+        "candidate_promotion_eligible",
+        "candidate_promotion_reason",
+        "candidate_promotion_terminal_status",
+    ):
+        assert key not in stale
+
+
+def test_midflight_self_sealed_foreign_proof_cannot_authorize_live_terminal() -> None:
+    issue = _closed_v4_issue(
+        candidate_uid="CAND_FOREIGN_TARGET",
+        validation_cluster_uid="VAL_FOREIGN_TARGET",
+    )
+    issue["proof_kernel_producer_binding_sha256"] = "a" * 64
+    issue["proof_kernel_occurrence_binding_sha256"] = "b" * 64
+    runner = _runner(FakeValidatorAgent([]))
+
+    assert runner._terminal_authority.evaluate(issue, operation="live").disposition == "confirmed"
+    authority = runner._evaluate_bound_terminal_authority(issue, operation="live")
+
+    assert authority.disposition == "needs_review"
+    assert authority.reason_code == "NEEDS_REVIEW_PROTOCOL_OR_ENGINE_FAILURE"
+
+
+def test_disabled_validator_cannot_preserve_self_sealed_v0_authority() -> None:
+    issue = _closed_v4_issue(
+        candidate_disposition="confirmed",
+        validation_status="validated",
+        terminal_transition_level="V0",
+    )
+    state = _state(issue)
+
+    _runner(FakeValidatorAgent([]), enabled=False).run(state)
+
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["proof_kernel_input_rebuild_status"] == "legacy_or_unknown_candidate"
+    assert "proof_kernel_input" not in issue
+    assert "proof_kernel_promotion_certificate" not in issue
+    assert "terminal_transition_level" not in issue
+    assert issue["terminal_authority_decision"]["disposition"] == "needs_review"
+    assert state["issues"] == []
+
+
+def test_live_product_rebuild_replaces_stale_cross_obligation_authority() -> None:
+    issue = _resource_proof_issue(cleanup=True)
+    issue.update(
+        {
+            "line": 4,
+            "resource": "p",
+            "source": {
+                "file": "src/resource.c",
+                "function": "resource_target",
+                "line": 4,
+                "resource": "p",
+                "expression": "malloc",
+            },
+            "sink": {
+                "file": "src/resource.c",
+                "function": "resource_target",
+                "line": 4,
+                "resource": "p",
+                "operation": "exit",
+            },
+            "candidate_source": "clang_ast_cfg",
+        }
+    )
+    CandidateRegistrar(
+        CandidateLedger(project_id="PROJECT_TEST", revision="REV_TEST")
+    ).register_issues(
+        [issue],
+        source="clang_ast_cfg",
+        default_entry_identity="api_entry",
+    )
+    stale = _closed_v4_issue()
+    stale_input = stale["proof_kernel_input"]
+    for key, value in stale.items():
+        if key.startswith("proof_kernel_") or key.startswith("terminal_"):
+            issue[key] = value
+    runner = _runner(FakeValidatorAgent([]))
+
+    prepared = runner._prepare_issue_for_validation(_state(issue), issue, 0)
+
+    assert prepared is None
+    assert issue["proof_kernel_input"] != stale_input
+    assert issue["proof_kernel_input_origin"] == "product_composite_obligation_v4"
+    assert issue["proof_kernel_input"]["proof_obligation"]["counterproof_clauses"]
+    assert issue["proof_kernel_terminal_authority_decision"]["disposition"] == (
+        "rejected_with_proof"
+    )
+    assert issue["candidate_disposition"] == "rejected_with_proof"
+    assert issue["terminal_transition_level"] == "V0"
 
 
 def test_v4_reverification_failure_is_answer_safe(monkeypatch) -> None:
@@ -667,6 +837,8 @@ def test_p6_soft_watermark_drains_eight_workers_as_zero_call_audit() -> None:
             confidence=0.1,
             rule_confidence=0.1,
             positive_evidence=[],
+            audit_status="audit_only",
+            category="potential_issue",
         )
         for index in range(8)
     ]
@@ -680,6 +852,9 @@ def test_p6_soft_watermark_drains_eight_workers_as_zero_call_audit() -> None:
         ),
         proof_engine_agent_factory=lambda *_args, **_kwargs: SoftDeniedValidator(),
     )
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    ledger.enable_p6_balanced_admission()
+    runner.config.scan_token_usage_ledger = ledger
 
     runner.run(state)
 
@@ -693,6 +868,69 @@ def test_p6_soft_watermark_drains_eight_workers_as_zero_call_audit() -> None:
     assert all(issue["candidate_disposition"] == "shadow_observation" for issue in issues)
     assert all(issue["p6_token_provider_calls"] == 0 for issue in issues)
     assert all("validation_error" not in issue for issue in issues)
+
+
+def test_p6_soft_watermark_uses_audit_eligibility_and_preserves_actionable_review(
+    monkeypatch,
+) -> None:
+    from zscope.core.validation import runner as runner_module
+
+    calls = []
+
+    class Eligible:
+        needs_review_eligible = True
+        reason_codes = ()
+
+        def to_dict(self):
+            return {
+                "schema_version": "zscope.audit-eligibility.v1",
+                "needs_review_eligible": True,
+                "reason_codes": [],
+                "disposition": "needs_review",
+            }
+
+    def classify(issue):
+        calls.append(issue["id"])
+        return Eligible()
+
+    monkeypatch.setattr(runner_module, "evaluate_audit_eligibility", classify)
+
+    class SoftDeniedValidator:
+        def run(self, _input_data):
+            raise P6BalancedTokenAdmissionError("p6_token_soft_watermark")
+
+    issue = _issue(
+        id="ISSUE_SOFT_ELIGIBLE",
+        candidate_uid="CAND_SOFT_ELIGIBLE",
+        validation_cluster_uid="VAL_SOFT_ELIGIBLE",
+        dedup_key="soft-eligible",
+        confidence=0.1,
+        rule_confidence=0.1,
+        positive_evidence=[],
+        audit_status="audit_only",
+        category="potential_issue",
+    )
+    state = _state(issue)
+    memory = []
+    runner = _runner(
+        None,
+        memory=memory,
+        proof_engine_agent_factory=lambda *_args, **_kwargs: SoftDeniedValidator(),
+    )
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    ledger.enable_p6_balanced_admission()
+    runner.config.scan_token_usage_ledger = ledger
+
+    runner.run(state)
+
+    assert calls == ["ISSUE_SOFT_ELIGIBLE"]
+    assert state["validation_queue_drained"] is True
+    assert state["observations"] == [issue]
+    assert state.get("audit_observations", []) == []
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["audit_eligibility"]["needs_review_eligible"] is True
+    assert issue["p6_token_provider_calls"] == 0
+    assert memory == [("ISSUE_SOFT_ELIGIBLE", "needs_review")]
 
 
 def test_p6_hard_limit_drains_as_canonical_needs_review_without_engine_failure() -> None:
@@ -804,6 +1042,296 @@ def test_validation_runner_cache_is_scoped_to_runner_instance() -> None:
 
     assert first._validator_cache_get("same-candidate") == cached
     assert second._validator_cache_get("same-candidate") is None
+
+
+@pytest.mark.parametrize(
+    "changed_field",
+    (
+        "successor_implementation_root_sha256",
+        "successor_qualification_sha256",
+        "successor_review_status",
+        "successor_review_status_content_sha256",
+        "successor_review_set_sha256",
+    ),
+)
+def test_validation_persistent_cache_protocol_binds_complete_successor_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    changed_field: str,
+) -> None:
+    base = {
+        "successor_implementation_root_sha256": "1" * 64,
+        "successor_qualification_sha256": "2" * 64,
+        "successor_review_status": "in_progress",
+        "successor_review_status_content_sha256": "3" * 64,
+        "successor_review_set_sha256": "",
+    }
+    changed = dict(base)
+    changed[changed_field] = "reviewed" if changed_field == "successor_review_status" else "4" * 64
+
+    class ProtocolStore:
+        def __init__(self) -> None:
+            self.values: dict[tuple[str, str, str, str], dict] = {}
+
+        def save_validation_result(
+            self,
+            cache_key,
+            result,
+            *,
+            protocol,
+            candidate_schema_version,
+            environment_fingerprint,
+            **_kwargs,
+        ) -> None:
+            self.values[
+                (
+                    cache_key,
+                    protocol,
+                    candidate_schema_version,
+                    environment_fingerprint,
+                )
+            ] = dict(result)
+
+        def load_validation_result(
+            self,
+            cache_key,
+            *,
+            protocol,
+            candidate_schema_version,
+            environment_fingerprint,
+        ):
+            return self.values.get(
+                (
+                    cache_key,
+                    protocol,
+                    candidate_schema_version,
+                    environment_fingerprint,
+                )
+            )
+
+    store = ProtocolStore()
+
+    def install(binding: dict[str, str]) -> None:
+        monkeypatch.setattr(
+            validation_runner_module,
+            "load_successor_qualification",
+            lambda: {
+                "implementation_root_sha256": binding["successor_implementation_root_sha256"],
+                "content_sha256": binding["successor_qualification_sha256"],
+            },
+        )
+        monkeypatch.setattr(
+            validation_runner_module,
+            "SUCCESSOR_RUNTIME_REVIEW_MANIFEST",
+            {
+                "status": binding["successor_review_status"],
+                "content_sha256": binding["successor_review_status_content_sha256"],
+                "review_set_sha256": binding["successor_review_set_sha256"],
+            },
+        )
+        monkeypatch.setattr(
+            validation_runner_module,
+            "validate_successor_runtime_review_status",
+            lambda *_args, **_kwargs: (True, "valid"),
+        )
+        monkeypatch.setattr(
+            validation_runner_module,
+            "validate_current_successor_runtime_review_status",
+            lambda *_args, **_kwargs: (
+                (True, "current_successor_reviewed")
+                if binding["successor_review_status"] == "reviewed"
+                else (False, "successor_review_in_progress")
+            ),
+        )
+
+    install(base)
+    first = _runner(None)
+    first.snapshot_store = store
+    assert first._validator_cache_put("same-candidate", _validator_v3_result()) is True
+
+    install(changed)
+    second = _runner(None)
+    second.snapshot_store = store
+
+    assert first._validation_persistent_cache_enabled is True
+    assert second._validation_persistent_cache_enabled is True
+    assert first._validation_cache_successor_binding == base
+    assert second._validation_cache_successor_binding == changed
+    assert first._validation_cache_protocol != second._validation_cache_protocol
+    assert second._validator_cache_get("same-candidate") is None
+
+
+def test_stale_successor_disables_persistent_validation_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def stale() -> dict:
+        raise ValueError("successor_qualification_source_stale")
+
+    monkeypatch.setattr(validation_runner_module, "load_successor_qualification", stale)
+    runner = _runner(None)
+    calls: list[str] = []
+
+    class Store:
+        def load_validation_result(self, *_args, **_kwargs):
+            calls.append("load")
+            return _validator_v3_result()
+
+        def save_validation_result(self, *_args, **_kwargs):
+            calls.append("save")
+
+    runner.snapshot_store = Store()
+    runner._validator_cache_get("stale-successor")
+    runner._validator_cache_put("stale-successor", _validator_v3_result())
+
+    assert runner._validation_persistent_cache_enabled is False
+    assert calls == []
+
+
+def test_unavailable_successor_review_status_disables_persistent_validation_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        validation_runner_module,
+        "load_successor_qualification",
+        lambda: {
+            "implementation_root_sha256": "1" * 64,
+            "content_sha256": "2" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        validation_runner_module,
+        "SUCCESSOR_RUNTIME_REVIEW_MANIFEST",
+        {},
+    )
+    monkeypatch.setattr(
+        validation_runner_module,
+        "validate_successor_runtime_review_status",
+        lambda *_args, **_kwargs: (False, "successor_review_status_unavailable"),
+    )
+
+    runner = _runner(None)
+
+    assert runner._validation_persistent_cache_enabled is False
+    assert runner._validation_cache_successor_binding == {}
+
+
+def test_reviewed_successor_without_physical_evidence_disables_persistent_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        validation_runner_module,
+        "load_successor_qualification",
+        lambda: {
+            "implementation_root_sha256": "1" * 64,
+            "content_sha256": "2" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        validation_runner_module,
+        "SUCCESSOR_RUNTIME_REVIEW_MANIFEST",
+        {
+            "status": "reviewed",
+            "content_sha256": "3" * 64,
+            "review_set_sha256": "4" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        validation_runner_module,
+        "validate_successor_runtime_review_status",
+        lambda *_args, **_kwargs: (True, "valid"),
+    )
+    monkeypatch.setattr(
+        validation_runner_module,
+        "validate_current_successor_runtime_review_status",
+        lambda *_args, **_kwargs: (False, "successor_review_evidence_unavailable"),
+    )
+
+    runner = _runner(None)
+
+    assert runner._validation_persistent_cache_enabled is False
+    assert runner._validation_cache_successor_binding == {}
+
+
+def test_in_progress_successor_with_physical_evidence_disables_persistent_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        validation_runner_module,
+        "load_successor_qualification",
+        lambda: {
+            "implementation_root_sha256": "1" * 64,
+            "content_sha256": "2" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        validation_runner_module,
+        "SUCCESSOR_RUNTIME_REVIEW_MANIFEST",
+        {
+            "status": "in_progress",
+            "content_sha256": "3" * 64,
+            "review_set_sha256": "",
+        },
+    )
+    monkeypatch.setattr(
+        validation_runner_module,
+        "validate_successor_runtime_review_status",
+        lambda *_args, **_kwargs: (True, "valid"),
+    )
+    monkeypatch.setattr(
+        validation_runner_module,
+        "validate_current_successor_runtime_review_status",
+        lambda *_args, **_kwargs: (
+            False,
+            "successor_review_in_progress_contains_review_evidence",
+        ),
+    )
+
+    runner = _runner(None)
+
+    assert runner._validation_persistent_cache_enabled is False
+    assert runner._validation_cache_successor_binding == {}
+
+
+def test_cache_hit_occurs_only_after_persisted_v4_authority_is_discarded() -> None:
+    candidate_uid = "CAND_CACHE_STALE_AUTHORITY"
+    cluster_uid = "VAL_CACHE_STALE_AUTHORITY"
+    cached_result = _validator_v3_result()
+    cached_result.update(
+        {
+            "candidate_uid": candidate_uid,
+            "validation_cluster_uid": cluster_uid,
+        }
+    )
+    agent = FakeValidatorAgent([AgentResponse(success=True, data=cached_result)])
+    runner = _runner(agent, result_cache=ValidationResultCache(max_entries=8))
+
+    def persisted_attempt():
+        return _closed_v4_issue(
+            id="ISSUE_CACHE_STALE_AUTHORITY",
+            candidate_uid=candidate_uid,
+            validation_cluster_uid=cluster_uid,
+            candidate_disposition="confirmed",
+            validation_status="validated",
+            terminal_transition_level="V0",
+            validator_cache_hit=1,
+            resume_checkpoint_id="CHECKPOINT_STALE",
+            policy_replay_source="RUN_STALE",
+        )
+
+    first_issue = persisted_attempt()
+    first_state = _state(first_issue)
+    runner.run(first_state)
+    second_issue = persisted_attempt()
+    second_state = _state(second_issue)
+    runner.run(second_state)
+
+    assert len(agent.inputs) == 1
+    assert second_state["validator_cache_hit"] == 1
+    for issue in (first_issue, second_issue):
+        assert issue["candidate_disposition"] == "needs_review"
+        assert issue["proof_kernel_input_rebuild_status"] == "legacy_or_unknown_candidate"
+        assert "proof_kernel_input" not in issue
+        assert "proof_kernel_promotion_certificate" not in issue
+        assert "terminal_transition_level" not in issue
 
 
 @pytest.mark.parametrize(
@@ -1396,11 +1924,39 @@ def test_v2_no_match_does_not_exhaust_refined_same_kind_request(monkeypatch) -> 
     assert {entry["status"] for entry in attempts} == {"no_match"}
 
 
-def test_v2_same_object_can_retry_after_evidence_snapshot_changes(monkeypatch) -> None:
-    agent = FakeValidatorAgent([])
-    runner = _runner(agent)
-    issue = _issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
-    issue["validator_evidence_snapshot_sha256_by_pass"] = {"initial": "a" * 64}
+def test_v2_same_scope_rechecks_after_real_fact_delta_then_exact_duplicate_is_zero_call() -> None:
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="uncertain",
+                    validation_pass="evidence_recheck",
+                    stop_reason="missing_fact",
+                ),
+            )
+        ]
+    )
+    runner = _runner(agent, scan=SimpleNamespace(depth="balanced"))
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="medium",
+        impact_level="medium",
+        reachable_from_entry=True,
+        entry_context={"entry_is_external_root": True},
+        function_ir_graph=_function_ir_graph(),
+        source={"callee": "read_input", "line": 5},
+        sink={"callee": "sink", "line": 10},
+        security_obligation={
+            "obligation_uid": "OBL_RANGE",
+            "subject_uid": "wire_len",
+            "decision_region_uid": "REGION_PATH",
+            "required_fact_kinds": ["source_controllability"],
+        },
+        obligation_required_fact_kinds=["source_controllability"],
+        missing_fact_kinds=["source_controllability"],
+    )
     item = SimpleNamespace(
         raw_issue=issue,
         issue_func="sink_func",
@@ -1409,40 +1965,35 @@ def test_v2_same_object_can_retry_after_evidence_snapshot_changes(monkeypatch) -
     )
     request = _validator_v3_result(
         missing_fact_request={
-            "fact_kind": "value_range",
+            "fact_kind": "source_controllability",
             "subject_uid": "wire_len",
             "function_uid": "sink_func",
-            "reason": "the bound is required",
+            "reason": "the externally controlled source fact is required",
         },
         stop_reason="missing_fact",
     )
-    provider_calls = []
-
-    def resolve(*_args, **_kwargs):
-        provider_calls.append(1)
-        return SimpleNamespace(
-            resolutions=[
-                SimpleNamespace(
-                    fact_kind="value_range",
-                    terminal_status="no_match",
-                    status="no_match",
-                    miss_reason="no qualified local fact",
-                )
-            ],
-            evidence_delta={},
-            evidence_delta_hash="",
-            proof_added=False,
-            has_evidence_delta=False,
-        )
-
-    monkeypatch.setattr(runner._evidence_completion_queue, "resolve_required_facts", resolve)
+    runner._validator_input(issue, item.issue_code, item.evidence_pack)
+    _, before = runner._v2_request_identity(item, request["missing_fact_request"])
 
     runner._run_v3_evidence_recheck(item, agent, request, {})
-    issue["validator_evidence_snapshot_sha256_by_pass"]["initial"] = "b" * 64
+    _, after_delta = runner._v2_request_identity(item, request["missing_fact_request"])
+    assert after_delta["evidence_snapshot_sha256"] != before["evidence_snapshot_sha256"]
+    assert issue["decision_fact_slice"]["facts"]
+
+    # The changed material snapshot authorizes one bounded provider recheck.
+    # It returns the same fact delta, so it must not trigger another model call.
+    runner._run_v3_evidence_recheck(item, agent, request, {})
+    _, after_duplicate_delta = runner._v2_request_identity(item, request["missing_fact_request"])
+    assert after_duplicate_delta == after_delta
+
+    # With neither a new fact nor a new re-entry, the exact third request is
+    # rejected before the deterministic provider and the model.
+    provider_attempts = issue["evidence_completion_attempt_count"]
     runner._run_v3_evidence_recheck(item, agent, request, {})
 
-    assert len(provider_calls) == 2
+    assert issue["evidence_completion_attempt_count"] == provider_attempts == 2
     assert len(issue["validator_fact_request_attempts"]) == 2
+    assert len(agent.inputs) == 1
     assert len(issue.get("evidence_completion_request_hashes") or []) <= 1
 
 
@@ -1528,8 +2079,11 @@ def test_v2_fact_first_exact_scope_is_zero_call_but_each_refinement_runs(monkeyp
     issue["validator_evidence_snapshot_sha256_by_pass"]["initial"] = "b" * 64
     runner._run_v3_evidence_recheck(item, agent, request(), {})
 
-    assert len(provider_calls) == 4
-    assert len(issue["validator_fact_request_attempts"]) == 5
+    # Mutating the historical V1 snapshot is not a material evidence delta.
+    # Only the three genuinely refined scopes may reach the provider.
+    assert len(provider_calls) == 3
+    assert len(issue["validator_fact_request_attempts"]) == 4
+    assert issue["validator_evidence_snapshot_sha256_by_pass"]["v2_initial_snapshot_drift"] is True
     assert agent.inputs == []
 
 
@@ -1579,6 +2133,7 @@ def test_v3_terminal_authority_skips_post_terminal_provider_and_model_calls(monk
     agent = FakeValidatorAgent([])
     runner = _runner(agent)
     issue = _closed_v4_issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
+    _trust_test_producer_occurrence_binding(monkeypatch, issue)
     item = SimpleNamespace(
         raw_issue=issue,
         issue_func="sink_func",
@@ -1612,6 +2167,7 @@ def test_v3_terminal_authority_skips_post_terminal_provider_and_model_calls(monk
 @pytest.mark.parametrize("bad_response", ("failure", "malformed"))
 def test_v3_persists_programmatic_closure_even_when_response_is_bad(
     tmp_path,
+    monkeypatch,
     bad_response: str,
 ) -> None:
     issue = _executable_path_issue(
@@ -1620,6 +2176,7 @@ def test_v3_persists_programmatic_closure_even_when_response_is_bad(
         severity="high",
         reachable_from_entry=True,
     )
+    _trust_test_producer_occurrence_binding(monkeypatch, issue)
 
     class ClosingThenBadValidator(FakeValidatorAgent):
         def __init__(self):
@@ -1668,13 +2225,14 @@ def test_v3_persists_programmatic_closure_even_when_response_is_bad(
     assert all(event["stage"] == "report" for event in trace["events"][transition_index + 1 :])
 
 
-def test_v3_rejects_a_second_action_after_programmatic_closure(tmp_path) -> None:
+def test_v3_rejects_a_second_action_after_programmatic_closure(tmp_path, monkeypatch) -> None:
     issue = _executable_path_issue(
         candidate_uid="CAND_V3_POST_PROOF",
         validation_cluster_uid="VAL_V3_POST_PROOF",
         severity="high",
         reachable_from_entry=True,
     )
+    _trust_test_producer_occurrence_binding(monkeypatch, issue)
 
     class PostProofValidator(FakeValidatorAgent):
         def __init__(self):
@@ -1715,7 +2273,7 @@ def test_v3_rejects_a_second_action_after_programmatic_closure(tmp_path) -> None
     assert not issue.get("terminal_transition_event_uid")
 
 
-def test_v3_reenters_the_original_composite_obligation_and_closes_at_v3() -> None:
+def test_v3_reenters_the_original_composite_obligation_and_closes_at_v3(monkeypatch) -> None:
     graph = _function_ir_graph(duplicate_sink=True, as_object=True)
     proof_ir = program_proof_ir_from_graph(
         graph,
@@ -1758,6 +2316,22 @@ def test_v3_reenters_the_original_composite_obligation_and_closes_at_v3() -> Non
     runner = _runner(FakeValidatorAgent([]))
 
     runner._reverify_attached_proof_kernel_input(issue)
+    _trust_test_producer_occurrence_binding(monkeypatch, issue)
+
+    item = SimpleNamespace(
+        raw_issue=issue,
+        issue_func="sink_func",
+        issue_code="void sink_func(void) {}",
+        evidence_pack={},
+    )
+    snapshot_request = {
+        "fact_kind": str(catalog[1]["fact_kind"]),
+        "subject_uid": str(catalog[1]["subject_uid"]),
+        "function_uid": "sink_func",
+        "fixed_parameters": dict(catalog[1]["fixed_parameters"]),
+    }
+    runner._validator_input(issue, item.issue_code, item.evidence_pack)
+    _, identity_before_reentry = runner._v2_request_identity(item, snapshot_request)
 
     assert issue["proof_kernel_closure_evaluation"]["complete"] is False
     assert "proof_kernel_promotion_certificate" not in issue
@@ -1778,6 +2352,7 @@ def test_v3_reenters_the_original_composite_obligation_and_closes_at_v3() -> Non
         issue,
         action_uid=frozen_action_uid,
     )
+    _, identity_after_reentry = runner._v2_request_identity(item, snapshot_request)
     authority = runner._terminal_authority.evaluate(issue, operation="live")
     runner._mark_terminal_transition(issue, "V3", authority)
 
@@ -1794,6 +2369,10 @@ def test_v3_reenters_the_original_composite_obligation_and_closes_at_v3() -> Non
         catalog[0]["action_uid"],
         catalog[1]["action_uid"],
     ]
+    assert (
+        identity_after_reentry["evidence_snapshot_sha256"]
+        != identity_before_reentry["evidence_snapshot_sha256"]
+    )
     assert issue["proof_kernel_terminal_authority_decision"]["schema_version"] == (
         "zscope.terminal-authority-decision.v4"
     )
@@ -1836,6 +2415,7 @@ def test_v2_fact_reenters_the_same_frozen_obligation_before_terminal_authority(
         candidate_uid="CAND_V2_REENTRY",
         validation_cluster_uid="VAL_V2_REENTRY",
         proof_kernel_input={
+            "schema_version": PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
             "proof_ir": proof_ir,
             "proof_obligation": obligation,
             "selected_action_uids": [catalog[0]["action_uid"]],
@@ -1843,6 +2423,7 @@ def test_v2_fact_reenters_the_same_frozen_obligation_before_terminal_authority(
     )
     runner = _runner(FakeValidatorAgent([]))
     runner._reverify_attached_proof_kernel_input(issue)
+    _trust_test_producer_occurrence_binding(monkeypatch, issue)
     item = SimpleNamespace(
         raw_issue=issue,
         issue_func="sink_func",
@@ -1901,7 +2482,7 @@ def test_v2_fact_reenters_the_same_frozen_obligation_before_terminal_authority(
     assert issue["terminal_transition_level"] == "V2"
 
 
-def test_explicit_v4_ineligible_review_becomes_ledgered_audit_observation() -> None:
+def test_untrusted_explicit_v4_input_is_cleared_and_remains_needs_review() -> None:
     graph = _function_ir_graph(duplicate_sink=True, as_object=True)
     proof_ir = program_proof_ir_from_graph(
         graph,
@@ -1963,13 +2544,14 @@ def test_explicit_v4_ineligible_review_becomes_ledgered_audit_observation() -> N
         state
     )
 
-    assert issue["candidate_disposition"] == "shadow_observation"
-    assert issue["validation_status"] == "uncertain"
-    assert issue["audit_status"] == "audit_only"
-    assert issue["audit_eligibility"]["needs_review_eligible"] is False
-    assert state["observations"] == []
-    assert state["audit_observations"] == [issue]
-    assert ledger.terminal == [(issue, "shadow_observation", "uncertain")]
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["proof_kernel_input_rebuild_status"] == "legacy_or_unknown_candidate"
+    assert "proof_kernel_input" not in issue
+    assert "audit_eligibility" not in issue
+    assert state["observations"] == [issue]
+    assert state.get("audit_observations", []) == []
+    assert ledger.terminal == [(issue, "needs_review", "needs_review")]
 
 
 def test_legacy_review_without_v4_envelope_remains_canonical_needs_review() -> None:

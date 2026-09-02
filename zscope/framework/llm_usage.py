@@ -33,7 +33,21 @@ TOKEN_USAGE_STAGES = (
 )
 P6_BALANCED_SOFT_TOKEN_WATERMARK = 10_500_000
 P6_BALANCED_MAX_TOKENS = 11_999_999
-P6_BALANCED_LOW_VALUE_CALL_KINDS = frozenset({"p6_low_value_audit"})
+# Provider prompt usage is reported only after a request has physically run.
+# Formal admission therefore keeps one complete prompt-accounting allowance
+# unspendable for each of the eight globally in-flight requests.  Successful
+# evidence is still checked against 11,999,999; this lower ceiling is the
+# pre-call safety boundary.
+P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM = 8 * 65_536
+P6_BALANCED_ADMISSION_MAX_TOKENS = (
+    P6_BALANCED_MAX_TOKENS - P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM
+)
+P6_BALANCED_LOW_VALUE_CALL_KINDS = frozenset(
+    {
+        "p6_low_value_audit",
+        "p6_low_value_hunter",
+    }
+)
 _VALIDATOR_V3_CALL_KINDS = frozenset(
     {"length_retry", "json_repair", "investigation_synthesis", "targeted_investigation"}
 )
@@ -485,6 +499,9 @@ class ScanTokenUsageLedger:
         self._p6_admission_admitted_count = 0
         self._p6_admission_denied_count = 0
         self._p6_admission_denied_reasons: Dict[str, int] = {}
+        self._p6_budget_fail_closed = False
+        self._p6_budget_violation_count = 0
+        self._p6_budget_violation_reasons: Dict[str, int] = {}
 
     def enable_p6_balanced_admission(self) -> None:
         """Enable the immutable P6 balanced-only token admission contract."""
@@ -551,8 +568,10 @@ class ScanTokenUsageLedger:
                 # a refusal never creates an LLM usage event or enters the
                 # provider-coverage denominator.
                 self._p6_admission_request_count += 1
+                if self._p6_budget_fail_closed:
+                    self._deny_p6_admission_locked("p6_token_hard_limit")
                 projected = self._consumed_tokens + self._reserved_tokens + proposed
-                if projected > P6_BALANCED_MAX_TOKENS:
+                if projected > P6_BALANCED_ADMISSION_MAX_TOKENS:
                     self._deny_p6_admission_locked("p6_token_hard_limit")
                 if (
                     projected > P6_BALANCED_SOFT_TOKEN_WATERMARK
@@ -612,6 +631,27 @@ class ScanTokenUsageLedger:
                 )
             self._reserved_tokens -= active.reserved_total_tokens
             self._stage_reserved_tokens[active.budget_stage] -= active.reserved_total_tokens
+            actual_exceeded_reservation = total > active.reserved_total_tokens
+            actual_exceeded_global_limit = (
+                self._p6_balanced_admission_enabled
+                and self._consumed_tokens + total > P6_BALANCED_MAX_TOKENS
+            )
+            budget_violation = bool(
+                self._p6_balanced_admission_enabled
+                and (actual_exceeded_reservation or actual_exceeded_global_limit)
+            )
+            violation_reasons: list[str] = []
+            if budget_violation:
+                if actual_exceeded_global_limit:
+                    violation_reasons.append("p6_actual_usage_exceeded_global_limit")
+                elif actual_exceeded_reservation:
+                    violation_reasons.append("p6_actual_usage_exceeded_reservation")
+                self._p6_budget_fail_closed = True
+                self._p6_budget_violation_count += 1
+                for failure_class in violation_reasons:
+                    self._p6_budget_violation_reasons[failure_class] = (
+                        self._p6_budget_violation_reasons.get(failure_class, 0) + 1
+                    )
             self._consumed_tokens += total
             self._stage_consumed_tokens[active.budget_stage] += total
             return self._new_event_locked(
@@ -623,7 +663,7 @@ class ScanTokenUsageLedger:
                 reserved_total_tokens=active.reserved_total_tokens,
                 provider_reported=bool(provider_reported),
                 conservative_charge=bool(conservative_charge),
-                budget_violation=False,
+                budget_violation=budget_violation,
                 attribution=active.attribution,
                 budget_stage=active.budget_stage,
                 model=active.model,
@@ -632,7 +672,11 @@ class ScanTokenUsageLedger:
                 call_chain_id=active.call_chain_id,
                 attempt_index=active.attempt_index,
                 logical_operation_id=active.logical_operation_id,
-                reason=reason,
+                # An actual-usage overrun is a fixed answer-free failure
+                # class.  Preserve no caller/provider text on that formal
+                # failure path; the event itself remains the immutable cost
+                # record that makes the selected attempt fail closed.
+                reason=(violation_reasons[-1] if violation_reasons else reason),
                 finish_reason=_clean(finish_reason),
                 cached_prompt_tokens=min(prompt, _token_count(cached_prompt_tokens)),
                 reasoning_tokens=min(completion, _token_count(reasoning_tokens)),
@@ -875,10 +919,27 @@ class ScanTokenUsageLedger:
                 "maximum_tokens": (
                     P6_BALANCED_MAX_TOKENS if self._p6_balanced_admission_enabled else None
                 ),
+                "admission_maximum_tokens": (
+                    P6_BALANCED_ADMISSION_MAX_TOKENS
+                    if self._p6_balanced_admission_enabled
+                    else None
+                ),
+                "prompt_accounting_headroom_tokens": (
+                    P6_BALANCED_PROMPT_ACCOUNTING_HEADROOM
+                    if self._p6_balanced_admission_enabled
+                    else None
+                ),
                 "request_count": self._p6_admission_request_count,
                 "admitted_request_count": self._p6_admission_admitted_count,
                 "denied_request_count": self._p6_admission_denied_count,
                 "denied_reasons": dict(sorted(self._p6_admission_denied_reasons.items())),
+                "budget_fail_closed": self._p6_budget_fail_closed,
+                "budget_violation_count": self._p6_budget_violation_count,
+                "budget_violation_reasons": dict(sorted(self._p6_budget_violation_reasons.items())),
+                "budget_violation_conservation_passed": (
+                    self._p6_budget_violation_count
+                    == sum(self._p6_budget_violation_reasons.values())
+                ),
                 "request_conservation_passed": (
                     self._p6_admission_request_count
                     == self._p6_admission_admitted_count + self._p6_admission_denied_count

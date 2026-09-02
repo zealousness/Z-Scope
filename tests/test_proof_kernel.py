@@ -841,6 +841,10 @@ def test_evaluation_projection_replaces_state_and_removes_stale_promotion() -> N
         selected_action_uids=(actions[0]["action_uid"],),
     )
     assert evaluation.promotion_certificate is None
+    assert evaluation.closure_evaluation.complete is False
+    assert evaluation.closure_evaluation.integrity_status == "verified"
+    assert evaluation.closure_evaluation.failure_codes == ()
+    assert evaluation.closure_evaluation.missing_clause_uids
     issue = {
         "proof_kernel_promotion_certificate": {"stale": True},
         "proof_kernel_terminal_authority_decision": {"stale": True},
@@ -852,6 +856,38 @@ def test_evaluation_projection_replaces_state_and_removes_stale_promotion() -> N
     assert issue["proof_kernel_closure_evaluation"] == (evaluation.closure_evaluation.to_dict())
     assert "proof_kernel_promotion_certificate" not in issue
     assert "proof_kernel_terminal_authority_decision" not in issue
+
+
+def test_selected_action_without_checker_result_is_integrity_failure() -> None:
+    proof_ir, obligation, actions = _artifacts(
+        "source_sink_path_exists",
+        {"source_node_uid": "B3", "sink_node_uid": "B1"},
+        {"path_exists": True},
+    )
+    engine = ProofKernelEngine()
+    catalog = engine.action_catalog(proof_ir=proof_ir, obligation=obligation)
+    frozen = freeze_proof_state(
+        proof_ir=proof_ir,
+        obligation=obligation,
+        action_catalog=catalog,
+        selected_action_uids=(actions[0]["action_uid"],),
+        check_results=(),
+        checker_result_refs=(),
+        root_manifest_sha256="a" * 64,
+    )
+
+    closure = reduce_proof_closure(
+        frozen_state=frozen,
+        proof_ir=proof_ir,
+        obligation=obligation,
+        action_catalog=catalog,
+        check_results=(),
+    )
+
+    assert closure.complete is False
+    assert closure.disposition == "needs_review"
+    assert closure.integrity_status == "invalid"
+    assert closure.failure_codes == ("selected_executable_clause_not_checked",)
 
 
 def test_authoritative_closure_rejects_required_non_executable_clause() -> None:

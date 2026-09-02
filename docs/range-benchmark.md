@@ -252,7 +252,10 @@ projection 读取 `formal_benchmark=false` 与 `release_eligible=false`，不接
 | Truth v16 product | default | `TP >= 37/61` 且 `TP >= 4 * raw_FP` | `TP >= 43/61` 且 `TP >= 9 * raw_FP` |
 | Truth v16 product | with-needs-review | `TP = 61/61` 且 `TP >= raw_FP` | `TP = 61/61` 且 `2 * TP >= 3 * raw_FP` |
 
-Truth v16 的 75 个 design-risk 项单独计分与守恒，不进入 61 个 product 项的召回或准确率分母。
+Truth v16 scorer 额外输出 61 个 product 与 75 个 design-risk 成员的 answer-separated
+SHA-256 commitments、各分区摘要和 union 摘要；quality gate 不读取 Truth，但必须据此重验每个 matched ID
+属于精确分区、两个分区互斥且各自/联合守恒。75 个 design-risk 项单独计分，不进入 61 个 product
+项的召回或准确率分母。
 default 匹配集必须是 with-needs-review 的子集，with-needs-review 必须包含全部 canonical
 `needs_review`；audit observation 不可在评分后按 Truth 隐藏 FP。挑战目标只记录、不阻塞；任一硬门禁、
 provider usage 100%、队列排空、token/tool/trace/finding/terminal 守恒、post-proof 零调用或
@@ -266,13 +269,32 @@ tampered 或绑定不完整的输入不得生成该文件。该 aggregate 只用
 
 选定 cold balanced attempt 的全部扫描调用及其重试必须严格小于 12,000,000 tokens，即最多
 11,999,999。P6 调度器在 10,500,000 软水位停止启动低价值线索，并在每批前为全部在途请求预留
-最大输出；`used + reserved_inflight` 可能超过 11,999,999 时禁止启动该批。这是 P6-only
+最大输出；prompt 使用完整 messages/tools/response-format JSON 的 UTF-8 byte 上界，并额外预留冻结的
+chat-template framing allowance，禁止把平均 chars/token 估算当作 formal reservation。`used + reserved_inflight`
+可能超过 11,999,999 时禁止启动该批。这是 P6-only
 admission；probe、canary、qualification 和独立审核单独记账，普通产品扫描仍只做运行后成本度量。
 本次把 runtime、Prompt、cache 和 proof revision 同时提升到 P6/v4。旧 TerminalAuthority v3、proof/certificate、
 checkpoint 与 cache 只作历史审计，不得授权新的 live/resume confirmation；只有能从原始 obligation 完整重建并按
 v4 重验的记录才能被当前 candidate 使用，否则保持 `needs_review`。本次 Hunter concurrency、Prompt 或 Proof Catalog 变化由确定性
 `qualification-artifact.v2.json` 重新执行 120 个 answer-isolated P4 单元；历史
 `qualification-artifact.json` 继续只读保留并维持既有 P4 review lineage，不能用新 artifact 改写旧审核。
+历史 `p5-release-status.json` 同样只证明其冻结 commit/tree，不能授权本次 P6/v4 源码。当前候选以递归、
+确定性的 package implementation root 同时绑定 scanner runtime、Prompt、rules、LLM adapter 与 Proof
+authority；生成的 P2/P4/P5 combined successor qualification 只允许执行 non-release P6 扫描，不能代替独立
+审核。只有相同 candidate/tree、successor、P6 qualification/final evidence 和三份 exact approved review
+共同形成 evidence-only `reviewed` projection 后，当前实现才可进入后续 P7/release 门禁；P6 的
+`formal_benchmark` 与 `release_eligible` 始终为 `false`。
+
+`reviewed` 状态不是可由协调者手填并重封的声明。未来 evidence-only 集成必须保存 qualification、三份角色
+review 与 final-evidence 的精确恢复 artifact、逐 artifact restore receipt 和候选 material snapshot；投影器会
+复跑 final-evidence、qualification、packet/raw-envelope/decision、冻结 reviewer identity、approved/零 blocker
+等现有严格校验，并要求独立 artifact 与 final-evidence 内副本逐字节相等。状态中的 qualification 与 final
+evidence 字段分别明确区分物理文件 SHA-256 和语义 content SHA-256，review set 只从实际内容重算。bundle 或
+receipt 缺失时 `in_progress` 仍可执行 non-release balanced，但任何伪造的 `reviewed` 必须以
+`successor_review_evidence_unavailable` 或 binding mismatch fail closed。evidence-only PR 必须以被审核 candidate
+为精确 merge base、保持单父线性历史，并由 CI 对每个中间 commit 和最终 diff 执行固定 allowlist；同一 PR
+夹带产品代码、workflow、script 或文档变化时不得生成 current projection。allowlist 只包含 reviewed status、
+deterministic integration receipt 和固定 physical evidence bundle。
 
 所有零网络门禁和 P2/P4/P5 successor qualification 通过后、完整 Range 扫描之前，必须先在原生 WSL
 Ubuntu 对开放 synthetic C 正反例执行一次 DeepSeek 单点回放。该回放固定

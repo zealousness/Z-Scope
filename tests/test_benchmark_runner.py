@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 from functools import lru_cache
@@ -82,15 +83,15 @@ def _usage_event(*, sequence: int = 1, reservation_id: str = "call-1") -> dict:
 
 
 def test_p6_retry_conservation_bounds_contract_regeneration_per_operation() -> None:
+    scan_usage = {
+        "p6_balanced_admission": {"enabled": True},
+        "rejected_before_model_count": 0,
+        "rejected_before_model_reasons": {},
+        "rejected_before_model_attempts": [],
+    }
     report = {
-        "metadata": {
-            "llm_usage": {
-                "p6_balanced_admission": {"enabled": True},
-                "rejected_before_model_count": 0,
-                "rejected_before_model_reasons": {},
-                "rejected_before_model_attempts": [],
-            }
-        }
+        owner: {"llm_usage": {"scan_token_usage": dict(scan_usage)}}
+        for owner in ("summary", "metadata", "run_manifest")
     }
     operation_id = "a" * 64
 
@@ -116,6 +117,79 @@ def test_p6_retry_conservation_bounds_contract_regeneration_per_operation() -> N
     )
     assert two["passed"] is False
     assert two["maximum_observed_contract_regenerations"] == 2
+
+
+def _p6_usage_projection_report(snapshot: dict) -> dict:
+    return {
+        owner: {"llm_usage": {"scan_token_usage": copy.deepcopy(snapshot)}}
+        for owner in ("summary", "metadata", "run_manifest")
+    }
+
+
+@pytest.mark.parametrize("missing_owner", ("summary", "metadata", "run_manifest"))
+def test_p6_scan_usage_requires_every_canonical_projection(missing_owner: str) -> None:
+    snapshot = {
+        "active_reservation_count": 0,
+        "rejected_before_model_count": 0,
+        "rejected_before_model_attempts": [],
+        "p6_balanced_admission": {
+            "enabled": True,
+            "request_count": 1,
+            "admitted_request_count": 1,
+            "denied_request_count": 0,
+            "denied_reasons": {},
+            "request_conservation_passed": True,
+        },
+    }
+    report = _p6_usage_projection_report(snapshot)
+    del report[missing_owner]["llm_usage"]["scan_token_usage"]
+
+    with pytest.raises(BenchmarkError, match=f"{missing_owner} scan usage projection is missing"):
+        benchmark_runner._p6_scan_usage_projection(report)
+
+
+@pytest.mark.parametrize("divergence", ("soft_denial", "pre_model_rejection"))
+def test_p6_scan_usage_rejects_divergent_canonical_projections(divergence: str) -> None:
+    clean = {
+        "active_reservation_count": 0,
+        "rejected_before_model_count": 0,
+        "rejected_before_model_attempts": [],
+        "p6_balanced_admission": {
+            "enabled": True,
+            "request_count": 1,
+            "admitted_request_count": 1,
+            "denied_request_count": 0,
+            "denied_reasons": {},
+            "request_conservation_passed": True,
+        },
+    }
+    report = _p6_usage_projection_report(clean)
+    divergent = report["run_manifest"]["llm_usage"]["scan_token_usage"]
+    if divergence == "soft_denial":
+        divergent["p6_balanced_admission"].update(
+            {
+                "request_count": 2,
+                "denied_request_count": 1,
+                "denied_reasons": {"p6_token_soft_watermark": 1},
+            }
+        )
+    else:
+        divergent["p6_balanced_admission"].update({"request_count": 2, "admitted_request_count": 2})
+        divergent["rejected_before_model_count"] = 1
+        divergent["rejected_before_model_attempts"] = [
+            {
+                "call_chain_id": "llm-call-chain-2",
+                "attempt_index": 1,
+                "logical_operation_id": "a" * 64,
+                "call_kind": "initial_decision",
+                "reason": "provider_request_rejected",
+            }
+        ]
+
+    with pytest.raises(BenchmarkError, match="scan usage projections diverge"):
+        benchmark_runner._p6_admission_conservation(report, physical_call_count=1)
+    with pytest.raises(BenchmarkError, match="scan usage projections diverge"):
+        benchmark_runner._p6_retry_conservation(report, usage_rows=[_usage_event()])
 
 
 @pytest.mark.parametrize("language", ["c_cpp", "java"])
@@ -216,6 +290,121 @@ def test_p6_runtime_source_snapshot_binds_python_and_non_python_assets(
     assert first_digest != second_digest
     assert (first / "AGENT.md").read_text(encoding="utf-8") == "frozen prompt\n"
     assert not any(path.is_symlink() for path in first.rglob("*"))
+
+
+def test_p6_producer_source_sandbox_physically_excludes_answer_authority(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "candidate/zscope"
+    (package / "cli").mkdir(parents=True)
+    (package / "benchmarking").mkdir()
+    (package / "product").mkdir()
+    (package / "__init__.py").write_text("\n", encoding="utf-8")
+    (package / "cli/cli.py").write_text("PRODUCT = True\n", encoding="utf-8")
+    (package / "cli/benchmark.py").write_text("SCORER = True\n", encoding="utf-8")
+    (package / "benchmarking/protocol.py").write_text("TRUTH = True\n", encoding="utf-8")
+    (package / "benchmarking/p6_review.py").write_text("DECISION = True\n", encoding="utf-8")
+    historical_qualification = (
+        package / "orchestration/hypothesis_hunter/qualification/qualification-artifact.v2.json"
+    )
+    historical_qualification.parent.mkdir(parents=True)
+    historical_qualification.write_text("{}\n", encoding="utf-8")
+    (package / "product/runtime.yaml").write_text("enabled: true\n", encoding="utf-8")
+    runtime = tmp_path / "producer/runtime-source/zscope"
+    benchmark_runner.prepare_p6_runtime_source(runtime, source_root=package)
+
+    fixture = tmp_path / "fixture"
+    (fixture / "src").mkdir(parents=True)
+    (fixture / "src/main.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
+    (fixture / "CMakeLists.txt").write_text("project(p6 C)\n", encoding="utf-8")
+    (fixture / "benchmark").mkdir()
+    (fixture / "benchmark/ground_truth.json").write_text("{}\n", encoding="utf-8")
+    scan_input = tmp_path / "producer/scan-input"
+    copy_scan_input(fixture, scan_input, "c_cpp")
+
+    receipt = benchmark_runner.validate_p6_producer_source_sandbox(
+        runtime_source=runtime,
+        scan_input=scan_input,
+        language="c_cpp",
+        host_process_sandbox={
+            "schema_version": "zscope.p6-host-producer-sandbox.v1",
+            "candidate_commit": "1" * 40,
+            "candidate_git_tree": "2" * 40,
+            "file_count": 1,
+            "source_manifest_sha256": "3" * 64,
+            "receipt_sha256": "4" * 64,
+            "scorer_present": False,
+            "truth_present": False,
+            "expected_answer_present": False,
+            "review_decision_present": False,
+            "postscore_evidence_present": False,
+        },
+    )
+
+    assert (runtime / "cli/cli.py").is_file()
+    assert (runtime / "product/runtime.yaml").is_file()
+    assert not (runtime / "cli/benchmark.py").exists()
+    assert not (runtime / "benchmarking").exists()
+    assert not (
+        runtime / "orchestration/hypothesis_hunter/qualification/qualification-artifact.v2.json"
+    ).exists()
+    assert not (scan_input / "benchmark").exists()
+    assert receipt["scorer_present"] is False
+    assert receipt["truth_present"] is False
+    assert receipt["expected_present"] is False
+    assert receipt["review_decision_present"] is False
+    assert receipt["postscore_evidence_present"] is False
+
+
+def test_p6_producer_source_sandbox_rejects_late_scorer_injection(tmp_path: Path) -> None:
+    package = tmp_path / "candidate/zscope"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("\n", encoding="utf-8")
+    runtime = tmp_path / "producer/runtime-source/zscope"
+    benchmark_runner.prepare_p6_runtime_source(runtime, source_root=package)
+    (runtime / "benchmarking").mkdir()
+    (runtime / "benchmarking/protocol.py").write_text("\n", encoding="utf-8")
+    scan_input = tmp_path / "producer/scan-input"
+    scan_input.mkdir(parents=True)
+    (scan_input / "CMakeLists.txt").write_text("project(p6 C)\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkError, match="p6_producer_sandbox_invalid") as raised:
+        benchmark_runner.validate_p6_producer_source_sandbox(
+            runtime_source=runtime,
+            scan_input=scan_input,
+            language="c_cpp",
+            host_process_sandbox={},
+        )
+
+    assert raised.value.failure_class == "input_binding_failure"
+
+
+def test_p6_producer_source_sandbox_rejects_late_qualification_injection(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "candidate/zscope"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("\n", encoding="utf-8")
+    runtime = tmp_path / "producer/runtime-source/zscope"
+    benchmark_runner.prepare_p6_runtime_source(runtime, source_root=package)
+    injected = (
+        runtime / "orchestration/hypothesis_hunter/qualification/qualification-artifact.v2.json"
+    )
+    injected.parent.mkdir(parents=True)
+    injected.write_text("{}\n", encoding="utf-8")
+    scan_input = tmp_path / "producer/scan-input"
+    scan_input.mkdir(parents=True)
+    (scan_input / "CMakeLists.txt").write_text("project(p6 C)\n", encoding="utf-8")
+
+    with pytest.raises(BenchmarkError, match="p6_producer_sandbox_invalid") as raised:
+        benchmark_runner.validate_p6_producer_source_sandbox(
+            runtime_source=runtime,
+            scan_input=scan_input,
+            language="c_cpp",
+            host_process_sandbox={},
+        )
+
+    assert raised.value.failure_class == "input_binding_failure"
 
 
 def test_p6_runtime_source_is_materialized_from_the_bound_git_revision(
@@ -886,7 +1075,7 @@ def test_usage_event_sidecar_is_archived_from_scan_workspace(tmp_path: Path) -> 
 
 
 def test_decision_trace_sidecar_is_archived_and_rebound_for_offline_explain(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scan_root = tmp_path / "scan"
     trace_root = scan_root / ".zscope_snapshots"
@@ -930,12 +1119,18 @@ def test_decision_trace_sidecar_is_archived_and_rebound_for_offline_explain(
         "decision_proof": {"coverage": "complete", "polarity": "positive"},
         **_confirmed_v4_bundle(),
     }
+    monkeypatch.setattr(
+        "zscope.orchestration.decision_trace._has_exact_v4_producer_occurrence_binding",
+        lambda item: item.get("_test_exact_producer_occurrence_binding") is True,
+    )
+    issue["_test_exact_producer_occurrence_binding"] = True
     store.record_terminal_transition(
         issue,
         level="V1",
         authority=issue["terminal_authority_decision"],
     )
     store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
+    issue.pop("_test_exact_producer_occurrence_binding")
     manifest = store.snapshot()
     report = {
         "issues": [issue],

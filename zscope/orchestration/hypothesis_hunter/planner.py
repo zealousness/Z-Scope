@@ -266,6 +266,18 @@ class AttackSurfacePlanner:
             "subject_uid": subject_uid,
             "decision_region_uid": region_uid,
             "dependency_hashes": [record.code_hash] if len(record.code_hash) == 64 else [],
+            # The proof catalog consumes this system-owned identity before it
+            # accepts any FunctionIR graph.  Keeping it nested prevents a
+            # provider-produced offer from substituting one field without
+            # invalidating the complete record/revision binding.
+            "graph_record_binding": {
+                "project_uid": semantic_map.project_id,
+                "revision_uid": semantic_map.revision,
+                "function_uid": record.function_uid,
+                "function_name": record.function_name,
+                "file": record.file_path,
+                "code_sha256": record.code_hash,
+            },
             "location": {
                 "file": record.file_path,
                 "function_uid": record.function_uid,

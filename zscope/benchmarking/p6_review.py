@@ -432,6 +432,7 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "containers/p6/runtime-lock.json",
         "containers/p6/verify_toolchain.py",
         "scripts/download_p6_run_artifact.py",
+        "scripts/project_successor_review_evidence.py",
         "scripts/p6_balanced_orchestrator.py",
         "scripts/p6_balanced_quality_gate.py",
         "scripts/p6_local_runtime.py",
@@ -452,6 +453,8 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "tests/test_p6_recovery_artifacts.py",
         "tests/test_p6_review_protocol.py",
         "tests/test_p6_workflow_protocol.py",
+        "tests/test_successor_review_integration.py",
+        "tests/test_successor_runtime_review_status.py",
         "zscope/benchmarking/isolation.py",
         "zscope/benchmarking/p6_balanced_quality_aggregate.schema.json",
         "zscope/benchmarking/p6_balanced_quality_gate.schema.json",
@@ -462,6 +465,9 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "zscope/benchmarking/p6_local_proxy_provision.schema.json",
         "zscope/benchmarking/p6_local_runtime.py",
         "zscope/benchmarking/p6_protocol.py",
+        "zscope/benchmarking/p6_producer_metrics.py",
+        "zscope/benchmarking/p6_producer_package_init.py",
+        "zscope/benchmarking/p6_producer_sandbox.py",
         "zscope/benchmarking/p6_quality_revalidation_receipt.schema.json",
         "zscope/benchmarking/p6_review.py",
         "zscope/benchmarking/p6_reviewer_usage.schema.json",
@@ -475,9 +481,22 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "zscope/orchestration/p6-proof-promotion-qualification.v1.json",
         "zscope/orchestration/proof_promotion_qualification.py",
         "zscope/orchestration/schemas/p6-proof-promotion-qualification-v1.schema.json",
+        "zscope/orchestration/schemas/successor-review-artifact-restore-receipt-v1.schema.json",
+        "zscope/orchestration/schemas/successor-review-evidence-bundle-v1.schema.json",
+        "zscope/orchestration/schemas/successor-review-integration-receipt-v1.schema.json",
+        "zscope/orchestration/schemas/successor-runtime-review-status-v1.schema.json",
+        "zscope/orchestration/successor-runtime-review-status.v1.json",
+        "zscope/orchestration/successor_review_evidence.py",
+        "zscope/orchestration/successor_review_integration.py",
+        "zscope/orchestration/successor_runtime_review_status.py",
+        "zscope/orchestration/runtime_authority.py",
+        "zscope/reporting/schema.py",
+        "zscope/rules/builtin_catalog.yaml",
+        "zscope/rules/qualification_registry.yaml",
     ),
     "proof_security": (
         ".github/workflows/p6-pilot-validation.yml",
+        "scripts/project_successor_review_evidence.py",
         "scripts/qualify_p6_proof_promotion.py",
         "scripts/prepare_v3_action_canary.py",
         "scripts/run_p6_synthetic_replay.py",
@@ -495,6 +514,8 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "tests/test_p4_hypothesis_hunter.py",
         "tests/test_proof_kernel.py",
         "tests/test_validation_runner.py",
+        "tests/test_successor_review_integration.py",
+        "tests/test_successor_runtime_review_status.py",
         "zscope/benchmarking/p6_protocol.py",
         "zscope/benchmarking/p6_review.py",
         "zscope/benchmarking/p6_reviewer_usage.schema.json",
@@ -503,6 +524,10 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "zscope/agents/proof_engine/agent.py",
         "zscope/alerts/verifier.py",
         "zscope/core/analysis/analyzer.py",
+        "zscope/core/candidates/clang_ast_cfg.py",
+        "zscope/core/candidates/cpp_domains/concurrency_shared_state.py",
+        "zscope/core/candidates/cpp_domains/resource_lifecycle.py",
+        "zscope/core/candidates/regex.py",
         "zscope/core/validation/audit_eligibility.py",
         "zscope/core/validation/authority.py",
         "zscope/core/validation/evidence_completion.py",
@@ -515,7 +540,10 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "zscope/core/validation/proof_kernel/registry.py",
         "zscope/core/validation/runner.py",
         "zscope/orchestration/hypothesis_hunter/resource_proof.py",
+        "zscope/orchestration/hypothesis_hunter/catalog.py",
+        "zscope/orchestration/hypothesis_hunter/planner.py",
         "zscope/orchestration/hypothesis_hunter/runtime.py",
+        "zscope/orchestration/candidate_envelope.py",
         "zscope/orchestration/candidates.py",
         "zscope/orchestration/decision_trace.py",
         "zscope/orchestration/parallel_analyzer.py",
@@ -523,11 +551,24 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "zscope/orchestration/proof_promotion_qualification.py",
         "zscope/orchestration/runtime_authority.py",
         "zscope/orchestration/schemas/p6-proof-promotion-qualification-v1.schema.json",
+        "zscope/orchestration/schemas/successor-review-artifact-restore-receipt-v1.schema.json",
+        "zscope/orchestration/schemas/successor-review-evidence-bundle-v1.schema.json",
+        "zscope/orchestration/schemas/successor-review-integration-receipt-v1.schema.json",
+        "zscope/orchestration/schemas/successor-runtime-review-status-v1.schema.json",
+        "zscope/orchestration/successor-runtime-review-status.v1.json",
+        "zscope/orchestration/successor_review_evidence.py",
+        "zscope/orchestration/successor_review_integration.py",
+        "zscope/orchestration/successor_runtime_review_status.py",
+        "zscope/retrieval/clang_backend.py",
+        "zscope/retrieval/clang_extractor.py",
+        "zscope/retrieval/clang_tooling_evidence.py",
         "zscope/reporting/assembler.py",
         "zscope/reporting/finding_roots.py",
         "zscope/reporting/report.py",
         "zscope/reporting/schema.py",
         "zscope/reporting/views.py",
+        "zscope/rules/builtin_catalog.yaml",
+        "zscope/rules/qualification_registry.yaml",
     ),
     "independent_benchmark": (
         ".github/actions/validate-p6-artifact/action.yml",
@@ -537,6 +578,7 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "containers/p6/runtime-lock.json",
         "containers/p6/verify_toolchain.py",
         "scripts/download_p6_run_artifact.py",
+        "scripts/project_successor_review_evidence.py",
         "scripts/p6_balanced_orchestrator.py",
         "scripts/p6_balanced_quality_gate.py",
         "scripts/p6_local_runtime.py",
@@ -557,6 +599,8 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "tests/test_p6_recovery_artifacts.py",
         "tests/test_p6_review_protocol.py",
         "tests/test_p6_workflow_protocol.py",
+        "tests/test_successor_review_integration.py",
+        "tests/test_successor_runtime_review_status.py",
         "zscope/benchmarking/isolation.py",
         "zscope/benchmarking/p6_balanced_quality_aggregate.schema.json",
         "zscope/benchmarking/p6_balanced_quality_gate.schema.json",
@@ -567,6 +611,9 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "zscope/benchmarking/p6_local_proxy_provision.schema.json",
         "zscope/benchmarking/p6_local_runtime.py",
         "zscope/benchmarking/p6_protocol.py",
+        "zscope/benchmarking/p6_producer_metrics.py",
+        "zscope/benchmarking/p6_producer_package_init.py",
+        "zscope/benchmarking/p6_producer_sandbox.py",
         "zscope/benchmarking/p6_quality_revalidation_receipt.schema.json",
         "zscope/benchmarking/p6_review.py",
         "zscope/benchmarking/p6_reviewer_usage.schema.json",
@@ -579,6 +626,18 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "zscope/orchestration/p6-proof-promotion-qualification.v1.json",
         "zscope/orchestration/proof_promotion_qualification.py",
         "zscope/orchestration/schemas/p6-proof-promotion-qualification-v1.schema.json",
+        "zscope/orchestration/schemas/successor-review-artifact-restore-receipt-v1.schema.json",
+        "zscope/orchestration/schemas/successor-review-evidence-bundle-v1.schema.json",
+        "zscope/orchestration/schemas/successor-review-integration-receipt-v1.schema.json",
+        "zscope/orchestration/schemas/successor-runtime-review-status-v1.schema.json",
+        "zscope/orchestration/successor-runtime-review-status.v1.json",
+        "zscope/orchestration/successor_review_evidence.py",
+        "zscope/orchestration/successor_review_integration.py",
+        "zscope/orchestration/successor_runtime_review_status.py",
+        "zscope/orchestration/runtime_authority.py",
+        "zscope/reporting/schema.py",
+        "zscope/rules/builtin_catalog.yaml",
+        "zscope/rules/qualification_registry.yaml",
     ),
 }
 
@@ -3709,16 +3768,24 @@ def validate_review_artifact(
 
 
 def aggregate_review_set(
-    *, packet_paths: Mapping[str, Path], output_dirs: Mapping[str, Path]
+    *,
+    packet_paths: Mapping[str, Path],
+    output_dirs: Mapping[str, Path],
+    material_roots: Optional[Mapping[str, Path]] = None,
 ) -> Mapping[str, Any]:
     if set(packet_paths) != set(REVIEW_ROLES) or set(output_dirs) != set(REVIEW_ROLES):
         raise P6ProtocolError("P6 review set requires all three frozen roles")
+    if material_roots is not None and set(material_roots) != set(REVIEW_ROLES):
+        raise P6ProtocolError("P6 review set requires all three frozen material roots")
     records: List[Mapping[str, Any]] = []
     common: set[Tuple[str, str]] = set()
     role_usages: List[Mapping[str, Any]] = []
     for role in REVIEW_ROLES:
         validate_review_artifact(
-            output_dir=output_dirs[role], packet_path=packet_paths[role], role=role
+            output_dir=output_dirs[role],
+            packet_path=packet_paths[role],
+            role=role,
+            material_root=(material_roots[role] if material_roots is not None else None),
         )
         packet = load_json_strict(packet_paths[role])
         decision = load_json_strict(output_dirs[role] / "decision.json")

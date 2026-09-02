@@ -45,17 +45,23 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "legacy_scorer_entry", "legacy_scorer_engine", "v16_scorer",
-        "quality_gate", "quality_gate_schema", "orchestrator",
+        "legacy_scorer_entry", "legacy_scorer_engine", "legacy_scorer_wrapper", "v16_scorer",
+        "quality_gate", "quality_gate_schema", "sidecar_evidence",
+        "sidecar_evidence_schema", "truth_partition_projection_schema", "provider_config", "orchestrator",
         "orchestrator_cli", "revalidation_receipt_schema", "legacy_truth",
         "v16_truth"
       ],
       "properties": {
         "legacy_scorer_entry": {"$ref": "#/$defs/sha256"},
         "legacy_scorer_engine": {"$ref": "#/$defs/sha256"},
+        "legacy_scorer_wrapper": {"$ref": "#/$defs/sha256"},
         "v16_scorer": {"$ref": "#/$defs/sha256"},
         "quality_gate": {"$ref": "#/$defs/sha256"},
         "quality_gate_schema": {"$ref": "#/$defs/sha256"},
+        "sidecar_evidence": {"$ref": "#/$defs/sha256"},
+        "sidecar_evidence_schema": {"$ref": "#/$defs/sha256"},
+        "truth_partition_projection_schema": {"$ref": "#/$defs/sha256"},
+        "provider_config": {"$ref": "#/$defs/sha256"},
         "orchestrator": {"$ref": "#/$defs/sha256"},
         "orchestrator_cli": {"$ref": "#/$defs/sha256"},
         "revalidation_receipt_schema": {"$ref": "#/$defs/sha256"},
@@ -68,7 +74,8 @@
       "additionalProperties": false,
       "required": [
         "bindings", "frozen_manifest", "legacy_score", "producer_projection",
-        "report", "usage_evidence", "v16_score", "quality_gate"
+        "report", "trace_sidecars", "usage_events", "usage_evidence", "v16_score",
+        "v16_truth_partitions", "quality_gate"
       ],
       "properties": {
         "bindings": {"$ref": "#/$defs/sha256"},
@@ -76,8 +83,11 @@
         "legacy_score": {"$ref": "#/$defs/sha256"},
         "producer_projection": {"$ref": "#/$defs/sha256"},
         "report": {"$ref": "#/$defs/sha256"},
+        "trace_sidecars": {"$ref": "#/$defs/sha256"},
+        "usage_events": {"$ref": "#/$defs/sha256"},
         "usage_evidence": {"$ref": "#/$defs/sha256"},
         "v16_score": {"$ref": "#/$defs/sha256"},
+        "v16_truth_partitions": {"$ref": "#/$defs/sha256"},
         "quality_gate": {"$ref": "#/$defs/sha256"}
       }
     }

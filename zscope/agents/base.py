@@ -556,16 +556,23 @@ class JsonToolAgent(ToolCallingAgent):
         extractor: JsonExtractor,
         json_output_spec: Optional[JsonOutputSpec],
     ) -> Any:
+        conversation_items = list(conversation)
         if json_output_spec:
             parsed = self._extract_structured_json_payload(
                 content,
                 result,
-                conversation,
+                conversation_items,
                 json_output_spec,
             )
             if parsed is not None:
                 return parsed
-        return extractor(content, result, list(conversation))
+            if self._final_tool_contract_required(
+                result,
+                conversation_items,
+                json_output_spec,
+            ):
+                return None
+        return extractor(content, result, conversation_items)
 
     def _extract_structured_json_payload(
         self,
@@ -574,11 +581,21 @@ class JsonToolAgent(ToolCallingAgent):
         conversation: Iterable[Dict[str, Any]],
         json_output_spec: JsonOutputSpec,
     ) -> Any:
-        for data in self._final_tool_payloads(result, conversation, json_output_spec):
+        conversation_items = list(conversation)
+        for data in self._final_tool_payloads(result, conversation_items, json_output_spec):
             parsed = self._coerce_payload_for_spec(data, json_output_spec)
             if parsed is not None:
                 return parsed
-        for text in self._text_sources(content, result, conversation):
+        # Once a response is governed by a final-tool contract, prose is not a
+        # second authorization channel.  In particular, valid JSON text cannot
+        # rescue a missing, mixed, duplicated, or malformed final tool batch.
+        if self._final_tool_contract_required(
+            result,
+            conversation_items,
+            json_output_spec,
+        ):
+            return None
+        for text in self._text_sources(content, result, conversation_items):
             for data in extract_json_blocks(text):
                 parsed = self._coerce_payload_for_spec(data, json_output_spec)
                 if parsed is not None:
@@ -603,37 +620,108 @@ class JsonToolAgent(ToolCallingAgent):
         conversation: Iterable[Dict[str, Any]],
         json_output_spec: JsonOutputSpec,
     ) -> Iterable[Dict[str, Any]]:
-        messages = []
-        if isinstance(result.get("message"), dict):
-            messages.append(result["message"])
-        messages.extend(list(conversation))
-        for message in reversed(messages):
-            tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
-            if not isinstance(tool_calls, list):
-                continue
-            for tool_call in tool_calls:
-                function = tool_call.get("function") if isinstance(tool_call, dict) else None
-                if not isinstance(function, dict):
-                    continue
-                if function.get("name") != json_output_spec.final_tool_name:
-                    continue
-                payload = cls._coerce_tool_arguments(function.get("arguments"))
-                if payload is not None:
-                    yield payload
+        # ``result["message"]`` is commonly also the final item in
+        # ``conversation``.  Inspecting both used to double-count one provider
+        # response and, worse, allowed one valid final tool to hide a sibling
+        # action or duplicate final call.  A finalization response is accepted
+        # only when its latest response message contains exactly one call and
+        # that call is the configured final tool with object arguments.
+        message = cls._final_tool_response_message(result, conversation)
+        if message is None:
+            return
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list) or len(tool_calls) != 1:
+            return
+        tool_call = tool_calls[0]
+        function = tool_call.get("function") if isinstance(tool_call, dict) else None
+        if not isinstance(function, dict):
+            return
+        if function.get("name") != json_output_spec.final_tool_name:
+            return
+        payload = cls._coerce_tool_arguments(function.get("arguments"))
+        if payload is not None:
+            yield payload
+
+    @staticmethod
+    def _final_tool_response_message(
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        result_message = result.get("message")
+        if isinstance(result_message, dict):
+            return result_message
+        for candidate in reversed(list(conversation)):
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("role") == "assistant"
+                and "tool_calls" in candidate
+            ):
+                return candidate
+        return None
+
+    @classmethod
+    def _final_tool_contract_required(
+        cls,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+        json_output_spec: JsonOutputSpec,
+    ) -> bool:
+        if result.get("_zscope_final_tool_contract_required") is True:
+            return True
+        if result.get("terminal_tool_name") == json_output_spec.final_tool_name:
+            return True
+        message = cls._final_tool_response_message(result, conversation)
+        if cls._message_contains_final_tool(message, json_output_spec.final_tool_name):
+            return True
+        # ``result.message`` is authoritative for payload extraction, but it
+        # must not hide an earlier assistant response that already invoked the
+        # configured final tool.  Ordinary exploratory tool calls do not, by
+        # themselves, convert a later structured response into a tool contract.
+        return any(
+            isinstance(candidate, dict)
+            and candidate.get("role") == "assistant"
+            and cls._message_contains_final_tool(
+                candidate,
+                json_output_spec.final_tool_name,
+            )
+            for candidate in conversation
+        )
+
+    @staticmethod
+    def _message_contains_final_tool(
+        message: Any,
+        final_tool_name: str,
+    ) -> bool:
+        if not isinstance(message, dict):
+            return False
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return False
+        return any(
+            isinstance(tool_call, dict)
+            and isinstance(tool_call.get("function"), dict)
+            and tool_call["function"].get("name") == final_tool_name
+            for tool_call in tool_calls
+        )
+
+    @staticmethod
+    def _mark_final_tool_contract(
+        response: Dict[str, Any],
+        *,
+        required: bool,
+    ) -> Dict[str, Any]:
+        marked = dict(response)
+        marked["_zscope_final_tool_contract_required"] = bool(required)
+        return marked
 
     @staticmethod
     def _coerce_tool_arguments(arguments: Any) -> Optional[Dict[str, Any]]:
-        if isinstance(arguments, dict):
-            return arguments
-        if not isinstance(arguments, str):
-            return None
         try:
-            data = json.loads(arguments)
+            return LLMClient._parse_terminal_tool_args(arguments)
         except P6BalancedTokenAdmissionError:
             raise
-        except Exception:
+        except (TypeError, ValueError, json.JSONDecodeError):
             return None
-        return data if isinstance(data, dict) else None
 
     def _run_json_structured_finalization(
         self,
@@ -735,6 +823,9 @@ class JsonToolAgent(ToolCallingAgent):
                 "content": str(message.get("content") or ""),
                 "conversation": final_conversation,
                 "message": message,
+                "_zscope_final_tool_contract_required": bool(
+                    response.get("_zscope_final_tool_contract_required")
+                ),
                 "reasoning_content": message.get("reasoning_content"),
                 "finish_reason": choice.get("finish_reason"),
                 "provider_model": response.get("model")
@@ -894,6 +985,9 @@ class JsonToolAgent(ToolCallingAgent):
                 "content": str(message.get("content") or ""),
                 "conversation": repair_messages,
                 "message": message,
+                "_zscope_final_tool_contract_required": bool(
+                    response.get("_zscope_final_tool_contract_required")
+                ),
                 "reasoning_content": message.get("reasoning_content"),
                 "finish_reason": choice.get("finish_reason"),
                 "provider_model": response.get("model")
@@ -980,7 +1074,7 @@ class JsonToolAgent(ToolCallingAgent):
                 else "auto"
             )
         try:
-            return chat_completion(
+            response = chat_completion(
                 prompt_messages,
                 tools=tools,
                 tool_choice=tool_choice,
@@ -989,13 +1083,21 @@ class JsonToolAgent(ToolCallingAgent):
                 trace_label=trace_label,
                 trace_iteration=trace_iteration,
             )
+            return self._mark_final_tool_contract(
+                response,
+                required=bool(tools and force_final_tool),
+            )
         except TypeError:
-            return chat_completion(
+            response = chat_completion(
                 prompt_messages,
                 tools=[final_tool_schema],
                 trace_agent=self.name,
                 trace_label=trace_label,
                 trace_iteration=trace_iteration,
+            )
+            return self._mark_final_tool_contract(
+                response,
+                required=force_final_tool,
             )
         except P6BalancedTokenAdmissionError:
             raise
@@ -1016,7 +1118,7 @@ class JsonToolAgent(ToolCallingAgent):
                     )
                 return None
             try:
-                return chat_completion(
+                response = chat_completion(
                     prompt_messages,
                     tools=[final_tool_schema],
                     tool_choice=(
@@ -1031,13 +1133,21 @@ class JsonToolAgent(ToolCallingAgent):
                     trace_label=f"{trace_label}; structured_fallback=tool",
                     trace_iteration=trace_iteration,
                 )
+                return self._mark_final_tool_contract(
+                    response,
+                    required=force_final_tool,
+                )
             except TypeError:
-                return chat_completion(
+                response = chat_completion(
                     prompt_messages,
                     tools=[final_tool_schema],
                     trace_agent=self.name,
                     trace_label=f"{trace_label}; structured_fallback=tool",
                     trace_iteration=trace_iteration,
+                )
+                return self._mark_final_tool_contract(
+                    response,
+                    required=force_final_tool,
                 )
             except P6BalancedTokenAdmissionError:
                 raise

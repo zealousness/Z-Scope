@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -16,6 +20,10 @@ from scripts.validate_p6_artifact_tree import (
 from scripts.project_p6_entry_lineage import project_gate_lineage
 from scripts import run_p6_cold_producer
 from zscope.benchmarking.runner import BenchmarkError
+from zscope.benchmarking.p6_producer_sandbox import (
+    materialize_p6_host_producer_sandbox,
+    p6_host_producer_child_environment,
+)
 from zscope.benchmarking.p6_protocol import (
     P6ProtocolError,
     canonical_sha256,
@@ -65,7 +73,7 @@ def test_dispatcher_binds_control_candidate_and_exact_local_wsl_evidence() -> No
         "control_plane_commit",
         "candidate_sha",
         "local_evidence_commit",
-        "local_quality_gate_sha256",
+        "local_evidence_receipt_sha256",
     }
     assert all(
         value["required"] == "true"
@@ -74,11 +82,10 @@ def test_dispatcher_binds_control_candidate_and_exact_local_wsl_evidence() -> No
     assert "P6_CONTROL_PLANE_COMMIT: ${{ inputs.control_plane_commit }}" in text
     assert "P6_CANDIDATE_COMMIT: ${{ inputs.candidate_sha }}" in text
     assert "P6_LOCAL_EVIDENCE_COMMIT: ${{ inputs.local_evidence_commit }}" in text
-    assert "P6_LOCAL_QUALITY_GATE_SHA256: ${{ inputs.local_quality_gate_sha256 }}" in text
     assert (
-        "P6_LOCAL_QUALITY_GATE_PATH: "
-        ".github/evidence/p6/local-balanced-quality-gate.json" in text
+        "P6_LOCAL_EVIDENCE_RECEIPT_SHA256: " "${{ inputs.local_evidence_receipt_sha256 }}" in text
     )
+    assert "P6_LOCAL_EVIDENCE_ROOT: " ".github/evidence/p6/local-balanced-evidence" in text
     for job in workflow["jobs"].values():
         for step in job.get("steps", []):
             assert "${{ inputs." not in step.get("run", "")
@@ -98,7 +105,7 @@ def test_dispatcher_binds_control_candidate_and_exact_local_wsl_evidence() -> No
         assert f"inputs.{name.lower()}" not in text
 
 
-def test_entry_fails_closed_before_provider_work_without_exact_local_wsl_gate() -> None:
+def test_entry_fails_closed_before_provider_work_without_complete_local_wsl_bundle() -> None:
     _, workflow = _workflow()
     entry_steps = workflow["jobs"]["entry"]["steps"]
     evidence = next(
@@ -108,6 +115,12 @@ def test_entry_fails_closed_before_provider_work_without_exact_local_wsl_gate() 
         == "Require immutable passed local WSL balanced evidence before provider work"
     )
     evidence_index = entry_steps.index(evidence)
+    successor_projection = next(
+        step
+        for step in entry_steps
+        if step.get("name") == "Validate resource-backed current-successor review projection"
+    )
+    projection_index = entry_steps.index(successor_projection)
     secret_index = next(
         index
         for index, step in enumerate(entry_steps)
@@ -119,34 +132,20 @@ def test_entry_fails_closed_before_provider_work_without_exact_local_wsl_gate() 
         for index, step in enumerate(entry_steps)
         if step.get("name") == "Remove exact-label stale P6 scanners before any secret is loaded"
     )
-    assert evidence_index < cleanup_index < secret_index
+    assert projection_index < evidence_index < cleanup_index < secret_index
+    assert "scripts/project_successor_review_evidence.py check" in successor_projection["run"]
+    assert "--repository-root . --head HEAD" in successor_projection["run"]
 
     script = evidence["run"]
     for exact_binding in (
-        "parent_row != [evidence_commit, tested_commit]",
-        '"merge-base", "--is-ancestor", evidence_commit, control_commit',
-        'evidence_change != [f"A\\t{evidence_path}"]',
-        'candidate_change != [f"A\\t{evidence_path}"]',
-        "candidate_tree != evidence_tree",
-        '"100644", "blob"',
-        "hashlib.sha256(evidence_bytes).hexdigest() != expected_digest",
-        "load_json_strict(evidence_file)",
-        "validate_quality_gate(gate)",
-        'gate.get("hard_gate_passed") is not True',
-        'gate.get("formal_benchmark") is not False',
-        'gate.get("release_eligible") is not False',
-        '"git_commit": tested_commit',
-        '"git_tree": tested_tree',
-        '"candidate_sha256": tested_sha256',
-        '"provider_identity_sha256": contract.identity_sha256',
-        '"runtime_sha256": runtime_sha256',
-        '"config_sha256": contract.config_sha256',
+        "scripts/p6_balanced_orchestrator.py verify-local-evidence",
+        '--hosted-control-plane-commit "$P6_CONTROL_PLANE_COMMIT"',
+        '--evidence-commit "$P6_LOCAL_EVIDENCE_COMMIT"',
+        '--receipt-sha256 "$P6_LOCAL_EVIDENCE_RECEIPT_SHA256"',
+        'test "$P6_CANDIDATE_COMMIT" = "$P6_CONTROL_PLANE_COMMIT"',
     ):
         assert exact_binding in script
-    assert "require_p6_provider_contract(" in script
-    assert "prepare_p6_runtime_source(" in script
-    assert "git_revision=candidate_commit" in script
-    assert "if ! validate_local_evidence >/dev/null 2>&1; then" in script
+    assert "local-balanced-quality-gate.json" not in script
     assert "input_binding_failure" in script
     assert "|| true" not in script
     assert "continue-on-error" not in evidence
@@ -159,7 +158,7 @@ def test_entry_fails_closed_before_provider_work_without_exact_local_wsl_gate() 
 
     identities = entry_steps[0]["run"]
     assert '[[ "$P6_LOCAL_EVIDENCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]' in identities
-    assert '[[ "$P6_LOCAL_QUALITY_GATE_SHA256" =~ ^[0-9a-f]{64}$ ]]' in identities
+    assert '[[ "$P6_LOCAL_EVIDENCE_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]' in identities
     for job_name in (
         "provider_probe",
         "anonymous_qualification",
@@ -349,8 +348,12 @@ def test_balanced_quality_scoring_is_post_freeze_truth_isolated_and_hard_gated()
     assert "score_range_v5.py" not in balanced_script
     assert "Z_SCOPE_BENCHMARK_TRUTH" not in balanced_script
     assert "score.json" not in balanced_script
+    assert "scripts/run_p6_cold_producer.py --scan-depth balanced" in balanced_script
+    assert "Checkout candidate as untrusted read-only input" == balanced["steps"][1]["name"]
 
     assert quality["needs"] == ["cold_balanced"]
+    assert quality["steps"][0]["name"] == "Checkout immutable control plane"
+    assert quality["steps"][1]["name"] == "Checkout candidate as untrusted read-only input"
     assert "--producer-job 'one isolated cold balanced pilot'" in quality_script
     assert '--artifact-id "$BALANCED_ID"' in quality_script
     assert '--artifact-digest "sha256:$BALANCED_DIGEST"' in quality_script
@@ -1400,20 +1403,412 @@ def test_control_plane_never_executes_or_imports_candidate_on_host() -> None:
             assert "python3 $P6_CANDIDATE_ROOT" not in run
 
 
+def test_cold_host_process_uses_a_physical_answer_free_cwd_and_pythonpath(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    for relative in (
+        "scripts/run_p6_cold_producer.py",
+        "zscope/__init__.py",
+        "zscope/benchmarking/__init__.py",
+        "zscope/benchmarking/p6_producer_metrics.py",
+        "zscope/benchmarking/p6_producer_package_init.py",
+        "zscope/benchmarking/p6_producer_sandbox.py",
+        "zscope/benchmarking/runner.py",
+        "test/range/zscope.benchmark.yaml",
+        "test/range/src/example.c",
+    ):
+        target = repository / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = Path(relative)
+        target.write_bytes(source.read_bytes() if source.is_file() else b"placeholder\n")
+    forbidden = {
+        "test/range/benchmark/ground_truth.json": b"{}\n",
+        "zscope/benchmarking/protocol.py": b"SCORER = True\n",
+        "zscope/cli/benchmark.py": b"SCORER_ENTRY = True\n",
+        "zscope/core/ground_truth.json": b"{}\n",
+        "zscope/core/review_packets/proof.json": b"{}\n",
+        "zscope/orchestration/hypothesis_hunter/qualification/qualification-artifact.v2.json": b"{}\n",
+        ".github/evidence/p6/review/decision.json": b"{}\n",
+        "zscope/benchmarking/postscore_trace.py": b"POSTSCORE = True\n",
+    }
+    for relative, payload in forbidden.items():
+        target = repository / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    for command in (
+        ("git", "init", "--quiet"),
+            ("git", "-c", "core.autocrlf=false", "add", "."),
+        (
+            "git",
+            "-c",
+            "user.name=P6 Test",
+            "-c",
+            "user.email=p6@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "candidate",
+        ),
+    ):
+        subprocess.run(command, cwd=repository, check=True)
+    candidate = subprocess.check_output(
+        ("git", "rev-parse", "HEAD"), cwd=repository, text=True
+    ).strip()
+    sandbox = tmp_path / "producer-source"
+    receipt = tmp_path / "producer-receipt.json"
+    materialize_p6_host_producer_sandbox(
+        repository_root=repository,
+        candidate_commit=candidate,
+        destination=sandbox,
+        receipt_path=receipt,
+    )
+
+    for relative in forbidden:
+        assert not (sandbox / relative).exists()
+    environment = p6_host_producer_child_environment(
+        {
+            **os.environ,
+            "GITHUB_WORKSPACE": str(tmp_path / "control"),
+            "P6_CONTROL_ROOT": str(tmp_path / "control"),
+            "P6_CANDIDATE_ROOT": str(tmp_path / "candidate"),
+            "Z_SCOPE_BENCHMARK_TRUTH": str(tmp_path / "truth.json"),
+            "GIT_DIR": str(repository / ".git"),
+            "GIT_WORK_TREE": str(repository),
+            "GIT_INDEX_FILE": str(repository / ".git/index"),
+            "GIT_OBJECT_DIRECTORY": str(repository / ".git/objects"),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(repository / ".git/objects"),
+            "GIT_COMMON_DIR": str(repository / ".git"),
+            "PWD": str(repository),
+            "OLDPWD": str(tmp_path),
+            "INIT_CWD": str(repository),
+            "RUNNER_WORKSPACE": str(tmp_path),
+            "CUSTOM_WORKSPACE_LOCATOR": str(repository / "test/range"),
+            "Z_SCOPE_P6_CANDIDATE_COMMIT": candidate,
+        },
+        sandbox_root=sandbox,
+        receipt_path=receipt,
+        forbidden_roots=(repository,),
+    )
+    probe = (
+        "import json,os,sys; from pathlib import Path; "
+        "from zscope.benchmarking.p6_producer_sandbox import "
+        "validate_p6_host_producer_sandbox; root=Path(os.environ["
+        "'Z_SCOPE_P6_HOST_PRODUCER_ROOT']); receipt=Path(os.environ["
+        "'Z_SCOPE_P6_HOST_PRODUCER_RECEIPT']); value="
+        "validate_p6_host_producer_sandbox(sandbox_root=root,receipt_path=receipt,"
+        "expected_candidate_commit=os.environ['Z_SCOPE_P6_CANDIDATE_COMMIT']); "
+        "print(json.dumps({'cwd':str(Path.cwd()),'pythonpath':os.environ['PYTHONPATH'],"
+        "'scorer':(root/'zscope/benchmarking/protocol.py').exists(),"
+        "'truth':(root/'test/range/benchmark/ground_truth.json').exists(),"
+        "'schema':value['schema_version']}))"
+    )
+    completed = subprocess.run(
+        (sys.executable, "-c", probe),
+        cwd=sandbox,
+        env=environment,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    observed = json.loads(completed.stdout)
+    assert observed == {
+        "cwd": str(sandbox.resolve()),
+        "pythonpath": str(sandbox.resolve()),
+        "scorer": False,
+        "truth": False,
+        "schema": "zscope.p6-host-producer-sandbox.v1",
+    }
+    assert "GITHUB_WORKSPACE" not in environment
+    assert "P6_CONTROL_ROOT" not in environment
+    assert "P6_CANDIDATE_ROOT" not in environment
+    assert "Z_SCOPE_BENCHMARK_TRUTH" not in environment
+    assert not any(key.upper().startswith("GIT_") for key in environment)
+    for key in (
+        "PWD",
+        "OLDPWD",
+        "INIT_CWD",
+        "RUNNER_WORKSPACE",
+        "CUSTOM_WORKSPACE_LOCATOR",
+    ):
+        assert key not in environment
+    git_probe = subprocess.run(
+        ("git", "rev-parse", "--show-toplevel"),
+        cwd=sandbox,
+        env=environment,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    assert git_probe.returncode != 0
+    assert git_probe.stdout == ""
+
+
+def test_cold_wrapper_enters_host_sandbox_before_importing_benchmark_runner() -> None:
+    wrapper = Path("scripts/run_p6_cold_producer.py").read_text(encoding="utf-8")
+    runner = Path("zscope/benchmarking/runner.py").read_text(encoding="utf-8")
+
+    assert "materialize_p6_host_producer_sandbox(" in wrapper
+    assert "cwd=str(sandbox)" in wrapper
+    assert "p6_host_producer_child_environment(" in wrapper
+    assert "forbidden_roots=(source_root,)" in wrapper
+    assert 'launch_environment["Z_SCOPE_P6_API_KEY_FILE"]' in wrapper
+    assert "str(private_output)" in wrapper
+    assert "from zscope.benchmarking.runner import BenchmarkError, run_benchmark" not in wrapper
+    assert (
+        "from zscope.benchmarking.protocol import (" not in runner.split("def score_artifact", 1)[0]
+    )
+
+
+@pytest.mark.parametrize("child_returncode", [0, 2, "raise"])
+def test_cold_launcher_does_not_pass_control_checkout_locators_to_actual_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_returncode: int | str,
+) -> None:
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    control = tmp_path / "control"
+    script = control / "scripts/run_p6_cold_producer.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# launcher\n", encoding="utf-8")
+    key_file = control / "test/range/zscope.local.env"
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text("Z_SCOPE_API_KEY=private\n", encoding="utf-8")
+    attestation = control / "expected-proxy-attestation.json"
+    attestation.write_text("{}\n", encoding="utf-8")
+    if os.name == "posix":
+        key_file.chmod(0o600)
+        attestation.chmod(0o600)
+    requested_output = control / "p6-balanced"
+    marker = runner_temp / "p6-cold-balanced-failure.json"
+    candidate = "a" * 40
+    captured: dict[str, object] = {}
+
+    def fake_materialize(**kwargs: object) -> dict[str, object]:
+        destination = Path(str(kwargs["destination"]))
+        receipt = Path(str(kwargs["receipt_path"]))
+        (destination / "scripts").mkdir(parents=True)
+        (destination / "scripts/run_p6_cold_producer.py").write_text("# child\n", encoding="utf-8")
+        receipt.write_text("{}\n", encoding="utf-8")
+        return {}
+
+    def fake_child(
+        command: list[str],
+        *,
+        cwd: str,
+        env: dict[str, str],
+        stdin: object,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del stdin, check
+        captured.update(command=list(command), cwd=cwd, environment=dict(env))
+        if child_returncode == "raise":
+            raise OSError("synthetic child launch failure")
+        if child_returncode == 0:
+            private_output = Path(command[command.index("--output") + 1])
+            private_output.mkdir()
+            (private_output / "aggregate.json").write_text("{}\n", encoding="utf-8")
+        else:
+            marker.write_text(
+                '{"failure_class":"internal_failure","failure_count":1}\n',
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(command, int(child_returncode))
+
+    monkeypatch.setattr(run_p6_cold_producer, "__file__", str(script))
+    monkeypatch.setattr(
+        run_p6_cold_producer,
+        "materialize_p6_host_producer_sandbox",
+        fake_materialize,
+    )
+    monkeypatch.setattr(run_p6_cold_producer.subprocess, "run", fake_child)
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.setenv("Z_SCOPE_P6_CANDIDATE_COMMIT", candidate)
+    monkeypatch.setenv("Z_SCOPE_P6_API_KEY_FILE", str(key_file))
+    monkeypatch.setenv("Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE", str(attestation))
+    monkeypatch.setenv(
+        "Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_SHA256",
+        sha256_file(attestation),
+    )
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(control))
+    monkeypatch.setenv("P6_CONTROL_ROOT", str(control))
+    monkeypatch.setenv("GIT_DIR", str(control / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(control))
+    monkeypatch.setenv("CUSTOM_WORKSPACE_LOCATOR", str(control / "test/range"))
+
+    invocation = run_p6_cold_producer.argparse.Namespace(
+        scan_depth="balanced",
+        output=requested_output,
+        failure_marker=marker,
+    )
+    if child_returncode == "raise":
+        with pytest.raises(OSError, match="synthetic child launch failure"):
+            run_p6_cold_producer._run_from_answer_free_host_sandbox(invocation)
+        result = None
+    else:
+        result = run_p6_cold_producer._run_from_answer_free_host_sandbox(invocation)
+
+    if child_returncode != "raise":
+        assert result == child_returncode
+        assert (requested_output / "aggregate.json").is_file() is (child_returncode == 0)
+    command = captured["command"]
+    environment = captured["environment"]
+    assert isinstance(command, list)
+    assert isinstance(environment, dict)
+    serialized_child_inputs = json.dumps(
+        {"command": command, "environment": environment}, sort_keys=True
+    )
+    assert str(control) not in serialized_child_inputs
+    assert str(requested_output) not in command
+    assert not any(str(key).upper().startswith("GIT_") for key in environment)
+    assert captured["cwd"] == environment["Z_SCOPE_P6_HOST_PRODUCER_ROOT"]
+    assert environment["PYTHONPATH"] == captured["cwd"]
+    assert Path(environment["Z_SCOPE_P6_API_KEY_FILE"]).parent == runner_temp
+    assert (
+        Path(environment["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"]).parent == runner_temp
+    )
+    assert not Path(environment["Z_SCOPE_P6_API_KEY_FILE"]).exists()
+    assert not Path(environment["Z_SCOPE_BENCHMARK_EXPECTED_PROXY_ATTESTATION_FILE"]).exists()
+    assert not any(path.name.endswith("-key.env") for path in runner_temp.iterdir())
+    assert not any(path.name.endswith("-proxy.json") for path in runner_temp.iterdir())
+    assert all(
+        b"Z_SCOPE_API_KEY=private" not in path.read_bytes()
+        for path in runner_temp.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+
+
+def test_answer_free_host_tree_imports_runner_without_loading_scorer(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    shutil.copytree(
+        Path("zscope"),
+        repository / "zscope",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    (repository / "scripts").mkdir()
+    shutil.copy2(
+        Path("scripts/run_p6_cold_producer.py"),
+        repository / "scripts/run_p6_cold_producer.py",
+    )
+    for relative in ("CMakeLists.txt", "README.md", "zscope.benchmark.yaml"):
+        source = Path("test/range") / relative
+        if source.is_file():
+            target = repository / "test/range" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    for directory in ("src", "include", "internal"):
+        source = Path("test/range") / directory
+        if source.is_dir():
+            shutil.copytree(source, repository / "test/range" / directory)
+    qualification_output = (
+        repository / "zscope/orchestration/p6-proof-promotion-qualification.v1.json"
+    )
+    status_output = repository / "zscope/orchestration/successor-runtime-review-status.v1.json"
+    qualification_environment = dict(os.environ)
+    qualification_environment["PYTHONPATH"] = str(repository)
+    subprocess.run(
+        (
+            sys.executable,
+            str(Path("scripts/qualify_p6_proof_promotion.py").resolve()),
+            "--output",
+            str(qualification_output),
+            "--status-output",
+            str(status_output),
+        ),
+        cwd=Path.cwd(),
+        env=qualification_environment,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    for command in (
+        ("git", "init", "--quiet"),
+        ("git", "-c", "core.autocrlf=false", "add", "."),
+        (
+            "git",
+            "-c",
+            "user.name=P6 Test",
+            "-c",
+            "user.email=p6@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "candidate",
+        ),
+    ):
+        subprocess.run(command, cwd=repository, check=True)
+    candidate = subprocess.check_output(
+        ("git", "rev-parse", "HEAD"), cwd=repository, text=True
+    ).strip()
+    sandbox = tmp_path / "producer-source"
+    receipt = tmp_path / "producer-receipt.json"
+    materialize_p6_host_producer_sandbox(
+        repository_root=repository,
+        candidate_commit=candidate,
+        destination=sandbox,
+        receipt_path=receipt,
+    )
+    environment = p6_host_producer_child_environment(
+        {**os.environ, "Z_SCOPE_P6_CANDIDATE_COMMIT": candidate},
+        sandbox_root=sandbox,
+        receipt_path=receipt,
+    )
+    probe = (
+        "import json,sys; from pathlib import Path; "
+        "from zscope.benchmarking.runner import run_benchmark; root=Path.cwd(); "
+            "from zscope.orchestration.proof_promotion_qualification import load_runtime_successor_qualification; successor=load_runtime_successor_qualification(); "
+        "print(json.dumps({'callable':callable(run_benchmark),"
+        "'successor_loaded':successor['status']=='local_candidate_qualified',"
+        "'scorer_loaded':'zscope.benchmarking.protocol' in sys.modules,"
+        "'scorer_present':(root/'zscope/benchmarking/protocol.py').exists(),"
+        "'scorer_entry_present':(root/'zscope/cli/benchmark.py').exists(),"
+        "'truth_present':(root/'test/range/benchmark').exists(),"
+        "'qualification_present':(root/'zscope/orchestration/hypothesis_hunter/qualification/qualification-artifact.v2.json').exists(),"
+        "'review_present':(root/'.github/evidence').exists(),"
+        "'postscore_present':(root/'zscope/benchmarking/postscore_trace.py').exists()}))"
+    )
+    completed = subprocess.run(
+        (sys.executable, "-B", "-c", probe),
+        cwd=sandbox,
+        env=environment,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    assert json.loads(completed.stdout) == {
+        "callable": True,
+        "successor_loaded": True,
+        "scorer_loaded": False,
+        "scorer_present": False,
+        "scorer_entry_present": False,
+        "truth_present": False,
+        "qualification_present": False,
+        "review_present": False,
+        "postscore_present": False,
+    }
+
+
 def test_candidate_is_exact_normal_merge_of_tested_tree_plus_evidence() -> None:
     text, _ = _workflow()
+    verifier = Path("zscope/benchmarking/p6_balanced_orchestrator.py").read_text(encoding="utf-8")
 
     assert 'test "$P6_CANDIDATE_COMMIT" = "$P6_CONTROL_PLANE_COMMIT"' in text
     assert (
         "test \"$(git rev-parse 'HEAD^{tree}')\" = "
         '"$(git -C "$P6_CANDIDATE_ROOT" rev-parse \'HEAD^{tree}\')"'
     ) in text
-    assert "len(candidate_parents) != 3" in text
-    assert "evidence_commit not in candidate_parents[1:]" in text
-    assert "parent_row != [evidence_commit, tested_commit]" in text
-    assert '"merge-base", "--is-ancestor", evidence_commit, control_commit' in text
-    assert "candidate_tree != evidence_tree" in text
-    assert 'candidate_change != [f"A\\t{evidence_path}"]' in text
+    assert "len(hosted_parents) != 3" in verifier
+    assert "evidence_commit not in hosted_parents[1:]" in verifier
+    assert "len(evidence_parents) != 2" in verifier
+    assert "changed_paths(tested_commit, evidence_commit)" in verifier
+    assert "changed_paths(tested_commit, hosted_control_plane_commit)" in verifier
+    assert 'f"{evidence_commit}^{{tree}}"' in verifier
+    assert 'f"{hosted_control_plane_commit}^{{tree}}"' in verifier
     assert (
         'control_object="$(git rev-parse "${P6_CONTROL_PLANE_COMMIT}:${protected_path}")"' in text
     )
@@ -1669,6 +2064,7 @@ def test_cold_producer_persists_only_the_typed_benchmark_failure(
             scan_depth=depth,
             output=tmp_path / "output",
             failure_marker=marker,
+            require_source_sandbox=False,
         )
         == 2
     )
@@ -1695,6 +2091,7 @@ def test_cold_producer_maps_unknown_exceptions_to_internal_failure(
             scan_depth="fast",
             output=tmp_path / "output",
             failure_marker=marker,
+            require_source_sandbox=False,
         )
         == 2
     )
@@ -1724,6 +2121,7 @@ def test_cold_producer_forces_answer_free_scanning_before_external_freeze(
             scan_depth="balanced",
             output=tmp_path / "output",
             failure_marker=marker,
+            require_source_sandbox=False,
         )
         == 0
     )

@@ -9,14 +9,28 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from ..orchestration.candidate_envelope import CANDIDATE_SCHEMA_VERSION
+from ..orchestration.proof_promotion_qualification import (
+    load_runtime_successor_qualification as load_successor_qualification,
+)
+from ..orchestration.successor_runtime_review_status import (
+    SUCCESSOR_RUNTIME_REVIEW_MANIFEST,
+    validate_current_successor_runtime_review_status,
+    validate_successor_runtime_review_status,
+)
 from ..orchestration.runtime_authority import (
     P5_RELEASE_STATUS,
     RUNTIME_CACHE_EPOCH,
+    current_successor_reviewed,
     validate_runtime_authority_manifest,
 )
 
 
 REPORT_SCHEMA_VERSION = 3
+RUN_MANIFEST_SCHEMA_VERSION = "zscope.run-manifest.v3"
+# A report produced before the current deterministic successor was projected
+# into its manifest must never become reusable merely because it happens to
+# share the broader runtime-authority cache epoch.
+REPORT_REUSE_EPOCH = "zscope.report-reuse.successor-bound.v1"
 FINDING_STATUSES = {"clean", "needs_review", "confirmed"}
 COMPLETENESS_STATUSES = {"complete", "partial", "degraded", "failed", "interrupted"}
 EXIT_POLICIES = {"review", "confirmed", "legacy"}
@@ -423,6 +437,41 @@ def scan_outcome(finding: str, completeness: str) -> str:
     return finding if finding in FINDING_STATUSES else "clean"
 
 
+def current_successor_runtime_binding() -> Dict[str, str]:
+    """Load the exact fresh deterministic successor identity.
+
+    This deliberately uses the strict qualification loader rather than the
+    review-status projection.  An ``in_progress`` successor may produce a
+    non-release report, while a stale/malformed qualification cannot be used
+    to bind either a new report or a historical reuse decision.
+    """
+
+    successor = load_successor_qualification()
+    implementation_root = str(successor["implementation_root_sha256"])
+    qualification_sha256 = str(successor["content_sha256"])
+    review_status = SUCCESSOR_RUNTIME_REVIEW_MANIFEST
+    valid_review, reason = validate_successor_runtime_review_status(
+        review_status,
+        expected_implementation_root_sha256=implementation_root,
+        expected_successor_qualification_sha256=qualification_sha256,
+    )
+    if not valid_review:
+        raise ValueError(reason)
+    current_review, current_reason = validate_current_successor_runtime_review_status(review_status)
+    if review_status.get("status") == "reviewed":
+        if not current_review:
+            raise ValueError(current_reason)
+    elif current_review or current_reason != "successor_review_in_progress":
+        raise ValueError(current_reason)
+    return {
+        "successor_implementation_root_sha256": str(implementation_root),
+        "successor_qualification_sha256": qualification_sha256,
+        "successor_review_status": str(review_status["status"]),
+        "successor_review_status_content_sha256": str(review_status["content_sha256"]),
+        "successor_review_set_sha256": str(review_status["review_set_sha256"]),
+    }
+
+
 def report_reuse_blockers(
     report: Mapping[str, Any],
     *,
@@ -448,8 +497,10 @@ def report_reuse_blockers(
         manifest = {}
     if str(manifest.get("candidate_schema_version") or "") != CANDIDATE_SCHEMA_VERSION:
         blockers.append("candidate_schema_mismatch")
-    if str(manifest.get("schema_version") or "") != "zscope.run-manifest.v2":
+    if str(manifest.get("schema_version") or "") != RUN_MANIFEST_SCHEMA_VERSION:
         blockers.append("run_manifest_schema_mismatch")
+    if str(manifest.get("report_reuse_epoch") or "") != REPORT_REUSE_EPOCH:
+        blockers.append("report_reuse_epoch_mismatch")
     if str(manifest.get("cache_epoch") or "") != RUNTIME_CACHE_EPOCH:
         blockers.append("cache_epoch_mismatch")
     authority_manifest = manifest.get("runtime_authority_manifest")
@@ -462,6 +513,25 @@ def report_reuse_blockers(
     trace = manifest.get("decision_trace")
     if not isinstance(trace, Mapping) or trace.get("complete") is not True:
         blockers.append("decision_trace_incomplete")
+
+    try:
+        current_successor = current_successor_runtime_binding()
+    except (KeyError, OSError, TypeError, ValueError):
+        blockers.append("successor_qualification_not_current")
+        current_successor = {}
+    for key in (
+        "successor_implementation_root_sha256",
+        "successor_qualification_sha256",
+        "successor_review_status",
+        "successor_review_status_content_sha256",
+        "successor_review_set_sha256",
+    ):
+        expected = str(current_successor.get(key) or "")
+        actual = str(manifest.get(key) or "")
+        if key not in manifest:
+            blockers.append(f"successor_binding_missing:{key}")
+        elif actual != expected:
+            blockers.append(f"successor_binding_mismatch:{key}")
 
     unresolved_dispositions = {
         "needs_review",
@@ -505,6 +575,12 @@ def report_reuse_blockers(
             "effective_rules_sha256",
             "cache_epoch",
             "runtime_authority_sha256",
+            "report_reuse_epoch",
+            "successor_implementation_root_sha256",
+            "successor_qualification_sha256",
+            "successor_review_status",
+            "successor_review_status_content_sha256",
+            "successor_review_set_sha256",
         ):
             expected = str(expected_manifest.get(key) or "")
             if not expected:
@@ -537,8 +613,11 @@ def build_run_manifest(
     review_governance: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     governance = dict(review_governance or {})
+    successor_binding = current_successor_runtime_binding()
     return {
-        "schema_version": "zscope.run-manifest.v2",
+        "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
+        "report_reuse_epoch": REPORT_REUSE_EPOCH,
+        **successor_binding,
         "run_id": metadata.get("run_id") or "",
         "entry_function": entry_function,
         "project_id": metadata.get("project_id") or "",
@@ -785,6 +864,8 @@ def apply_report_schema_v2(
         release_blockers.append("report_invariant_failed")
     if P5_RELEASE_STATUS != "complete":
         release_blockers.append("p5_stage_not_complete")
+    if not current_successor_reviewed():
+        release_blockers.append("successor_review_not_current")
     authority_manifest = report["run_manifest"].get("runtime_authority_manifest")
     authority_valid = isinstance(authority_manifest, Mapping) and (
         validate_runtime_authority_manifest(authority_manifest)[0]

@@ -1,9 +1,14 @@
+import pytest
+from types import SimpleNamespace
+
+import zscope.reporting.schema as report_schema_module
 from zscope.orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
     annotate_issue_identity,
 )
 from zscope.reporting.schema import (
     apply_report_schema_v2,
+    build_run_manifest,
     coalesce_terminal_candidates,
     completeness_status,
     exit_code_for_report,
@@ -11,6 +16,8 @@ from zscope.reporting.schema import (
     report_invariant_status,
     report_is_reusable,
     report_reuse_blockers,
+    REPORT_REUSE_EPOCH,
+    RUN_MANIFEST_SCHEMA_VERSION,
 )
 from zscope.orchestration.runtime_authority import (
     RUNTIME_CACHE_EPOCH,
@@ -40,6 +47,36 @@ def test_enabled_discovery_without_llm_is_partial_and_exit_two() -> None:
     assert report["completeness"] == "partial"
     assert report["candidate_terminal_states"][0]["candidate_disposition"] == ("deferred_budget")
     assert exit_code_for_report(report, policy="legacy") == 2
+
+
+def test_new_run_manifest_projects_exact_current_successor_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = {
+        "successor_implementation_root_sha256": "1" * 64,
+        "successor_qualification_sha256": "2" * 64,
+        "successor_review_status": "in_progress",
+        "successor_review_status_content_sha256": "3" * 64,
+        "successor_review_set_sha256": "",
+    }
+    monkeypatch.setattr(
+        report_schema_module,
+        "current_successor_runtime_binding",
+        lambda: dict(binding),
+    )
+
+    manifest = build_run_manifest(
+        {"run_id": "RUN"},
+        entry_function="entry",
+        finding="clean",
+        completeness="complete",
+        issue_count=0,
+        needs_review_count=0,
+    )
+
+    assert manifest["schema_version"] == RUN_MANIFEST_SCHEMA_VERSION
+    assert manifest["report_reuse_epoch"] == REPORT_REUSE_EPOCH
+    assert {key: manifest[key] for key in binding} == binding
 
 
 def test_fast_disabled_discovery_does_not_mark_report_partial() -> None:
@@ -768,7 +805,21 @@ def test_shadow_observation_is_a_closed_non_user_visible_terminal() -> None:
     assert invariant["shadow_observation_count"] == 1
 
 
-def test_report_reuse_requires_complete_compatible_manifest_without_pending_work() -> None:
+def test_report_reuse_requires_complete_compatible_manifest_without_pending_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    successor_binding = {
+        "successor_implementation_root_sha256": "1" * 64,
+        "successor_qualification_sha256": "2" * 64,
+        "successor_review_status": "in_progress",
+        "successor_review_status_content_sha256": "3" * 64,
+        "successor_review_set_sha256": "",
+    }
+    monkeypatch.setattr(
+        report_schema_module,
+        "current_successor_runtime_binding",
+        lambda: dict(successor_binding),
+    )
     authority = build_runtime_authority_manifest(
         source_tree_hash="a" * 40,
         config_sha256="b" * 64,
@@ -788,7 +839,9 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
         "candidate_terminal_states": [],
         "run_manifest": {
             "valid": True,
-            "schema_version": "zscope.run-manifest.v2",
+            "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
+            "report_reuse_epoch": REPORT_REUSE_EPOCH,
+            **successor_binding,
             "candidate_schema_version": "zscope.candidate.v3.3",
             "cache_epoch": RUNTIME_CACHE_EPOCH,
             "runtime_authority_manifest": authority,
@@ -842,3 +895,116 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
     }
     assert "candidate_schema_mismatch" in report_reuse_blockers(v32_candidate_schema)
     assert not report_is_reusable(v32_candidate_schema)
+
+    for key in successor_binding:
+        missing = {
+            **reusable,
+            "run_manifest": {
+                name: value for name, value in reusable["run_manifest"].items() if name != key
+            },
+        }
+        assert f"successor_binding_missing:{key}" in report_reuse_blockers(missing)
+
+        mismatched = {
+            **reusable,
+            "run_manifest": {
+                **reusable["run_manifest"],
+                key: "reviewed" if key == "successor_review_status" else "f" * 64,
+            },
+        }
+        assert f"successor_binding_mismatch:{key}" in report_reuse_blockers(mismatched)
+
+    same_runtime_epoch_old_manifest = {
+        **reusable,
+        "run_manifest": {
+            **reusable["run_manifest"],
+            "schema_version": "zscope.run-manifest.v2",
+        },
+    }
+    assert "run_manifest_schema_mismatch" in report_reuse_blockers(same_runtime_epoch_old_manifest)
+
+    def stale_successor() -> dict[str, str]:
+        raise ValueError("successor_qualification_source_stale")
+
+    monkeypatch.setattr(
+        report_schema_module,
+        "current_successor_runtime_binding",
+        stale_successor,
+    )
+    assert "successor_qualification_not_current" in report_reuse_blockers(reusable)
+
+    # Maintain mode delegates to the same exact successor comparison and must
+    # not short-circuit a new analysis with a report from another review
+    # projection.
+    monkeypatch.setattr(
+        report_schema_module,
+        "current_successor_runtime_binding",
+        lambda: dict(successor_binding),
+    )
+    from zscope.core.analysis.analyzer import Analyzer
+
+    analyzer = SimpleNamespace(
+        maintain_mode=True,
+        config=SimpleNamespace(project=SimpleNamespace(project_root=".")),
+        _git_commit_sha=lambda _root: "REV",
+        _config_hash=lambda: "CONFIG",
+        _model_manifest_hash=lambda: "MODEL",
+        _knowledge_db_version=lambda: "11",
+        _effective_rules_sha256=lambda: "",
+    )
+    historical = {
+        **reusable,
+        "run_manifest": {
+            **reusable["run_manifest"],
+            "successor_review_status_content_sha256": "f" * 64,
+        },
+    }
+    state = {
+        "history_loaded": True,
+        "historical_report": historical,
+        "is_code_unchanged": True,
+        "entry_func": "entry",
+        "notes": [],
+    }
+    assert Analyzer._reuse_unchanged_report(analyzer, state) is False
+    assert "final_report_dict" not in state
+    assert "successor_binding_mismatch" in state["notes"][0]
+
+
+def test_reviewed_report_binding_requires_current_physical_review_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        report_schema_module,
+        "load_successor_qualification",
+        lambda: {
+            "implementation_root_sha256": "1" * 64,
+            "content_sha256": "2" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        report_schema_module,
+        "SUCCESSOR_RUNTIME_REVIEW_MANIFEST",
+        {
+            "status": "reviewed",
+            "content_sha256": "3" * 64,
+            "review_set_sha256": "4" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        report_schema_module,
+        "validate_successor_runtime_review_status",
+        lambda *_args, **_kwargs: (True, "valid"),
+    )
+    monkeypatch.setattr(
+        report_schema_module,
+        "validate_current_successor_runtime_review_status",
+        lambda *_args, **_kwargs: (False, "successor_review_evidence_unavailable"),
+    )
+
+    with pytest.raises(ValueError, match="successor_review_evidence_unavailable"):
+        report_schema_module.current_successor_runtime_binding()
+
+    assert "successor_qualification_not_current" in report_reuse_blockers(
+        {"schema_version": 3, "run_manifest": {}}
+    )

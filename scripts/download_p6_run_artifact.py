@@ -56,6 +56,7 @@ P6_PROTECTED_ENVIRONMENTS = frozenset(
         "p6-review-product-architecture",
         "p6-review-proof-security",
         "p6-review-independent-benchmark",
+        "p6-successor-review-integration",
     }
 )
 
@@ -91,7 +92,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def _validate_arguments(args: argparse.Namespace) -> None:
     if os.environ.get("Z_SCOPE_P6_ENVIRONMENT") not in P6_PROTECTED_ENVIRONMENTS:
-        raise P6ProtocolError("P6 artifact restore requires sealed-benchmark environment")
+        raise P6ProtocolError("P6 artifact restore requires a protected P6 environment")
     current_run_id_arg = getattr(args, "current_run_id", None)
     current_attempt_arg = getattr(args, "current_run_attempt", None)
     if (current_run_id_arg is None) is not (current_attempt_arg is None):

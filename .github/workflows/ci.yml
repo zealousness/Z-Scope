@@ -38,6 +38,56 @@ jobs:
             --head "$Z_SCOPE_CHANGE_HEAD"
           python -m pytest -q tests/test_zscope_2_change_scope.py
 
+  successor-review-authoritative-provenance:
+    name: Successor review authoritative artifact provenance
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: control
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Restore and compare newly integrated reviewed artifacts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          Z_SCOPE_P6_ENVIRONMENT: p6-successor-review-integration
+          SUCCESSOR_CHANGE_BASE: ${{ github.event.pull_request.base.sha }}
+          SUCCESSOR_CHANGE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          status="$(python -c 'import json; print(json.load(open("candidate/zscope/orchestration/successor-runtime-review-status.v1.json", encoding="utf-8"))["status"])')"
+          if [[ "$status" == "reviewed" ]]; then
+            test -f control/scripts/project_successor_review_evidence.py
+            python -m pip install --require-hashes -r control/requirements/constraints/py313.txt
+            python -m pip install --no-deps -e control
+            (cd candidate && python ../control/scripts/project_successor_review_evidence.py online-check \
+              --repository-root . \
+              --resource-root zscope/orchestration \
+              --change-base "$SUCCESSOR_CHANGE_BASE" \
+              --head "$SUCCESSOR_CHANGE_HEAD")
+          elif [[ "$status" == "in_progress" ]]; then
+            python -m pip install --require-hashes -r candidate/requirements/constraints/py313.txt
+            python -m pip install --no-deps -e candidate
+            (cd candidate && python scripts/project_successor_review_evidence.py online-check \
+              --repository-root . \
+              --resource-root zscope/orchestration \
+              --change-base "$SUCCESSOR_CHANGE_BASE" \
+              --head "$SUCCESSOR_CHANGE_HEAD")
+          else
+            exit 2
+          fi
+
   python:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-24.04
@@ -55,6 +105,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
@@ -77,13 +128,22 @@ jobs:
           zscope-maven-cache --help
           zscope-benchmark --help
       - name: Build and install wheel
+        env:
+          SUCCESSOR_CHANGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
+          python scripts/project_successor_review_evidence.py check \
+            --repository-root . \
+            --head HEAD \
+            --change-base "$SUCCESSOR_CHANGE_BASE"
+          SUCCESSOR_STATUS="$(python -c 'from zscope.orchestration.successor_runtime_review_status import SUCCESSOR_RUNTIME_REVIEW_STATUS; print(SUCCESSOR_RUNTIME_REVIEW_STATUS)')"
           python -m build --wheel
           python scripts/check_p2_proof_package.py dist/zscope-*.whl
           python scripts/check_p4_hypothesis_package.py dist/zscope-*.whl
           python scripts/check_p5_runtime_authority_package.py dist/zscope-*.whl
           python -m pip install --force-reinstall --no-deps dist/zscope-*.whl
           python -m pip check
+          INSTALLED_CHECK_ROOT="$(mktemp -d)"
+          (cd "$INSTALLED_CHECK_ROOT" && Z_SCOPE_EXPECTED_SUCCESSOR_STATUS="$SUCCESSOR_STATUS" python -c 'import os; from zscope.orchestration.successor_runtime_review_status import SUCCESSOR_RUNTIME_REVIEW_STATUS, current_successor_reviewed; expected = os.environ["Z_SCOPE_EXPECTED_SUCCESSOR_STATUS"]; assert SUCCESSOR_RUNTIME_REVIEW_STATUS == expected; assert current_successor_reviewed() is (expected == "reviewed")')
 
   quality:
     runs-on: ubuntu-24.04

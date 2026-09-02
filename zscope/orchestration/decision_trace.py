@@ -212,6 +212,16 @@ def _authority_disposition(disposition: str) -> str:
     return disposition
 
 
+def _has_exact_v4_producer_occurrence_binding(issue: Mapping[str, Any]) -> bool:
+    """Keep trace storage import-light while sharing the canonical rebuild."""
+
+    from ..core.validation.audit_eligibility import (
+        has_exact_v4_producer_occurrence_binding,
+    )
+
+    return has_exact_v4_producer_occurrence_binding(issue)
+
+
 def _live_v4_authority(issue: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     """Return an exact live v4 projection, never a recorded v3 assertion.
 
@@ -226,6 +236,11 @@ def _live_v4_authority(issue: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     recorded_dict = dict(recorded)
     if str(recorded_dict.get("schema_version") or "") != TERMINAL_AUTHORITY_DECISION_V4:
+        return None
+    if str(recorded_dict.get("disposition") or "") in {
+        "confirmed",
+        "rejected_with_proof",
+    } and not _has_exact_v4_producer_occurrence_binding(issue):
         return None
     materialized = issue.get("proof_kernel_terminal_authority_decision")
     if isinstance(materialized, Mapping) and dict(materialized) != recorded_dict:
@@ -652,6 +667,12 @@ class DecisionTraceStore:
             ),
             "proof_kernel_root_manifest_sha256": str(
                 issue.get("proof_kernel_root_manifest_sha256") or ""
+            ),
+            "proof_kernel_producer_binding_sha256": str(
+                issue.get("proof_kernel_producer_binding_sha256") or ""
+            ),
+            "proof_kernel_occurrence_binding_sha256": str(
+                issue.get("proof_kernel_occurrence_binding_sha256") or ""
             ),
             "proof_kernel_decision": _sanitize(
                 issue.get("proof_kernel_decision")
@@ -1334,6 +1355,7 @@ class DecisionTraceStore:
                 "resource_identity",
                 "resource_signature",
                 "source_identity",
+                "sink_identity",
                 "decision_region_uid",
                 "dependency_code_hash",
                 "code_snapshot_hash",

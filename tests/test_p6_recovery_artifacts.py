@@ -1071,7 +1071,7 @@ def test_restore_primitive_enforces_protected_arguments(monkeypatch, tmp_path: P
         lambda **_: pytest.fail("network metadata must not be read before validation"),
     )
 
-    with pytest.raises(P6ProtocolError, match="sealed-benchmark environment"):
+    with pytest.raises(P6ProtocolError, match="protected P6 environment"):
         p6_download.restore_exact_p6_artifact(args, token="token")
 
 

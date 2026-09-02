@@ -32,6 +32,16 @@ FINDING_ROOT_VERSION = "zscope.finding-root.v2"
 _DISPLAY_DISPOSITIONS = frozenset({"confirmed", "needs_review"})
 
 
+def _has_exact_v4_producer_occurrence_binding(item: Mapping[str, Any]) -> bool:
+    """Keep report projection import-light while sharing the canonical rebuild."""
+
+    from ..core.validation.audit_eligibility import (
+        has_exact_v4_producer_occurrence_binding,
+    )
+
+    return has_exact_v4_producer_occurrence_binding(item)
+
+
 @dataclass(frozen=True)
 class FindingRootProjection:
     outcomes: Tuple[Dict[str, Any], ...]
@@ -272,6 +282,24 @@ def _obligation(item: Mapping[str, Any]) -> Mapping[str, Any]:
     return {}
 
 
+def _proof_obligation(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the exact ProofKernel obligation carried by the v4 input.
+
+    ``security_obligation`` is the Registrar-owned candidate contract
+    (``OBL_*``).  The ProofKernel deterministically expands that contract into
+    a composite proof obligation (``POBL_*``).  They are deliberately bound by
+    the producer revalidator, but they are not the same object or UID.
+    Promotion and proof-equivalence checks therefore compare against the
+    composite object that TerminalAuthority actually consumed.
+    """
+
+    raw_input = item.get("proof_kernel_input")
+    if not isinstance(raw_input, Mapping):
+        return {}
+    value = raw_input.get("proof_obligation")
+    return value if isinstance(value, Mapping) else {}
+
+
 def _family(item: Mapping[str, Any]) -> str:
     obligation = _obligation(item)
     return (
@@ -500,6 +528,8 @@ def _merge_block_reason(item: Mapping[str, Any]) -> str:
 def _exact_v4_authority(item: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     """Return only an exact, independently recomputed materialized v4 decision."""
 
+    if not _has_exact_v4_producer_occurrence_binding(item):
+        return None
     recorded = item.get("terminal_authority_decision")
     engine_recorded = item.get("proof_kernel_terminal_authority_decision")
     if not (
@@ -516,12 +546,19 @@ def _exact_v4_authority(item: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _proof_equivalence_contract(item: Mapping[str, Any]) -> str:
-    """Return an exact proof/object/path identity suitable for aliasing.
+    """Return a cluster-independent proof/object/path identity for aliasing.
 
     Structural similarity is intentionally insufficient.  Missing call-path or
     v4 proof material leaves the row unkeyed so two independent obligations can
     never be collapsed merely because they share a family, sink, or source
-    location.
+    location.  Each member's own sealed state and TerminalAuthority decision is
+    revalidated first; only then do we project the semantic obligation fields.
+
+    Validation-cluster, obligation, state, closure and root hashes deliberately
+    do not enter the projected identity: all of those hashes include the
+    detector-local ``validation_cluster_uid`` and made cross-source merging
+    impossible.  The replacement is still exact: code IR, subject/object,
+    decision region, full clause contracts and call path must all match.
     """
 
     try:
@@ -567,25 +604,54 @@ def _proof_equivalence_contract(item: Mapping[str, Any]) -> str:
         and call_path
     ):
         return ""
-    obligation = _obligation(item)
-    outer_obligation_uid = str(obligation.get("obligation_uid") or "")
-    outer_obligation_sha256 = str(obligation.get("content_sha256") or "")
-    if outer_obligation_uid and outer_obligation_uid != state.obligation_uid:
+    obligation = _proof_obligation(item)
+    proof_obligation_uid = str(obligation.get("obligation_uid") or "")
+    proof_obligation_sha256 = str(obligation.get("content_sha256") or "")
+    if not proof_obligation_uid or proof_obligation_uid != state.obligation_uid:
         return ""
-    if outer_obligation_sha256 and outer_obligation_sha256 != state.obligation_sha256:
+    if not proof_obligation_sha256 or proof_obligation_sha256 != state.obligation_sha256:
+        return ""
+
+    def semantic_clauses(bucket: str) -> List[Dict[str, Any]]:
+        clauses: List[Dict[str, Any]] = []
+        for raw_clause in obligation.get(bucket) or []:
+            if not isinstance(raw_clause, Mapping):
+                return []
+            clauses.append(
+                {
+                    "role": str(raw_clause.get("role") or ""),
+                    "provider_family": str(raw_clause.get("provider_family") or ""),
+                    "predicate_id": str(raw_clause.get("predicate_id") or ""),
+                    "fact_kind": str(raw_clause.get("fact_kind") or ""),
+                    "quantifier": str(raw_clause.get("quantifier") or ""),
+                    "expected_value": deepcopy(raw_clause.get("expected_value")),
+                    "parameters": deepcopy(dict(raw_clause.get("parameters") or {})),
+                    "required": bool(raw_clause.get("required")),
+                }
+            )
+        clauses.sort(key=_stable_json)
+        return clauses
+
+    confirmation_clauses = semantic_clauses("confirmation_clauses")
+    counterproof_clauses = semantic_clauses("counterproof_clauses")
+    open_clauses = semantic_clauses("open_clauses")
+    if not confirmation_clauses and obligation.get("confirmation_clauses"):
+        return ""
+    if not counterproof_clauses and obligation.get("counterproof_clauses"):
+        return ""
+    if not open_clauses and obligation.get("open_clauses"):
         return ""
     return _stable_json(
         {
-            "schema_version": "zscope.proof-equivalence-root.v1",
-            "obligation_uid": state.obligation_uid,
-            "obligation_sha256": state.obligation_sha256,
-            "proof_ir_uid": state.proof_ir_uid,
+            "schema_version": "zscope.proof-equivalence-root.v2",
             "proof_ir_sha256": state.proof_ir_sha256,
-            "proof_state_sha256": state.content_sha256,
-            "closure_evaluation_sha256": closure.content_sha256,
-            "proof_root_sha256": state.root_manifest_sha256,
-            "subject_uid": state.subject_uid,
+            "proof_ir_dependency_hashes": list(state.proof_ir_dependency_hashes),
+            "defect_family": _family(item),
+            "subject_uid": _merge_subject_identity(state.subject_uid),
             "decision_region_uid": state.decision_region_uid,
+            "confirmation_clauses": confirmation_clauses,
+            "counterproof_clauses": counterproof_clauses,
+            "open_clauses": open_clauses,
             "call_path": call_path,
         }
     )
@@ -622,12 +688,12 @@ def _has_complete_deterministic_proof(item: Mapping[str, Any]) -> bool:
     region = _decision_region(item)
     if region and region != str(promotion.get("decision_region_uid") or ""):
         return False
-    obligation = _obligation(item)
+    obligation = _proof_obligation(item)
     obligation_uid = str(obligation.get("obligation_uid") or "")
     obligation_sha256 = str(obligation.get("content_sha256") or "")
-    if obligation_uid and obligation_uid != str(promotion.get("obligation_uid") or ""):
+    if not obligation_uid or obligation_uid != str(promotion.get("obligation_uid") or ""):
         return False
-    if obligation_sha256 and obligation_sha256 != str(promotion.get("obligation_sha256") or ""):
+    if not obligation_sha256 or obligation_sha256 != str(promotion.get("obligation_sha256") or ""):
         return False
     return True
 

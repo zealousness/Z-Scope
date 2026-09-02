@@ -60,6 +60,7 @@ tests:
 - scan-wide token usage ledger 必须在配置生效边界创建一次并注入所有入口、Agent 和 LLM profile，不能为并行入口各建一份账本。它只计量，不按产品硬预算停止调用。
 - Ledger 必须在全部 producer 结束后显式 freeze；freeze 后不能登记新候选。每个 terminal cluster 和无候选 audit unit 都必须分别有 decision/coverage trace，usage call ID 与 token 总数必须和 JSONL sidecar 守恒。
 - resume/maintain只能复用相同P5 cache epoch、RuntimeAuthorityManifest和完整terminal trace的报告；P5前cache/report/snapshot只允许compat展示或历史复核，不能形成新证据。
+- 历史P5 `complete`只作为旧候选lineage；当前源码必须同时具备fresh combined successor qualification和精确独立审核evidence。缺少后者时扫描仍可执行P6 non-release qualification，但报告release gate固定加入`successor_review_not_current`。
 - 每个cluster恰好一个terminal event；SecuritySpec、Hunter和Proof refs附加到该事件，不得由任何producer创建第二个terminal-authority事件。
 
 ## Balanced 持久灰度决策

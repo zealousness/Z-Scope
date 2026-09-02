@@ -1322,7 +1322,12 @@ class ParallelAnalyzer:
             }
             return fact_service.graph(issue, {})
 
-        catalog = HypothesisProofCatalog(graph_provider)
+        catalog = HypothesisProofCatalog(
+            graph_provider,
+            project_uid=str(semantic_map.project_id),
+            revision_uid=str(semantic_map.revision),
+            project_root=self.base_config.project.project_root,
+        )
         report_runner = None
         if analysis_llm_client is not None:
             agent = HypothesisHunterAgent(analysis_llm_client)

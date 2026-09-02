@@ -647,6 +647,7 @@ class ProofEngineAgent(JsonToolAgent):
             "content": str(message.get("content") or ""),
             "message": message,
             "conversation": [*messages, message],
+            "terminal_tool_required": response_format is None,
             "finish_reason": choice.get("finish_reason"),
             "provider_model": response.get("model"),
         }
@@ -664,23 +665,48 @@ class ProofEngineAgent(JsonToolAgent):
             return None, "terminal_tool_invalid"
         values: List[Any] = []
         payload = result.get("terminal_tool_payload")
+        response_message = result.get("message")
+        final_tool_contract = (
+            "terminal_tool_valid" in result
+            or result.get("terminal_tool_required") is True
+            or (isinstance(response_message, dict) and "tool_calls" in response_message)
+        )
         if result.get("terminal_tool_valid") is True and isinstance(payload, dict):
             values.append(payload)
         else:
             spec = self._validation_json_output_spec_v3()
-            values.extend(
-                self._final_tool_payloads(
-                    dict(result),
-                    result.get("conversation") or [],
-                    spec,
+            terminal_tool_required = result.get("terminal_tool_required") is True
+            if terminal_tool_required and (
+                not isinstance(response_message, dict) or "tool_calls" not in response_message
+            ):
+                return None, "terminal_tool_invalid"
+            if isinstance(response_message, dict) and "tool_calls" in response_message:
+                tool_calls = response_message.get("tool_calls")
+                if not isinstance(tool_calls, list) or len(tool_calls) != 1:
+                    return None, "terminal_tool_invalid"
+                tool_call = tool_calls[0]
+                function = tool_call.get("function") if isinstance(tool_call, dict) else None
+                if not isinstance(function, dict) or function.get("name") != spec.final_tool_name:
+                    return None, "terminal_tool_invalid"
+                strict_payload = self._coerce_tool_arguments(function.get("arguments"))
+                if strict_payload is None:
+                    return None, "terminal_tool_invalid"
+                values.append(strict_payload)
+            else:
+                values.extend(
+                    self._final_tool_payloads(
+                        dict(result),
+                        result.get("conversation") or [],
+                        spec,
+                    )
                 )
-            )
-        texts = [str(result.get("content") or "")]
-        for message in reversed(list(result.get("conversation") or [])):
-            if isinstance(message, dict) and message.get("role") == "assistant":
-                texts.append(str(message.get("content") or ""))
-        for text in (value for value in texts if value):
-            values.extend(extract_json_blocks(text))
+        if not final_tool_contract:
+            texts = [str(result.get("content") or "")]
+            for message in reversed(list(result.get("conversation") or [])):
+                if isinstance(message, dict) and message.get("role") == "assistant":
+                    texts.append(str(message.get("content") or ""))
+            for text in (value for value in texts if value):
+                values.extend(extract_json_blocks(text))
         failure_class = "structured_payload_missing"
         for value in values:
             parsed = parse_validator_result_v3(

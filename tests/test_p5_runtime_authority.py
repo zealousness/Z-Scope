@@ -4,12 +4,16 @@ import importlib.util
 
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.orchestration.runtime_authority import (
+    CURRENT_SUCCESSOR_REVIEWED,
     P5_RELEASE_MANIFEST,
     P5_RELEASE_STATUS,
     RUNTIME_CACHE_EPOCH,
     build_runtime_authority_manifest,
     validate_runtime_authority_manifest,
     validate_p5_release_status,
+)
+from zscope.orchestration.successor_runtime_review_status import (
+    SUCCESSOR_RUNTIME_REVIEW_STATUS,
 )
 from zscope.reporting.schema import report_reuse_blockers
 
@@ -126,6 +130,8 @@ def test_pre_p5_reports_and_release_are_fail_closed() -> None:
     # reviewed implementation is frozen.
     assert P5_RELEASE_STATUS in {"in_progress", "complete"}
     assert validate_p5_release_status(P5_RELEASE_MANIFEST) == (True, "valid")
+    assert SUCCESSOR_RUNTIME_REVIEW_STATUS in {"in_progress", "reviewed"}
+    assert CURRENT_SUCCESSOR_REVIEWED is (SUCCESSOR_RUNTIME_REVIEW_STATUS == "reviewed")
 
     in_progress = {
         "schema_version": "zscope.p5-release-status.v1",

@@ -9,7 +9,6 @@ from typing import Any
 
 import pytest
 
-from scripts.p2_proof_corpus import build_case
 from scripts.p6_balanced_quality_gate import (
     FAILURE_AGGREGATE_SCHEMA_VERSION,
     MAX_BALANCED_TOKENS,
@@ -22,9 +21,16 @@ from scripts.p6_balanced_quality_gate import (
     validate_quality_failure_aggregate,
 )
 from zscope.benchmarking.provider_runtime import P6_PROVIDER_MODEL, P6_PROVIDER_RESPONSE_MODEL
+from zscope.benchmarking.p6_sidecar_evidence import build_trace_sidecar_evidence
+from zscope.core.validation.audit_eligibility import (
+    revalidate_v4_producer_occurrence_binding,
+)
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
+from zscope.core.validation.fact_capabilities import FunctionIRFactService
+from zscope.core.validation.function_ir import FunctionIRGraph
 from zscope.core.validation.proof_kernel import ProofKernelEngine
-from zscope.core.validation.proof_kernel.canonical import seal_mapping
+from zscope.orchestration.candidate_envelope import annotate_issue_identity
+from zscope.reporting.finding_roots import _has_complete_deterministic_proof
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -32,39 +38,139 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 @lru_cache(maxsize=1)
 def _confirmed_v4() -> dict[str, Any]:
-    family = "concurrency"
-    subject = "shared.counter"
-    region = "REGION_balanced_quality"
-    cluster_uid = "VAL_confirmed"
-    case = build_case("concurrency", 0)
-    body = dict(case["proof_obligation"])
-    body.pop("obligation_uid")
-    body.pop("content_sha256")
-    body.update(
-        {
-            "validation_cluster_uid": cluster_uid,
-            "defect_family": family,
-            "subject_uid": subject,
-            "decision_region_uid": region,
-        }
-    )
-    obligation = seal_mapping(body, uid_field="obligation_uid", prefix="POBL_")
-    evaluation = ProofKernelEngine().evaluate(
-        proof_ir=case["program_proof_ir"],
-        obligation=obligation,
-    )
-    carrier: dict[str, Any] = {
-        "candidate_disposition": "confirmed",
-        "validation_cluster_uid": cluster_uid,
-        "status": "confirmed",
-        "obligation_uid": obligation["obligation_uid"],
-        "subject_uid": subject,
-        "decision_region_uid": region,
-        "defect_class": family,
-        "security_obligation": obligation,
+    call = {
+        "callee": "malloc",
+        "line": 4,
+        "callee_decl_identity": (
+            '{"kind":"FunctionDecl","name":"malloc",' '"type":"void *(size_t)"}'
+        ),
+        "callee_binding_complete": True,
+        "callee_decl_origin": "external_declaration",
+        "callee_project_definition": False,
+        "result_type": "void *",
+        "arg_count": 1,
+        "argument_kinds": ["IntegerLiteral"],
+        "argument_types": ["int"],
+        "argument_refs": [[]],
+        "argument_ref_types": [{}],
+        "first_argument_refs": [],
     }
+    graph = FunctionIRGraph.from_clang_evidence(
+        {
+            "clang_path": "clang",
+            "code_snapshot_sha256": "d" * 64,
+            "cfg_dump": {
+                "summary": {
+                    "parse_ok": True,
+                    "function": "resource_target",
+                    "function_section_unique": True,
+                    "entry_blocks": ["B1"],
+                    "exit_blocks": ["B0"],
+                    "blocks": [
+                        {
+                            "id": "B1",
+                            "label": "(ENTRY)",
+                            "successors": ["B0"],
+                            "predecessors": [],
+                            "statements": ["p = malloc(8)"],
+                        },
+                        {
+                            "id": "B0",
+                            "label": "(EXIT)",
+                            "successors": [],
+                            "predecessors": ["B1"],
+                            "statements": [],
+                        },
+                    ],
+                }
+            },
+            "ast_dump": {
+                "summary": {
+                    "parse_ok": True,
+                    "target_function": {
+                        "call_exprs": [call],
+                        "call_assignments": [{**call, "target": "p"}],
+                        "var_decls": [
+                            {
+                                "name": "p",
+                                "type": "void *",
+                                "line": 4,
+                                "storage_class": "",
+                            }
+                        ],
+                        "value_fact_coverage_complete": True,
+                    },
+                }
+            },
+        },
+        function="resource_target",
+        file="src/resource.c",
+    )
+    assert graph is not None and graph.coverage_complete is True
+    carrier: dict[str, Any] = {
+        "candidate_source": "llm",
+        "candidate_disposition": "confirmed",
+        "status": "confirmed",
+        "file": "src/resource.c",
+        "line": 4,
+        "location": "src/resource.c:4",
+        "function": "resource_target",
+        "category": "memory_leak",
+        "defect_class": "memory_leak",
+        "source": {
+            "kind": "resource_acquire",
+            "function": "resource_target",
+            "file": "src/resource.c",
+            "line": 4,
+            "operation": "malloc",
+            "resource": "p",
+        },
+        "sink": {
+            "kind": "exit",
+            "function": "resource_target",
+            "file": "src/resource.c",
+            "line": 4,
+            "resource": "p",
+        },
+        "resource": "p",
+        "function_ir_graph": graph.to_dict(),
+        "decision_fact_graph_v1": True,
+        "decision_context_v31": True,
+        "decision_context_v32": True,
+        "decision_context_v33": True,
+        "security_obligation_v1": True,
+        "missing_fact_kinds": [],
+        "validator_evidence_actions": [],
+    }
+    annotate_issue_identity(
+        carrier,
+        project_id="p6-balanced-quality-test",
+        revision="rev-p6-balanced-quality-test",
+    )
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(
+        carrier,
+        {},
+    )
+    assert frozen is not None
+    selected_action_uids = tuple(map(str, frozen["selected_action_uids"]))
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+        selected_action_uids=selected_action_uids,
+    )
+    assert evaluation.closure_evaluation.complete is True
+    carrier["proof_kernel_input"] = frozen
+    carrier["proof_kernel_input_origin"] = "product_composite_obligation_v4"
+    carrier["proof_kernel_checker_results"] = [dict(value) for value in evaluation.check_results]
+    carrier["proof_kernel_live_selected_action_uids"] = list(selected_action_uids)
     evaluation.apply_to_issue(carrier)
+    producer_binding, occurrence_binding = revalidate_v4_producer_occurrence_binding(carrier)
+    assert producer_binding and occurrence_binding
+    carrier["proof_kernel_producer_binding_sha256"] = producer_binding
+    carrier["proof_kernel_occurrence_binding_sha256"] = occurrence_binding
     authority = TerminalAuthorityEvaluator().evaluate(carrier, operation="live").to_dict()
+    assert authority["terminal"] is True
+    assert authority["disposition"] == "confirmed"
     carrier["proof_kernel_terminal_authority_decision"] = authority
     carrier["terminal_authority_decision"] = authority
     return carrier
@@ -78,6 +184,85 @@ def _view(truth_count: int, tp: int, fp: int, *, prefix: str) -> dict:
         "false_positives_raw": fp,
         "matched": [f"{prefix}-{index:03d}" for index in range(tp)],
     }
+
+
+def _truth_id_commitment(truth_id: str) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {"truth_id": truth_id},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _partition_commitments(product_ids: list[str], design_ids: list[str]) -> dict[str, Any]:
+    def partition(member_ids: list[str]) -> dict[str, Any]:
+        members = sorted(_truth_id_commitment(value) for value in member_ids)
+        return {
+            "member_count": len(members),
+            "member_commitments": members,
+            "member_commitments_sha256": hashlib.sha256(
+                json.dumps(members, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+        }
+
+    product = partition(product_ids)
+    design = partition(design_ids)
+    union = sorted(set(product["member_commitments"]) | set(design["member_commitments"]))
+    value = {
+        "schema_version": "zscope.p6-truth-partition-projection.v1",
+        "truth_sha256": "3" * 64,
+        "product": product,
+        "design_risk": design,
+        "partitions_disjoint": True,
+        "union_member_count": len(union),
+        "union_member_commitments_sha256": hashlib.sha256(
+            json.dumps(union, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "answer_material_present": False,
+    }
+    value["content_sha256"] = hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return value
+
+
+def _trace_sidecar_evidence() -> dict[str, Any]:
+    manifest = {
+        "trace_count": 0,
+        "coverage_trace_count": 0,
+        "evidence_object_count": 0,
+        "model_event_count": 0,
+        "traces": {},
+        "coverage_traces": {},
+        "evidence_object_sha256": [],
+        "model_event_sha256": [],
+        "complete": True,
+    }
+    return build_trace_sidecar_evidence(
+        manifest_path="decision_trace_manifest.json",
+        manifest_payload=json.dumps(manifest, sort_keys=True).encode("utf-8"),
+        sidecar_payloads={},
+    )
+
+
+def test_confirmed_product_v4_binds_distinct_registrar_and_proof_obligations() -> None:
+    carrier = copy.deepcopy(_confirmed_v4())
+    registrar_obligation = carrier["security_obligation"]
+    proof_obligation = carrier["proof_kernel_input"]["proof_obligation"]
+
+    assert registrar_obligation["obligation_uid"].startswith("OBL_")
+    assert proof_obligation["obligation_uid"].startswith("POBL_")
+    assert registrar_obligation["obligation_uid"] != proof_obligation["obligation_uid"]
+    assert _has_complete_deterministic_proof(carrier) is True
+
+    tampered = copy.deepcopy(carrier)
+    tampered["proof_kernel_input"]["proof_obligation"]["obligation_uid"] = "POBL_tampered"
+    assert _has_complete_deterministic_proof(tampered) is False
 
 
 def _producer_projection() -> dict:
@@ -258,6 +443,10 @@ def _inputs() -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
         *v16["product"]["default"]["matched"],
         *[f"v16-extra-{index:03d}" for index in range(18)],
     ]
+    v16["p6_truth_partition_projection"] = _partition_commitments(
+        list(v16["product"]["with_needs_review"]["matched"]),
+        [f"risk-{index}" for index in range(75)],
+    )
     bindings = {
         "git_commit": "1" * 40,
         "git_tree": "2" * 40,
@@ -276,17 +465,28 @@ def _inputs() -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
         "report": "9" * 64,
         "legacy_score": "a" * 64,
         "v16_score": "b" * 64,
+        "v16_truth_partitions": "2" * 64,
         "producer_projection": "c" * 64,
+        "trace_sidecars": "1" * 64,
+        "usage_events": "0" * 64,
         "usage_evidence": "d" * 64,
     }
     frozen_manifest = {
-        "schema_version": "zscope.p6-balanced-frozen-scan.v1",
+        "schema_version": "zscope.p6-balanced-frozen-scan.v3",
         "workflow_run_id": "33260000001",
         "workflow_run_attempt": 1,
         "control_plane_commit": "c" * 40,
         "candidate_git_sha": bindings["git_commit"],
         "candidate_git_tree": bindings["git_tree"],
         "attempt_id": bindings["selected_attempt_id"],
+        "llm_usage_events_sha256": "0" * 64,
+        "llm_usage_events_call_count": 8,
+        "trace_sidecars_sha256": artifacts["trace_sidecars"],
+        "trace_sidecar_member_count": 1,
+        "trace_count": 0,
+        "coverage_trace_count": 0,
+        "evidence_object_count": 0,
+        "model_event_count": 0,
         "report_sha256": artifacts["report"],
         "bindings_sha256": artifacts["bindings"],
         "usage_evidence_sha256": "d" * 64,
@@ -301,10 +501,18 @@ def _inputs() -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
         ).encode("utf-8")
     ).hexdigest()
     usage_evidence = {
-        "schema_version": "zscope.p6-balanced-usage-evidence.v1",
+        "schema_version": "zscope.p6-balanced-usage-evidence.v3",
         "workflow_run_id": frozen_manifest["workflow_run_id"],
         "workflow_run_attempt": frozen_manifest["workflow_run_attempt"],
         "attempt_id": frozen_manifest["attempt_id"],
+        "llm_usage_events_sha256": frozen_manifest["llm_usage_events_sha256"],
+        "llm_usage_events_call_count": frozen_manifest["llm_usage_events_call_count"],
+        "trace_sidecars_sha256": frozen_manifest["trace_sidecars_sha256"],
+        "trace_sidecar_member_count": frozen_manifest["trace_sidecar_member_count"],
+        "trace_count": frozen_manifest["trace_count"],
+        "coverage_trace_count": frozen_manifest["coverage_trace_count"],
+        "evidence_object_count": frozen_manifest["evidence_object_count"],
+        "model_event_count": frozen_manifest["model_event_count"],
         "score_fields": {
             name: copy.deepcopy(legacy[name])
             for name in (
@@ -358,10 +566,13 @@ def _build(parts: tuple[dict, dict, dict, dict, dict, dict, dict, dict]) -> dict
         report=report,
         legacy_score=legacy,
         v16_score=v16,
+        v16_truth_partitions=v16["p6_truth_partition_projection"],
         producer_projection=projection,
         bindings=bindings,
         frozen_manifest=frozen_manifest,
         usage_evidence=usage,
+        usage_events_call_count=8,
+        trace_sidecars=_trace_sidecar_evidence(),
         artifact_sha256s=artifacts,
     )
 
@@ -377,6 +588,7 @@ def test_quality_gate_uses_integer_cross_products_and_keeps_design_risk_separate
     assert result["truth_v16"]["design_risk"]["default"]["counting_contract"] == (
         "separate_from_product_quality_gates"
     )
+    assert result["cross_view"]["truth_v16_design_risk"] is True
     assert result["balanced_scan_usage"]["total_tokens"] == MAX_BALANCED_TOKENS
     assert result["formal_benchmark"] is False
     assert result["release_eligible"] is False
@@ -404,7 +616,14 @@ def test_each_hard_boundary_fails_closed(view_path: tuple[str, str], tp: int, fp
     elif view_path == ("v16", "default"):
         v16["product"]["default"] = _view(61, tp, fp, prefix="v16")
     else:
-        v16["product"]["with_needs_review"] = _view(61, tp, fp, prefix="v16")
+        v16["product"]["with_needs_review"].update(
+            {
+                "true_positives": tp,
+                "false_negatives": 61 - tp,
+                "false_positives_raw": fp,
+                "matched": v16["product"]["with_needs_review"]["matched"][:tp],
+            }
+        )
     with pytest.raises(P6BalancedQualityGateError, match="hard quality gate"):
         _build(
             (
@@ -484,6 +703,16 @@ def test_default_must_be_subset_of_with_needs_review() -> None:
         _build(tuple(parts))
 
 
+def test_design_risk_default_must_be_subset_of_with_needs_review() -> None:
+    parts = list(_inputs())
+    v16 = copy.deepcopy(parts[2])
+    v16["design_risk"]["with_needs_review"]["matched"] = [f"risk-{index}" for index in range(8, 16)]
+    parts[2] = v16
+
+    with pytest.raises(P6BalancedQualityGateError, match="hard quality gate"):
+        _build(tuple(parts))
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -493,7 +722,6 @@ def test_default_must_be_subset_of_with_needs_review() -> None:
         "model_mismatch",
         "queue_not_drained",
         "terminal_not_conserved",
-        "hard_admission_denied",
         "retry_bound_tamper",
     ),
 )
@@ -513,14 +741,6 @@ def test_usage_and_conservation_boundaries_fail_closed(mutation: str) -> None:
         legacy["queue_empty"] = False
     elif mutation == "terminal_not_conserved":
         legacy["p6_conservation"]["dimensions"]["terminal"]["conserved"] = False
-    elif mutation == "hard_admission_denied":
-        legacy["p6_admission_conservation"].update(
-            {
-                "request_count": 9,
-                "denied_request_count": 1,
-                "denied_reasons": {"p6_token_hard_limit": 1},
-            }
-        )
     else:
         legacy["p6_retry_conservation"]["maximum_observed_attempt_index"] = 3
         legacy["p6_retry_conservation"]["passed"] = False
@@ -532,6 +752,74 @@ def test_usage_and_conservation_boundaries_fail_closed(mutation: str) -> None:
         json.dumps(usage, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     parts[6] = usage
+    with pytest.raises(P6BalancedQualityGateError, match="hard quality gate"):
+        _build(tuple(parts))
+
+
+def test_conserved_zero_call_hard_limit_denial_is_not_an_overshoot() -> None:
+    parts = list(_inputs())
+    legacy = copy.deepcopy(parts[1])
+    legacy["p6_admission_conservation"].update(
+        {
+            "request_count": 9,
+            "admitted_request_count": 8,
+            "denied_request_count": 1,
+            "denied_reasons": {"p6_token_hard_limit": 1},
+            "request_conservation_passed": True,
+            "zero_call_denial_conservation_passed": True,
+        }
+    )
+    parts[1] = legacy
+    usage = copy.deepcopy(parts[6])
+    usage["score_fields"] = {name: copy.deepcopy(legacy[name]) for name in usage["score_fields"]}
+    usage.pop("content_sha256")
+    usage["content_sha256"] = hashlib.sha256(
+        json.dumps(usage, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    parts[6] = usage
+
+    gate = _build(tuple(parts))
+
+    assert gate["hard_gate_passed"] is True
+    assert gate["balanced_scan_usage"]["hard_limit_denied_count"] == 1
+    assert gate["balanced_scan_usage"]["gates"]["hard_limit_denials_zero_call_conserved"] is True
+    assert gate["balanced_scan_usage"]["total_tokens"] == MAX_BALANCED_TOKENS
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("not_zero_call", "reason_count_mismatch", "budget_violation"),
+)
+def test_hard_limit_denial_still_requires_zero_call_conservation(
+    mutation: str,
+) -> None:
+    parts = list(_inputs())
+    legacy = copy.deepcopy(parts[1])
+    legacy["p6_admission_conservation"].update(
+        {
+            "request_count": 9,
+            "admitted_request_count": 8,
+            "denied_request_count": 1,
+            "denied_reasons": {"p6_token_hard_limit": 1},
+            "request_conservation_passed": True,
+            "zero_call_denial_conservation_passed": True,
+        }
+    )
+    if mutation == "not_zero_call":
+        legacy["p6_admission_conservation"]["zero_call_denial_conservation_passed"] = False
+    elif mutation == "reason_count_mismatch":
+        legacy["p6_admission_conservation"]["denied_reasons"]["p6_token_hard_limit"] = 2
+    else:
+        legacy["budget_violation_count"] = 1
+    parts[1] = legacy
+    usage = copy.deepcopy(parts[6])
+    usage["score_fields"] = {name: copy.deepcopy(legacy[name]) for name in usage["score_fields"]}
+    usage.pop("content_sha256")
+    usage["content_sha256"] = hashlib.sha256(
+        json.dumps(usage, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    parts[6] = usage
+
     with pytest.raises(P6BalancedQualityGateError, match="hard quality gate"):
         _build(tuple(parts))
 
@@ -636,6 +924,77 @@ def test_matched_counts_and_design_risk_denominator_are_strict() -> None:
         _build(tuple(parts))
 
 
+def _reseal_partition_projection(projection: dict[str, Any]) -> None:
+    for name in ("product", "design_risk"):
+        members = projection[name]["member_commitments"]
+        projection[name]["member_count"] = len(members)
+        projection[name]["member_commitments_sha256"] = hashlib.sha256(
+            json.dumps(sorted(members), separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    union = sorted(
+        set(projection["product"]["member_commitments"])
+        | set(projection["design_risk"]["member_commitments"])
+    )
+    projection["union_member_count"] = len(union)
+    projection["union_member_commitments_sha256"] = hashlib.sha256(
+        json.dumps(union, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    projection.pop("content_sha256", None)
+    projection["content_sha256"] = hashlib.sha256(
+        json.dumps(
+            projection, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "product_matched_from_design_partition",
+        "design_matched_from_product_partition",
+        "unknown_product_matched_id",
+        "unknown_design_matched_id",
+        "duplicate_product_matched_id",
+        "overlapping_partition_commitment",
+        "duplicate_partition_commitment",
+    ),
+)
+def test_v16_partition_membership_overlap_duplicates_and_unknowns_fail_closed(
+    mutation: str,
+) -> None:
+    parts = list(_inputs())
+    v16 = copy.deepcopy(parts[2])
+    commitments = v16["p6_truth_partition_projection"]
+    if mutation == "product_matched_from_design_partition":
+        v16["product"]["default"]["matched"][0] = "risk-74"
+        v16["product"]["with_needs_review"]["matched"][0] = "risk-74"
+    elif mutation == "design_matched_from_product_partition":
+        v16["design_risk"]["default"]["matched"][0] = "v16-000"
+        v16["design_risk"]["with_needs_review"]["matched"][0] = "v16-000"
+    elif mutation == "unknown_product_matched_id":
+        v16["product"]["default"]["matched"][0] = "unknown-product"
+        v16["product"]["with_needs_review"]["matched"][0] = "unknown-product"
+    elif mutation == "unknown_design_matched_id":
+        v16["design_risk"]["default"]["matched"][0] = "unknown-design"
+        v16["design_risk"]["with_needs_review"]["matched"][0] = "unknown-design"
+    elif mutation == "duplicate_product_matched_id":
+        v16["product"]["default"]["matched"][-1] = v16["product"]["default"]["matched"][0]
+    elif mutation == "overlapping_partition_commitment":
+        commitments["design_risk"]["member_commitments"][0] = commitments["product"][
+            "member_commitments"
+        ][0]
+        _reseal_partition_projection(commitments)
+    else:
+        commitments["design_risk"]["member_commitments"][-1] = commitments["design_risk"][
+            "member_commitments"
+        ][0]
+        _reseal_partition_projection(commitments)
+    parts[2] = v16
+
+    with pytest.raises(P6BalancedQualityGateError):
+        _build(tuple(parts))
+
+
 @pytest.mark.parametrize("score_index", (1, 2))
 def test_each_score_must_bind_the_exact_frozen_report(score_index: int) -> None:
     parts = list(_inputs())
@@ -643,6 +1002,21 @@ def test_each_score_must_bind_the_exact_frozen_report(score_index: int) -> None:
     score["p6_frozen_report_sha256"] = "0" * 64
     parts[score_index] = score
     with pytest.raises(P6BalancedQualityGateError, match="exact frozen report"):
+        _build(tuple(parts))
+
+
+def test_usage_evidence_must_bind_the_frozen_attempt_sidecar() -> None:
+    parts = list(_inputs())
+    usage = copy.deepcopy(parts[6])
+    usage["llm_usage_events_sha256"] = "f" * 64
+    unsigned = dict(usage)
+    unsigned.pop("content_sha256", None)
+    usage["content_sha256"] = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    parts[6] = usage
+
+    with pytest.raises(P6BalancedQualityGateError, match="usage evidence binding"):
         _build(tuple(parts))
 
 
@@ -788,6 +1162,8 @@ def test_quality_gate_cli_failure_is_fixed_and_answer_free(
             str(missing),
             "--v16-score",
             str(missing),
+            "--v16-truth-partitions",
+            str(missing),
             "--producer-projection",
             str(missing),
             "--bindings",
@@ -795,6 +1171,10 @@ def test_quality_gate_cli_failure_is_fixed_and_answer_free(
             "--frozen-manifest",
             str(missing),
             "--usage-evidence",
+            str(missing),
+            "--usage-events",
+            str(missing),
+            "--trace-sidecars",
             str(missing),
             "--output",
             str(tmp_path / "output.json"),
