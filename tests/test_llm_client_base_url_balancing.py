@@ -1181,13 +1181,6 @@ def test_strict_provider_allows_sse_comment_keepalive(monkeypatch) -> None:
                 "choices": [],
             },
         ],
-        [
-            {
-                "model": "unit-model",
-                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
-                "choices": [{"delta": {"content": "ignored"}, "finish_reason": "length"}],
-            }
-        ],
     ],
 )
 def test_strict_provider_rejects_usage_drift_or_nonterminal_finish_reason(
@@ -1220,6 +1213,47 @@ def test_strict_provider_rejects_usage_drift_or_nonterminal_finish_reason(
     }
     event = ledger.snapshot(include_events=True)["events"][0]
     assert event["outcome"] != "success"
+
+
+def test_strict_provider_accepts_length_truncation_for_continuation(
+    monkeypatch,
+) -> None:
+    """A ``length`` finish is well-formed truncation, not a protocol break.
+
+    The stream is complete and provider usage arrives; only the completion hit
+    the request's token cap.  The strict validator must let it through so the
+    conversation loop can continue instead of failing the whole scan.
+    """
+
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    line = {
+        "model": "unit-model",
+        "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+        "choices": [{"delta": {"content": "ignored"}, "finish_reason": "length"}],
+    }
+    response = _StrictUsageResponse()
+    response.iter_lines = lambda: iter(
+        [
+            f"data: {json.dumps(line)}".encode("utf-8"),
+            b"data: [DONE]",
+        ]
+    )
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    result = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert result["choices"][0]["finish_reason"] == "length"
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["outcome"] == "success"
+    assert event["finish_reason"] == "length"
 
 
 @pytest.mark.parametrize(

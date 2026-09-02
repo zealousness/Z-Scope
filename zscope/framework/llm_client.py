@@ -1638,6 +1638,23 @@ class LLMClient:
                     if self.require_exact_response_model and failure_class.startswith(
                         "provider_protocol_"
                     ):
+                        # A long streaming session can occasionally receive one
+                        # malformed chunk from an otherwise healthy gateway.
+                        # Retry the byte-identical request once (bounded by
+                        # ``total_attempts``) before declaring the protocol
+                        # incompatible; a deterministic schema rejection
+                        # fails again on the retry and still fail-closes.
+                        if attempt < total_attempts:
+                            logger.warning(
+                                "Strict provider response rejected (class=%s); "
+                                "retrying request (attempt=%d/%s)",
+                                failure_class,
+                                attempt,
+                                str(total_attempts),
+                            )
+                            post_attempt_delay = self.TRANSIENT_CLIENT_RESPONSE_RETRY_DELAY_SECONDS
+                            last_error = failure_class
+                            continue
                         logger.warning(
                             "Strict provider response rejected (class=%s)",
                             failure_class,
@@ -1820,7 +1837,9 @@ class LLMClient:
         ):
             raise _ProviderCallError("provider_protocol_invalid_response")
         finish_reason = str(raw_finish_reason or "stop")
-        if self.require_exact_response_model:
+        if self.require_exact_response_model and finish_reason != "length":
+            # ``length`` is the provider's well-formed truncation outcome; the
+            # conversation loop continues from it instead of fail-closing.
             self._validate_strict_tool_finish_reason(
                 finish_reason,
                 tool_protocol=response_tool_protocol,
@@ -1846,8 +1865,14 @@ class LLMClient:
             raise _ProviderCallError("provider_protocol_model_mismatch")
 
     def _validate_provider_finish_reason(self, finish_reason: str) -> None:
+        # ``length`` is a well-formed provider outcome: the stream completed and
+        # provider usage arrived, the completion merely hit the request's token
+        # cap.  The strict protocol still rejects every other non-terminal
+        # reason; truncation itself is recoverable upstream (the tool loop
+        # continues the conversation instead of failing the whole scan).
         if self.require_exact_response_model and finish_reason not in {
             "stop",
+            "length",
             "tool_calls",
             "function_call",
         }:
@@ -1859,12 +1884,17 @@ class LLMClient:
         *,
         tool_protocol: str,
     ) -> None:
-        expected = {
-            "": "stop",
-            "tool_calls": "tool_calls",
-            "function_call": "function_call",
+        # Several OpenAI-compatible gateways emit ``finish_reason=stop`` even
+        # when the message carries complete ``tool_calls``; the conversation
+        # loop already treats that combination as a usable tool call.  Reject
+        # only shapes that cannot be acted upon, not the well-known stop+call
+        # gateway quirk.
+        allowed = {
+            "": {"stop"},
+            "tool_calls": {"stop", "tool_calls"},
+            "function_call": {"stop", "function_call"},
         }.get(tool_protocol)
-        if expected is None or finish_reason != expected:
+        if allowed is None or finish_reason not in allowed:
             raise _ProviderCallError("provider_protocol_invalid_response")
 
     def _validate_strict_provider_message(
@@ -2215,23 +2245,31 @@ class LLMClient:
         if self.require_exact_response_model:
             if not finish_reason_seen or finish_reason not in {
                 "stop",
+                "length",
                 "tool_calls",
                 "function_call",
             }:
                 raise _ProviderCallError("provider_protocol_invalid_response")
-            if tool_protocol == "tool_calls" and not tool_calls_map:
+            if finish_reason == "length":
+                # A truncated stream carries no complete tool call by
+                # definition; skip the protocol/finish cross-check and let
+                # the conversation loop continue from the partial output.
+                pass
+            elif tool_protocol == "tool_calls" and not tool_calls_map:
                 raise _ProviderCallError("provider_protocol_invalid_response")
-            if tool_protocol == "function_call" and not legacy_function_call:
+            elif tool_protocol == "function_call" and not legacy_function_call:
                 raise _ProviderCallError("provider_protocol_invalid_response")
-            self._validate_strict_tool_finish_reason(
-                finish_reason,
-                tool_protocol=tool_protocol,
-            )
+            else:
+                self._validate_strict_tool_finish_reason(
+                    finish_reason,
+                    tool_protocol=tool_protocol,
+                )
 
         assembled_message: Dict[str, Any] = {"role": "assistant"}
+        truncated = finish_reason == "length"
         if content_pieces:
             assembled_message["content"] = "".join(content_pieces)
-        if legacy_function_call:
+        if not truncated and legacy_function_call:
             if (
                 set(legacy_function_call) != {"name", "arguments"}
                 or not legacy_function_call["name"]
@@ -2243,17 +2281,21 @@ class LLMClient:
                 streaming=False,
             )
             assembled_message.setdefault("content", "")
-        elif tool_calls_map:
+        elif not truncated and tool_calls_map:
             assembled_message["tool_calls"] = [
                 tool_calls_map[key] for key in sorted(tool_calls_map.keys(), key=str)
             ]
             assembled_message.setdefault("content", "")
         else:
+            # A ``length`` truncation can cut the stream mid tool-call; such
+            # fragments have no complete id/name/arguments and are unusable.
+            # Drop them and let the conversation loop continue from the
+            # partial content instead of failing the whole scan.
             assembled_message.setdefault("content", "")
         if reasoning_pieces:
             assembled_message["reasoning_content"] = "".join(reasoning_pieces)
 
-        if self.require_exact_response_model:
+        if self.require_exact_response_model and not truncated:
             # Streaming validation above intentionally permits partial deltas.
             # Revalidate the assembled response as one complete message so a
             # missing id/type/name/arguments fragment can never reach an agent
