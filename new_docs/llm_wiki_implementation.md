@@ -1253,3 +1253,122 @@ git diff --check
 ```
 
 结果：`17 passed`（LLM projection/Compiler）；未访问真实 LLM endpoint，未运行 demo 扫描。
+
+## 2026-09-01：阶段 28——Validator 输入投影
+
+### 目标和范围
+
+本阶段记录 Validator 侧 `project_knowledge` 输入投影的落地实现。目标是把 Wiki/source fallback 的完整、可审计上下文转换为 Validator LLM 可直接理解且大小受控的投影，同时保留程序拥有的 revision、manifest、selection 和引用闭包信息。
+
+本阶段不改变 Validator 的确定性证据、candidate ledger 或 verdict 状态机；Wiki 约束仍然只是文档辅助上下文，不能单独确认、拒绝或改变 candidate 终态。也没有运行 Z-Scope demo 扫描或真实 LLM endpoint。
+
+### 实际数据流
+
+```text
+candidate/raw issue + evidence pack
+        │
+        ├─ ProjectKnowledgeService.resolve_for_candidate()
+        │    ├─ 从 candidate/evidence obligation 构造查询目标
+        │    ├─ Wiki active constraint 匹配（revision/manifest/ref 已 pin）
+        │    └─ 无有效 Wiki 命中时 SourceIndex direct fallback
+        │
+        ├─ validate_project_knowledge()
+        │    └─ schema、mode、预算、selection/ref 闭包和状态校验
+        │
+        └─ build_validator_evidence_slice_v3()
+             ├─ build_validator_project_knowledge_projection()
+             ├─ 压缩为模型可见字段
+             └─ 将 constraint/source ref 注册到 evidence_ref_catalog
+```
+
+`ValidationRunner._build_evidence_pack()` 在候选证据构建完成后调用 Wiki service。`shadow` 模式仍只记录选择和预算 telemetry，不把投影放进模型输入；`active` 模式才把通过校验的 `project_knowledge` 放入 evidence pack，随后由 v3 evidence slice 生成最终 Validator 输入。Wiki service 或投影校验失败时保留原始 evidence，不把异常伪装成“无约束”。
+
+### 模型可见投影
+
+模型看到的顶层字段固定为：
+
+| 字段 | 来源和用途 |
+| --- | --- |
+| `resolution_mode` | 程序标记 `wiki`、`source_fallback` 或 `none`；用于理解上下文来源 |
+| `wiki_revision_id` | 当前 Wiki revision；source fallback/none 为 `null` |
+| `target` | 候选目标的紧凑身份与义务范围 |
+| `constraints` | 匹配到的、带可解析 source ref 的文档约束 |
+| `source_excerpts` | direct fallback 或辅助来源摘录 |
+| `conflicts` | 冲突约束的有界摘要，不是已裁决结论 |
+| `omitted_constraint_count` | 因 20 条选择上限或 token 预算未注入的约束数 |
+| `omitted_source_excerpt_count` | 因选择上限或 token 预算未注入的原文摘录数 |
+| `fallback_reason` | fallback/no-hit 的程序原因 |
+
+manifest digest、context digest、selection 排名细节、完整 source catalog 和内部预算信息留在程序拥有的审计 envelope 中，不直接暴露给模型。`schema_version` 也由程序保留在完整对象中，不作为该紧凑模型投影的顶层字段。
+
+### `target` 字段映射和修复
+
+`build_validator_project_knowledge_projection()` 不再从已匹配的 constraints 反向推导候选身份。`target.subject_ids` 和 `target.obligation_kinds` 必须来自 candidate/evidence obligation：
+
+- subject 优先读取 candidate 的 `subject_ids`、`subject_id` 或 `subject`；对象 subject 读取 `canonical_id`/`id`。
+- obligation kind 优先读取 `obligation_kinds`，其次读取 `missing_fact_kinds`、`fact_kinds`、单值 `obligation_kind` 或 `fact_kind`。
+- 字符串会统一包装成数组，数组去重并保留稳定顺序；缺失时返回空数组，而不是用约束 subject 填充。
+- `target.module_ids` 当前来自 service 构造的 obligation；本阶段保留程序字段，不允许模型修改。candidate 解析器的模块、subject 和多义务完整覆盖仍列为 TODO。
+
+`candidate_file` 由候选的 `candidate_file`、`relative_file`、`file_path` 或 `file` 获取，并统一为 project-root 相对 POSIX 路径；如果候选未直接提供文件，则从 `location` 的 `path:line[:column]` 形式提取路径。绝对路径会去掉前导 `/`，历史占位值 `unknown.md` 不会覆盖真实候选路径；最终没有路径时才使用 `unknown.md`。因此此前输入中出现的 `unknown.md` 会被 `src/...` 等真实候选文件修复。
+
+`function_name` 优先使用 service target 的 `function_name`/`function_id`，否则回退到 candidate 的 `function`。service 内部同时保留 `function_id`、`entry_function` 等查询字段，但紧凑 projection 只公开 Validator 判断所需的函数名称。
+
+### 约束和冲突投影
+
+每条约束投影保留：`constraint_id`、`kind`、去掉 subject-kind 前缀后的 `subject_id`、`subject_kind`、`statement`、`authority`、`normativity`、`status`、`source_refs` 和 `conflicts_with`。`subject_kind` 来自程序生成的约束对象；其合法值由 project-knowledge schema 的 enum 限制。
+
+进入 active context 的约束必须满足：
+
+1. `status` 为 `active` 或 `conflicted`；
+2. `authority=documented_contract`；
+3. 至少有一个 source ref，且该 ref 在当前 pinned revision 中可解析。
+
+同一 subject/kind/scope 的冲突约束以图连通分量生成 `conflicts` 摘要，并将双方 ID 和 source refs 交给 Validator。冲突只表示文档存在不一致，Validator 必须结合代码证据判断，不能把任一冲突声明当成自动反证或证明。stale、不可解析引用、推荐性/描述性/unknown 语句不作为 negative evidence。
+
+### 程序校验和引用闭包
+
+`validate_project_knowledge()` 使用本地 schema registry 验证 `zscope.validator-project-knowledge.v1`，并补充以下跨字段检查：
+
+- `wiki` 必须有 revision；`source_fallback`/`none` 不得携带 Wiki revision 或编译约束；`none` 必须为空；
+- `estimated_tokens` 不得超过 selection 的 `max_tokens`；
+- `selected_constraint_ids` 必须全部存在于当前 constraints；
+- `selected_source_ref_ids` 必须来自 source excerpts 或 constraints 的 source refs；
+- 每条约束必须满足 active/conflicted、documented_contract 和 source-ref 条件。
+
+v3 slice 生成后，所有 constraint ID 和 source ref 会加入 `evidence_ref_catalog`，分别标记为 `project_constraint` 与 `project_document_ref`，并带有限摘要。Validator 只能引用 catalog 中存在的 ref；单独出现的 UID、hash 或未知 constraint ID 不构成证据。
+
+### 预算、稳定性和降级
+
+ProjectKnowledgeService 默认共享 `4096` token 上限；调用方可以传更小值但不能超过该上限。Wiki constraint 和 direct source excerpt 各最多选择 20 条，超出部分通过 omitted count 审计。排序按 kind、canonical subject 和 constraint ID 等稳定键执行，context digest 对除自身外的完整 envelope 计算，确保同一 candidate/revision 输入可复现。
+
+Wiki 无 active revision、revision lint 失败、manifest 不匹配、Compiler 不可用或查询无命中时，系统回退到 source-index：有相关原文则 `source_fallback`，无命中则 `none/no_relevant_project_constraint`。任何 service/schema 异常都只丢弃 project knowledge，保留既有 Validator evidence 和 needs-review 语义。
+
+### 实际修改文件
+
+- `zscope/core/validation/evidence.py`：新增/维护紧凑投影、candidate 字段解析和 v3 evidence slice 注入。
+- `zscope/core/validation/runner.py`：在 evidence pack 阶段调用 service，区分 shadow 与 active，并在失败时保留基础证据。
+- `zscope/wiki/service.py`：构造 target、匹配 active/conflicted constraints、生成冲突摘要、执行 direct fallback 和 context telemetry。
+- `zscope/wiki/context/obligation.py`：从 candidate/evidence 建立稳定查询 obligation，规范化文件路径和义务 kind 别名。
+- `zscope/wiki/schemas/validator-project-knowledge.schema.json`：固定 target 数组字段、candidate_file 路径约束、subject-kind/obligation-kind enum 及冲突字段。
+- `zscope/agents/validator_agent/AGENT.md`：说明 project knowledge 是辅助上下文、冲突处理、引用规则和模型可见字段。
+- `tests/test_validator_project_knowledge.py`、`tests/test_wiki_service.py`：覆盖投影字段、candidate_file 修复、source ref catalog、fallback、预算和冲突语义。
+
+### 验证记录
+
+本阶段实施期间使用了相关 pytest 和静态检查验证代码契约；未运行 demo 扫描：
+
+```text
+python -m pytest -q tests/test_validator_project_knowledge.py tests/test_wiki_service.py tests/test_validation_runner.py
+python -m compileall -q zscope tests
+git diff --check
+```
+
+测试覆盖的关键断言包括：`unknown.md` 能由候选 location 修复为真实 `candidate_file`；target 的 subject/kind 缺失时保持空数组；constraint subject kind、status 和 conflicts_with 可被投影；source refs 可进入 catalog；shadow 不注入模型；Wiki 失败可回退 direct source。
+
+### 后续 TODO
+
+- 完善 candidate 解析器，稳定解析 `target.module_ids`、`target.subject_ids`、`target.obligation_kinds`，覆盖函数、模块、文件、资源、锁及多义务候选。
+- 为解析失败定义统一的 `unknown`/空值审计语义，避免不同 candidate adapter 产生不一致的隐式回退。
+- 增加 projection 的独立 snapshot/replay 测试，固定排序、digest、token 计数和 evidence catalog 闭包。
+- 在不改变 active/shadow 边界的前提下，补充 report-level Wiki selection telemetry 与 Validator 输入审计关联。

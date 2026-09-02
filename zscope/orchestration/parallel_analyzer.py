@@ -243,6 +243,8 @@ class ParallelAnalyzer:
         }
         self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
         self.deferred_entry_candidates: List[Dict[str, Any]] = []
+        self._last_combined_report: Optional[Dict[str, Any]] = None
+        self._last_markdown_results: Dict[str, ParallelAnalysisResult] = {}
         self.run_id = uuid.uuid4().hex
 
     @staticmethod
@@ -2138,9 +2140,7 @@ class ParallelAnalyzer:
         llm_iteration_budget_summary = self._llm_iteration_budget_summary(results)
         scan_budget_summary = dict(getattr(self, "_last_scan_budget_metadata", {}) or {})
         llm_usage_summary = self._llm_usage_summary()
-        scan_token_usage = (
-            scan_token_usage_snapshot(base_config) if base_config is not None else {}
-        )
+        scan_token_usage = scan_token_usage_snapshot(base_config) if base_config is not None else {}
         wiki_service = getattr(self, "project_knowledge_service", None)
         wiki_telemetry_fn = getattr(wiki_service, "telemetry_snapshot", None)
         wiki_telemetry = (
@@ -2503,6 +2503,12 @@ class ParallelAnalyzer:
         from ..benchmarking.protocol import candidate_funnel
 
         combined_report["metadata"]["candidate_funnel"] = candidate_funnel(combined_report)
+
+        # Keep the exact post-validation projection available to the Markdown
+        # renderer.  Entry results are deliberately only intermediate
+        # provenance: the scan-level ledger may replace them with a canonical
+        # confirmed/needs_review outcome after all workers have completed.
+        self._last_combined_report = combined_report
 
         if output_path:
             with open(output_path, "w", encoding="utf-8") as f:
@@ -2980,6 +2986,278 @@ class ParallelAnalyzer:
             "analysis_obligations": diff_impact.get("analysis_obligations") or [],
         }
 
+    @staticmethod
+    def _markdown_report_status(issue: Dict[str, Any]) -> str:
+        """Return one stable display status for final-report issue projections."""
+        status = str(issue.get("validation_status") or "").strip().lower()
+        if status:
+            return status
+        disposition = str(issue.get("candidate_disposition") or "").strip().lower()
+        if disposition == "confirmed":
+            return "validated"
+        if disposition == "needs_review":
+            return "needs_review"
+        finding_kind = str(issue.get("finding_kind") or "").strip().lower()
+        return "needs_review" if finding_kind == "needs_review" else ""
+
+    @staticmethod
+    def _markdown_issue_entry(issue: Dict[str, Any]) -> str:
+        """Choose the human-facing entry label carried by a final issue."""
+        for key in ("analyzed_from", "function", "entry_function", "entry_identity"):
+            value = str(issue.get(key) or "").strip()
+            if value:
+                return value
+        return "unknown"
+
+    def _generate_markdown_from_combined_report(
+        self, report: Dict[str, Any], output_path: Path
+    ) -> str:
+        """Render Markdown from the same final projection written as JSON.
+
+        The old renderer consumed ``ParallelAnalysisResult`` objects directly.
+        Those objects can be assembled before the shared validation queue
+        closes, so they are not authoritative for final dispositions.  This
+        renderer intentionally consumes only the post-schema combined report.
+        """
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
+        raw_issues = report.get("issues")
+        issues = (
+            [item for item in raw_issues if isinstance(item, dict)]
+            if isinstance(raw_issues, list)
+            else []
+        )
+
+        raw_review_items = metadata.get("audit_observations")
+        review_items = [item for item in raw_review_items if isinstance(item, dict)]
+        if not isinstance(raw_review_items, list):
+            review_items = []
+        if not review_items:
+            review_view = (
+                report.get("report_views", {}).get("with_needs_review", {})
+                if isinstance(report.get("report_views"), dict)
+                else {}
+            )
+            raw_view_issues = review_view.get("issues") if isinstance(review_view, dict) else []
+            review_items = (
+                [
+                    item
+                    for item in raw_view_issues
+                    if isinstance(item, dict)
+                    and self._markdown_report_status(item)
+                    in {"needs_review", "uncertain", "unvalidated"}
+                ]
+                if isinstance(raw_view_issues, list)
+                else []
+            )
+        # Keep Markdown aligned with the report's displayed review view while
+        # avoiding confirmed findings duplicated into that view.
+        review_items = [
+            item
+            for item in review_items
+            if self._markdown_report_status(item) in {"needs_review", "uncertain", "unvalidated"}
+        ]
+
+        raw_function_results = report.get("function_results")
+        function_results = (
+            [item for item in raw_function_results if isinstance(item, dict)]
+            if isinstance(raw_function_results, list)
+            else []
+        )
+        if not function_results:
+            function_results = [
+                {
+                    "function": result.function_name,
+                    "entry_identity": result.entry_identity,
+                    "entry_key": key,
+                    "verdict": result.verdict,
+                }
+                for key, result in sorted(getattr(self, "_last_markdown_results", {}).items())
+            ]
+
+        def belongs_to(item: Dict[str, Any], function_result: Dict[str, Any]) -> bool:
+            aliases = {
+                str(function_result.get(key) or "").strip()
+                for key in ("function", "entry_identity", "entry_key", "entry_file_path")
+                if str(function_result.get(key) or "").strip()
+            }
+            values = {
+                str(item.get(key) or "").strip()
+                for key in (
+                    "analyzed_from",
+                    "function",
+                    "entry_function",
+                    "entry_identity",
+                    "reported_from_entry",
+                    "entry_key",
+                    "entry_file_path",
+                )
+                if str(item.get(key) or "").strip()
+            }
+            return bool(aliases.intersection(values))
+
+        function_rows: List[Dict[str, Any]] = []
+        for item in function_results:
+            matched_issues = [issue for issue in issues if belongs_to(issue, item)]
+            matched_review = [review for review in review_items if belongs_to(review, item)]
+            display_verdict = str(item.get("verdict") or "unknown")
+            if matched_issues:
+                display_verdict = "issues_found"
+            elif matched_review and display_verdict == "no_issue_found":
+                display_verdict = "needs_review"
+            function_rows.append(
+                {
+                    "item": item,
+                    "issues": matched_issues,
+                    "review": matched_review,
+                    "verdict": display_verdict,
+                }
+            )
+
+        functions_analyzed = int(summary.get("functions_analyzed") or len(function_results))
+        issues_found = len(issues)
+        error_count = int(summary.get("functions_failed") or 0)
+        no_issue_count = sum(row["verdict"] == "no_issue_found" for row in function_rows)
+        deferred_count = int(summary.get("deferred_entry_count") or 0)
+        completeness = str(
+            report.get("completeness")
+            or ("incomplete" if error_count or deferred_count else "complete")
+        )
+
+        md = [
+            "# Z-SCOPE Batch Analysis Report",
+            "",
+            "## Summary",
+            f"- **Completeness**: {completeness}",
+            f"- **Functions Analyzed**: {functions_analyzed}",
+            f"- **Issues Found**: {issues_found}",
+            f"- **No Issues Found**: {no_issue_count}",
+            f"- **Errors**: {error_count}",
+            f"- **Total Issues Detected**: {int(summary.get('total_issues') or issues_found)}",
+            f"- **Audit Observations**: {len(review_items)}",
+            f"- **Deferred Entry Candidates**: {deferred_count}",
+        ]
+
+        diff_coverage = metadata.get("diff_impact_coverage")
+        coverage_summary = (
+            diff_coverage.get("coverage_summary") if isinstance(diff_coverage, dict) else {}
+        )
+        if isinstance(coverage_summary, dict) and coverage_summary:
+            md.extend(
+                [
+                    "",
+                    "## Diff Impact Coverage",
+                    f"- **Changed Functions**: {coverage_summary.get('changed_total', 0)}",
+                    f"- **Scan Entries**: {coverage_summary.get('scan_entry_count', 0)}",
+                    f"- **Covered By Scan**: {coverage_summary.get('covered_by_scan', 0)}",
+                    f"- **Context Only**: {coverage_summary.get('context_only', 0)}",
+                    f"- **Triage Only**: {coverage_summary.get('triage_only', 0)}",
+                    f"- **Unresolved**: {coverage_summary.get('unresolved', 0)}",
+                ]
+            )
+
+        md.extend(
+            [
+                "",
+                "## Function Details",
+                "",
+                "| Function | Verdict | Issues | Needs Review / Audit | Duration |",
+                "| :--- | :--- | :--- | :--- | :--- |",
+            ]
+        )
+        for row in sorted(
+            function_rows,
+            key=lambda value: str(value["item"].get("function") or ""),
+        ):
+            item = row["item"]
+            function_name = str(item.get("function") or item.get("entry_identity") or "unknown")
+            duration = item.get("duration_seconds")
+            duration_str = f"{float(duration):.1f}s" if duration not in (None, "") else "N/A"
+            md.append(
+                f"| {function_name} | {row['verdict']} | "
+                f"{len(row['issues'])} | {len(row['review'])} / {len(row['review'])} | {duration_str} |"
+            )
+
+        def append_issue(md_lines: List[str], issue: Dict[str, Any], index: int) -> None:
+            impact = str(issue.get("impact_level", "UNKNOWN")).upper()
+            confidence = issue.get("confidence", "N/A")
+            if isinstance(confidence, float):
+                confidence = f"{confidence:.2f}"
+            md_lines.extend(
+                [
+                    f"#### {index}. [{impact}] {issue.get('id', f'ISSUE_{index}')}: {issue.get('function', 'N/A')}",
+                    f"- **Location**: `{issue.get('location', 'N/A')}`",
+                    f"- **Confidence**: `{confidence}`",
+                    f"- **Category**: {issue.get('category', 'N/A')} ({issue.get('subcategory', 'N/A')})",
+                ]
+            )
+            snippet = issue.get("code_snippet")
+            if snippet:
+                md_lines.append(
+                    f"- **Relevant Code**:\n```c\n{self._normalize_md_text(snippet)}\n```"
+                )
+            md_lines.append(
+                f"- **Description**: {self._normalize_md_text(issue.get('description', 'N/A'))}"
+            )
+            if issue.get("reasoning"):
+                md_lines.append(
+                    f"- **Analysis Reasoning**: {self._normalize_md_text(issue.get('reasoning'))}"
+                )
+            md_lines.append(
+                f"- **Root Cause**: {self._normalize_md_text(issue.get('root_cause', 'N/A'))}"
+            )
+            md_lines.append(
+                f"- **Suggested Fix**: {self._normalize_md_text(issue.get('suggested_fix', 'N/A'))}"
+            )
+            status = self._markdown_report_status(issue)
+            if status:
+                status_emoji = {
+                    "validated": "✅",
+                    "needs_review": "🟡",
+                    "rejected": "❌",
+                    "pending": "⏳",
+                    "unvalidated": "⚠️",
+                }.get(status, "")
+                md_lines.append(f"- **Validation Status**: {status_emoji} {status}")
+            if issue.get("validation_reasoning"):
+                md_lines.append(
+                    f"- **Validation Reasoning**: {self._normalize_md_text(issue.get('validation_reasoning'))}"
+                )
+            md_lines.append("")
+
+        md.extend(["", "## Detected Issues", ""])
+        if not issues:
+            md.append("*No issues detected.*")
+        else:
+            grouped: Dict[str, List[Dict[str, Any]]] = {}
+            for issue in issues:
+                if self._markdown_report_status(issue) == "rejected":
+                    continue
+                grouped.setdefault(self._markdown_issue_entry(issue), []).append(issue)
+            if not grouped:
+                md.append("*No issues detected.*")
+            for entry, entry_issues in sorted(grouped.items()):
+                md.extend([f"### Entry Function: `{entry}`", ""])
+                for index, issue in enumerate(entry_issues, 1):
+                    append_issue(md, issue, index)
+
+        md.extend(["", "## Needs Review Findings", ""])
+        if not review_items:
+            md.append("*No needs_review observations.*")
+        else:
+            grouped_review: Dict[str, List[Dict[str, Any]]] = {}
+            for item in review_items:
+                grouped_review.setdefault(self._markdown_issue_entry(item), []).append(item)
+            for entry, entry_issues in sorted(grouped_review.items()):
+                md.extend([f"### Entry Function: `{entry}`", ""])
+                for index, issue in enumerate(entry_issues, 1):
+                    append_issue(md, issue, index)
+
+        content = "\n".join(md)
+        output_path.write_text(content, encoding="utf-8")
+        logger.info("Markdown report saved to: %s", output_path)
+        return content
+
     def generate_combined_markdown_report(
         self, results: Dict[str, ParallelAnalysisResult], output_path: Path
     ) -> str:
@@ -2993,6 +3271,13 @@ class ParallelAnalyzer:
         Returns:
             Markdown report content
         """
+        self._last_markdown_results = results
+        combined_report = getattr(self, "_last_combined_report", None)
+        if isinstance(combined_report, dict):
+            return self._generate_markdown_from_combined_report(combined_report, output_path)
+
+        # Preserve the standalone helper behavior for callers that render a
+        # Markdown report without first generating the combined JSON report.
         summary = {
             "total": len(results),
             "issues_found": sum(1 for r in results.values() if r.verdict == "issues_found"),

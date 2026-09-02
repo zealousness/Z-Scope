@@ -119,8 +119,9 @@ LLM 不能直接写页面、edge、日志或 revision metadata。Constraint-only
 2. 判断 active revision 是否绑定当前 manifest。
 3. 按 Wiki mode 决定 off、build-only、shadow 或 active。
 4. auto_maintain 开启且文档变化时，执行一次有界增量 build。
-5. build 失败不阻断扫描，记录事件并使用 direct source fallback。
-6. 注入只读 ProjectKnowledgeService；并行入口共享同一 pinned revision、source index 和查询缓存。
+5. 若 manifest 变化但 accepted Markdown 的 added/changed/removed delta 为空，执行不调用 LLM 的 manifest-only freshness refresh，复用父 revision 的约束与来源投影；不得将空 delta 改写为全量编译。
+6. build 失败不阻断扫描，记录事件并使用 direct source fallback。
+7. 注入只读 ProjectKnowledgeService；并行入口共享同一 pinned revision、source index 和查询缓存。
 
 不得在每个入口或候选上重复扫描文档、创建 store 或调用 Compiler。
 
@@ -1163,4 +1164,6 @@ truth、secret 或 runtime instruction 泄漏；active revision 无法重建；r
 - [x] docs/modules/wiki.md、配置、CLI、迁移和实施记录同步。
 
 ## 17.TODO
-Validator project_knowledge：完善 candidate 解析器，稳定填充 `target.module_ids`、`target.subject_ids` 和 `target.obligation_kinds`，覆盖函数、模块、文件、资源、锁及多义务候选；在解析失败时记录可审计的空值/unknown 语义。
+ - Validator project_knowledge：完善 candidate 解析器，稳定填充 `target.module_ids`、`target.subject_ids` 和 `target.obligation_kinds`，覆盖函数、模块、文件、资源、锁及多义务候选；在解析失败时记录可审计的空值/unknown 语义。
+ - 段落级Wiki更新：源文档删除把全部相关constraints记为stale，新增文档执行wiki_incremental。源文档修改只把删除/修改段落的constraints记为stale，修改/新增段落执行wiki_incremental。还要考虑到文档级增删改和段落级增删改同步发生的情况。
+ - 目前constraints会无限增长，可每隔一段时间删除stale constraints。

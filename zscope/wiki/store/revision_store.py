@@ -373,17 +373,84 @@ class WikiStore:
             )
         except ValueError:
             return None
-        if not path.is_file():
+        if path.is_file():
+            try:
+                value = _read_bounded_json_object(
+                    path,
+                    max_bytes=SOURCE_MANIFEST_MAX_BYTES,
+                    label="Wiki revision source manifest",
+                )
+            except ValueError:
+                value = None
+            if value is not None:
+                return value
+
+        # Older/pruned revisions may no longer have their JSON projection on
+        # disk while the SQLite projection remains available.  Reconstruct
+        # the accepted-source portion needed by compare_manifests() from the
+        # immutable document refs and revision metadata.  This keeps source
+        # changes observable so stale constraints are propagated instead of
+        # being mistaken for an empty delta.
+        try:
+            revision_row = self.connection.execute(
+                "SELECT project_id, source_manifest_digest, revision_json "
+                "FROM revisions WHERE revision_id=?",
+                (rid,),
+            ).fetchone()
+            if revision_row is None:
+                return None
+            refs = self.connection.execute(
+                "SELECT ref_json FROM document_refs WHERE revision_id=?",
+                (rid,),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+
+        accepted_by_source: Dict[str, Dict[str, Any]] = {}
+        for row in refs:
+            try:
+                ref = json.loads(row["ref_json"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(ref, Mapping):
+                continue
+            source_id = str(ref.get("source_id") or "").strip()
+            relative_path = str(ref.get("relative_path") or "").strip()
+            content_digest = str(ref.get("source_digest") or "").strip()
+            if not source_id or not relative_path or not content_digest:
+                continue
+            # A source can have several section refs; all sections carry the
+            # same document digest.  Keep one deterministic record per source.
+            accepted_by_source.setdefault(
+                source_id,
+                {
+                    "source_id": source_id,
+                    "project_id": str(revision_row["project_id"] or ""),
+                    "relative_path": relative_path,
+                    "content_digest": content_digest,
+                    "module_hints": [],
+                },
+            )
+        if not accepted_by_source:
             return None
         try:
-            value = _read_bounded_json_object(
-                path,
-                max_bytes=SOURCE_MANIFEST_MAX_BYTES,
-                label="Wiki revision source manifest",
-            )
-        except ValueError:
-            return None
-        return value
+            revision_json = json.loads(revision_row["revision_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            revision_json = {}
+        return {
+            "schema_version": "zscope.document-source-manifest.v1",
+            "project_id": str(revision_row["project_id"] or "project"),
+            "project_root_digest": "",
+            "scanner": {},
+            "accepted": sorted(
+                accepted_by_source.values(), key=lambda item: item["relative_path"]
+            ),
+            "excluded": [],
+            "unsupported_extensions": {},
+            "override_digest": None,
+            "source_manifest_digest": str(revision_row["source_manifest_digest"] or ""),
+            "created_at": str(revision_json.get("created_at") or ""),
+        }
 
     def _publish_active(
         self, revision_id: str, source_manifest_digest: str, updated_at: str
@@ -1125,6 +1192,34 @@ class WikiStore:
             "created_at": _utc_now(),
             "active": True,
         }
+        # A maintenance-only revision may be produced by the deterministic
+        # fallback when the parent Wiki was compiled by the LLM.  Preserve the
+        # parent's Wiki compiler identity so a transient compiler outage does
+        # not downgrade the revision to a skeleton/deterministic Wiki.  The
+        # newly stale constraints remain excluded by the runtime resolver.
+        parent_compiler: Mapping[str, Any] = {}
+        if parent_id:
+            try:
+                parent_compiler = self.revision_metadata(str(parent_id)).get("compiler", {})
+            except (OSError, ValueError):
+                try:
+                    row = self.connection.execute(
+                        "SELECT revision_json FROM revisions WHERE revision_id=?",
+                        (str(parent_id),),
+                    ).fetchone()
+                    metadata = json.loads(row["revision_json"]) if row else {}
+                    parent_compiler = (
+                        metadata.get("compiler", {})
+                        if isinstance(metadata, Mapping)
+                        else {}
+                    )
+                except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+                    parent_compiler = {}
+        if (
+            str(revision["compiler"].get("kind", "")) == "deterministic"
+            and str(parent_compiler.get("kind", "")) in {"llm", "mixed"}
+        ):
+            revision["compiler"] = dict(parent_compiler)
         revision_dir = self.staging_root / f"{rid}.tmp"
         if revision_dir.exists():
             import shutil

@@ -16,7 +16,6 @@ int wiki_copy_label(const char *label) {
 
     label_len = strlen(label);
 
-    /* The public gateway contract is documented in README.md. */
     for (index = 0; index < label_len; ++index) {
         stored_label[index] = label[index];
     }

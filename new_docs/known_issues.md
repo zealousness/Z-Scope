@@ -419,3 +419,59 @@ complete_source_to_sink=true：0/21
 10. 将 completeness 拆分为独立状态：后端路径是否存在、entry 调用链是否找到、source endpoint 是否映射、sink endpoint 是否映射、源码边是否连续、运行时可行性是否证明。
 11. 在 Prompt 中删除固定 checker/schema/profile、空 backend path、空 function context、重复 reported location 和通用 Validator 模板；完整原始记录保留在审计元数据中。
 12. 增加单元和端到端测试：Saber 2.x/3.x 路径解析、原始输出持久化、数据库 round-trip、空路径、真实多节点路径、bug type 不作为 symbol、function/value 分离、调用链与 value-flow 分离、错误 fallback 禁止，以及 complete/proven 状态计算。
+
+## KI-011 Validator 前后 Evidence Completion 基本重复，缺失事实请求未驱动补全
+
+### 问题描述
+
+当前 Validator 流程存在两次 Evidence Completion：
+
+1. Validator 前，`complete_prevalidation()` 基于 Candidate 和已构建的 validation evidence 运行本地确定性 provider；如果得到可路由的 confirmation/rejection proof，可以直接处理 Candidate 并跳过 LLM。
+2. Validator 后，当 Validator 结果进入 `needs_review` 时，`complete()` 再运行同一组 `_completion_proofs()` provider；找到 proof 后重新执行一次 Validation Pipeline，未找到则标记为 `exhausted`。
+
+两次补全使用相同的 Candidate、代码、CFG/AST 事实和 evidence pack，中间没有重新执行事实后端，也没有增加新的代码证据。Validator 返回的：
+
+```json
+"missing_fact_request": [
+  {
+    "fact_kind": "value_range",
+    "subject": "wire_len",
+    "reason": "缺少 wire_len 的确定上界"
+  }
+]
+```
+
+目前只会被 Runner 校验并写入 `validator_missing_fact_requests`，随后复制到 `EvidenceCompletionRequest` 和报告遥测。Evidence Completion 不会根据 `fact_kind` 选择对应 provider，不会针对 `subject` 查询或计算事实，也不会判断生成的 proof 是否回答了具体请求。因此“完整请求数组贯通”目前只是数据与审计字段贯通，并不代表定向事实补全已经实现。
+
+后置补全与前置补全并非在所有情况下严格相同。Validator Pipeline 会在后置补全前写入 `blocking_negative_evidence`；当该字段为 `true` 时，Evidence Completion 会过滤 rejection proof。因此后置结果可能比前置结果更少，但通常不会产生前置阶段不存在的新 proof。其他 Validator 状态字段一般不参与 provider 的事实计算。
+
+此外，`EvidenceCompletionQueue` 当前同步运行一次本地 provider 集合，并不是真正的异步任务队列；`max_workers` 没有参与这条 provider 调度。
+
+### 影响
+
+- 对同一 Candidate 和同一 evidence，后置 Evidence Completion 通常重复前置计算并再次得到无 proof 的结果。
+- `missing_fact_request` 看起来像可执行补全请求，实际主要承担解释、报告和审计作用，接口名称容易高估系统能力。
+- 后置补全通常只增加重复计算和 `exhausted` 状态，不能补齐 LLM 指出的 value range、caller contract、ownership、lockset 等具体事实。
+- 当前状态只能表示整次聚合补全 `completed/exhausted`，不能表示每个 `(fact_kind, subject)` 请求的完成情况。
+- 即使任意 provider 生成 proof，也没有建立 proof 与具体请求之间的对应关系，无法证明请求已经得到回答。
+
+### 当前结论
+
+在没有新 evidence、且 `blocking_negative_evidence` 不改变 proof 过滤的常见情况下，Validator 前后 Evidence Completion 的结果等价。前置阶段若已找到权威 proof，Candidate 通常会跳过 Validator，因此后置阶段真正执行时大多是在重复一次已经失败的确定性补全。
+
+当前 Evidence Completion 应理解为“在已有材料上运行确定性证明规则”，而不是“执行 Validator 提出的缺失事实请求”。
+
+### 后续建议
+
+应明确选择以下一种方向：
+
+1. 如果短期不实现事实补采，删除后置重复补全，仅保留 Validator 前的 deterministic prevalidation；Validator 的 `missing_fact_request` 明确定位为审计信息。
+2. 如果保留后置补全，则建立真正的定向补全链路：
+   - 以 `(fact_kind, subject)` 路由到对应的确定性 fact provider；
+   - 对 subject 执行新的值域、调用者契约、ownership/cleanup、lockset/HB、对象 identity 或 reachability 查询；
+   - 将新事实写回 DecisionFactGraph 或等价稳定事实层；
+   - 逐项记录 `completed`、`exhausted`、`unsupported` 和生成的 fact/proof 引用；
+   - 仅在获得新事实后重新运行 deterministic proof 和 Validation Pipeline。
+3. 为补全建立 request-to-fact/proof 对应关系，禁止无关 provider 生成的任意 proof 将全部请求笼统标记为 completed。
+4. 如果保留 Queue 命名和 `max_workers` 配置，应实现真实的有界 provider 调度；否则重命名为同步 completion pass，并删除无效并发配置，避免错误预期。
+5. 增加端到端测试：前后 evidence 不变时不得重复执行无收益补全；特定 fact kind/subject 只调用匹配 provider；多请求逐项状态；空请求行为；新事实写回后 proof 重算；`blocking_negative_evidence` 的过滤差异。

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from zscope.orchestration.candidates import CandidateLedger
 from zscope.orchestration.subagents import SubAgentTicket
-from zscope.reporting.report import ReportGenerator
+from zscope.reporting.report import FinalReport, Issue, ReportGenerator
 from zscope.reporting.assembler import ReportAssembler
 
 
@@ -110,6 +110,37 @@ def test_report_assembler_can_skip_root_report_files(tmp_path: Path) -> None:
     assert not (tmp_path / "report.json").exists()
     assert not (tmp_path / "report.md").exists()
     assert snapshot_store.saved["index_name"] == "entry@src/demo.c:1-20"
+
+
+def test_markdown_report_includes_final_needs_review_view(tmp_path: Path) -> None:
+    review = {
+        "id": "OBS_1",
+        "function": "entry",
+        "location": "src/demo.c:10",
+        "category": "reliability",
+        "subcategory": "contract",
+        "description": "The caller contract is uncertain.",
+        "root_cause": "The input range is undocumented.",
+        "suggested_fix": "Review the caller contract.",
+        "confidence": 0.5,
+        "impact_level": "medium",
+        "candidate_disposition": "needs_review",
+    }
+    report = FinalReport(
+        entry_function="entry",
+        overall_verdict="no_issue_found",
+        issues=[],
+        report_views={"with_needs_review": {"issues": [review]}},
+        finding_status="needs_review",
+    )
+
+    ReportGenerator(tmp_path).save_markdown_report(report)
+    content = (tmp_path / "report.md").read_text(encoding="utf-8")
+
+    assert "未发现已确认缺陷；存在待复核项。" in content
+    assert "## 待复核问题" in content
+    assert "The caller contract is uncertain." in content
+    assert "*No needs_review observations.*" not in content
 
 
 def test_report_assembler_preserves_returned_report_metadata(tmp_path: Path) -> None:

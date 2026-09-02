@@ -488,7 +488,9 @@ def build_validator_project_knowledge_projection(
                 "statement": item.get("statement"),
                 "authority": item.get("authority"),
                 "normativity": item.get("normativity"),
+                "status": item.get("status"),
                 "source_refs": list(item.get("source_refs") or []),
+                "conflicts_with": list(item.get("conflicts_with") or []),
             }
         )
     selection = knowledge.get("selection") if isinstance(knowledge.get("selection"), Mapping) else {}

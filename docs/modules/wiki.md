@@ -82,12 +82,13 @@ Wiki Compiler chunk 在单个文档内通过 `concurrency.wiki_compiler_workers`
 - 纯 `removed_source_ids` delta 不调用 LLM，也不接受页面正文、约束或 edge proposal；RevisionStore 仅确定性传播 ref 不可解析和 constraint stale，再发布 current-manifest revision。只有包含 added/changed source 的 delta 才允许 Compiler 生成约束。
 - removed-only 的 deterministic ChangeSet 使用 `zscope.wiki.removal.v1` provenance，并只记录受影响的 `docsrc` ID 和固定 reason；不得生成“源文档原内容”或“旧 Wiki 内容”的猜测性 Markdown。
 - direct fallback 只返回有来源的原文摘录；没有命中返回 `none`，不能从文档猜测 constraint，也不能改变 Validator verdict。
-- active Wiki context 只消费当前 manifest pin 下 status=active、authority=documented_contract 且 source refs 可解析的 constraint；背景页本身不计作 Wiki 注入证据。
+- active Wiki context 只消费当前 manifest pin 下 status=active 或 status=conflicted、authority=documented_contract 且 source refs 可解析的 constraint；conflicted constraint 会连同有界的冲突摘要注入 Validator，供其结合源代码裁决，不能单独作为结论；背景页本身不计作 Wiki 注入证据。
 - `ProjectKnowledgeService` 在扫描开始时快照一个 active revision；并发 Validator worker 不得重新读取 active pointer。Validator cache identity 必须包含 project knowledge schema、mode、revision、manifest、context digest 和 ranking version。
 - 同一 scan session 不得由入口 Analyzer 重复执行 Wiki preflight/Compiler，也不得并发争抢 `compiler.lock`；共享服务的生命周期必须覆盖全部入口与最终验证队列。
 - candidate revision 在切换 active pointer 前必须完成 Constraint Schema 和完整 `lint_revision()`；lint 结果必须写回 revision metadata，不能预置固定 `passed`。lint、SQLite projection 或 active pointer 发布失败时将该 revision 标记为 failed、重建程序拥有的 `log.md`，并保留旧 active revision。
 - Compiler provenance 是程序拥有的字段；无论模型是否提交 `compiler` metadata，发布前都必须以实际 adapter、prompt version 和 client model 无条件覆盖。Compiler unavailable 时同样不切换 active pointer；Validator 记录 fallback reason 并回到 source-index direct fallback。
 - `build_only` 在 manifest 改变时也必须发布 current revision，但不向 Validator 暴露 context；`auto_maintain + compiler_enabled` 可对 deterministic revision 做一次 LLM enrichment，已经是 LLM/mixed revision 且 manifest 未变时不得产生 revision churn。
+- 若 manifest 变化但 `compare_manifests()` 得到的 accepted Markdown delta 为空，Analyzer 发布不调用 LLM 的 manifest-only freshness revision，复用父 revision 的约束/来源投影；不得把空 delta 改写为全部 accepted 文档重新编译。仅当 active revision 没有已物化约束时，才允许按 accepted 文档执行 bootstrap。
 - `audit-events.jsonl` 使用 `zscope.wiki-event.v1` 哈希链；每个事件的 `previous_event_digest` 必须连接前一事件，lint 必须检测断链。
 - event replay 重建的 active revision 必须与 `active.json` 一致；`log.md` 必须与同一事件链的程序投影字节等价。
 - `active.json`、revision metadata、source manifest、page/index/log 和 audit event 文件都按不可信磁盘输入处理：固定 revision ID、大小、UTF-8、symlink 和 state-root 路径边界，任何非法状态不得参与路径拼接。

@@ -262,8 +262,40 @@ class ReportGenerator:
             json.dump(data, f, indent=2, ensure_ascii=False)
         return output_path
 
+    @staticmethod
+    def _needs_review_issues(report: FinalReport) -> List[Issue]:
+        """Project final needs_review items from the report view for Markdown."""
+        review_statuses = {"needs_review", "uncertain", "unvalidated"}
+        views = report.report_views if isinstance(report.report_views, dict) else {}
+        view = views.get("with_needs_review")
+        raw_items = view.get("issues", []) if isinstance(view, dict) else []
+        projected: List[Issue] = []
+        for index, raw in enumerate(raw_items, 1):
+            if isinstance(raw, Issue):
+                if str(raw.validation_status or "").strip().lower() in review_statuses:
+                    projected.append(raw)
+                continue
+            if not isinstance(raw, dict):
+                continue
+            status = str(raw.get("validation_status") or "").strip().lower()
+            if not status:
+                disposition = str(raw.get("candidate_disposition") or "").strip().lower()
+                finding_kind = str(raw.get("finding_kind") or "").strip().lower()
+                status = (
+                    "needs_review"
+                    if disposition == "needs_review" or finding_kind == "needs_review"
+                    else ""
+                )
+            if status not in review_statuses:
+                continue
+            issue = Issue.from_dict(raw, context_function=report.entry_function, issue_index=index)
+            issue.validation_status = "needs_review"
+            projected.append(issue)
+        return projected
+
     def save_markdown_report(self, report: FinalReport) -> Path:
         """保存中文分析结论报告。"""
+        review_issues = self._needs_review_issues(report)
         md_content = f"""# Z-SCOPE 分析报告
 
 **分析时间**: {report.metadata.get('timestamp', '未记录')}
@@ -279,7 +311,10 @@ class ReportGenerator:
             f"{' (incomplete)' if report.completeness != 'complete' else ''}\n\n"
         )
         if not report.issues:
-            md_content += "未发现显著缺陷。\n"
+            if review_issues:
+                md_content += "未发现已确认缺陷；存在待复核项。\n"
+            else:
+                md_content += "未发现显著缺陷。\n"
         else:
             # Filter out rejected issues for offline report
             reportable_issues = [i for i in report.issues if i.validation_status != "rejected"]
@@ -331,6 +366,32 @@ class ReportGenerator:
                     }.get(issue.validation_status, "⚪ Validator 未完成")
                     md_content += f"\n**{status_label}**:\n{self._normalize_md_text(issue.validation_reasoning)}\n"
 
+                md_content += "\n---\n"
+
+        if review_issues:
+            md_content += "\n## 待复核问题\n\n"
+            for issue in review_issues:
+                icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}.get(
+                    issue.impact_level.lower(), "⚪"
+                )
+                md_content += f"### {icon} [{issue.id}] {issue.category}: {issue.subcategory}\n"
+                md_content += f"- **所在函数**: `{issue.function}`\n"
+                md_content += f"- **代码位置**: `{issue.location}`\n"
+                md_content += f"- **置信度**: {issue.confidence:.0%}\n"
+                if issue.finding_kind:
+                    md_content += f"- **Finding 类型**: `{issue.finding_kind}`\n"
+                if issue.code_snippet:
+                    md_content += f"\n**相关代码**:\n```c\n{self._normalize_md_text(issue.code_snippet)}\n```\n"
+                md_content += f"\n**问题描述**:\n{self._normalize_md_text(issue.description)}\n"
+                if issue.reasoning:
+                    md_content += f"\n**分析推理**:\n{self._normalize_md_text(issue.reasoning)}\n"
+                md_content += f"\n**根本原因**:\n{self._normalize_md_text(issue.root_cause)}\n"
+                md_content += f"\n**修复建议**:\n> {self._normalize_md_text(issue.suggested_fix)}\n"
+                if issue.validation_reasoning:
+                    md_content += (
+                        "\n**🟡 Validator 待复核**:\n"
+                        f"{self._normalize_md_text(issue.validation_reasoning)}\n"
+                    )
                 md_content += "\n---\n"
 
         if report.notes:

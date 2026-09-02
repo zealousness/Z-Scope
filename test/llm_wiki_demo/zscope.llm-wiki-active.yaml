@@ -8,7 +8,7 @@ llms:
     api_key: ${Z_SCOPE_API_KEY}
     max_tokens: 8192
     max_retries: 2
-    timeout: 120
+    timeout: 180
 
 project:
   root: test/llm_wiki_demo
@@ -18,18 +18,18 @@ project:
   include_paths: [include, src]
   exclude_paths: [build]
   wiki:
-    mode: active
+    mode: "active"
     auto_maintain: false
     compiler_enabled: true
     compiler_max_tokens: 20000
-    state_dir: .zscope_knowledge/wiki-active-fixture-v2
+    state_dir: .zscope_knowledge/wiki
     documents:
       exclude:
         - .zscope_conversations/**
         - .zscope_knowledge/**
         - benchmark/README.md
         - benchmark_runs/**
-        - zscope_batch_report.md
+        - zscope_batch_report*.md
   entry_discovery:
     enabled: true
     search_root: .
