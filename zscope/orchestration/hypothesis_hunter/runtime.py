@@ -29,6 +29,7 @@ from .store import HypothesisArtifactStore
 
 
 ReportRunner = Callable[[Mapping[str, Any], Mapping[str, Any], Sequence[Mapping[str, Any]]], Any]
+P6_LOW_VALUE_HUNTER_RISK_CUTOFF = 60
 
 
 class HypothesisHunterRuntime:
@@ -80,6 +81,7 @@ class HypothesisHunterRuntime:
             value.function_uid: value.function_name for value in semantic_map.functions
         }
         llm_calls = 0
+        soft_token_denials = 0
         cache_hits = 0
         coverage_status_counts = {"complete": 0, "partial": 0, "failed": 0}
         prepared: list[dict[str, Any]] = []
@@ -163,10 +165,20 @@ class HypothesisHunterRuntime:
                     stage="active_discovery",
                     agent="hypothesis_hunter",
                     audit_unit_uid=str(unit["audit_unit_uid"]),
-                    call_kind="hypothesis_selection",
+                    call_kind=self._discovery_call_kind(unit),
                 ):
                     return selected_report_runner(value["projection"], unit, value["offers"])
 
+            # Submit stronger answer-free risk classes first.  ThreadPoolExecutor
+            # uses a FIFO work queue, so the 10.5M soft watermark cannot let a
+            # low-value Hunter unit reserve capacity ahead of a stronger unit.
+            pending.sort(
+                key=lambda pair: (
+                    -self._discovery_risk_score(pair[1]["unit"]),
+                    str(pair[1]["unit"].get("audit_unit_uid") or ""),
+                    pair[0],
+                )
+            )
             llm_calls = len(pending)
             worker_count = min(self.max_concurrent_calls, len(pending))
             with ThreadPoolExecutor(
@@ -178,8 +190,17 @@ class HypothesisHunterRuntime:
                     index = futures[future]
                     try:
                         response = future.result()
-                    except P6BalancedTokenAdmissionError:
-                        raise
+                    except P6BalancedTokenAdmissionError as exc:
+                        if exc.failure_class != "p6_token_soft_watermark":
+                            raise
+                        # This is an answer-free pre-provider refusal.  Keep
+                        # the audit unit in the coverage manifest, but do not
+                        # count it as a physical model call or silently fall
+                        # back to another discovery path.
+                        prepared[index]["report"] = None
+                        prepared[index]["failure_reason"] = "p6_low_value_hunter_soft_watermark"
+                        soft_token_denials += 1
+                        continue
                     except Exception:
                         # A provider/transport failure belongs to exactly this
                         # audit unit.  The exception body must never enter an
@@ -203,8 +224,20 @@ class HypothesisHunterRuntime:
                 else:
                     report = None
             if report is None:
-                coverage_status_counts["failed"] += 1
-                observation = self._observation(unit, "hunter_report_unavailable_or_invalid")
+                failure_reason = str(
+                    value.get("failure_reason") or "hunter_report_unavailable_or_invalid"
+                )
+                coverage_status_counts[
+                    (
+                        "partial"
+                        if failure_reason == "p6_low_value_hunter_soft_watermark"
+                        else "failed"
+                    )
+                ] += 1
+                observation = self._observation(
+                    unit,
+                    failure_reason,
+                )
                 observations.append(observation)
                 references.append(
                     self.store.put(
@@ -332,7 +365,8 @@ class HypothesisHunterRuntime:
                     for candidate_uid in value.get("registered_candidate_uids") or []
                 }
             ),
-            "llm_call_count": llm_calls,
+            "llm_call_count": llm_calls - soft_token_denials,
+            "p6_soft_token_denied_count": soft_token_denials,
             "cache_hit_count": cache_hits,
             "planner_diagnostic_count": len(self.planner.diagnostics),
             "coverage_status_counts": coverage_status_counts,
@@ -358,6 +392,29 @@ class HypothesisHunterRuntime:
             "coverage_summary": coverage_summary,
             "planner_diagnostics": list(self.planner.diagnostics),
         }
+
+    @staticmethod
+    def _discovery_risk_score(unit: Mapping[str, Any]) -> int:
+        """Return the sealed planner score without accepting bool coercion."""
+
+        value = unit.get("risk_score")
+        if isinstance(value, bool) or not isinstance(value, int):
+            return 0
+        return max(0, min(100, value))
+
+    @classmethod
+    def _discovery_call_kind(cls, unit: Mapping[str, Any]) -> str:
+        """Classify only low-risk Hunter selection for P6 soft admission.
+
+        The attack-surface planner computes ``risk_score`` solely from frozen
+        program/coverage facts.  A score below 60 is the fixed low-value
+        discovery class.  Ordinary scans merely retain this attribution; only
+        the sealed P6 balanced ledger enforces its soft watermark.
+        """
+
+        if cls._discovery_risk_score(unit) < P6_LOW_VALUE_HUNTER_RISK_CUTOFF:
+            return "p6_low_value_hunter"
+        return "hypothesis_selection"
 
     @staticmethod
     def _report_from_response(response: Any) -> dict[str, Any] | None:
@@ -429,6 +486,14 @@ class HypothesisHunterRuntime:
             "candidate_source": "hypothesis_hunter",
             "audit_unit_uid": str(hypothesis["audit_unit_uid"]),
             "candidate_disposition": "needs_review",
+            # Preserve the exact system-produced offer as the immutable
+            # producer domain for the later v4 audit binding.  The Hunter
+            # model may only select identifiers from this offer (the strict
+            # report schema rejects proof/offer replacement fields), and the
+            # Registrar copies this value into the candidate artifact before
+            # Validator model output is applied.  Live authority still
+            # rebuilds and revalidates the offer; this copy is not a receipt.
+            "hypothesis_offer": dict(offer),
             "security_hypothesis": dict(hypothesis),
             "proof_kernel_evaluation": dict(proof),
             "proof_kernel_input": {

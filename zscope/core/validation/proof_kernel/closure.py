@@ -833,12 +833,16 @@ def reduce_proof_closure(
     if not all_required <= catalog_clause_uids:
         failures.add("required_clause_not_executable")
         missing.update(all_required - catalog_clause_uids)
-    if not all_required <= selected_clause_uids:
-        failures.add("required_executable_clause_not_selected")
-        missing.update(all_required - selected_clause_uids)
-    if not all_required <= checked:
-        failures.add("required_executable_clause_not_checked")
-        missing.update(all_required - checked)
+    # A selected subset is a valid, resumable proof-progress state.  It must
+    # remain fail-closed ``needs_review``, but it is not an integrity failure:
+    # V2/V3 use the exact missing clause set to schedule bounded follow-up
+    # evidence.  By contrast, every *selected* action must have a checker
+    # result; omitting one after selection is an integrity violation.
+    missing.update(all_required - selected_clause_uids)
+    unchecked_selected = selected_clause_uids - checked
+    if unchecked_selected:
+        failures.add("selected_executable_clause_not_checked")
+        missing.update(unchecked_selected)
     accepted = accepted_confirmation | accepted_counterproof
     missing.update(all_required - accepted)
     conflicting.update(accepted_confirmation & accepted_counterproof)

@@ -9,11 +9,23 @@ import pytest
 from scripts.run_p6_policy_replay import P6PolicyReplayError, replay_trace_root
 from scripts.reverify_v3_trace import reverify_trace_root
 from scripts.p2_proof_corpus import build_corpus
+import zscope.orchestration.decision_trace as decision_trace_module
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.core.validation.proof_kernel import ProofKernelEngine
 from zscope.orchestration.decision_trace import DecisionTraceStore
 from zscope.benchmarking.p6_protocol import canonical_sha256
 from zscope.cli.explain import _policy_replay
+
+
+@pytest.fixture(autouse=True)
+def _trust_p2_corpus_producer_boundary(monkeypatch) -> None:
+    """Keep replay mechanics tests independent of product provenance."""
+
+    monkeypatch.setattr(
+        decision_trace_module,
+        "_has_exact_v4_producer_occurrence_binding",
+        lambda _candidate: True,
+    )
 
 
 def _trace_root(tmp_path: Path) -> Path:

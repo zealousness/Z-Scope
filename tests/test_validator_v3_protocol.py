@@ -65,20 +65,38 @@ class _DirectLLM:
     def chat_completion(self, messages, **kwargs):
         self.calls.append((messages, kwargs))
         reply = self.replies.pop(0)
+        message = {
+            "role": "assistant",
+            "content": reply.get("content", ""),
+            "reasoning_content": reply.get("reasoning_content"),
+        }
+        if "tool_calls" in reply:
+            message["tool_calls"] = reply["tool_calls"]
         return {
             "choices": [
                 {
                     "finish_reason": reply.get("finish_reason", "stop"),
-                    "message": {
-                        "role": "assistant",
-                        "content": reply.get("content", ""),
-                        "reasoning_content": reply.get("reasoning_content"),
-                    },
+                    "message": message,
                 }
             ],
             "model": "unit-model",
             "usage": {"prompt_tokens": 100, "completion_tokens": 20},
         }
+
+
+class _ToolDirectLLM(_DirectLLM):
+    supports_structured_output = False
+
+
+def _final_call(payload: dict, *, call_id: str = "call_final") -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": "emit_validator_result_v3",
+            "arguments": json.dumps(payload),
+        },
+    }
 
 
 def _input(evidence_slice=None) -> dict:
@@ -168,6 +186,162 @@ def test_proof_engine_v3_uses_one_direct_strict_completion() -> None:
     assert "missing_fact_request is an object" in prompt
     assert "verdict must be uncertain" in prompt
     assert "stop_reason must be missing_fact" in prompt
+
+
+def test_proof_engine_v3_accepts_exactly_one_forced_final_tool_initially() -> None:
+    llm = _ToolDirectLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [_final_call(_result())],
+            }
+        ]
+    )
+
+    response = ProofEngineAgent(llm, []).run(_input())
+
+    assert response.success is True
+    assert response.data["verdict"] == "verified"
+    assert len(llm.calls) == 1
+    assert llm.calls[0][1]["tools"][0]["function"]["name"] == ("emit_validator_result_v3")
+    assert llm.calls[0][1]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "emit_validator_result_v3"},
+    }
+
+
+def test_proof_engine_v3_forced_final_tool_rejects_prose_json_fallback() -> None:
+    llm = _ToolDirectLLM(
+        [
+            {"finish_reason": "stop", "content": json.dumps(_result())},
+            {"finish_reason": "stop", "content": json.dumps(_result())},
+        ]
+    )
+
+    response = ProofEngineAgent(llm, []).run(_input())
+
+    assert response.success is True
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["stop_reason"] == "malformed_output"
+    assert response.metadata["validator_repair_attempted"] == 1
+    assert response.metadata["validator_repair_accepted"] == 0
+    assert response.metadata["validator_contract_failure_class"] == "terminal_tool_invalid"
+
+
+def test_proof_engine_v3_invalid_final_payload_cannot_use_prose_json() -> None:
+    invalid_final = {
+        "id": "call_invalid",
+        "type": "function",
+        "function": {
+            "name": "emit_validator_result_v3",
+            "arguments": json.dumps({"schema_version": "wrong"}),
+        },
+    }
+    llm = _ToolDirectLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "content": json.dumps(_result()),
+                "tool_calls": [invalid_final],
+            },
+            {
+                "finish_reason": "tool_calls",
+                "content": json.dumps(_result()),
+                "tool_calls": [invalid_final],
+            },
+        ]
+    )
+
+    response = ProofEngineAgent(llm, []).run(_input())
+
+    assert response.success is True
+    assert response.data["verdict"] == "uncertain"
+    assert response.metadata["validator_repair_accepted"] == 0
+    assert response.metadata["validator_contract_failure_class"] != "none"
+
+
+def test_proof_engine_v3_rejects_multiple_initial_finals_before_regeneration() -> None:
+    llm = _ToolDirectLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "content": json.dumps(_result()),
+                "tool_calls": [
+                    _final_call(_result(), call_id="call_final_1"),
+                    _final_call(_result(), call_id="call_final_2"),
+                ],
+            },
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [_final_call(_result(), call_id="call_repaired")],
+            },
+        ]
+    )
+
+    response = ProofEngineAgent(llm, []).run(_input())
+
+    assert response.success is True
+    assert response.data["verdict"] == "verified"
+    assert response.metadata["validator_repair_attempted"] == 1
+    assert response.metadata["validator_repair_accepted"] == 1
+    assert len(llm.calls) == 2
+    assert "class=terminal_tool_invalid" in llm.calls[1][0][-1]["content"]
+
+
+def test_proof_engine_v3_rejects_multiple_finals_from_regeneration() -> None:
+    llm = _ToolDirectLLM(
+        [
+            {"content": "not-json"},
+            {
+                "finish_reason": "tool_calls",
+                "content": json.dumps(_result()),
+                "tool_calls": [
+                    _final_call(_result(), call_id="call_repair_1"),
+                    _final_call(_result(), call_id="call_repair_2"),
+                ],
+            },
+        ]
+    )
+
+    response = ProofEngineAgent(llm, []).run(_input())
+
+    assert response.success is True
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["stop_reason"] == "malformed_output"
+    assert response.metadata["validator_repair_attempted"] == 1
+    assert response.metadata["validator_repair_accepted"] == 0
+    assert response.metadata["validator_contract_failure_class"] == ("terminal_tool_invalid")
+
+
+def test_proof_engine_v3_rejects_final_tool_mixed_with_an_action() -> None:
+    mixed = [
+        _final_call(_result()),
+        {
+            "id": "call_action",
+            "type": "function",
+            "function": {"name": "inspect_more", "arguments": "{}"},
+        },
+    ]
+    llm = _ToolDirectLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "content": json.dumps(_result()),
+                "tool_calls": mixed,
+            },
+            {
+                "finish_reason": "tool_calls",
+                "content": json.dumps(_result()),
+                "tool_calls": mixed,
+            },
+        ]
+    )
+
+    response = ProofEngineAgent(llm, []).run(_input())
+
+    assert response.success is True
+    assert response.data["verdict"] == "uncertain"
+    assert response.metadata["validator_contract_failure_class"] == ("terminal_tool_invalid")
 
 
 def test_proof_engine_rejects_non_v3_and_generic_inputs_without_model_call() -> None:

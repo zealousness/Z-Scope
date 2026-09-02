@@ -118,6 +118,9 @@ def test_python_39_314_constraints_and_ci_are_declared() -> None:
     assert 'sqlite = ">=3.8.10.2"' in pyproject
     assert "target-version = ['py39']" in pyproject
     assert 'python_version = "3.9"' in pyproject
+    assert '"orchestration/successor-runtime-review-evidence/*"' in pyproject
+    assert '"orchestration/successor-runtime-review-evidence/**/*"' in pyproject
+    assert '"orchestration/successor-runtime-review-integration-receipt.v1.json"' in pyproject
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     for suffix, version in (
         ("39", "3.9"),
@@ -135,7 +138,11 @@ def test_python_39_314_constraints_and_ci_are_declared() -> None:
     assert "scripts/check_black_baseline.py" in workflow
     assert "scripts/qualify_p6_proof_promotion.py --check" in workflow
     assert "scripts/check_p4_hypothesis_package.py dist/zscope-*.whl" in workflow
-    assert "scripts/check_p5_runtime_authority_package.py dist/zscope-*.whl" in workflow
+    assert "scripts/check_p5_runtime_authority_package.py" in workflow
+    assert "scripts/project_successor_review_evidence.py check" in workflow
+    assert "--expect-successor-status in_progress" not in workflow
+    assert "current_successor_reviewed" in workflow
+    assert "dist/zscope-*.whl" in workflow
     assert "tests/test_p6_proof_promotion_qualification.py" in workflow
     assert "tests/test_audit_eligibility.py" in workflow
     assert "test/range/benchmark test/java_range/benchmark" in workflow

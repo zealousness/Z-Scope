@@ -44,6 +44,16 @@ TERMINAL_DISPOSITIONS = frozenset(
 NONTERMINAL_STATUSES = frozenset({"pending", "queued", "planned", "running"})
 
 
+def _has_exact_v4_producer_occurrence_binding(issue: Mapping[str, Any]) -> bool:
+    """Keep the ledger import-light while sharing the canonical rebuild."""
+
+    from ..core.validation.audit_eligibility import (
+        has_exact_v4_producer_occurrence_binding,
+    )
+
+    return has_exact_v4_producer_occurrence_binding(issue)
+
+
 @dataclass
 class CandidateTicket:
     """Structured data accepted by the Candidate Ledger.
@@ -929,7 +939,12 @@ class CandidateLedger:
         """
 
         evaluator = TerminalAuthorityEvaluator()
-        projected = evaluator.evaluate(issue, operation="live")
+        producer_occurrence_bound = _has_exact_v4_producer_occurrence_binding(issue)
+        projected = evaluator.evaluate(
+            issue if producer_occurrence_bound else {},
+            protocol_or_engine_failure=not producer_occurrence_bound,
+            operation="live",
+        )
         projected_dict = projected.to_dict()
         recorded = issue.get("terminal_authority_decision")
         engine_recorded = issue.get("proof_kernel_terminal_authority_decision")
@@ -939,7 +954,8 @@ class CandidateLedger:
         )
         claimed_disposition = str(issue.get("candidate_disposition") or "").lower()
         authorized = bool(
-            projected.terminal
+            producer_occurrence_bound
+            and projected.terminal
             and projected.disposition == requested_disposition
             and projected.integrity_status == "verified"
             and projected.promotion_certificate is not None
@@ -965,8 +981,10 @@ class CandidateLedger:
         issue.pop("proof_kernel_promotion_certificate", None)
         issue.pop("proof_kernel_terminal_authority_decision", None)
         issue.pop("terminal_authority_decision", None)
+        issue.pop("proof_kernel_producer_binding_sha256", None)
+        issue.pop("proof_kernel_occurrence_binding_sha256", None)
         fail_closed = evaluator.evaluate(
-            issue,
+            {},
             protocol_or_engine_failure=True,
             operation="live",
         )

@@ -12,7 +12,10 @@ import requests
 from zscope.config.config import ConfigLoader
 from zscope.framework import llm_client as llm_client_module
 from zscope.framework.llm_client import LLMClient, ProviderFailureError
-from zscope.framework.llm_usage import ScanTokenUsageLedger
+from zscope.framework.llm_usage import (
+    P6_BALANCED_ADMISSION_MAX_TOKENS,
+    ScanTokenUsageLedger,
+)
 
 
 class _FakeResponse:
@@ -129,6 +132,587 @@ class _StrictUsageResponse(_FakeResponse):
         yield b"data: [DONE]"
 
 
+class _LegacyFunctionCallResponse(_FakeResponse):
+    def iter_lines(self):
+        chunks = [
+            {
+                "model": self.model,
+                "choices": [
+                    {
+                        "delta": {
+                            "role": "assistant",
+                            "function_call": {"name": "emit_"},
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": self.model,
+                "choices": [
+                    {
+                        "delta": {"function_call": {"name": "result"}},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": self.model,
+                "choices": [
+                    {
+                        "delta": {"function_call": {"arguments": '{"value":'}},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "model": self.model,
+                "choices": [
+                    {
+                        "delta": {"function_call": {"arguments": "7}"}},
+                        "finish_reason": "function_call",
+                    }
+                ],
+            },
+            {
+                "model": self.model,
+                "usage": {
+                    "prompt_tokens": 17,
+                    "completion_tokens": 5,
+                    "total_tokens": 22,
+                },
+                "choices": [],
+            },
+        ]
+        for chunk in chunks:
+            yield ("data: " + json.dumps(chunk)).encode("utf-8")
+        yield b"data: [DONE]"
+
+
+class _ScriptedToolCallResponse(_FakeResponse):
+    def __init__(self, chunks):
+        super().__init__()
+        self.chunks = chunks
+
+    def iter_lines(self):
+        for chunk in self.chunks:
+            value = dict(chunk)
+            value.setdefault("model", self.model)
+            yield ("data: " + json.dumps(value)).encode("utf-8")
+        yield b"data: [DONE]"
+
+
+def test_strict_sse_normalizes_fragmented_legacy_function_call_and_accounts_once(
+    monkeypatch,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-legacy.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    payloads = []
+
+    def fake_post(_url, **kwargs):
+        payloads.append(kwargs["json"])
+        return _LegacyFunctionCallResponse()
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+    response = client.chat_completion(
+        [{"role": "user", "content": "return the result"}],
+        tools=[{"type": "function", "function": {"name": "emit_result"}}],
+        tool_choice={"type": "function", "function": {"name": "emit_result"}},
+    )
+
+    message = response["choices"][0]["message"]
+    assert "function_call" not in message
+    assert len(message["tool_calls"]) == 1
+    assert message["tool_calls"][0]["function"] == {
+        "name": "emit_result",
+        "arguments": '{"value":7}',
+    }
+    assert payloads[0]["parallel_tool_calls"] is False
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["tool_call_count"] == 1
+
+
+def test_strict_sse_assembles_one_complete_modern_tool_call(monkeypatch) -> None:
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-modern.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    response = _ScriptedToolCallResponse(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_lookup",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"name":',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": '"demo"}'},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+            {
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 4,
+                    "total_tokens": 15,
+                },
+                "choices": [],
+            },
+        ]
+    )
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    result = client.chat_completion(
+        [{"role": "user", "content": "lookup"}],
+        tools=[{"type": "function", "function": {"name": "lookup"}}],
+    )
+
+    assert result["choices"][0]["message"]["tool_calls"] == [
+        {
+            "index": 0,
+            "id": "call_lookup",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"name":"demo"}'},
+        }
+    ]
+    assert ledger.snapshot(include_events=True)["events"][0]["tool_call_count"] == 1
+
+
+def _invalid_modern_tool_chunks(case: str):
+    first_call = {
+        "index": 0,
+        "id": "call_stable",
+        "type": "function",
+        "function": {"name": "lookup", "arguments": ""},
+    }
+    if case == "missing-function":
+        return _tool_delta_chunks([{"index": 0, "id": "call_missing"}])
+    if case == "empty-tool-batch":
+        return _tool_delta_chunks([])
+    if case == "duplicate-argument-key":
+        first_call["function"][
+            "arguments"
+        ] = '{"PRIVATE_DUPLICATE_KEY":1,"PRIVATE_DUPLICATE_KEY":2}'
+        return _tool_delta_chunks([first_call])
+    if case == "nonfinite-argument":
+        first_call["function"]["arguments"] = '{"PRIVATE_NONFINITE":NaN}'
+        return _tool_delta_chunks([first_call])
+    if case == "multiple":
+        first_call["function"]["arguments"] = "{}"
+        second = {
+            "index": 1,
+            "id": "PRIVATE_SECOND_CALL",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"},
+        }
+        return _tool_delta_chunks([first_call, second])
+
+    second_call = {"index": 0, "function": {"arguments": "{}"}}
+    if case == "id-drift":
+        second_call["id"] = "PRIVATE_DRIFTING_CALL_ID"
+    elif case == "function-name-drift":
+        second_call["function"]["name"] = "PRIVATE_DRIFTING_FUNCTION_NAME"
+    elif case == "index-drift":
+        second_call.update({"index": 1, "id": "call_stable", "type": "function"})
+        second_call["function"]["name"] = "lookup"
+    else:
+        raise AssertionError(f"unknown case: {case}")
+    return [
+        *_tool_delta_chunks([first_call], finish_reason=None),
+        *_tool_delta_chunks([second_call]),
+    ]
+
+
+def _tool_delta_chunks(tool_calls, *, finish_reason="tool_calls"):
+    return [
+        {
+            "choices": [
+                {
+                    "delta": {"tool_calls": tool_calls},
+                    "finish_reason": finish_reason,
+                }
+            ]
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing-function",
+        "id-drift",
+        "function-name-drift",
+        "index-drift",
+        "duplicate-argument-key",
+        "nonfinite-argument",
+        "empty-tool-batch",
+        "multiple",
+    ],
+)
+def test_strict_sse_rejects_incomplete_or_drifting_modern_tool_calls(
+    monkeypatch,
+    caplog,
+    case,
+) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-invalid-modern.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+    )
+    response = _ScriptedToolCallResponse(_invalid_modern_tool_chunks(case))
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "lookup"}])
+
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    assert str(raised.value) == ProviderFailureError.MESSAGE
+    assert "PRIVATE_" not in caplog.text
+
+
+def test_strict_curl_normalizes_legacy_function_call_and_disables_parallel_tools(
+    monkeypatch,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-curl-legacy.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    client._transport = "curl"
+    captured = {}
+    body = {
+        "model": "unit-model",
+        "choices": [
+            {
+                "finish_reason": "function_call",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "function_call": {
+                        "name": "emit_result",
+                        "arguments": '{"value":7}',
+                    },
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 17, "completion_tokens": 5, "total_tokens": 22},
+    }
+
+    class Completed:
+        returncode = 0
+        stderr = b""
+        stdout = (json.dumps(body) + "\n__Z_SCOPE_HTTP_STATUS__:200").encode("utf-8")
+
+    def fake_run(_command, **kwargs):
+        captured.update(json.loads(kwargs["input"].decode("utf-8")))
+        return Completed()
+
+    monkeypatch.setattr(client, "_curl_executable", lambda: "curl")
+    monkeypatch.setattr(llm_client_module.subprocess, "run", fake_run)
+    response = client.chat_completion(
+        [{"role": "user", "content": "return the result"}],
+        tools=[{"type": "function", "function": {"name": "emit_result"}}],
+        tool_choice={"type": "function", "function": {"name": "emit_result"}},
+    )
+
+    message = response["choices"][0]["message"]
+    assert "function_call" not in message
+    assert len(message["tool_calls"]) == 1
+    assert captured["parallel_tool_calls"] is False
+    assert captured["stream"] is False
+    assert ledger.snapshot(include_events=True)["events"][0]["tool_call_count"] == 1
+
+
+def test_strict_curl_accepts_one_complete_modern_tool_call(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-curl-modern.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+    )
+    client._transport = "curl"
+    body = {
+        "model": "unit-model",
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "function_call": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_lookup",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": '{"name":"demo"}',
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+    }
+
+    class Completed:
+        returncode = 0
+        stderr = b""
+        stdout = (json.dumps(body) + "\n__Z_SCOPE_HTTP_STATUS__:200").encode("utf-8")
+
+    monkeypatch.setattr(client, "_curl_executable", lambda: "curl")
+    monkeypatch.setattr(
+        llm_client_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: Completed(),
+    )
+
+    response = client.chat_completion([{"role": "user", "content": "lookup"}])
+
+    assert (
+        response["choices"][0]["message"]["tool_calls"]
+        == body["choices"][0]["message"]["tool_calls"]
+    )
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }
+        ],
+        [
+            {
+                "id": "call_wrong_type",
+                "type": "PRIVATE_WRONG_TYPE",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }
+        ],
+        [
+            {
+                "id": "call_missing_name",
+                "type": "function",
+                "function": {"arguments": "{}"},
+            }
+        ],
+        [
+            {
+                "id": "call_missing_arguments",
+                "type": "function",
+                "function": {"name": "lookup"},
+            }
+        ],
+        [
+            {
+                "id": "call_one",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            },
+            {
+                "id": "PRIVATE_SECOND_CALL",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            },
+        ],
+    ],
+    ids=["missing-id", "wrong-type", "missing-name", "missing-arguments", "multiple"],
+)
+def test_strict_curl_rejects_incomplete_or_multiple_modern_tool_calls(
+    monkeypatch,
+    caplog,
+    tool_calls,
+) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-curl-invalid-modern.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+    )
+    client._transport = "curl"
+    body = {
+        "model": "unit-model",
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": tool_calls,
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+    class Completed:
+        returncode = 0
+        stderr = b""
+        stdout = (json.dumps(body) + "\n__Z_SCOPE_HTTP_STATUS__:200").encode("utf-8")
+
+    monkeypatch.setattr(client, "_curl_executable", lambda: "curl")
+    monkeypatch.setattr(
+        llm_client_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: Completed(),
+    )
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "lookup"}])
+
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    assert str(raised.value) == ProviderFailureError.MESSAGE
+    assert "PRIVATE_" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {
+            "role": "assistant",
+            "content": "",
+            "function_call": {"name": "emit_result", "arguments": "{}"},
+            "tool_calls": [],
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "function_call": {"name": "emit_result", "arguments": {}},
+        },
+    ],
+    ids=["mixed-modern-and-legacy", "non-string-arguments"],
+)
+def test_strict_curl_rejects_ambiguous_legacy_function_call(
+    monkeypatch,
+    message,
+) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-curl-invalid.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+    )
+    client._transport = "curl"
+    body = {
+        "model": "unit-model",
+        "choices": [{"finish_reason": "function_call", "message": message}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+    class Completed:
+        returncode = 0
+        stderr = b""
+        stdout = (json.dumps(body) + "\n__Z_SCOPE_HTTP_STATUS__:200").encode("utf-8")
+
+    monkeypatch.setattr(client, "_curl_executable", lambda: "curl")
+    monkeypatch.setattr(
+        llm_client_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: Completed(),
+    )
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    assert str(raised.value) == ProviderFailureError.MESSAGE
+
+
+def test_strict_provider_rejects_mixed_legacy_and_modern_tool_protocols(
+    monkeypatch,
+    caplog,
+) -> None:
+    canary = "PRIVATE_MIXED_TOOL_ARGUMENT_MUST_NOT_LEAK"
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-mixed.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+    )
+
+    class MixedResponse(_FakeResponse):
+        def iter_lines(self):
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "model": self.model,
+                        "choices": [
+                            {
+                                "delta": {
+                                    "function_call": {
+                                        "name": "emit_result",
+                                        "arguments": json.dumps({"private": canary}),
+                                    },
+                                    "tool_calls": [],
+                                },
+                                "finish_reason": "function_call",
+                            }
+                        ],
+                    }
+                )
+            ).encode("utf-8")
+
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: MixedResponse())
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert raised.value.failure_class == "provider_protocol_incompatible"
+    assert str(raised.value) == ProviderFailureError.MESSAGE
+    assert canary not in caplog.text
+
+
 def test_strict_provider_accepts_only_exact_model_and_conserved_integer_usage(
     monkeypatch,
 ) -> None:
@@ -156,6 +740,86 @@ def test_strict_provider_accepts_only_exact_model_and_conserved_integer_usage(
     event = ledger.snapshot(include_events=True)["events"][0]
     assert event["provider_reported"] is True
     assert event["provider_response_model"] == "unit-model"
+
+
+def test_strict_provider_accepts_zero_optional_usage_details_with_positive_total(
+    monkeypatch,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-zero-details.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    monkeypatch.setattr(
+        client.session,
+        "post",
+        lambda *_args, **_kwargs: _StrictUsageResponse(
+            usage={
+                "prompt_tokens": 2,
+                "completion_tokens": 1,
+                "total_tokens": 3,
+                "cached_prompt_tokens": 0,
+                "reasoning_tokens": 0,
+            }
+        ),
+    )
+
+    response = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert response["usage"]["estimated"] is False
+    assert response["usage"]["cached_prompt_tokens"] == 0
+    assert response["usage"]["reasoning_tokens"] == 0
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["provider_reported"] is True
+    assert event["cached_prompt_tokens"] == 0
+    assert event["reasoning_tokens"] == 0
+
+
+def test_strict_sse_treats_null_tool_protocol_fields_as_absent(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-null-tools.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+    )
+    response = _ScriptedToolCallResponse(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "role": "assistant",
+                            "content": "ok",
+                            "function_call": None,
+                            "tool_calls": None,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+            {
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 1,
+                    "total_tokens": 3,
+                },
+                "choices": [],
+            },
+        ]
+    )
+    monkeypatch.setattr(client.session, "post", lambda *_args, **_kwargs: response)
+
+    result = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert result["choices"][0]["message"] == {
+        "role": "assistant",
+        "content": "ok",
+    }
 
 
 def test_strict_provider_accepts_only_the_frozen_canonical_response_model(
@@ -304,6 +968,11 @@ def test_strict_provider_accepts_null_usage_placeholders_before_terminal_usage(
             {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 6},
             "provider_usage_unverifiable",
         ),
+        (
+            "unit-model",
+            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "provider_usage_unverifiable",
+        ),
     ],
 )
 def test_strict_provider_rejects_identity_or_usage_before_returning_model_output(
@@ -350,6 +1019,57 @@ def test_strict_provider_rejects_identity_or_usage_before_returning_model_output
     assert canary not in str(raised.value)
     event = ledger.snapshot(include_events=True)["events"][0]
     assert event["outcome"] != "success"
+
+
+def test_strict_curl_rejects_nonempty_output_with_all_zero_usage_without_leak(
+    monkeypatch,
+    caplog,
+) -> None:
+    canary = "P6_ZERO_USAGE_CURL_OUTPUT_CANARY"
+    ledger = ScanTokenUsageLedger(depth="fast")
+    client = LLMClient(
+        api_key="test",
+        base_url="https://strict-zero-curl.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+        require_exact_response_model=True,
+        token_usage_ledger=ledger,
+    )
+    client._transport = "curl"
+    body = {
+        "model": "unit-model",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": canary},
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+    class Completed:
+        returncode = 0
+        stderr = b""
+        stdout = (json.dumps(body) + "\n__Z_SCOPE_HTTP_STATUS__:200").encode("utf-8")
+
+    monkeypatch.setattr(client, "_curl_executable", lambda: "curl")
+    monkeypatch.setattr(
+        llm_client_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: Completed(),
+    )
+
+    with pytest.raises(ProviderFailureError) as raised:
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert raised.value.failure_class == "provider_usage_unverifiable"
+    assert str(raised.value) == ProviderFailureError.MESSAGE
+    assert canary not in str(raised.value)
+    assert canary not in caplog.text
+    assert client.usage_snapshot()["successful_calls"] == 0
+    event = ledger.snapshot(include_events=True)["events"][0]
+    assert event["outcome"] == "failed_unknown_usage"
+    assert event["provider_reported"] is False
 
 
 def test_strict_provider_rejects_duplicate_streaming_json_keys(monkeypatch) -> None:
@@ -1380,6 +2100,169 @@ def test_llm_client_caps_total_inflight_across_distinct_endpoints(monkeypatch) -
 
     assert max_active == LLMClient.DEFAULT_GLOBAL_MAX_INFLIGHT
     assert client_b.global_capacity_snapshot()["in_flight"] == 0
+
+
+def test_p6_near_cap_eight_clients_conserve_out_of_order_retry_attempts(
+    monkeypatch,
+) -> None:
+    ledger = ScanTokenUsageLedger(depth="balanced")
+    ledger.enable_p6_balanced_admission()
+    per_attempt_reservation = 11
+    initial_consumed = P6_BALANCED_ADMISSION_MAX_TOKENS - (
+        LLMClient.DEFAULT_GLOBAL_MAX_INFLIGHT * per_attempt_reservation
+    )
+    initial = ledger.reserve(
+        initial_consumed - 1,
+        1,
+        model="unit-model",
+        call_chain_id=ledger.new_call_chain_id(),
+    )
+    ledger.settle(
+        initial,
+        prompt_tokens=initial_consumed - 1,
+        completion_tokens=1,
+        provider_reported=True,
+        provider_response_model="unit-model",
+    )
+
+    monkeypatch.setattr(
+        LLMClient,
+        "_estimate_request_prompt_tokens",
+        classmethod(
+            lambda _cls, _messages, *, tools, response_format, request_payload=None: 1
+        ),
+    )
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+    clients = [
+        LLMClient(
+            api_key="test",
+            base_url=f"http://p6-near-cap-{index}-{uuid.uuid4().hex}.example/v1",
+            models=["unit-model"],
+            max_retries=1,
+            max_tokens=10,
+            require_exact_response_model=True,
+            token_usage_ledger=ledger,
+            llm_ref=f"client-{index}",
+            global_max_concurrent_requests=8,
+        )
+        for index in range(8)
+    ]
+    lock = threading.Lock()
+    first_wave_full = threading.Event()
+    retry_started = threading.Event()
+    release = [threading.Event() for _ in clients]
+    calls = [0 for _ in clients]
+    active = 0
+    max_active = 0
+    admission_boundaries = []
+
+    class FakeSession:
+        def __init__(self, index: int) -> None:
+            self.index = index
+
+        def post(self, _url, **_kwargs):
+            nonlocal active, max_active
+            with lock:
+                calls[self.index] += 1
+                attempt = calls[self.index]
+                active += 1
+                max_active = max(max_active, active)
+                if active == 8:
+                    first_wave_full.set()
+            admission_boundaries.append(ledger.snapshot())
+            try:
+                assert first_wave_full.wait(timeout=3.0)
+                if self.index == 0 and attempt == 1:
+                    return _FakeResponse(status_code=400, text="private")
+                if self.index == 0 and attempt == 2:
+                    retry_started.set()
+                assert release[self.index].wait(timeout=3.0)
+                return _StrictUsageResponse(
+                    model="unit-model",
+                    usage={
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                )
+            finally:
+                with lock:
+                    active -= 1
+
+    for index, client in enumerate(clients):
+        session = FakeSession(index)
+        monkeypatch.setattr(client, "_session_for_thread", lambda session=session: session)
+
+    messages = [{"role": "user", "content": "same request"}]
+    settlement_order = [7, 2, 5, 1, 6, 3, 4, 0]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(client.chat_completion, messages) for client in clients]
+        assert retry_started.wait(timeout=3.0)
+        at_retry = ledger.snapshot(include_events=True)
+        assert at_retry["consumed_tokens"] + at_retry["reserved_tokens"] == (
+            P6_BALANCED_ADMISSION_MAX_TOKENS
+        )
+        assert at_retry["active_reservation_count"] == 8
+        assert at_retry["rejected_before_model_count"] == 1
+        assert clients[0].global_capacity_snapshot()["in_flight"] == 8
+
+        for index in settlement_order:
+            release[index].set()
+            result = futures[index].result(timeout=3.0)
+            assert result["choices"][0]["message"]["content"] == "ok"
+
+    snapshot = ledger.snapshot(include_events=True)
+    assert max_active == 8
+    assert calls == [2, 1, 1, 1, 1, 1, 1, 1]
+    assert clients[-1].global_capacity_snapshot()["in_flight"] == 0
+    assert all(
+        item["consumed_tokens"] + item["reserved_tokens"]
+        <= P6_BALANCED_ADMISSION_MAX_TOKENS
+        for item in admission_boundaries
+    )
+    assert snapshot["consumed_tokens"] == initial_consumed + 16
+    assert snapshot["reserved_tokens"] == 0
+    assert snapshot["active_reservation_count"] == 0
+    assert snapshot["event_count"] == 9
+    assert snapshot["rejected_before_model_count"] == 1
+    assert snapshot["rejected_before_model_reasons"] == {"provider_http_client_error": 1}
+    assert [row["llm_ref"] for row in snapshot["events"][-8:]] == [
+        f"client-{index}" for index in settlement_order
+    ]
+    retried = next(row for row in snapshot["events"] if row["llm_ref"] == "client-0")
+    rejected = snapshot["rejected_before_model_attempts"][0]
+    assert retried["attempt_index"] == 2
+    assert retried["retry"] is True
+    assert rejected["attempt_index"] == 1
+    assert rejected["call_chain_id"] == retried["call_chain_id"]
+    attempts_by_chain = {}
+    for row in [*snapshot["events"], *snapshot["rejected_before_model_attempts"]]:
+        attempts_by_chain.setdefault(row["call_chain_id"], []).append(row["attempt_index"])
+    assert len(attempts_by_chain) == 9
+    assert all(
+        sorted(attempts) == list(range(1, len(attempts) + 1))
+        for attempts in attempts_by_chain.values()
+    )
+    totals = snapshot["usage_attribution"]["totals"]
+    assert totals["request_count"] == 9
+    assert totals["provider_reported_calls"] == 9
+    assert totals["estimated_or_conservative_calls"] == 0
+    assert totals["retry_count"] == 1
+    assert totals["provider_reported_calls"] / totals["request_count"] == 1.0
+    admission = snapshot["p6_balanced_admission"]
+    assert admission["request_count"] == 10
+    assert admission["admitted_request_count"] == 10
+    assert admission["denied_request_count"] == 0
+    assert admission["request_conservation_passed"] is True
+    assert admission["admitted_request_count"] == (
+        snapshot["event_count"] + snapshot["rejected_before_model_count"]
+    )
+    assert admission["request_count"] == (
+        snapshot["event_count"]
+        + snapshot["rejected_before_model_count"]
+        + admission["denied_request_count"]
+    )
 
 
 def test_llm_client_defaults_to_global_endpoint_cap_of_eight() -> None:

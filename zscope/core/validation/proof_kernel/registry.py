@@ -1362,6 +1362,62 @@ def _resource_cleanup_state(
     }
 
 
+_ASSIGNMENT_OPERATOR_RE = re.compile(r"(?<![=!<>])(?P<operator>(?:<<|>>|[+\-*/%&|^])?=)(?!=)")
+
+
+def _resource_reference_kinds(expression: str, resource_uid: str) -> set[str]:
+    """Classify resource mentions as identity, address, or pointee content.
+
+    This is intentionally narrower than a C expression parser.  Any form we
+    cannot prove to be a pointee-content access remains a bare identity and
+    therefore keeps the ownership clause open.
+    """
+
+    result: set[str] = set()
+    escaped = re.escape(resource_uid)
+    for match in re.finditer(rf"\b{escaped}\b", expression):
+        before = expression[: match.start()]
+        after = expression[match.end() :]
+        if re.search(r"&\s*$", before):
+            result.add("address")
+            continue
+        if re.match(r"\s*(?:\[[^\]]*\]|->|\.)", after):
+            result.add("pointee")
+            continue
+        # Treat ``*p`` as dereference only when ``*`` is unary.  A preceding
+        # identifier/closing delimiter makes ``x * p`` ambiguous and thus a
+        # bare resource-identity use.
+        star = re.search(r"\*\s*$", before)
+        if star is not None:
+            prefix = before[: star.start()].rstrip()
+            if not prefix or prefix[-1] in "([{=,:?!~+-/%&|^":
+                result.add("pointee")
+                continue
+        result.add("bare")
+    return result
+
+
+def _resource_assignment_is_identity_ambiguous(text: str, resource_uid: str) -> bool:
+    """Return whether an assignment can rebind, alias, or transfer ownership."""
+
+    matches = list(_ASSIGNMENT_OPERATOR_RE.finditer(text))
+    if not matches:
+        return False
+    if len(matches) != 1:
+        return True
+    match = matches[0]
+    lhs = text[: match.start()]
+    rhs = text[match.end() :]
+    lhs_kinds = _resource_reference_kinds(lhs, resource_uid)
+    rhs_kinds = _resource_reference_kinds(rhs, resource_uid)
+    if "address" in lhs_kinds or "address" in rhs_kinds:
+        return True
+    # A bare LHS is ``p = q`` (or a compound pointer rebind); a bare RHS is
+    # ``q = p`` / field/global/out-param storage.  Pointee-only references such
+    # as ``p[0] = 1``, ``*p = 1`` and ``x ^= p[0]`` do not move ownership.
+    return "bare" in lhs_kinds or "bare" in rhs_kinds
+
+
 def qualified_resource_leak_options(summary: Mapping[str, Any]) -> list[Dict[str, Any]]:
     """Return exact resource identity/cleanup/transfer closure options.
 
@@ -1464,16 +1520,9 @@ def qualified_resource_leak_options(summary: Mapping[str, Any]) -> list[Dict[str
             if re.search(rf"\breturn\b[^;]*\b{re.escape(resource_uid)}\b", text):
                 ownership_closed = False
                 break
-            if "=" in text:
-                assign_lhs, assign_rhs = text.split("=", 1)
-                if re.search(rf"\b{re.escape(resource_uid)}\b", assign_rhs):
-                    lhs_symbols = re.findall(r"\b[A-Za-z_]\w*\b", assign_lhs)
-                    if not lhs_symbols or lhs_symbols[-1] != resource_uid:
-                        ownership_closed = False
-                        break
-                if re.search(rf"\b{re.escape(resource_uid)}\b", assign_lhs):
-                    ownership_closed = False
-                    break
+            if _resource_assignment_is_identity_ambiguous(text, resource_uid):
+                ownership_closed = False
+                break
             if re.search(rf"&\s*{re.escape(resource_uid)}\b", text):
                 ownership_closed = False
                 break

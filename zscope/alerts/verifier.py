@@ -1,8 +1,9 @@
 """Offline P5 verification for external alerts.
 
 Alert verification never invokes a model or the Hypothesis Hunter.  A SARIF
-producer may attach a frozen Proof Kernel input; otherwise the external signal
-remains reviewable.
+producer may attach a frozen Proof Kernel input for offline audit, but that
+self-contained object has no binding to the current alert occurrence and can
+never authorize a live terminal transition.
 """
 
 from __future__ import annotations
@@ -236,21 +237,18 @@ class AlertVerifier:
                 artifact_refs = list(evaluation.artifact_refs)
                 checker_refs = list(evaluation.checker_result_refs)
                 proof_root = evaluation.root_manifest_sha256
-                integrity_status = "verified"
-                evaluation.apply_to_issue(authority_issue)
+                integrity_status = "verified_unbound"
                 proof_decision = {
                     "schema_version": evaluation.schema_version,
                     "proof_kernel_mode": evaluation.proof_kernel_mode,
-                    "disposition": evaluation.decision,
-                    "reason_code": evaluation.reason_code,
-                    "missing_fact_kinds": (
-                        []
-                        if evaluation.decision in {"confirmed", "rejected_with_proof"}
-                        else ["proof_clause"]
-                    ),
+                    "disposition": "needs_review",
+                    "reason_code": "alert_verify_external_proof_unbound",
+                    "missing_fact_kinds": ["external_alert_program_evidence"],
                     "artifact_refs": artifact_refs,
                     "checker_result_refs": checker_refs,
                     "root_manifest_sha256": proof_root,
+                    "audit_disposition": evaluation.decision,
+                    "audit_reason_code": evaluation.reason_code,
                 }
             except (KeyError, TypeError, ValueError) as exc:
                 integrity_status = "failed"
@@ -267,9 +265,9 @@ class AlertVerifier:
                 }
 
         authority = self.terminal_authority.evaluate(
-            authority_issue,
+            {},
             protocol_or_engine_failure=integrity_status == "failed",
-            operation="live",
+            operation="audit",
         )
         disposition = authority.disposition
         proof_authority = authority.to_dict()
@@ -342,7 +340,9 @@ class AlertVerifier:
             "terminal_authority": authority.authority,
             "terminal_authority_decision": authority.to_dict(),
             "terminal_reason_codes": [authority.reason_code],
-            "open_clause_ids": ([] if disposition != "needs_review" else ["proof_clause"]),
+            "open_clause_ids": (
+                [] if disposition != "needs_review" else ["external_alert_program_evidence"]
+            ),
             "security_spec_mode": security_identity["security_spec_mode"],
             "security_spec_artifact_refs": list(security_identity["security_spec_artifact_refs"]),
             "security_spec_decision": dict(security_identity["security_spec_decision"]),

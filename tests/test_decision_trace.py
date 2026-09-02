@@ -9,12 +9,16 @@ import pytest
 
 from zscope.cli.explain import main as explain_main
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
+from zscope.core.validation.audit_eligibility import (
+    has_exact_v4_producer_occurrence_binding as real_v4_producer_occurrence_binding,
+)
 from zscope.core.validation.claim_verifier import EvidenceClaimRequest, EvidenceClaimVerifier
 from zscope.core.validation.proof_kernel import (
     ProofKernelEngine,
     build_proof_clause,
     build_proof_obligation,
 )
+import zscope.orchestration.decision_trace as decision_trace_module
 from zscope.orchestration.decision_trace import (
     DecisionTraceError,
     DecisionTraceStore,
@@ -30,6 +34,15 @@ from zscope.reporting.assembler import ReportAssembler
 
 from scripts.reverify_v3_trace import reverify_trace_root
 from scripts.p2_proof_corpus import build_corpus
+
+
+@pytest.fixture(autouse=True)
+def _test_producer_occurrence_verifier(monkeypatch) -> None:
+    monkeypatch.setattr(
+        decision_trace_module,
+        "_has_exact_v4_producer_occurrence_binding",
+        lambda item: item.get("_test_exact_producer_occurrence_binding") is True,
+    )
 
 
 @lru_cache(maxsize=3)
@@ -86,6 +99,9 @@ def _frozen_authority_bundle(disposition: str) -> dict:
     assert authority["disposition"] == disposition
     carrier["proof_kernel_terminal_authority_decision"] = authority
     carrier["terminal_authority_decision"] = authority
+    carrier["proof_kernel_producer_binding_sha256"] = "a" * 64
+    carrier["proof_kernel_occurrence_binding_sha256"] = "b" * 64
+    carrier["_test_exact_producer_occurrence_binding"] = True
     return carrier
 
 
@@ -464,6 +480,10 @@ def test_terminal_transition_exact_replay_and_drift_fail_closed(tmp_path: Path) 
     assert created is True
     assert replay_created is False
     assert replay == event
+    policy_ref = str(event["input_refs"][0])
+    policy_evidence = json.loads((tmp_path / policy_ref).read_text(encoding="utf-8"))
+    assert policy_evidence["payload"]["proof_kernel_producer_binding_sha256"] == "a" * 64
+    assert policy_evidence["payload"]["proof_kernel_occurrence_binding_sha256"] == "b" * 64
     with pytest.raises(DecisionTraceError, match="replay_drift"):
         store.record_terminal_transition(issue, level="V3", authority=authority)
 
@@ -485,6 +505,40 @@ def test_proof_terminal_requires_a_persisted_live_transition(tmp_path: Path) -> 
 
     with pytest.raises(DecisionTraceError, match="no exact live transition"):
         store.finalize_issue(issue, view_memberships=("default", "with_needs_review"))
+
+
+def test_self_sealed_terminal_cannot_acquire_a_live_trace_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        decision_trace_module,
+        "_has_exact_v4_producer_occurrence_binding",
+        real_v4_producer_occurrence_binding,
+    )
+    store = DecisionTraceStore(tmp_path)
+    issue = {
+        "candidate_uid": "CAND_UNBOUND_TRACE",
+        "validation_cluster_uid": "VAL_UNBOUND_TRACE",
+        "candidate_disposition": "confirmed",
+        "validation_status": "validated",
+        **_authority_bundle("confirmed"),
+    }
+    issue.pop("_test_exact_producer_occurrence_binding", None)
+    issue.pop("proof_kernel_producer_binding_sha256", None)
+    issue.pop("proof_kernel_occurrence_binding_sha256", None)
+
+    with pytest.raises(
+        DecisionTraceError,
+        match="terminal_transition_authority_revalidation_failed",
+    ):
+        store.record_terminal_transition(
+            issue,
+            level="V1",
+            authority=issue["terminal_authority_decision"],
+        )
+
+    assert not issue.get("terminal_transition_event_uid")
 
 
 def test_terminal_transition_persistence_failure_is_fail_closed(

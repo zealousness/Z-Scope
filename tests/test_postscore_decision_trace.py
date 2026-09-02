@@ -3,11 +3,23 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
+import pytest
+
 from scripts.p2_proof_corpus import build_case
 from zscope.benchmarking.postscore_trace import build_postscore_decision_trace
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.core.validation.proof_kernel import ProofKernelEngine
+import zscope.orchestration.decision_trace as decision_trace_module
 from zscope.orchestration.decision_trace import DecisionTraceStore
+
+
+@pytest.fixture(autouse=True)
+def _test_producer_occurrence_verifier(monkeypatch) -> None:
+    monkeypatch.setattr(
+        decision_trace_module,
+        "_has_exact_v4_producer_occurrence_binding",
+        lambda item: item.get("_test_exact_producer_occurrence_binding") is True,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -22,6 +34,9 @@ def _confirmed_v4_bundle() -> dict:
     authority = TerminalAuthorityEvaluator().evaluate(carrier, operation="live").to_dict()
     carrier["proof_kernel_terminal_authority_decision"] = authority
     carrier["terminal_authority_decision"] = authority
+    carrier["proof_kernel_producer_binding_sha256"] = "a" * 64
+    carrier["proof_kernel_occurrence_binding_sha256"] = "b" * 64
+    carrier["_test_exact_producer_occurrence_binding"] = True
     return carrier
 
 

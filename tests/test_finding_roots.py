@@ -4,14 +4,31 @@ from copy import deepcopy
 from functools import lru_cache
 from typing import Any
 
+import pytest
+
 from scripts.p2_proof_corpus import build_case
+from zscope.core.validation.audit_eligibility import (
+    has_exact_v4_producer_occurrence_binding as real_v4_producer_occurrence_binding,
+)
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.core.validation.proof_kernel import ProofKernelEngine
 from zscope.core.validation.proof_kernel.canonical import seal_mapping
+import zscope.reporting.finding_roots as finding_roots_module
 from zscope.reporting.finding_roots import (
     FINDING_ROOT_VERSION,
     project_finding_roots,
 )
+
+
+@pytest.fixture(autouse=True)
+def _test_producer_occurrence_verifier(monkeypatch) -> None:
+    """Keep root-mechanics fixtures explicit about their trusted boundary."""
+
+    monkeypatch.setattr(
+        finding_roots_module,
+        "_has_exact_v4_producer_occurrence_binding",
+        lambda item: item.get("_test_exact_producer_occurrence_binding") is True,
+    )
 
 
 @lru_cache(maxsize=64)
@@ -41,10 +58,14 @@ def _confirmed_v4_bundle(
     )
     carrier: dict[str, Any] = {}
     evaluation.apply_to_issue(carrier)
+    carrier["proof_kernel_input"] = evaluation.authority_inputs()["proof_kernel_input"]
     carrier["proof_kernel_root_manifest_sha256"] = evaluation.root_manifest_sha256
     authority = TerminalAuthorityEvaluator().evaluate(carrier, operation="live").to_dict()
     carrier["proof_kernel_terminal_authority_decision"] = authority
     carrier["terminal_authority_decision"] = authority
+    carrier["proof_kernel_producer_binding_sha256"] = "a" * 64
+    carrier["proof_kernel_occurrence_binding_sha256"] = "b" * 64
+    carrier["_test_exact_producer_occurrence_binding"] = True
     return carrier
 
 
@@ -75,10 +96,14 @@ def _review_v4_bundle(
     )
     carrier: dict[str, Any] = {}
     evaluation.apply_to_issue(carrier)
+    carrier["proof_kernel_input"] = evaluation.authority_inputs()["proof_kernel_input"]
     carrier["proof_kernel_root_manifest_sha256"] = evaluation.root_manifest_sha256
     authority = TerminalAuthorityEvaluator().evaluate(carrier, operation="live").to_dict()
     carrier["proof_kernel_terminal_authority_decision"] = authority
     carrier["terminal_authority_decision"] = authority
+    carrier["proof_kernel_producer_binding_sha256"] = "a" * 64
+    carrier["proof_kernel_occurrence_binding_sha256"] = "b" * 64
+    carrier["_test_exact_producer_occurrence_binding"] = True
     return carrier
 
 
@@ -192,6 +217,55 @@ def test_same_candidate_different_validation_clusters_do_not_merge() -> None:
 
     assert len(_display(projection.outcomes, "confirmed")) == 2
     assert len(_display(projection.outcomes, "deduplicated_alias")) == 0
+
+
+def test_distinct_sources_and_clusters_merge_on_exact_semantic_v4_root() -> None:
+    projection = project_finding_roots(
+        [
+            _outcome(
+                "clang",
+                candidate_uid="CAND_clang",
+                cluster_uid="VAL_clang",
+                v4_promotion=True,
+                call_path=["entry", "sink"],
+            ),
+            _outcome(
+                "graph",
+                candidate_uid="CAND_graph",
+                cluster_uid="VAL_graph",
+                v4_promotion=True,
+                call_path=["entry", "sink"],
+            ),
+        ]
+    )
+
+    primary = _display(projection.outcomes, "confirmed")[0]
+    assert projection.finding_root_count == 1
+    assert projection.finding_root_alias_count == 1
+    assert primary["finding_root_merge_contract"] == "same_decision_region_subject"
+    assert primary["member_validation_cluster_uids"] == ["VAL_clang", "VAL_graph"]
+
+
+def test_distinct_clusters_do_not_merge_when_exact_call_path_differs() -> None:
+    projection = project_finding_roots(
+        [
+            _outcome(
+                "left",
+                cluster_uid="VAL_left",
+                v4_promotion=True,
+                call_path=["entry", "left", "sink"],
+            ),
+            _outcome(
+                "right",
+                cluster_uid="VAL_right",
+                v4_promotion=True,
+                call_path=["entry", "right", "sink"],
+            ),
+        ]
+    )
+
+    assert projection.finding_root_count == 2
+    assert projection.finding_root_alias_count == 0
 
 
 def test_different_detectors_with_same_structured_sink_merge() -> None:
@@ -422,6 +496,36 @@ def test_tampered_v4_promotion_cannot_authorize_attachment() -> None:
 
     assert projection.finding_root_count == 2
     assert projection.finding_root_alias_count == 0
+
+
+def test_unbound_self_sealed_v4_proof_cannot_become_alias_root(monkeypatch) -> None:
+    monkeypatch.setattr(
+        finding_roots_module,
+        "_has_exact_v4_producer_occurrence_binding",
+        real_v4_producer_occurrence_binding,
+    )
+    first = _outcome(
+        "self_sealed_a",
+        cluster_uid="VAL_self_sealed_alias",
+        v4_promotion=True,
+        call_path=["entry", "sink"],
+    )
+    second = _outcome(
+        "self_sealed_b",
+        cluster_uid="VAL_self_sealed_alias",
+        v4_promotion=True,
+        call_path=["entry", "sink"],
+    )
+    for item in (first, second):
+        item.pop("_test_exact_producer_occurrence_binding", None)
+        item.pop("proof_kernel_producer_binding_sha256", None)
+        item.pop("proof_kernel_occurrence_binding_sha256", None)
+
+    projection = project_finding_roots([first, second])
+
+    assert projection.finding_root_count == 2
+    assert projection.finding_root_alias_count == 0
+    assert len(_display(projection.outcomes, "deduplicated_alias")) == 0
 
 
 def test_same_candidate_different_subject_region_or_call_path_never_merges() -> None:

@@ -1161,7 +1161,12 @@ class Analyzer:
             semantic_map,
             candidate_registrar=registrar,
             security_spec_runtime=spec_runtime,
-            proof_bundle_provider=HypothesisProofCatalog(graph_provider).bundles,
+            proof_bundle_provider=HypothesisProofCatalog(
+                graph_provider,
+                project_uid=str(semantic_map.project_id),
+                revision_uid=str(semantic_map.revision),
+                project_root=self.config.project.project_root,
+            ).bundles,
             report_runner=report_runner,
         )
         state["security_runtime"].update(

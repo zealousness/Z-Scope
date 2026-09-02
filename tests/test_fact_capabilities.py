@@ -7,7 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from zscope.agents.proof_engine.agent import ProofEngineAgent
+from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from zscope.core.candidates.decision_facts import security_obligation_for
+from zscope.core.validation.authority import TerminalAuthorityEvaluator
 from zscope.core.validation.fact_capabilities import (
     ConcurrencyProofProvider,
     EvidenceAction,
@@ -23,6 +25,7 @@ from zscope.core.validation.proof_kernel import (
     build_cross_thread_function_ir,
 )
 from zscope.core.validation.proofs import deterministic_decision_proof
+from zscope.orchestration.candidate_envelope import annotate_issue_identity
 
 
 def _clang_graph(*, branch_release: bool = False) -> FunctionIRGraph:
@@ -1683,6 +1686,139 @@ def test_composite_exact_resource_leak_mints_v4_promotion() -> None:
     )
     assert evaluation.decision == "confirmed"
     assert evaluation.promotion_certificate is not None
+
+
+@pytest.mark.parametrize(
+    "content_use",
+    [
+        "p[0] = 1",
+        "*p = 1",
+        "x ^= p[0]",
+    ],
+)
+def test_production_leak_emitter_content_use_reaches_terminal_authority(content_use) -> None:
+    generator = ClangAstCfgCandidateGenerator()
+    issues = generator.generate_issues(
+        "single_block",
+        f"""
+1 | int single_block(void) {{
+4 |     char *p = malloc(8);
+5 |     {content_use};
+6 |     return 0;
+7 | }}
+""",
+        "src/generic.c",
+    )
+    issue = next(
+        value for value in issues if value["rule"] == "clang_cfg_acquire_without_release_on_exit"
+    )
+    issue["function_ir_graph"] = _single_block_graph(
+        ["p = malloc(8)", content_use],
+        [{"callee": "malloc", "line": 4}],
+        var_decls=[{"name": "p", "type": "char *", "line": 4, "storage_class": ""}],
+    ).to_dict()
+    issue.update(
+        {
+            "record_role": "validation_obligation",
+            "decision_fact_graph_v1": True,
+            "security_obligation_v1": True,
+            "decision_context_v31": True,
+            "decision_context_v32": True,
+            "decision_context_v33": True,
+        }
+    )
+    annotate_issue_identity(
+        issue,
+        project_id="PROJECT_TEST",
+        project_root=".",
+        revision="REV_TEST",
+        entry_function="single_block",
+        run_id="RUN_TEST",
+    )
+
+    assert issue["resource_signature"] == "p"
+    assert issue["resource_identity"] == "p"
+    source_endpoint = json.loads(issue["source_identity"])
+    assert source_endpoint == {
+        "file": "src/generic.c",
+        "function": "single_block",
+        "kind": "resource_acquire",
+        "line": "4",
+        "operation": "malloc",
+        "resource": "p",
+    }
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+    assert frozen is not None
+    assert frozen["proof_obligation"]["open_clauses"] == []
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+        selected_action_uids=frozen["selected_action_uids"],
+    )
+    authority = TerminalAuthorityEvaluator().evaluate(evaluation.authority_inputs())
+
+    assert evaluation.decision == "confirmed"
+    assert evaluation.promotion_certificate is not None
+    assert authority.terminal is True
+    assert authority.disposition == "confirmed"
+
+
+@pytest.mark.parametrize("identity_change", ["q = p", "p = q"])
+def test_production_leak_identity_alias_or_rebind_stays_needs_review(identity_change) -> None:
+    generator = ClangAstCfgCandidateGenerator()
+    graph = _single_block_graph(
+        ["p = malloc(8)", identity_change],
+        [{"callee": "malloc", "line": 4}],
+        var_decls=[{"name": "p", "type": "char *", "line": 4, "storage_class": ""}],
+    )
+    issues = generator.generate_issues(
+        "single_block",
+        f"""
+1 | int single_block(void) {{
+4 |     char *p = malloc(8);
+5 |     {identity_change};
+6 |     return 0;
+7 | }}
+""",
+        "src/generic.c",
+    )
+    issue = next(
+        value for value in issues if value["rule"] == "clang_cfg_acquire_without_release_on_exit"
+    )
+    issue["function_ir_graph"] = graph.to_dict()
+    issue.update(
+        {
+            "record_role": "validation_obligation",
+            "decision_fact_graph_v1": True,
+            "security_obligation_v1": True,
+            "decision_context_v31": True,
+            "decision_context_v32": True,
+            "decision_context_v33": True,
+        }
+    )
+    annotate_issue_identity(
+        issue,
+        project_id="PROJECT_TEST",
+        project_root=".",
+        revision="REV_TEST",
+        entry_function="single_block",
+        run_id="RUN_TEST",
+    )
+
+    frozen = FunctionIRFactService(None, enabled=False).build_composite_proof_input(issue, {})
+    assert frozen is not None
+    evaluation = ProofKernelEngine().evaluate_selected_actions(
+        proof_ir=frozen["proof_ir"],
+        obligation=frozen["proof_obligation"],
+        selected_action_uids=frozen["selected_action_uids"],
+    )
+    authority = TerminalAuthorityEvaluator().evaluate(evaluation.authority_inputs())
+
+    assert evaluation.decision == "needs_review"
+    assert evaluation.promotion_certificate is None
+    assert authority.terminal is True
+    assert authority.disposition == "needs_review"
+    assert authority.reason_code == "NEEDS_REVIEW_OPEN_CLAUSES"
 
 
 def test_governed_leak_rejects_wrong_acquisition_anchor() -> None:

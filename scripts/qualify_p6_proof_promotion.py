@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -37,16 +39,38 @@ from zscope.orchestration.proof_promotion_qualification import (
     P6_PROOF_PROMOTION_QUALIFICATION_RESOURCE,
     P6_PROOF_PROMOTION_QUALIFICATION_VERSION,
     current_dependency_qualifications,
+    implementation_root_sha256,
     current_source_hashes,
     protocol_identity,
     validate_successor_freshness,
     validate_successor_qualification,
+)
+from zscope.orchestration.successor_runtime_review_status import (
+    build_in_progress_successor_runtime_review_status,
 )
 from zscope.semantics.security_map import SecurityEvent
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "zscope/orchestration" / P6_PROOF_PROMOTION_QUALIFICATION_RESOURCE
+
+
+def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
+    """Replace one generated JSON resource without exposing a partial file."""
+
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -378,6 +402,7 @@ def qualify() -> dict[str, Any]:
         **_authority_fail_closed_counts(terminals, incomplete),
         **_resource_counts(),
     }
+    source_hashes = current_source_hashes()
     body = {
         "schema_version": P6_PROOF_PROMOTION_QUALIFICATION_VERSION,
         "status": "local_candidate_qualified",
@@ -388,7 +413,8 @@ def qualify() -> dict[str, Any]:
         "llm_calls": 0,
         "protocol_identity": protocol_identity(),
         "qualification_dependencies": current_dependency_qualifications(),
-        "source_sha256": current_source_hashes(),
+        "source_sha256": source_hashes,
+        "implementation_root_sha256": implementation_root_sha256(source_hashes),
         "case_counts": counts,
         "acceptance": {
             "passed": True,
@@ -406,7 +432,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--status-output",
+        type=Path,
+        help="Atomically reseal the non-authoritative in-progress review projection",
+    )
     args = parser.parse_args()
+    if args.status_output is not None and (args.output is None or args.check):
+        parser.error("--status-output requires --output and cannot be combined with --check")
     result = qualify()
     if args.check:
         try:
@@ -426,9 +459,12 @@ def main() -> int:
         )
         return 0
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        with args.output.open("w", encoding="utf-8", newline="\n") as stream:
-            stream.write(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+        _write_json_atomic(args.output, result)
+        if args.status_output is not None:
+            _write_json_atomic(
+                args.status_output,
+                build_in_progress_successor_runtime_review_status(result),
+            )
         print(result["content_sha256"])
         return 0
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))

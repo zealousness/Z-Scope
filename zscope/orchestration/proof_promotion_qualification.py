@@ -12,70 +12,23 @@ import hashlib
 import json
 import re
 from importlib import resources
-from typing import Any, Mapping, Tuple
+from typing import Any, Mapping
+
+from .successor_implementation_root import (
+    IMPLEMENTATION_ROOT_EXCLUDED_PATHS,
+    IMPLEMENTATION_ROOT_EXCLUDED_PREFIXES,
+    P6_IMPLEMENTATION_ROOT_VERSION,
+    SOURCE_BOUND_PATHS,
+    _implementation_path_excluded,
+    current_implementation_root_sha256,
+    current_source_hashes,
+    implementation_inventory_root_sha256,
+    implementation_root_sha256,
+)
 
 P6_PROOF_PROMOTION_QUALIFICATION_VERSION = "zscope.p6-proof-promotion-successor-qualification.v1"
 P6_PROOF_PROMOTION_QUALIFICATION_RESOURCE = "p6-proof-promotion-qualification.v1.json"
 P2_CORPUS_FILE_SHA256 = "60d650de574b5ef3b659f9722cc7eca7b1e161e0120ab25ba44ed38861f27985"
-
-SOURCE_BOUND_PATHS: Tuple[str, ...] = (
-    "zscope/agents/base.py",
-    "zscope/agents/hypothesis_hunter/AGENT.md",
-    "zscope/agents/proof_engine/AGENT.md",
-    "zscope/agents/proof_engine/agent.py",
-    "zscope/alerts/verifier.py",
-    "zscope/cli/cli.py",
-    "zscope/cli/explain.py",
-    "zscope/core/analysis/analyzer.py",
-    "zscope/core/validation/__init__.py",
-    "zscope/core/validation/audit_eligibility.py",
-    "zscope/core/validation/authority.py",
-    "zscope/core/validation/evidence_completion.py",
-    "zscope/core/validation/fact_capabilities.py",
-    "zscope/core/validation/function_ir.py",
-    "zscope/core/validation/proof_kernel/__init__.py",
-    "zscope/core/validation/proof_kernel/canonical.py",
-    "zscope/core/validation/proof_kernel/checker.py",
-    "zscope/core/validation/proof_kernel/closure.py",
-    "zscope/core/validation/proof_kernel/engine.py",
-    "zscope/core/validation/proof_kernel/lifecycle.py",
-    "zscope/core/validation/proof_kernel/models.py",
-    "zscope/core/validation/proof_kernel/provider.py",
-    "zscope/core/validation/proof_kernel/registry.py",
-    "zscope/core/validation/proof_kernel/schemas/evidence-action-v2.schema.json",
-    "zscope/core/validation/proof_kernel/schemas/evidence-certificate-v2.schema.json",
-    "zscope/core/validation/proof_kernel/schemas/function-security-summary-v2.schema.json",
-    "zscope/core/validation/proof_kernel/schemas/program-proof-ir-v2.schema.json",
-    "zscope/core/validation/proof_kernel/schemas/proof-check-result-v2.schema.json",
-    "zscope/core/validation/proof_kernel/schemas/proof-obligation-v2.schema.json",
-    "zscope/core/validation/proof_kernel/store.py",
-    "zscope/core/validation/runner.py",
-    "zscope/framework/llm_client.py",
-    "zscope/framework/llm_usage.py",
-    "zscope/orchestration/decision_trace.py",
-    "zscope/orchestration/candidates.py",
-    "zscope/orchestration/hypothesis_hunter/blind.py",
-    "zscope/orchestration/hypothesis_hunter/catalog.py",
-    "zscope/orchestration/hypothesis_hunter/lifecycle.py",
-    "zscope/orchestration/hypothesis_hunter/models.py",
-    "zscope/orchestration/hypothesis_hunter/planner.py",
-    "zscope/orchestration/hypothesis_hunter/qualification.py",
-    "zscope/orchestration/hypothesis_hunter/resource_proof.py",
-    "zscope/orchestration/hypothesis_hunter/runtime.py",
-    "zscope/orchestration/hypothesis_hunter/store.py",
-    "zscope/orchestration/parallel_analyzer.py",
-    "zscope/orchestration/proof_promotion_qualification.py",
-    "zscope/orchestration/runtime_authority.py",
-    "zscope/orchestration/schemas/p6-proof-promotion-qualification-v1.schema.json",
-    "zscope/orchestration/schemas/runtime-authority-manifest-v1.schema.json",
-    "zscope/retrieval/clang_tooling_evidence.py",
-    "zscope/reporting/assembler.py",
-    "zscope/reporting/finding_roots.py",
-    "zscope/reporting/report.py",
-    "zscope/reporting/schema.py",
-    "zscope/reporting/views.py",
-    "zscope/semantics/security_specs/runtime.py",
-)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _TOP_LEVEL_FIELDS = frozenset(
@@ -90,6 +43,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "protocol_identity",
         "qualification_dependencies",
         "source_sha256",
+        "implementation_root_sha256",
         "case_counts",
         "acceptance",
         "content_sha256",
@@ -151,38 +105,20 @@ def _content_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _resource_bytes(relative: str) -> bytes:
-    parts = relative.split("/")
-    if not parts or parts[0] != "zscope" or any(not value for value in parts):
-        raise ValueError("successor_qualification_source_path_invalid")
-    current = resources.files("zscope")
-    for part in parts[1:]:
-        current = current.joinpath(part)
-    return current.read_bytes()
-
-
-def current_source_hashes() -> dict[str, str]:
-    return {path: hashlib.sha256(_resource_bytes(path)).hexdigest() for path in SOURCE_BOUND_PATHS}
-
-
 def current_dependency_qualifications() -> dict[str, str]:
     from ..semantics.security_specs.qualification import (
         load_builtin_qualification as load_p3_qualification,
     )
-    from .hypothesis_hunter.qualification import (
-        load_builtin_qualification as load_p4_qualification,
-    )
+    from .hypothesis_hunter.qualification import qualification_identity_sha256
 
     return {
         "p2_corpus_file_sha256": P2_CORPUS_FILE_SHA256,
         "p3_security_spec_qualification_sha256": str(load_p3_qualification()["content_sha256"]),
-        "p4_hypothesis_qualification_sha256": str(load_p4_qualification()["content_sha256"]),
+        "p4_hypothesis_qualification_sha256": qualification_identity_sha256(),
     }
 
 
-def validate_successor_qualification(raw: Mapping[str, Any]) -> tuple[bool, str]:
-    """Validate the sealed artifact without granting phase-completion authority."""
-
+def _validate_successor_contract_fields(raw: Mapping[str, Any]) -> tuple[bool, str]:
     if set(raw) != _TOP_LEVEL_FIELDS:
         return False, "successor_qualification_fields_mismatch"
     if raw.get("schema_version") != P6_PROOF_PROMOTION_QUALIFICATION_VERSION:
@@ -204,11 +140,6 @@ def validate_successor_qualification(raw: Mapping[str, Any]) -> tuple[bool, str]
         return False, "successor_qualification_dependencies_invalid"
     if any(_SHA256_RE.fullmatch(str(value or "")) is None for value in dependencies.values()):
         return False, "successor_qualification_dependency_hash_invalid"
-    sources = raw.get("source_sha256")
-    if not isinstance(sources, Mapping) or set(sources) != set(SOURCE_BOUND_PATHS):
-        return False, "successor_qualification_source_set_mismatch"
-    if any(_SHA256_RE.fullmatch(str(value or "")) is None for value in sources.values()):
-        return False, "successor_qualification_source_hash_invalid"
     counts = raw.get("case_counts")
     if not isinstance(counts, Mapping) or set(counts) != _CASE_FIELDS:
         return False, "successor_qualification_case_counts_invalid"
@@ -240,6 +171,26 @@ def validate_successor_qualification(raw: Mapping[str, Any]) -> tuple[bool, str]
     body = {key: value for key, value in raw.items() if key != "content_sha256"}
     if raw.get("content_sha256") != _content_sha256(body):
         return False, "successor_qualification_content_hash_mismatch"
+    return True, "valid_successor_qualification_contract"
+
+
+def validate_successor_qualification(raw: Mapping[str, Any]) -> tuple[bool, str]:
+    """Validate the sealed artifact without granting phase-completion authority."""
+
+    valid, reason = _validate_successor_contract_fields(raw)
+    if not valid:
+        return valid, reason
+    sources = raw.get("source_sha256")
+    if not isinstance(sources, Mapping) or set(sources) != set(SOURCE_BOUND_PATHS):
+        return False, "successor_qualification_source_set_mismatch"
+    if any(_SHA256_RE.fullmatch(str(value or "")) is None for value in sources.values()):
+        return False, "successor_qualification_source_hash_invalid"
+    try:
+        expected_implementation_root = implementation_root_sha256(sources)
+    except ValueError as exc:
+        return False, str(exc)
+    if raw.get("implementation_root_sha256") != expected_implementation_root:
+        return False, "successor_qualification_implementation_root_mismatch"
     return True, "valid_local_candidate_qualification"
 
 
@@ -249,9 +200,50 @@ def validate_successor_freshness(raw: Mapping[str, Any]) -> tuple[bool, str]:
         return valid, reason
     if dict(raw["qualification_dependencies"]) != current_dependency_qualifications():
         return False, "successor_qualification_dependency_stale"
-    if dict(raw["source_sha256"]) != current_source_hashes():
+    current_sources = current_source_hashes()
+    if dict(raw["source_sha256"]) != current_sources:
         return False, "successor_qualification_source_stale"
+    if raw.get("implementation_root_sha256") != implementation_root_sha256(current_sources):
+        return False, "successor_qualification_implementation_root_stale"
     return True, "fresh_local_candidate_qualification"
+
+
+def validate_runtime_successor_freshness(raw: Mapping[str, Any]) -> tuple[bool, str]:
+    """Validate the sealed successor from a physically reduced producer tree."""
+
+    valid, reason = _validate_successor_contract_fields(raw)
+    if not valid:
+        return valid, reason
+    dependencies = raw.get("qualification_dependencies")
+    if not isinstance(dependencies, Mapping) or dict(dependencies) != current_dependency_qualifications():
+        return False, "successor_qualification_dependency_stale"
+    sources = raw.get("source_sha256")
+    if not isinstance(sources, Mapping) or any(
+        _SHA256_RE.fullmatch(str(value or "")) is None for value in sources.values()
+    ):
+        return False, "successor_qualification_source_hash_invalid"
+    try:
+        sealed_root = implementation_inventory_root_sha256(sources)
+    except ValueError as exc:
+        return False, str(exc)
+    if raw.get("implementation_root_sha256") != sealed_root:
+        return False, "successor_qualification_implementation_root_mismatch"
+    current_sources = current_source_hashes()
+    if not set(current_sources).issubset(sources):
+        return False, "successor_qualification_runtime_source_stale"
+    for path, digest in current_sources.items():
+        expected = str(sources[path])
+        # The sealed producer tree substitutes a tiny package initializer for
+        # the host initializer so importing the scanner cannot pull in
+        # control-plane benchmarking modules.  Bind that deliberate alias to
+        # the exact source hash already present in the qualification inventory.
+        if path == "zscope/benchmarking/__init__.py":
+            expected = str(
+                sources.get("zscope/benchmarking/p6_producer_package_init.py") or expected
+            )
+        if expected != digest:
+            return False, "successor_qualification_runtime_source_stale"
+    return True, "fresh_runtime_successor_qualification"
 
 
 def load_successor_qualification() -> dict[str, Any]:
@@ -260,6 +252,19 @@ def load_successor_qualification() -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("successor_qualification_must_be_object")
     valid, reason = validate_successor_freshness(raw)
+    if not valid:
+        raise ValueError(reason)
+    return raw
+
+
+def load_runtime_successor_qualification() -> dict[str, Any]:
+    """Load the current successor without mounting historical control evidence."""
+
+    resource = resources.files(__package__).joinpath(P6_PROOF_PROMOTION_QUALIFICATION_RESOURCE)
+    raw = json.loads(resource.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("successor_qualification_must_be_object")
+    valid, reason = validate_runtime_successor_freshness(raw)
     if not valid:
         raise ValueError(reason)
     return raw

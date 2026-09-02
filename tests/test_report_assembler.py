@@ -359,3 +359,6 @@ def test_report_assembler_marks_undrained_validation_queue_incomplete(
     assert (
         "validation_queue_not_drained" in saved["run_manifest"]["release_gate_status"]["blockers"]
     )
+    assert (
+        "successor_review_not_current" in saved["run_manifest"]["release_gate_status"]["blockers"]
+    )

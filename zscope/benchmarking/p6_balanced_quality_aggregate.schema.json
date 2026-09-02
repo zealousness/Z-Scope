@@ -38,10 +38,11 @@
     "cross_view": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["legacy_v15", "truth_v16_product"],
+      "required": ["legacy_v15", "truth_v16_product", "truth_v16_design_risk"],
       "properties": {
         "legacy_v15": {"type": "boolean"},
-        "truth_v16_product": {"type": "boolean"}
+        "truth_v16_product": {"type": "boolean"},
+        "truth_v16_design_risk": {"type": "boolean"}
       }
     },
     "balanced_scan_usage": {

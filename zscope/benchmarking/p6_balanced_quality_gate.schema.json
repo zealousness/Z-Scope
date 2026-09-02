@@ -16,15 +16,18 @@
     "artifacts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bindings", "frozen_manifest", "legacy_score", "producer_projection", "report", "usage_evidence", "v16_score"],
+      "required": ["bindings", "frozen_manifest", "legacy_score", "producer_projection", "report", "trace_sidecars", "usage_events", "usage_evidence", "v16_score", "v16_truth_partitions"],
       "properties": {
         "bindings": {"$ref": "#/$defs/artifact"},
         "frozen_manifest": {"$ref": "#/$defs/artifact"},
         "legacy_score": {"$ref": "#/$defs/artifact"},
         "producer_projection": {"$ref": "#/$defs/artifact"},
         "report": {"$ref": "#/$defs/artifact"},
+        "trace_sidecars": {"$ref": "#/$defs/artifact"},
+        "usage_events": {"$ref": "#/$defs/artifact"},
         "usage_evidence": {"$ref": "#/$defs/artifact"},
-        "v16_score": {"$ref": "#/$defs/artifact"}
+        "v16_score": {"$ref": "#/$defs/artifact"},
+        "v16_truth_partitions": {"$ref": "#/$defs/artifact"}
       }
     },
     "legacy_v15": {"$ref": "#/$defs/twoViews"},
@@ -129,8 +132,12 @@
     },
     "crossView": {
       "type": "object", "additionalProperties": false,
-      "required": ["legacy_v15", "truth_v16_product"],
-      "properties": {"legacy_v15": {"const": true}, "truth_v16_product": {"const": true}}
+      "required": ["legacy_v15", "truth_v16_product", "truth_v16_design_risk"],
+      "properties": {
+        "legacy_v15": {"const": true},
+        "truth_v16_product": {"const": true},
+        "truth_v16_design_risk": {"const": true}
+      }
     },
     "dimensions": {
       "type": "object", "additionalProperties": false,
@@ -146,14 +153,15 @@
       "required": [
         "usage_complete", "usage_coverage", "no_estimated_calls", "model_identity",
         "queue_drained", "token_ledger_matches_score", "token_conservation", "token_limit",
-        "admission_conservation", "no_hard_limit_denials", "retry_bounds"
+        "admission_conservation", "hard_limit_denials_zero_call_conserved", "retry_bounds"
       ],
       "properties": {
         "usage_complete": {"const": true}, "usage_coverage": {"const": true},
         "no_estimated_calls": {"const": true}, "model_identity": {"const": true},
         "queue_drained": {"const": true}, "token_ledger_matches_score": {"const": true},
         "token_conservation": {"const": true}, "token_limit": {"const": true},
-        "admission_conservation": {"const": true}, "no_hard_limit_denials": {"const": true},
+        "admission_conservation": {"const": true},
+        "hard_limit_denials_zero_call_conserved": {"const": true},
         "retry_bounds": {"const": true}
       }
     },
@@ -179,7 +187,7 @@
         "admission_admitted_count": {"type": "integer", "minimum": 0},
         "admission_denied_count": {"type": "integer", "minimum": 0},
         "soft_watermark_denied_count": {"type": "integer", "minimum": 0},
-        "hard_limit_denied_count": {"const": 0},
+        "hard_limit_denied_count": {"type": "integer", "minimum": 0},
         "retry_conservation": {
           "type": "object", "additionalProperties": false,
           "required": [

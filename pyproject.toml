@@ -71,6 +71,9 @@ zscope = [
     "orchestration/hypothesis_hunter/qualification/*.json",
     "orchestration/schemas/*.json",
     "orchestration/*.json",
+    "orchestration/successor-runtime-review-integration-receipt.v1.json",
+    "orchestration/successor-runtime-review-evidence/*",
+    "orchestration/successor-runtime-review-evidence/**/*",
     "workflows/*.yaml",
     "web/static/*.html",
 ]

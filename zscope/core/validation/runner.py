@@ -36,6 +36,14 @@ from ...orchestration.candidate_envelope import (
     DECISION_CONTEXT_VERSION,
 )
 from ...orchestration.runtime_authority import RUNTIME_CACHE_EPOCH
+from ...orchestration.proof_promotion_qualification import (
+    load_runtime_successor_qualification as load_successor_qualification,
+)
+from ...orchestration.successor_runtime_review_status import (
+    SUCCESSOR_RUNTIME_REVIEW_MANIFEST,
+    validate_current_successor_runtime_review_status,
+    validate_successor_runtime_review_status,
+)
 from .evidence import (
     VALIDATOR_EVIDENCE_SLICE_V3,
     VALIDATOR_MISSING_FACT_KINDS,
@@ -63,7 +71,11 @@ def _as_dict(value: Any) -> Dict[str, Any]:
 
 
 from .pipeline import ValidationOutcome, ValidationPipeline
-from .audit_eligibility import evaluate_audit_eligibility
+from .audit_eligibility import (
+    evaluate_audit_eligibility,
+    has_exact_v4_producer_occurrence_binding,
+    revalidate_v4_producer_occurrence_binding,
+)
 from .evidence_completion import EvidenceCompletionQueue
 from .fact_capabilities import (
     EvidenceAction,
@@ -71,7 +83,12 @@ from .fact_capabilities import (
     FunctionIRFactService,
     verify_certificate_v2,
 )
-from .authority import TERMINAL_AUTHORITY_DECISION_V4, TerminalAuthorityEvaluator
+from .authority import (
+    TERMINAL_AUTHORITY_DECISION_V4,
+    AuthorityOperation,
+    TerminalAuthorityDecision,
+    TerminalAuthorityEvaluator,
+)
 from .proof_kernel.lifecycle import PROOF_KERNEL_MODE
 from .proof_kernel.engine import PROOF_KERNEL_AUTHORITY_INPUT_VERSION, ProofKernelEngine
 from .proof_kernel.canonical import content_sha256
@@ -196,7 +213,9 @@ class ValidationRunner:
     """Owns validation-stage orchestration around ``ValidationPipeline``."""
 
     # P5 intentionally severs every pre-authority validation cache lineage.
-    _VALIDATION_CACHE_PROTOCOL = f"{RUNTIME_CACHE_EPOCH}.proof-engine-cache.v1"
+    _VALIDATION_CACHE_PROTOCOL_PREFIX = (
+        f"{RUNTIME_CACHE_EPOCH}.proof-engine-cache.successor-bound.v2"
+    )
     _DEFAULT_VALIDATION_CACHE_SIZE = 4096
     # Internal lifecycle identity only; there is no user-selectable authority switch.
     _PROOF_KERNEL_TERMINAL_MODE = PROOF_KERNEL_MODE
@@ -262,6 +281,54 @@ class ValidationRunner:
         self.deduplicate_issues = deduplicate_issues_fn
         self.proof_engine_agent_factory = proof_engine_agent_factory
         self.scheduler = scheduler
+        # A fixed epoch is insufficient after a deterministic successor is
+        # regenerated within the same broad runtime protocol.  Persisted and
+        # in-flight Validator results must bind both the exact implementation
+        # root, answer-free qualification, and current review projection.
+        try:
+            successor = load_successor_qualification()
+            implementation_root = str(successor["implementation_root_sha256"])
+            qualification_sha256 = str(successor["content_sha256"])
+            review_status = dict(SUCCESSOR_RUNTIME_REVIEW_MANIFEST)
+            valid_review, review_reason = validate_successor_runtime_review_status(
+                review_status,
+                expected_implementation_root_sha256=implementation_root,
+                expected_successor_qualification_sha256=qualification_sha256,
+            )
+            if not valid_review:
+                raise ValueError(review_reason)
+            current_review, current_reason = validate_current_successor_runtime_review_status(
+                review_status
+            )
+            if review_status.get("status") == "reviewed":
+                if not current_review:
+                    raise ValueError(current_reason)
+            elif current_review or current_reason != "successor_review_in_progress":
+                raise ValueError(current_reason)
+            successor_cache_binding = {
+                "successor_implementation_root_sha256": implementation_root,
+                "successor_qualification_sha256": qualification_sha256,
+                "successor_review_status": str(review_status["status"]),
+                "successor_review_status_content_sha256": str(review_status["content_sha256"]),
+                "successor_review_set_sha256": str(review_status["review_set_sha256"]),
+            }
+        except (KeyError, OSError, TypeError, ValueError):
+            # Development or a partially installed package may not yet carry
+            # a fresh qualification.  Analysis can still fail closed into a
+            # non-release report, but no persisted result may cross that
+            # boundary.  In-memory coalescing remains scoped to this runner.
+            self._validation_cache_protocol = (
+                self._VALIDATION_CACHE_PROTOCOL_PREFIX + ".unqualified"
+            )
+            self._validation_cache_successor_binding = {}
+            self._validation_persistent_cache_enabled = False
+        else:
+            self._validation_cache_successor_binding = successor_cache_binding
+            binding_sha256 = self._stable_hash(successor_cache_binding)
+            self._validation_cache_protocol = ".".join(
+                (self._VALIDATION_CACHE_PROTOCOL_PREFIX, binding_sha256)
+            )
+            self._validation_persistent_cache_enabled = True
         # Validator verdicts are contextual.  Keeping this cache on the runner
         # scopes it to one immutable scan instead of leaking decisions between
         # projects, revisions, entries, or long-lived service requests.
@@ -507,17 +574,17 @@ class ValidationRunner:
             )
         new_issues = deduped_issues
 
-        if not self._validator_enabled():
-            self._mark_unvalidated(state, new_issues)
-            state["pending_new_issues"] = []
-            state["validation_queue_drained"] = True
-            return
-
         prepared = []
         for index, raw_issue in enumerate(new_issues):
             item = self._prepare_issue_for_validation(state, raw_issue, index)
             if item is not None:
                 prepared.append(item)
+
+        if not self._validator_enabled():
+            self._mark_unvalidated(state, [item.raw_issue for item in prepared])
+            state["pending_new_issues"] = []
+            state["validation_queue_drained"] = True
+            return
 
         prepared = self._assign_v3_investigation_budget(prepared)
         prepared = self._order_balanced_validation_work(prepared)
@@ -538,6 +605,7 @@ class ValidationRunner:
             for position, item in enumerate(prepared):
                 if parent_token is not None:
                     parent_token.raise_if_cancelled()
+                self._mark_validation_running(state, item.raw_issue)
                 result = self._validate_with_deadline(
                     item,
                     parent_token=parent_token,
@@ -608,6 +676,7 @@ class ValidationRunner:
                                 item,
                                 parent_token=parent_token,
                             )
+                        self._mark_validation_running(state, item.raw_issue)
                         future_to_item[future] = item
 
                     pending = set(future_to_item)
@@ -855,6 +924,15 @@ class ValidationRunner:
         elapsed = max(0.0, time.monotonic() - started)
         self._record_validation_budget(item, result, soft_budget, elapsed)
         return result
+
+    @staticmethod
+    def _mark_validation_running(state: Mapping[str, Any], issue: Mapping[str, Any]) -> None:
+        """Count only a Validator worker that has actually been dispatched."""
+
+        ledger = state.get("candidate_ledger")
+        mark_running = getattr(ledger, "mark_validation_running", None)
+        if callable(mark_running):
+            mark_running(issue)
 
     @staticmethod
     def _cancel_validation_futures(futures: Any) -> None:
@@ -1294,7 +1372,7 @@ class ValidationRunner:
             raw_issue["proof_kernel_terminal_authority_decision"] = (
                 self._proof_kernel_terminal_decision(raw_issue)
             )
-            authority = self._terminal_authority.evaluate(raw_issue)
+            authority = self._evaluate_bound_terminal_authority(raw_issue)
             raw_issue["terminal_authority_decision"] = authority.to_dict()
             raw_issue["terminal_authority"] = authority.authority
             raw_issue["terminal_reason_codes"] = [authority.reason_code]
@@ -1332,7 +1410,7 @@ class ValidationRunner:
         raw_issue["proof_kernel_terminal_authority_decision"] = (
             self._proof_kernel_terminal_decision(raw_issue)
         )
-        authority = self._terminal_authority.evaluate(raw_issue)
+        authority = self._evaluate_bound_terminal_authority(raw_issue)
         raw_issue["terminal_authority_decision"] = authority.to_dict()
         raw_issue["terminal_authority"] = authority.authority
         raw_issue["terminal_reason_codes"] = [authority.reason_code]
@@ -1435,7 +1513,7 @@ class ValidationRunner:
                     f"{batch.evidence_delta_hash or 'no-delta'}"
                 ),
             )
-        authority = self._terminal_authority.evaluate(issue)
+        authority = self._evaluate_bound_terminal_authority(issue)
         if authority.disposition in {"confirmed", "rejected_with_proof"}:
             return batch, self._validation_outcome_from_proof_authority(issue, authority)
         if not batch.proof_added:
@@ -1642,7 +1720,13 @@ class ValidationRunner:
         return decision
 
     def _reverify_attached_proof_kernel_input(self, issue: Dict[str, Any]) -> None:
-        """Recompute Hunter-selected proof actions before any model validation."""
+        """Recompute one already producer-verified proof input.
+
+        This method validates reducer syntax and semantics only.  Live entry
+        points must first reconstruct the input through
+        :meth:`_rebuild_live_proof_input`; an attached mapping is never a
+        producer receipt merely because it has the authority-input shape.
+        """
 
         raw = issue.get("proof_kernel_input")
         if raw is None:
@@ -1658,6 +1742,7 @@ class ValidationRunner:
             }
             or raw.get("schema_version") != PROOF_KERNEL_AUTHORITY_INPUT_VERSION
         ):
+            self._clear_v4_proof_projection(issue)
             issue["proof_kernel_decision"] = {
                 "proof_kernel_mode": self._PROOF_KERNEL_TERMINAL_MODE,
                 "disposition": "needs_review",
@@ -1668,8 +1753,11 @@ class ValidationRunner:
                 "artifact_refs": [],
             }
             issue["proof_kernel_reverification_status"] = "failed"
-            self._clear_v4_proof_projection(issue)
             return
+        # A prior attempt may have left a byte-valid certificate and terminal
+        # projection for another selection.  Preserve only the reconstructed
+        # producer input and recompute every reducer-owned object below.
+        self._clear_v4_proof_projection(issue, clear_input=False)
         try:
             selected_action_uids = tuple(map(str, raw["selected_action_uids"]))
             engine = ProofKernelEngine()
@@ -1691,6 +1779,7 @@ class ValidationRunner:
                 selected_action_uids=selected_action_uids,
             )
         except (KeyError, TypeError, ValueError):
+            self._clear_v4_proof_projection(issue)
             issue["proof_kernel_decision"] = {
                 "proof_kernel_mode": self._PROOF_KERNEL_TERMINAL_MODE,
                 "disposition": "needs_review",
@@ -1702,7 +1791,80 @@ class ValidationRunner:
                 "failure_class": "proof_kernel_reverification_failed",
             }
             issue["proof_kernel_reverification_status"] = "failed"
+
+    @staticmethod
+    def _reset_live_candidate_projection(issue: Dict[str, Any]) -> None:
+        """Return a persisted candidate to an unresolved live-entry state."""
+
+        issue["candidate_disposition"] = "needs_review"
+        issue["validation_status"] = "needs_review"
+        issue["policy_disposition"] = "needs_review"
+        issue["finding_kind"] = "needs_review"
+        issue.pop("model_verdict", None)
+        issue.pop("confirmed", None)
+        issue.pop("is_confirmed", None)
+        issue.pop("verdict", None)
+        issue.pop("terminal_disposition", None)
+        issue.pop("status", None)
+        issue.pop("validator_policy_outcome", None)
+        issue.pop("audit_eligibility", None)
+        issue.pop("audit_status", None)
+        issue.pop("audit_reason_codes", None)
+        issue.pop("candidate_terminal_authority_failure_class", None)
+        attribution = issue.get("attribution")
+        if isinstance(attribution, dict):
+            attribution["decided_by"] = "unresolved"
+            attribution["decision_level"] = "none"
+            attribution["decision_details"] = {}
+
+    def _attach_hunter_proof_input(self, issue: Dict[str, Any]) -> bool:
+        """Reconstruct one Hunter proof solely from its current sealed offer."""
+
+        from ...orchestration.hypothesis_hunter.models import (
+            validate_hypothesis_offer,
+            validate_security_hypothesis,
+        )
+
+        offer = issue.get("hypothesis_offer")
+        hypothesis = issue.get("security_hypothesis")
+        if not isinstance(offer, Mapping) or not isinstance(hypothesis, Mapping):
+            issue["proof_kernel_input_rebuild_status"] = "hunter_producer_objects_missing"
+            return False
+        offer_valid, _ = validate_hypothesis_offer(offer)
+        hypothesis_valid, _ = validate_security_hypothesis(hypothesis, offer=offer)
+        if not offer_valid or not hypothesis_valid:
+            issue["proof_kernel_input_rebuild_status"] = "hunter_producer_binding_invalid"
+            return False
+        proof_ir = offer.get("proof_ir")
+        obligation = offer.get("proof_obligation")
+        selected = hypothesis.get("evidence_action_uids")
+        if (
+            not isinstance(proof_ir, Mapping)
+            or not isinstance(obligation, Mapping)
+            or not isinstance(selected, list)
+        ):
+            issue["proof_kernel_input_rebuild_status"] = "hunter_proof_input_invalid"
+            return False
+        selected_action_uids = tuple(map(str, selected))
+        issue["proof_kernel_input"] = {
+            "schema_version": PROOF_KERNEL_AUTHORITY_INPUT_VERSION,
+            "proof_ir": deepcopy(dict(proof_ir)),
+            "proof_obligation": deepcopy(dict(obligation)),
+            "selected_action_uids": list(selected_action_uids),
+        }
+        issue["proof_kernel_input_origin"] = "hypothesis_hunter_offer_v4"
+        issue["proof_kernel_input_rebuild_status"] = "frozen"
+        producer_binding, occurrence_binding = revalidate_v4_producer_occurrence_binding(issue)
+        if not producer_binding or not occurrence_binding:
             self._clear_v4_proof_projection(issue)
+            issue["proof_kernel_input_rebuild_status"] = "hunter_producer_binding_invalid"
+            return False
+        self._reverify_attached_proof_kernel_input(issue)
+        verified = issue.get("proof_kernel_reverification_status") == "verified"
+        if verified:
+            issue["proof_kernel_producer_binding_sha256"] = producer_binding
+            issue["proof_kernel_occurrence_binding_sha256"] = occurrence_binding
+        return verified
 
     def _attach_product_composite_proof_input(
         self,
@@ -1711,13 +1873,11 @@ class ValidationRunner:
     ) -> bool:
         """Freeze the ordinary Validator candidate's complete v4 obligation.
 
-        Hunter inputs keep their own frozen provenance.  Ordinary candidates
-        are composed only after the evidence pack is available, using the
+        Ordinary candidates are composed only after the evidence pack is
+        available, using the independently rebuilt CandidateEnvelope,
         governed SecurityObligation identity and FunctionIR action catalog.
         """
 
-        if issue.get("proof_kernel_input") is not None:
-            return False
         # Candidates produced before the governed SecurityObligation cutover
         # remain readable, but must not acquire a newly inferred product proof
         # shape during compatibility replay.
@@ -1735,20 +1895,110 @@ class ValidationRunner:
         issue["proof_kernel_input_origin"] = "product_composite_obligation_v4"
         issue["proof_kernel_composite_family"] = self._function_ir_facts.composite_family(issue)
         issue["proof_kernel_composite_status"] = "frozen"
+        issue["proof_kernel_input_rebuild_status"] = "frozen"
+        proof_ir = composite.get("proof_ir")
+        obligation = composite.get("proof_obligation")
+        selected = composite.get("selected_action_uids")
+        if (
+            not isinstance(proof_ir, Mapping)
+            or not isinstance(obligation, Mapping)
+            or not isinstance(selected, list)
+        ):
+            self._clear_v4_proof_projection(issue)
+            issue["proof_kernel_composite_status"] = "producer_binding_invalid"
+            return False
+        producer_binding, occurrence_binding = revalidate_v4_producer_occurrence_binding(issue)
+        if not producer_binding or not occurrence_binding:
+            self._clear_v4_proof_projection(issue)
+            issue["proof_kernel_composite_status"] = "producer_binding_invalid"
+            return False
         self._reverify_attached_proof_kernel_input(issue)
-        return True
+        verified = issue.get("proof_kernel_reverification_status") == "verified"
+        if verified:
+            issue["proof_kernel_producer_binding_sha256"] = producer_binding
+            issue["proof_kernel_occurrence_binding_sha256"] = occurrence_binding
+        return verified
+
+    def _rebuild_live_proof_input(
+        self,
+        issue: Dict[str, Any],
+        evidence_pack: Mapping[str, Any],
+    ) -> bool:
+        """Discard persisted proof projections and reconstruct current authority."""
+
+        source = str(issue.get("candidate_source") or issue.get("origin") or "").lower()
+        self._clear_v4_proof_projection(issue)
+        self._reset_live_candidate_projection(issue)
+        if source == "hypothesis_hunter":
+            rebuilt = self._attach_hunter_proof_input(issue)
+        elif issue.get("security_obligation_v1") is True:
+            rebuilt = self._attach_product_composite_proof_input(issue, evidence_pack)
+        else:
+            issue["proof_kernel_input_rebuild_status"] = "legacy_or_unknown_candidate"
+            rebuilt = False
+        if not rebuilt:
+            # Builder failures must not retain a partially reconstructed input
+            # or any certificate/authority projection from the failed attempt.
+            status = str(
+                issue.get("proof_kernel_input_rebuild_status")
+                or issue.get("proof_kernel_composite_status")
+                or "producer_binding_invalid"
+            )
+            self._clear_v4_proof_projection(issue)
+            self._reset_live_candidate_projection(issue)
+            issue["proof_kernel_input_rebuild_status"] = status
+        return rebuilt
 
     @staticmethod
-    def _clear_v4_proof_projection(issue: Dict[str, Any]) -> None:
-        """Remove stale live-authority values after fail-closed reverification."""
+    def _clear_v4_proof_projection(
+        issue: Dict[str, Any],
+        *,
+        clear_input: bool = True,
+    ) -> None:
+        """Remove every mutable projection that could carry old v4 authority."""
 
         for key in (
+            "proof_kernel_evaluation",
+            "proof_kernel_fact_first",
             "proof_kernel_frozen_state",
             "proof_kernel_closure_evaluation",
             "proof_kernel_promotion_certificate",
             "proof_kernel_terminal_authority_decision",
+            "terminal_authority_decision",
+            "terminal_authority",
+            "terminal_reason_codes",
+            "proof_kernel_checker_results",
+            "proof_kernel_checker_result_refs",
+            "proof_kernel_artifact_refs",
+            "proof_kernel_root_manifest_sha256",
+            "proof_kernel_decision",
+            "proof_kernel_live_selected_action_uids",
+            "proof_kernel_reverification_status",
+            "proof_kernel_v2_reentry_status",
+            "proof_kernel_v3_reentry_status",
+            "proof_kernel_producer_binding_sha256",
+            "proof_kernel_occurrence_binding_sha256",
+            "candidate_promotion_eligible",
+            "candidate_promotion_reason",
+            "candidate_promotion_terminal_status",
+            "deterministic_prevalidation_decision",
+            "terminal_transition_level",
+            "terminal_transition_disposition",
+            "terminal_transition_event_uid",
+            "terminal_transition_event_hash",
+            "terminal_transition_authority_sha256",
+            "terminal_event_uid",
         ):
             issue.pop(key, None)
+        if clear_input:
+            for key in (
+                "proof_kernel_input",
+                "proof_kernel_input_origin",
+                "proof_kernel_composite_family",
+                "proof_kernel_composite_status",
+                "proof_kernel_input_rebuild_status",
+            ):
+                issue.pop(key, None)
 
     def _record_v4_proof_evaluation(
         self,
@@ -1815,6 +2065,49 @@ class ValidationRunner:
         )
         issue["proof_kernel_terminal_authority_decision"] = authority.to_dict()
         issue["terminal_authority_decision"] = authority.to_dict()
+
+    def _evaluate_bound_terminal_authority(
+        self,
+        issue: Mapping[str, Any],
+        *,
+        model_result: Optional[Mapping[str, Any]] = None,
+        has_executable_action: bool = False,
+        protocol_or_engine_failure: bool = False,
+        operation: AuthorityOperation = "live",
+    ) -> TerminalAuthorityDecision:
+        """Evaluate live authority only after producer/occurrence rebuilding.
+
+        The reducer can prove only that its own supplied objects are mutually
+        consistent.  A mismatched or absent producer/occurrence receipt must
+        therefore be removed from the evaluator's input domain rather than
+        passed alongside a failure flag (a valid self-sealed promotion would
+        otherwise still be returned before that flag is considered).
+        """
+
+        if not has_exact_v4_producer_occurrence_binding(issue):
+            if not protocol_or_engine_failure:
+                unbound = self._terminal_authority.evaluate(
+                    issue,
+                    model_result=model_result,
+                    has_executable_action=has_executable_action,
+                    operation=operation,
+                )
+                if unbound.disposition == "needs_review":
+                    return unbound
+            return self._terminal_authority.evaluate(
+                {},
+                model_result=model_result,
+                has_executable_action=has_executable_action,
+                protocol_or_engine_failure=True,
+                operation=operation,
+            )
+        return self._terminal_authority.evaluate(
+            issue,
+            model_result=model_result,
+            has_executable_action=has_executable_action,
+            protocol_or_engine_failure=protocol_or_engine_failure,
+            operation=operation,
+        )
 
     def _matching_frozen_proof_action_uid(
         self,
@@ -1961,15 +2254,9 @@ class ValidationRunner:
         raw_issue: Dict[str, Any],
         index: int,
     ) -> Optional[_PreparedValidation]:
-        self._reverify_attached_proof_kernel_input(raw_issue)
         self._ensure_discovery_attribution(raw_issue)
         issue_func = self._issue_function(raw_issue, state)
         logger.info("Validating issue: %s in %s", raw_issue.get("id", "unknown"), issue_func)
-
-        ledger = state.get("candidate_ledger")
-        mark_running = getattr(ledger, "mark_validation_running", None)
-        if callable(mark_running):
-            mark_running(raw_issue)
 
         decision = self.validation_pipeline.apply_pre_validation_feedback(raw_issue, issue_func)
         if decision:
@@ -1987,7 +2274,7 @@ class ValidationRunner:
 
         issue_code = self._issue_code(issue_func, state)
         evidence_pack = self._build_evidence_pack(raw_issue, state, issue_code)
-        self._attach_product_composite_proof_input(raw_issue, evidence_pack)
+        self._rebuild_live_proof_input(raw_issue, evidence_pack)
         evidence_ref = self._decision_trace_store.put_evidence(
             kind="validator_evidence_pack",
             payload=evidence_pack,
@@ -2001,7 +2288,7 @@ class ValidationRunner:
             ),
         )
         raw_issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
-        attached_authority = self._terminal_authority.evaluate(raw_issue)
+        attached_authority = self._evaluate_bound_terminal_authority(raw_issue)
         if attached_authority.disposition in {"confirmed", "rejected_with_proof"}:
             self._trace_event(
                 raw_issue,
@@ -2279,7 +2566,7 @@ class ValidationRunner:
                 val_data,
                 token_metadata,
             )
-            proof_authority = self._terminal_authority.evaluate(item.raw_issue)
+            proof_authority = self._evaluate_bound_terminal_authority(item.raw_issue)
             if proof_authority.disposition not in {
                 "confirmed",
                 "rejected_with_proof",
@@ -2338,12 +2625,12 @@ class ValidationRunner:
                 return validated
             self._validator_result_cache.discard(cache_key)
         loader = getattr(self.snapshot_store, "load_validation_result", None)
-        if not callable(loader) or not cache_key:
+        if not self._validation_persistent_cache_enabled or not callable(loader) or not cache_key:
             return None
         try:
             cached = loader(
                 cache_key,
-                protocol=self._VALIDATION_CACHE_PROTOCOL,
+                protocol=self._validation_cache_protocol,
                 candidate_schema_version=CANDIDATE_SCHEMA_VERSION,
                 environment_fingerprint=self._validation_environment_fingerprint,
             )
@@ -2368,13 +2655,13 @@ class ValidationRunner:
             return False
         self._validator_result_cache.put(cache_key, validated)
         saver = getattr(self.snapshot_store, "save_validation_result", None)
-        if not callable(saver):
+        if not self._validation_persistent_cache_enabled or not callable(saver):
             return True
         try:
             saver(
                 cache_key,
                 validated,
-                protocol=self._VALIDATION_CACHE_PROTOCOL,
+                protocol=self._validation_cache_protocol,
                 candidate_schema_version=CANDIDATE_SCHEMA_VERSION,
                 environment_fingerprint=self._validation_environment_fingerprint,
                 max_entries=max(1, self._validator_result_cache_size * 2),
@@ -2470,7 +2757,7 @@ class ValidationRunner:
         # cross-entry in-flight coalescing and revalidates the same obligation.
         if validation_cluster_uid:
             payload = {
-                "protocol": self._VALIDATION_CACHE_PROTOCOL,
+                "protocol": self._validation_cache_protocol,
                 "decision_context_version": DECISION_CONTEXT_VERSION,
                 "environment": self._validation_environment_fingerprint,
                 "rendered_prompt_contract_sha256": self._validation_prompt_contract_sha256,
@@ -2501,7 +2788,7 @@ class ValidationRunner:
             ):
                 return ""
         payload = {
-            "protocol": self._VALIDATION_CACHE_PROTOCOL,
+            "protocol": self._validation_cache_protocol,
             "decision_context_version": DECISION_CONTEXT_VERSION,
             "environment": self._validation_environment_fingerprint,
             "rendered_prompt_contract_sha256": self._validation_prompt_contract_sha256,
@@ -2572,7 +2859,7 @@ class ValidationRunner:
             prompt_contract = self._build_validation_prompt_contract()
             prompt_contract_sha256 = self._stable_hash(prompt_contract)
         payload = {
-            "protocol": self._VALIDATION_CACHE_PROTOCOL,
+            "protocol": self._validation_cache_protocol,
             "decision_context_version": DECISION_CONTEXT_VERSION,
             "project_root": project_root.resolve().as_posix(),
             "project_revision": self._project_revision(project_root),
@@ -2840,7 +3127,7 @@ class ValidationRunner:
         raw_issue["proof_kernel_terminal_authority_decision"] = (
             self._proof_kernel_terminal_decision(raw_issue)
         )
-        authority = self._terminal_authority.evaluate(
+        authority = self._evaluate_bound_terminal_authority(
             raw_issue,
             model_result=val_data,
             has_executable_action=False,
@@ -2927,51 +3214,50 @@ class ValidationRunner:
         """Close one pre-provider P6 budget refusal without engine failure.
 
         A soft refusal is authorized only for work already classified by the
-        answer-free scheduler as low-value audit.  A hard refusal leaves the
-        unstarted obligation canonical ``needs_review``.  Neither path calls
-        a provider, exposes an exception body, nor forges proof closure.
+        answer-free scheduler as low-value audit.  It must still pass through
+        the same answer-free audit-eligibility classifier as completed
+        Validator work: an eligible unresolved obligation remains canonical
+        ``needs_review`` while an ineligible hint is conserved as audit-only.
+        A hard refusal always leaves the unstarted obligation canonical
+        ``needs_review``.  Neither path calls a provider, exposes an exception
+        body, nor forges proof closure.
         """
 
         issue = result.raw_issue
         failure_class = str(result.admission_failure_class or "")
-        priority = issue.get("balanced_validation_priority")
-        priority = priority if isinstance(priority, Mapping) else {}
-        soft_audit = bool(
-            failure_class == "p6_token_soft_watermark"
-            and priority.get("class") == "low_value_audit"
-        )
+        # Only the sealed ledger can issue a soft-watermark refusal, and it
+        # does so exclusively for the fixed low-value call-kind allowlist.
+        # Rechecking mutable candidate priority here would create a second,
+        # potentially divergent authority after provider admission.
+        soft_audit = failure_class == "p6_token_soft_watermark"
         issue.pop("model_verdict", None)
         issue["p6_token_admission_reason"] = failure_class
         issue["p6_token_admission_request_denied"] = result.admission_request_denied
         issue["p6_token_provider_calls"] = 0
         issue["proof_kernel_mode"] = self._PROOF_KERNEL_TERMINAL_MODE
-        authority = self._terminal_authority.evaluate(issue, operation="live")
+        authority = self._evaluate_bound_terminal_authority(issue, operation="live")
         issue["proof_kernel_terminal_authority_decision"] = authority.to_dict()
         issue["terminal_authority_decision"] = authority.to_dict()
         issue["terminal_authority"] = authority.authority
         issue["terminal_reason_codes"] = [authority.reason_code]
+        issue["candidate_disposition"] = "needs_review"
+        issue["policy_disposition"] = "needs_review"
+        issue["validation_status"] = "needs_review"
+        issue["finding_kind"] = "needs_review"
+        outcome = ValidationOutcome(
+            report_bucket="observations",
+            memory_status="needs_review",
+            verdict="needs_review",
+            final_score=0.0,
+        )
         if soft_audit:
-            issue["candidate_disposition"] = "shadow_observation"
-            issue["policy_disposition"] = "shadow_observation"
-            issue["validation_status"] = "uncertain"
-            issue["finding_kind"] = "audit_only"
-            issue["audit_status"] = "audit_only"
-            issue["audit_reason_codes"] = ["P6_TOKEN_SOFT_WATERMARK"]
-            bucket = state.setdefault("audit_observations", [])
+            outcome = self._classify_final_needs_review(state, issue, outcome)
+        if outcome.report_bucket:
+            bucket = state.setdefault(outcome.report_bucket, [])
             if isinstance(bucket, list) and not any(value is issue for value in bucket):
                 bucket.append(issue)
-            state["audit_observation_count"] = int(state.get("audit_observation_count", 0) or 0) + 1
-        else:
-            # A hard denial (or an impossible soft/classification mismatch)
-            # cannot hide an unresolved obligation from with-needs-review.
-            issue["candidate_disposition"] = "needs_review"
-            issue["policy_disposition"] = "needs_review"
-            issue["validation_status"] = "needs_review"
-            issue["finding_kind"] = "needs_review"
-            bucket = state.setdefault("observations", [])
-            if isinstance(bucket, list) and not any(value is issue for value in bucket):
-                bucket.append(issue)
-            self.remember_validation_result(issue, "needs_review")
+        if outcome.memory_status:
+            self.remember_validation_result(issue, outcome.memory_status)
         counts = state.setdefault("p6_token_admission_counts", {})
         if isinstance(counts, dict):
             counts[failure_class] = int(counts.get(failure_class, 0) or 0) + 1
@@ -3107,7 +3393,7 @@ class ValidationRunner:
         item: _PreparedValidation,
         raw_request: Mapping[str, Any],
     ) -> tuple[str, Dict[str, Any]]:
-        """Bind a V2 request to its exact parameters and V1 evidence snapshot.
+        """Bind a V2 request to its exact parameters and current evidence snapshot.
 
         A fact kind is a provider routing key, not a request identity.  Keeping
         the subject, function, fixed action parameters, and the evidence slice
@@ -3128,17 +3414,7 @@ class ValidationRunner:
                 subject_uid=subject_uid,
             )
 
-        snapshots = item.raw_issue.get("validator_evidence_snapshot_sha256_by_pass")
-        snapshots = snapshots if isinstance(snapshots, Mapping) else {}
-        evidence_snapshot_sha256 = str(snapshots.get("initial") or "")
-        if not evidence_snapshot_sha256:
-            evidence_snapshot_sha256 = self._stable_hash(
-                {
-                    "decision_fact_slice": item.raw_issue.get("decision_fact_slice") or {},
-                    "evidence_closure_state": item.raw_issue.get("evidence_closure_state") or {},
-                    "evidence_pack": item.evidence_pack,
-                }
-            )
+        evidence_snapshot_sha256 = self._current_v2_evidence_snapshot_sha256(item)
         payload = {
             "fact_kind": fact_kind,
             "subject_uid": subject_uid,
@@ -3147,6 +3423,77 @@ class ValidationRunner:
             "evidence_snapshot_sha256": evidence_snapshot_sha256,
         }
         return self._stable_hash(payload), payload
+
+    def _current_v2_evidence_snapshot_sha256(
+        self,
+        item: _PreparedValidation,
+    ) -> str:
+        """Commit the material evidence currently available to V2.
+
+        The initial Validator slice is an immutable base, but it is not the
+        complete identity after deterministic providers or V3 actions add a
+        fact.  Derive the current snapshot from the accepted decision facts,
+        producer-verified proofs, and the exact live ProofKernel selection.
+        Operational bookkeeping (provider status, missing-plan scheduling,
+        retry counters) is deliberately excluded: a ``no_match`` transition
+        must not manufacture a new evidence identity and unlock another call.
+        """
+
+        issue = item.raw_issue
+        snapshots = issue.get("validator_evidence_snapshot_sha256_by_pass")
+        if not isinstance(snapshots, dict):
+            snapshots = {}
+            issue["validator_evidence_snapshot_sha256_by_pass"] = snapshots
+        observed_initial_sha256 = str(snapshots.get("initial") or "")
+        if not observed_initial_sha256:
+            observed_initial_sha256 = self._stable_hash(
+                {
+                    "decision_fact_slice": issue.get("decision_fact_slice") or {},
+                    "evidence_pack": item.evidence_pack,
+                }
+            )
+        initial_sha256 = str(snapshots.get("v2_initial_base") or "")
+        if not initial_sha256:
+            initial_sha256 = observed_initial_sha256
+            snapshots["v2_initial_base"] = initial_sha256
+        elif observed_initial_sha256 != initial_sha256:
+            # The V1 slice is immutable after its first identity projection.
+            # Only accepted material below may authorize a refined request.
+            snapshots["v2_initial_snapshot_drift"] = True
+
+        fact_slice = issue.get("decision_fact_slice")
+        fact_slice = fact_slice if isinstance(fact_slice, Mapping) else {}
+        proof_input = issue.get("proof_kernel_input")
+        proof_input = proof_input if isinstance(proof_input, Mapping) else {}
+
+        def canonical_records(value: Any) -> list[Dict[str, Any]]:
+            records = {
+                self._stable_hash(record): deepcopy(dict(record))
+                for record in value or []
+                if isinstance(record, Mapping)
+            }
+            return [records[digest] for digest in sorted(records)]
+
+        material = {
+            "schema_version": "zscope.v2-evidence-snapshot.v1",
+            "initial_validator_snapshot_sha256": initial_sha256,
+            "decision_facts": canonical_records(fact_slice.get("facts")),
+            "decision_fact_uids": sorted(
+                str(value) for value in fact_slice.get("fact_uids") or [] if str(value)
+            ),
+            "dependency_code_hashes": sorted(
+                str(value) for value in fact_slice.get("dependency_code_hashes") or [] if str(value)
+            ),
+            "v3_investigation_facts": canonical_records(issue.get("v3_investigation_facts")),
+            "deterministic_proofs": canonical_records(issue.get("deterministic_proofs")),
+            "proof_kernel_input_sha256": (self._stable_hash(proof_input) if proof_input else ""),
+            "proof_kernel_live_selected_action_uids": list(
+                map(str, issue.get("proof_kernel_live_selected_action_uids") or [])
+            ),
+        }
+        current_sha256 = self._stable_hash(material)
+        snapshots["current_v2"] = current_sha256
+        return current_sha256
 
     def _parameterized_action_parameters(
         self,
@@ -3655,7 +4002,7 @@ class ValidationRunner:
             item.raw_issue["proof_kernel_v2_reentry_status"] = "reduced_original_obligation"
         elif batch.has_evidence_delta:
             item.raw_issue["proof_kernel_v2_reentry_status"] = "no_exact_action_in_frozen_catalog"
-        proof_authority = self._terminal_authority.evaluate(item.raw_issue)
+        proof_authority = self._evaluate_bound_terminal_authority(item.raw_issue)
         proof_is_terminal = bool(
             proof_authority.terminal
             and proof_authority.disposition in {"confirmed", "rejected_with_proof"}
@@ -3986,7 +4333,7 @@ class ValidationRunner:
                         "newly_accepted": False,
                         "terminal_authority": pending_v3_terminal["authority"].to_dict(),
                     }
-                current_authority = self._terminal_authority.evaluate(item.raw_issue)
+                current_authority = self._evaluate_bound_terminal_authority(item.raw_issue)
                 if current_authority.disposition in {"confirmed", "rejected_with_proof"}:
                     pending_v3_terminal = {
                         "authority": current_authority,
@@ -4016,7 +4363,7 @@ class ValidationRunner:
                 executed_v3_action_ids.append(action.action_id)
                 remaining_before = set(self._remaining_fact_kinds(item.raw_issue))
                 if action.fact_kind not in remaining_before:
-                    authority = self._terminal_authority.evaluate(
+                    authority = self._evaluate_bound_terminal_authority(
                         item.raw_issue,
                         model_result=val_data,
                         has_executable_action=bool(
@@ -4110,7 +4457,7 @@ class ValidationRunner:
                         item.raw_issue["proof_kernel_v3_reentry_status"] = (
                             "no_exact_action_in_frozen_catalog"
                         )
-                authority = self._terminal_authority.evaluate(
+                authority = self._evaluate_bound_terminal_authority(
                     item.raw_issue,
                     model_result=val_data,
                     has_executable_action=bool(
@@ -4396,7 +4743,7 @@ class ValidationRunner:
     ) -> Dict[str, Any]:
         """Close a new V3 fact request once, never with contradictory state."""
 
-        current_authority = self._terminal_authority.evaluate(item.raw_issue)
+        current_authority = self._evaluate_bound_terminal_authority(item.raw_issue)
         if current_authority.disposition in {"confirmed", "rejected_with_proof"}:
             self._mark_terminal_transition(item.raw_issue, "V3", current_authority)
             item.raw_issue["validator_v3_post_resolution"] = {
@@ -4487,7 +4834,7 @@ class ValidationRunner:
             item.raw_issue["proof_kernel_v3_reentry_status"] = "reduced_original_obligation"
         elif batch.has_evidence_delta:
             item.raw_issue["proof_kernel_v3_reentry_status"] = "no_exact_action_in_frozen_catalog"
-        proof_authority = self._terminal_authority.evaluate(item.raw_issue)
+        proof_authority = self._evaluate_bound_terminal_authority(item.raw_issue)
         proof_is_terminal = bool(
             proof_authority.terminal
             and proof_authority.disposition in {"confirmed", "rejected_with_proof"}
@@ -4661,7 +5008,7 @@ class ValidationRunner:
         )
         if not self._proof_kernel_is_authoritative():
             return outcome.memory_status in {"needs_review", "engine_failed"}
-        authority = self._terminal_authority.evaluate(
+        authority = self._evaluate_bound_terminal_authority(
             probe,
             model_result=val_data,
             # This method is called only after the caller established that V3
@@ -4710,10 +5057,15 @@ class ValidationRunner:
     def _proof_kernel_terminal_decision(issue: Mapping[str, Any]) -> Dict[str, Any]:
         """Project only the current v4 authority; never mint a legacy live decision."""
 
+        binding_valid = has_exact_v4_producer_occurrence_binding(issue)
+        projected = TerminalAuthorityEvaluator().evaluate(issue, operation="live")
+        if binding_valid or projected.disposition == "needs_review":
+            return projected.to_dict()
         return (
             TerminalAuthorityEvaluator()
             .evaluate(
-                issue,
+                issue if binding_valid else {},
+                protocol_or_engine_failure=not binding_valid,
                 operation="live",
             )
             .to_dict()
@@ -5225,7 +5577,7 @@ class ValidationRunner:
             failure_class,
         )
         raw_issue.pop("proof_kernel_terminal_authority_decision", None)
-        authority = self._terminal_authority.evaluate(
+        authority = self._evaluate_bound_terminal_authority(
             raw_issue,
             protocol_or_engine_failure=True,
             operation="live",

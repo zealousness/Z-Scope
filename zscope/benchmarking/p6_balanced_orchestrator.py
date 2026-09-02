@@ -30,15 +30,26 @@ from zscope.benchmarking.p6_protocol import (
     validate_depth_projection,
 )
 from zscope.benchmarking.provider_runtime import require_p6_provider_contract
+from zscope.benchmarking.p6_sidecar_evidence import (
+    P6SidecarEvidenceError,
+    TRACE_SIDECAR_EVIDENCE_FILENAME,
+    USAGE_EVENTS_EVIDENCE_FILENAME,
+    build_trace_sidecar_evidence,
+    materialize_trace_sidecar_evidence,
+    validate_trace_sidecar_evidence,
+)
 from zscope.benchmarking.runner import (
     BenchmarkError,
+    _read_usage_events_jsonl,
     _p6_answer_free_gate_failures,
     build_p6_answer_free_producer_metrics,
+    prepare_p6_runtime_source,
 )
 
 
-FROZEN_SCAN_SCHEMA_VERSION = "zscope.p6-balanced-frozen-scan.v1"
-USAGE_EVIDENCE_SCHEMA_VERSION = "zscope.p6-balanced-usage-evidence.v1"
+FROZEN_SCAN_SCHEMA_VERSION = "zscope.p6-balanced-frozen-scan.v3"
+USAGE_EVIDENCE_SCHEMA_VERSION = "zscope.p6-balanced-usage-evidence.v3"
+TRUTH_PARTITION_PROJECTION_VERSION = "zscope.p6-truth-partition-projection.v1"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _RUN_ID_RE = re.compile(r"[1-9][0-9]*\Z")
@@ -83,15 +94,29 @@ _SCORER_ENV_ALLOWLIST = frozenset(
     }
 )
 QUALITY_REVALIDATION_RECEIPT_VERSION = "zscope.p6-quality-revalidation-receipt.v1"
+LOCAL_BALANCED_EVIDENCE_ROOT = ".github/evidence/p6/local-balanced-evidence"
+LOCAL_BALANCED_EVIDENCE_RECEIPT = "quality-revalidation-receipt.json"
 _QUALITY_BUNDLE_FILES = {
     "bindings": "bindings.json",
     "frozen_manifest": "frozen-manifest.json",
     "legacy_score": "legacy-score.json",
     "producer_projection": "producer-projection.json",
     "report": "frozen-report.json",
+    "trace_sidecars": TRACE_SIDECAR_EVIDENCE_FILENAME,
+    "usage_events": USAGE_EVENTS_EVIDENCE_FILENAME,
     "usage_evidence": "usage-evidence.json",
     "v16_score": "v16-score.json",
+    "v16_truth_partitions": "v16-truth-partitions.json",
     "quality_gate": "p6-balanced-quality-gate.json",
+}
+_LOCAL_BALANCED_EVIDENCE_FILES = {
+    **{
+        f"quality/{filename}": f"{LOCAL_BALANCED_EVIDENCE_ROOT}/quality/{filename}"
+        for filename in _QUALITY_BUNDLE_FILES.values()
+    },
+    LOCAL_BALANCED_EVIDENCE_RECEIPT: (
+        f"{LOCAL_BALANCED_EVIDENCE_ROOT}/{LOCAL_BALANCED_EVIDENCE_RECEIPT}"
+    ),
 }
 _CANONICAL_SOURCE_FILES = {
     "legacy_scorer_entry": "zscope/cli/benchmark.py",
@@ -104,6 +129,12 @@ _CANONICAL_SOURCE_FILES = {
     "v16_scorer": "scripts/score_range_v5.py",
     "quality_gate": "scripts/p6_balanced_quality_gate.py",
     "quality_gate_schema": "zscope/benchmarking/p6_balanced_quality_gate.schema.json",
+    "sidecar_evidence": "zscope/benchmarking/p6_sidecar_evidence.py",
+    "sidecar_evidence_schema": "zscope/benchmarking/p6_sidecar_evidence.schema.json",
+    "truth_partition_projection_schema": (
+        "zscope/benchmarking/p6_truth_partition_projection.schema.json"
+    ),
+    "provider_config": "test/range/zscope.benchmark.yaml",
     "orchestrator": "zscope/benchmarking/p6_balanced_orchestrator.py",
     "orchestrator_cli": "scripts/p6_balanced_orchestrator.py",
     "revalidation_receipt_schema": (
@@ -150,6 +181,7 @@ GitHeadResolver = Callable[[Path], str]
 
 _MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024
 _MAX_CONTROL_PLANE_TREE_BYTES = 1024 * 1024 * 1024
+_USAGE_SIDECAR_NAME = USAGE_EVENTS_EVIDENCE_FILENAME
 _TRACE_DIRECTORY_NAMES = frozenset(
     {"decision_traces", "coverage_traces", "evidence_objects", "model_events"}
 )
@@ -688,6 +720,79 @@ def _projection(snapshot: _FileSnapshot, *, identity: BalancedRunIdentity) -> di
     return value
 
 
+def _truth_partition_member_commitment(truth_id: str) -> str:
+    return canonical_sha256({"truth_id": truth_id})
+
+
+def _truth_partition_projection(
+    truth_snapshot: _FileSnapshot,
+) -> dict[str, Any]:
+    """Project v16 product/design-risk membership in the P6 control plane.
+
+    The frozen Benchmark v5 scorer remains byte-identical to ``origin/main``.
+    This answer-separated projection is generated only after that scorer has
+    completed and is persisted as a distinct, hash-bound P6 artifact.
+    """
+
+    truth = _object_from_snapshot(truth_snapshot, name="Truth v16 partition input")
+    records = truth.get("vulnerabilities")
+    if not isinstance(records, list) or any(not isinstance(row, Mapping) for row in records):
+        raise P6BalancedOrchestratorError("Truth v16 partition input is invalid")
+    partition_ids: dict[str, list[str]] = {"product": [], "design_risk": []}
+    for row in records:
+        contract = row.get("verification_contract")
+        truth_id = str(row.get("id") or "").strip()
+        kind = str(contract.get("kind") or "") if isinstance(contract, Mapping) else ""
+        if not truth_id or kind not in {
+            "concrete_trigger",
+            "public_api_contract",
+            "pattern_model",
+            "retired",
+        }:
+            raise P6BalancedOrchestratorError("Truth v16 partition member is invalid")
+        if kind in {"concrete_trigger", "public_api_contract"}:
+            partition_ids["product"].append(truth_id)
+        elif kind == "pattern_model":
+            partition_ids["design_risk"].append(truth_id)
+    if len(set(partition_ids["product"] + partition_ids["design_risk"])) != sum(
+        len(values) for values in partition_ids.values()
+    ):
+        raise P6BalancedOrchestratorError("Truth v16 partitions are not unique")
+
+    def partition(member_ids: Sequence[str]) -> dict[str, Any]:
+        commitments = sorted(_truth_partition_member_commitment(value) for value in member_ids)
+        return {
+            "member_count": len(commitments),
+            "member_commitments": commitments,
+            "member_commitments_sha256": canonical_sha256(commitments),
+        }
+
+    product = partition(partition_ids["product"])
+    design_risk = partition(partition_ids["design_risk"])
+    product_set = set(product["member_commitments"])
+    design_set = set(design_risk["member_commitments"])
+    union = sorted(product_set | design_set)
+    value: dict[str, Any] = {
+        "schema_version": TRUTH_PARTITION_PROJECTION_VERSION,
+        "truth_sha256": truth_snapshot.sha256,
+        "product": product,
+        "design_risk": design_risk,
+        "partitions_disjoint": not bool(product_set & design_set),
+        "union_member_count": len(union),
+        "union_member_commitments_sha256": canonical_sha256(union),
+        "answer_material_present": False,
+    }
+    value["content_sha256"] = canonical_sha256(value)
+    if (
+        product["member_count"] != 61
+        or design_risk["member_count"] != 75
+        or value["partitions_disjoint"] is not True
+        or value["union_member_count"] != 136
+    ):
+        raise P6BalancedOrchestratorError("Truth v16 partition projection is invalid")
+    return value
+
+
 def _validate_complete_balanced_aggregate(
     *,
     aggregate: Mapping[str, Any],
@@ -736,6 +841,53 @@ def _validate_complete_balanced_aggregate(
             raise P6BalancedOrchestratorError("balanced producer attempt lineage is invalid")
     if sum(str(phase.get("phase") or "") == "scan" for phase in phases) != 1:
         raise P6BalancedOrchestratorError("balanced producer scan phase is not unique")
+
+
+def _validate_usage_sidecar_binding(
+    *,
+    report: Mapping[str, Any],
+    run: Mapping[str, Any],
+    trace_manifest: Mapping[str, Any],
+    usage_snapshot: _FileSnapshot,
+    usage_call_count: int,
+) -> None:
+    """Bind the exact usage sidecar to every selected-producer declaration."""
+
+    expected_artifact = {
+        "schema_version": "zscope.llm-usage-events-artifact.v1",
+        "path": _USAGE_SIDECAR_NAME,
+        "sha256": usage_snapshot.sha256,
+        "call_count": usage_call_count,
+        "answer_free": True,
+    }
+    metadata = report.get("metadata")
+    manifest = report.get("run_manifest")
+    if not isinstance(metadata, Mapping) or not isinstance(manifest, Mapping):
+        raise P6BalancedOrchestratorError("balanced usage artifact owners are invalid")
+    metadata_artifact = metadata.get("llm_usage_events_artifact")
+    manifest_artifact = manifest.get("llm_usage_events_artifact")
+    if (
+        not isinstance(metadata_artifact, Mapping)
+        or not isinstance(manifest_artifact, Mapping)
+        or dict(metadata_artifact) != expected_artifact
+        or dict(manifest_artifact) != expected_artifact
+    ):
+        raise P6BalancedOrchestratorError("balanced usage artifact binding is invalid")
+
+    trace_usage = trace_manifest.get("llm_usage_events")
+    if (
+        not isinstance(trace_usage, Mapping)
+        or trace_usage.get("available") is not True
+        or trace_usage.get("path") != _USAGE_SIDECAR_NAME
+        or trace_usage.get("file_sha256") != usage_snapshot.sha256
+        or trace_usage.get("event_count") != usage_call_count
+    ):
+        raise P6BalancedOrchestratorError("balanced decision-trace usage binding is invalid")
+
+    artifact_hashes = run.get("artifact_hashes")
+    files = artifact_hashes.get("files") if isinstance(artifact_hashes, Mapping) else None
+    if not isinstance(files, Mapping) or files.get(_USAGE_SIDECAR_NAME) != usage_snapshot.sha256:
+        raise P6BalancedOrchestratorError("balanced aggregate usage binding is invalid")
 
 
 def freeze_balanced_scan(
@@ -809,6 +961,14 @@ def freeze_balanced_scan(
     provider_runtime = provenance.get("provider_runtime")
     cold_cache = run.get("cold_cache")
     isolation = run.get("isolation")
+    producer_source_sandbox = (
+        isolation.get("producer_source_sandbox") if isinstance(isolation, Mapping) else None
+    )
+    host_process_sandbox = (
+        producer_source_sandbox.get("host_process_sandbox")
+        if isinstance(producer_source_sandbox, Mapping)
+        else None
+    )
     usage_accounting_value = producer_metrics.get("usage_accounting")
     usage_accounting: Mapping[str, Any] = (
         usage_accounting_value if isinstance(usage_accounting_value, Mapping) else {}
@@ -834,6 +994,67 @@ def freeze_balanced_scan(
         or isolation.get("image_id") != projection.get("oci_image_id")
         or isolation.get("runtime_source_sha256") != projection.get("runtime_source_sha256")
         or isolation.get("provider_identity_sha256") != projection.get("provider_identity_sha256")
+        or not isinstance(producer_source_sandbox, Mapping)
+        or set(producer_source_sandbox)
+        != {
+            "schema_version",
+            "runtime_source_sha256",
+            "scan_input_manifest_sha256",
+            "host_process_sandbox",
+            "scorer_present",
+            "truth_present",
+            "expected_present",
+            "review_decision_present",
+            "postscore_evidence_present",
+        }
+        or producer_source_sandbox.get("schema_version") != "zscope.p6-producer-source-sandbox.v2"
+        or producer_source_sandbox.get("runtime_source_sha256")
+        != projection.get("runtime_source_sha256")
+        or producer_source_sandbox.get("scan_input_manifest_sha256")
+        != run.get("input_manifest_sha256")
+        or any(
+            producer_source_sandbox.get(name) is not False
+            for name in (
+                "scorer_present",
+                "truth_present",
+                "expected_present",
+                "review_decision_present",
+                "postscore_evidence_present",
+            )
+        )
+        or not isinstance(host_process_sandbox, Mapping)
+        or set(host_process_sandbox)
+        != {
+            "schema_version",
+            "candidate_commit",
+            "candidate_git_tree",
+            "file_count",
+            "source_manifest_sha256",
+            "receipt_sha256",
+            "scorer_present",
+            "truth_present",
+            "expected_answer_present",
+            "review_decision_present",
+            "postscore_evidence_present",
+        }
+        or host_process_sandbox.get("schema_version") != "zscope.p6-host-producer-sandbox.v1"
+        or host_process_sandbox.get("candidate_commit") != identity.candidate_git_sha
+        or host_process_sandbox.get("candidate_git_tree") != identity.candidate_git_tree
+        or not isinstance(host_process_sandbox.get("file_count"), int)
+        or int(host_process_sandbox.get("file_count") or 0) < 1
+        or _SHA256_RE.fullmatch(str(host_process_sandbox.get("source_manifest_sha256") or ""))
+        is None
+        or _SHA256_RE.fullmatch(str(host_process_sandbox.get("receipt_sha256") or "")) is None
+        or any(
+            host_process_sandbox.get(name) is not False
+            for name in (
+                "scorer_present",
+                "truth_present",
+                "expected_answer_present",
+                "review_decision_present",
+                "postscore_evidence_present",
+            )
+        )
         or not isinstance(usage_totals, Mapping)
         or projection.get("call_count") != int(usage_accounting.get("call_count") or 0)
         or projection.get("provider_usage_coverage")
@@ -898,12 +1119,39 @@ def freeze_balanced_scan(
             for snapshot in (usage_snapshot, trace_snapshot, *trace_sidecars.values())
         ):
             raise P6BalancedOrchestratorError("balanced protected canary detected")
-        _write_snapshot(producer_workspace / "llm_usage_events.jsonl", usage_snapshot)
+        _write_snapshot(producer_workspace / _USAGE_SIDECAR_NAME, usage_snapshot)
         _write_snapshot(producer_workspace / trace_name, trace_snapshot)
         for relative, snapshot in trace_sidecars.items():
             destination = producer_workspace / Path(*PurePosixPath(relative).parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
             _write_snapshot(destination, snapshot)
+        try:
+            usage_call_count = len(
+                _read_usage_events_jsonl(producer_workspace / _USAGE_SIDECAR_NAME)
+            )
+        except (BenchmarkError, OSError, UnicodeError) as exc:
+            raise P6BalancedOrchestratorError("balanced usage sidecar is invalid") from exc
+        _validate_usage_sidecar_binding(
+            report=report,
+            run=run,
+            trace_manifest=_object_from_snapshot(
+                trace_snapshot, name="balanced decision-trace manifest"
+            ),
+            usage_snapshot=usage_snapshot,
+            usage_call_count=usage_call_count,
+        )
+        try:
+            trace_evidence = build_trace_sidecar_evidence(
+                manifest_path=trace_name,
+                manifest_payload=trace_snapshot.payload,
+                sidecar_payloads={
+                    relative: snapshot.payload for relative, snapshot in trace_sidecars.items()
+                },
+            )
+        except P6SidecarEvidenceError as exc:
+            raise P6BalancedOrchestratorError(
+                "balanced decision-trace sidecar evidence is invalid"
+            ) from exc
         try:
             recomputed_metrics = build_p6_answer_free_producer_metrics(
                 report_path=staged_report,
@@ -932,11 +1180,25 @@ def freeze_balanced_scan(
         frozen_report = temp / "report.json"
         _write_snapshot(frozen_report, report_snapshot)
         _write_json(temp / "bindings.json", bindings)
+        _write_snapshot(temp / USAGE_EVENTS_EVIDENCE_FILENAME, usage_snapshot)
+        _write_json(temp / TRACE_SIDECAR_EVIDENCE_FILENAME, trace_evidence)
+        trace_evidence_snapshot = _snapshot_regular_file(
+            temp / TRACE_SIDECAR_EVIDENCE_FILENAME,
+            name="balanced trace sidecar evidence",
+        )
         usage: dict[str, Any] = {
             "schema_version": USAGE_EVIDENCE_SCHEMA_VERSION,
             "workflow_run_id": identity.workflow_run_id,
             "workflow_run_attempt": identity.workflow_run_attempt,
             "attempt_id": identity.attempt_id,
+            "llm_usage_events_sha256": usage_snapshot.sha256,
+            "llm_usage_events_call_count": usage_call_count,
+            "trace_sidecars_sha256": trace_evidence_snapshot.sha256,
+            "trace_sidecar_member_count": trace_evidence["member_count"],
+            "trace_count": trace_evidence["trace_count"],
+            "coverage_trace_count": trace_evidence["coverage_trace_count"],
+            "evidence_object_count": trace_evidence["evidence_object_count"],
+            "model_event_count": trace_evidence["model_event_count"],
             "score_fields": usage_fields,
             "answer_material_present": False,
             "formal_benchmark": False,
@@ -952,6 +1214,14 @@ def freeze_balanced_scan(
             "candidate_git_sha": identity.candidate_git_sha,
             "candidate_git_tree": identity.candidate_git_tree,
             "attempt_id": identity.attempt_id,
+            "llm_usage_events_sha256": usage_snapshot.sha256,
+            "llm_usage_events_call_count": usage_call_count,
+            "trace_sidecars_sha256": trace_evidence_snapshot.sha256,
+            "trace_sidecar_member_count": trace_evidence["member_count"],
+            "trace_count": trace_evidence["trace_count"],
+            "coverage_trace_count": trace_evidence["coverage_trace_count"],
+            "evidence_object_count": trace_evidence["evidence_object_count"],
+            "model_event_count": trace_evidence["model_event_count"],
             "report_sha256": report_snapshot.sha256,
             "bindings_sha256": _snapshot_regular_file(
                 temp / "bindings.json", name="balanced bindings"
@@ -1241,6 +1511,82 @@ def validate_quality_revalidation_receipt(
         raise P6BalancedOrchestratorError("quality revalidation receipt digest is invalid")
 
 
+def _receipt_identity(value: Mapping[str, Any]) -> BalancedRunIdentity:
+    validate_quality_revalidation_receipt(value)
+    row = value["identity"]
+    assert isinstance(row, Mapping)
+    identity = BalancedRunIdentity(
+        workflow_run_id=str(row["workflow_run_id"]),
+        workflow_run_attempt=int(row["workflow_run_attempt"]),
+        attempt_id=str(row["attempt_id"]),
+        control_plane_commit=str(row["control_plane_commit"]),
+        candidate_git_sha=str(row["candidate_git_sha"]),
+        candidate_git_tree=str(row["candidate_git_tree"]),
+    )
+    identity.validate()
+    return identity
+
+
+def validate_complete_local_balanced_evidence(
+    *,
+    evidence_root: Path,
+    expected_receipt_sha256: str,
+) -> tuple[dict[str, Any], dict[str, Any], BalancedRunIdentity]:
+    """Validate a complete local quality bundle plus its canonical receipt.
+
+    A standalone quality gate is deliberately insufficient: the report,
+    scores, bindings, usage/projection evidence, freeze manifest, and the
+    authoritative byte-exact revalidation receipt must all be present.
+    """
+
+    from scripts.p6_balanced_quality_gate import validate_quality_gate_bundle
+
+    if _SHA256_RE.fullmatch(expected_receipt_sha256) is None:
+        raise P6BalancedOrchestratorError("local evidence receipt digest is invalid")
+    root = Path(evidence_root)
+    try:
+        metadata = root.lstat()
+    except OSError as exc:
+        raise P6BalancedOrchestratorError("local evidence bundle is unavailable") from exc
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or {entry.name for entry in root.iterdir()} != {"quality", LOCAL_BALANCED_EVIDENCE_RECEIPT}
+    ):
+        raise P6BalancedOrchestratorError("local evidence bundle members are invalid")
+    quality_root = root / "quality"
+    quality_snapshots = _quality_bundle_snapshots(quality_root)
+    receipt_snapshot = _snapshot_regular_file(
+        root / LOCAL_BALANCED_EVIDENCE_RECEIPT,
+        name="local quality revalidation receipt",
+    )
+    if receipt_snapshot.sha256 != expected_receipt_sha256:
+        raise P6BalancedOrchestratorError("local evidence receipt digest does not match")
+    receipt = _object_from_snapshot(
+        receipt_snapshot,
+        name="local quality revalidation receipt",
+    )
+    identity = _receipt_identity(receipt)
+    bundle_hashes = _quality_bundle_hashes(quality_snapshots)
+    if (
+        receipt.get("input_bundle_sha256s") != bundle_hashes
+        or receipt.get("output_bundle_sha256s") != bundle_hashes
+    ):
+        raise P6BalancedOrchestratorError("local evidence receipt does not bind the bundle")
+    gate = validate_quality_gate_bundle(quality_root)
+    if (
+        gate.get("content_sha256") != receipt.get("quality_gate_content_sha256")
+        or gate.get("hard_gate_passed") is not True
+        or gate.get("formal_benchmark") is not False
+        or gate.get("release_eligible") is not False
+    ):
+        raise P6BalancedOrchestratorError("local evidence quality gate is not eligible")
+    after = root.lstat()
+    if _metadata_identity(after) != _metadata_identity(metadata):
+        raise P6BalancedOrchestratorError("local evidence bundle changed during validation")
+    return receipt, gate, identity
+
+
 def revalidate_balanced_quality_bundle(
     *,
     restored_bundle: Path,
@@ -1302,6 +1648,8 @@ def revalidate_balanced_quality_bundle(
         for source_name, target_name in {
             "report": "report.json",
             "bindings": "bindings.json",
+            "trace_sidecars": TRACE_SIDECAR_EVIDENCE_FILENAME,
+            "usage_events": USAGE_EVENTS_EVIDENCE_FILENAME,
             "usage_evidence": "usage-evidence.json",
             "frozen_manifest": "manifest.json",
         }.items():
@@ -1332,6 +1680,7 @@ def revalidate_balanced_quality_bundle(
             projection_snapshot=projection_snapshot,
             truth_snapshots=truth_snapshots,
             control_source_snapshots=control_source_snapshots,
+            provider_config_snapshot=source_snapshots["provider_config"],
             identity=identity,
             output=regenerated,
             execution_root=control_plane_snapshot.root,
@@ -1398,12 +1747,219 @@ def revalidate_balanced_quality_bundle(
         shutil.rmtree(workspace, ignore_errors=True)
 
 
+def revalidate_complete_local_balanced_evidence(
+    *,
+    evidence_root: Path,
+    expected_receipt_sha256: str,
+    repository_root: Path,
+    process_runner: ProcessRunner = subprocess.run,
+    python_executable: str = sys.executable,
+) -> tuple[dict[str, Any], dict[str, Any], BalancedRunIdentity]:
+    """Canonically rescore and byte-compare one complete local evidence bundle."""
+
+    receipt, gate, identity = validate_complete_local_balanced_evidence(
+        evidence_root=evidence_root,
+        expected_receipt_sha256=expected_receipt_sha256,
+    )
+    root = Path(evidence_root).resolve(strict=True)
+    workspace = Path(tempfile.mkdtemp(prefix=".p6-local-evidence-revalidate.", dir=root.parent))
+    try:
+        regenerated_receipt_path = workspace / "quality-revalidation-receipt.json"
+        regenerated_receipt = revalidate_balanced_quality_bundle(
+            restored_bundle=root / "quality",
+            legacy_truth_path=repository_root / _CANONICAL_TRUTH_FILES["legacy_truth"],
+            v16_truth_path=repository_root / _CANONICAL_TRUTH_FILES["v16_truth"],
+            identity=identity,
+            output=workspace / "quality",
+            receipt_path=regenerated_receipt_path,
+            repository_root=repository_root,
+            process_runner=process_runner,
+            python_executable=python_executable,
+            # Hosted entry is checked out at the later evidence merge.  The
+            # scorer is nevertheless materialized from this receipt's exact
+            # immutable source commit and may not read the live checkout.
+            git_head_resolver=lambda _root: identity.control_plane_commit,
+        )
+        original_receipt = _snapshot_regular_file(
+            root / LOCAL_BALANCED_EVIDENCE_RECEIPT,
+            name="local quality revalidation receipt",
+        )
+        regenerated_snapshot = _snapshot_regular_file(
+            regenerated_receipt_path,
+            name="regenerated local quality revalidation receipt",
+        )
+        if (
+            regenerated_receipt != receipt
+            or regenerated_snapshot.payload != original_receipt.payload
+        ):
+            raise P6BalancedOrchestratorError(
+                "local evidence receipt did not reproduce byte-exactly"
+            )
+        return receipt, gate, identity
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def verify_committed_local_balanced_evidence(
+    *,
+    repository_root: Path,
+    hosted_control_plane_commit: str,
+    evidence_commit: str,
+    expected_receipt_sha256: str,
+    process_runner: ProcessRunner = subprocess.run,
+    python_executable: str = sys.executable,
+) -> dict[str, Any]:
+    """Verify the immutable local evidence commit before hosted provider work.
+
+    The evidence commit must add exactly the complete nine-file bundle to its
+    tested parent.  The hosted control-plane commit must be a two-parent merge
+    that retains those exact bytes and no other change relative to the tested
+    source.  The committed bundle is then canonically rescored from the tested
+    commit and compared byte-for-byte with its receipt.
+    """
+
+    root = Path(repository_root).resolve(strict=True)
+    if (
+        _GIT_RE.fullmatch(hosted_control_plane_commit) is None
+        or _GIT_RE.fullmatch(evidence_commit) is None
+        or _SHA256_RE.fullmatch(expected_receipt_sha256) is None
+    ):
+        raise P6BalancedOrchestratorError("local evidence commit identity is invalid")
+    if _resolve_repository_head(root, process_runner=process_runner) != hosted_control_plane_commit:
+        raise P6BalancedOrchestratorError("hosted control-plane HEAD is invalid")
+
+    def git_text(*arguments: str) -> str:
+        return _run_git_bytes(root, arguments).decode("utf-8", errors="strict").strip()
+
+    for revision in (hosted_control_plane_commit, evidence_commit):
+        if git_text("cat-file", "-t", revision) != "commit":
+            raise P6BalancedOrchestratorError("local evidence commit is unavailable")
+    evidence_parents = git_text("rev-list", "--parents", "-n", "1", evidence_commit).split()
+    if len(evidence_parents) != 2 or evidence_parents[0] != evidence_commit:
+        raise P6BalancedOrchestratorError("local evidence commit parent is invalid")
+    tested_commit = evidence_parents[1]
+    hosted_parents = git_text(
+        "rev-list", "--parents", "-n", "1", hosted_control_plane_commit
+    ).split()
+    if (
+        len(hosted_parents) != 3
+        or hosted_parents[0] != hosted_control_plane_commit
+        or evidence_commit not in hosted_parents[1:]
+    ):
+        raise P6BalancedOrchestratorError("hosted evidence merge lineage is invalid")
+    expected_paths = set(_LOCAL_BALANCED_EVIDENCE_FILES.values())
+
+    def changed_paths(left: str, right: str) -> set[str]:
+        rows = git_text("diff", "--no-renames", "--name-status", left, right).splitlines()
+        expected_rows = {f"A\t{path}" for path in expected_paths}
+        if set(rows) != expected_rows or len(rows) != len(expected_rows):
+            raise P6BalancedOrchestratorError("local evidence commit contents are invalid")
+        return {row.split("\t", 1)[1] for row in rows}
+
+    if changed_paths(tested_commit, evidence_commit) != expected_paths:
+        raise P6BalancedOrchestratorError("local evidence commit contents are invalid")
+    if changed_paths(tested_commit, hosted_control_plane_commit) != expected_paths:
+        raise P6BalancedOrchestratorError("hosted evidence merge contents are invalid")
+    if git_text("rev-parse", f"{evidence_commit}^{{tree}}") != git_text(
+        "rev-parse", f"{hosted_control_plane_commit}^{{tree}}"
+    ):
+        raise P6BalancedOrchestratorError("hosted evidence tree is invalid")
+
+    workspace = Path(tempfile.mkdtemp(prefix=".p6-committed-local-evidence."))
+    control_plane_snapshot: _ControlPlaneTreeSnapshot | None = None
+    try:
+        staged = workspace / "evidence"
+        (staged / "quality").mkdir(parents=True, mode=0o700)
+        for local_relative, committed_path in sorted(_LOCAL_BALANCED_EVIDENCE_FILES.items()):
+            row = git_text("ls-tree", evidence_commit, "--", committed_path).split()
+            if len(row) != 4 or row[:2] != ["100644", "blob"] or row[3] != committed_path:
+                raise P6BalancedOrchestratorError("local evidence Git member is invalid")
+            payload = _run_git_bytes(root, ("show", f"{evidence_commit}:{committed_path}"))
+            target = staged / local_relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(target, flags, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+        receipt, gate, identity = revalidate_complete_local_balanced_evidence(
+            evidence_root=staged,
+            expected_receipt_sha256=expected_receipt_sha256,
+            repository_root=root,
+            process_runner=process_runner,
+            python_executable=python_executable,
+        )
+        tested_tree = git_text("rev-parse", f"{tested_commit}^{{tree}}")
+        if (
+            identity.control_plane_commit != tested_commit
+            or identity.candidate_git_sha != tested_commit
+            or identity.candidate_git_tree != tested_tree
+        ):
+            raise P6BalancedOrchestratorError("local evidence tested identity is invalid")
+        control_plane_snapshot = _materialize_control_plane_tree(
+            repository_root=root,
+            control_plane_commit=hosted_control_plane_commit,
+            destination=workspace / "hosted-control-plane",
+        )
+        contract = require_p6_provider_contract(
+            control_plane_snapshot.root / "test/range/zscope.benchmark.yaml"
+        )
+        runtime_source = workspace / "producer-runtime" / "zscope"
+        runtime_sha256 = prepare_p6_runtime_source(
+            runtime_source,
+            source_root=control_plane_snapshot.root / "zscope",
+        )
+        bindings = gate.get("bindings")
+        expected_bindings = {
+            "git_commit": tested_commit,
+            "git_tree": tested_tree,
+            "candidate_sha256": hashlib.sha256(tested_commit.encode("ascii")).hexdigest(),
+            "provider_identity_sha256": contract.identity_sha256,
+            "runtime_sha256": runtime_sha256,
+            "config_sha256": contract.config_sha256,
+        }
+        if not isinstance(bindings, Mapping) or any(
+            bindings.get(name) != value for name, value in expected_bindings.items()
+        ):
+            raise P6BalancedOrchestratorError("local evidence candidate binding is invalid")
+        if (
+            _resolve_repository_head(root, process_runner=process_runner)
+            != hosted_control_plane_commit
+        ):
+            raise P6BalancedOrchestratorError("hosted control-plane HEAD changed")
+        return {
+            "tested_commit": tested_commit,
+            "evidence_commit": evidence_commit,
+            "hosted_control_plane_commit": hosted_control_plane_commit,
+            "receipt_sha256": expected_receipt_sha256,
+            "receipt_content_sha256": str(receipt["content_sha256"]),
+            "quality_gate_content_sha256": str(gate["content_sha256"]),
+            "canonical_revalidation_passed": True,
+            "complete_bundle_present": True,
+        }
+    finally:
+        if control_plane_snapshot is not None:
+            _remove_control_plane_tree(control_plane_snapshot)
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 _FROZEN_INPUT_FILES = {
     "manifest": "manifest.json",
     "report": "report.json",
     "bindings": "bindings.json",
+    "trace_sidecars": TRACE_SIDECAR_EVIDENCE_FILENAME,
+    "usage_events": USAGE_EVENTS_EVIDENCE_FILENAME,
     "usage_evidence": "usage-evidence.json",
 }
+
+
+def _usage_rows_from_snapshot(snapshot: _FileSnapshot) -> list[dict[str, Any]]:
+    workspace = Path(tempfile.mkdtemp(prefix=".p6-usage-sidecar."))
+    try:
+        path = workspace / USAGE_EVENTS_EVIDENCE_FILENAME
+        _write_snapshot(path, snapshot)
+        return _read_usage_events_jsonl(path)
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def _validate_frozen_snapshots(
@@ -1421,6 +1977,14 @@ def _validate_frozen_snapshots(
         "candidate_git_sha",
         "candidate_git_tree",
         "attempt_id",
+        "llm_usage_events_sha256",
+        "llm_usage_events_call_count",
+        "trace_sidecars_sha256",
+        "trace_sidecar_member_count",
+        "trace_count",
+        "coverage_trace_count",
+        "evidence_object_count",
+        "model_event_count",
         "report_sha256",
         "bindings_sha256",
         "usage_evidence_sha256",
@@ -1446,14 +2010,31 @@ def _validate_frozen_snapshots(
         "formal_benchmark": False,
         "release_eligible": False,
     }
-    if supplied != canonical_sha256(unsigned) or any(
-        frozen.get(key) != value for key, value in expected.items()
+    if (
+        supplied != canonical_sha256(unsigned)
+        or any(frozen.get(key) != value for key, value in expected.items())
+        or _SHA256_RE.fullmatch(str(frozen.get("llm_usage_events_sha256") or "")) is None
+        or type(frozen.get("llm_usage_events_call_count")) is not int
+        or int(frozen.get("llm_usage_events_call_count") or 0) < 1
+        or _SHA256_RE.fullmatch(str(frozen.get("trace_sidecars_sha256") or "")) is None
+        or any(
+            type(frozen.get(field)) is not int or int(frozen.get(field) or 0) < 0
+            for field in (
+                "trace_sidecar_member_count",
+                "trace_count",
+                "coverage_trace_count",
+                "evidence_object_count",
+                "model_event_count",
+            )
+        )
     ):
         raise P6BalancedOrchestratorError("balanced freeze manifest is invalid")
     for name, field in (
         ("report", "report_sha256"),
         ("bindings", "bindings_sha256"),
         ("usage_evidence", "usage_evidence_sha256"),
+        ("trace_sidecars", "trace_sidecars_sha256"),
+        ("usage_events", "llm_usage_events_sha256"),
     ):
         if frozen_snapshots[name].sha256 != frozen.get(field):
             raise P6BalancedOrchestratorError("balanced freeze artifact digest is invalid")
@@ -1474,6 +2055,14 @@ def _validate_frozen_snapshots(
             "workflow_run_id",
             "workflow_run_attempt",
             "attempt_id",
+            "llm_usage_events_sha256",
+            "llm_usage_events_call_count",
+            "trace_sidecars_sha256",
+            "trace_sidecar_member_count",
+            "trace_count",
+            "coverage_trace_count",
+            "evidence_object_count",
+            "model_event_count",
             "score_fields",
             "answer_material_present",
             "formal_benchmark",
@@ -1485,6 +2074,22 @@ def _validate_frozen_snapshots(
         or usage.get("workflow_run_id") != identity.workflow_run_id
         or usage.get("workflow_run_attempt") != identity.workflow_run_attempt
         or usage.get("attempt_id") != identity.attempt_id
+        or usage.get("llm_usage_events_sha256") != frozen.get("llm_usage_events_sha256")
+        or usage.get("llm_usage_events_call_count") != frozen.get("llm_usage_events_call_count")
+        or usage.get("trace_sidecars_sha256") != frozen.get("trace_sidecars_sha256")
+        or any(
+            usage.get(field) != frozen.get(field)
+            for field in (
+                "trace_sidecar_member_count",
+                "trace_count",
+                "coverage_trace_count",
+                "evidence_object_count",
+                "model_event_count",
+            )
+        )
+        or _SHA256_RE.fullmatch(str(usage.get("llm_usage_events_sha256") or "")) is None
+        or type(usage.get("llm_usage_events_call_count")) is not int
+        or int(usage.get("llm_usage_events_call_count") or 0) < 1
         or usage.get("answer_material_present") is not False
         or usage.get("formal_benchmark") is not False
         or usage.get("release_eligible") is not False
@@ -1492,6 +2097,34 @@ def _validate_frozen_snapshots(
         or set(usage["score_fields"]) != _USAGE_FIELDS
     ):
         raise P6BalancedOrchestratorError("balanced usage evidence is invalid")
+    try:
+        trace_payloads = validate_trace_sidecar_evidence(
+            _object_from_snapshot(
+                frozen_snapshots["trace_sidecars"],
+                name="balanced trace sidecar evidence",
+            )
+        )
+    except P6SidecarEvidenceError as exc:
+        raise P6BalancedOrchestratorError("balanced trace sidecar evidence is invalid") from exc
+    if (
+        len(trace_payloads) != frozen.get("trace_sidecar_member_count")
+        or any(
+            frozen.get(field) != usage.get(field)
+            for field in (
+                "trace_count",
+                "coverage_trace_count",
+                "evidence_object_count",
+                "model_event_count",
+            )
+        )
+    ):
+        raise P6BalancedOrchestratorError("balanced trace sidecar counts do not conserve")
+    try:
+        usage_rows = _usage_rows_from_snapshot(frozen_snapshots["usage_events"])
+    except (BenchmarkError, OSError, UnicodeError) as exc:
+        raise P6BalancedOrchestratorError("balanced usage sidecar is invalid") from exc
+    if len(usage_rows) != frozen.get("llm_usage_events_call_count"):
+        raise P6BalancedOrchestratorError("balanced usage sidecar count does not conserve")
     if (
         report.get("answer_material_present") is not False
         or not isinstance(report.get("run_manifest"), Mapping)
@@ -1621,12 +2254,17 @@ def score_frozen_balanced_scan(
             v16_truth_path=v16_truth_path,
         )
         control_source_snapshots = _scoring_control_snapshots(control_plane_snapshot.root)
+        provider_config_snapshot = _snapshot_regular_file(
+            control_plane_snapshot.root / _CANONICAL_SOURCE_FILES["provider_config"],
+            name="canonical provider config",
+        )
         return _score_frozen_balanced_scan_with_snapshots(
             validated=validated,
             frozen_snapshots=frozen_snapshots,
             projection_snapshot=projection_snapshot,
             truth_snapshots=truth_snapshots,
             control_source_snapshots=control_source_snapshots,
+            provider_config_snapshot=provider_config_snapshot,
             identity=identity,
             output=output,
             execution_root=control_plane_snapshot.root,
@@ -1647,6 +2285,7 @@ def _score_frozen_balanced_scan_with_snapshots(
     projection_snapshot: _FileSnapshot,
     truth_snapshots: Mapping[str, _FileSnapshot],
     control_source_snapshots: Mapping[str, _FileSnapshot],
+    provider_config_snapshot: _FileSnapshot,
     identity: BalancedRunIdentity,
     output: Path,
     execution_root: Path,
@@ -1659,6 +2298,54 @@ def _score_frozen_balanced_scan_with_snapshots(
     if set(control_source_snapshots) != set(_SCORING_CONTROL_SOURCE_NAMES):
         raise P6BalancedOrchestratorError("scoring implementation snapshot set is incomplete")
     _, _, _, usage = validated
+    recompute_root = Path(tempfile.mkdtemp(prefix=".p6-sidecar-recompute.", dir=output.parent))
+    try:
+        recompute_report = recompute_root / "report.json"
+        _write_snapshot(recompute_report, frozen_snapshots["report"])
+        _write_snapshot(
+            recompute_root / USAGE_EVENTS_EVIDENCE_FILENAME,
+            frozen_snapshots["usage_events"],
+        )
+        trace_value = _object_from_snapshot(
+            frozen_snapshots["trace_sidecars"],
+            name="balanced trace sidecar evidence",
+        )
+        try:
+            materialize_trace_sidecar_evidence(trace_value, destination=recompute_root / "trace")
+        except P6SidecarEvidenceError as exc:
+            raise P6BalancedOrchestratorError(
+                "balanced trace sidecar evidence cannot be materialized"
+            ) from exc
+        for source in sorted((recompute_root / "trace").rglob("*")):
+            if source.is_file():
+                destination = recompute_root / source.relative_to(recompute_root / "trace")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(destination)
+        shutil.rmtree(recompute_root / "trace")
+        provider_config = recompute_root / "zscope.benchmark.yaml"
+        _write_snapshot(provider_config, provider_config_snapshot)
+        contract = require_p6_provider_contract(provider_config)
+        recomputed = build_p6_answer_free_producer_metrics(
+            report_path=recompute_report,
+            run_dir=recompute_root,
+            provider_contract=contract,
+        )
+        if (
+            {name: recomputed.get(name) for name in sorted(_USAGE_FIELDS)}
+            != dict(usage["score_fields"])
+            or _p6_answer_free_gate_failures(recomputed)
+        ):
+            raise P6BalancedOrchestratorError(
+                "balanced frozen sidecars do not reproduce producer metrics"
+            )
+    except (BenchmarkError, OSError, ValueError) as exc:
+        if isinstance(exc, P6BalancedOrchestratorError):
+            raise
+        raise P6BalancedOrchestratorError(
+            "balanced frozen sidecar recomputation failed"
+        ) from exc
+    finally:
+        shutil.rmtree(recompute_root, ignore_errors=True)
     if failure_aggregate_path is not None and (
         failure_aggregate_path.exists() or failure_aggregate_path.is_symlink()
     ):
@@ -1671,6 +2358,14 @@ def _score_frozen_balanced_scan_with_snapshots(
         _write_snapshot(temp / "bindings.json", frozen_snapshots["bindings"])
         _write_snapshot(temp / "producer-projection.json", projection_snapshot)
         _write_snapshot(temp / "frozen-manifest.json", frozen_snapshots["manifest"])
+        _write_snapshot(
+            temp / TRACE_SIDECAR_EVIDENCE_FILENAME,
+            frozen_snapshots["trace_sidecars"],
+        )
+        _write_snapshot(
+            temp / USAGE_EVENTS_EVIDENCE_FILENAME,
+            frozen_snapshots["usage_events"],
+        )
         _write_snapshot(temp / "usage-evidence.json", frozen_snapshots["usage_evidence"])
         scorer_inputs = temp / ".scorer-input"
         scorer_inputs.mkdir(mode=0o700)
@@ -1748,6 +2443,11 @@ def _score_frozen_balanced_scan_with_snapshots(
         v16["p6_frozen_report_sha256"] = report_sha
         _write_json(legacy_score, legacy)
         _write_json(v16_score, v16)
+        v16_truth_partitions = temp / "v16-truth-partitions.json"
+        _write_json(
+            v16_truth_partitions,
+            _truth_partition_projection(truth_snapshots["v16_truth"]),
+        )
         legacy_raw.unlink()
         shutil.rmtree(scorer_inputs)
         gate_argv: list[str] = [
@@ -1759,6 +2459,8 @@ def _score_frozen_balanced_scan_with_snapshots(
             str(legacy_score),
             "--v16-score",
             str(v16_score),
+            "--v16-truth-partitions",
+            str(v16_truth_partitions),
             "--producer-projection",
             str(temp / "producer-projection.json"),
             "--bindings",
@@ -1767,6 +2469,10 @@ def _score_frozen_balanced_scan_with_snapshots(
             str(temp / "frozen-manifest.json"),
             "--usage-evidence",
             str(temp / "usage-evidence.json"),
+            "--usage-events",
+            str(temp / USAGE_EVENTS_EVIDENCE_FILENAME),
+            "--trace-sidecars",
+            str(temp / TRACE_SIDECAR_EVIDENCE_FILENAME),
             "--output",
             str(quality_gate),
         ]
@@ -1807,12 +2513,17 @@ def _score_frozen_balanced_scan_with_snapshots(
 __all__ = [
     "BalancedRunIdentity",
     "FROZEN_SCAN_SCHEMA_VERSION",
+    "LOCAL_BALANCED_EVIDENCE_RECEIPT",
+    "LOCAL_BALANCED_EVIDENCE_ROOT",
     "P6BalancedOrchestratorError",
     "QUALITY_REVALIDATION_RECEIPT_VERSION",
     "USAGE_EVIDENCE_SCHEMA_VERSION",
     "freeze_balanced_scan",
+    "revalidate_complete_local_balanced_evidence",
     "revalidate_balanced_quality_bundle",
     "score_frozen_balanced_scan",
     "validate_frozen_balanced_scan",
+    "validate_complete_local_balanced_evidence",
     "validate_quality_revalidation_receipt",
+    "verify_committed_local_balanced_evidence",
 ]

@@ -24,12 +24,6 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
 
-from zscope.benchmarking.protocol import (
-    MATCHER_VERSION,
-    aggregate_usage_ledger,
-    candidate_funnel,
-    score_report_views,
-)
 from zscope.benchmarking.isolation import (
     BenchmarkIsolationError,
     RootlessOciExecutor,
@@ -59,6 +53,16 @@ from zscope.benchmarking.provider_runtime import (
     require_p6_provider_contract,
     required_environment_keys,
 )
+from zscope.benchmarking.p6_producer_metrics import (
+    aggregate_p6_producer_usage_ledger,
+    p6_producer_candidate_funnel,
+)
+from zscope.benchmarking.p6_producer_sandbox import (
+    P6ProducerSandboxError,
+    p6_product_runtime_member_allowed,
+    receipt_sha256 as p6_host_producer_receipt_sha256,
+    validate_p6_host_producer_sandbox,
+)
 from zscope.benchmarking.replay_bundle import write_validator_replay_bundle
 from zscope.config.config import ConfigLoader
 from zscope.framework.llm_usage import (
@@ -70,6 +74,9 @@ from zscope.framework.llm_usage import (
     canonical_usage_stage,
 )
 from zscope.core.validation.authority import TerminalAuthorityEvaluator
+from zscope.core.validation.audit_eligibility import (
+    has_exact_v4_producer_occurrence_binding,
+)
 from zscope.orchestration.decision_trace import (
     DECISION_TRACE_MANIFEST_VERSION,
     load_decision_trace,
@@ -89,6 +96,7 @@ TRUTH_ENVIRONMENT_KEYS = {
     "GROUND_TRUTH_PATH",
 }
 P6_CANDIDATE_COMMIT_ENVIRONMENT_KEY = "Z_SCOPE_P6_CANDIDATE_COMMIT"
+MATCHER_VERSION = "zscope.truth-matcher.v2"
 C_GATES = dict(DEFAULT_BENCHMARK_POLICY.range_gates)
 C_SEALED_GATES = dict(DEFAULT_BENCHMARK_POLICY.sealed_delta_gates)
 _OCI_EXECUTOR_FACTORY = RootlessOciExecutor
@@ -98,6 +106,51 @@ _P6_RUNTIME_BOOTSTRAP = (
     "module=sys.argv.pop(1);"
     "runpy.run_module(module,run_name='__main__')"
 )
+
+_P6_RUNTIME_EXCLUDED_PREFIXES = frozenset({("benchmark",), ("benchmarking",)})
+_P6_RUNTIME_EXCLUDED_FILES = frozenset({("cli", "benchmark.py")})
+
+
+def score_report_views(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    """Load the Truth scorer only in the separate post-freeze control plane."""
+
+    from zscope.benchmarking.protocol import score_report_views as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def aggregate_usage_ledger(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    """Compatibility wrapper for non-producer benchmark modes."""
+
+    from zscope.benchmarking.protocol import aggregate_usage_ledger as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def candidate_funnel(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    """Compatibility wrapper for scored benchmark envelopes."""
+
+    from zscope.benchmarking.protocol import candidate_funnel as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def _p6_runtime_source_member_allowed(relative: Path) -> bool:
+    """Return whether one candidate-package member belongs in the scanner runtime.
+
+    The benchmark driver, scorers, Truth adapters, reviewer harnesses, and
+    post-score evidence processors are control-plane code.  They are never
+    imported by the product CLI inside OCI and must not be physically present
+    in the producer runtime mount.
+    """
+
+    parts = tuple(relative.parts)
+    return (
+        bool(parts)
+        and not any(parts[: len(prefix)] == prefix for prefix in _P6_RUNTIME_EXCLUDED_PREFIXES)
+        and parts not in _P6_RUNTIME_EXCLUDED_FILES
+        and p6_product_runtime_member_allowed(relative)
+    )
 
 
 def _container_scan_argv(container_python: str, *, mode: str) -> list[str]:
@@ -266,11 +319,12 @@ def prepare_p6_runtime_source(
     source_root: Optional[Path] = None,
     git_revision: Optional[str] = None,
 ) -> str:
-    """Copy the complete candidate ``zscope`` package into a sealed tree.
+    """Copy the product-only candidate ``zscope`` package into a sealed tree.
 
-    The copied tree deliberately excludes only interpreter caches.  Prompts,
-    rule catalogs, schemas, policies, and every other runtime asset remain
-    included and are bound by one canonical all-file digest.
+    Prompts, rule catalogs, schemas, policies, and every product runtime asset
+    remain included and are bound by one canonical all-file digest.  The
+    benchmark/scorer control plane and ``zscope.cli.benchmark`` are excluded:
+    the cold producer receives neither Truth authority nor post-score code.
     """
 
     target = Path(destination).resolve()
@@ -313,60 +367,80 @@ def prepare_p6_runtime_source(
                     "input_binding_failure",
                     message="p6_runtime_source_invalid",
                 )
-            archived = subprocess.run(
-                ["git", "archive", "--format=tar", revision, "--", "zscope"],
+            listed = subprocess.run(
+                ["git", "ls-tree", "-r", "-z", "--full-tree", revision, "--", "zscope"],
                 cwd=str(repository_root()),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
-            if archived.returncode != 0 or len(archived.stdout) > 128 * 1024 * 1024:
+            if listed.returncode != 0:
                 raise _p6_failure(
                     "input_binding_failure",
                     message="p6_runtime_source_invalid",
                 )
             total_size = 0
-            with tarfile.open(fileobj=io.BytesIO(archived.stdout), mode="r:") as archive:
-                for member in archive.getmembers():
-                    parts = Path(member.name).parts
-                    if (
-                        not parts
-                        or parts[0] != "zscope"
-                        or any(part in {"", ".", ".."} for part in parts)
-                        or member.issym()
-                        or member.islnk()
-                    ):
-                        raise _p6_failure(
-                            "input_binding_failure",
-                            message="p6_runtime_source_invalid",
-                        )
-                    relative = Path(*parts[1:])
-                    if member.isdir():
-                        if relative.parts:
-                            (target / relative).mkdir(parents=True, exist_ok=True)
-                        continue
-                    if not member.isreg() or not relative.parts:
-                        raise _p6_failure(
-                            "input_binding_failure",
-                            message="p6_runtime_source_invalid",
-                        )
-                    source_handle = archive.extractfile(member)
-                    if source_handle is None:
-                        raise _p6_failure(
-                            "input_binding_failure",
-                            message="p6_runtime_source_invalid",
-                        )
-                    payload = source_handle.read(64 * 1024 * 1024 + 1)
-                    total_size += len(payload)
-                    if len(payload) != member.size or total_size > 64 * 1024 * 1024:
-                        raise _p6_failure(
-                            "input_binding_failure",
-                            message="p6_runtime_source_invalid",
-                        )
-                    copied = target / relative
-                    copied.parent.mkdir(parents=True, exist_ok=True)
-                    copied.write_bytes(payload)
-        except (OSError, subprocess.SubprocessError, tarfile.TarError) as exc:
+            seen: set[Path] = set()
+            selected: list[tuple[Path, str]] = []
+            for encoded in bytes(listed.stdout).split(b"\0"):
+                if not encoded:
+                    continue
+                try:
+                    tree_metadata, encoded_path = encoded.split(b"\t", 1)
+                    mode, object_type, object_id = tree_metadata.decode("ascii").split(" ", 2)
+                    parts = Path(encoded_path.decode("utf-8")).parts
+                except (UnicodeError, ValueError) as exc:
+                    raise _p6_failure(
+                        "input_binding_failure",
+                        message="p6_runtime_source_invalid",
+                    ) from exc
+                if (
+                    not parts
+                    or parts[0] != "zscope"
+                    or any(part in {"", ".", ".."} for part in parts)
+                ):
+                    raise _p6_failure(
+                        "input_binding_failure",
+                        message="p6_runtime_source_invalid",
+                    )
+                relative = Path(*parts[1:])
+                if not relative.parts or not _p6_runtime_source_member_allowed(relative):
+                    continue
+                if (
+                    relative in seen
+                    or mode not in {"100644", "100755"}
+                    or object_type != "blob"
+                    or re.fullmatch(r"[0-9a-f]{40}", object_id) is None
+                ):
+                    raise _p6_failure(
+                        "input_binding_failure",
+                        message="p6_runtime_source_invalid",
+                    )
+                seen.add(relative)
+                selected.append((relative, object_id))
+            for relative, object_id in selected:
+                loaded = subprocess.run(
+                    ["git", "cat-file", "blob", object_id],
+                    cwd=str(repository_root()),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                payload = bytes(loaded.stdout)
+                total_size += len(payload)
+                if (
+                    loaded.returncode != 0
+                    or len(payload) > 64 * 1024 * 1024
+                    or total_size > 64 * 1024 * 1024
+                ):
+                    raise _p6_failure(
+                        "input_binding_failure",
+                        message="p6_runtime_source_invalid",
+                    )
+                copied = target / relative
+                copied.parent.mkdir(parents=True, exist_ok=True)
+                copied.write_bytes(payload)
+        except (OSError, subprocess.SubprocessError) as exc:
             raise _p6_failure(
                 "input_binding_failure",
                 message="p6_runtime_source_invalid",
@@ -383,22 +457,28 @@ def prepare_p6_runtime_source(
                 source.rglob("*"), key=lambda item: item.relative_to(source).as_posix()
             ):
                 relative = path.relative_to(source)
-                metadata = path.lstat()
-                if stat.S_ISLNK(metadata.st_mode):
+                file_metadata = path.lstat()
+                if stat.S_ISLNK(file_metadata.st_mode):
                     raise _p6_failure(
                         "input_binding_failure",
                         message="p6_runtime_source_invalid",
                     )
-                if stat.S_ISDIR(metadata.st_mode):
-                    if "__pycache__" not in relative.parts:
+                if stat.S_ISDIR(file_metadata.st_mode):
+                    if "__pycache__" not in relative.parts and _p6_runtime_source_member_allowed(
+                        relative
+                    ):
                         (target / relative).mkdir(parents=True, exist_ok=True)
                     continue
-                if not stat.S_ISREG(metadata.st_mode):
+                if not stat.S_ISREG(file_metadata.st_mode):
                     raise _p6_failure(
                         "input_binding_failure",
                         message="p6_runtime_source_invalid",
                     )
-                if "__pycache__" in relative.parts or path.suffix.lower() in {".pyc", ".pyo"}:
+                if (
+                    "__pycache__" in relative.parts
+                    or path.suffix.lower() in {".pyc", ".pyo"}
+                    or not _p6_runtime_source_member_allowed(relative)
+                ):
                     continue
                 copied = target / relative
                 copied.parent.mkdir(parents=True, exist_ok=True)
@@ -550,6 +630,87 @@ def copy_scan_input(source: Path, destination: Path, language: str) -> Dict[str,
         if not allowed:
             raise BenchmarkError(f"unexpected scan-input file: {relative.as_posix()}")
     return manifest
+
+
+def validate_p6_producer_source_sandbox(
+    *,
+    runtime_source: Path,
+    scan_input: Path,
+    language: str,
+    host_process_sandbox: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Validate the physical, answer-free source boundary mounted into OCI.
+
+    This check runs after both trees have been materialized and before the
+    execution config or any model call is created.  Scoring later occurs from
+    an independently materialized control-plane checkout; it never extends
+    this producer sandbox in place.
+    """
+
+    runtime_root = Path(runtime_source).resolve()
+    scan_root = Path(scan_input).resolve()
+    if (
+        runtime_root == scan_root
+        or runtime_root.is_relative_to(scan_root)
+        or scan_root.is_relative_to(runtime_root)
+    ):
+        raise _p6_failure("input_binding_failure", message="p6_producer_sandbox_invalid")
+    try:
+        runtime_manifest_sha256 = sealed_runtime_source_sha256(runtime_root)
+        runtime_paths = {
+            path.relative_to(runtime_root).as_posix()
+            for path in runtime_root.rglob("*")
+            if path.is_file()
+        }
+        if not runtime_paths or any(
+            not _p6_runtime_source_member_allowed(Path(relative)) for relative in runtime_paths
+        ):
+            raise _p6_failure("input_binding_failure", message="p6_producer_sandbox_invalid")
+        scan_manifest = scan_input_manifest(scan_root)
+        for row in scan_manifest["files"]:
+            relative = Path(str(row["path"]))
+            if not _allowed_fixture_file(language, relative) and not (
+                language == "java" and relative.as_posix() == "entries.json"
+            ):
+                raise _p6_failure("input_binding_failure", message="p6_producer_sandbox_invalid")
+    except (BenchmarkError, BenchmarkIsolationError, OSError, ValueError) as exc:
+        if isinstance(exc, BenchmarkError) and exc.failure_class == "input_binding_failure":
+            raise
+        raise _p6_failure("input_binding_failure", message="p6_producer_sandbox_invalid") from exc
+    expected_host_fields = {
+        "schema_version",
+        "candidate_commit",
+        "candidate_git_tree",
+        "file_count",
+        "source_manifest_sha256",
+        "receipt_sha256",
+        "scorer_present",
+        "truth_present",
+        "expected_answer_present",
+        "review_decision_present",
+        "postscore_evidence_present",
+    }
+    if (
+        set(host_process_sandbox) != expected_host_fields
+        or host_process_sandbox.get("schema_version") != "zscope.p6-host-producer-sandbox.v1"
+        or any(
+            host_process_sandbox.get(name) is not False
+            for name in expected_host_fields
+            if name.endswith("_present")
+        )
+    ):
+        raise _p6_failure("input_binding_failure", message="p6_producer_sandbox_invalid")
+    return {
+        "schema_version": "zscope.p6-producer-source-sandbox.v2",
+        "runtime_source_sha256": runtime_manifest_sha256,
+        "scan_input_manifest_sha256": str(scan_manifest["manifest_sha256"]),
+        "host_process_sandbox": dict(host_process_sandbox),
+        "scorer_present": False,
+        "truth_present": False,
+        "expected_present": False,
+        "review_decision_present": False,
+        "postscore_evidence_present": False,
+    }
 
 
 def restore_scan_input(root: Path, manifest: Mapping[str, Any]) -> None:
@@ -1627,10 +1788,49 @@ def _provider_model_identity_metrics(
     }
 
 
+def _p6_scan_usage_projection(report: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return the one exact P6 scan-usage projection declared by a report.
+
+    The report intentionally repeats the immutable scan ledger in its summary,
+    metadata, and run manifest.  Treating those copies as fallbacks would let a
+    clean first copy hide a later soft/hard denial or pre-model rejection.  P6
+    therefore accepts the projections only when every declared copy is a JSON-
+    exact match.
+    """
+
+    projections: List[Dict[str, Any]] = []
+    for owner_name in ("summary", "metadata", "run_manifest"):
+        container = report.get(owner_name)
+        owner = container.get("llm_usage") if isinstance(container, Mapping) else None
+        nested = owner.get("scan_token_usage") if isinstance(owner, Mapping) else None
+        if not isinstance(nested, Mapping) or not isinstance(
+            nested.get("p6_balanced_admission"), Mapping
+        ):
+            raise BenchmarkError(f"P6 {owner_name} scan usage projection is missing")
+        projections.append(dict(nested))
+
+    if "llm_usage" in report:
+        raw_owner = report.get("llm_usage")
+        if not isinstance(raw_owner, Mapping):
+            raise BenchmarkError("P6 top-level scan usage owner is invalid")
+        optional = raw_owner.get("scan_token_usage", raw_owner)
+        if not isinstance(optional, Mapping) or not isinstance(
+            optional.get("p6_balanced_admission"), Mapping
+        ):
+            raise BenchmarkError("P6 top-level scan usage projection is invalid")
+        projections.append(dict(optional))
+
+    selected = projections[0]
+    if any(projection != selected for projection in projections[1:]):
+        raise BenchmarkError("P6 scan usage projections diverge")
+    return selected
+
+
 def _p6_admission_conservation(
     report: Mapping[str, Any],
     *,
     physical_call_count: int,
+    scan_usage_projection: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Project P6 admission accounting without turning denials into calls.
 
@@ -1641,22 +1841,7 @@ def _p6_admission_conservation(
     coverage or fabricate estimated/missing usage.
     """
 
-    owners = (
-        _as_dict(report.get("llm_usage")),
-        _as_dict(_as_dict(report.get("metadata")).get("llm_usage")),
-        _as_dict(_as_dict(report.get("summary")).get("llm_usage")),
-        _as_dict(_as_dict(report.get("run_manifest")).get("llm_usage")),
-    )
-    snapshots = tuple(
-        candidate
-        for owner in owners
-        for candidate in (owner, _as_dict(owner.get("scan_token_usage")))
-        if candidate
-    )
-    snapshot = next(
-        (value for value in snapshots if isinstance(value.get("p6_balanced_admission"), Mapping)),
-        {},
-    )
+    snapshot = dict(scan_usage_projection or _p6_scan_usage_projection(report))
     admission = _as_dict(snapshot.get("p6_balanced_admission"))
 
     def count(name: str) -> int:
@@ -1713,6 +1898,7 @@ def _p6_retry_conservation(
     report: Mapping[str, Any],
     *,
     usage_rows: Sequence[Mapping[str, Any]],
+    scan_usage_projection: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Prove bounded transport retry and contract regeneration per call chain.
 
@@ -1723,22 +1909,7 @@ def _p6_retry_conservation(
     of rejected attempts from disappearing from the retry proof.
     """
 
-    owners = (
-        _as_dict(report.get("llm_usage")),
-        _as_dict(_as_dict(report.get("metadata")).get("llm_usage")),
-        _as_dict(_as_dict(report.get("summary")).get("llm_usage")),
-        _as_dict(_as_dict(report.get("run_manifest")).get("llm_usage")),
-    )
-    snapshots = tuple(
-        candidate
-        for owner in owners
-        for candidate in (owner, _as_dict(owner.get("scan_token_usage")))
-        if candidate
-    )
-    snapshot = next(
-        (value for value in snapshots if isinstance(value.get("p6_balanced_admission"), Mapping)),
-        {},
-    )
+    snapshot = dict(scan_usage_projection or _p6_scan_usage_projection(report))
     raw_rejections = snapshot.get("rejected_before_model_attempts")
     rejections = raw_rejections if isinstance(raw_rejections, list) else []
     expected_rejection_count = snapshot.get("rejected_before_model_count")
@@ -2021,7 +2192,23 @@ _P6_V4_POLICY_FIELDS = (
     "proof_kernel_closure_evaluation",
     "proof_kernel_promotion_certificate",
     "proof_kernel_root_manifest_sha256",
+    "proof_kernel_producer_binding_sha256",
+    "proof_kernel_occurrence_binding_sha256",
     "proof_kernel_terminal_authority_decision",
+)
+
+_P6_V4_TERMINAL_IDENTITY_FIELDS = (
+    "candidate_uid",
+    "obligation_uid",
+    "validation_cluster_uid",
+    "subject_uid",
+    "resource_identity",
+    "resource_signature",
+    "source_identity",
+    "sink_identity",
+    "decision_region_uid",
+    "dependency_code_hash",
+    "code_snapshot_hash",
 )
 
 
@@ -2219,8 +2406,21 @@ def _p6_terminal_authority_conservation(
             raise BenchmarkError("proof terminal report and policy evidence disagree")
         policy_carrier = dict(payload)
         state_projection = payload.get("issue")
-        if isinstance(state_projection, Mapping):
-            policy_carrier.update(state_projection)
+        if not isinstance(state_projection, Mapping):
+            raise BenchmarkError("proof terminal policy state is invalid")
+        expected_identity = {
+            field: item.get(field)
+            for field in _P6_V4_TERMINAL_IDENTITY_FIELDS
+            if item.get(field) not in (None, "", [], {})
+        }
+        policy_identity = {
+            field: state_projection.get(field)
+            for field in _P6_V4_TERMINAL_IDENTITY_FIELDS
+            if state_projection.get(field) not in (None, "", [], {})
+        }
+        if not expected_identity or policy_identity != expected_identity:
+            raise BenchmarkError("proof terminal report and policy identity disagree")
+        policy_carrier.update(state_projection)
         projected_authority = (
             TerminalAuthorityEvaluator()
             .evaluate(
@@ -2231,9 +2431,11 @@ def _p6_terminal_authority_conservation(
         )
         if projected_authority != _as_dict(item.get("terminal_authority_decision")):
             raise BenchmarkError("proof trace does not reverify TerminalAuthority v4")
+        if not has_exact_v4_producer_occurrence_binding(item):
+            raise BenchmarkError("proof trace does not reverify producer occurrence")
+        if proof_disposition == "confirmed" and not _has_complete_deterministic_proof(item):
+            raise BenchmarkError("confirmed trace does not reverify promotion")
         if disposition == "confirmed":
-            if not _has_complete_deterministic_proof(policy_carrier):
-                raise BenchmarkError("confirmed trace does not reverify promotion")
             confirmed_trace_v4_count += 1
 
     coverage_rows = manifest.get("coverage_traces")
@@ -2339,13 +2541,22 @@ def build_p6_answer_free_producer_metrics(
         run_dir=run_dir,
         usage_rows=usage_rows,
     )
-    usage_accounting = aggregate_usage_ledger(report, usage_spans=usage_rows)
+    usage_accounting = aggregate_p6_producer_usage_ledger(
+        report,
+        usage_spans=usage_rows,
+    )
     totals = _as_dict(usage_accounting.get("totals"))
+    scan_usage_projection = _p6_scan_usage_projection(report)
     admission_conservation = _p6_admission_conservation(
         report,
         physical_call_count=int(usage_accounting.get("call_count") or 0),
+        scan_usage_projection=scan_usage_projection,
     )
-    retry_conservation = _p6_retry_conservation(report, usage_rows=usage_rows)
+    retry_conservation = _p6_retry_conservation(
+        report,
+        usage_rows=usage_rows,
+        scan_usage_projection=scan_usage_projection,
+    )
     manifest = _as_dict(report.get("run_manifest"))
     summary = _as_dict(report.get("summary"))
     model_identity = _provider_model_identity_metrics(
@@ -2372,7 +2583,7 @@ def build_p6_answer_free_producer_metrics(
         "telemetry_complete_rate": float(usage_accounting.get("telemetry_complete") is True),
         "protocol_anomaly_count": int(summary.get("validator_protocol_exhausted_count") or 0)
         + len(usage_accounting.get("errors") or []),
-        "candidate_funnel": candidate_funnel(report),
+        "candidate_funnel": p6_producer_candidate_funnel(report),
         "usage_accounting": usage_accounting,
         "p6_admission_conservation": admission_conservation,
         "p6_retry_conservation": retry_conservation,
@@ -2909,15 +3120,53 @@ def _run_trial_in_workspace(
         raise _p6_failure("cold_cache_not_isolated")
     runtime_source: Optional[Path] = None
     runtime_source_sha256 = ""
+    producer_source_sandbox: Optional[Dict[str, Any]] = None
+    host_process_sandbox: Optional[Dict[str, Any]] = None
     if mode == "pilot":
         if candidate_revision is None or re.fullmatch(r"[0-9a-f]{40}", candidate_revision) is None:
             raise _p6_failure("input_binding_failure")
         runtime_source = workspace / "runtime-source" / "zscope"
-        runtime_source_sha256 = prepare_p6_runtime_source(
-            runtime_source,
-            git_revision=candidate_revision,
-        )
+        if answer_free_producer:
+            host_root_value = os.environ.get("Z_SCOPE_P6_HOST_PRODUCER_ROOT", "").strip()
+            host_receipt_value = os.environ.get("Z_SCOPE_P6_HOST_PRODUCER_RECEIPT", "").strip()
+            try:
+                host_root = Path(host_root_value).resolve(strict=True)
+                host_receipt_path = Path(host_receipt_value).resolve(strict=True)
+                if host_root != repository_root().resolve(strict=True):
+                    raise P6ProducerSandboxError("host producer root is invalid")
+                host_process_sandbox = validate_p6_host_producer_sandbox(
+                    sandbox_root=host_root,
+                    receipt_path=host_receipt_path,
+                    expected_candidate_commit=candidate_revision,
+                )
+                host_process_sandbox["receipt_sha256"] = p6_host_producer_receipt_sha256(
+                    host_receipt_path
+                )
+                runtime_source_sha256 = prepare_p6_runtime_source(
+                    runtime_source,
+                    source_root=host_root / "zscope",
+                )
+            except (OSError, P6ProducerSandboxError) as exc:
+                raise _p6_failure(
+                    "input_binding_failure",
+                    message="p6_producer_sandbox_invalid",
+                ) from exc
+        else:
+            runtime_source_sha256 = prepare_p6_runtime_source(
+                runtime_source,
+                git_revision=candidate_revision,
+            )
     input_manifest = copy_scan_input(spec.fixture_root, scan_root, spec.language)
+    if mode == "pilot":
+        assert runtime_source is not None
+        producer_source_sandbox = validate_p6_producer_source_sandbox(
+            runtime_source=runtime_source,
+            scan_input=scan_root,
+            language=spec.language,
+            host_process_sandbox=host_process_sandbox or {},
+        )
+        if producer_source_sandbox["runtime_source_sha256"] != runtime_source_sha256:
+            raise _p6_failure("input_binding_failure", message="p6_producer_sandbox_invalid")
     _json_dump(run_dir / "input-manifest.json", input_manifest)
     execution_root = scan_root
     oci_output: Optional[Path] = None
@@ -3455,6 +3704,11 @@ def _run_trial_in_workspace(
             ),
             "scan_cwd": str(scan_root),
             "truth_available_to_scan": False,
+            **(
+                {"producer_source_sandbox": producer_source_sandbox}
+                if producer_source_sandbox is not None
+                else {}
+            ),
         },
         "provenance": {
             **_report_provenance(report),

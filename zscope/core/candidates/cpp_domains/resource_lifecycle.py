@@ -2264,6 +2264,7 @@ class ClangResourceLifecycleRules:
                 ],
                 [state.line.number, line.number],
             ),
+            bind_unique_resource_acquisition=True,
         )
 
     def _allocation_is_short_lived(
@@ -2721,6 +2722,16 @@ class ClangResourceLifecycleRules:
 
     def _is_transfer(self, text: str, var: str) -> bool:
         escaped = re.escape(var)
+        # Mutating the acquired object's contents does not rebind or transfer
+        # the pointer identity.  In particular, ``p[0] = ...`` and ``*p = ...``
+        # must remain ordinary pointee use.  Transfers to another out-param,
+        # field, global, container, callback or callee are handled below.
+        pointee_write = re.search(
+            rf"(?:\*\s*{escaped}\b|\b{escaped}\s*(?:\[[^\]]+\]|->\s*[A-Za-z_]\w*|\.\s*[A-Za-z_]\w*))\s*=(?!=)",
+            text,
+        )
+        if pointee_write:
+            return False
         transfer_patterns = [
             rf"\breturn\s+{escaped}\s*;",
             rf"\*\s*[A-Za-z_]\w*\s*=\s*{escaped}\s*;",

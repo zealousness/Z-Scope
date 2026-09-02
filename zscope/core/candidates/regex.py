@@ -265,6 +265,7 @@ class RegexCandidateGenerator(
             suggested_fix: str,
             sink: str,
             source: str = "",
+            thread_object: str = "",
             confidence: float = 0.78,
             impact_level: str = "medium",
             positive: Optional[List[str]] = None,
@@ -353,39 +354,45 @@ class RegexCandidateGenerator(
                 cwe=cwe,
             )
 
-            issues.append(
-                {
-                    "id": candidate_id,
-                    "candidate_id": candidate_id,
-                    "function": func_name,
-                    "location": f"{file_path}:{line.number}",
-                    "category": defect_class,
-                    "subcategory": defect_class,
-                    "defect_class": defect_class,
-                    "finding_kind": "regex_candidate",
-                    "rule": rule,
-                    "rule_id": descriptor.rule_id if descriptor is not None else rule,
-                    "cwe": cwe,
-                    "skill": skill,
-                    "description": description,
-                    "root_cause": root_cause,
-                    "suggested_fix": suggested_fix,
-                    "confidence": confidence,
-                    "rule_confidence": confidence,
-                    "impact_level": impact_level,
-                    "reasoning": reasoning,
-                    "code_snippet": self._context(
-                        lines, line.index + context_start, line.index + context_end
-                    ),
-                    "source": source,
-                    "sink": sink,
-                    "dedup_key": dedup_key,
-                    "positive_evidence": pos,
-                    "negative_evidence": neg,
-                    "evidence_pack": pack,
-                    "evidence_refs": [],
-                }
-            )
+            issue = {
+                "id": candidate_id,
+                "candidate_id": candidate_id,
+                "function": func_name,
+                "location": f"{file_path}:{line.number}",
+                "category": defect_class,
+                "subcategory": defect_class,
+                "defect_class": defect_class,
+                "finding_kind": "regex_candidate",
+                "rule": rule,
+                "rule_id": descriptor.rule_id if descriptor is not None else rule,
+                "cwe": cwe,
+                "skill": skill,
+                "description": description,
+                "root_cause": root_cause,
+                "suggested_fix": suggested_fix,
+                "confidence": confidence,
+                "rule_confidence": confidence,
+                "impact_level": impact_level,
+                "reasoning": reasoning,
+                "code_snippet": self._context(
+                    lines, line.index + context_start, line.index + context_end
+                ),
+                "source": source,
+                "sink": sink,
+                "dedup_key": dedup_key,
+                "positive_evidence": pos,
+                "negative_evidence": neg,
+                "evidence_pack": pack,
+                "evidence_refs": [],
+            }
+            if thread_object:
+                # Concurrency obligations are object-centric.  Preserve the
+                # exact detector-owned object identity instead of forcing the
+                # candidate envelope to derive one from display source text,
+                # file and line metadata.
+                issue["thread_object"] = thread_object
+                pack["thread_object"] = thread_object
+            issues.append(issue)
 
         return emit
 

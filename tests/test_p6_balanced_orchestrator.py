@@ -10,11 +10,12 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
 from scripts import p6_balanced_orchestrator as orchestrator_cli
-from scripts.p2_proof_corpus import build_case
+from tests.p6_v4_test_support import confirmed_product_v4_issue
 from scripts.p6_balanced_quality_gate import (
     P6BalancedQualityGateError,
     build_quality_gate,
@@ -27,17 +28,17 @@ from zscope.benchmarking.p6_balanced_orchestrator import (
     BalancedRunIdentity,
     P6BalancedOrchestratorError,
     freeze_balanced_scan,
+    revalidate_complete_local_balanced_evidence,
     revalidate_balanced_quality_bundle,
     score_frozen_balanced_scan,
     validate_frozen_balanced_scan,
+    validate_complete_local_balanced_evidence,
     validate_quality_revalidation_receipt,
+    verify_committed_local_balanced_evidence,
 )
 from zscope.benchmarking.p6_protocol import canonical_sha256
 from zscope.benchmarking.provider_runtime import require_p6_provider_contract
-from zscope.benchmarking.runner import build_p6_answer_free_producer_metrics
-from zscope.core.validation.authority import TerminalAuthorityEvaluator
-from zscope.core.validation.proof_kernel import ProofKernelEngine
-from zscope.core.validation.proof_kernel.canonical import seal_mapping
+from zscope.benchmarking.runner import BenchmarkError, build_p6_answer_free_producer_metrics
 from zscope.framework.llm_usage import LLMUsageAttribution, LLMUsageEvent
 from zscope.orchestration.decision_trace import DecisionTraceStore
 
@@ -238,48 +239,10 @@ def _conservation(calls: int = 8) -> dict[str, Any]:
 
 
 def _confirmed_v4_issue() -> dict[str, Any]:
-    case = build_case("concurrency", 0)
-    body = dict(case["proof_obligation"])
-    body.pop("obligation_uid")
-    body.pop("content_sha256")
-    body.update(
-        {
-            "validation_cluster_uid": "VAL_confirmed_trace",
-            "defect_family": "concurrency",
-            "subject_uid": "shared.counter",
-            "decision_region_uid": "REGION_confirmed_trace",
-        }
+    return confirmed_product_v4_issue(
+        project_id="p6-balanced-orchestrator-test",
+        revision="rev-p6-balanced-orchestrator-test",
     )
-    obligation = seal_mapping(body, uid_field="obligation_uid", prefix="POBL_")
-    evaluation = ProofKernelEngine().evaluate(
-        proof_ir=case["program_proof_ir"], obligation=obligation
-    )
-    selected_action_uids = [str(value["action_uid"]) for value in evaluation.actions]
-    issue: dict[str, Any] = {
-        "candidate_disposition": "confirmed",
-        "validation_cluster_uid": "VAL_confirmed_trace",
-        "status": "confirmed",
-        "obligation_uid": obligation["obligation_uid"],
-        "subject_uid": "shared.counter",
-        "decision_region_uid": "REGION_confirmed_trace",
-        "defect_class": "concurrency",
-        "security_obligation": obligation,
-        "proof_kernel_input": {
-            "proof_ir": case["program_proof_ir"],
-            "proof_obligation": obligation,
-            "selected_action_uids": selected_action_uids,
-        },
-        "proof_kernel_live_selected_action_uids": selected_action_uids,
-        "proof_kernel_checker_results": [dict(value) for value in evaluation.check_results],
-        "proof_kernel_artifact_refs": list(evaluation.artifact_refs),
-        "proof_kernel_checker_result_refs": list(evaluation.checker_result_refs),
-        "proof_kernel_root_manifest_sha256": evaluation.root_manifest_sha256,
-    }
-    evaluation.apply_to_issue(issue)
-    authority = TerminalAuthorityEvaluator().evaluate(issue, operation="live").to_dict()
-    issue["proof_kernel_terminal_authority_decision"] = authority
-    issue["terminal_authority_decision"] = authority
-    return issue
 
 
 def _producer_tree(
@@ -365,6 +328,7 @@ def _producer_tree(
     confirmed_issue: dict[str, Any] | None = None
     if confirmed_terminal:
         confirmed_issue = _confirmed_v4_issue()
+        confirmed_cluster_uid = str(confirmed_issue["validation_cluster_uid"])
         trace_store.record_terminal_transition(
             confirmed_issue,
             level="V1",
@@ -375,18 +339,30 @@ def _producer_tree(
         )
         if post_terminal_call:
             trace_store.append_event(
-                "VAL_confirmed_trace",
+                confirmed_cluster_uid,
                 stage="provider",
                 actor="test_provider",
                 reason_code="LLM_USAGE_BOUND",
                 call_ids=("call-2",),
                 token_delta=0,
             )
-            confirmed_issue["decision_trace_sha256"] = trace_store.trace("VAL_confirmed_trace")[
+            confirmed_issue["decision_trace_sha256"] = trace_store.trace(confirmed_cluster_uid)[
                 "document_sha256"
             ]
     trace_store.snapshot()
     trace_manifest = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace_manifest["llm_usage_events"].update(
+        {
+            "available": True,
+            "path": usage_path.name,
+            "file_sha256": _sha(usage_path),
+            "event_count": len(events),
+        }
+    )
+    trace_manifest_unsigned = dict(trace_manifest)
+    trace_manifest_unsigned.pop("manifest_sha256", None)
+    trace_manifest["manifest_sha256"] = canonical_sha256(trace_manifest_unsigned)
+    _dump(trace_path, trace_manifest)
     trace_artifact = {
         "schema_version": "zscope.decision-trace-artifact.v1",
         "path": trace_path.name,
@@ -398,6 +374,31 @@ def _producer_tree(
         "model_event_count": trace_manifest["model_event_count"],
         "complete": True,
         "answer_free": True,
+    }
+    usage_artifact = {
+        "schema_version": "zscope.llm-usage-events-artifact.v1",
+        "path": usage_path.name,
+        "sha256": _sha(usage_path),
+        "call_count": len(events),
+        "answer_free": True,
+    }
+    scan_usage = {
+        "active_reservation_count": 0,
+        "rejected_before_model_count": 0,
+        "rejected_before_model_reasons": {},
+        "rejected_before_model_attempts": [],
+        "p6_balanced_admission": {
+            "enabled": True,
+            "soft_token_watermark": 10_500_000,
+            "maximum_tokens": 11_999_999,
+            "request_count": 4 if post_terminal_call else 3,
+            "admitted_request_count": 2 if post_terminal_call else 1,
+            "denied_request_count": 2,
+            "denied_reasons": {
+                "p6_token_soft_watermark": 2,
+            },
+            "request_conservation_passed": True,
+        },
     }
     report = {
         "answer_material_present": False,
@@ -414,29 +415,18 @@ def _producer_tree(
             "audit_observation_count": 0,
             "audit_observations": [],
             **({"benign_detail": benign_detail} if benign_detail is not None else {}),
-            "llm_usage": {
-                "active_reservation_count": 0,
-                "rejected_before_model_count": 0,
-                "rejected_before_model_reasons": {},
-                "rejected_before_model_attempts": [],
-                "p6_balanced_admission": {
-                    "enabled": True,
-                    "soft_token_watermark": 10_500_000,
-                    "maximum_tokens": 11_999_999,
-                    "request_count": 4 if post_terminal_call else 3,
-                    "admitted_request_count": 2 if post_terminal_call else 1,
-                    "denied_request_count": 2,
-                    "denied_reasons": {
-                        "p6_token_soft_watermark": 2,
-                    },
-                    "request_conservation_passed": True,
-                },
-            },
+            "llm_usage": {"scan_token_usage": copy.deepcopy(scan_usage)},
+            "llm_usage_events_artifact": dict(usage_artifact),
         },
-        "summary": {"validator_protocol_exhausted_count": 0},
+        "summary": {
+            "validator_protocol_exhausted_count": 0,
+            "llm_usage": {"scan_token_usage": copy.deepcopy(scan_usage)},
+        },
         "run_manifest": {
             "validation_queue_drained": True,
             "finding_root_count": 0,
+            "llm_usage": {"scan_token_usage": copy.deepcopy(scan_usage)},
+            "llm_usage_events_artifact": dict(usage_artifact),
             "decision_trace_artifact": trace_artifact,
         },
     }
@@ -492,6 +482,7 @@ def _producer_tree(
                 "answer_free_producer": True,
                 "queue_empty": True,
                 "gate_failures": [],
+                "input_manifest_sha256": "b" * 64,
                 "metrics": metrics,
                 "provenance": {
                     "runtime_spec_sha256": "3" * 64,
@@ -502,6 +493,8 @@ def _producer_tree(
                     "files": {
                         "report.json": _sha(report_path),
                         "producer-metrics.json": _sha(metrics_path),
+                        "llm_usage_events.jsonl": _sha(usage_path),
+                        "decision_trace_manifest.json": _sha(trace_path),
                     }
                 },
                 "cold_cache": {
@@ -514,6 +507,29 @@ def _producer_tree(
                     "image_id": image_id,
                     "runtime_source_sha256": runtime_sha,
                     "provider_identity_sha256": contract.identity_sha256,
+                    "producer_source_sandbox": {
+                        "schema_version": "zscope.p6-producer-source-sandbox.v2",
+                        "runtime_source_sha256": runtime_sha,
+                        "scan_input_manifest_sha256": "b" * 64,
+                        "host_process_sandbox": {
+                            "schema_version": "zscope.p6-host-producer-sandbox.v1",
+                            "candidate_commit": identity.candidate_git_sha,
+                            "candidate_git_tree": identity.candidate_git_tree,
+                            "file_count": 100,
+                            "source_manifest_sha256": "c" * 64,
+                            "receipt_sha256": "d" * 64,
+                            "scorer_present": False,
+                            "truth_present": False,
+                            "expected_answer_present": False,
+                            "review_decision_present": False,
+                            "postscore_evidence_present": False,
+                        },
+                        "scorer_present": False,
+                        "truth_present": False,
+                        "expected_present": False,
+                        "review_decision_present": False,
+                        "postscore_evidence_present": False,
+                    },
                     "phase_executions": [phase_execution],
                 },
             }
@@ -734,10 +750,15 @@ def test_scorers_keep_using_snapshot_after_live_dependency_replacement(
         target = live_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(f"# original {relative}\n", encoding="utf-8")
+    (live_root / balanced_orchestrator._CANONICAL_SOURCE_FILES["provider_config"]).write_bytes(
+        CONFIG.read_bytes()
+    )
     legacy_truth = live_root / "test/range/benchmark/ground_truth.json"
     v16_truth = live_root / "test/range/benchmark/v16/ground_truth.json"
-    _dump(legacy_truth, {})
-    _dump(v16_truth, {})
+    legacy_truth.parent.mkdir(parents=True, exist_ok=True)
+    v16_truth.parent.mkdir(parents=True, exist_ok=True)
+    legacy_truth.write_bytes(LEGACY_TRUTH.read_bytes())
+    v16_truth.write_bytes(V16_TRUTH.read_bytes())
     dependencies = (
         "zscope/benchmarking/benchmark_v5.py",
         "zscope/benchmarking/p6_protocol.py",
@@ -801,6 +822,21 @@ def _view(truth_count: int, tp: int, fp: int, prefix: str) -> dict[str, Any]:
     }
 
 
+def _v16_partition_ids() -> tuple[list[str], list[str]]:
+    truth = json.loads(V16_TRUTH.read_text(encoding="utf-8"))
+    product: list[str] = []
+    design: list[str] = []
+    for row in truth["vulnerabilities"]:
+        kind = row["verification_contract"]["kind"]
+        if kind in {"concrete_trigger", "public_api_contract"}:
+            product.append(row["id"])
+        elif kind == "pattern_model":
+            design.append(row["id"])
+    assert len(product) == 61
+    assert len(design) == 75
+    return product, design
+
+
 class ScoreRunner:
     def __init__(self, *, fail_quality: bool = False) -> None:
         self.calls: list[tuple[list[str], dict[str, str]]] = []
@@ -833,28 +869,31 @@ class ScoreRunner:
             _dump(output, legacy)
             return subprocess.CompletedProcess(command, 0)
         if Path(command[1]).name == "v16_scorer.py":
+            product_ids, design_ids = _v16_partition_ids()
             v16 = {
                 "product": {
-                    "default": _view(61, 43, 4, "v16"),
-                    "with_needs_review": _view(61, 61, 40, "v16"),
+                    "default": {
+                        **_view(61, 43, 4, "v16"),
+                        "matched": product_ids[:43],
+                    },
+                    "with_needs_review": {
+                        **_view(61, 61, 40, "v16"),
+                        "matched": product_ids,
+                    },
                 },
                 "design_risk": {
                     "default": {
                         "truth_count": 75,
                         "true_positives": 4,
-                        "matched": [f"risk-{index}" for index in range(4)],
+                        "matched": design_ids[:4],
                     },
                     "with_needs_review": {
                         "truth_count": 75,
                         "true_positives": 8,
-                        "matched": [f"risk-{index}" for index in range(8)],
+                        "matched": design_ids[:8],
                     },
                 },
             }
-            v16["product"]["with_needs_review"]["matched"] = [
-                *v16["product"]["default"]["matched"],
-                *[f"v16-extra-{index}" for index in range(18)],
-            ]
             _dump(output, v16)
             return subprocess.CompletedProcess(command, 0)
         if Path(command[1]).name == "quality_gate.py":
@@ -904,13 +943,22 @@ def test_shared_freeze_then_dual_score_and_strict_gate_is_truth_isolated(
         "legacy-score.json",
         "p6-balanced-quality-gate.json",
         "producer-projection.json",
+        "trace-sidecars.json",
+        "llm_usage_events.jsonl",
         "usage-evidence.json",
         "v16-score.json",
+        "v16-truth-partitions.json",
     }
     assert gate["artifacts"]["frozen_manifest"]["sha256"] == _sha(frozen / "manifest.json")
     assert gate["artifacts"]["report"]["sha256"] == _sha(frozen / "report.json")
     assert gate["artifacts"]["usage_evidence"]["sha256"] == _sha(frozen / "usage-evidence.json")
     frozen_usage = json.loads((frozen / "usage-evidence.json").read_text("utf-8"))
+    frozen_manifest = json.loads((frozen / "manifest.json").read_text("utf-8"))
+    assert frozen_usage["llm_usage_events_sha256"] == frozen_manifest["llm_usage_events_sha256"]
+    assert (
+        frozen_usage["llm_usage_events_call_count"]
+        == frozen_manifest["llm_usage_events_call_count"]
+    )
     admission = frozen_usage["score_fields"]["p6_admission_conservation"]
     assert admission["request_count"] == 3
     assert admission["admitted_request_count"] == 1
@@ -1007,6 +1055,193 @@ def _quality_bundle(tmp_path: Path) -> tuple[Path, ScoreRunner]:
         python_executable="python",
     )
     return quality, runner
+
+
+def _complete_local_evidence(tmp_path: Path) -> tuple[Path, Path]:
+    candidate, _ = _quality_bundle(tmp_path)
+    evidence = tmp_path / "local-balanced-evidence"
+    evidence.mkdir()
+    receipt = evidence / "quality-revalidation-receipt.json"
+    revalidate_balanced_quality_bundle(
+        restored_bundle=candidate,
+        legacy_truth_path=LEGACY_TRUTH,
+        v16_truth_path=V16_TRUTH,
+        identity=_identity(),
+        output=evidence / "quality",
+        receipt_path=receipt,
+        repository_root=REPO_ROOT,
+        process_runner=ScoreRunner(),
+        python_executable="python",
+        git_head_resolver=lambda _root: _identity().control_plane_commit,
+    )
+    return evidence, receipt
+
+
+def test_local_evidence_requires_complete_bundle_not_standalone_gate(tmp_path: Path) -> None:
+    quality, _ = _quality_bundle(tmp_path)
+    standalone = tmp_path / "standalone-evidence"
+    standalone.mkdir()
+    shutil.copy2(quality / "p6-balanced-quality-gate.json", standalone / "quality-gate.json")
+
+    with pytest.raises(P6BalancedOrchestratorError, match="members"):
+        validate_complete_local_balanced_evidence(
+            evidence_root=standalone,
+            expected_receipt_sha256=_sha(standalone / "quality-gate.json"),
+        )
+
+
+def test_complete_local_evidence_is_canonically_rescored_and_byte_compared(
+    tmp_path: Path,
+) -> None:
+    evidence, receipt_path = _complete_local_evidence(tmp_path)
+    expected_digest = _sha(receipt_path)
+
+    receipt, gate, identity = validate_complete_local_balanced_evidence(
+        evidence_root=evidence,
+        expected_receipt_sha256=expected_digest,
+    )
+    runner = ScoreRunner()
+    replayed_receipt, replayed_gate, replayed_identity = (
+        revalidate_complete_local_balanced_evidence(
+            evidence_root=evidence,
+            expected_receipt_sha256=expected_digest,
+            repository_root=REPO_ROOT,
+            process_runner=runner,
+            python_executable="python",
+        )
+    )
+
+    assert identity == replayed_identity == _identity()
+    assert receipt == replayed_receipt
+    assert gate == replayed_gate
+    assert gate["hard_gate_passed"] is True
+    assert len(runner.calls) == 3
+
+
+def test_committed_local_evidence_accepts_only_complete_normal_merge_lineage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+
+    git("init", "--quiet", "--initial-branch=main")
+    git("config", "user.name", "P6 Test")
+    git("config", "user.email", "p6@example.invalid")
+    (repository / "README.md").write_text("base\n", encoding="utf-8")
+    git("add", "README.md")
+    git("commit", "--quiet", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    git("switch", "--quiet", "-c", "evidence")
+    (repository / "zscope").mkdir()
+    (repository / "zscope/__init__.py").write_text("\n", encoding="utf-8")
+    git("add", "zscope/__init__.py")
+    git("commit", "--quiet", "-m", "candidate")
+    tested = git("rev-parse", "HEAD")
+    tested_tree = git("rev-parse", "HEAD^{tree}")
+    evidence_root = repository / balanced_orchestrator.LOCAL_BALANCED_EVIDENCE_ROOT
+    quality = evidence_root / "quality"
+    quality.mkdir(parents=True)
+    for filename in balanced_orchestrator._QUALITY_BUNDLE_FILES.values():
+        (quality / filename).write_text("{}\n", encoding="utf-8")
+    (evidence_root / "quality-revalidation-receipt.json").write_text("{}\n", encoding="utf-8")
+    git("add", balanced_orchestrator.LOCAL_BALANCED_EVIDENCE_ROOT)
+    git("commit", "--quiet", "-m", "local evidence")
+    evidence_commit = git("rev-parse", "HEAD")
+    git("switch", "--quiet", "main")
+    assert git("rev-parse", "HEAD") == base
+    git("merge", "--quiet", "--no-ff", "evidence", "-m", "merge evidence")
+    hosted = git("rev-parse", "HEAD")
+
+    identity = BalancedRunIdentity(
+        workflow_run_id="33260000009",
+        workflow_run_attempt=1,
+        attempt_id="p6-33260000009-1",
+        control_plane_commit=tested,
+        candidate_git_sha=tested,
+        candidate_git_tree=tested_tree,
+    )
+
+    def fake_revalidate(**kwargs: Any) -> tuple[dict[str, Any], dict[str, Any], Any]:
+        staged = Path(kwargs["evidence_root"])
+        assert {path.name for path in (staged / "quality").iterdir()} == set(
+            balanced_orchestrator._QUALITY_BUNDLE_FILES.values()
+        )
+        assert (staged / "quality-revalidation-receipt.json").is_file()
+        return (
+            {"content_sha256": "d" * 64},
+            {
+                "content_sha256": "e" * 64,
+                "bindings": {
+                    "git_commit": tested,
+                    "git_tree": tested_tree,
+                    "candidate_sha256": hashlib.sha256(tested.encode("ascii")).hexdigest(),
+                    "provider_identity_sha256": "p" * 64,
+                    "runtime_sha256": "r" * 64,
+                    "config_sha256": "q" * 64,
+                },
+            },
+            identity,
+        )
+
+    def fake_materialize(**kwargs: Any) -> Any:
+        destination = Path(kwargs["destination"])
+        (destination / "zscope").mkdir(parents=True)
+        (destination / "zscope/__init__.py").write_text("\n", encoding="utf-8")
+        (destination / "test/range").mkdir(parents=True)
+        (destination / "test/range/zscope.benchmark.yaml").write_text(
+            "llms: {}\n", encoding="utf-8"
+        )
+        return balanced_orchestrator._ControlPlaneTreeSnapshot(
+            root=destination,
+            commit_sha=hosted,
+            tree_sha=git("rev-parse", f"{hosted}^{{tree}}"),
+            manifest_sha256="f" * 64,
+        )
+
+    def fake_prepare(destination: Path, **_kwargs: Any) -> str:
+        destination.mkdir(parents=True)
+        (destination / "__init__.py").write_text("\n", encoding="utf-8")
+        return "r" * 64
+
+    monkeypatch.setattr(
+        balanced_orchestrator,
+        "_resolve_repository_head",
+        lambda _root, process_runner: hosted,
+    )
+    monkeypatch.setattr(
+        balanced_orchestrator,
+        "revalidate_complete_local_balanced_evidence",
+        fake_revalidate,
+    )
+    monkeypatch.setattr(balanced_orchestrator, "_materialize_control_plane_tree", fake_materialize)
+    monkeypatch.setattr(balanced_orchestrator, "_remove_control_plane_tree", lambda _value: None)
+    monkeypatch.setattr(balanced_orchestrator, "prepare_p6_runtime_source", fake_prepare)
+    monkeypatch.setattr(
+        balanced_orchestrator,
+        "require_p6_provider_contract",
+        lambda _path: SimpleNamespace(identity_sha256="p" * 64, config_sha256="q" * 64),
+    )
+
+    result = verify_committed_local_balanced_evidence(
+        repository_root=repository,
+        hosted_control_plane_commit=hosted,
+        evidence_commit=evidence_commit,
+        expected_receipt_sha256="c" * 64,
+    )
+
+    assert result["tested_commit"] == tested
+    assert result["canonical_revalidation_passed"] is True
+    assert result["complete_bundle_present"] is True
 
 
 def test_authoritative_revalidation_rescores_and_reproduces_every_byte(
@@ -1148,6 +1383,43 @@ def test_revalidate_cli_requires_external_identity_and_receipt_paths(
     assert captured["receipt_path"] == tmp_path / "receipt.json"
 
 
+def test_verify_local_evidence_cli_requires_complete_receipt_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_verify(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        orchestrator_cli,
+        "verify_committed_local_balanced_evidence",
+        fake_verify,
+    )
+    result = orchestrator_cli.main(
+        [
+            "verify-local-evidence",
+            "--repository-root",
+            str(tmp_path),
+            "--hosted-control-plane-commit",
+            "a" * 40,
+            "--evidence-commit",
+            "b" * 40,
+            "--receipt-sha256",
+            "c" * 64,
+        ]
+    )
+
+    assert result == 0
+    assert captured == {
+        "repository_root": tmp_path,
+        "hosted_control_plane_commit": "a" * 40,
+        "evidence_commit": "b" * 40,
+        "expected_receipt_sha256": "c" * 64,
+    }
+
+
 @pytest.mark.parametrize("mutation", ("missing_usage", "changed_usage", "extra", "symlink"))
 def test_authoritative_revalidation_rejects_non_exact_or_tampered_bundle(
     tmp_path: Path, mutation: str, monkeypatch: pytest.MonkeyPatch
@@ -1213,17 +1485,28 @@ def _rebuild_bundle_gate(root: Path) -> None:
         "legacy_score": "legacy-score.json",
         "producer_projection": "producer-projection.json",
         "report": "frozen-report.json",
+        "trace_sidecars": "trace-sidecars.json",
+        "usage_events": "llm_usage_events.jsonl",
         "usage_evidence": "usage-evidence.json",
         "v16_score": "v16-score.json",
+        "v16_truth_partitions": "v16-truth-partitions.json",
     }
     gate = build_quality_gate(
         report=json.loads((root / "frozen-report.json").read_text("utf-8")),
         legacy_score=json.loads((root / "legacy-score.json").read_text("utf-8")),
         v16_score=json.loads((root / "v16-score.json").read_text("utf-8")),
+        v16_truth_partitions=json.loads(
+            (root / "v16-truth-partitions.json").read_text("utf-8")
+        ),
         producer_projection=json.loads((root / "producer-projection.json").read_text("utf-8")),
         bindings=json.loads((root / "bindings.json").read_text("utf-8")),
         frozen_manifest=json.loads((root / "frozen-manifest.json").read_text("utf-8")),
         usage_evidence=json.loads((root / "usage-evidence.json").read_text("utf-8")),
+        usage_events_call_count=sum(
+            bool(line.strip())
+            for line in (root / "llm_usage_events.jsonl").read_text("utf-8").splitlines()
+        ),
+        trace_sidecars=json.loads((root / "trace-sidecars.json").read_text("utf-8")),
         artifact_sha256s={name: _sha(root / filename) for name, filename in artifact_names.items()},
     )
     (root / "p6-balanced-quality-gate.json").write_text(
@@ -1341,6 +1624,90 @@ def test_freeze_rejects_report_not_bound_by_selected_aggregate(tmp_path: Path) -
         )
 
 
+def test_freeze_rejects_cross_attempt_usage_sidecar_before_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aggregate, report, metrics, projection = _producer_tree(tmp_path)
+    usage_path = metrics.parent / "llm_usage_events.jsonl"
+    rows = [json.loads(line) for line in usage_path.read_text(encoding="utf-8").splitlines()]
+    rows[0]["call_chain_id"] = "llm-call-chain-9"
+    rows[0]["logical_operation_id"] = "e" * 64
+    usage_path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    def forbidden_metrics(**_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("producer metrics must not run before usage binding validation")
+
+    monkeypatch.setattr(
+        balanced_orchestrator,
+        "build_p6_answer_free_producer_metrics",
+        forbidden_metrics,
+    )
+    with pytest.raises(P6BalancedOrchestratorError, match="usage artifact binding"):
+        freeze_balanced_scan(
+            aggregate_path=aggregate,
+            report_path=report,
+            producer_metrics_path=metrics,
+            projection_path=projection,
+            provider_config_path=CONFIG,
+            identity=_identity(),
+            output=tmp_path / "frozen",
+        )
+
+
+@pytest.mark.parametrize(
+    ("declaration", "error"),
+    (
+        ("metadata", "usage artifact binding"),
+        ("run_manifest", "usage artifact binding"),
+        ("decision_trace", "decision-trace usage binding"),
+        ("aggregate", "aggregate usage binding"),
+    ),
+)
+def test_freeze_requires_every_usage_sidecar_declaration(
+    tmp_path: Path, declaration: str, error: str
+) -> None:
+    aggregate_path, report_path, metrics_path, projection_path = _producer_tree(tmp_path)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    trace_path = metrics_path.parent / "decision_trace_manifest.json"
+    if declaration in {"metadata", "run_manifest"}:
+        report[declaration]["llm_usage_events_artifact"]["sha256"] = "f" * 64
+    elif declaration == "decision_trace":
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        trace["llm_usage_events"]["file_sha256"] = "f" * 64
+        unsigned_trace = dict(trace)
+        unsigned_trace.pop("manifest_sha256", None)
+        trace["manifest_sha256"] = canonical_sha256(unsigned_trace)
+        _dump(trace_path, trace)
+        artifact = report["run_manifest"]["decision_trace_artifact"]
+        artifact["sha256"] = _sha(trace_path)
+        artifact["manifest_sha256"] = trace["manifest_sha256"]
+        aggregate["runs"][0]["artifact_hashes"]["files"][trace_path.name] = _sha(trace_path)
+    else:
+        aggregate["runs"][0]["artifact_hashes"]["files"]["llm_usage_events.jsonl"] = "f" * 64
+
+    _dump(report_path, report)
+    aggregate["runs"][0]["artifact_hashes"]["files"]["report.json"] = _sha(report_path)
+    _dump(aggregate_path, aggregate)
+    projection = json.loads(projection_path.read_text(encoding="utf-8"))
+    projection["artifact_sha256"] = canonical_sha256(aggregate)
+    _dump(projection_path, projection)
+
+    with pytest.raises(P6BalancedOrchestratorError, match=error):
+        freeze_balanced_scan(
+            aggregate_path=aggregate_path,
+            report_path=report_path,
+            producer_metrics_path=metrics_path,
+            projection_path=projection_path,
+            provider_config_path=CONFIG,
+            identity=_identity(),
+            output=tmp_path / "frozen",
+        )
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -1419,6 +1786,66 @@ def test_freeze_recomputes_v4_authority_and_post_terminal_calls_from_trace(
             output=output,
         )
         assert frozen["attempt_id"] == _identity().attempt_id
+
+
+@pytest.mark.parametrize(
+    ("mutation", "failure"),
+    (
+        ("producer_hash", "policy evidence disagree"),
+        ("producer_material", "producer occurrence"),
+        ("immutable_identity", "policy identity disagree"),
+    ),
+)
+def test_producer_metrics_rejects_terminal_provenance_drift(
+    tmp_path: Path,
+    mutation: str,
+    failure: str,
+) -> None:
+    _, report_path, _, _ = _producer_tree(tmp_path, confirmed_terminal=True)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    terminal = report["candidate_terminal_states"][0]
+    if mutation == "producer_hash":
+        terminal["proof_kernel_producer_binding_sha256"] = "f" * 64
+    elif mutation == "producer_material":
+        terminal["source"]["file"] = "src/other.c"
+    else:
+        terminal["sink_identity"] = "SINK_tampered"
+    _dump(report_path, report)
+
+    with pytest.raises(BenchmarkError, match=failure):
+        build_p6_answer_free_producer_metrics(
+            report_path=report_path,
+            run_dir=report_path.parent,
+            provider_contract=require_p6_provider_contract(CONFIG),
+        )
+
+
+def test_producer_metrics_revalidates_confirmed_alias_without_double_count(
+    tmp_path: Path,
+) -> None:
+    _, report_path, _, _ = _producer_tree(tmp_path, confirmed_terminal=True)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    terminal = report["candidate_terminal_states"][0]
+    terminal.update(
+        {
+            "candidate_disposition": "deduplicated_alias",
+            "status": "deduplicated_alias",
+            "validation_status": "deduplicated_alias",
+            "finding_root_original_disposition": "confirmed",
+            "finding_root_uid": "ROOT_test_confirmed_alias",
+            "finding_root_primary_validation_cluster_uid": "VAL_primary",
+        }
+    )
+    _dump(report_path, report)
+
+    metrics = build_p6_answer_free_producer_metrics(
+        report_path=report_path,
+        run_dir=report_path.parent,
+        provider_contract=require_p6_provider_contract(CONFIG),
+    )
+
+    assert metrics["p6_terminal_authority"]["confirmed_v4_report_count"] == 0
+    assert metrics["p6_terminal_authority"]["confirmed_v4_trace_count"] == 0
 
 
 def test_frozen_manifest_or_report_tamper_fails_before_any_scorer(tmp_path: Path) -> None:

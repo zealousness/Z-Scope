@@ -1,9 +1,14 @@
+import json
+import shutil
 import threading
 from pathlib import Path
+
+import pytest
 
 from zscope.retrieval.clang_backend import ClangBackend
 from zscope.retrieval.clang_extractor import ClangExtractor
 from zscope.retrieval.knowledge_db import KnowledgeDB
+from zscope.retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
 
 
 class _FakeDB:
@@ -795,6 +800,530 @@ def test_call_hierarchy_classifies_function_pointer_targets(tmp_path, monkeypatc
         ("unknown_target", "direct", "unknown_callable"),
     ]
     assert rows[0][7] == "void direct_target(void)"
+
+
+def _clangd_direct_function_argument(name: str) -> dict:
+    return {
+        "kind": "ImplicitCast",
+        "role": "expression",
+        "detail": "FunctionToPointerDecay",
+        "children": [
+            {
+                "kind": "DeclRef",
+                "role": "expression",
+                "detail": name,
+                "arcana": (
+                    f"DeclRefExpr 0x1 'void (void)' Function 0x2 " f"'{name}' 'void (void)'"
+                ),
+            }
+        ],
+    }
+
+
+def _clangd_pthread_create_ast(callback: dict, *, callback_index: int = 3) -> dict:
+    children = [
+        _clangd_direct_function_argument("pthread_create"),
+        {"kind": "UnaryOperator", "role": "expression", "detail": "&"},
+        {"kind": "IntegerLiteral", "role": "expression", "detail": "0"},
+        {"kind": "IntegerLiteral", "role": "expression", "detail": "0"},
+        {"kind": "IntegerLiteral", "role": "expression", "detail": "0"},
+    ]
+    children[callback_index] = callback
+    return {
+        "kind": "Function",
+        "role": "declaration",
+        "children": [
+            {
+                "kind": "Compound",
+                "role": "statement",
+                "children": [
+                    {
+                        "kind": "Call",
+                        "role": "expression",
+                        "range": {
+                            "start": {"line": 3, "character": 4},
+                            "end": {"line": 3, "character": 50},
+                        },
+                        "children": children,
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_typed_pthread_callback_edge_survives_call_hierarchy_path(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "demo.c"
+    source.write_text(
+        "static void *worker(void *value) { return value; }\n"
+        "int entry(void) {\n"
+        "    pthread_t thread;\n"
+        "    pthread_create(&thread, 0, worker, 0);\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    extractor._call_hierarchy_supported = True
+    monkeypatch.setattr(extractor, "prepare_call_hierarchy", lambda *args: [{"name": "entry"}])
+    monkeypatch.setattr(
+        extractor,
+        "get_outgoing_calls",
+        lambda _item: [
+            {
+                "to": {"name": "pthread_create", "kind": extractor.SK_FUNCTION},
+                "fromRanges": [{"start": {"line": 3, "character": 4}}],
+            }
+        ],
+    )
+    ast_calls = []
+
+    def typed_ast(_file, requested_range):
+        ast_calls.append(requested_range)
+        return _clangd_pthread_create_ast(_clangd_direct_function_argument("worker"))
+
+    monkeypatch.setattr(extractor, "get_ast", typed_ast)
+    sym = {
+        "range": {
+            "start": {"line": 1, "character": 0},
+            "end": {"line": 5, "character": 1},
+        }
+    }
+    rows = []
+
+    extractor._extract_call_edges(
+        source,
+        "entry",
+        "demo.c",
+        2,
+        6,
+        rows,
+        sym,
+        {"entry", "worker"},
+    )
+
+    assert ast_calls == [sym["range"]]
+    assert [row for row in rows if row[5] == "callback"] == [
+        (
+            "entry",
+            "demo.c",
+            "worker",
+            "demo.c",
+            4,
+            "callback",
+            "thread_entry_function",
+            "",
+        )
+    ]
+
+
+def test_typed_pthread_callback_rejects_cast_alias_and_non_third_argument(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "demo.c"
+    source.write_text(
+        "int entry(void) { pthread_create(&thread, 0, worker, 0); return 0; }\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    sym = {
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 70},
+        }
+    }
+    rejected = [
+        {
+            "kind": "CStyleCast",
+            "role": "expression",
+            "detail": "BitCast",
+            "children": [_clangd_direct_function_argument("worker")],
+        },
+        {
+            "kind": "ImplicitCast",
+            "role": "expression",
+            "detail": "LValueToRValue",
+            "children": [
+                {
+                    "kind": "DeclRef",
+                    "role": "expression",
+                    "detail": "worker_alias",
+                    "arcana": "DeclRefExpr 0x1 Var 0x2 'worker_alias'",
+                }
+            ],
+        },
+    ]
+    for ast in (
+        *(_clangd_pthread_create_ast(value) for value in rejected),
+        _clangd_pthread_create_ast(_clangd_direct_function_argument("worker"), callback_index=2),
+    ):
+        monkeypatch.setattr(extractor, "get_ast", lambda *_args, value=ast: value)
+        rows = []
+        assert (
+            extractor._extract_typed_thread_callback_edges(
+                source,
+                "entry",
+                "demo.c",
+                1,
+                6,
+                rows,
+                sym=sym,
+                known_local_functions={"entry", "worker"},
+            )
+            == 0
+        )
+        assert rows == []
+
+
+def test_typed_pthread_callback_rejects_local_governed_callee_definition(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "collision.c"
+    source.write_text(
+        "int entry(void) { pthread_create(&thread, 0, worker, 0); return 0; }\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(
+        extractor,
+        "get_ast",
+        lambda *_args: _clangd_pthread_create_ast(_clangd_direct_function_argument("worker")),
+    )
+    sym = {
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 70},
+        }
+    }
+    rows = []
+
+    assert (
+        extractor._extract_typed_thread_callback_edges(
+            source,
+            "entry",
+            "collision.c",
+            1,
+            2,
+            rows,
+            sym=sym,
+            known_local_functions={
+                "entry": "entry",
+                "worker": "worker",
+                "pthread_create": "pthread_create",
+            },
+        )
+        == 0
+    )
+    assert rows == []
+
+
+def test_direct_callback_names_support_unique_cpp_free_function_and_reject_ambiguity() -> None:
+    def row(name: str, *, declaration: bool = False) -> tuple:
+        return (
+            name,
+            "demo.cpp",
+            1,
+            2,
+            f"void *{name}(void *)",
+            0,
+            0,
+            int(declaration),
+            1,
+        )
+
+    assert ClangExtractor._direct_callback_function_names(
+        Path("demo.cpp"),
+        (row("worker"), row("Box::method"), row("prototype", declaration=True)),
+    ) == {"worker", "method"}
+    assert ClangExtractor._direct_callback_function_targets(
+        Path("demo.cpp"),
+        (row("worker"), row("Box::method"), row("prototype", declaration=True)),
+    ) == {"worker": "worker", "method": "Box::method"}
+    assert (
+        ClangExtractor._direct_callback_function_names(
+            Path("demo.cxx"),
+            (row("worker"), row("worker")),
+        )
+        == set()
+    )
+    assert (
+        ClangExtractor._direct_callback_function_targets(
+            Path("demo.cpp"),
+            (row("Left::worker"), row("Right::worker")),
+        )
+        == {}
+    )
+    assert (
+        ClangExtractor._direct_callback_function_names(
+            Path("demo.hpp"),
+            (row("worker"),),
+        )
+        == set()
+    )
+
+
+def test_typed_pthread_callback_emits_exact_qualified_cpp_method(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "demo.cpp"
+    source.write_text(
+        "struct Worker { static void *run(void *); };\n"
+        "int entry(void) { pthread_create(&thread, 0, Worker::run, 0); return 0; }\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(
+        extractor,
+        "get_ast",
+        lambda *_args: _clangd_pthread_create_ast(
+            {
+                **_clangd_direct_function_argument("run"),
+                "children": [
+                    {
+                        "kind": "DeclRef",
+                        "role": "expression",
+                        "detail": "run",
+                        "arcana": "DeclRefExpr 0x1 CXXMethod 0x2 'run'",
+                    }
+                ],
+            }
+        ),
+    )
+    sym = {
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 4, "character": 1},
+        }
+    }
+    rows = []
+
+    added = extractor._extract_typed_thread_callback_edges(
+        source,
+        "entry",
+        "demo.cpp",
+        1,
+        5,
+        rows,
+        sym=sym,
+        known_local_functions={"run": "Worker::run"},
+    )
+
+    assert added == 1
+    assert rows[0][2] == "Worker::run"
+
+
+@pytest.mark.skipif(
+    shutil.which("clangd") is None or shutil.which("clang++") is None,
+    reason="requires real clangd and clang++",
+)
+def test_real_clangd_indexes_exact_qualified_cpp_callback(tmp_path) -> None:
+    source = tmp_path / "method.cpp"
+    source.write_text(
+        "#include <pthread.h>\n"
+        "struct Worker { static void *run(void *value) { return value; } };\n"
+        "int entry() {\n"
+        "  pthread_t thread;\n"
+        "  pthread_create(&thread, nullptr, Worker::run, nullptr);\n"
+        "  return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "compile_commands.json").write_text(
+        json.dumps(
+            [
+                {
+                    "directory": str(tmp_path),
+                    "file": str(source),
+                    "arguments": [
+                        shutil.which("clang++") or "clang++",
+                        "-std=c++17",
+                        "-Werror",
+                        "-Wall",
+                        "-Wextra",
+                        "-c",
+                        str(source),
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    method_evidence = ClangToolingEvidenceProvider(
+        tmp_path / "compile_commands.json",
+        clang_path=shutil.which("clang++") or "clang++",
+        execute=True,
+    ).collect_for_function(
+        func_name="Worker::run",
+        file_path=str(source),
+        start_line=2,
+        end_line=2,
+    )
+    method_ast = method_evidence["ast_dump"]["summary"]
+    assert method_ast["target_function_unique"] is True
+    assert method_ast["target_function"]["name"] == "Worker::run"
+    extractor = ClangExtractor(
+        project_root=tmp_path,
+        clangd_path=shutil.which("clangd") or "clangd",
+        compile_commands_dir=tmp_path,
+        max_threads=1,
+    )
+    assert extractor.start() is True
+    try:
+        assert extractor.open_document(source) is True
+        pending = list(extractor.get_document_symbols(source) or [])
+        symbols = []
+        while pending:
+            item = pending.pop()
+            symbols.append(item)
+            pending.extend(item.get("children") or [])
+        entry = next(item for item in symbols if str(item.get("name") or "").startswith("entry"))
+        rows = []
+        added = extractor._extract_typed_thread_callback_edges(
+            source,
+            "entry",
+            "method.cpp",
+            3,
+            7,
+            rows,
+            sym=entry,
+            known_local_functions={"run": "Worker::run"},
+        )
+    finally:
+        extractor.close_document(source)
+        extractor.stop()
+
+    assert added == 1
+    assert rows == [
+        (
+            "entry",
+            "method.cpp",
+            "Worker::run",
+            "method.cpp",
+            5,
+            "callback",
+            "thread_entry_function",
+            "",
+        )
+    ]
+
+
+@pytest.mark.skipif(
+    shutil.which("clangd") is None or shutil.which("clang") is None,
+    reason="requires real clangd and clang",
+)
+def test_real_clangd_rejects_project_defined_pthread_create_callback_edge(tmp_path) -> None:
+    source = tmp_path / "collision.c"
+    source.write_text(
+        "typedef unsigned long thread_id;\n"
+        "typedef void *(*thread_start)(void *);\n"
+        "static void *worker(void *value) { return value; }\n"
+        "int pthread_create(thread_id *id, const void *attr, thread_start start, void *arg) {\n"
+        "  (void)id; (void)attr; return start(arg) != 0;\n"
+        "}\n"
+        "int entry(void) {\n"
+        "  thread_id id = 0;\n"
+        "  return pthread_create(&id, 0, worker, 0);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "compile_commands.json").write_text(
+        json.dumps(
+            [
+                {
+                    "directory": str(tmp_path),
+                    "file": str(source),
+                    "arguments": [
+                        shutil.which("clang") or "clang",
+                        "-std=c11",
+                        "-Werror",
+                        "-Wall",
+                        "-Wextra",
+                        "-c",
+                        str(source),
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(
+        project_root=tmp_path,
+        clangd_path=shutil.which("clangd") or "clangd",
+        compile_commands_dir=tmp_path,
+        max_threads=1,
+    )
+    assert extractor.start() is True
+    try:
+        assert extractor.open_document(source) is True
+        pending = list(extractor.get_document_symbols(source) or [])
+        symbols = []
+        while pending:
+            item = pending.pop()
+            symbols.append(item)
+            pending.extend(item.get("children") or [])
+        entry = next(item for item in symbols if str(item.get("name") or "").startswith("entry"))
+        rows = []
+        added = extractor._extract_typed_thread_callback_edges(
+            source,
+            "entry",
+            "collision.c",
+            7,
+            10,
+            rows,
+            sym=entry,
+            known_local_functions={
+                "entry": "entry",
+                "worker": "worker",
+                "pthread_create": "pthread_create",
+            },
+        )
+    finally:
+        extractor.close_document(source)
+        extractor.stop()
+
+    assert added == 0
+    assert rows == []
+
+
+def test_clang_backend_reverse_pointer_query_includes_only_indirect_and_callback_edges(
+    tmp_path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "callback.db"))
+    backend = ClangBackend()
+    backend._db = db
+    try:
+        db.insert_call_edges_batch(
+            [
+                (
+                    "creator",
+                    "demo.c",
+                    "worker",
+                    "demo.c",
+                    9,
+                    "callback",
+                    "thread_entry_function",
+                    "",
+                ),
+                (
+                    "indirect_caller",
+                    "demo.c",
+                    "worker",
+                    "",
+                    12,
+                    "indirect",
+                    "function_pointer_variable",
+                    "",
+                ),
+                ("ordinary", "demo.c", "worker", "demo.c", 15, "direct", "function", ""),
+            ]
+        )
+        db.commit()
+
+        assert backend.find_function_pointers("worker") == [
+            {"caller": "creator", "file": "demo.c", "line": 9},
+            {"caller": "indirect_caller", "file": "demo.c", "line": 12},
+        ]
+    finally:
+        backend._db = None
+        db.close()
 
 
 def test_regex_call_extraction_classifies_member_and_local_function_pointers(

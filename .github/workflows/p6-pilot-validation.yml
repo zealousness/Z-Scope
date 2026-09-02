@@ -10,10 +10,10 @@ on:
         description: Exact main commit to validate as the non-release P6 candidate
         required: true
       local_evidence_commit:
-        description: Exact immutable commit adding only the locally passed WSL balanced quality gate
+        description: Exact immutable commit adding only the complete locally passed WSL balanced evidence bundle and receipt
         required: true
-      local_quality_gate_sha256:
-        description: External SHA-256 of the exact local WSL balanced quality-gate bytes
+      local_evidence_receipt_sha256:
+        description: External SHA-256 of the complete local WSL evidence revalidation receipt
         required: true
 
 concurrency:
@@ -36,8 +36,8 @@ env:
   P6_CONTROL_PLANE_COMMIT: ${{ inputs.control_plane_commit }}
   P6_CANDIDATE_COMMIT: ${{ inputs.candidate_sha }}
   P6_LOCAL_EVIDENCE_COMMIT: ${{ inputs.local_evidence_commit }}
-  P6_LOCAL_QUALITY_GATE_SHA256: ${{ inputs.local_quality_gate_sha256 }}
-  P6_LOCAL_QUALITY_GATE_PATH: .github/evidence/p6/local-balanced-quality-gate.json
+  P6_LOCAL_EVIDENCE_RECEIPT_SHA256: ${{ inputs.local_evidence_receipt_sha256 }}
+  P6_LOCAL_EVIDENCE_ROOT: .github/evidence/p6/local-balanced-evidence
   P6_CONTROL_ROOT: ${{ github.workspace }}/control
   P6_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
   PYTHONPATH: ${{ github.workspace }}/control
@@ -61,7 +61,7 @@ jobs:
           [[ "$P6_CONTROL_PLANE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$P6_CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$P6_LOCAL_EVIDENCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$P6_LOCAL_QUALITY_GATE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$P6_LOCAL_EVIDENCE_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]
           test "$P6_CONTROL_PLANE_COMMIT" = "$GITHUB_SHA"
       - name: Checkout immutable control plane
         uses: actions/checkout@v7
@@ -80,158 +80,23 @@ jobs:
       - uses: ./control/.github/actions/setup-p6-python
         with:
           checkout-path: control
+      - name: Validate resource-backed current-successor review projection
+        run: |
+          set -euo pipefail
+          python3 scripts/project_successor_review_evidence.py check \
+            --repository-root . --head HEAD >/dev/null
       - name: Require immutable passed local WSL balanced evidence before provider work
         env:
           P6_ENTRY_FAILURE_MARKER: ${{ runner.temp }}/p6-entry-failure-${{ github.run_id }}-${{ github.run_attempt }}.json
         run: |
           set -euo pipefail
-          validate_local_evidence() {
-            python3 - <<'PY'
-          import hashlib
-          import os
-          import shutil
-          import stat
-          import subprocess
-          import tempfile
-          from pathlib import Path
-
-          from scripts.p6_balanced_quality_gate import validate_quality_gate
-          from zscope.benchmarking.p6_protocol import load_json_strict
-          from zscope.benchmarking.provider_runtime import require_p6_provider_contract
-          from zscope.benchmarking.runner import prepare_p6_runtime_source
-
-          control_root = Path(os.environ["P6_CONTROL_ROOT"]).resolve(strict=True)
-          candidate_root = Path(os.environ["P6_CANDIDATE_ROOT"]).resolve(strict=True)
-          runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
-          control_commit = os.environ["P6_CONTROL_PLANE_COMMIT"]
-          candidate_commit = os.environ["P6_CANDIDATE_COMMIT"]
-          evidence_commit = os.environ["P6_LOCAL_EVIDENCE_COMMIT"]
-          evidence_path = os.environ["P6_LOCAL_QUALITY_GATE_PATH"]
-          expected_digest = os.environ["P6_LOCAL_QUALITY_GATE_SHA256"]
-
-          def git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
-              return subprocess.run(
-                  ["git", *arguments],
-                  cwd=control_root,
-                  check=check,
-                  stdout=subprocess.PIPE,
-                  stderr=subprocess.DEVNULL,
-              )
-
-          if git("cat-file", "-t", control_commit).stdout.strip() != b"commit":
-              raise SystemExit(2)
-          if git("cat-file", "-t", candidate_commit).stdout.strip() != b"commit":
-              raise SystemExit(2)
-          if git("cat-file", "-t", evidence_commit).stdout.strip() != b"commit":
-              raise SystemExit(2)
-          if candidate_commit != control_commit:
-              raise SystemExit(2)
-          if git("merge-base", "--is-ancestor", evidence_commit, control_commit, check=False).returncode != 0:
-              raise SystemExit(2)
-          if git("merge-base", "--is-ancestor", candidate_commit, control_commit, check=False).returncode != 0:
-              raise SystemExit(2)
-          candidate_parents = git("rev-list", "--parents", "-n", "1", candidate_commit).stdout.decode(
-              "ascii", errors="strict"
-          ).strip().split()
-          if (
-              len(candidate_parents) != 3
-              or candidate_parents[0] != candidate_commit
-              or evidence_commit not in candidate_parents[1:]
-          ):
-              raise SystemExit(2)
-          evidence_change = git(
-              "diff-tree",
-              "--no-commit-id",
-              "--name-status",
-              "-r",
-              evidence_commit,
-          ).stdout.decode("utf-8", errors="strict").splitlines()
-          tree_row = git("ls-tree", evidence_commit, "--", evidence_path).stdout.decode(
-              "utf-8", errors="strict"
-          ).strip().split()
-          if len(tree_row) != 4 or tree_row[:2] != ["100644", "blob"] or tree_row[3] != evidence_path:
-              raise SystemExit(2)
-          candidate_tree = git("rev-parse", f"{candidate_commit}^{{tree}}").stdout.decode(
-              "ascii", errors="strict"
-          ).strip()
-          evidence_tree = git("rev-parse", f"{evidence_commit}^{{tree}}").stdout.decode(
-              "ascii", errors="strict"
-          ).strip()
-          if candidate_tree != evidence_tree:
-              raise SystemExit(2)
-          evidence_bytes = git("show", f"{evidence_commit}:{evidence_path}").stdout
-          if hashlib.sha256(evidence_bytes).hexdigest() != expected_digest:
-              raise SystemExit(2)
-
-          work_root = Path(tempfile.mkdtemp(prefix="p6-local-evidence-", dir=runner_temp))
-          try:
-              work_mode = stat.S_IMODE(work_root.lstat().st_mode)
-              if work_root.is_symlink() or not work_root.is_dir() or work_mode & 0o077:
-                  raise SystemExit(2)
-              evidence_file = work_root / "quality-gate.json"
-              flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-              if hasattr(os, "O_NOFOLLOW"):
-                  flags |= os.O_NOFOLLOW
-              descriptor = os.open(evidence_file, flags, 0o600)
-              with os.fdopen(descriptor, "wb") as handle:
-                  handle.write(evidence_bytes)
-              gate = load_json_strict(evidence_file)
-              if not isinstance(gate, dict):
-                  raise SystemExit(2)
-              validate_quality_gate(gate)
-              if (
-                  gate.get("hard_gate_passed") is not True
-                  or gate.get("formal_benchmark") is not False
-                  or gate.get("release_eligible") is not False
-              ):
-                  raise SystemExit(2)
-              bindings = gate.get("bindings")
-              if not isinstance(bindings, dict):
-                  raise SystemExit(2)
-              tested_commit = bindings.get("git_commit")
-              if not isinstance(tested_commit, str):
-                  raise SystemExit(2)
-              if git("cat-file", "-t", tested_commit).stdout.strip() != b"commit":
-                  raise SystemExit(2)
-              parent_row = git("rev-list", "--parents", "-n", "1", evidence_commit).stdout.decode(
-                  "ascii", errors="strict"
-              ).strip().split()
-              if parent_row != [evidence_commit, tested_commit]:
-                  raise SystemExit(2)
-              if evidence_change != [f"A\t{evidence_path}"]:
-                  raise SystemExit(2)
-              candidate_change = git(
-                  "diff", "--name-status", tested_commit, candidate_commit
-              ).stdout.decode("utf-8", errors="strict").splitlines()
-              if candidate_change != [f"A\t{evidence_path}"]:
-                  raise SystemExit(2)
-              tested_tree = git("rev-parse", f"{tested_commit}^{{tree}}").stdout.decode(
-                  "ascii", errors="strict"
-              ).strip()
-              tested_sha256 = hashlib.sha256(tested_commit.encode("ascii")).hexdigest()
-              contract = require_p6_provider_contract(
-                  candidate_root / "test/range/zscope.benchmark.yaml"
-              )
-              runtime_source = work_root / "runtime-source"
-              runtime_sha256 = prepare_p6_runtime_source(
-                  runtime_source,
-                  git_revision=candidate_commit,
-              )
-              expected_bindings = {
-                  "git_commit": tested_commit,
-                  "git_tree": tested_tree,
-                  "candidate_sha256": tested_sha256,
-                  "provider_identity_sha256": contract.identity_sha256,
-                  "runtime_sha256": runtime_sha256,
-                  "config_sha256": contract.config_sha256,
-              }
-              if any(bindings.get(name) != value for name, value in expected_bindings.items()):
-                  raise SystemExit(2)
-          finally:
-              shutil.rmtree(work_root, ignore_errors=True)
-          PY
-          }
-          if ! validate_local_evidence >/dev/null 2>&1; then
+          test "$P6_CANDIDATE_COMMIT" = "$P6_CONTROL_PLANE_COMMIT"
+          if ! python3 scripts/p6_balanced_orchestrator.py verify-local-evidence \
+            --repository-root . \
+            --hosted-control-plane-commit "$P6_CONTROL_PLANE_COMMIT" \
+            --evidence-commit "$P6_LOCAL_EVIDENCE_COMMIT" \
+            --receipt-sha256 "$P6_LOCAL_EVIDENCE_RECEIPT_SHA256" \
+            >/dev/null 2>&1; then
             python3 - <<'PY' >/dev/null 2>&1
           import json
           import os
@@ -306,13 +171,22 @@ jobs:
             test/range/benchmark/v16/ground_truth.json \
             test/range/benchmark/v16/truth-manifest.json \
             scripts/score_range_v5.py \
+            zscope/benchmarking/benchmark_policy.v1.json \
+            zscope/benchmarking/benchmark_policy.v2.json \
+            zscope/benchmarking/p6_expected_proxy_attestation.schema.json \
             zscope/benchmarking/p6_protocol.py \
+            zscope/benchmarking/p6_producer_metrics.py \
+            zscope/benchmarking/p6_producer_package_init.py \
+            zscope/benchmarking/p6_producer_sandbox.py \
             zscope/benchmarking/p6_balanced_orchestrator.py \
             zscope/benchmarking/p6_balanced_quality_gate.schema.json \
+            zscope/benchmarking/p6_quality_revalidation_receipt.schema.json \
             zscope/benchmarking/p6_local_image_provenance.schema.json \
             zscope/benchmarking/p6_local_runtime.py \
             zscope/benchmarking/p6_review.py \
+            zscope/benchmarking/policy.py \
             zscope/benchmarking/provider_runtime.py \
+            zscope/benchmarking/replay_bundle.py \
             zscope/benchmarking/runner.py \
             zscope/benchmarking/isolation.py \
             zscope/cli/benchmark.py; do

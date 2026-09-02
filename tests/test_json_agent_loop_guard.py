@@ -197,6 +197,185 @@ def _payload_spec() -> JsonOutputSpec:
     )
 
 
+def test_final_tool_payload_is_enumerated_once_when_message_is_in_conversation() -> None:
+    agent = LoopGuardAgent(object())
+    spec = _payload_spec()
+    message = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_emit",
+                "type": "function",
+                "function": {
+                    "name": "emit_unit_payload",
+                    "arguments": json.dumps({"type": "unit_payload", "value": "ok"}),
+                },
+            }
+        ],
+    }
+
+    payloads = list(agent._final_tool_payloads({"message": message}, [message], spec))
+
+    assert payloads == [{"type": "unit_payload", "value": "ok"}]
+
+
+@pytest.mark.parametrize("second_name", ["emit_unit_payload", "inspect_more"])
+def test_final_tool_payload_rejects_duplicate_or_mixed_calls(second_name: str) -> None:
+    agent = LoopGuardAgent(object())
+    spec = _payload_spec()
+    message = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_emit",
+                "type": "function",
+                "function": {
+                    "name": "emit_unit_payload",
+                    "arguments": json.dumps({"type": "unit_payload", "value": "ok"}),
+                },
+            },
+            {
+                "id": "call_second",
+                "type": "function",
+                "function": {"name": second_name, "arguments": "{}"},
+            },
+        ],
+    }
+
+    assert list(agent._final_tool_payloads({"message": message}, [message], spec)) == []
+
+
+@pytest.mark.parametrize("second_name", ["emit_unit_payload", "inspect_more"])
+def test_final_tool_contract_never_falls_back_to_prose_for_invalid_batch(
+    second_name: str,
+) -> None:
+    agent = LoopGuardAgent(object())
+    spec = _payload_spec()
+    content = json.dumps({"type": "unit_payload", "value": "prose-bypass"})
+    message = {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [
+            {
+                "id": "call_emit",
+                "type": "function",
+                "function": {
+                    "name": "emit_unit_payload",
+                    "arguments": json.dumps({"type": "unit_payload", "value": "tool"}),
+                },
+            },
+            {
+                "id": "call_second",
+                "type": "function",
+                "function": {"name": second_name, "arguments": "{}"},
+            },
+        ],
+    }
+    result = {"message": message}
+
+    assert agent._extract_structured_json_payload(content, result, [message], spec) is None
+    assert (
+        agent._extract_json_output(
+            content,
+            result,
+            [message],
+            extractor=lambda *_args: {"type": "unit_payload", "value": "caller-bypass"},
+            json_output_spec=spec,
+        )
+        is None
+    )
+
+
+def test_missing_forced_final_tool_never_falls_back_to_prose() -> None:
+    agent = LoopGuardAgent(object())
+    spec = _payload_spec()
+    content = json.dumps({"type": "unit_payload", "value": "prose-bypass"})
+    message = {"role": "assistant", "content": content}
+    result = {
+        "message": message,
+        "_zscope_final_tool_contract_required": True,
+    }
+
+    assert agent._extract_structured_json_payload(content, result, [message], spec) is None
+
+
+def test_result_message_cannot_hide_conversation_final_tool_contract() -> None:
+    agent = LoopGuardAgent(object())
+    spec = _payload_spec()
+    content = json.dumps({"type": "unit_payload", "value": "prose-bypass"})
+    result_message = {"role": "assistant", "content": content}
+    earlier_final = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_bad",
+                "type": "function",
+                "function": {"name": "emit_unit_payload", "arguments": "not-json"},
+            }
+        ],
+    }
+
+    assert (
+        agent._extract_structured_json_payload(
+            content,
+            {"message": result_message},
+            [earlier_final, result_message],
+            spec,
+        )
+        is None
+    )
+
+
+def test_structured_output_without_final_tool_contract_keeps_json_path() -> None:
+    agent = LoopGuardAgent(object())
+    spec = _payload_spec()
+    payload = {"type": "unit_payload", "value": "structured"}
+    content = json.dumps(payload)
+    message = {"role": "assistant", "content": content}
+
+    assert (
+        agent._extract_structured_json_payload(
+            content,
+            {"message": message},
+            [message],
+            spec,
+        )
+        == payload
+    )
+
+
+def test_ordinary_tool_history_does_not_disable_later_structured_output() -> None:
+    agent = LoopGuardAgent(object())
+    spec = _payload_spec()
+    payload = {"type": "unit_payload", "value": "structured"}
+    content = json.dumps(payload)
+    ordinary_action = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_inspect",
+                "type": "function",
+                "function": {"name": "inspect_more", "arguments": "{}"},
+            }
+        ],
+    }
+    message = {"role": "assistant", "content": content}
+
+    assert (
+        agent._extract_structured_json_payload(
+            content,
+            {"message": message},
+            [ordinary_action, message],
+            spec,
+        )
+        == payload
+    )
+
+
 def test_json_tool_agent_repairs_prose_with_final_tool(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",

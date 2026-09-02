@@ -12,8 +12,14 @@ from zscope.config.config import (
 )
 from zscope.config.function_entry import FunctionEntry
 from zscope.orchestration import scan_session as scan_session_module
+import zscope.reporting.schema as report_schema_module
+from zscope.orchestration.runtime_authority import (
+    RUNTIME_CACHE_EPOCH,
+    build_runtime_authority_manifest,
+)
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 from zscope.orchestration.scan_session import ScanSessionRunner
+from zscope.reporting.schema import REPORT_REUSE_EPOCH, RUN_MANIFEST_SCHEMA_VERSION
 from zscope.rules.extensions import preflight_rules
 from zscope.snapshots.store import SnapshotStore
 
@@ -43,6 +49,73 @@ def test_review_counts_separate_visible_findings_from_manifest_obligations() -> 
 
     assert ScanSessionRunner._needs_review_count_from_report(report) == 30
     assert ScanSessionRunner._unresolved_obligations_count_from_report(report) == 951
+
+
+def test_resume_requires_exact_current_successor_report_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = {
+        "successor_implementation_root_sha256": "1" * 64,
+        "successor_qualification_sha256": "2" * 64,
+        "successor_review_status": "in_progress",
+        "successor_review_status_content_sha256": "3" * 64,
+        "successor_review_set_sha256": "",
+    }
+    monkeypatch.setattr(
+        report_schema_module,
+        "current_successor_runtime_binding",
+        lambda: dict(binding),
+    )
+    authority = build_runtime_authority_manifest(
+        source_tree_hash="a" * 40,
+        config_sha256="b" * 64,
+        backend_sha256="c" * 64,
+        revisions={"proof_checker": "proof-checker.v2"},
+    )
+    report = {
+        "schema_version": 3,
+        "finding_status": "clean",
+        "completeness": "complete",
+        "issues": [],
+        "candidate_terminal_states": [],
+        "run_manifest": {
+            "valid": True,
+            "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
+            "report_reuse_epoch": REPORT_REUSE_EPOCH,
+            **binding,
+            "candidate_schema_version": "zscope.candidate.v3.3",
+            "cache_epoch": RUNTIME_CACHE_EPOCH,
+            "runtime_authority_manifest": authority,
+            "decision_trace": {"complete": True},
+        },
+    }
+    cfg = _config(tmp_path)
+    runner = ScanSessionRunner(cfg, resume=True)
+    entry = FunctionEntry("handle_request", file_path="src/a.c")
+    monkeypatch.setattr(runner, "_load_current_saved_report", lambda *_args: report)
+
+    stale_state = {
+        "entries_loaded": True,
+        "batch_mode": True,
+        "entries": [entry],
+        "code_index": object(),
+    }
+    report["run_manifest"]["successor_review_status_content_sha256"] = "f" * 64
+    runner._handle_plan_resume_entries(stale_state, None)  # type: ignore[arg-type]
+    assert stale_state["entries"] == [entry]
+    assert stale_state["skipped_entries"] == []
+
+    report["run_manifest"].update(binding)
+    current_state = {
+        "entries_loaded": True,
+        "batch_mode": True,
+        "entries": [entry],
+        "code_index": object(),
+    }
+    runner._handle_plan_resume_entries(current_state, None)  # type: ignore[arg-type]
+    assert current_state["entries"] == []
+    assert current_state["skipped_entries"] == [entry]
 
 
 def test_unresolved_obligations_fall_back_to_terminal_candidate_ledger() -> None:
