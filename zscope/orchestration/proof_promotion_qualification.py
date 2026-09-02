@@ -233,10 +233,13 @@ def validate_runtime_successor_freshness(raw: Mapping[str, Any]) -> tuple[bool, 
         return False, "successor_qualification_runtime_source_stale"
     for path, digest in current_sources.items():
         expected = str(sources[path])
+        if expected == digest:
+            continue
         # The sealed producer tree substitutes a tiny package initializer for
         # the host initializer so importing the scanner cannot pull in
-        # control-plane benchmarking modules.  Bind that deliberate alias to
-        # the exact source hash already present in the qualification inventory.
+        # control-plane benchmarking modules.  A host tree still carries the
+        # full initializer, whose sealed hash already matched above; only a
+        # physically reduced producer tree falls back to the alias binding.
         if path == "zscope/benchmarking/__init__.py":
             expected = str(
                 sources.get("zscope/benchmarking/p6_producer_package_init.py") or expected
