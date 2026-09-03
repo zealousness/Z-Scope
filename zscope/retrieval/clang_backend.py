@@ -5,7 +5,7 @@ Provides precise C/C++ code structure extraction without Joern dependency.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .backend_base import CodeBackend
 from .clang_extractor import ClangExtractor
@@ -390,6 +390,18 @@ class ClangBackend(CodeBackend):
 
             # Base extraction may have dirtied otherwise-current derived indexes.
             derived_work = self._derived_indexes_needing_rebuild(db)
+            partial_only_files: Optional[Set[str]] = None
+            if derived_work:
+                partial_only_files = self._plan_partial_derived_rebuild(
+                    db,
+                    derived_work,
+                    changed_paths=[
+                        path
+                        for path, (_tu_id, changed) in prescanned_tus.items()
+                        if changed
+                    ],
+                    deleted_paths=deleted_paths,
+                )
             if derived_work and file_list and not wait_for_index_once():
                 self._status = "error"
                 return False
@@ -422,7 +434,12 @@ class ClangBackend(CodeBackend):
                             db.begin_derived_index_rebuild(index_name, target_version)
                             started_specs.append(spec)
                             db.prepare_derived_index_staging(index_name)
-                        combined_result = combined_rebuild(db, use_staging=True)
+                        if partial_only_files is not None:
+                            combined_result = combined_rebuild(
+                                db, use_staging=True, only_files=partial_only_files
+                            )
+                        else:
+                            combined_result = combined_rebuild(db, use_staging=True)
                         counts = dict(combined_result.get("counts") or {})
                         errors = dict(combined_result.get("errors") or {})
                         for index_name, target_version, _rebuild_method in derived_work:
@@ -454,11 +471,19 @@ class ClangBackend(CodeBackend):
                                 else {"rows": row_count}
                             )
                             try:
-                                db.finalize_derived_index_rebuild(
-                                    index_name,
-                                    target_version,
-                                    last_stats,
-                                )
+                                if partial_only_files is not None:
+                                    db.finalize_derived_index_rebuild(
+                                        index_name,
+                                        target_version,
+                                        last_stats,
+                                        merge_files=sorted(partial_only_files),
+                                    )
+                                else:
+                                    db.finalize_derived_index_rebuild(
+                                        index_name,
+                                        target_version,
+                                        last_stats,
+                                    )
                             except Exception as exc:
                                 derived_failed = True
                                 self._record_derived_failure(
@@ -496,9 +521,19 @@ class ClangBackend(CodeBackend):
                                     raise RuntimeError(
                                         "clangd extractor unavailable for derived rebuild"
                                     )
-                                row_count = int(
-                                    rebuild_method(extractor, db, use_staging=True)
-                                )
+                                if partial_only_files is not None:
+                                    row_count = int(
+                                        rebuild_method(
+                                            extractor,
+                                            db,
+                                            use_staging=True,
+                                            only_files=partial_only_files,
+                                        )
+                                    )
+                                else:
+                                    row_count = int(
+                                        rebuild_method(extractor, db, use_staging=True)
+                                    )
                                 stats_getter = getattr(
                                     extractor,
                                     "get_last_derived_stats",
@@ -512,11 +547,19 @@ class ClangBackend(CodeBackend):
                             else:
                                 row_count = 0
                                 last_stats = {"rows": 0, "files": 0, "functions": 0}
-                            db.finalize_derived_index_rebuild(
-                                index_name,
-                                target_version,
-                                last_stats,
-                            )
+                            if partial_only_files is not None:
+                                db.finalize_derived_index_rebuild(
+                                    index_name,
+                                    target_version,
+                                    last_stats,
+                                    merge_files=sorted(partial_only_files),
+                                )
+                            else:
+                                db.finalize_derived_index_rebuild(
+                                    index_name,
+                                    target_version,
+                                    last_stats,
+                                )
                             logger.info(
                                 "Rebuilt derived index %s rows=%d",
                                 index_name,
@@ -655,6 +698,59 @@ class ClangBackend(CodeBackend):
             ),
         )
         return [spec for spec in specs if db.derived_index_needs_rebuild(spec[0], spec[1])]
+
+    def _plan_partial_derived_rebuild(
+        self,
+        db: Any,
+        derived_work: List[Tuple[str, str, Any]],
+        *,
+        changed_paths: List[str],
+        deleted_paths: List[str],
+    ) -> Optional[Set[str]]:
+        """Scope the derived rebuild to include-closure-affected files.
+
+        Partial rebuilds merge staged rows for the affected files only, so
+        they run exclusively when every dirty index was invalidated by base
+        facts (never by an extractor version bump, a purge-driven reason, or
+        a previous failure) and the affected set stays small enough for the
+        merge to beat a full rebuild.
+        """
+        if not (changed_paths or deleted_paths):
+            return None
+        compute = getattr(db, "compute_derived_affected_files", None)
+        if not callable(compute):
+            return None
+        for index_name, _target_version, _rebuild_method in derived_work:
+            state = db.get_derived_index_state(index_name)
+            if str(state.get("dirty_reason") or "") != "base_facts_changed":
+                return None
+        get_functions = getattr(db, "get_function_records", None)
+        if not callable(get_functions):
+            return None
+        try:
+            candidates = sorted(
+                {
+                    str(row.get("file_path") or "")
+                    for row in get_functions()
+                    if str(row.get("file_path") or "")
+                }
+            )
+            if not candidates:
+                return None
+            affected = compute(changed_paths, deleted_paths, candidates)
+        except Exception as exc:
+            logger.warning(
+                "Partial derived rebuild planning failed; using full rebuild: %s", exc
+            )
+            return None
+        if affected is None:
+            return None
+        logger.info(
+            "Partial derived rebuild: %d/%d function file(s) affected by base changes",
+            len(affected),
+            len(candidates),
+        )
+        return set(affected)
 
     def _derived_indexes_are_current(self, db: Any) -> bool:
         expected = (
