@@ -22,6 +22,9 @@ from .svf_runner import SvfResult, SvfRunner
 
 logger = logging.getLogger(__name__)
 
+# Upper bound of concurrent saber processes per 8 GiB of configured heap budget.
+_SABER_HEAP_PER_WORKER_MB = 8192
+
 
 class SvfAnalyzer:
     """Build bitcode, run SVF, and write indirect-call/Saber data."""
@@ -415,15 +418,32 @@ class SvfAnalyzer:
                 logger.info("SVF resume: event=tool_rerun tool=ander group=%s", group_name)
         return had_timeout
 
+    def _saber_worker_count(self, group_count: int) -> int:
+        """Bound parallel saber processes by configured workers and heap headroom.
+
+        Each saber process may allocate up to the configured heap limit; the
+        memory cap keeps concurrent tool processes within a bounded budget.
+        """
+        if group_count <= 0:
+            return 0
+        heap_workers = max(1, int(self._heap_limit) // _SABER_HEAP_PER_WORKER_MB)
+        return max(1, min(int(self._parallel_workers or 1), group_count, heap_workers))
+
     def _run_saber_groups(
         self,
         runner: Any,
         saber_paths: Dict[str, Path],
         project_root: Path,
     ) -> bool:
-        had_failure = False
+        if not saber_paths:
+            return False
+        # Resume checks touch the DB and cached artifacts only; keep them serial
+        # so cached groups never occupy a worker slot.
+        pending_paths: Dict[str, Path] = {}
+        fingerprints: Dict[str, str] = {}
         for group_name, bc_path in sorted(saber_paths.items()):
             fingerprint = self._tool_artifact_fingerprint("saber", group_name, bc_path)
+            fingerprints[group_name] = fingerprint
             status = self._load_tool_status("saber", group_name)
             artifact = self._validated_replay_artifact(
                 "saber", group_name, fingerprint, status, project_root
@@ -455,87 +475,144 @@ class SvfAnalyzer:
                     "SVF resume: event=recovery_failed tool=saber group=%s; rerunning tool",
                     group_name,
                 )
-            output_dir = project_root / f".zscope_svf_{self._safe_output_suffix(group_name)}"
-            logger.info("Running Saber analysis for group '%s' using %s", group_name, bc_path)
-            try:
-                result = runner.run_saber(bc_path, output_dir)
-            except Exception as exc:
-                logger.warning("Saber group '%s' failed: %s", group_name, exc)
-                self._write_tool_status(
-                    "saber",
+            pending_paths[group_name] = bc_path
+        if not pending_paths:
+            return False
+
+        max_workers = self._saber_worker_count(len(pending_paths))
+        logger.info(
+            "Running %d Saber group(s) with %d worker(s)",
+            len(pending_paths),
+            max_workers,
+        )
+        had_failure = False
+        if max_workers <= 1:
+            for group_name, bc_path in pending_paths.items():
+                if not self._run_one_saber_group(
+                    runner,
                     group_name,
-                    fingerprint,
-                    status="failed",
-                    timed_out=False,
-                )
-                had_failure = True
-                continue
-            if result.timed_out:
-                self._write_tool_status(
-                    "saber",
+                    bc_path,
+                    project_root,
+                    fingerprints[group_name],
+                ):
+                    had_failure = True
+            return had_failure
+        with ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="zscope-saber"
+        ) as executor:
+            futures = {
+                executor.submit(
+                    self._run_one_saber_group,
+                    runner,
                     group_name,
-                    fingerprint,
-                    status="timed_out",
-                    timed_out=True,
-                    result=result,
-                )
-                had_failure = True
-                continue
-            if not result.success:
-                self._write_tool_status(
-                    "saber",
-                    group_name,
-                    fingerprint,
-                    status="failed",
-                    timed_out=False,
-                    result=result,
-                )
-                had_failure = True
-                continue
-            try:
-                artifact_path = self._write_saber_artifact(output_dir, result.bugs)
-                artifact_hash = self._file_hash(artifact_path)
-                artifact_relpath = self._relative_artifact_path(artifact_path, project_root)
-            except (OSError, TypeError, ValueError) as exc:
-                logger.warning(
-                    "Saber artifact persistence failed for group '%s': %s", group_name, exc
-                )
-                self._write_tool_status(
-                    "saber",
-                    group_name,
-                    fingerprint,
-                    status="failed",
-                    timed_out=False,
-                    result=result,
-                )
-                had_failure = True
-                continue
+                    bc_path,
+                    project_root,
+                    fingerprints[group_name],
+                ): group_name
+                for group_name, bc_path in pending_paths.items()
+            }
+            for future in as_completed(futures):
+                group_name = futures[future]
+                try:
+                    if not future.result():
+                        had_failure = True
+                except Exception as exc:
+                    logger.warning("Saber group failed: group=%s error=%s", group_name, exc)
+                    self._write_tool_status(
+                        "saber",
+                        group_name,
+                        fingerprints.get(group_name, ""),
+                        status="failed",
+                        timed_out=False,
+                    )
+                    had_failure = True
+        return had_failure
+
+    def _run_one_saber_group(
+        self,
+        runner: Any,
+        group_name: str,
+        bc_path: Path,
+        project_root: Path,
+        fingerprint: str,
+    ) -> bool:
+        """Run and materialize one saber group. Returns False on any failure."""
+        output_dir = project_root / f".zscope_svf_{self._safe_output_suffix(group_name)}"
+        logger.info("Running Saber analysis for group %s using %s", group_name, bc_path)
+        try:
+            result = runner.run_saber(bc_path, output_dir)
+        except Exception as exc:
+            logger.warning("Saber group %s failed: %s", group_name, exc)
             self._write_tool_status(
                 "saber",
                 group_name,
                 fingerprint,
-                status="success",
+                status="failed",
                 timed_out=False,
-                result=result,
-                artifact_path=artifact_relpath,
-                artifact_hash=artifact_hash,
             )
-            if not self._materialize_group(
+            return False
+        if result.timed_out:
+            self._write_tool_status(
                 "saber",
                 group_name,
                 fingerprint,
-                artifact_path,
-                artifact_hash,
-                artifact_relpath,
-            ):
-                logger.warning(
-                    "SVF group failed: event=recovery_failed tool=saber group=%s",
-                    group_name,
-                )
-                had_failure = True
-                continue
-            logger.info("SVF resume: event=tool_rerun tool=saber group=%s", group_name)
-        return had_failure
+                status="timed_out",
+                timed_out=True,
+                result=result,
+            )
+            return False
+        if not result.success:
+            self._write_tool_status(
+                "saber",
+                group_name,
+                fingerprint,
+                status="failed",
+                timed_out=False,
+                result=result,
+            )
+            return False
+        try:
+            artifact_path = self._write_saber_artifact(output_dir, result.bugs)
+            artifact_hash = self._file_hash(artifact_path)
+            artifact_relpath = self._relative_artifact_path(artifact_path, project_root)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Saber artifact persistence failed for group %s: %s", group_name, exc
+            )
+            self._write_tool_status(
+                "saber",
+                group_name,
+                fingerprint,
+                status="failed",
+                timed_out=False,
+                result=result,
+            )
+            return False
+        self._write_tool_status(
+            "saber",
+            group_name,
+            fingerprint,
+            status="success",
+            timed_out=False,
+            result=result,
+            artifact_path=artifact_relpath,
+            artifact_hash=artifact_hash,
+        )
+        if not self._materialize_group(
+            "saber",
+            group_name,
+            fingerprint,
+            artifact_path,
+            artifact_hash,
+            artifact_relpath,
+        ):
+            logger.warning(
+                "SVF group failed: event=recovery_failed tool=saber group=%s",
+                group_name,
+            )
+            return False
+        logger.info("SVF resume: event=tool_rerun tool=saber group=%s", group_name)
+        return True
 
     @staticmethod
     def _is_saber_group(group_name: str) -> bool:
