@@ -6,12 +6,16 @@ sources:
   - zscope/retrieval/code_index.py
   - zscope/retrieval/knowledge_db.py
   - zscope/retrieval/clang_backend.py
+  - zscope/retrieval/clang_extractor.py
+  - zscope/retrieval/clang_extractor_pool.py
   - zscope/retrieval/joern_backend.py
   - zscope/retrieval/unified_backend.py
   - zscope/retrieval/java_source_backend.py
   - zscope/retrieval/java_unified_backend.py
   - zscope/retrieval/java_signal_providers.py
   - zscope/retrieval/svf_analyzer.py
+  - zscope/retrieval/build_llvm.py
+  - zscope/retrieval/bitcode_scope.py
 tests:
   - tests/test_code_index_cache.py
   - tests/test_clang_incremental_extraction.py
@@ -21,6 +25,11 @@ tests:
   - tests/test_svf_cache.py
   - tests/test_joern_client.py
   - tests/test_java_source_backend.py
+  - tests/test_svf_saber_parallel.py
+  - tests/test_svf_memory_budget.py
+  - tests/test_clang_extractor_pool.py
+  - tests/test_build_llvm_lazy_plan.py
+  - tests/test_partial_derived_rebuild.py
 ---
 
 # 代码检索与后端
@@ -39,6 +48,8 @@ tests:
 - Java source backend 提供方法、注解和框架结构；java_unified 叠加 SootUp、WALA、Joern provider evidence。
 - C/C++ Joern 在 1.x 中仅为弃用兼容入口，不属于默认或离线 C 工具链。
 - Unified backend 组合 Clang 与 SVF；bitcode scope、LLVM 构建和 SVF runner 负责入口裁剪、链接与分析。
+- SVF 执行受三项性能机制约束：按组堆预算预检（超预算组跳过并保留降级语义）、saber 分组并行的堆上界 worker 池，以及可选的 scope-first 惰性位码构建（先按 KnowledgeDB 规划所需 TU，再只编译这些 TU）。
+- Clang 基础抽取可通过 Z_SCOPE_CLANGD_SHARDS 选择多实例 clangd 分片池；派生索引部分重建按 include 闭包把重建范围缩小到受影响的函数文件。
 - 上层候选和 Tool runtime 只消费统一查询结果，不应依赖某个后端的私有输出文本。
 
 ## 必须保持的不变量
@@ -57,6 +68,11 @@ tests:
 - KnowledgeDB 写入新事实后必须使相关查询缓存失效。
 - Unified 的 Clang 与 SVF 结果必须通过稳定的文件、函数和位置坐标缝合。
 - bitcode 裁剪、符号闭包、共享/互斥 pool 和回退原因必须保留 manifest 供审计。
+- SVF/saber 组并行执行（串行 resume 阶段 + 执行阶段线程池）必须保持与串行逐组执行完全一致的每组 status 与 artifact 语义；worker 并发同时受 `svf_workers` 与堆预算上界约束。
+- WPA 内存预算预检按合并后 .bc 体积估算 Andersen 内存；被跳过的超预算组必须记录 `skipped_memory_budget` 工具状态并维持降级（had_timeout）语义，不得伪装成完整成功；`Z_SCOPE_SVF_BC_MEMORY_FACTOR`（<=0 关闭预检）只调缩放系数。
+- 惰性位码构建（`Z_SCOPE_SVF_LAZY_BITCODE`，默认关闭）的规划只能使用 KnowledgeDB 事实与预期 bc 路径：规划失败、空计划或 full 模式必须回退全量编译；编译后的符号闭包只能在已编译集合内补链，选择、闭包与链接仍以真实编译产物为准。
+- 派生索引部分重建仅在所有脏索引的 `dirty_reason` 均为 `base_facts_changed`、存在真实基础变更且受影响函数文件不超过候选一半时启用；merge 发布必须完整替换受影响文件的行且不触碰其他文件行；extractor 版本升级、purge/清理与失败重试保持全量重建。
+- clangd 分片池只扇出基础抽取与延迟调用边；SQLite 发布保持调用方单写者事务，派生索引重建固定路由到主分片。
 - 遍历目标项目时要容忍权限错误和无效链接，但不能越过配置的源码范围读取敏感路径。
 
 ## 常见变更应落到哪里
@@ -73,6 +89,8 @@ tests:
 python -m pytest -q tests/test_code_index_cache.py tests/test_clang_incremental_extraction.py tests/test_clang_derived_reference_resolution.py tests/test_clang_lsp_transport.py
 python -m pytest -q tests/test_knowledge_db_ir_and_config.py tests/test_svf_cache.py
 python -m pytest -q tests/test_joern_client.py tests/test_bitcode_scope.py
+python -m pytest -q tests/test_svf_saber_parallel.py tests/test_svf_memory_budget.py tests/test_clang_extractor_pool.py
+python -m pytest -q tests/test_build_llvm_lazy_plan.py tests/test_partial_derived_rebuild.py
 ```
 
 ## 权威源码和关联文档
