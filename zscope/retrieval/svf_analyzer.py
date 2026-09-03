@@ -274,14 +274,17 @@ class SvfAnalyzer:
     ) -> Optional[Set[str]]:
         """Compute the scope plan before compiling; None keeps the full build."""
         try:
-            return builder.plan_required_sources(
-                groups=groups,
-                scope_config=self._scope_config,
-                entry_functions=scope_entries,
-                knowledge_db=self._db,
-                project_root=project_root,
-                auto_entry_clusters=(
-                    self._scope_config.mode != "full" and bool(scope_entries)
+            return cast(
+                Optional[Set[str]],
+                builder.plan_required_sources(
+                    groups=groups,
+                    scope_config=self._scope_config,
+                    entry_functions=scope_entries,
+                    knowledge_db=self._db,
+                    project_root=project_root,
+                    auto_entry_clusters=(
+                        self._scope_config.mode != "full" and bool(scope_entries)
+                    ),
                 ),
             )
         except Exception as exc:

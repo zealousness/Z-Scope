@@ -400,7 +400,7 @@ class ClangBackend(CodeBackend):
                         for path, (_tu_id, changed) in prescanned_tus.items()
                         if changed
                     ],
-                    deleted_paths=deleted_paths,
+                    deleted_paths=[str(path) for path in deleted_paths],
                 )
             if derived_work and file_list and not wait_for_index_once():
                 self._status = "error"
