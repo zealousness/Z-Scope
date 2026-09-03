@@ -854,11 +854,41 @@ class FunctionIRGraph:
                     for call_index in call_indexes
                 }
                 if any(len(values) != 1 for values in candidates.values()):
-                    return {}, False
-                selected = [values[0] for values in candidates.values()]
+                    # Zero-argument calls (``__errno_location`` after errno macro
+                    # expansion, bare event hooks) carry no argument references,
+                    # so a repeated identical shape cannot misattribute a typed
+                    # argument binding.  When every candidate call matches every
+                    # candidate location and none of the calls carries any
+                    # argument reference, pair them in order; any other shape
+                    # stays ambiguous and fails closed.
+                    zero_arg_ambiguous = (
+                        len(call_indexes) == len(call_locations)
+                        and all(
+                            not (
+                                isinstance(call.get("argument_refs"), list)
+                                and any(str(v or "") for v in call["argument_refs"])
+                            )
+                            and int(call.get("arg_count") or 0) == 0
+                            for call in (normalized_calls[index] for index in call_indexes)
+                        )
+                        and all(
+                            len(candidates[index]) == len(call_locations)
+                            for index in call_indexes
+                        )
+                    )
+                    if not zero_arg_ambiguous:
+                        return {}, False
+                    selected = list(call_locations)
+                else:
+                    selected = [values[0] for values in candidates.values()]
                 if len(set(selected)) != len(selected):
                     return {}, False
-                resolved = [(call_index, candidates[call_index][0]) for call_index in call_indexes]
+                if len(selected) == len(call_indexes):
+                    resolved = list(zip(call_indexes, selected))
+                else:
+                    resolved = [
+                        (call_index, candidates[call_index][0]) for call_index in call_indexes
+                    ]
             for call_index, location in resolved:
                 mapped_call_indexes.add(call_index)
                 used_pairs.add((location, callee))
@@ -901,6 +931,15 @@ class FunctionIRGraph:
             "reinterpret_cast",
             "const_cast",
             "dynamic_cast",
+            # ``debug.DumpCFG`` renders return statements as ``return (...)``
+            # and parenthesized casts/declarators can follow these keywords.
+            "return",
+            "else",
+            "do",
+            "case",
+            "default",
+            "typeof",
+            "_Generic",
         }
         return {
             value

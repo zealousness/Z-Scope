@@ -405,7 +405,7 @@ class ClangToolingEvidenceProvider:
                     }
                 )
                 if str(child.get("opcode") or "") == "=" and len(inner) >= 2:
-                    targets = cls._decl_refs_in_node(inner[0])
+                    targets = cls._assignment_target_texts(inner[0])
                     for nested in cls._walk_ast(inner[1]):
                         if targets and nested.get("kind") == "CallExpr":
                             call_assignments.append(
@@ -1088,6 +1088,52 @@ class ClangToolingEvidenceProvider:
             if child.get("kind") == "DeclRefExpr" and child.get("name"):
                 return str(child.get("name") or "")
         return ""
+
+    @classmethod
+    def _assignment_target_texts(cls, lhs: Any) -> List[str]:
+        """Render assignment LHS access paths, member fields included.
+
+        ``_decl_refs_in_node`` returns only declaration names, so a member
+        store such as ``zone->addr = _safe_malloc(...)`` would yield the bare
+        ``zone`` and fail to match the full member expression in the CFG text.
+        Render the structural access path (``zone->addr``) first and keep the
+        plain declaration names as fallbacks.
+        """
+
+        targets: List[str] = []
+
+        def render(node: Any) -> str:
+            if not isinstance(node, dict):
+                return ""
+            kind = str(node.get("kind") or "")
+            raw_inner = node.get("inner")
+            inner = raw_inner if isinstance(raw_inner, list) else []
+            if kind == "MemberExpr":
+                member = str(node.get("name") or "")
+                base = next((item for item in inner if isinstance(item, dict)), {})
+                base_text = render(base)
+                if not member:
+                    return base_text
+                arrow = "->" if node.get("isArrow") else "."
+                return f"{base_text}{arrow}{member}" if base_text else member
+            if kind == "DeclRefExpr":
+                referenced = node.get("referencedDecl")
+                if isinstance(referenced, dict):
+                    return str(referenced.get("name") or "")
+                return str(node.get("name") or "")
+            if kind in {"ImplicitCastExpr", "ParenExpr"}:
+                return render(next((item for item in inner if isinstance(item, dict)), {}))
+            if kind == "ArraySubscriptExpr":
+                return render(next((item for item in inner if isinstance(item, dict)), {}))
+            return ""
+
+        structural = render(lhs)
+        if structural:
+            targets.append(structural)
+        for ref in cls._decl_refs_in_node(lhs):
+            if ref not in targets:
+                targets.append(ref)
+        return targets[:8]
 
     @classmethod
     def _decl_refs_in_node(cls, node: Any) -> List[str]:

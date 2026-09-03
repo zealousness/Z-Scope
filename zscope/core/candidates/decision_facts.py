@@ -727,7 +727,12 @@ def required_fact_kinds_for_issue(issue: Mapping[str, Any]) -> tuple[str, ...]:
         "obligation_required_fact_kinds"
     )
     if isinstance(explicit, Sequence) and not isinstance(explicit, str):
-        return tuple(sorted({str(item) for item in explicit if str(item)}))
+        # Preserve the caller's order while de-duplicating.  The field is an
+        # echo of the frozen obligation's own ``required_fact_kinds``; sorting
+        # it here would rebuild a different tuple than the rule-branch literal
+        # below produced, so a live rebuild could never match the stored
+        # obligation identity.
+        return tuple(dict.fromkeys(str(item) for item in explicit if str(item)))
     rule = str(issue.get("rule") or pack.get("rule") or "").lower()
     defect = str(issue.get("defect_class") or issue.get("category") or "").lower()
     text = f"{rule} {defect}"

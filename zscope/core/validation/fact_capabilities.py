@@ -1311,10 +1311,23 @@ class FunctionIRFactService:
             "source_uid",
             "sink_uid",
             "decision_region_uid",
-            "required_fact_kinds",
         )
+
+        def _identity_equal(raw_value: Any, expected_value: Any) -> bool:
+            # A stored obligation round-trips through JSON, so its sequence
+            # fields come back as lists while ``to_dict`` emits tuples.  The
+            # frozen identity is the ordered content, not the container type.
+            if isinstance(raw_value, (list, tuple)) and isinstance(
+                expected_value, (list, tuple)
+            ):
+                return list(raw_value) == list(expected_value)
+            return raw_value == expected_value
+
         if raw.get("version") != SECURITY_OBLIGATION_VERSION or any(
-            raw.get(key) != expected.get(key) for key in identity_fields
+            not _identity_equal(raw.get(key), expected.get(key))
+            for key in identity_fields
+        ) or list(raw.get("required_fact_kinds") or []) != list(
+            expected.get("required_fact_kinds") or []
         ):
             return None
         return raw
