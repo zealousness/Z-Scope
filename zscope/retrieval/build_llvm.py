@@ -19,7 +19,7 @@ import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 from .bitcode_scope import (
     BitcodeScopeConfig,
@@ -117,10 +117,13 @@ class BitcodeBuilder:
         auto_entry_clusters: bool = False,
         saber_groups: bool = False,
         saber_full_group: bool = False,
+        only_sources: Optional[Set[str]] = None,
     ) -> Dict[str, Path]:
         """执行完整构建流程，返回各分组合并后的 .bc 路径字典。
 
         groups: 可选的分组配置，格式 {"group_name": ["exclude_file1.c", ...]}
+        only_sources: 惰性构建的 scope 计划（源文件集合）。仅编译计划内的 TU；
+            None 表示全量编译。选择与链接仍发生在实际编译出的 .bc 上。
         """
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._manifest = self._load_manifest()
@@ -135,6 +138,14 @@ class BitcodeBuilder:
         if not commands:
             logger.error("No compile commands loaded")
             return {}
+
+        if only_sources is not None:
+            commands = self._filter_commands_for_scope_plan(commands, only_sources)
+            if not commands:
+                logger.warning(
+                    "Scope plan matched no compile commands; falling back to full build"
+                )
+                commands = self._load_compile_commands()
 
         logger.info("Building bitcode for %d translation units", len(commands))
 
@@ -357,6 +368,122 @@ class BitcodeBuilder:
 
         self._save_manifest()
         return results
+
+    def _filter_commands_for_scope_plan(
+        self,
+        commands: Sequence[dict],
+        only_sources: Set[str],
+    ) -> List[dict]:
+        """Keep only the compile commands whose source is in the scope plan."""
+        planned = {str(Path(source).resolve()) for source in only_sources}
+        selected: List[dict] = []
+        for cmd in commands:
+            src_file = str(cmd.get("file") or "")
+            directory = str(cmd.get("directory") or self.source_root)
+            try:
+                resolved = self._resolve_source_file(src_file, directory)
+            except (OSError, ValueError):
+                continue
+            if str(resolved) in planned:
+                selected.append(cmd)
+        logger.info(
+            "Lazy bitcode scope plan: %d/%d translation unit(s) required",
+            len(selected),
+            len(commands),
+        )
+        return selected
+
+    def plan_required_sources(
+        self,
+        *,
+        groups: Optional[Dict[str, List[str]]] = None,
+        scope_config: Optional[BitcodeScopeConfig] = None,
+        entry_functions: Optional[Sequence[Any]] = None,
+        knowledge_db: Optional[Any] = None,
+        project_root: Optional[Path] = None,
+        auto_entry_clusters: bool = False,
+    ) -> Optional[Set[str]]:
+        """Return the union of scope-selected source files WITHOUT compiling.
+
+        Cluster and reachability planning are driven by KnowledgeDB facts and
+        path mappings only, so prospective bitcode paths (which do not exist
+        yet) are sufficient inputs.  llvm-nm symbol closure degrades to a
+        no-op on the missing files; it is re-applied on the real bitcode after
+        the lazy build and can then only pull in already-compiled TUs.
+
+        Returns None whenever planning cannot bound the build (full mode, no
+        selector inputs, empty plan) so the caller keeps the full compile.
+        """
+        commands = self._load_compile_commands()
+        if not commands or knowledge_db is None or scope_config is None:
+            return None
+        if scope_config.mode == "full" or not entry_functions:
+            return None
+
+        selector = EntryBitcodeSelector(
+            db=knowledge_db,
+            source_root=self.source_root,
+            project_root=Path(project_root or self.source_root),
+            config=scope_config,
+        )
+        bc_to_src: Dict[Path, Path] = {}
+        all_sources: Set[Path] = set()
+        for idx, cmd in enumerate(commands):
+            src_file = str(cmd.get("file") or "")
+            directory = str(cmd.get("directory") or self.source_root)
+            try:
+                resolved = self._resolve_source_file(src_file, directory)
+            except (OSError, ValueError):
+                continue
+            prospective_bc = self.output_dir / f"tu_{idx}_{Path(src_file).stem}.o.bc"
+            bc_to_src[prospective_bc] = resolved
+            all_sources.add(resolved)
+        if not bc_to_src:
+            return None
+
+        required: Set[Path] = set()
+        for group_name, exclude_list in (groups or {"default": []}).items():
+            group_bcs = [
+                bc
+                for bc, src in bc_to_src.items()
+                if not any(ex in Path(src).name for ex in (exclude_list or []))
+            ]
+            if not group_bcs:
+                continue
+            if auto_entry_clusters:
+                clusters = selector.cluster_entries(
+                    group_prefix=f"plan_{group_name}",
+                    candidate_bcs=group_bcs,
+                    bc_to_src=bc_to_src,
+                    entries=entry_functions,
+                )
+                selected_bcs: List[Path] = [
+                    Path(bc).resolve()
+                    for cluster in clusters
+                    for bc in cluster.selected_bcs
+                ]
+            else:
+                selected, _plan = selector.select(
+                    group_name=f"plan_{group_name}",
+                    candidate_bcs=group_bcs,
+                    bc_to_src=bc_to_src,
+                    entries=entry_functions,
+                )
+                selected_bcs = [Path(bc).resolve() for bc in selected]
+            for bc in selected_bcs:
+                src = bc_to_src.get(bc)
+                if src is not None:
+                    required.add(src)
+
+        required.update(selector._always_include_sources(all_sources))
+        if not required:
+            return None
+        logger.info(
+            "SVF lazy bitcode plan: %d/%d source file(s) required by scope",
+            len(required),
+            len(all_sources),
+        )
+        return {str(src) for src in required}
 
     def _load_or_build_entry_clusters(
         self,
