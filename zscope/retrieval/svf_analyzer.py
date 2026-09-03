@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 # Upper bound of concurrent saber processes per 8 GiB of configured heap budget.
 _SABER_HEAP_PER_WORKER_MB = 8192
 
+# Whole-program Andersen memory scales roughly linearly with the merged bitcode
+# size.  The factor is intentionally conservative; tune via
+# Z_SCOPE_SVF_BC_MEMORY_FACTOR (<= 0 disables the pre-check) without a config
+# schema change.  Calibrate on test/range before adjusting.
+_WPA_MEMORY_FACTOR_PER_BC_MB = 25.0
+
 
 class SvfAnalyzer:
     """Build bitcode, run SVF, and write indirect-call/Saber data."""
@@ -335,9 +341,33 @@ class SvfAnalyzer:
                     "SVF resume: event=recovery_failed tool=ander group=%s; rerunning tool",
                     group_name,
                 )
+            if self._wpa_memory_budget_exceeded(bc_path):
+                factor = self._wpa_memory_factor()
+                bc_size_mb = max(
+                    0.0, Path(bc_path).stat().st_size / (1024.0 * 1024.0)
+                )
+                logger.warning(
+                    "SVF memory budget: event=skip tool=ander group=%s "
+                    "bc_size_mb=%.1f estimated_mb=%.1f heap_limit_mb=%d factor=%.1f",
+                    group_name,
+                    bc_size_mb,
+                    bc_size_mb * factor,
+                    int(self._heap_limit),
+                    factor,
+                )
+                self._write_tool_status(
+                    "ander",
+                    group_name,
+                    fingerprint,
+                    status="skipped_memory_budget",
+                    timed_out=False,
+                )
+                had_timeout = True
+                continue
             pending_paths[group_name] = bc_path
         if not pending_paths:
-            return False
+            # Every group was already satisfied (cache/reimport/budget-skip).
+            return had_timeout
         with ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="zscope-wpa"
         ) as executor:
@@ -417,6 +447,32 @@ class SvfAnalyzer:
                     continue
                 logger.info("SVF resume: event=tool_rerun tool=ander group=%s", group_name)
         return had_timeout
+
+    @staticmethod
+    def _wpa_memory_factor() -> float:
+        raw = os.environ.get("Z_SCOPE_SVF_BC_MEMORY_FACTOR", "")
+        try:
+            factor = float(raw) if raw.strip() else _WPA_MEMORY_FACTOR_PER_BC_MB
+        except ValueError:
+            factor = _WPA_MEMORY_FACTOR_PER_BC_MB
+        return max(factor, 0.0)
+
+    def _wpa_memory_budget_exceeded(self, bc_path: Path) -> bool:
+        """Return whether whole-program Andersen likely exceeds the heap budget.
+
+        The estimate is deliberately cheap (BC size times a conservative
+        factor).  Groups exceeding the budget are skipped before the tool can
+        burn its whole timeout on a doomed run; the recorded tool status keeps
+        the degraded-SVF semantics required by the formal benchmark gates.
+        """
+        factor = self._wpa_memory_factor()
+        if factor <= 0.0:
+            return False
+        try:
+            bc_size_mb = max(0.0, Path(bc_path).stat().st_size / (1024.0 * 1024.0))
+        except OSError:
+            return False
+        return bc_size_mb * factor > float(self._heap_limit)
 
     def _saber_worker_count(self, group_count: int) -> int:
         """Bound parallel saber processes by configured workers and heap headroom.
