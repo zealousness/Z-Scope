@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, cast
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, cast
 
 logger = logging.getLogger(__name__)
 
@@ -1726,8 +1726,15 @@ class KnowledgeDB:
         index_name: str,
         target_version: str,
         last_stats: Optional[Dict[str, Any]] = None,
+        *,
+        merge_files: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
-        """Atomically publish staged rows and their matching current state."""
+        """Atomically publish staged rows and their matching current state.
+
+        With merge_files the target index keeps rows for every other function
+        file and only the affected files' rows are replaced from staging; the
+        staged rows must therefore cover exactly those files.
+        """
         canonical = self._canonical_derived_index_name(index_name)
         target = str(target_version or "")
         conn = self._conn
@@ -1763,9 +1770,38 @@ class KnowledgeDB:
             try:
                 conn.execute(f"SAVEPOINT {savepoint}")
                 savepoint_active = True
+                merge_scope: bool = merge_files is not None
+                if merge_scope:
+                    conn.execute(
+                        "CREATE TEMP TABLE IF NOT EXISTS derived_merge_files ("
+                        "path TEXT PRIMARY KEY)"
+                    )
+                    conn.execute("DELETE FROM derived_merge_files")
+                    merge_rows = [
+                        (variant,)
+                        for file_path in merge_files or ()
+                        for variant in self._path_variants(str(file_path))
+                        if variant
+                    ]
+                    if merge_rows:
+                        conn.executemany(
+                            "INSERT OR IGNORE INTO derived_merge_files(path) VALUES (?)",
+                            merge_rows,
+                        )
                 if canonical == self.DERIVED_INDEX_SYMBOL_CONTEXT:
-                    conn.execute("DELETE FROM function_symbol_refs")
-                    conn.execute("DELETE FROM function_macro_refs")
+                    if merge_scope:
+                        conn.execute(
+                            "DELETE FROM function_symbol_refs WHERE function_file IN "
+                            "(SELECT path FROM derived_merge_files)"
+                        )
+                        conn.execute(
+                            "DELETE FROM function_macro_refs WHERE function_id IN "
+                            "(SELECT id FROM functions WHERE file_path IN "
+                            "(SELECT path FROM derived_merge_files))"
+                        )
+                    else:
+                        conn.execute("DELETE FROM function_symbol_refs")
+                        conn.execute("DELETE FROM function_macro_refs")
                     conn.execute(
                         "INSERT INTO function_symbol_refs "
                         "(function_name, function_file, symbol_name, symbol_kind, symbol_file, "
@@ -1791,7 +1827,14 @@ class KnowledgeDB:
                         f"FROM {self._DERIVED_MACRO_REF_STAGE}"
                     )
                 else:
-                    conn.execute("DELETE FROM function_type_refs")
+                    if merge_scope:
+                        conn.execute(
+                            "DELETE FROM function_type_refs WHERE function_id IN "
+                            "(SELECT id FROM functions WHERE file_path IN "
+                            "(SELECT path FROM derived_merge_files))"
+                        )
+                    else:
+                        conn.execute("DELETE FROM function_type_refs")
                     conn.execute(
                         "INSERT INTO function_type_refs "
                         "(function_id, type_id, type_index_name, referenced_name, "
@@ -2632,6 +2675,53 @@ class KnowledgeDB:
                 closure.add(clean_source)
             result[source_file] = sorted(closure)
         return result
+
+    def compute_derived_affected_files(
+        self,
+        changed_files: Iterable[str],
+        candidate_files: Iterable[str],
+        *,
+        max_affected_ratio: float = 0.5,
+    ) -> Optional[Set[str]]:
+        """Return candidate files affected by base changes via reverse include closure.
+
+        A candidate is affected when it changed itself or its transitive
+        include closure touches any changed path.  Matching is deliberately
+        conservative (basename-level prefilter plus canonical path variants)
+        so the result is a superset of the truly affected files.  Returns
+        None when a partial merge would not beat a full rebuild (affected set
+        exceeds max_affected_ratio of the candidates).
+        """
+        changed_variants: Set[str] = set()
+        changed_basenames: Set[str] = set()
+        for raw in changed_files or ():
+            if not str(raw or ""):
+                continue
+            for variant in self._path_variants(str(raw)):
+                changed_variants.add(self._normalize_include_graph_path(variant))
+                changed_basenames.add(Path(variant).name)
+        if not changed_basenames:
+            return set()
+        candidates = [str(item or "") for item in candidate_files if str(item or "")]
+        if not candidates:
+            return set()
+        closures = self.get_transitive_include_closures(candidates)
+        affected: Set[str] = set()
+        for file_path in candidates:
+            normalized = self._normalize_include_graph_path(file_path)
+            if (
+                Path(file_path).name in changed_basenames
+                or normalized in changed_variants
+            ):
+                affected.add(file_path)
+                continue
+            for member in closures.get(file_path) or ():
+                if Path(str(member)).name in changed_basenames:
+                    affected.add(file_path)
+                    break
+        if len(affected) > int(len(candidates) * max_affected_ratio):
+            return None
+        return affected
 
     @staticmethod
     def _normalize_include_graph_path(path: str) -> str:
