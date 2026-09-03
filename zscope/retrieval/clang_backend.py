@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .backend_base import CodeBackend
 from .clang_extractor import ClangExtractor
+from .clang_extractor_pool import ClangExtractorPool
 from .knowledge_db import KnowledgeDB
 
 logger = logging.getLogger(__name__)
@@ -92,12 +93,27 @@ class ClangBackend(CodeBackend):
         if self._source_path is None:
             return False
         cc_dir = Path(self._compile_commands_path).parent if self._compile_commands_path else None
-        self._extractor = ClangExtractor(
-            project_root=self._source_path,  # clangd cwd/rootUri = source_root
-            clangd_path=self._clangd_path,
-            compile_commands_dir=cc_dir,
-            max_threads=self._max_threads,
-        )
+        shard_count = ClangExtractorPool.shard_count_from_env()
+        if shard_count > 1:
+            logger.info(
+                "Using %d clangd shards for base extraction (max_threads=%d)",
+                shard_count,
+                self._max_threads,
+            )
+            self._extractor = ClangExtractorPool(
+                project_root=self._source_path,  # clangd cwd/rootUri = source_root
+                clangd_path=self._clangd_path,
+                compile_commands_dir=cc_dir,
+                max_threads=self._max_threads,
+                shard_count=shard_count,
+            )
+        else:
+            self._extractor = ClangExtractor(
+                project_root=self._source_path,  # clangd cwd/rootUri = source_root
+                clangd_path=self._clangd_path,
+                compile_commands_dir=cc_dir,
+                max_threads=self._max_threads,
+            )
         if not self._extractor.start():
             logger.error("Failed to start clangd extractor")
             return False
@@ -292,10 +308,11 @@ class ClangBackend(CodeBackend):
                     seed_project_files(file_list)
                 if deleted_paths and hasattr(extractor, "notify_files_deleted"):
                     extractor.notify_files_deleted(deleted_paths)
-                supports_deferred_index_barrier = isinstance(extractor, ClangExtractor)
-                if (
-                    not supports_deferred_index_barrier
-                    and not extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
+                supports_deferred_index_barrier = isinstance(
+                    extractor, (ClangExtractor, ClangExtractorPool)
+                )
+                if not supports_deferred_index_barrier and not extractor.wait_for_indexing(
+                    timeout=120, idle_threshold=3.0
                 ):
                     logger.error("clangd indexing did not become ready before the hard timeout")
                     self._status = "error"
