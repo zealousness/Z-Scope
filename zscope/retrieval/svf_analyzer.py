@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, cast
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, cast
 
 from ..config.function_entry import FunctionEntry
 from .bitcode_scope import BitcodeScopeConfig
@@ -149,12 +149,21 @@ class SvfAnalyzer:
                 llvm_link_path=self._llvm_link,
                 timeout=self._timeout,
             )
+            only_sources: Optional[Set[str]] = None
+            if self._lazy_bitcode_enabled():
+                only_sources = self._plan_lazy_bitcode(
+                    builder=builder,
+                    groups=groups,
+                    scope_entries=scope_entries,
+                    project_root=project_root,
+                )
             bc_paths = self._build_bitcode(
                 builder,
                 groups=groups,
                 scope_entries=scope_entries,
                 project_root=project_root,
                 explicit_groups_config=bool(svf_groups_config),
+                only_sources=only_sources,
             )
             failed_tus = list(getattr(builder, "failed_tus", []))
             bitcode_complete = not failed_tus
@@ -245,6 +254,42 @@ class SvfAnalyzer:
             logger.error("SVF analysis failed: %s", exc)
             return False
 
+    @staticmethod
+    def _lazy_bitcode_enabled() -> bool:
+        """Lazy scope-first bitcode builds are opt-in via environment flag."""
+        return os.environ.get("Z_SCOPE_SVF_LAZY_BITCODE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def _plan_lazy_bitcode(
+        self,
+        *,
+        builder: Any,
+        groups: Dict[str, List[str]],
+        scope_entries: Sequence[Any],
+        project_root: Path,
+    ) -> Optional[Set[str]]:
+        """Compute the scope plan before compiling; None keeps the full build."""
+        try:
+            return builder.plan_required_sources(
+                groups=groups,
+                scope_config=self._scope_config,
+                entry_functions=scope_entries,
+                knowledge_db=self._db,
+                project_root=project_root,
+                auto_entry_clusters=(
+                    self._scope_config.mode != "full" and bool(scope_entries)
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "SVF lazy bitcode planning failed; compiling all TUs: %s", exc
+            )
+            return None
+
     def _build_bitcode(
         self,
         builder: Any,
@@ -253,6 +298,7 @@ class SvfAnalyzer:
         scope_entries: Sequence[Any],
         project_root: Path,
         explicit_groups_config: bool = False,
+        only_sources: Optional[Set[str]] = None,
     ) -> Dict[str, Path]:
         """Call BitcodeBuilder with scope kwargs when the implementation supports them."""
         params: Mapping[str, inspect.Parameter]
@@ -265,18 +311,21 @@ class SvfAnalyzer:
         )
         if not supports_scope_kwargs:
             return cast(Dict[str, Path], builder.build(groups=groups))
-        return cast(
-            Dict[str, Path],
-            builder.build(
-                groups=groups,
-                scope_config=self._scope_config,
-                entry_functions=scope_entries,
-                knowledge_db=self._db,
-                project_root=project_root,
-                auto_entry_clusters=(self._scope_config.mode != "full" and bool(scope_entries)),
-                saber_groups=True,
-            ),
+        build_kwargs: Dict[str, Any] = dict(
+            groups=groups,
+            scope_config=self._scope_config,
+            entry_functions=scope_entries,
+            knowledge_db=self._db,
+            project_root=project_root,
+            auto_entry_clusters=(self._scope_config.mode != "full" and bool(scope_entries)),
+            saber_groups=True,
         )
+        supports_only_sources = "only_sources" in params or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+        )
+        if only_sources is not None and supports_only_sources:
+            build_kwargs["only_sources"] = only_sources
+        return cast(Dict[str, Path], builder.build(**build_kwargs))
 
     def _run_split_svf(
         self,
