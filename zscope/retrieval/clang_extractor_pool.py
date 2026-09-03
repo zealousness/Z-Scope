@@ -24,7 +24,7 @@ import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .clang_extractor import ClangExtractor
 from .knowledge_db import KnowledgeDB
@@ -462,10 +462,14 @@ class ClangExtractorPool:
         db: KnowledgeDB,
         *,
         use_staging: bool = False,
+        only_files: Optional[Set[str]] = None,
     ) -> int:
+        kwargs: Dict[str, Any] = {"use_staging": use_staging}
+        if only_files is not None:
+            kwargs["only_files"] = only_files
         return self._shards[_DERIVED_SHARD_INDEX].rebuild_function_derived_refs(
             db,
-            use_staging=use_staging,
+            **kwargs,
         )
 
     def rebuild_function_symbol_refs(
@@ -473,10 +477,14 @@ class ClangExtractorPool:
         db: KnowledgeDB,
         *,
         use_staging: bool = False,
+        only_files: Optional[Set[str]] = None,
     ) -> int:
+        kwargs: Dict[str, Any] = {"use_staging": use_staging}
+        if only_files is not None:
+            kwargs["only_files"] = only_files
         return self._shards[_DERIVED_SHARD_INDEX].rebuild_function_symbol_refs(
             db,
-            use_staging=use_staging,
+            **kwargs,
         )
 
     def rebuild_function_type_refs(
@@ -484,10 +492,14 @@ class ClangExtractorPool:
         db: KnowledgeDB,
         *,
         use_staging: bool = False,
+        only_files: Optional[Set[str]] = None,
     ) -> int:
+        kwargs: Dict[str, Any] = {"use_staging": use_staging}
+        if only_files is not None:
+            kwargs["only_files"] = only_files
         return self._shards[_DERIVED_SHARD_INDEX].rebuild_function_type_refs(
             db,
-            use_staging=use_staging,
+            **kwargs,
         )
 
     def get_last_derived_stats(self, index_name: str) -> Dict[str, Any]:

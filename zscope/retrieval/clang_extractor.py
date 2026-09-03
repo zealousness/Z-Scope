@@ -25,6 +25,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Union,
     cast,
@@ -2050,6 +2051,7 @@ class ClangExtractor:
         db: KnowledgeDB,
         *,
         use_staging: bool = False,
+        only_files: Optional[Set[str]] = None,
     ) -> int:
         get_functions = getattr(db, "get_function_records", None)
         get_globals = getattr(db, "get_global_variables", None)
@@ -2073,6 +2075,12 @@ class ClangExtractor:
         assert callable(get_macros)
 
         functions = [row for row in get_functions() if not row.get("is_declaration")]
+        if only_files is not None:
+            functions = [
+                row
+                for row in functions
+                if str(row.get("file_path") or "") in only_files
+            ]
         globals_by_name = self._records_by_name(get_globals())
         macros_by_name = self._records_by_name(get_macros())
         indexed_symbol_names = set(globals_by_name).union(macros_by_name)
@@ -2230,6 +2238,7 @@ class ClangExtractor:
         db: KnowledgeDB,
         *,
         use_staging: bool = False,
+        only_files: Optional[Set[str]] = None,
     ) -> int:
         """Rebuild direct function type references after all TU facts are current."""
         get_functions = getattr(db, "get_function_records", None)
@@ -2245,6 +2254,12 @@ class ClangExtractor:
         assert callable(get_types)
 
         functions = [row for row in get_functions() if not row.get("is_declaration")]
+        if only_files is not None:
+            functions = [
+                row
+                for row in functions
+                if str(row.get("file_path") or "") in only_files
+            ]
         type_records = list(get_types())
         types_by_name = self._records_by_name(type_records)
         indexed_type_names = set(types_by_name)
@@ -2381,6 +2396,7 @@ class ClangExtractor:
         db: KnowledgeDB,
         *,
         use_staging: bool = False,
+        only_files: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
         """Rebuild symbol and type references in one file-major semantic pass."""
         symbol_index = "function_symbol_context"
@@ -2419,6 +2435,12 @@ class ClangExtractor:
         assert callable(stage_types)
 
         functions = [row for row in get_functions() if not row.get("is_declaration")]
+        if only_files is not None:
+            functions = [
+                row
+                for row in functions
+                if str(row.get("file_path") or "") in only_files
+            ]
         functions_by_file: Dict[str, List[Dict[str, Any]]] = {}
         for function in functions:
             functions_by_file.setdefault(str(function.get("file_path") or ""), []).append(function)
