@@ -133,7 +133,11 @@ SVF 可能将 `llvm.memset.*`、`llvm.memcpy.*`、`llvm.memmove.*`、`llvm.trap`
 7. 保留 `get_function_info_callees()` 的完整查询语义，并逐步让普通调用图查询复用同一套 edge projection/过滤规则。
 8. 增加以下回归测试：过滤项位于首批结果、跨分页重复项、direct/indirect 重名合并、稳定排序、超大间接调用集合以及后端分页提前停止。
 
-## KI-005 通用旧 tool result 压缩可能丢失语义建模关键证据
+## KI-005 通用旧 tool result 压缩可能丢失语义建模关键证据（已缓解）
+
+### 修复状态
+
+已缓解。/zscope/framework/llm_client.py设置MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS=50
 
 ### 问题描述
 
@@ -168,10 +172,6 @@ SVF 可能将 `llvm.memset.*`、`llvm.memcpy.*`、`llvm.memmove.*`、`llvm.trap`
 5. 增加受控的 `get_evidence(tool_call_id)` 或等价机制，使模型可取回已压缩结果的原文；该恢复操作不应被视为违反“不得重复工具调用”。
 6. 在最终 `emit_function_snapshot` 前构建独立 evidence pack，要求每个高风险 effect、error path、ownership/lock/callback 断言能对应到证据 ID 和源码行；证据不足时应输出 `unknown`，而非推断为事实。
 7. 建立压缩/未压缩对照回归：覆盖超长头文件、目标类型定义位于文件尾部、跨轮 callback/lock contract、重复查询禁止、原始证据恢复，以及 snapshot 字段的证据覆盖率、无依据断言率和 token 成本。
-
-### 已缓解
-
-/zscope/framework/llm_client.py设置MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS=50
 
 ## KI-006 `external function config` 未启用
 
@@ -480,7 +480,11 @@ complete_source_to_sink=true：0/21
 4. 如果保留 Queue 命名和 `max_workers` 配置，应实现真实的有界 provider 调度；否则重命名为同步 completion pass，并删除无效并发配置，避免错误预期。
 5. 增加端到端测试：前后 evidence 不变时不得重复执行无收益补全；特定 fact kind/subject 只调用匹配 provider；多请求逐项状态；空请求行为；新事实写回后 proof 重算；`blocking_negative_evidence` 的过滤差异。
 
-## KI-012 思考过程未回传且叠加输出上限，导致思维链断裂与无限思考
+## KI-012 思考过程未回传且叠加输出上限，导致思维链断裂与无限思考（已缓解）
+
+### 修复状态
+
+已缓解。API 请求默认保留最近一轮 assistant 的 reasoning_content。更早轮次的思考过程仍会删除，避免上下文持续膨胀。
 
 ### 问题描述
 
