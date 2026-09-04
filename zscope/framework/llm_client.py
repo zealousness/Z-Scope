@@ -1686,6 +1686,7 @@ class LLMClient:
         conversation: List[Dict[str, Any]],
         *,
         preserve_reasoning_metadata: bool = False,
+        preserve_latest_reasoning_metadata: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Build the model-facing context without mutating the full transcript.
@@ -1715,11 +1716,13 @@ class LLMClient:
             if (
                 role == "assistant"
                 and not preserve_reasoning_metadata
-                and index != latest_assistant_index
+                and not (
+                    preserve_latest_reasoning_metadata and index == latest_assistant_index
+                )
             ):
                 # reasoning_content is provider-specific scratchpad text. It is
-                # useful for continuing the latest model turn, but replaying all
-                # older reasoning is very expensive.
+                # useful for continuing a truncated model turn, but replaying it
+                # during normal tool rounds is expensive and disrupts prompt caching.
                 projected_message.pop("reasoning_content", None)
             elif role == "tool":
                 tool_id = str(message.get("tool_call_id") or "")
@@ -1971,6 +1974,7 @@ class LLMClient:
             model_conversation = self._prepare_messages_for_model(
                 conversation,
                 preserve_reasoning_metadata=preserve_reasoning_metadata,
+                preserve_latest_reasoning_metadata=last_finish_reason == "length",
             )
             ctx_tokens = self.estimate_tokens(model_conversation)
             raw_ctx_tokens = self.estimate_tokens(conversation)
