@@ -62,7 +62,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   <button id="savePageBtn">保存当前离线页面</button>
   <button id="defaultViewBtn" type="button">Default</button>
   <button id="needsReviewViewBtn" type="button">With needs_review</button>
-  <small>离线模式支持筛选、查看详情并编辑 validation_status / validation_reasoning。</small>
+  <small>离线模式支持筛选、查看详情并编辑 validation_status / 人工反驳说明（user_rebuttal）；validator 的 validation_reasoning 为只读结论。</small>
 </header>
 <main>
   <section class="panel">
@@ -135,7 +135,10 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
           </select>
           <span style="font-size:12px; color:var(--muted);">此处修改将保存在离线 HTML 内</span>
         </div>
-        <textarea id="reason" placeholder="填写 validation_reasoning（支持多行文本）"></textarea>
+        <label style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted);">Validator 验证说明（只读）</label>
+        <textarea id="reason" readonly placeholder="Validator 未提供验证说明" style="background:rgba(148,163,184,0.08);"></textarea>
+        <label style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-top:8px;">人工反驳 / 复核说明</label>
+        <textarea id="rebuttal" placeholder="填写人工验证依据，例如：为什么确认为真阳性 / 为什么拒绝 / 还需要检查哪些路径（支持多行文本）"></textarea>
       </div>
     </div>
     <div id="emptyView" style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; opacity:0.3;">
@@ -413,6 +416,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   const sevEl = document.getElementById('sev');
   const statusEl = document.getElementById('status');
   const reasonEl = document.getElementById('reason');
+  const rebuttalEl = document.getElementById('rebuttal');
   const snippetEl = document.getElementById('snippet');
   const reasoningEl = document.getElementById('reasoning');
   const evidenceDetailsEl = document.getElementById('evidenceDetails');
@@ -435,6 +439,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     bucket[key] = [
       String(issue.validation_status ?? ''),
       String(issue.validation_reasoning ?? ''),
+      String(issue.user_rebuttal ?? ''),
     ];
   }
 
@@ -740,7 +745,8 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
 
     statusEl.value = f.validation_status || 'pending';
     reasonEl.value = f.validation_reasoning || '';
-    
+    rebuttalEl.value = f.user_rebuttal || '';
+
     snippetEl.textContent = f.code_snippet || '暂无代码片段';
     reasoningEl.textContent = f.reasoning || f.reasoning_process || '暂无推理过程';
     evidenceDetailsEl.textContent = formatFindingEvidence(f) || '暂无结构化证据';
@@ -763,6 +769,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
       detailsCardEl.style.borderLeftColor = getBorderColor(f.impact_level);
       statusEl.value = f.validation_status || 'pending';
       reasonEl.value = f.validation_reasoning || '';
+      rebuttalEl.value = f.user_rebuttal || '';
       snippetEl.textContent = f.code_snippet || '暂无代码片段';
       reasoningEl.textContent = f.reasoning || f.reasoning_process || '暂无推理过程';
       evidenceDetailsEl.textContent = formatFindingEvidence(f) || '暂无结构化证据';
@@ -786,9 +793,10 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     renderList();
   });
 
-  reasonEl.addEventListener('input', () => {
+  // #reason 为只读展示（validator 原始说明），人工输入统一写入 #rebuttal -> user_rebuttal。
+  rebuttalEl.addEventListener('input', () => {
     if (currentIndex < 0) return;
-    state.findings[currentIndex].validation_reasoning = reasonEl.value;
+    state.findings[currentIndex].user_rebuttal = rebuttalEl.value;
     updateIssueSummary(state.findings[currentIndex]);
     refreshUnsavedValidationChanges();
   });

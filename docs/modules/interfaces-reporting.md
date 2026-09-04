@@ -43,6 +43,7 @@ tests:
 - schema 层维护结构化报告兼容性，finding roots/identity 信息用于低噪声投影。
 - SARIF exporter 将完成后的报告转换为 SARIF v2.1.0，并保留稳定 fingerprint 和证据位置。
 - Web server 负责路由，services 负责配置、报告、反馈和索引状态等业务操作。
+- Web 验证反馈保留 validator 的原始 `validation_reasoning`（Dashboard 中只读展示）；人工反驳 / 复核说明保存于 issue 级 `user_rebuttal`，随报告、snapshot final reports 与 finding_baselines 持久化。rejected 的 suppression reason 优先取 `user_rebuttal`，历史数据回退到 `validation_reasoning`。
 - MCP stdio/HTTP server 复用工具与资源 provider；远程 HTTP 额外经过 token、allowlist 和绑定地址校验。
 - Web/MCP 扫描请求接受 `scan_depth`，响应回显 effective depth 与 usage 摘要；CLI/YAML/API 最终都走同一严格配置校验。
 

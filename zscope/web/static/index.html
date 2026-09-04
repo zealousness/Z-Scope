@@ -535,12 +535,34 @@
             grid-column: 1 / -1;
             min-width: 0;
         }
-        .audit-decision-textarea {
+        .audit-decision-fields {
             grid-column: 1;
             grid-row: 2;
+            min-width: 0;
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            gap: 0.45rem;
+        }
+        .audit-decision-field {
+            min-width: 0;
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            gap: 0.3rem;
+        }
+        .audit-validator-textarea {
+            width: 100%;
+            height: clamp(52px, 26%, 120px);
+            resize: none;
+            font-size: 0.72rem;
+            line-height: 1.45;
+            background: #f8fafc;
+        }
+        .audit-rebuttal-textarea {
             width: 100%;
             height: 100%;
-            min-height: 96px;
+            min-height: 64px;
             resize: none;
         }
         .audit-decision-controls {
@@ -964,13 +986,27 @@
                     <section class="audit-decision-panel">
                         <div class="audit-decision-title">
                             <h3 class="text-sm font-semibold text-slate-950">验证决策</h3>
-                            <p class="text-xs subtle-text">可直接引用 evidence ref、文件路径和行号。</p>
+                            <p class="text-xs subtle-text">Validator 说明保留原始结论；反驳 / 复核说明可直接引用 evidence ref、文件路径和行号。</p>
                         </div>
-                        <textarea
-                            class="textarea textarea-bordered audit-decision-textarea"
-                            placeholder="填写人工验证依据，例如：为什么确认为真阳性 / 为什么拒绝 / 还需要检查哪些路径。"
-                            :value="selectedFinding.validation_reasoning"
-                            @input="setFindingValidationReasoning(selectedFinding, $event.target.value)"></textarea>
+                        <div class="audit-decision-fields">
+                            <div class="audit-decision-field">
+                                <label class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Validator 验证说明（只读）</label>
+                                <textarea
+                                    class="textarea textarea-bordered audit-validator-textarea"
+                                    readonly
+                                    :placeholder="selectedFinding.validation_reasoning ? '' : 'Validator 未提供验证说明'"
+                                    :value="selectedFinding.validation_reasoning"></textarea>
+                            </div>
+                            <div class="audit-decision-field">
+                                <label class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">人工反驳 / 复核说明</label>
+                                <textarea
+                                    class="textarea textarea-bordered audit-rebuttal-textarea"
+                                    x-ref="rebuttalInput"
+                                    placeholder="填写人工验证依据，例如：为什么确认为真阳性 / 为什么拒绝 / 还需要检查哪些路径。"
+                                    :value="selectedFinding.user_rebuttal"
+                                    @input="setFindingUserRebuttal(selectedFinding, $event.target.value)"></textarea>
+                            </div>
+                        </div>
                         <div class="audit-decision-controls">
                             <div class="audit-status-stack">
                                 <template x-for="status in validationStatusOptions" :key="status">
@@ -1754,12 +1790,17 @@
                     return String(issue?.validation_reasoning || '');
                 },
 
+                validationRebuttal(issue) {
+                    return String(issue?.user_rebuttal || '');
+                },
+
                 resetFindingValidationBaseline(issue, options = {}) {
                     if (!issue || typeof issue !== 'object') {
                         return issue;
                     }
                     issue._validation_original_status = this.validationStatus(issue);
                     issue._validation_original_reasoning = this.validationReasoning(issue);
+                    issue._validation_original_rebuttal = this.validationRebuttal(issue);
                     issue._validation_dirty = false;
                     issue._snapshot_sync_pending = Boolean(options.snapshotPending);
                     return issue;
@@ -1773,7 +1814,8 @@
                         this.resetFindingValidationBaseline(issue);
                     }
                     issue._validation_dirty = this.validationStatus(issue) !== String(issue._validation_original_status || 'pending')
-                        || this.validationReasoning(issue) !== String(issue._validation_original_reasoning || '');
+                        || this.validationReasoning(issue) !== String(issue._validation_original_reasoning || '')
+                        || this.validationRebuttal(issue) !== String(issue._validation_original_rebuttal || '');
                     return issue._validation_dirty;
                 },
 
@@ -1783,6 +1825,7 @@
                         ...source,
                         validation_status: source.validation_status || 'pending',
                         validation_reasoning: source.validation_reasoning || '',
+                        user_rebuttal: source.user_rebuttal || '',
                         uid: `${view || 'view'}-${source.id || 'issue'}-${source.function || 'fn'}-${source.location || 'loc'}-${index}`
                     };
                     return this.resetFindingValidationBaseline(normalized);
@@ -1816,6 +1859,7 @@
                         }
                         issue.validation_status = source.validation_status;
                         issue.validation_reasoning = source.validation_reasoning;
+                        issue.user_rebuttal = source.user_rebuttal;
                         this.updateFindingDirtyFlag(issue);
                     });
                 },
@@ -1831,13 +1875,18 @@
                     }
                     issue.validation_status = status || 'pending';
                     this.markFindingValidationDirty(issue);
+                    if (issue.validation_status === 'rejected' && !this.validationRebuttal(issue)) {
+                        this.$nextTick(() => {
+                            this.$refs.rebuttalInput?.focus();
+                        });
+                    }
                 },
 
-                setFindingValidationReasoning(issue, reasoning) {
+                setFindingUserRebuttal(issue, rebuttal) {
                     if (!issue) {
                         return;
                     }
-                    issue.validation_reasoning = reasoning || '';
+                    issue.user_rebuttal = rebuttal || '';
                     this.markFindingValidationDirty(issue);
                 },
 
@@ -2416,6 +2465,7 @@
                         reasoning: 10000,
                         reasoning_process: 10000,
                         validation_reasoning: 10000,
+                        user_rebuttal: 10000,
                         description: 5000,
                         root_cause: 5000,
                         suggested_fix: 5000,
@@ -2426,7 +2476,7 @@
                         'id', 'candidate_id', 'candidate_source', 'finding_kind', 'function', 'location',
                         'category', 'subcategory', 'description', 'root_cause', 'suggested_fix',
                         'reasoning', 'reasoning_process', 'code_snippet', 'validation_status',
-                        'validation_reasoning', 'confidence', 'impact_level', 'dedup_key',
+                        'validation_reasoning', 'user_rebuttal', 'confidence', 'impact_level', 'dedup_key',
                         'stable_fingerprint', 'defect_class', 'rule', 'rule_id', 'cwe', 'source', 'sink',
                         'guard_analysis', 'exploit_scenario', 'final_score', 'file', 'line',
                         'start_line', 'end_line', 'entry_function', 'sink_function', 'target_function',
@@ -2470,7 +2520,7 @@
                     [
                         'id', 'candidate_id', 'candidate_source', 'finding_kind', 'function', 'location',
                         'category', 'subcategory', 'validation_status', 'validation_reasoning',
-                        'confidence', 'impact_level', 'dedup_key', 'stable_fingerprint',
+                        'user_rebuttal', 'confidence', 'impact_level', 'dedup_key', 'stable_fingerprint',
                         'defect_class', 'rule', 'rule_id', 'cwe', 'final_score',
                         'file', 'line', 'start_line', 'end_line', 'entry_function', 'sink_function',
                         'target_function', 'analyzed_from', 'reachable_from_entry',
@@ -2515,6 +2565,7 @@
                         _offline_id,
                         _validation_original_status,
                         _validation_original_reasoning,
+                        _validation_original_rebuttal,
                         _validation_dirty,
                         _snapshot_sync_pending,
                         ...rest

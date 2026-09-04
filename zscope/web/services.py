@@ -43,6 +43,7 @@ DASHBOARD_TEXT_LIMITS = {
     "reasoning": 10000,
     "reasoning_process": 10000,
     "validation_reasoning": 10000,
+    "user_rebuttal": 10000,
     "description": 5000,
     "root_cause": 5000,
     "suggested_fix": 5000,
@@ -67,6 +68,7 @@ DASHBOARD_ISSUE_FIELDS = (
     "code_snippet",
     "validation_status",
     "validation_reasoning",
+    "user_rebuttal",
     "confidence",
     "impact_level",
     "dedup_key",
@@ -875,7 +877,7 @@ class ReportFeedbackService:
         for issue in updates:
             if not isinstance(issue, dict):
                 continue
-            status, reasoning = normalize_validation(issue)
+            status, reasoning, rebuttal = normalize_validation(issue)
             dedup_key = feedback_dedup_key(issue)
             if dedup_key:
                 baseline_status = {
@@ -892,7 +894,7 @@ class ReportFeedbackService:
                     func_name=str(issue.get("function") or ""),
                     location=str(issue.get("location") or ""),
                     category=feedback_category(issue),
-                    reason=str(reasoning or "user rejected finding"),
+                    reason=str(rebuttal or reasoning or "user rejected finding"),
                     scope="finding",
                     rule=str(issue.get("rule") or issue.get("candidate_source") or ""),
                     note=str(issue.get("description") or ""),
@@ -912,9 +914,10 @@ class ReportFeedbackService:
                 return
             key = issue_key(issue)
             if key in update_map:
-                status, reasoning = update_map[key]
+                status, reasoning, rebuttal = update_map[key]
                 issue["validation_status"] = status
                 issue["validation_reasoning"] = reasoning
+                issue["user_rebuttal"] = rebuttal
 
         for issue in report.get("issues", []):
             update_issue(issue)
@@ -990,9 +993,10 @@ class ReportFeedbackService:
                     update = dedup_updates[str(dedup_key)]
             if not update:
                 return False
-            status, reasoning = update
+            status, reasoning, rebuttal = update
             target["validation_status"] = status
             target["validation_reasoning"] = reasoning
+            target["user_rebuttal"] = rebuttal
             if status == "rejected":
                 target["rejection_source"] = "user"
             return True
@@ -1120,12 +1124,14 @@ def issue_key_part(value: Any) -> Any:
         return str(value)
 
 
-def normalize_validation(issue: Dict[str, Any]) -> tuple[str, Any]:
+def normalize_validation(issue: Dict[str, Any]) -> tuple[str, Any, Any]:
     status = issue.get("validation_status")
     if status not in ALLOWED_VALIDATION_STATUSES:
         status = "pending"
     reasoning = issue.get("validation_reasoning")
-    return status, reasoning
+    # 用户反驳/复核说明独立于 validator 说明持久化，不覆盖 validation_reasoning。
+    rebuttal = issue.get("user_rebuttal")
+    return status, reasoning, rebuttal
 
 
 def feedback_category(issue: Dict[str, Any]) -> str:
