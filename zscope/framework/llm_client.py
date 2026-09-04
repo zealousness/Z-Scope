@@ -1877,6 +1877,7 @@ class LLMClient:
         iterations = 0
         tool_call_history: Dict[str, List[Dict[str, Any]]] = {}
         loop_guard_recovery: Optional[Dict[str, Any]] = None
+        loop_guard_disabled_tools: Set[str] = set()
         cumulative_prompt_tokens = 0
         cumulative_completion_tokens = 0
         warned_low_iterations = False
@@ -1917,7 +1918,7 @@ class LLMClient:
                         exc,
                     )
                     executor_requested_final = True
-            force_no_tool_final = loop_guard_recovery is not None or executor_requested_final
+            force_no_tool_final = executor_requested_final
             final_iteration = max_iteration_final or force_no_tool_final
             if max_iteration_final:
                 final_instruction = (
@@ -1969,7 +1970,20 @@ class LLMClient:
             )
 
             # Call LLM
-            request_tools = None if final_iteration else tools_schema
+            request_tools = (
+                None
+                if final_iteration
+                else [
+                    schema
+                    for schema in tools_schema
+                    if not (
+                        isinstance(schema, dict)
+                        and isinstance(schema.get("function"), dict)
+                        and schema["function"].get("name") in loop_guard_disabled_tools
+                        and schema["function"].get("name") != terminal_tool_name
+                    )
+                ]
+            )
             if final_iteration and terminal_tool_name:
                 terminal_schemas = [
                     schema
@@ -2234,7 +2248,7 @@ class LLMClient:
                 return result_payload
 
             # Execute each tool call
-            force_final_after_loop_guard = False
+            loop_guard_tools_triggered_this_iteration: List[str] = []
             terminal_calls = []
             for candidate in tool_calls:
                 candidate_function = (
@@ -2485,7 +2499,23 @@ class LLMClient:
                         tool_id,
                         previous_calls,
                     )
-                    if covered_snippet_call is not None:
+                    if func_name in loop_guard_disabled_tools:
+                        repeated_call_count = len(previous_calls) + 1
+                        result = {
+                            "success": False,
+                            "error": (
+                                "This tool was disabled by the loop guard after a repeated "
+                                "call. Use another available tool or produce the final answer."
+                            ),
+                            "loop_guard_disabled_tool": True,
+                            **repeat_notice,
+                        }
+                        logger.warning(
+                            "Rejected call to tool disabled by loop guard: %s %s",
+                            func_name,
+                            func_args,
+                        )
+                    elif covered_snippet_call is not None:
                         repeated_call_count = 0
                         result = self._slice_covering_file_snippet_result(
                             covered_snippet_call,
@@ -2609,34 +2639,23 @@ class LLMClient:
                         )
 
                     if isinstance(result, dict) and result.get("repeat_call_guard"):
+                        loop_guard_disabled_tools.add(func_name)
                         loop_guard_recovery = {
                             "tool": func_name,
                             "arguments": func_args,
                             "repeat_count": repeated_call_count,
+                            "disabled_tools": sorted(loop_guard_disabled_tools),
                         }
                         logger.error(
-                            "Conversation hit repeated identical tool call; forcing final "
-                            "no-tool response: "
+                            "Conversation hit repeated identical tool call; disabling only "
+                            "the offending tool: "
                             "%s %s (repeat #%d)",
                             func_name,
                             func_args,
                             repeated_call_count,
                         )
-                        conversation.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "The loop guard blocked a repeated identical tool call. "
-                                    "The latest tool message contains the cached result or the "
-                                    "available evidence for that request. Tool use is now disabled. "
-                                    "Produce the required final answer from the evidence already in "
-                                    "this conversation. If the expected output is JSON, output one "
-                                    "valid JSON block now."
-                                ),
-                            }
-                        )
-                        force_final_after_loop_guard = True
-                        break
+                        if func_name not in loop_guard_tools_triggered_this_iteration:
+                            loop_guard_tools_triggered_this_iteration.append(func_name)
 
                 except Exception as e:
                     logger.error(f"Tool execution failed: {e}")
@@ -2656,7 +2675,19 @@ class LLMClient:
                             {},
                             error=str(e),
                         )
-            if force_final_after_loop_guard:
+            if loop_guard_tools_triggered_this_iteration:
+                disabled_names = ", ".join(loop_guard_tools_triggered_this_iteration)
+                conversation.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The loop guard blocked repeated calls and disabled only these tools: "
+                            f"{disabled_names}. Their latest tool messages contain the cached "
+                            "results or available evidence. Other tools remain available; use them "
+                            "only if needed, then produce the required final answer."
+                        ),
+                    }
+                )
                 continue
 
         if iterations >= max_iterations:

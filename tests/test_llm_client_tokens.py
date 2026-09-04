@@ -767,7 +767,7 @@ def test_bounded_conversation_can_replay_provider_reasoning_metadata(monkeypatch
     assert any(message.get("reasoning_content") == "provider-chain-state" for message in calls[1])
 
 
-def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call(
+def test_run_conversation_disables_only_repeated_tool_after_loop_guard(
     monkeypatch,
 ) -> None:
     client = LLMClient(
@@ -777,12 +777,23 @@ def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call
     )
     chat_calls = []
     tool_calls = []
+    tools_schema = [
+        {
+            "type": "function",
+            "function": {"name": "get_file_snippet", "parameters": {}},
+        },
+        {
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {}},
+        },
+    ]
 
     def fake_chat_completion(messages, **kwargs):
         chat_calls.append(list(messages))
         if len(chat_calls) == 4:
-            assert kwargs.get("tools") is None
-            assert "Tool use is now disabled" in messages[-1]["content"]
+            assert [schema["function"]["name"] for schema in kwargs["tools"]] == ["lookup"]
+            assert "get_file_snippet" in messages[-1]["content"]
+            assert "Other tools remain available" in messages[-1]["content"]
             return {
                 "choices": [
                     {
@@ -829,7 +840,7 @@ def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call
 
     result = client.run_conversation_with_tools(
         messages=[{"role": "user", "content": "start"}],
-        tools_schema=[],
+        tools_schema=tools_schema,
         tool_executor=fake_tool_executor,
         max_iterations=10,
         max_identical_tool_calls=1,
@@ -844,12 +855,90 @@ def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call
     assert result["content"].endswith("done")
     assert result["repeated_tool_call"]["tool"] == "get_file_snippet"
     assert result["repeated_tool_call"]["repeat_count"] == 3
+    assert result["repeated_tool_call"]["disabled_tools"] == ["get_file_snippet"]
     cached_tool_messages = [
         msg
         for msg in result["conversation"]
         if msg.get("role") == "tool" and "cached_tool_result" in str(msg.get("content", ""))
     ]
     assert cached_tool_messages
+
+
+def test_other_tool_remains_executable_after_loop_guard(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    chat_calls = []
+    tool_calls = []
+    tools_schema = [
+        {
+            "type": "function",
+            "function": {"name": "get_file_snippet", "parameters": {}},
+        },
+        {
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {}},
+        },
+    ]
+
+    def tool_call(call_id, name, arguments):
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)},
+        }
+
+    def fake_chat_completion(messages, **kwargs):
+        chat_calls.append(list(messages))
+        if len(chat_calls) <= 3:
+            call = tool_call(
+                f"call_{len(chat_calls)}",
+                "get_file_snippet",
+                {"file_path": "src/demo.c", "start_line": 1, "end_line": 10},
+            )
+        elif len(chat_calls) == 4:
+            assert [schema["function"]["name"] for schema in kwargs["tools"]] == ["lookup"]
+            call = tool_call("call_lookup", "lookup", {"name": "demo"})
+        else:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "done"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            }
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {"role": "assistant", "content": "", "tool_calls": [call]},
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        }
+
+    def fake_tool_executor(name, args):
+        tool_calls.append((name, args))
+        return {"success": True, "data": name}
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=tools_schema,
+        tool_executor=fake_tool_executor,
+        max_iterations=10,
+        max_identical_tool_calls=1,
+    )
+
+    assert result["loop_guard_triggered"] is True
+    assert result["iterations"] == 5
+    assert [name for name, _args in tool_calls] == ["get_file_snippet", "lookup"]
+    assert result["content"].endswith("done")
 
 
 def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> None:
