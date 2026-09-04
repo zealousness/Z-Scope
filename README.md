@@ -478,6 +478,10 @@ zscope -c zscope.yaml --verbose
 # 本轮启用 C/C++ balanced；token 只在扫描完成后计量
 zscope -c zscope.yaml --scan-depth balanced
 
+# --verbose 会把模型交互与工具调用录制到 .zscope_conversations/，
+# 供事后审计 llm_client 与工具行为（事件字典与调优指南见
+# new_docs/conversation_recorder_events.md）
+
 # 批量扫描模式：从 entry_functions_list JSON 开始
 zscope -c zscope.yaml
 
