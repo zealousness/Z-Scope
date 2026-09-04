@@ -604,6 +604,9 @@ def test_duplicate_terminal_calls_are_rejected_before_single_retry(monkeypatch) 
 
 
 def test_run_conversation_with_tools_compacts_old_tool_results(monkeypatch) -> None:
+    # The default keep-recent window (50 rounds) would retain every tool
+    # result in this short conversation; pin it to 1 to exercise compaction.
+    monkeypatch.setattr(LLMClient, "MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS", 1)
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid",

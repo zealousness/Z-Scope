@@ -7,6 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 import errno
+import hashlib
 import random
 import re
 import json
@@ -939,6 +940,137 @@ class LLMClient:
         self.close_thread_session()
         self._mark_all_base_urls_cooldown(cooldown_seconds)
 
+    # ------------------------------------------------------------------
+    # Conversation recording helpers. Every helper is a no-op unless the
+    # process-wide recorder is enabled (verbose runs) and a trace session
+    # exists, so instrumented call sites carry no overhead otherwise.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tools_schema_hash(tools_schema: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+        if not tools_schema:
+            return None
+        try:
+            canonical = json.dumps(tools_schema, ensure_ascii=False, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            canonical = repr(tools_schema)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _record_chat_exchange(
+        recorder: Any,
+        trace_session: Optional[ConversationSession],
+        created_trace_session: bool,
+        *,
+        iteration: Optional[int],
+        messages: List[Dict[str, Any]],
+        assembled_message: Dict[str, Any],
+        finish_reason: Optional[str],
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        duration_ms: int,
+        attempt_count: int,
+        base_url: str,
+        usage_event: Optional[Mapping[str, Any]] = None,
+        usage_attribution: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        if not (recorder and trace_session):
+            return
+        usage_event_id = None
+        if isinstance(usage_event, Mapping):
+            usage_event_id = usage_event.get("sequence")
+        recorder.record_exchange(
+            trace_session,
+            iteration,
+            messages,
+            assembled_message,
+            finish_reason,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            duration_ms=duration_ms,
+            attempt_count=attempt_count,
+            base_url=base_url,
+            usage_event_id=usage_event_id,
+            attribution=dict(usage_attribution) if usage_attribution else None,
+        )
+        if created_trace_session:
+            recorder.record_session_end(
+                trace_session,
+                iteration or 1,
+                prompt_tokens + completion_tokens,
+                truncated=finish_reason == "length",
+                cumulative_prompt_tokens=prompt_tokens,
+                cumulative_completion_tokens=completion_tokens,
+                cumulative_total_tokens=prompt_tokens + completion_tokens,
+                finish_reason=finish_reason,
+            )
+
+    @staticmethod
+    def _record_attempt_failure(
+        trace_session: Optional[ConversationSession],
+        iteration: Optional[int],
+        *,
+        model: Optional[str],
+        base_url: Optional[str],
+        attempt: Optional[int],
+        outcome: str,
+        error: Optional[str] = None,
+        delay_ms: Optional[int] = None,
+    ) -> None:
+        recorder = get_conversation_recorder()
+        if recorder is None or trace_session is None:
+            return
+        recorder.record_attempt_failure(
+            trace_session,
+            iteration,
+            model=model,
+            base_url=base_url,
+            attempt=attempt,
+            outcome=outcome,
+            error=error,
+            delay_ms=delay_ms,
+        )
+
+    @staticmethod
+    def _attempt_failure_outcome(error: BaseException) -> str:
+        if isinstance(error, requests.exceptions.Timeout):
+            return "timeout"
+        if isinstance(error, requests.exceptions.SSLError):
+            return "tls_error"
+        if isinstance(error, requests.exceptions.ConnectionError):
+            return "connect_error"
+        return "request_error"
+
+    @staticmethod
+    def _record_control_event(
+        trace_session: Optional[ConversationSession],
+        iteration: int,
+        kind: str,
+        detail: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        recorder = get_conversation_recorder()
+        if recorder is None or trace_session is None:
+            return
+        recorder.record_iteration_control(
+            trace_session,
+            iteration,
+            kind,
+            dict(detail) if detail else None,
+        )
+
+    @staticmethod
+    def _record_loop_guard_event(
+        trace_session: Optional[ConversationSession],
+        iteration: int,
+        **fields: Any,
+    ) -> None:
+        recorder = get_conversation_recorder()
+        if recorder is None or trace_session is None:
+            return
+        recorder.record_loop_guard(trace_session, iteration, **fields)
+
     def chat_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -963,7 +1095,11 @@ class LLMClient:
         recorder = get_conversation_recorder()
         created_trace_session = False
         if recorder and trace_session is None:
-            trace_session = recorder.begin_session(trace_agent or "direct_chat", trace_label)
+            trace_session = recorder.begin_session(
+                trace_agent or "direct_chat",
+                trace_label,
+                tools_schema_hash=self._tools_schema_hash(tools),
+            )
             created_trace_session = True
 
         for model in self.models:
@@ -1082,24 +1218,23 @@ class LLMClient:
                             f"Completion ~{completion_tokens:,} tk | "
                             f"Total ~{prompt_tokens + completion_tokens:,} tk"
                         )
-                        if recorder and trace_session:
-                            recorder.record_exchange(
-                                trace_session,
-                                trace_iteration,
-                                messages,
-                                assembled_message,
-                                finish_reason,
-                                model,
-                                prompt_tokens,
-                                completion_tokens,
-                            )
-                            if created_trace_session:
-                                recorder.record_session_end(
-                                    trace_session,
-                                    trace_iteration or 1,
-                                    prompt_tokens + completion_tokens,
-                                    truncated=finish_reason == "length",
-                                )
+                        self._record_chat_exchange(
+                            recorder,
+                            trace_session,
+                            created_trace_session,
+                            iteration=trace_iteration,
+                            messages=messages,
+                            assembled_message=assembled_message,
+                            finish_reason=finish_reason,
+                            model=model,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            duration_ms=max(0, int(round(duration_seconds * 1000))),
+                            attempt_count=attempt,
+                            base_url=endpoint.url,
+                            usage_event=usage_event,
+                            usage_attribution=usage_attribution,
+                        )
                         self._record_endpoint_success(endpoint)
                         return {
                             "choices": [
@@ -1170,24 +1305,23 @@ class LLMClient:
                             f"Completion ≈ {completion_tokens:,} tk | "
                             f"Total ≈ {prompt_tokens + completion_tokens:,} tk"
                         )
-                        if recorder and trace_session:
-                            recorder.record_exchange(
-                                trace_session,
-                                trace_iteration,
-                                messages,
-                                assembled_message,
-                                finish_reason,
-                                model,
-                                prompt_tokens,
-                                completion_tokens,
-                            )
-                            if created_trace_session:
-                                recorder.record_session_end(
-                                    trace_session,
-                                    trace_iteration or 1,
-                                    prompt_tokens + completion_tokens,
-                                    truncated=finish_reason == "length",
-                                )
+                        self._record_chat_exchange(
+                            recorder,
+                            trace_session,
+                            created_trace_session,
+                            iteration=trace_iteration,
+                            messages=messages,
+                            assembled_message=assembled_message,
+                            finish_reason=finish_reason,
+                            model=model,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            duration_ms=max(0, int(round(duration_seconds * 1000))),
+                            attempt_count=attempt,
+                            base_url=endpoint.url,
+                            usage_event=usage_event,
+                            usage_attribution=usage_attribution,
+                        )
 
                         self._record_endpoint_success(endpoint)
                         return {
@@ -1228,6 +1362,16 @@ class LLMClient:
                             10,
                         ) + random.uniform(0, 3)
                         self._mark_base_url_cooldown(endpoint, wait_time)
+                        self._record_attempt_failure(
+                            trace_session,
+                            trace_iteration,
+                            model=model,
+                            base_url=endpoint.url,
+                            attempt=attempt,
+                            outcome="rate_limited" if response.status_code == 429 else "http_5xx",
+                            error=error_msg,
+                            delay_ms=int(wait_time * 1000),
+                        )
                         logger.warning(
                             "Rate limited or server error on %s; cooling it down for %.1fs...",
                             endpoint.url,
@@ -1250,6 +1394,16 @@ class LLMClient:
                         self._mark_base_url_cooldown(endpoint, wait_time)
                         post_attempt_delay = wait_time
                         last_error = error_msg
+                        self._record_attempt_failure(
+                            trace_session,
+                            trace_iteration,
+                            model=model,
+                            base_url=endpoint.url,
+                            attempt=attempt,
+                            outcome="auth_retry",
+                            error=error_msg,
+                            delay_ms=int(wait_time * 1000),
+                        )
                         logger.warning(
                             "Endpoint %s returned an isolated HTTP 401 after prior "
                             "successful authentication; retrying once after %.1fs",
@@ -1258,6 +1412,15 @@ class LLMClient:
                         )
                         continue
                     else:
+                        self._record_attempt_failure(
+                            trace_session,
+                            trace_iteration,
+                            model=model,
+                            base_url=endpoint.url,
+                            attempt=attempt,
+                            outcome=f"http_{response.status_code}",
+                            error=error_msg,
+                        )
                         last_error = error_msg
                         break  # Try next model
 
@@ -1271,6 +1434,16 @@ class LLMClient:
                         2 ** min(attempt - 1, 4),
                         10,
                     ) + random.uniform(0, 3)
+                    self._record_attempt_failure(
+                        trace_session,
+                        trace_iteration,
+                        model=model,
+                        base_url=endpoint.url,
+                        attempt=attempt,
+                        outcome=self._attempt_failure_outcome(e),
+                        error=str(e),
+                        delay_ms=int(wait_time * 1000),
+                    )
                     if overload_reason is not None:
                         self._record_endpoint_overload(
                             endpoint,
@@ -1348,6 +1521,15 @@ class LLMClient:
                         elif token.wait(post_attempt_delay):
                             token.raise_if_cancelled()
 
+            self._record_attempt_failure(
+                trace_session,
+                trace_iteration,
+                model=model,
+                base_url=None,
+                attempt=attempt,
+                outcome="model_fallback",
+                error=last_error,
+            )
             logger.info(f"Falling back from model {model}...")
 
         raise Exception(f"All models failed. Last error: {last_error}")
@@ -1906,14 +2088,45 @@ class LLMClient:
         terminal_tool_call_count = 0
         terminal_invalid_call_count = 0
         terminal_failure_history: Dict[str, List[Dict[str, Any]]] = {}
+        loop_guard_fired = False
         if terminal_tool_handler is None and terminal_tool_validator is not None:
             terminal_tool_handler = terminal_tool_validator
+        conversation_started_monotonic = time.monotonic()
         recorder = get_conversation_recorder()
         trace_session = (
-            recorder.begin_session(trace_agent or "unknown_agent", trace_label)
+            recorder.begin_session(
+                trace_agent or "unknown_agent",
+                trace_label,
+                tools_schema_hash=self._tools_schema_hash(tools_schema),
+            )
             if recorder
             else None
         )
+
+        def _record_session_end_traced(
+            final_iterations: int,
+            final_tokens: int,
+            *,
+            truncated: bool,
+            finish_reason_value: Optional[str],
+            terminal_valid: Optional[bool],
+        ) -> None:
+            if not (recorder and trace_session):
+                return
+            recorder.record_session_end(
+                trace_session,
+                final_iterations,
+                final_tokens,
+                truncated=truncated,
+                cumulative_prompt_tokens=cumulative_prompt_tokens,
+                cumulative_completion_tokens=cumulative_completion_tokens,
+                cumulative_total_tokens=cumulative_prompt_tokens
+                + cumulative_completion_tokens,
+                wall_seconds=max(0.0, time.monotonic() - conversation_started_monotonic),
+                finish_reason=finish_reason_value,
+                loop_guard_triggered=loop_guard_fired or None,
+                terminal_tool_valid=terminal_valid,
+            )
 
         while iterations < max_iterations:
             iterations += 1
@@ -1955,8 +2168,20 @@ class LLMClient:
                         "content": final_instruction,
                     }
                 )
+                self._record_control_event(
+                    trace_session,
+                    iterations,
+                    "final_instruction",
+                    {
+                        "iteration": iterations,
+                        "max_iterations": max_iterations,
+                        "terminal_tool_name": terminal_tool_name,
+                    },
+                )
             elif force_no_tool_final:
-                pass
+                self._record_control_event(
+                    trace_session, iterations, "forced_final_by_executor"
+                )
             elif not warned_low_iterations and remaining_after_this <= low_iteration_threshold:
                 warned_low_iterations = True
                 conversation.append(
@@ -1969,6 +2194,15 @@ class LLMClient:
                             "the evidence already in this conversation."
                         ),
                     }
+                )
+                self._record_control_event(
+                    trace_session,
+                    iterations,
+                    "low_iteration_warning",
+                    {
+                        "remaining_after_this": remaining_after_this,
+                        "max_iterations": max_iterations,
+                    },
                 )
 
             model_conversation = self._prepare_messages_for_model(
@@ -2060,6 +2294,12 @@ class LLMClient:
                             ),
                         }
                     )
+                    self._record_control_event(
+                        trace_session,
+                        iterations,
+                        "terminal_prose_reprompt",
+                        {"reason": "no_terminal_call"},
+                    )
                     continue
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(
@@ -2071,8 +2311,13 @@ class LLMClient:
                 logger.info(
                     f"Conversation complete: {iterations} iterations, final context ≈ {final_tokens:,} tokens"
                 )
-                if recorder and trace_session:
-                    recorder.record_session_end(trace_session, iterations, final_tokens)
+                _record_session_end_traced(
+                    iterations,
+                    final_tokens,
+                    truncated=False,
+                    finish_reason_value=finish_reason,
+                    terminal_valid=terminal_tool_valid,
+                )
                 result_payload = {
                     "content": content,
                     "conversation": conversation,
@@ -2108,6 +2353,12 @@ class LLMClient:
                     f"Model {self.models[0] if self.models else 'unknown'} output truncated! Prompting to continue..."
                 )
                 conversation.append({"role": "user", "content": "请继续"})
+                self._record_control_event(
+                    trace_session,
+                    iterations,
+                    "length_continuation",
+                    {"finish_reason": "length"},
+                )
                 continue
 
             # Handle tool calls
@@ -2127,19 +2378,25 @@ class LLMClient:
                     "Model returned %d tool calls after tool use was disabled.",
                     len(tool_calls),
                 )
+                self._record_control_event(
+                    trace_session,
+                    iterations,
+                    "final_iteration_tool_calls_rejected",
+                    {"tool_call_count": len(tool_calls)},
+                )
                 final_tokens = self.estimate_tokens(
                     self._prepare_messages_for_model(
                         conversation,
                         preserve_reasoning_metadata=preserve_reasoning_metadata,
                     )
                 )
-                if recorder and trace_session:
-                    recorder.record_session_end(
-                        trace_session,
-                        iterations,
-                        final_tokens,
-                        truncated=max_iteration_final,
-                    )
+                _record_session_end_traced(
+                    iterations,
+                    final_tokens,
+                    truncated=max_iteration_final,
+                    finish_reason_value=finish_reason,
+                    terminal_valid=terminal_tool_valid,
+                )
                 result_payload = {
                     "content": self._get_combined_content(conversation),
                     "conversation": conversation,
@@ -2221,6 +2478,12 @@ class LLMClient:
                             ),
                         }
                     )
+                    self._record_control_event(
+                        trace_session,
+                        iterations,
+                        "terminal_prose_reprompt",
+                        {"reason": "no_tool_calls"},
+                    )
                     continue
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(
@@ -2232,8 +2495,13 @@ class LLMClient:
                 logger.info(
                     f"Conversation complete (no more tool calls): {iterations} iterations, final context ≈ {final_tokens:,} tokens"
                 )
-                if recorder and trace_session:
-                    recorder.record_session_end(trace_session, iterations, final_tokens)
+                _record_session_end_traced(
+                    iterations,
+                    final_tokens,
+                    truncated=False,
+                    finish_reason_value=finish_reason,
+                    terminal_valid=terminal_tool_valid,
+                )
                 result_payload = {
                     "content": content,
                     "conversation": conversation,
@@ -2327,6 +2595,7 @@ class LLMClient:
                                 terminal_tool_name,
                                 terminal_args,
                                 True,
+                                tool_call_id=terminal_id,
                             )
                         final_tokens = self.estimate_tokens(
                             self._prepare_messages_for_model(
@@ -2334,8 +2603,13 @@ class LLMClient:
                                 preserve_reasoning_metadata=preserve_reasoning_metadata,
                             )
                         )
-                        if recorder and trace_session:
-                            recorder.record_session_end(trace_session, iterations, final_tokens)
+                        _record_session_end_traced(
+                            iterations,
+                            final_tokens,
+                            truncated=False,
+                            finish_reason_value=finish_reason,
+                            terminal_valid=terminal_tool_valid,
+                        )
                         return {
                             "content": str(message.get("content") or ""),
                             "conversation": conversation,
@@ -2384,6 +2658,7 @@ class LLMClient:
                             terminal_args,
                             False,
                             validation_error,
+                            tool_call_id=terminal_id,
                         )
                     terminal_invalid_call_count += 1
                     failure_signature = self._terminal_failure_signature(
@@ -2442,13 +2717,22 @@ class LLMClient:
                             terminal_invalid_call_count,
                             len(identical_failures),
                         )
-                        if recorder and trace_session:
-                            recorder.record_session_end(
-                                trace_session,
-                                iterations,
-                                final_tokens,
-                                truncated=False,
-                            )
+                        loop_guard_fired = True
+                        self._record_loop_guard_event(
+                            trace_session,
+                            iterations,
+                            tool=terminal_tool_name,
+                            repeat_count=len(identical_failures),
+                            reason=guard_reason,
+                            scope="terminal",
+                        )
+                        _record_session_end_traced(
+                            iterations,
+                            final_tokens,
+                            truncated=False,
+                            finish_reason_value=finish_reason,
+                            terminal_valid=terminal_tool_valid,
+                        )
                         result_payload = {
                             "content": str(message.get("content") or ""),
                             "conversation": conversation,
@@ -2489,12 +2773,22 @@ class LLMClient:
 
                 logger.info(f"Tool call: {func_name}")
 
+                tool_started = time.monotonic()
+                func_args: Dict[str, Any] = {}
                 try:
                     func_args = self._parse_tool_args(func_args_str)
 
                     # VERY IMPORTANT: Re-serialize the corrected dict back into the conversation history
                     # so that strict upstreams like GLM-4/5 do not throw 400 Bad Request on "Expecting ','"
                     function["arguments"] = json.dumps(func_args, ensure_ascii=False)
+                    if recorder and trace_session:
+                        recorder.record_tool_call(
+                            trace_session,
+                            iterations,
+                            func_name,
+                            func_args,
+                            tool_call_id=tool_id,
+                        )
 
                     signature = self._tool_call_signature(func_name, func_args)
                     previous_calls = tool_call_history.get(signature, [])
@@ -2653,6 +2947,17 @@ class LLMClient:
                             func_name,
                             func_args,
                             result,
+                            tool_call_id=tool_id,
+                            duration_ms=max(
+                                0, int(round((time.monotonic() - tool_started) * 1000))
+                            ),
+                            blocked=bool(
+                                isinstance(result, dict) and result.get("repeat_call_guard")
+                            ),
+                            cached_replay=bool(
+                                isinstance(result, dict) and result.get("cached_tool_result")
+                            ),
+                            repeat_count=repeated_call_count,
                         )
 
                     if isinstance(result, dict) and result.get("repeat_call_guard"):
@@ -2671,6 +2976,16 @@ class LLMClient:
                             func_args,
                             repeated_call_count,
                         )
+                        loop_guard_fired = True
+                        self._record_loop_guard_event(
+                            trace_session,
+                            iterations,
+                            tool=func_name,
+                            repeat_count=repeated_call_count,
+                            disabled_tools=sorted(loop_guard_disabled_tools),
+                            scope="tool",
+                            recovered=False,
+                        )
                         if func_name not in loop_guard_tools_triggered_this_iteration:
                             loop_guard_tools_triggered_this_iteration.append(func_name)
 
@@ -2688,9 +3003,14 @@ class LLMClient:
                             trace_session,
                             iterations,
                             func_name,
-                            {},
+                            func_args,
                             {},
                             error=str(e),
+                            tool_call_id=tool_id,
+                            duration_ms=max(
+                                0, int(round((time.monotonic() - tool_started) * 1000))
+                            ),
+                            args_raw=func_args_str if not func_args else None,
                         )
             if loop_guard_tools_triggered_this_iteration:
                 disabled_names = ", ".join(loop_guard_tools_triggered_this_iteration)
@@ -2732,13 +3052,13 @@ class LLMClient:
         logger.info(
             f"Conversation ended (truncated={iterations >= max_iterations}): {iterations} iterations, final context ≈ {final_tokens:,} tokens"
         )
-        if recorder and trace_session:
-            recorder.record_session_end(
-                trace_session,
-                iterations,
-                final_tokens,
-                truncated=iterations >= max_iterations,
-            )
+        _record_session_end_traced(
+            iterations,
+            final_tokens,
+            truncated=iterations >= max_iterations,
+            finish_reason_value=last_finish_reason,
+            terminal_valid=terminal_tool_valid,
+        )
         result_payload = {
             "content": conversation[-1].get("content", "") if not message.get("tool_calls") else "",
             "conversation": conversation,

@@ -3,6 +3,7 @@ Command Line Interface for Z-SCOPE.
 """
 
 import click
+import hashlib
 import json
 import logging
 import sys
@@ -256,7 +257,14 @@ def main(
             click.echo(f"Task ID: {task_id}")
         if verbose:
             recorder = enable_conversation_recording(
-                zscope_config.project.project_root / ".zscope_conversations"
+                zscope_config.project.project_root / ".zscope_conversations",
+                metadata={
+                    "config_path": str(config),
+                    "config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+                    "zscope_version": __version__,
+                    "scan_depth": scan_depth,
+                    "mode": mode,
+                },
             )
             logger.info("LLM conversation recording enabled: %s", recorder.run_dir)
 
