@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -190,6 +191,7 @@ def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> No
               "location": "src/demo.c:42",
               "defect_class": "double_free",
               "validation_status": "pending",
+              "validation_reasoning": "validator: free after ownership transfer",
               "dedup_key": "double_free|entry|src/demo.c:42"
             }
           ]
@@ -208,7 +210,8 @@ def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> No
                 "location": "src/demo.c:42",
                 "defect_class": "double_free",
                 "validation_status": "rejected",
-                "validation_reasoning": "manual review",
+                "validation_reasoning": "validator: free after ownership transfer",
+                "user_rebuttal": "manual review: guard releases before second free",
                 "dedup_key": "double_free|entry|src/demo.c:42",
             }
         ]
@@ -218,9 +221,136 @@ def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> No
     assert payload["success"] is True
     assert payload["db_persisted"] is True
     assert saved["issues"][0]["validation_status"] == "rejected"
-    assert store.is_false_positive("entry", "src/demo.c:42", "double_free")
+    # Validator 原始说明必须保留，用户反驳说明独立持久化。
     assert (
-        store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "false_positive"
+        saved["issues"][0]["validation_reasoning"]
+        == "validator: free after ownership transfer"
+    )
+    assert (
+        saved["issues"][0]["user_rebuttal"]
+        == "manual review: guard releases before second free"
+    )
+    assert store.is_false_positive("entry", "src/demo.c:42", "double_free")
+    baseline = store.get_finding_baseline("double_free|entry|src/demo.c:42")
+    assert baseline["status"] == "false_positive"
+    assert (
+        json.loads(baseline["issue_json"]).get("user_rebuttal")
+        == "manual review: guard releases before second free"
+    )
+
+    with sqlite3.connect(store.db_path) as conn:
+        reason = conn.execute(
+            "SELECT reason FROM finding_suppressions WHERE func_name = ? AND location = ?",
+            ("entry", "src/demo.c:42"),
+        ).fetchone()[0]
+    assert reason == "manual review: guard releases before second free"
+
+
+def test_report_feedback_service_rejected_persists_rebuttal_to_snapshots(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "report.json"
+    issue = {
+        "id": "ISSUE_1",
+        "function": "entry",
+        "location": "src/demo.c:42",
+        "defect_class": "double_free",
+        "validation_status": "pending",
+        "validation_reasoning": "validator: free after ownership transfer",
+        "dedup_key": "double_free|entry|src/demo.c:42",
+    }
+    report_path.write_text(json.dumps({"issues": [dict(issue)]}), encoding="utf-8")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    snapshot_report = snapshot_dir / "entry_final.json"
+    snapshot_report.write_text(json.dumps({"issues": [dict(issue)]}), encoding="utf-8")
+    snapshot_store = type("FakeSnapshotStore", (), {"snapshot_dir": snapshot_dir})()
+
+    store = UserConfigStore(tmp_path / "user_config.xlsx")
+    service = ReportFeedbackService(
+        store,
+        snapshot_store,
+        report_filename=str(report_path),
+    )
+
+    payload = service.save_validation_feedback(
+        [
+            {
+                **issue,
+                "validation_status": "rejected",
+                "user_rebuttal": "user: guard prevents the second free",
+            }
+        ]
+    )
+    snapshot_saved = json.loads(snapshot_report.read_text(encoding="utf-8"))
+
+    assert payload["success"] is True
+    assert snapshot_saved["issues"][0]["validation_status"] == "rejected"
+    # Validator 原始说明不被拒绝操作覆盖，反驳说明与用户拒绝来源一起落盘。
+    assert (
+        snapshot_saved["issues"][0]["validation_reasoning"]
+        == "validator: free after ownership transfer"
+    )
+    assert (
+        snapshot_saved["issues"][0]["user_rebuttal"]
+        == "user: guard prevents the second free"
+    )
+    assert snapshot_saved["issues"][0]["rejection_source"] == "user"
+
+    with sqlite3.connect(store.db_path) as conn:
+        reason = conn.execute(
+            "SELECT reason FROM finding_suppressions WHERE func_name = ? AND location = ?",
+            ("entry", "src/demo.c:42"),
+        ).fetchone()[0]
+    assert reason == "user: guard prevents the second free"
+
+
+def test_report_feedback_service_rebuttal_only_update_preserves_status_and_reasoning(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "issues": [
+                    {
+                        "id": "ISSUE_1",
+                        "function": "entry",
+                        "location": "src/demo.c:42",
+                        "defect_class": "double_free",
+                        "validation_status": "needs_review",
+                        "validation_reasoning": "validator: conflicting guard evidence",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReportFeedbackService(report_filename=str(report_path))
+
+    service.save_validation_feedback(
+        [
+            {
+                "id": "ISSUE_1",
+                "function": "entry",
+                "location": "src/demo.c:42",
+                "defect_class": "double_free",
+                "validation_status": "needs_review",
+                "validation_reasoning": "validator: conflicting guard evidence",
+                "user_rebuttal": "reviewer: guard is unreachable on this path",
+            }
+        ]
+    )
+    saved = service.load_report()
+
+    assert saved["issues"][0]["validation_status"] == "needs_review"
+    assert (
+        saved["issues"][0]["validation_reasoning"]
+        == "validator: conflicting guard evidence"
+    )
+    assert (
+        saved["issues"][0]["user_rebuttal"]
+        == "reviewer: guard is unreachable on this path"
     )
 
 
@@ -366,6 +496,7 @@ def test_report_feedback_service_updates_snapshots_by_default(tmp_path: Path) ->
                 **issue,
                 "validation_status": "needs_review",
                 "validation_reasoning": "manual review",
+                "user_rebuttal": "reviewer notes",
             }
         ]
     )
@@ -376,6 +507,7 @@ def test_report_feedback_service_updates_snapshots_by_default(tmp_path: Path) ->
     assert payload["snapshot_persistence"]["issues_updated"] == 1
     assert snapshot_saved["issues"][0]["validation_status"] == "needs_review"
     assert snapshot_saved["issues"][0]["validation_reasoning"] == "manual review"
+    assert snapshot_saved["issues"][0]["user_rebuttal"] == "reviewer notes"
 
 
 def test_report_feedback_service_accepts_structured_issue_key_fields(tmp_path: Path) -> None:

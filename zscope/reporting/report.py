@@ -30,6 +30,7 @@ class Issue:
         "pending"  # pending, validated, needs_review, uncertain, unvalidated, rejected
     )
     validation_reasoning: Optional[str] = None
+    user_rebuttal: Optional[str] = None
     finding_kind: Optional[str] = None
     validator_verdict: Optional[str] = None
     cwe: Optional[str] = None
@@ -366,6 +367,12 @@ class ReportGenerator:
                     }.get(issue.validation_status, "⚪ Validator 未完成")
                     md_content += f"\n**{status_label}**:\n{self._normalize_md_text(issue.validation_reasoning)}\n"
 
+                if issue.user_rebuttal:
+                    md_content += (
+                        "\n**👤 用户反驳 / 复核说明**:\n"
+                        f"{self._normalize_md_text(issue.user_rebuttal)}\n"
+                    )
+
                 md_content += "\n---\n"
 
         if review_issues:
@@ -391,6 +398,11 @@ class ReportGenerator:
                     md_content += (
                         "\n**🟡 Validator 待复核**:\n"
                         f"{self._normalize_md_text(issue.validation_reasoning)}\n"
+                    )
+                if issue.user_rebuttal:
+                    md_content += (
+                        "\n**👤 用户反驳 / 复核说明**:\n"
+                        f"{self._normalize_md_text(issue.user_rebuttal)}\n"
                     )
                 md_content += "\n---\n"
 
