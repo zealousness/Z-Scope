@@ -484,7 +484,7 @@ complete_source_to_sink=true：0/21
 
 ### 修复状态
 
-已缓解。API 请求默认保留最近一轮 assistant 的 reasoning_content。更早轮次的思考过程仍会删除，避免上下文持续膨胀。
+已缓解。当上一轮 API 返回 finish_reason="length" 时，下一次续写请求保留最近一轮 reasoning。更早轮次的思考过程仍会删除，避免上下文持续膨胀。
 
 ### 问题描述
 
