@@ -194,6 +194,13 @@ class WikiWriterLock:
     def _pid_alive(pid: int) -> bool:
         if pid <= 0:
             return False
+        if os.name == "nt":
+            # os.kill(pid, 0) is destructive on Windows: signal 0 equals
+            # CTRL_C_EVENT, which is delivered to every process attached to
+            # the calling console, and any other signal value unconditionally
+            # TerminateProcess()es the target. Probe the process handle
+            # instead of signalling it.
+            return WikiWriterLock._pid_alive_windows(pid)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -203,6 +210,27 @@ class WikiWriterLock:
         except OSError:
             return False
         return True
+
+    @staticmethod
+    def _pid_alive_windows(pid: int) -> bool:
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+        except (ImportError, OSError, AttributeError):
+            return True
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
 
     @classmethod
     def _read_owner(cls, path: Path) -> dict:
