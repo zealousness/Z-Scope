@@ -94,7 +94,7 @@ class LLMClient:
     OpenAI-compatible LLM client with model fallback support.
     """
 
-    MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS = 1
+    MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS = 50
     MODEL_CONTEXT_INLINE_OLD_TOOL_CHARS = 900
     MODEL_CONTEXT_TOOL_RESULT_SUMMARY_CHARS = 1800
     MODEL_CONTEXT_SUMMARY_STRING_CHARS = 500
@@ -2487,21 +2487,26 @@ class LLMClient:
                     )
                     if covered_snippet_call is not None:
                         repeated_call_count = 0
-                        covering_result = covered_snippet_call.get("result")
-                        result = dict(covering_result) if isinstance(covering_result, dict) else {}
-                        result["cached_tool_result"] = True
-                        result["covered_file_snippet_replay"] = True
-                        result["repeat_call_warning"] = self._build_covered_file_snippet_notice(
-                            func_args,
-                            tool_id,
+                        result = self._slice_covering_file_snippet_result(
                             covered_snippet_call,
-                        )
-                        logger.warning(
-                            "Replayed cached result for covered get_file_snippet range: "
-                            "%s (covered by %s)",
                             func_args,
-                            covered_snippet_call.get("arguments"),
                         )
+                        if result is None:
+                            result = tool_executor(func_name, func_args)
+                        else:
+                            result["cached_tool_result"] = True
+                            result["covered_file_snippet_replay"] = True
+                            result["repeat_call_warning"] = self._build_covered_file_snippet_notice(
+                                func_args,
+                                tool_id,
+                                covered_snippet_call,
+                            )
+                            logger.warning(
+                                "Replayed sliced cached result for covered get_file_snippet range: "
+                                "%s (covered by %s)",
+                                func_args,
+                                covered_snippet_call.get("arguments"),
+                            )
                     elif (
                         max_identical_tool_calls > 0
                         and len(previous_calls) >= max_identical_tool_calls
@@ -2931,6 +2936,58 @@ class LLMClient:
                 "unless the new range includes additional lines that are not present."
             ),
         }
+
+    @classmethod
+    def _slice_covering_file_snippet_result(
+        cls,
+        covering_call: Dict[str, Any],
+        arguments: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Derive the exact requested line range from a covering snippet result."""
+        result = covering_call.get("result")
+        if not isinstance(result, dict) or result.get("success") is not True:
+            return None
+        data = result.get("data")
+        if not isinstance(data, dict):
+            return None
+
+        covering_start = cls._line_number(data.get("start_line"))
+        covering_end = cls._line_number(data.get("end_line"))
+        requested_start = cls._line_number(arguments.get("start_line"))
+        requested_end = cls._line_number(arguments.get("end_line"))
+        code = data.get("code")
+        if (
+            covering_start is None
+            or covering_end is None
+            or requested_start is None
+            or requested_end is None
+            or not isinstance(code, str)
+            or covering_start > requested_start
+            or covering_end < requested_end
+        ):
+            return None
+
+        code_lines = code.splitlines(keepends=True)
+        covering_line_count = covering_end - covering_start + 1
+        if len(code_lines) != covering_line_count:
+            return None
+        start_offset = requested_start - covering_start
+        end_offset = requested_end - covering_start + 1
+        selected_lines = code_lines[start_offset:end_offset]
+        if len(selected_lines) != requested_end - requested_start + 1:
+            return None
+
+        sliced_data = dict(data)
+        sliced_data.update(
+            {
+                "start_line": requested_start,
+                "end_line": requested_end,
+                "code": "".join(selected_lines),
+            }
+        )
+        sliced_result = dict(result)
+        sliced_result["data"] = sliced_data
+        return sliced_result
 
     @staticmethod
     def _normalize_file_path_for_compare(value: Any) -> str:
