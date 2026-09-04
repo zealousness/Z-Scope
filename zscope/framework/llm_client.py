@@ -1686,6 +1686,7 @@ class LLMClient:
         conversation: List[Dict[str, Any]],
         *,
         preserve_reasoning_metadata: bool = False,
+        preserve_latest_reasoning_metadata: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Build the model-facing context without mutating the full transcript.
@@ -1696,17 +1697,32 @@ class LLMClient:
         structured summaries that preserve lookup provenance and key facts.
         """
         keep_tool_ids = self._recent_tool_result_ids_to_keep(conversation)
+        latest_assistant_index = next(
+            (
+                index
+                for index in range(len(conversation) - 1, -1, -1)
+                if conversation[index].get("role") == "assistant"
+            ),
+            None,
+        )
         projected: List[Dict[str, Any]] = []
         compacted_count = 0
         original_chars = 0
         compacted_chars = 0
 
-        for message in conversation:
+        for index, message in enumerate(conversation):
             role = message.get("role")
             projected_message = self._copy_message_for_model(message)
-            if role == "assistant" and not preserve_reasoning_metadata:
+            if (
+                role == "assistant"
+                and not preserve_reasoning_metadata
+                and not (
+                    preserve_latest_reasoning_metadata and index == latest_assistant_index
+                )
+            ):
                 # reasoning_content is provider-specific scratchpad text. It is
-                # useful for local diagnostics but very expensive to replay.
+                # useful for continuing a truncated model turn, but replaying it
+                # during normal tool rounds is expensive and disrupts prompt caching.
                 projected_message.pop("reasoning_content", None)
             elif role == "tool":
                 tool_id = str(message.get("tool_call_id") or "")
@@ -1958,6 +1974,7 @@ class LLMClient:
             model_conversation = self._prepare_messages_for_model(
                 conversation,
                 preserve_reasoning_metadata=preserve_reasoning_metadata,
+                preserve_latest_reasoning_metadata=last_finish_reason == "length",
             )
             ctx_tokens = self.estimate_tokens(model_conversation)
             raw_ctx_tokens = self.estimate_tokens(conversation)
