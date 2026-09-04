@@ -1696,17 +1696,30 @@ class LLMClient:
         structured summaries that preserve lookup provenance and key facts.
         """
         keep_tool_ids = self._recent_tool_result_ids_to_keep(conversation)
+        latest_assistant_index = next(
+            (
+                index
+                for index in range(len(conversation) - 1, -1, -1)
+                if conversation[index].get("role") == "assistant"
+            ),
+            None,
+        )
         projected: List[Dict[str, Any]] = []
         compacted_count = 0
         original_chars = 0
         compacted_chars = 0
 
-        for message in conversation:
+        for index, message in enumerate(conversation):
             role = message.get("role")
             projected_message = self._copy_message_for_model(message)
-            if role == "assistant" and not preserve_reasoning_metadata:
+            if (
+                role == "assistant"
+                and not preserve_reasoning_metadata
+                and index != latest_assistant_index
+            ):
                 # reasoning_content is provider-specific scratchpad text. It is
-                # useful for local diagnostics but very expensive to replay.
+                # useful for continuing the latest model turn, but replaying all
+                # older reasoning is very expensive.
                 projected_message.pop("reasoning_content", None)
             elif role == "tool":
                 tool_id = str(message.get("tool_call_id") or "")

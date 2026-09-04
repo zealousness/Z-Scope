@@ -767,6 +767,66 @@ def test_bounded_conversation_can_replay_provider_reasoning_metadata(monkeypatch
     assert any(message.get("reasoning_content") == "provider-chain-state" for message in calls[1])
 
 
+def test_length_continuation_replays_latest_provider_reasoning_by_default(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "reasoning_content": "latest-provider-chain-state",
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            }
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "done"},
+                }
+            ],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 3},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    client.run_conversation_with_tools(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "older",
+                "reasoning_content": "older-provider-chain-state",
+            },
+            {"role": "user", "content": "start"},
+        ],
+        tools_schema=[],
+        tool_executor=lambda name, args: (_ for _ in ()).throw(AssertionError("not called")),
+        max_iterations=2,
+    )
+
+    second_request = calls[1]
+    assert any(
+        message.get("reasoning_content") == "latest-provider-chain-state"
+        for message in second_request
+    )
+    assert all(
+        message.get("reasoning_content") != "older-provider-chain-state"
+        for message in second_request
+    )
+
+
 def test_run_conversation_disables_only_repeated_tool_after_loop_guard(
     monkeypatch,
 ) -> None:
