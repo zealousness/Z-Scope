@@ -909,13 +909,17 @@ def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> Non
 
     def fake_tool_executor(name, args):
         tool_calls.append((name, args))
+        code = "".join(
+            f"{line} | int demo_{line}(void) {{ return {line}; }}\n"
+            for line in range(1, 21)
+        )
         return {
             "success": True,
             "data": {
                 "file": args["file_path"],
                 "start_line": args["start_line"],
                 "end_line": args["end_line"],
-                "code": "1 | int demo(void) { return 0; }\n",
+                "code": code,
             },
         }
 
@@ -939,6 +943,11 @@ def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> Non
     ]
     assert covered_tool_messages
     assert "cached_tool_result" in covered_tool_messages[0]["content"]
+    covered_payload = json.loads(covered_tool_messages[0]["content"])
+    assert covered_payload["data"]["start_line"] == 5
+    assert covered_payload["data"]["end_line"] == 10
+    assert covered_payload["data"]["code"].splitlines()[0].startswith("5 |")
+    assert len(covered_payload["data"]["code"].splitlines()) == 6
 
 
 def test_run_conversation_reports_final_tool_call_after_tools_disabled(monkeypatch) -> None:

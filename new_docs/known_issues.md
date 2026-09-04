@@ -169,6 +169,10 @@ SVF 可能将 `llvm.memset.*`、`llvm.memcpy.*`、`llvm.memmove.*`、`llvm.trap`
 6. 在最终 `emit_function_snapshot` 前构建独立 evidence pack，要求每个高风险 effect、error path、ownership/lock/callback 断言能对应到证据 ID 和源码行；证据不足时应输出 `unknown`，而非推断为事实。
 7. 建立压缩/未压缩对照回归：覆盖超长头文件、目标类型定义位于文件尾部、跨轮 callback/lock contract、重复查询禁止、原始证据恢复，以及 snapshot 字段的证据覆盖率、无依据断言率和 token 成本。
 
+### 已缓解
+
+/zscope/framework/llm_client.py设置MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS=50
+
 ## KI-006 `external function config` 未启用
 
 ### 问题描述
@@ -475,3 +479,67 @@ complete_source_to_sink=true：0/21
 3. 为补全建立 request-to-fact/proof 对应关系，禁止无关 provider 生成的任意 proof 将全部请求笼统标记为 completed。
 4. 如果保留 Queue 命名和 `max_workers` 配置，应实现真实的有界 provider 调度；否则重命名为同步 completion pass，并删除无效并发配置，避免错误预期。
 5. 增加端到端测试：前后 evidence 不变时不得重复执行无收益补全；特定 fact kind/subject 只调用匹配 provider；多请求逐项状态；空请求行为；新事实写回后 proof 重算；`blocking_negative_evidence` 的过滤差异。
+
+## KI-012 思考过程未回传且叠加输出上限，导致思维链断裂与无限思考
+
+### 问题描述
+
+`LLMClient.run_conversation_with_tools()` 在内存中保留 provider 返回的 `reasoning_content`，但发送下一轮请求前，`_prepare_messages_for_model()` 会删除历史 assistant message 中的 `reasoning_content`。因此，模型在一次响应因输出上限（`finish_reason=length`）被截断后，下一轮只能看到不完整或空的 assistant 内容，无法接续上一轮已经进行的思考。
+
+当前逻辑在 `finish_reason=length` 后无条件追加“请继续”。当 completion budget 主要被思考过程消耗、最终 `content` 为空时，后续请求没有可供续写的思维状态；模型只能重新推演，重新消耗输出上限，形成“思考—截断—重新思考”的循环，表现为无限思考而无法产生最终 JSON。
+
+### 实际证据
+
+在 `test/range/.zscope_conversations/run_20260813_123452_52026/zscope-validator-2-validator_agent-0016.md` 中，最后一轮保留约 33,674 字符 `reasoning_content`，但 `content` 为空并以 `finish_reason=length` 结束。此前多轮 reasoning 已反复接近同一 `uncertain` 判断，但由于后续请求看不到这些思考内容，模型持续重新分析，最终达到 `50/50` 轮仍未输出 validation JSON。
+
+### 影响
+
+- 被截断的思考无法在下一轮恢复，模型重复消耗 reasoning token；
+- “请继续”无法真正续写空的 assistant 输出，可能演变为无限思考；
+- 单个候选的 wall time、API 调用和 token 成本失控，并可能达到最大迭代次数；
+- 已形成但未落盘的判断丢失，候选被迫降级为 Needs Review 或 protocol-exhausted。
+
+### 暂缓原因
+
+续写需要在上下文长度、reasoning 可见性、结构化终态协议和输出预算之间取得一致策略。当前主会话投影、自动续写和失败后的 Repair 没有共享明确的状态边界，贸然保留全部 reasoning 可能造成上下文膨胀，完全删除又无法恢复思考状态。
+
+### 后续建议
+
+1. 为 `finish_reason=length` 定义专用 continuation 状态：保留可恢复的 reasoning 摘要或尾部，并明确要求直接输出最终 JSON，而不是无条件追加“请继续”。
+2. 当 `content` 为空且仅有 reasoning 时，限制续写次数；再次出现 `length` 或空输出时立即停止主循环并进入有界的结构化 Repair/降级路径。
+3. 在 API 调用前对 continuation 和 Repair envelope 执行硬 token 上限检查，避免截断响应触发更大的上下文膨胀。
+4. 让主会话与 Repair 共享明确的 projection contract，仅保留生成终态所需的证据、状态摘要和最后失败输出。
+5. 增加回归测试：reasoning-only `length`、连续空 assistant、continuation 状态保留、续写次数上限、Repair 上下文上限和 `budget_exhausted` 降级。
+
+## KI-013 Loop Guard 触发后禁用全部工具（已修复）
+
+### 修复状态
+
+已修复。`LLMClient.run_conversation_with_tools()` 现在只会禁用触发 Loop Guard 的工具，保留其他普通工具和终态工具。即使模型继续请求已禁用工具，执行层也会拒绝该调用而不影响其他同轮工具调用。
+
+### 问题描述
+
+修复前，`LLMClient.run_conversation_with_tools()` 触发 Loop Guard 后，会设置 `loop_guard_recovery`，并从后续请求中移除全部普通工具 schema；如果没有配置终态工具，模型将无法再调用任何工具。Loop Guard 通常是针对同一个工具及同一组参数的重复调用，但旧恢复策略却把其他尚未尝试的工具一并禁用。
+
+### 实际证据
+
+在 `test/range/.zscope_conversations/run_20260813_123452_52026/zscope-validator-2-validator_agent-0016.md` 中，第 11 轮重复请求 `get_file_snippet(src/lifecycle.c,147-167)` 后触发 Loop Guard。随后普通工具均不可用，模型失去了继续获取其他证据的能力；该会话最终未生成 validation JSON。
+
+### 影响
+
+- 一个工具的重复调用会阻断其他工具提供补充证据；
+- Validator 可能在证据尚未完成时被迫作出不充分的终态判断；
+- 触发 Loop Guard 的候选更容易进入 Needs Review 或 protocol-exhausted；
+- 当前禁用范围无法区分“重复调用的工具”与“仍然安全可用的工具”。
+
+### 暂缓原因
+
+Loop Guard 需要与工具调用去重、参数规范化、结果缓存、工具依赖关系和终态工具发射保持一致。缩小禁用范围前，必须明确重复调用的精确签名及其生命周期，否则可能只是绕过当前拦截而重新进入同一循环。
+
+### 后续建议
+
+1. 首次触发时按“工具名 + 规范化参数”记录并封禁精确调用签名，只阻止该重复调用，其他工具继续可用。
+2. 再次请求相同签名时返回已有结果或明确的 Loop Guard 提示，不重复执行；只有多个不同签名连续触发时，才升级为禁用全部普通工具。
+3. 始终保留 `emit_validation_result` 等终态工具，确保模型仍能提交结构化终态。
+4. 将 Loop Guard 的触发签名、实际禁用工具、升级原因和最终退出状态写入 conversation 与 batch report，供 metrics 和异常附录核对。
+5. 增加回归测试：同签名重复调用只禁用该签名；其他工具仍可调用；重复签名命中缓存；多签名升级策略；终态工具保持可用。
