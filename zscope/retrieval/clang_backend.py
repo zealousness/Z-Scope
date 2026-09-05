@@ -314,9 +314,10 @@ class ClangBackend(CodeBackend):
                 if not supports_deferred_index_barrier and not extractor.wait_for_indexing(
                     timeout=120, idle_threshold=3.0
                 ):
-                    logger.error("clangd indexing did not become ready before the hard timeout")
-                    self._status = "error"
-                    return False
+                    logger.warning(
+                        "clangd indexing did not become ready before the soft timeout; "
+                        "continuing with a partially indexed project"
+                    )
                 index_ready = not supports_deferred_index_barrier
 
             def wait_for_index_once() -> bool:
@@ -329,9 +330,11 @@ class ClangBackend(CodeBackend):
                     extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
                 )
                 if not index_ready:
-                    logger.error(
-                        "clangd indexing did not become ready before the hard timeout"
+                    logger.warning(
+                        "clangd indexing did not become ready before the soft timeout; "
+                        "continuing with a partially indexed project"
                     )
+                    index_ready = True
                 return index_ready
 
             if changed_count:

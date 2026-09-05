@@ -115,11 +115,42 @@ class ClangExtractorPool:
     def wait_for_indexing(self, timeout: int = 120, idle_threshold: float = 5.0) -> bool:
         """Wait until every shard reports an idle index within one deadline."""
         deadline = time.monotonic() + max(0.0, float(timeout))
-        for shard in self._shards:
+        for shard_index, shard in enumerate(self._shards):
             remaining = int(max(0.0, deadline - time.monotonic()))
             if not shard.wait_for_indexing(timeout=remaining, idle_threshold=idle_threshold):
+                logger.warning(
+                    "clangd pool shard %d/%d did not become ready before the soft timeout",
+                    shard_index + 1,
+                    len(self._shards),
+                )
+                dump = getattr(shard, "dump_indexing_diagnostics", None)
+                if callable(dump):
+                    try:
+                        logger.warning(
+                            "clangd pool shard %d diagnostics:\n%s",
+                            shard_index + 1,
+                            dump(),
+                        )
+                    except Exception as dump_exc:
+                        logger.debug(
+                            "Failed to dump shard %d diagnostics: %s", shard_index, dump_exc
+                        )
                 return False
         return True
+
+    def dump_indexing_diagnostics(self) -> str:
+        """Aggregate per-shard stall diagnostics for one combined report."""
+        sections: List[str] = []
+        for shard_index, shard in enumerate(self._shards):
+            dump = getattr(shard, "dump_indexing_diagnostics", None)
+            if not callable(dump):
+                sections.append(f"shard {shard_index}: <no diagnostics available>")
+                continue
+            try:
+                sections.append(f"shard {shard_index}:\n{dump()}")
+            except Exception as dump_exc:
+                sections.append(f"shard {shard_index}: diagnostics failed: {dump_exc}")
+        return "\n---\n".join(sections) if sections else "clangd pool has no shards"
 
     def seed_project_file_index(self, file_paths: List[Path]) -> None:
         for shard in self._shards:
@@ -293,7 +324,10 @@ class ClangExtractorPool:
         if index_barrier is not None:
             barrier_ok = bool(index_barrier())
             if not barrier_ok:
-                logger.error("clangd indexing did not complete before call extraction")
+                logger.warning(
+                    "clangd indexing did not complete before call extraction; "
+                    "continuing without deferred call edges"
+                )
         shard_has_calls = any(
             self._call_work(facts)
             for shard_results in results_by_shard
@@ -303,7 +337,10 @@ class ClangExtractorPool:
         if shard_has_calls and index_barrier is None:
             barrier_ok = self.wait_for_indexing(timeout=120, idle_threshold=3.0)
             if not barrier_ok:
-                logger.error("clangd indexing did not complete before call extraction")
+                logger.warning(
+                    "clangd indexing did not complete before call extraction; "
+                    "continuing without deferred call edges"
+                )
 
         failures = [False]
 
