@@ -956,6 +956,150 @@ class LLMClient:
             canonical = repr(tools_schema)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    # ------------------------------------------------------------------
+    # HTTP 4xx wire-shape diagnostics. Customer gateways validate payloads
+    # with different strictness than the local benchmark replay, so a 400
+    # must be diagnosable from logs alone. These helpers never log message
+    # contents; they only summarize protocol fields and JSON-Schema
+    # constructs that strict providers are known to reject.
+    # ------------------------------------------------------------------
+
+    _MESSAGE_STANDARD_KEYS = frozenset(
+        {"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"}
+    )
+
+    @classmethod
+    def _collect_json_schema_flags(
+        cls,
+        node: Any,
+        flags: Dict[str, int],
+        depth: int = 0,
+    ) -> None:
+        """Count JSON-Schema constructs that strict provider validators reject."""
+        if depth > 16 or not isinstance(node, dict):
+            return
+        if isinstance(node.get("type"), list):
+            flags["type_union"] = flags.get("type_union", 0) + 1
+        for keyword in (
+            "$defs",
+            "$ref",
+            "$schema",
+            "oneOf",
+            "anyOf",
+            "allOf",
+            "pattern",
+            "patternProperties",
+            "format",
+            "minLength",
+            "maxLength",
+            "minItems",
+            "maxItems",
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+        ):
+            if keyword in node:
+                flags[keyword] = flags.get(keyword, 0) + 1
+        if node.get("additionalProperties") is False:
+            flags["additionalProperties_false"] = flags.get("additionalProperties_false", 0) + 1
+        for key, value in node.items():
+            if key in ("properties", "$defs", "patternProperties") and isinstance(value, dict):
+                for child in value.values():
+                    cls._collect_json_schema_flags(child, flags, depth + 1)
+            elif key in ("items", "additionalProperties", "not", "if", "then", "else"):
+                cls._collect_json_schema_flags(value, flags, depth + 1)
+            elif key in ("oneOf", "anyOf", "allOf", "prefixItems") and isinstance(value, list):
+                for child in value:
+                    cls._collect_json_schema_flags(child, flags, depth + 1)
+
+    def _log_http_4xx_diagnostics(
+        self,
+        *,
+        model: str,
+        base_url: str,
+        status: int,
+        response_body: Any,
+        payload: Dict[str, Any],
+    ) -> None:
+        """Log a compact, content-free wire-shape summary of a rejected request.
+
+        Emitted on every HTTP 4xx (including every provider validator 400) so
+        the offending protocol field can be identified from customer-environment
+        logs: exact top-level payload fields, ``max_tokens``, the ``tool_choice``
+        form, ``response_format`` detail, per-role message counts, whether any
+        assistant message would replay ``reasoning_content``, unexpected message
+        keys, tool names, a tools-schema hash, and JSON-Schema feature flags.
+        Never raises; diagnostics must not mask the original failure.
+        """
+        try:
+            messages = payload.get("messages")
+            roles: List[str] = []
+            role_counts: Dict[str, int] = {}
+            extra_message_keys: set = set()
+            assistant_with_reasoning = 0
+            if isinstance(messages, list):
+                for message in messages:
+                    if not isinstance(message, dict):
+                        roles.append("<non-dict>")
+                        continue
+                    role = str(message.get("role") or "<missing>")
+                    roles.append(role)
+                    role_counts[role] = role_counts.get(role, 0) + 1
+                    if role == "assistant" and message.get("reasoning_content") is not None:
+                        assistant_with_reasoning += 1
+                    extra_message_keys.update(
+                        str(key) for key in message.keys() if key not in self._MESSAGE_STANDARD_KEYS
+                    )
+            tools = payload.get("tools")
+            tool_names: List[str] = []
+            schema_flags: Dict[str, int] = {}
+            if isinstance(tools, list):
+                for tool in tools:
+                    function = tool.get("function") if isinstance(tool, dict) else None
+                    name = function.get("name") if isinstance(function, dict) else None
+                    tool_names.append(str(name) if name else "<missing>")
+                    parameters = function.get("parameters") if isinstance(function, dict) else None
+                    self._collect_json_schema_flags(parameters, schema_flags)
+            response_format = payload.get("response_format")
+            response_format_summary: Any = None
+            if isinstance(response_format, dict):
+                response_format_summary = {"type": response_format.get("type")}
+                json_schema = response_format.get("json_schema")
+                if isinstance(json_schema, dict):
+                    response_format_summary["json_schema.name"] = json_schema.get("name")
+                    response_format_summary["json_schema.strict"] = json_schema.get("strict")
+            diag = {
+                "model": model,
+                "base_url": base_url,
+                "status": status,
+                "payload_fields": sorted(str(key) for key in payload.keys()),
+                "max_tokens": payload.get("max_tokens"),
+                "temperature": payload.get("temperature"),
+                "tool_choice": payload.get("tool_choice"),
+                "response_format": response_format_summary,
+                "message_count": len(roles),
+                "role_counts": role_counts,
+                "role_tail": roles[-6:],
+                "assistant_with_reasoning_content": assistant_with_reasoning,
+                "message_extra_keys": sorted(extra_message_keys),
+                "tool_names": tool_names,
+                "tools_schema_hash": self._tools_schema_hash(
+                    tools if isinstance(tools, list) else None
+                ),
+                "tool_schema_flags": schema_flags,
+                "stream": payload.get("stream"),
+                "stream_options": payload.get("stream_options"),
+            }
+            logger.warning(
+                "[LLM-4xx-DIAG] %s",
+                json.dumps(diag, ensure_ascii=False, default=str),
+            )
+            logger.warning(
+                "[LLM-4xx-DIAG] provider_body: %s",
+                str(response_body or "")[:1500],
+            )
+        except Exception:
+            logger.warning("[LLM-4xx-DIAG] failed to summarize rejected payload", exc_info=True)
+
     @staticmethod
     def _record_chat_exchange(
         recorder: Any,
@@ -1336,6 +1480,14 @@ class LLMClient:
                     transient_http_error = (
                         response.status_code >= 500 or response.status_code == 429
                     )
+                    if 400 <= response.status_code < 500:
+                        self._log_http_4xx_diagnostics(
+                            model=model,
+                            base_url=endpoint.url,
+                            status=response.status_code,
+                            response_body=response.text,
+                            payload=attempt_payload,
+                        )
                     logger.warning(
                         "Model %s via %s failed (attempt %d/%s): %s",
                         model,
@@ -1599,6 +1751,16 @@ class LLMClient:
             detail = stderr or body[-500:] or f"curl exited with {proc.returncode}"
             raise RuntimeError(f"curl transport failed: {detail}")
         if status != 200:
+            if 400 <= status < 500:
+                # curl_payload has stream_options stripped and stream=False, so
+                # the summary reflects the curl-transport wire shape.
+                self._log_http_4xx_diagnostics(
+                    model=str(payload.get("model") or ""),
+                    base_url=url,
+                    status=status,
+                    response_body=body,
+                    payload=curl_payload,
+                )
             raise RuntimeError(f"HTTP {status}: {body[:2000]}")
         try:
             data = json.loads(body)

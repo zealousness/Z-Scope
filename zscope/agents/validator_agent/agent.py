@@ -431,8 +431,22 @@ class ValidatorAgent(JsonToolAgent):
             # profile that declares native JSON-schema support must not turn a
             # failed V1/V2 attempt into an unplanned second HTTP attempt.  A
             # provider without that capability already takes the one-terminal-
-            # tool branch above.
-            logger.warning("Validator v3 direct completion failed: %s", exc)
+            # tool branch above.  The failing wire mode (structured output vs.
+            # named terminal tool) is logged so provider 400s can be attributed
+            # to the exact request variant; LLM-4xx-DIAG carries the payload.
+            logger.warning(
+                "Validator v3 direct completion failed: %s | "
+                "structured_output=%s response_format=%s tool_choice=%s max_tokens=%s",
+                exc,
+                bool(response_format),
+                (response_format.get("type") if isinstance(response_format, dict) else None),
+                (
+                    tool_choice
+                    if (tool_choice := kwargs.get("tool_choice")) is not None
+                    else "auto(default)"
+                ),
+                kwargs.get("max_tokens"),
+            )
             return None, None
         choices = response.get("choices") or []
         if not choices or not isinstance(choices[0], dict):
