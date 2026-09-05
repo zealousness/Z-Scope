@@ -931,14 +931,11 @@ class JsonToolAgent(ToolCallingAgent):
         tools = None if response_format else [final_tool_schema]
         tool_choice: Any = None
         if tools:
-            tool_choice = (
-                {
-                    "type": "function",
-                    "function": {"name": json_output_spec.final_tool_name},
-                }
-                if force_final_tool
-                else "auto"
-            )
+            # Strict OpenAI-compatible gateways (e.g. InferHub serving GLM)
+            # reject the named-function tool_choice object with HTTP 400 and
+            # only accept "auto" / "none" / "required".  The repair request
+            # carries exactly one tool, so "required" forces the same call.
+            tool_choice = "required" if force_final_tool else "auto"
         try:
             return chat_completion(
                 prompt_messages,
@@ -969,14 +966,7 @@ class JsonToolAgent(ToolCallingAgent):
                 return chat_completion(
                     prompt_messages,
                     tools=[final_tool_schema],
-                    tool_choice=(
-                        {
-                            "type": "function",
-                            "function": {"name": json_output_spec.final_tool_name},
-                        }
-                        if force_final_tool
-                        else "auto"
-                    ),
+                    tool_choice="required" if force_final_tool else "auto",
                     trace_agent=self.name,
                     trace_label=f"{trace_label}; structured_fallback=tool",
                     trace_iteration=trace_iteration,
