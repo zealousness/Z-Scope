@@ -232,7 +232,7 @@ def test_validator_v3_uses_one_direct_strict_completion() -> None:
     assert response.success
     assert response.data["verdict"] == "verified"
     assert len(llm.calls) == 1
-    assert llm.calls[0][1]["max_tokens"] == 8192
+    assert "max_tokens" not in llm.calls[0][1]
     assert llm.calls[0][1]["response_format"]["json_schema"]["strict"] is True
     assert response.metadata["validator_api_call_count"] == 1
 
@@ -305,7 +305,7 @@ def test_validator_v3_length_stays_single_call_for_v3_escalation() -> None:
     assert response.data["verdict"] == "uncertain"
     assert response.data["stop_reason"] == "output_truncated"
     assert len(llm.calls) == 1
-    assert llm.calls[0][1]["max_tokens"] == 8192
+    assert "max_tokens" not in llm.calls[0][1]
     assert response.metadata["validator_length_retry_count"] == 0
 
 

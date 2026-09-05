@@ -4,8 +4,9 @@ Strict OpenAI-compatible gateways in customer environments (e.g. InferHub
 serving GLM, error InferHub.001001005.400) answer HTTP 400 unless
 ``tool_choice`` is ``"auto"`` / ``"none"`` / ``"required"``: the
 named-function object form is rejected.  These tests pin the wire shape so
-no call site regresses to the object form, and keep the direct v3
-``max_tokens`` inside the deployment-configured budget.
+no call site regresses to the object form, and keep the direct v3 call on
+pure config semantics: no hardcoded ``max_tokens``, so the configured
+``llm.max_tokens`` request ceiling applies like on every other stage.
 """
 
 from typing import Any, Dict, List
@@ -52,7 +53,6 @@ def test_v3_direct_completion_uses_gateway_safe_tool_choice() -> None:
     response, result = agent._direct_v3_completion(
         [{"role": "user", "content": "validate"}],
         trace_label="unit",
-        max_tokens=8192,
     )
     kwargs = client.calls[0]
     assert kwargs["tool_choice"] == "required"
@@ -60,13 +60,14 @@ def test_v3_direct_completion_uses_gateway_safe_tool_choice() -> None:
     assert kwargs["tools"] and (
         kwargs["tools"][0]["function"]["name"] == "emit_validator_result_v3"
     )
-    # Clamped to the deployment-configured budget the provider already accepts.
-    assert kwargs["max_tokens"] == 4096
+    # Pure config semantics: the agent must not inject a hardcoded limit; the
+    # LLMClient payload falls back to the configured llm.max_tokens.
+    assert "max_tokens" not in kwargs
     assert response["choices"][0]["finish_reason"] == "stop"
     assert result is not None
 
 
-def test_v3_direct_completion_keeps_budget_within_client_limit() -> None:
+def test_v3_direct_completion_explicit_override_is_passed_through() -> None:
     client = _RecordingClient(max_tokens=16384)
     agent = _agent(client)
     agent._direct_v3_completion(
