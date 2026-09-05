@@ -12,13 +12,14 @@ import threading
 import time
 import re
 import hashlib
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Any,
     Callable,
+    Deque,
     Dict,
     Iterable,
     List,
@@ -173,6 +174,15 @@ class ClangExtractor:
     ]
     _REQUEST_LATENCY_SAMPLE_LIMIT = 256
     _MAX_INDEXING_WAIT_SECONDS = 120.0
+    # A begin/report token that has not emitted any update for this long is
+    # treated as wedged (e.g. a lost $/progress end) and evicted instead of
+    # blocking readiness forever.
+    _PROGRESS_TOKEN_STALE_SECONDS = 900.0
+    # Emit a compact stall summary while wait_for_indexing is still waiting.
+    _INDEXING_DIAG_LOG_INTERVAL_SECONDS = 30.0
+    _RECENT_PROGRESS_EVENT_LIMIT = 24
+    _RECENT_STDERR_LINE_LIMIT = 20
+    _PROGRESS_TOKEN_DETAIL_LIMIT = 160
     _WRITER_QUEUE_LIMIT = 1024
 
     def __init__(
@@ -206,7 +216,11 @@ class ClangExtractor:
         self._position_encoding = "utf-16"
         self._semantic_token_types: List[str] = []
         self._semantic_token_modifiers: List[str] = []
-        self._progress_tokens: Dict[Any, str] = {}
+        self._progress_tokens: Dict[Any, Dict[str, Any]] = {}
+        self._recent_progress_events: Deque[Tuple[str, str, float]] = deque(
+            maxlen=self._RECENT_PROGRESS_EVENT_LIMIT
+        )
+        self._recent_stderr_lines: Deque[str] = deque(maxlen=self._RECENT_STDERR_LINE_LIMIT)
         self._last_progress_time = time.monotonic()
         self._file_status: Dict[str, Tuple[str, float]] = {}
         self._lsp_request_metrics: Dict[str, Dict[str, Any]] = {}
@@ -825,9 +839,17 @@ class ClangExtractor:
             params = msg.get("params")
             token = params.get("token") if isinstance(params, dict) else None
             if self._is_progress_token(token):
+                now = time.monotonic()
                 with self._condition:
-                    self._progress_tokens[token] = "created"
-                    self._last_progress_time = time.monotonic()
+                    self._progress_tokens[token] = {
+                        "status": "created",
+                        "title": "",
+                        "began_at": now,
+                        "updated_at": now,
+                        "detail": "",
+                    }
+                    self._last_progress_time = now
+                    self._record_progress_event_locked("create", token, "")
                     self._condition.notify_all()
             self._write_message({"jsonrpc": "2.0", "id": msg_id, "result": None})
             return
@@ -863,11 +885,36 @@ class ClangExtractor:
             return
         kind = str(value.get("kind") or "")
         with self._condition:
-            self._last_progress_time = time.monotonic()
+            now = time.monotonic()
+            self._last_progress_time = now
             if kind in {"begin", "report"}:
-                self._progress_tokens[token] = kind
+                entry = self._progress_tokens.get(token)
+                if not isinstance(entry, dict):
+                    entry = {
+                        "status": kind,
+                        "title": "",
+                        "began_at": now,
+                        "updated_at": now,
+                        "detail": "",
+                    }
+                    self._progress_tokens[token] = entry
+                else:
+                    entry["status"] = kind
+                    entry["updated_at"] = now
+                    if kind == "begin":
+                        entry["began_at"] = now
+                title = str(value.get("title") or "")
+                if title:
+                    entry["title"] = title[:80]
+                detail = str(value.get("message") or value.get("percentage") or "")
+                entry["detail"] = detail[: self._PROGRESS_TOKEN_DETAIL_LIMIT]
+                self._record_progress_event_locked(kind, token, entry["detail"])
             elif kind == "end":
-                self._progress_tokens.pop(token, None)
+                entry = self._progress_tokens.pop(token, None)
+                ended_detail = ""
+                if isinstance(entry, dict):
+                    ended_detail = str(entry.get("detail") or "")
+                self._record_progress_event_locked("end", token, ended_detail)
             self._condition.notify_all()
 
     @staticmethod
@@ -890,8 +937,135 @@ class ClangExtractor:
             except queue.Full:
                 pass
 
+    def _record_progress_event_locked(self, kind: str, token: Any, detail: str) -> None:
+        """Append a bounded progress event for stall diagnostics (condition held)."""
+        self._recent_progress_events.append(
+            (
+                f"{kind}:{str(token)[:64]}",
+                str(detail or "")[:120],
+                time.monotonic(),
+            )
+        )
+
+    def _progress_token_statuses(self) -> Dict[str, str]:
+        """Snapshot of every tracked progress token and its lifecycle status."""
+        with self._condition:
+            return {
+                str(token): str(entry.get("status"))
+                for token, entry in self._progress_tokens.items()
+                if isinstance(entry, dict)
+            }
+
     def _has_active_progress_locked(self) -> bool:
-        return any(status in {"begin", "report"} for status in self._progress_tokens.values())
+        """True while any progress token is mid-flight.
+
+        Tokens in begin/report state that stopped reporting for longer than
+        ``_PROGRESS_TOKEN_STALE_SECONDS`` are evicted first, so a lost
+        ``$/progress`` end notification can never wedge readiness forever.
+        """
+        now = time.monotonic()
+        stale_tokens = [
+            token
+            for token, entry in self._progress_tokens.items()
+            if isinstance(entry, dict)
+            and entry.get("status") in {"begin", "report"}
+            and now - float(entry.get("updated_at", now)) > self._PROGRESS_TOKEN_STALE_SECONDS
+        ]
+        for token in stale_tokens:
+            entry = self._progress_tokens.pop(token, None)
+            detail = str(entry.get("detail") or "") if isinstance(entry, dict) else ""
+            self._record_progress_event_locked("stale", token, detail)
+        if stale_tokens:
+            logger.warning(
+                "Evicted %d stale clangd progress token(s) after %.0fs without updates: %s",
+                len(stale_tokens),
+                self._PROGRESS_TOKEN_STALE_SECONDS,
+                [str(token) for token in stale_tokens],
+            )
+        return any(
+            isinstance(entry, dict) and entry.get("status") in {"begin", "report"}
+            for entry in self._progress_tokens.values()
+        )
+
+    def _indexing_wait_summary_locked(self, now: float) -> str:
+        """Compact one-line stall summary; caller must hold the condition."""
+        active = [
+            (token, entry)
+            for token, entry in self._progress_tokens.items()
+            if isinstance(entry, dict) and entry.get("status") in {"begin", "report"}
+        ]
+        parts = [
+            "last_progress_age=%.1fs" % max(0.0, now - self._last_progress_time),
+            "active_progress_tokens=%d" % len(active),
+        ]
+        for token, entry in active[:3]:
+            began_at = float(entry.get("began_at", now))
+            updated_at = float(entry.get("updated_at", now))
+            parts.append(
+                "token[%s] %s age=%.0fs since_update=%.0fs %s msg=%s"
+                % (
+                    str(token)[:48],
+                    entry.get("status"),
+                    max(0.0, now - began_at),
+                    max(0.0, now - updated_at),
+                    str(entry.get("title") or "")[:40],
+                    str(entry.get("detail") or "")[:80],
+                )
+            )
+        return " ".join(parts)
+
+    def dump_indexing_diagnostics(self) -> str:
+        """Human-readable snapshot of clangd state for diagnosing a stalled wait."""
+        with self._condition:
+            now = time.monotonic()
+            lines: List[str] = []
+            process = self.process
+            lines.append(
+                "transport_closed=%s running=%s initialized=%s process_alive=%s"
+                % (
+                    self._transport_closed,
+                    self._running,
+                    self._initialized,
+                    "unknown" if process is None else str(process.poll() is None),
+                )
+            )
+            if process is not None:
+                lines.append("clangd_pid=%s" % process.pid)
+            lines.append(
+                "last_progress_age=%.1fs" % max(0.0, now - self._last_progress_time)
+            )
+            lines.append(
+                "tracked_progress_tokens=%s" % self._indexing_wait_summary_locked(now)
+            )
+            if self._file_status:
+                state_counts: Dict[str, int] = {}
+                latest_uri = ""
+                latest_state = ""
+                latest_ts = 0.0
+                for uri, (state, ts) in self._file_status.items():
+                    state_counts[state] = state_counts.get(state, 0) + 1
+                    if ts >= latest_ts:
+                        latest_uri, latest_state, latest_ts = uri, state, ts
+                lines.append(
+                    "file_status_counts=%s latest=%s(%s, %.1fs ago)"
+                    % (
+                        state_counts,
+                        latest_uri.rsplit("/", 1)[-1],
+                        latest_state,
+                        max(0.0, now - latest_ts),
+                    )
+                )
+            events = list(self._recent_progress_events)
+            if events:
+                lines.append("recent_progress_events:")
+                for label, detail, ts in events[-10:]:
+                    lines.append("  [%5.1fs ago] %-28s %s" % (now - ts, label, detail))
+            stderr_lines = list(self._recent_stderr_lines)
+            if stderr_lines:
+                lines.append("recent_stderr:")
+                for line_text in stderr_lines[-8:]:
+                    lines.append("  %s" % line_text[:200])
+            return "\n".join(lines)
 
     def _stderr_loop(
         self, process: Optional[Any] = None, generation: Optional[int] = None
@@ -909,13 +1083,16 @@ class ClangExtractor:
                 if not line:
                     break
                 text = ANSI_ESCAPE.sub("", line.decode("utf-8", errors="ignore")).strip()
-                if text and "Indexing" in text:
+                if text:
                     with self._condition:
                         if generation != self._generation:
                             break
-                        self._last_progress_time = time.monotonic()
-                        self._condition.notify_all()
-                    logger.debug("clangd: %s", text)
+                        self._recent_stderr_lines.append(text[:240])
+                        if "Indexing" in text:
+                            self._last_progress_time = time.monotonic()
+                            self._condition.notify_all()
+                    if "Indexing" in text:
+                        logger.debug("clangd: %s", text)
             except OSError:
                 break
 
@@ -1172,6 +1349,7 @@ class ClangExtractor:
         )
         idle_threshold = max(0.0, float(idle_threshold))
         deadline = time.monotonic() + effective_timeout
+        next_diag_at = time.monotonic() + self._INDEXING_DIAG_LOG_INTERVAL_SECONDS
         with self._condition:
             while True:
                 now = time.monotonic()
@@ -1188,8 +1366,20 @@ class ClangExtractor:
                 wait_time = remaining
                 if self._initialized and not progress_active:
                     wait_time = min(wait_time, max(0.0, idle_threshold - idle_elapsed))
+                if now >= next_diag_at:
+                    logger.warning(
+                        "wait_for_indexing still waiting (%.1fs elapsed, %.1fs left): %s",
+                        effective_timeout - remaining,
+                        remaining,
+                        self._indexing_wait_summary_locked(now),
+                    )
+                    next_diag_at = now + self._INDEXING_DIAG_LOG_INTERVAL_SECONDS
                 self._condition.wait(timeout=wait_time)
-        logger.warning("wait_for_indexing timed out after %.1fs", effective_timeout)
+        logger.warning(
+            "wait_for_indexing timed out after %.1fs; clangd diagnostics:\n%s",
+            effective_timeout,
+            self.dump_indexing_diagnostics(),
+        )
         return False
 
     # ── 批量提取 ──
@@ -4533,10 +4723,16 @@ class ClangExtractor:
                         if call_tasks:
                             if not index_barrier_completed and index_barrier is not None:
                                 if not index_barrier():
-                                    raise TimeoutError(
-                                        "clangd indexing did not complete before call extraction"
+                                    logger.warning(
+                                        "clangd indexing did not complete before call "
+                                        "extraction; continuing without %d deferred "
+                                        "call-edge groups for this batch",
+                                        len(call_tasks),
                                     )
-                                index_barrier_completed = True
+                                    call_tasks = []
+                                else:
+                                    index_barrier_completed = True
+                        if call_tasks:
                             call_worker_count = min(
                                 max(1, int(self.max_threads or 1)),
                                 8,

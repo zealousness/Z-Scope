@@ -1048,6 +1048,83 @@ def test_run_batch_extraction_collects_concurrently_and_publishes_in_one_batch(
     assert extractor.get_last_base_stats()["files_extracted"] == 2
 
 
+def test_run_batch_extraction_continues_when_index_barrier_fails(
+    tmp_path, monkeypatch
+) -> None:
+    """A failed index barrier degrades to skipping call edges, never aborts."""
+    sources = [tmp_path / "first.c", tmp_path / "second.c"]
+    for source in sources:
+        source.write_text("int value(void) { return 1; }\n", encoding="utf-8")
+    prescanned = {
+        str(source.resolve()): (index + 1, True)
+        for index, source in enumerate(sources)
+    }
+    events = []
+
+    class BatchDB(_FakeDB):
+        def replace_tu_facts_batch_transaction(self):
+            class Transaction:
+                def __enter__(inner_self):
+                    events.append("batch_begin")
+
+                def __exit__(inner_self, exc_type, exc, traceback):
+                    events.append("batch_end")
+
+            return Transaction()
+
+    extractor = ClangExtractor(project_root=tmp_path, max_threads=2)
+
+    def collect(file_path, _db, tu_id, *, defer_call_queries=False):
+        events.append(("collect", Path(file_path).name, tu_id))
+        return {
+            "func_rows": [],
+            "call_rows": [],
+            "type_rows": [],
+            "global_rows": [],
+            "macro_rows": [],
+            "include_rows": [],
+            "_call_work": [
+                (
+                    Path(file_path),
+                    Path(file_path).stem,
+                    Path(file_path).name,
+                    1,
+                    1,
+                    {},
+                    set(),
+                )
+            ],
+        }
+
+    def publish(_db, tu_id, **facts):
+        events.append(("publish", tu_id))
+
+    def collect_calls(_work):
+        raise AssertionError("deferred call edges must be skipped when the barrier fails")
+
+    monkeypatch.setattr(extractor, "_collect_tu_facts", collect)
+    monkeypatch.setattr(extractor, "_publish_tu_facts", publish)
+    monkeypatch.setattr(extractor, "_extract_deferred_call_edges", collect_calls)
+
+    def index_barrier():
+        events.append("index_barrier")
+        return False
+
+    stats = extractor.run_batch_extraction(
+        sources,
+        BatchDB(),
+        batch_size=2,
+        prescanned_tus=prescanned,
+        index_barrier=index_barrier,
+    )
+
+    assert stats == {"total": 2, "success": 2, "failed": 0, "skipped": 0}
+    assert events[2] == "index_barrier"
+    assert "batch_begin" in events
+    assert events[-1] == "batch_end"
+    assert extractor.get_last_base_stats()["files_extracted"] == 2
+
+
 def test_clang_backend_passes_prescanned_tus_to_batch_extraction(
     tmp_path, monkeypatch
 ) -> None:
@@ -1632,7 +1709,9 @@ def test_clang_backend_partial_derived_failure_preserves_independent_state(
         db.close()
 
 
-def test_clang_backend_wait_for_indexing_timeout_is_terminal(tmp_path, monkeypatch) -> None:
+def test_clang_backend_wait_for_indexing_timeout_continues_extraction(
+    tmp_path, monkeypatch
+) -> None:
     source = tmp_path / "timeout.c"
     source.write_text("int timeout(void) { return 0; }\n", encoding="utf-8")
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
@@ -1641,11 +1720,29 @@ def test_clang_backend_wait_for_indexing_timeout_is_terminal(tmp_path, monkeypat
         extractor = _BackendSchedulingExtractor(wait_result=False)
         backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
 
-        assert backend._run_full_extraction() is False
-        assert extractor.base_calls == []
-        assert extractor.symbol_calls == 0
-        assert extractor.type_calls == 0
-        assert backend.status() == "error"
+        assert backend._run_full_extraction() is True
+        assert extractor.wait_calls == 1
+        assert len(extractor.base_calls) == 1
+        assert extractor.symbol_calls == 1
+        assert extractor.type_calls == 1
+        assert backend.status() == "ready"
+    finally:
+        db.close()
+
+
+def test_clang_backend_wait_for_indexing_timeout_does_not_set_error_status(
+    tmp_path, monkeypatch
+) -> None:
+    """A soft index-wait timeout must degrade with a warning, never abort the run."""
+    source = tmp_path / "soft_timeout.c"
+    source.write_text("int soft_timeout(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        _set_base_versions_current(db)
+        extractor = _BackendSchedulingExtractor(wait_result=False)
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+        assert backend._run_full_extraction() is True
+        assert backend.status() != "error"
     finally:
         db.close()
 

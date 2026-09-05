@@ -173,7 +173,7 @@ def test_work_done_progress_tracks_each_token_through_end(tmp_path, monkeypatch)
             "params": {"token": "background-index"},
         }
     )
-    assert extractor._progress_tokens == {"background-index": "created"}
+    assert extractor._progress_token_statuses() == {"background-index": "created"}
     assert written == [{"jsonrpc": "2.0", "id": 7, "result": None}]
 
     extractor._dispatch_message(
@@ -183,7 +183,7 @@ def test_work_done_progress_tracks_each_token_through_end(tmp_path, monkeypatch)
             "params": {"token": "background-index", "value": {"kind": "begin"}},
         }
     )
-    assert extractor._progress_tokens == {"background-index": "begin"}
+    assert extractor._progress_token_statuses() == {"background-index": "begin"}
     extractor._dispatch_message(
         {
             "jsonrpc": "2.0",
@@ -191,7 +191,7 @@ def test_work_done_progress_tracks_each_token_through_end(tmp_path, monkeypatch)
             "params": {"token": "background-index", "value": {"kind": "report"}},
         }
     )
-    assert extractor._progress_tokens == {"background-index": "report"}
+    assert extractor._progress_token_statuses() == {"background-index": "report"}
     extractor._dispatch_message(
         {
             "jsonrpc": "2.0",
@@ -217,7 +217,64 @@ def test_created_progress_token_is_not_active_indexing(tmp_path, monkeypatch) ->
     )
 
     assert extractor.wait_for_indexing(timeout=0.2, idle_threshold=0.01) is True
-    assert extractor._progress_tokens == {"reserved-token": "created"}
+    assert extractor._progress_token_statuses() == {"reserved-token": "created"}
+
+
+def test_stale_progress_token_is_evicted_and_readiness_recovers(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+    extractor._initialized = True
+    extractor._PROGRESS_TOKEN_STALE_SECONDS = 0.01
+    extractor._dispatch_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": "background-index",
+                "value": {"kind": "begin", "title": "indexing"},
+            },
+        }
+    )
+    assert extractor._progress_token_statuses() == {"background-index": "begin"}
+
+    time.sleep(0.05)
+
+    assert extractor._has_active_progress_locked() is False
+    assert extractor._progress_token_statuses() == {}
+    assert extractor.wait_for_indexing(timeout=0.5, idle_threshold=0.01) is True
+
+
+def test_dump_indexing_diagnostics_reports_active_token(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+    extractor._initialized = True
+    extractor._dispatch_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": "background-index",
+                "value": {"kind": "begin", "title": "indexing", "percentage": 1},
+            },
+        }
+    )
+    extractor._dispatch_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": "background-index",
+                "value": {"kind": "report", "message": "50%", "percentage": 50},
+            },
+        }
+    )
+
+    dump = extractor.dump_indexing_diagnostics()
+
+    assert "initialized=True" in dump
+    assert "active_progress_tokens=1" in dump
+    assert "background-index" in dump
+    assert "begin:background-index" in dump
+    assert "report:background-index" in dump
+    assert "50%" in dump
 
 
 def test_wait_for_indexing_observes_progress_end_and_idle_threshold(tmp_path) -> None:
