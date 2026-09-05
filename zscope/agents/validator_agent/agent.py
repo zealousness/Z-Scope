@@ -275,7 +275,6 @@ class ValidatorAgent(JsonToolAgent):
                 f"validation_cluster_uid={cluster_uid[:120]}; "
                 f"new_fact_count={new_fact_count}"
             ),
-            max_tokens=8192,
         )
         if response is None or result is None:
             self._finalize_slice_metadata(token_metadata)
@@ -361,7 +360,7 @@ class ValidatorAgent(JsonToolAgent):
         messages: List[Dict[str, Any]],
         *,
         trace_label: str,
-        max_tokens: int,
+        max_tokens: Optional[int] = None,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         chat_completion = getattr(self.llm_client, "chat_completion", None)
         if not callable(chat_completion):
@@ -410,18 +409,16 @@ class ValidatorAgent(JsonToolAgent):
         if response_format:
             response_format["json_schema"]["strict"] = True
         tool = self._final_json_tool_schema(spec)
-        # Stay inside the max_tokens budget the deployment already validated
-        # against this provider; the direct v3 call must not send a larger
-        # limit than every other stage uses.
-        client_max_tokens = getattr(self.llm_client, "max_tokens", None)
-        if isinstance(client_max_tokens, int) and client_max_tokens > 0:
-            max_tokens = min(max_tokens, client_max_tokens)
+        # Pure config semantics: like every other stage, the request carries no
+        # explicit max_tokens unless a caller overrides it, so the configured
+        # llm.max_tokens request ceiling applies unchanged.
         kwargs: Dict[str, Any] = {
-            "max_tokens": max_tokens,
             "trace_agent": self.name,
             "trace_label": trace_label,
             "trace_iteration": 1,
         }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         if response_format:
             kwargs["response_format"] = response_format
         else:
