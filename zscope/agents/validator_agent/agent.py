@@ -410,6 +410,12 @@ class ValidatorAgent(JsonToolAgent):
         if response_format:
             response_format["json_schema"]["strict"] = True
         tool = self._final_json_tool_schema(spec)
+        # Stay inside the max_tokens budget the deployment already validated
+        # against this provider; the direct v3 call must not send a larger
+        # limit than every other stage uses.
+        client_max_tokens = getattr(self.llm_client, "max_tokens", None)
+        if isinstance(client_max_tokens, int) and client_max_tokens > 0:
+            max_tokens = min(max_tokens, client_max_tokens)
         kwargs: Dict[str, Any] = {
             "max_tokens": max_tokens,
             "trace_agent": self.name,
@@ -420,10 +426,11 @@ class ValidatorAgent(JsonToolAgent):
             kwargs["response_format"] = response_format
         else:
             kwargs["tools"] = [tool]
-            kwargs["tool_choice"] = {
-                "type": "function",
-                "function": {"name": spec.final_tool_name},
-            }
+            # Strict OpenAI-compatible gateways (e.g. InferHub serving GLM)
+            # reject the named-function tool_choice object with HTTP 400 and
+            # only accept "auto" / "none" / "required".  This request carries
+            # exactly one tool, so "required" forces the same terminal call.
+            kwargs["tool_choice"] = "required"
         try:
             response = chat_completion(messages, **kwargs)
         except Exception as exc:
