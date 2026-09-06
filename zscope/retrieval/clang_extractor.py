@@ -34,6 +34,8 @@ from typing import (
 
 from ..common.utils import is_likely_function_call_identifier
 from .knowledge_db import KnowledgeDB
+from .clang_derived_cache import cache_key, encode_value, decode_value
+from .clang_resolution import DerivedResolver, derived_session
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +111,7 @@ class _OutboundMessage:
     body_size: int
     deadline: Optional[float]
     request_id: Optional[Any]
+    method: str = ""
     enqueued_at: float = field(default_factory=time.monotonic)
     written: threading.Event = field(default_factory=threading.Event)
 
@@ -225,6 +228,9 @@ class ClangExtractor:
         self._file_status: Dict[str, Tuple[str, float]] = {}
         self._lsp_request_metrics: Dict[str, Dict[str, Any]] = {}
         self._request_outcome_local = threading.local()
+        self._symbol_info_supported: Optional[bool] = None
+        self._derived_index_ready = False
+        self._server_info: Dict[str, Any] = {}
         self._transport_metrics: Dict[str, Any] = {
             "messages_enqueued": 0,
             "messages_written": 0,
@@ -256,6 +262,7 @@ class ClangExtractor:
         self._base_publish_lock = threading.Lock()
         self._project_file_index_lock = threading.Lock()
         self._project_file_index: Optional[Dict[str, List[Path]]] = None
+        self._derived_resolver: Optional[DerivedResolver] = None
 
     # ── 生命周期 ──
 
@@ -273,6 +280,7 @@ class ClangExtractor:
                     "--header-insertion=never",
                     "--background-index",
                     "--pch-storage=memory",
+                    "--limit-references=1000",
                     f"-j={self.max_threads}",
                 ]
                 if self.compile_commands_dir:
@@ -351,6 +359,9 @@ class ClangExtractor:
                     init_result.get("capabilities", {}) if isinstance(init_result, dict) else {}
                 )
                 self._apply_server_capabilities(capabilities)
+                self._server_info = dict(init_result.get("serverInfo") or {})
+                self._symbol_info_supported = None
+                self._derived_index_ready = False
 
                 self.send_notification("initialized", {})
                 with self._condition:
@@ -504,6 +515,7 @@ class ClangExtractor:
                 self._pending_request_deadlines.pop(msg_id, None)
                 self._record_request_latency_locked(method, started_at, timed_out=False)
             self._record_thread_request_outcome(method, timed_out=False)
+            self._record_rpc_outcome(method, "transport_error")
             logger.debug("LSP request '%s' could not be queued (id=%d)", method, msg_id)
             return None
 
@@ -536,8 +548,12 @@ class ClangExtractor:
         if response is not None:
             self._record_thread_request_outcome(method, timed_out=False)
             if "error" in response:
+                self._record_rpc_outcome(method, "rpc_error", response.get("error"))
                 logger.debug("LSP error for %s: %s", method, response["error"])
                 return None
+            self._record_rpc_outcome(
+                method, "success_nonempty" if response.get("result") else "success_empty"
+            )
             return response.get("result")
         if timed_out:
             self.send_notification("$/cancelRequest", {"id": msg_id})
@@ -547,7 +563,35 @@ class ClangExtractor:
                 "LSP request '%s' aborted because the transport closed (id=%d)", method, msg_id
             )
         self._record_thread_request_outcome(method, timed_out=timed_out)
+        self._record_rpc_outcome(method, "timeout" if timed_out else "transport_error")
         return None
+
+    def _record_rpc_outcome(self, method: str, status: str, error: Any = None) -> None:
+        outcome = {"status": status, "code": error.get("code") if isinstance(error, dict) else None}
+        outcomes = getattr(self._request_outcome_local, "outcomes", None)
+        if outcomes is None:
+            outcomes = self._request_outcome_local.outcomes = {}
+        outcomes[method] = outcome
+        with self._condition:
+            metrics = self._lsp_request_metrics.setdefault(
+                method, {"count": 0, "timeouts": 0, "latencies_ms": []}
+            )
+            metrics[status] = int(metrics.get(status, 0)) + 1
+            if self._derived_resolver is not None:
+                self._derived_resolver.observe_rpc(method, status=status, code=outcome["code"])
+                state = getattr(self._derived_resolver.local, "state", None)
+                if state is not None and status in {"rpc_error", "timeout", "transport_error"}:
+                    state["transient"] = True
+            if status == "rpc_error":
+                codes = metrics.setdefault("error_codes", {})
+                code = str(outcome["code"])
+                codes[code] = int(codes.get(code, 0)) + 1
+                if method == "textDocument/symbolInfo" and outcome["code"] == -32601:
+                    self._symbol_info_supported = False
+
+    def get_thread_rpc_outcome(self, method: str, *, clear: bool = False) -> Dict[str, Any]:
+        outcomes = getattr(self._request_outcome_local, "outcomes", {})
+        return dict(outcomes.pop(method, {}) if clear else outcomes.get(method, {}))
 
     def _record_thread_request_outcome(self, method: str, *, timed_out: bool) -> None:
         self._request_outcome_local.last = (str(method), bool(timed_out))
@@ -566,10 +610,14 @@ class ClangExtractor:
         self, method: str, started_at: float, *, timed_out: bool
     ) -> None:
         metrics = self._lsp_request_metrics[method]
+        elapsed = max(0.0, (time.monotonic() - started_at) * 1000.0)
+        if self._derived_resolver is not None:
+            self._derived_resolver.observe_rpc(method, elapsed=elapsed)
+        metrics["latency_sum_ms"] = float(metrics.get("latency_sum_ms", 0.0)) + elapsed
         if timed_out:
             metrics["timeouts"] += 1
         samples = metrics["latencies_ms"]
-        samples.append(max(0.0, (time.monotonic() - started_at) * 1000.0))
+        samples.append(elapsed)
         if len(samples) > self._REQUEST_LATENCY_SAMPLE_LIMIT:
             del samples[: len(samples) - self._REQUEST_LATENCY_SAMPLE_LIMIT]
 
@@ -587,8 +635,14 @@ class ClangExtractor:
             samples = list(metrics["latencies_ms"])
             count = int(metrics["count"])
             timeouts = int(metrics["timeouts"])
+            extra: Dict[str, Any] = {
+                k: (dict(v) if isinstance(v, dict) else v)
+                for k, v in metrics.items()
+                if k not in {"latencies_ms", "count", "timeouts"}
+            }
         if not samples:
             return {
+                **extra,
                 "count": count,
                 "timeouts": timeouts,
                 "average_latency_ms": 0.0,
@@ -597,9 +651,10 @@ class ClangExtractor:
         ordered = sorted(float(value) for value in samples)
         p95_index = max(0, ((len(ordered) * 95 + 99) // 100) - 1)
         return {
+            **extra,
             "count": count,
             "timeouts": timeouts,
-            "average_latency_ms": sum(ordered) / len(ordered),
+            "average_latency_ms": float(extra.get("latency_sum_ms", sum(ordered))) / max(1, count),
             "p95_latency_ms": ordered[p95_index],
         }
 
@@ -645,6 +700,7 @@ class ClangExtractor:
                 body_size=len(body),
                 deadline=deadline,
                 request_id=request_id,
+                method=str(msg.get("method") or ""),
             )
             try:
                 outbound.put_nowait(item)
@@ -706,6 +762,11 @@ class ClangExtractor:
                 stdin.flush()
 
                 with self._condition:
+                    if item.request_id is not None and item.method in self._lsp_request_metrics:
+                        metrics = self._lsp_request_metrics[item.method]
+                        metrics["sent"] = int(metrics.get("sent", 0)) + 1
+                        if self._derived_resolver is not None:
+                            self._derived_resolver.observe_rpc(item.method, status="sent")
                     self._transport_metrics["messages_written"] += 1
                     self._transport_metrics["payload_bytes_written"] += item.body_size
                     self._transport_metrics["wire_bytes_written"] += len(item.payload)
@@ -1363,6 +1424,7 @@ class ClangExtractor:
 
     def wait_for_indexing(self, timeout: int = 120, idle_threshold: float = 5.0) -> bool:
         """等待 work-done tokens 结束并达到空闲阈值，最多等待 120 秒。"""
+        self._derived_index_ready = False
         effective_timeout = min(
             self._MAX_INDEXING_WAIT_SECONDS,
             max(0.0, float(timeout)),
@@ -1377,6 +1439,7 @@ class ClangExtractor:
                 progress_active = self._has_active_progress_locked()
                 if self._initialized and not progress_active and idle_elapsed >= idle_threshold:
                     logger.info("clangd indexing appears idle (%.1fs no progress)", idle_elapsed)
+                    self._derived_index_ready = True
                     return True
                 remaining = deadline - now
                 if remaining <= 0:
@@ -2048,6 +2111,8 @@ class ClangExtractor:
         "reference_cache_evictions",
         "definition_requests",
         "definition_timeouts",
+        "usr_resolved",
+        "files_reused",
     )
 
     @staticmethod
@@ -2125,6 +2190,100 @@ class ClangExtractor:
     ) -> None:
         """Run bounded file jobs while keeping result consumption on the caller thread."""
         worker_count = self._derived_worker_count(len(work_items))
+        resolver = self._derived_resolver
+        original_worker = worker
+
+        def resolve_file(item: Tuple[str, List[Dict[str, Any]]]) -> _DerivedFileResult:
+            if resolver is None:
+                return original_worker(item)
+            source_path = self._resolve_indexed_source_path(item[0])
+            if self._read_source_lines(source_path) is None:
+                raise OSError(f"Cannot read indexed source during derived rebuild: {source_path}")
+            names = resolver.index_names
+            saved_by_index = {
+                name: value
+                for name in names
+                if (value := resolver.cache.get("file", cache_key([name, item[0]]))) is not None
+            }
+
+            def restore(result: _DerivedFileResult) -> _DerivedFileResult:
+                for name, saved in saved_by_index.items():
+                    saved_stats = self._new_derived_worker_stats(name)
+                    saved_stats.update(
+                        files_processed=1,
+                        functions_processed=len(item[1]),
+                        files_reused=1,
+                        unresolved_reasons=saved.get("unresolved_reasons", {}),
+                        unresolved_samples=saved.get("unresolved_samples", []),
+                    )
+                    result.stats_by_index[name] = saved_stats
+                    if name == "function_symbol_context":
+                        result.symbol_rows = [tuple(row) for row in saved["symbols"]]
+                        result.macro_rows = [tuple(row) for row in saved["macros"]]
+                    else:
+                        result.type_rows = [tuple(row) for row in saved["types"]]
+                return result
+
+            if len(saved_by_index) == len(names):
+                return restore(_DerivedFileResult())
+            with resolver.file(source_path) as state:
+                state["skip_indexes"] = set(saved_by_index)
+                first = original_worker(item)
+                if state["pending"]:
+                    usr_before = {
+                        name: int(stats.get("usr_resolved", 0))
+                        for name, stats in first.stats_by_index.items()
+                    }
+                    resolver.flush(state)
+                    result = original_worker(item)
+                    result.errors.update(first.errors)
+                    for name, stats in result.stats_by_index.items():
+                        for metric in (
+                            "semantic_requests",
+                            "symbol_info_requests",
+                            "references_requests",
+                            "definition_requests",
+                            "definition_timeouts",
+                            "reference_cache_evictions",
+                            "canonical_groups",
+                            "references_resolved",
+                        ):
+                            stats[metric] = int(stats.get(metric, 0)) + int(
+                                first.stats_by_index[name].get(metric, 0)
+                            )
+                        stats["usr_resolved"] = (
+                            int(stats.get("usr_resolved", 0))
+                            + int(first.stats_by_index[name].get("usr_resolved", 0))
+                            - usr_before[name]
+                        )
+                else:
+                    result = first
+                for name, local_stats in result.stats_by_index.items():
+                    if name in saved_by_index:
+                        continue
+                    if (
+                        name not in result.errors
+                        and not local_stats.get("_incomplete")
+                        and not state["transient"]
+                    ):
+                        resolver.cache.put(
+                            "file",
+                            cache_key([name, item[0]]),
+                            {
+                                "symbols": (
+                                    result.symbol_rows if name == "function_symbol_context" else []
+                                ),
+                                "macros": (
+                                    result.macro_rows if name == "function_symbol_context" else []
+                                ),
+                                "types": result.type_rows if name == "function_type_refs" else [],
+                                "unresolved_reasons": local_stats.get("unresolved_reasons", {}),
+                                "unresolved_samples": local_stats.get("unresolved_samples", []),
+                            },
+                        )
+                return restore(result)
+
+        worker = resolve_file
         metrics["worker_count"] = worker_count
         metrics["peak_inflight_files"] = 0
         if not work_items:
@@ -2133,6 +2292,8 @@ class ClangExtractor:
             metrics["peak_inflight_files"] = 1
             for item in work_items:
                 consume(worker(item))
+                if resolver is not None:
+                    resolver.cache.checkpoint()
             return
 
         active = 0
@@ -2167,25 +2328,38 @@ class ClangExtractor:
                     ordinal, item = next(iterator)
                 except StopIteration:
                     return False
-                pending[executor.submit(tracked_worker, item)] = ordinal
+                submitted = executor.submit(tracked_worker, item)
+                pending[submitted] = ordinal
+                if resolver is not None:
+                    submitted.add_done_callback(lambda _future: resolver.cache.wakeup.set())
                 return True
 
             for _ in range(min(max_pending, len(work_items))):
                 submit_next()
             try:
                 while pending:
-                    completed, _remaining = wait(
-                        tuple(pending),
-                        return_when=FIRST_COMPLETED,
-                    )
+                    if resolver is not None:
+                        resolver.cache.wakeup.clear()
+                        resolver.cache.pump()
+                        completed = {future for future in pending if future.done()}
+                        if not completed:
+                            resolver.cache.wakeup.wait(0.1)
+                            continue
+                    else:
+                        completed, _remaining = wait(tuple(pending), return_when=FIRST_COMPLETED)
                     for future in sorted(completed, key=lambda item: pending[item]):
                         pending.pop(future)
                         result = future.result()
                         submit_next()
                         consume(result)
+                        if resolver is not None:
+                            resolver.cache.checkpoint()
             except BaseException:
                 for future in pending:
                     future.cancel()
+                while resolver is not None and any(not f.done() for f in pending):
+                    resolver.cache.pump()
+                    wait(tuple(pending), timeout=0.01)
                 raise
 
     @staticmethod
@@ -2203,6 +2377,16 @@ class ClangExtractor:
         compute: Callable[[], Any],
     ) -> Any:
         """Memoize shared derived facts with per-key single-flight semantics."""
+        if self._derived_resolver is not None:
+            resolver = self._derived_resolver
+            state = getattr(resolver.local, "state", None)
+            scope = state["path"] if state else ""
+            result = resolver.cache.compute(
+                "aux:" + cache_name,
+                cache_key([scope, encode_value(key)]),
+                lambda: {"value": encode_value(compute()), "_volatile": True},
+            )
+            return decode_value(result["value"])
         cache = semantic_context.setdefault(cache_name, {})
         lock = self._resolution_cache_lock(semantic_context)
         if lock is None:
@@ -2237,6 +2421,7 @@ class ClangExtractor:
         future.set_result(value)
         return value
 
+    @derived_session
     def rebuild_function_symbol_refs(
         self,
         db: KnowledgeDB,
@@ -2403,6 +2588,8 @@ class ClangExtractor:
         if use_staging:
             result_count = staged_count
         else:
+            if self._derived_resolver is not None and not self._derived_resolver.validate():
+                raise RuntimeError("Inputs changed before derived symbol publication")
             rows = [(*key, access) for key, access in sorted(aggregated.items())]
             replace_context = getattr(db, "replace_function_symbol_context", None)
             if callable(replace_context):
@@ -2420,6 +2607,7 @@ class ClangExtractor:
         self._finish_derived_stats(stats)
         return result_count
 
+    @derived_session
     def rebuild_function_type_refs(
         self,
         db: KnowledgeDB,
@@ -2565,6 +2753,8 @@ class ClangExtractor:
         if use_staging:
             result_count = staged_count
         else:
+            if self._derived_resolver is not None and not self._derived_resolver.validate():
+                raise RuntimeError("Inputs changed before derived type publication")
             assert callable(replace_refs)
             deduplicated = sorted(set(rows), key=lambda row: tuple(str(value) for value in row))
             replace_refs(deduplicated)
@@ -2574,6 +2764,7 @@ class ClangExtractor:
         self._finish_derived_stats(stats)
         return result_count
 
+    @derived_session
     def rebuild_function_derived_refs(
         self,
         db: KnowledgeDB,
@@ -2775,9 +2966,12 @@ class ClangExtractor:
                     except Exception:
                         pass
 
-            for local_stats in local_stats_by_index.values():
+            for name, local_stats in local_stats_by_index.items():
                 local_stats["functions_processed"] = len(file_functions)
                 local_stats["files_processed"] = 1
+                # A sibling worker or failed staging write can cancel this layer
+                # before all functions were visited. Never checkpoint that gap.
+                local_stats["_incomplete"] = stop_events[name].is_set()
             return _DerivedFileResult(
                 stats_by_index=local_stats_by_index,
                 symbol_rows=[(*key, access) for key, access in sorted(file_symbols.items())],
@@ -2854,6 +3048,11 @@ class ClangExtractor:
         semantic_context: Dict[str, Any],
         stats: Dict[str, Any],
     ) -> List[Tuple[Any, ...]]:
+        state = (
+            getattr(self._derived_resolver.local, "state", None) if self._derived_resolver else None
+        )
+        if state and "function_type_refs" in state.get("skip_indexes", ()):
+            return []
         function_id = int(function.get("id") or 0)
         if function_id <= 0:
             return []
@@ -3166,6 +3365,11 @@ class ClangExtractor:
         semantic_context: Dict[str, Any],
         stats: Dict[str, Any],
     ) -> None:
+        state = (
+            getattr(self._derived_resolver.local, "state", None) if self._derived_resolver else None
+        )
+        if state and "function_symbol_context" in state.get("skip_indexes", ()):
+            return
         start_line = max(1, int(function.get("start_line") or 1))
         end_line = min(len(lines), max(start_line, int(function.get("end_line") or start_line)))
         body_lines = lines[start_line - 1 : end_line]
@@ -3195,12 +3399,17 @@ class ClangExtractor:
                     stats["filtered_local_shadow"] += 1
                 if global_candidates and is_field:
                     stats["filtered_field"] += 1
-                callable_macros = [
-                    row
-                    for row in macro_candidates
-                    if not bool(row.get("is_function_like"))
-                    or bool(re.match(r"\s*\(", masked_line[match.end() :]))
-                ]
+                macro_candidates_cache = semantic_context.setdefault(
+                    "callable_macro_candidates", {}
+                )
+                macro_candidate_key = (name, bool(re.match(r"\s*\(", masked_line[match.end() :])))
+                if macro_candidate_key not in macro_candidates_cache:
+                    macro_candidates_cache[macro_candidate_key] = [
+                        row
+                        for row in macro_candidates
+                        if not bool(row.get("is_function_like")) or macro_candidate_key[1]
+                    ]
+                callable_macros = macro_candidates_cache[macro_candidate_key]
                 stats["filtered_non_call_macro"] += len(macro_candidates) - len(callable_macros)
                 active_globals = [] if is_shadowed or is_field else global_candidates
                 if not active_globals and not callable_macros:
@@ -3433,7 +3642,8 @@ class ClangExtractor:
             "[%s] files=%d/%d functions=%d/%d candidates=%d "
             "filtered(shadow=%d field=%d macro_non_call=%d) "
             "semantic(req=%d resolved=%d) local=%d "
-            "references(req=%d resolved=%d) definitions(req=%d timeout=%d) unresolved=%d",
+            "references(req=%d resolved=%d) definitions(req=%d timeout=%d) unresolved=%d "
+            "usr(req=%d resolved=%d) reused_files=%d",
             stats.get("index_name"),
             int(stats.get("files_processed") or 0),
             int(stats.get("files_total") or 0),
@@ -3451,7 +3661,18 @@ class ClangExtractor:
             int(stats.get("definition_requests") or 0),
             int(stats.get("definition_timeouts") or 0),
             sum(int(value) for value in dict(stats.get("unresolved_reasons") or {}).values()),
+            int(stats.get("symbol_info_requests") or 0),
+            int(stats.get("usr_resolved") or 0),
+            int(stats.get("files_reused") or 0),
         )
+        if self._derived_resolver is not None:
+            logger.info(
+                "[derived-rpc] methods=%s cache=%s groups=%s memory=%s",
+                self._derived_resolver.rpc_snapshot(),
+                self._derived_resolver.cache.stats,
+                self._derived_resolver.group_snapshot(),
+                self._derived_resolver.memory_snapshot(),
+            )
         self._store_derived_stats_snapshot(stats)
 
     @staticmethod
@@ -3506,6 +3727,16 @@ class ClangExtractor:
 
     def _store_derived_stats_snapshot(self, stats: Dict[str, Any]) -> None:
         snapshot = {str(key): value for key, value in stats.items() if not str(key).startswith("_")}
+        if self._derived_resolver is not None:
+            resolver = self._derived_resolver
+            snapshot["rpc_methods"] = resolver.rpc_snapshot()
+            snapshot["candidate_groups"] = resolver.group_snapshot()
+            snapshot["resolution_cache"] = dict(
+                resolver.cache.stats,
+                resumable=resolver.reusable,
+                identity_reason=resolver.identity_reason,
+            )
+            snapshot["process_memory"] = resolver.memory_snapshot()
         started = stats.get("_started_monotonic")
         if isinstance(started, (int, float)):
             snapshot["elapsed_seconds"] = round(
@@ -3768,6 +3999,23 @@ class ClangExtractor:
         character: int = 0,
     ) -> Optional[Dict[str, Any]]:
         """Return clangd's stable USR/symbol ID for the symbol at one coordinate."""
+        details = self.get_symbol_details(file_path, line, character)
+        return details[0] if details is not None and len(details) == 1 else None
+
+    def get_symbol_details(
+        self, file_path: Path, line: int, character: int = 0
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Preserve all identities; unsupported is scoped to the process generation."""
+        if self._symbol_info_supported is False:
+            return None
+        override = self.__dict__.get("get_symbol_info")
+        if callable(override):
+            result = override(file_path, line, character)
+            if isinstance(result, dict):
+                return [result]
+            return result if isinstance(result, list) else None
+        if self.process is None and "send_request" not in self.__dict__:
+            return None
         result = self.send_request(
             "textDocument/symbolInfo",
             {
@@ -3780,9 +4028,9 @@ class ClangExtractor:
             timeout=30,
         )
         if isinstance(result, dict):
-            return cast(Dict[str, Any], result)
-        if isinstance(result, list) and result and isinstance(result[0], dict):
-            return cast(Dict[str, Any], result[0])
+            return [result]
+        if isinstance(result, list):
+            return [item for item in result if isinstance(item, dict)]
         return None
 
     def _candidate_canonical_identity(
@@ -3798,23 +4046,49 @@ class ClangExtractor:
         fallback = ("candidate", kind, identity)
 
         def compute() -> Tuple[Any, ...]:
-            can_query = self.process is not None or "get_symbol_info" in self.__dict__
+            can_query = self._symbol_info_supported is not False and (
+                self.process is not None
+                or "get_symbol_info" in self.__dict__
+                or "get_symbol_details" in self.__dict__
+            )
             getter = getattr(self, "get_symbol_info", None)
             declaration = self._candidate_declaration_position(candidate, semantic_context)
             if not can_query or not callable(getter) or declaration is None:
                 return fallback
             declaration_path, declaration_line, declaration_character = declaration
-            stats["symbol_info_requests"] = int(stats.get("symbol_info_requests") or 0) + 1
             try:
-                info = getter(
-                    declaration_path,
-                    max(0, declaration_line - 1),
-                    max(0, declaration_character),
-                )
+                if self._derived_resolver is not None:
+                    with self._derived_resolver.lease(declaration_path) as opened:
+                        details = (
+                            self._derived_resolver._rpc(
+                                "symbolInfo",
+                                declaration_path,
+                                declaration_line,
+                                declaration_character,
+                                stats,
+                            )["items"]
+                            if opened
+                            else []
+                        )
+                        info = details[0] if len(details) == 1 else None
+                else:
+                    opened = self.open_document(declaration_path)
+                    try:
+                        stats["symbol_info_requests"] = int(
+                            stats.get("symbol_info_requests") or 0
+                        ) + int(opened)
+                        info = (
+                            getter(declaration_path, declaration_line - 1, declaration_character)
+                            if opened
+                            else None
+                        )
+                    finally:
+                        if opened:
+                            self.close_document(declaration_path)
             except Exception:
                 info = None
             if isinstance(info, list):
-                info = info[0] if info and isinstance(info[0], dict) else None
+                info = info[0] if len(info) == 1 and isinstance(info[0], dict) else None
             usr = str(info.get("usr") or "") if isinstance(info, dict) else ""
             symbol_id = str(info.get("id") or "") if isinstance(info, dict) else ""
             return (
@@ -3925,6 +4199,34 @@ class ClangExtractor:
             stats["filtered_local_shadow"] += 1
             stats["semantic_resolved"] += 1
             return None
+        if self._derived_resolver is not None:
+            # A file-owned C global plus an actual global-scope semantic token
+            # proves linkage without relying on an incomplete include closure.
+            if (
+                kind == "global"
+                and source_path.suffix == ".c"
+                and len(candidates) == 1
+                and not candidates[0].get("is_extern")
+                and self._resolve_indexed_source_path(str(candidates[0].get("file_path") or ""))
+                == source_path.resolve()
+                and self._semantic_token_proves_kind(semantic_token, "global")
+            ):
+                stats["semantic_resolved"] += 1
+                stats["local_resolved"] += 1
+                return candidates[0]
+            result, reason = self._derived_resolver.resolve(
+                candidates,
+                kind,
+                source_path,
+                line,
+                character,
+                semantic_context,
+                stats,
+                include_closure=include_closure,
+            )
+            if result is None:
+                self._record_unresolved(stats, reason, {"file": function_file, "line": line})
+            return result
         visible = self._visible_candidates(
             candidates, function_file, include_closure, semantic_context
         )
@@ -3976,6 +4278,53 @@ class ClangExtractor:
         semantic_token: Optional[Dict[str, Any]],
         stats: Dict[str, Any],
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        if self._derived_resolver is not None:
+            resolver = self._derived_resolver
+            global_record, global_reason = resolver.resolve(
+                global_candidates,
+                "global",
+                source_path,
+                line,
+                character,
+                semantic_context,
+                stats,
+                include_closure=include_closure,
+            )
+            global_source = resolver.local.last_binding
+            macro_record, macro_reason = resolver.resolve(
+                macro_candidates,
+                "macro",
+                source_path,
+                line,
+                character,
+                semantic_context,
+                stats,
+                include_closure=include_closure,
+            )
+            incomplete = {
+                "pending_reference",
+                "reference_incomplete",
+                "reference_ambiguous",
+                "symbol_info_ambiguous",
+            }
+            if (
+                global_record is not None
+                and macro_record is None
+                and not (global_source == "references" and macro_reason in incomplete)
+            ):
+                return "global", global_record
+            if (
+                macro_record is not None
+                and global_record is None
+                and not (
+                    resolver.local.last_binding == "references" and global_reason in incomplete
+                )
+            ):
+                return "macro", macro_record
+            self._record_unresolved(
+                stats, "cross_kind_ambiguous", {"file": function_file, "line": line}
+            )
+            return "", None
         visible_globals = self._visible_candidates(
             global_candidates,
             function_file,
@@ -4075,6 +4424,17 @@ class ClangExtractor:
         if self._semantic_token_is_local(token):
             stats["semantic_resolved"] += 1
             return None, "local_type_shadow"
+        if self._derived_resolver is not None:
+            return self._derived_resolver.resolve(
+                candidates,
+                "type",
+                source_path,
+                lookup_line,
+                lookup_char,
+                semantic_context,
+                stats,
+                include_closure=include_closure,
+            )
         visible = self._visible_candidates(
             candidates, function_file, include_closure, semantic_context
         )
@@ -4133,33 +4493,24 @@ class ClangExtractor:
             stats=stats,
         )
         representatives: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+        matched: Set[Tuple[Any, ...]] = set()
+        complete = True
+        expected = (self._project_relative_path(source_path), int(line), int(character))
         for canonical_key, representative, _members in groups:
             representatives[canonical_key] = representative
-            self._candidate_reference_locations(
+            locations = self._candidate_reference_locations(
                 representative,
                 kind=kind,
                 semantic_context=semantic_context,
                 stats=stats,
                 canonical_key=canonical_key,
             )
-        coordinate = self._reference_coordinate(
-            kind,
-            self._project_relative_path(source_path),
-            line,
-            character,
-        )
-        resolution_lock = self._resolution_cache_lock(semantic_context)
-        if resolution_lock is None:
-            coordinate_index = semantic_context.setdefault("reference_coordinate_index", {})
-            matched_keys = coordinate_index.get(coordinate)
-        else:
-            with resolution_lock:
-                coordinate_index = semantic_context.setdefault("reference_coordinate_index", {})
-                raw_matched = coordinate_index.get(coordinate)
-                matched_keys = set(raw_matched) if isinstance(raw_matched, set) else raw_matched
-        if not isinstance(matched_keys, set) or len(matched_keys) != 1:
+            if expected in locations:
+                matched.add(canonical_key)
+            complete &= bool(semantic_context.get("_last_reference_complete", True))
+        if not complete or len(matched) != 1:
             return None
-        return representatives.get(next(iter(matched_keys)))
+        return representatives.get(next(iter(matched)))
 
     @staticmethod
     def _reference_file_key(file_path: str) -> str:
@@ -4192,6 +4543,10 @@ class ClangExtractor:
         stats: Dict[str, Any],
         canonical_key: Optional[Tuple[Any, ...]] = None,
     ) -> set[Tuple[str, int, int]]:
+        if self._derived_resolver is not None:
+            return self._derived_resolver.reference_locations(
+                candidate, kind, semantic_context, stats, canonical_key
+            )
         cache_key = (
             kind,
             (

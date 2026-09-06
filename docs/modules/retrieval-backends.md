@@ -7,6 +7,8 @@ sources:
   - zscope/retrieval/knowledge_db.py
   - zscope/retrieval/clang_backend.py
   - zscope/retrieval/clang_extractor.py
+  - zscope/retrieval/clang_resolution.py
+  - zscope/retrieval/clang_derived_cache.py
   - zscope/retrieval/clang_extractor_pool.py
   - zscope/retrieval/joern_backend.py
   - zscope/retrieval/unified_backend.py
@@ -20,6 +22,7 @@ tests:
   - tests/test_code_index_cache.py
   - tests/test_clang_incremental_extraction.py
   - tests/test_clang_derived_reference_resolution.py
+  - tests/test_clang_usr_resolution.py
   - tests/test_clang_lsp_transport.py
   - tests/test_knowledge_db_ir_and_config.py
   - tests/test_svf_cache.py
@@ -61,9 +64,12 @@ tests:
 - 基础增量索引只以文件哈希、TU 状态、删除影响和基础 extractor 版本为依据；`indexed + hash unchanged` 的 TU 不得因为派生索引版本或生命周期变化而重新执行 `extract_tu()`/`documentSymbol`。
 - `function_symbol_context` 与 `function_type_refs` 的 `dirty/in_progress/current/failed` 生命周期保存在 schema v14 的 metadata JSON 中。派生扫描按文件有界并发，worker 不得写 SQLite；只有调用线程可以分批写 TEMP staging，派生事实与 `current` 状态必须在同一事务发布；中断恢复只重建非 current 的派生层。
 - clangd JSON-RPC 必须使用单调时钟硬超时和事件唤醒，正确回复 server request，并以 work-done token 跟踪 background indexing；索引等待超时不得继续标记后端 ready。
-- symbol/type 引用应先使用逐文件 semantic tokens 和声明反向 references；只有仍然冲突的坐标才查询 definition，失败时不得按候选排序猜测绑定。
+- symbol/type 引用采用逐文件 semantic tokens 过滤、使用位置 symbolInfo/USR 与精确声明坐标、definition 回退，再对未闭合位置分组补 references。完整 symbolInfo 多结果不得取第一项；USR 缺少库内映射不代表外部符号；include closure 仅用于候选检索，不能作为硬排除依据。仅 C 文件自身拥有的唯一全局定义与实际全局作用域 token 可走局部快路径。
 - 基础 TU 刷新应把 clangd/源码收集与 SQLite 发布分开：跨文件查询使用有界并发，KnowledgeDB 由单写者按 TU SAVEPOINT、按批次单次提交；收集或发布失败不得先清空旧事实。
-- 派生引用必须使用有界、线程安全的缓存：两类派生索引同时失效时按文件合并为一次 semantic pass；同一声明的 references、symbol identity 和声明坐标查询使用 single-flight，锁不得跨越 clangd RPC；references 以规范坐标反向映射，重复声明按 clangd symbol identity 合并，semantic context 同时受文件数与估算字节预算约束，不能用全项目常驻内存换取 RPC 次数。
+- 派生引用必须使用有界、线程安全的缓存：两类派生索引同时失效时按文件合并 semantic pass；同一使用坐标及声明补证使用 single-flight，锁不得跨越 clangd RPC。热缓存按序列化字节预算淘汰，冷结果落到独立 SQLite sidecar；worker 通过有界请求队列访问缓存，只有调度线程读写 SQLite，等待必须由事件唤醒。解析中的歧义集合不能依赖 LRU 是否仍保留某个结果。
+- 声明坐标的 symbolInfo/references 必须持有 document lease，按文件有界复用。RPC 错误、成功空结果、超时和截断分别计量；references 达到显式返回上限或索引未就绪时不能用未命中消除歧义。逐位置 RPC 保留行列及协商的位置编码，不使用任意放宽的行号窗口绑定，也不把同名成员误匹配到外层声明范围。
+- `clang_derived_cache.sqlite3` 位于实际 KnowledgeDB 同目录，拥有独立 schema，不改变主库版本。坐标、USR 身份映射、references 和分索引的文件检查点按完整构建身份隔离。检查点保存事实和完成状态；旧已发布事实保持可读，恢复结果仍经 TEMP staging 原子发布。
+- 持久恢复必须证明输入一致：构建身份覆盖源码/依赖内容、编译数据库、clangd 身份、位置编码、基础事实和分析范围。首版仅对带 `arguments`、完整 `-MD` 依赖文件且依赖未过期的编译数据库启用跨进程恢复；`command` 字符串、`-MMD`、缺少/过期依赖或覆盖不全时保守禁用跨进程复用，仍保留本轮磁盘缓存。错误结果只存在会话 TEMP 表。发布前重新核对输入摘要，变化时停止发布。
 - LSP transport 的读写、排队和等待都受同一 monotonic deadline 约束；死进程 generation、document lease、UTF position encoding 和 source-lines 缓存必须保持线程安全。
 - KnowledgeDB 写入新事实后必须使相关查询缓存失效。
 - Unified 的 Clang 与 SVF 结果必须通过稳定的文件、函数和位置坐标缝合。
@@ -87,11 +93,14 @@ tests:
 
 ```bash
 python -m pytest -q tests/test_code_index_cache.py tests/test_clang_incremental_extraction.py tests/test_clang_derived_reference_resolution.py tests/test_clang_lsp_transport.py
+python -m pytest -q tests/test_clang_usr_resolution.py
 python -m pytest -q tests/test_knowledge_db_ir_and_config.py tests/test_svf_cache.py
 python -m pytest -q tests/test_joern_client.py tests/test_bitcode_scope.py
 python -m pytest -q tests/test_svf_saber_parallel.py tests/test_svf_memory_budget.py tests/test_clang_extractor_pool.py
 python -m pytest -q tests/test_build_llvm_lazy_plan.py tests/test_partial_derived_rebuild.py
 ```
+
+`scripts/profile_clang_derived.py` 在基础 KnowledgeDB 的独立副本上运行固定文件集合与不同 worker 数，保存方法请求量/错误/延迟、缓存、进程 RSS、恢复情况及稳定事实摘要；不运行 LLM、不删除 clangd 缓存。`--file-limit 0` 选择全部函数文件，`--files` 可重放固定 JSON 文件列表。对比时区分 clangd 缓存状态、派生冷重建和检查点恢复，不能将样本结果或本机线程扩展效率宣称为目标大项目的提速倍数。
 
 ## 权威源码和关联文档
 

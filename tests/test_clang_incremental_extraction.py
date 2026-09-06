@@ -332,6 +332,12 @@ def test_clang_extractor_rebuilds_direct_function_type_references(
         encoding="utf-8",
     )
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    header = tmp_path / "include" / "types.h"
+    header.parent.mkdir()
+    header_lines = ["\n"] * 120
+    header_lines[89] = "struct Plugin {};\n"
+    header_lines[109] = "struct PluginRegistry {};\n"
+    header.write_text("".join(header_lines), encoding="utf-8")
     try:
         db.insert_function(
             "register_plugin",
@@ -360,16 +366,26 @@ def test_clang_extractor_rebuilds_direct_function_type_references(
         extractor = ClangExtractor(project_root=tmp_path)
 
         def definition_for_token(file_path, line, character):
-            token = source.read_text(encoding="utf-8").splitlines()[line - 1][character:]
+            token = source.read_text(encoding="utf-8").splitlines()[line][character:]
             if token.startswith("PluginRegistry"):
-                return [("include/types.h", 110)]
-            if token.startswith("Plugin"):
-                return [("include/types.h", 90)]
-            return []
+                target_line = 109
+            elif token.startswith("Plugin"):
+                target_line = 89
+            else:
+                return []
+            return [
+                {
+                    "uri": header.as_uri(),
+                    "range": {
+                        "start": {"line": target_line, "character": 7},
+                        "end": {"line": target_line, "character": 13},
+                    },
+                }
+            ]
 
         monkeypatch.setattr(extractor, "open_document", lambda path: True)
         monkeypatch.setattr(extractor, "close_document", lambda path: None)
-        monkeypatch.setattr(extractor, "_definition_locations", definition_for_token)
+        monkeypatch.setattr(extractor, "get_definition", definition_for_token)
 
         count = extractor.rebuild_function_type_refs(db)
         context = db.get_function_type_context("register_plugin", "src/plugin.c", 1)
