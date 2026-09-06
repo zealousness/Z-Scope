@@ -245,13 +245,11 @@ class ClangExtractor:
         self._documents_lock = threading.RLock()
         self._opened_documents: Dict[str, int] = {}
         self._source_text_cache: OrderedDict[Tuple[str, int, int], str] = OrderedDict()
-        self._source_lines_cache: OrderedDict[
-            Tuple[str, int, int], List[str]
-        ] = OrderedDict()
+        self._source_lines_cache: OrderedDict[Tuple[str, int, int], List[str]] = OrderedDict()
         self._masked_source_cache: OrderedDict[Tuple[str, int, int], str] = OrderedDict()
-        self._function_pointer_name_cache: OrderedDict[
-            Tuple[str, int, int], set[str]
-        ] = OrderedDict()
+        self._function_pointer_name_cache: OrderedDict[Tuple[str, int, int], set[str]] = (
+            OrderedDict()
+        )
         self._source_text_cache_lock = threading.RLock()
         self._derived_cache_lock = threading.RLock()
         self._source_text_cache_limit = 32
@@ -639,9 +637,7 @@ class ClangExtractor:
                 self._transport_metrics["enqueue_failures"] += 1
                 return None
             deadline = (
-                self._pending_request_deadlines.get(request_id)
-                if request_id is not None
-                else None
+                self._pending_request_deadlines.get(request_id) if request_id is not None else None
             )
             item = _OutboundMessage(
                 generation=target_generation,
@@ -721,6 +717,7 @@ class ClangExtractor:
                 with self._condition:
                     self._transport_metrics["write_failures"] += 1
                 logger.error("Failed to write to clangd stdin")
+                self._log_unexpected_exit(self.process)
                 self._signal_transport_closed(generation)
                 return
             finally:
@@ -738,18 +735,14 @@ class ClangExtractor:
             }
             samples = list(self._transport_metrics["write_latencies_ms"])
         ordered = sorted(float(value) for value in samples)
-        snapshot["average_write_latency_ms"] = (
-            sum(ordered) / len(ordered) if ordered else 0.0
-        )
+        snapshot["average_write_latency_ms"] = sum(ordered) / len(ordered) if ordered else 0.0
         p95_index = max(0, ((len(ordered) * 95 + 99) // 100) - 1)
         snapshot["p95_write_latency_ms"] = ordered[p95_index] if ordered else 0.0
         return snapshot
 
     # ── 消息读取 ──
 
-    def _read_loop(
-        self, process: Optional[Any] = None, generation: Optional[int] = None
-    ) -> None:
+    def _read_loop(self, process: Optional[Any] = None, generation: Optional[int] = None) -> None:
         """后台线程：从 stdout 读取 JSON-RPC 消息。"""
         process = self.process if process is None else process
         generation = self._generation if generation is None else generation
@@ -804,7 +797,45 @@ class ClangExtractor:
         except OSError:
             pass
         finally:
+            # Distinguish "stop() asked us to shut down" from "clangd vanished":
+            # stop() clears _running (and usually bumps the generation) before the
+            # reader notices EOF, so an unexpected exit sees _running still True.
+            unexpected = False
+            with self._condition:
+                unexpected = bool(
+                    generation == self._generation
+                    and self._running
+                    and process is not None
+                    and getattr(process, "poll", lambda: None)() is not None
+                )
+            if unexpected:
+                self._log_unexpected_exit(process)
             self._signal_transport_closed(generation)
+
+    def _log_unexpected_exit(self, process: Optional[Any]) -> None:
+        """Log the clangd exit code plus transport diagnostics when it dies mid-run.
+
+        clangd crashing during batch extraction used to leave no trace of why:
+        stdout EOF silently closed the transport and every queued LSP request
+        was aborted.  Persist the exit code and the diagnostic ring buffers so
+        the crash signature (segfault, assert, OOM-kill, stderr tail) survives
+        in the run log.  Callers must not rely on this blocking: one poll()
+        snapshot, no waiting.
+        """
+        returncode: Any = "unknown"
+        try:
+            poll_value = process.poll() if process is not None else None
+            if poll_value is not None:
+                returncode = poll_value
+            diagnostics = self.dump_indexing_diagnostics()
+        except Exception:  # noqa: BLE001 - diagnostics must never raise
+            returncode = "unavailable"
+            diagnostics = "unavailable"
+        logger.error(
+            "clangd process exited unexpectedly (returncode=%s); " "transport diagnostics:\n%s",
+            returncode,
+            diagnostics,
+        )
 
     def _dispatch_message(self, msg: dict, *, generation: Optional[int] = None) -> None:
         """分发收到的 LSP 消息。"""
@@ -1030,13 +1061,10 @@ class ClangExtractor:
                 )
             )
             if process is not None:
-                lines.append("clangd_pid=%s" % process.pid)
-            lines.append(
-                "last_progress_age=%.1fs" % max(0.0, now - self._last_progress_time)
-            )
-            lines.append(
-                "tracked_progress_tokens=%s" % self._indexing_wait_summary_locked(now)
-            )
+                pid_value = getattr(process, "pid", None)
+                lines.append("clangd_pid=%s" % ("unknown" if pid_value is None else pid_value))
+            lines.append("last_progress_age=%.1fs" % max(0.0, now - self._last_progress_time))
+            lines.append("tracked_progress_tokens=%s" % self._indexing_wait_summary_locked(now))
             if self._file_status:
                 state_counts: Dict[str, int] = {}
                 latest_uri = ""
@@ -1067,9 +1095,7 @@ class ClangExtractor:
                     lines.append("  %s" % line_text[:200])
             return "\n".join(lines)
 
-    def _stderr_loop(
-        self, process: Optional[Any] = None, generation: Optional[int] = None
-    ) -> None:
+    def _stderr_loop(self, process: Optional[Any] = None, generation: Optional[int] = None) -> None:
         """后台线程：读取 clangd stderr 日志。"""
         process = self.process if process is None else process
         generation = self._generation if generation is None else generation
@@ -1149,9 +1175,7 @@ class ClangExtractor:
                 continue
             with self._documents_lock:
                 if self._opened_documents.pop(uri, 0):
-                    self.send_notification(
-                        "textDocument/didClose", {"textDocument": {"uri": uri}}
-                    )
+                    self.send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
             changes.append({"uri": uri, "type": 3})
         if changes:
             self.send_notification("workspace/didChangeWatchedFiles", {"changes": changes})
@@ -1250,9 +1274,7 @@ class ClangExtractor:
         self, file_path: Path, range_info: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict]:
         """Query clangd's AST extension without coupling it to extraction policy."""
-        params: Dict[str, Any] = {
-            "textDocument": {"uri": Path(file_path).resolve().as_uri()}
-        }
+        params: Dict[str, Any] = {"textDocument": {"uri": Path(file_path).resolve().as_uri()}}
         if range_info is not None:
             params["range"] = range_info
         result = self.send_request("textDocument/ast", params, timeout=60)
@@ -1292,9 +1314,7 @@ class ClangExtractor:
                 return index + 1
         return len(text)
 
-    def _lsp_range_to_python(
-        self, file_path: Path, range_info: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _lsp_range_to_python(self, file_path: Path, range_info: Dict[str, Any]) -> Dict[str, Any]:
         """Convert an LSP range into Python string offsets using negotiated encoding."""
         source_lines = self._read_source_lines(file_path)
         converted: Dict[str, Any] = dict(range_info)
@@ -1571,10 +1591,7 @@ class ClangExtractor:
                             str(global_row["metadata"].get("storage_class") or "unknown"),
                             str(global_row["metadata"].get("qualifiers") or ""),
                             str(global_row["metadata"].get("initializer") or ""),
-                            str(
-                                global_row["metadata"].get("definition_kind")
-                                or "unknown"
-                            ),
+                            str(global_row["metadata"].get("definition_kind") or "unknown"),
                         )
                         for global_row in global_rows
                     ]
@@ -2250,11 +2267,7 @@ class ClangExtractor:
 
         functions = [row for row in get_functions() if not row.get("is_declaration")]
         if only_files is not None:
-            functions = [
-                row
-                for row in functions
-                if str(row.get("file_path") or "") in only_files
-            ]
+            functions = [row for row in functions if str(row.get("file_path") or "") in only_files]
         globals_by_name = self._records_by_name(get_globals())
         macros_by_name = self._records_by_name(get_macros())
         indexed_symbol_names = set(globals_by_name).union(macros_by_name)
@@ -2357,9 +2370,7 @@ class ClangExtractor:
         def consume(result: _DerivedFileResult) -> None:
             nonlocal staged_count
             self._merge_derived_stats(stats, result.stats_by_index[index_name])
-            stats["peak_inflight_files"] = int(
-                worker_metrics.get("peak_inflight_files") or 0
-            )
+            stats["peak_inflight_files"] = int(worker_metrics.get("peak_inflight_files") or 0)
             if use_staging:
                 assert callable(stage_refs)
                 assert callable(stage_macro_refs)
@@ -2431,11 +2442,7 @@ class ClangExtractor:
 
         functions = [row for row in get_functions() if not row.get("is_declaration")]
         if only_files is not None:
-            functions = [
-                row
-                for row in functions
-                if str(row.get("file_path") or "") in only_files
-            ]
+            functions = [row for row in functions if str(row.get("file_path") or "") in only_files]
         type_records = list(get_types())
         types_by_name = self._records_by_name(type_records)
         indexed_type_names = set(types_by_name)
@@ -2537,9 +2544,7 @@ class ClangExtractor:
         def consume(result: _DerivedFileResult) -> None:
             nonlocal staged_count
             self._merge_derived_stats(stats, result.stats_by_index[index_name])
-            stats["peak_inflight_files"] = int(
-                worker_metrics.get("peak_inflight_files") or 0
-            )
+            stats["peak_inflight_files"] = int(worker_metrics.get("peak_inflight_files") or 0)
             if use_staging:
                 assert callable(stage_refs)
                 for offset in range(0, len(result.type_rows), 1000):
@@ -2614,16 +2619,10 @@ class ClangExtractor:
 
         functions = [row for row in get_functions() if not row.get("is_declaration")]
         if only_files is not None:
-            functions = [
-                row
-                for row in functions
-                if str(row.get("file_path") or "") in only_files
-            ]
+            functions = [row for row in functions if str(row.get("file_path") or "") in only_files]
         functions_by_file: Dict[str, List[Dict[str, Any]]] = {}
         for function in functions:
-            functions_by_file.setdefault(str(function.get("file_path") or ""), []).append(
-                function
-            )
+            functions_by_file.setdefault(str(function.get("file_path") or ""), []).append(function)
         globals_by_name = self._records_by_name(get_globals())
         macros_by_name = self._records_by_name(get_macros())
         types_by_name = self._records_by_name(list(get_types()))
@@ -4155,9 +4154,7 @@ class ClangExtractor:
             matched_keys = coordinate_index.get(coordinate)
         else:
             with resolution_lock:
-                coordinate_index = semantic_context.setdefault(
-                    "reference_coordinate_index", {}
-                )
+                coordinate_index = semantic_context.setdefault("reference_coordinate_index", {})
                 raw_matched = coordinate_index.get(coordinate)
                 matched_keys = set(raw_matched) if isinstance(raw_matched, set) else raw_matched
         if not isinstance(matched_keys, set) or len(matched_keys) != 1:
@@ -4378,9 +4375,9 @@ class ClangExtractor:
                     if not matched:
                         coordinate_index.pop(coordinate, None)
                 indexed.discard(evicted_key)
-                stats["reference_cache_evictions"] = int(
-                    stats.get("reference_cache_evictions") or 0
-                ) + 1
+                stats["reference_cache_evictions"] = (
+                    int(stats.get("reference_cache_evictions") or 0) + 1
+                )
 
         resolution_lock = self._resolution_cache_lock(semantic_context)
         if resolution_lock is None:
@@ -4847,16 +4844,11 @@ class ClangExtractor:
                         - int(request_metrics_before[method].get("timeouts") or 0),
                     ),
                     "average_latency_ms": round(
-                        float(
-                            self.get_request_metrics(method).get("average_latency_ms")
-                            or 0.0
-                        ),
+                        float(self.get_request_metrics(method).get("average_latency_ms") or 0.0),
                         3,
                     ),
                     "p95_latency_ms": round(
-                        float(
-                            self.get_request_metrics(method).get("p95_latency_ms") or 0.0
-                        ),
+                        float(self.get_request_metrics(method).get("p95_latency_ms") or 0.0),
                         3,
                     ),
                 }
