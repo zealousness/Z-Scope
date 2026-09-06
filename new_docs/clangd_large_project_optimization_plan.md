@@ -11,20 +11,20 @@
 | 文件调度、semantic tokens、LSP transport、派生发布 | zscope/retrieval/clang_extractor.py |
 | 使用位置解析、USR 映射、补证、输入身份 | zscope/retrieval/clang_resolution.py |
 | 字节预算、SQLite broker、single-flight、缓存恢复 | zscope/retrieval/clang_derived_cache.py |
-| 两类派生版本升级到 5，基础 extractor 版本不变 | zscope/retrieval/clang_backend.py |
+| 两类派生版本升级到 6，基础 extractor 版本不变 | zscope/retrieval/clang_backend.py |
 | 固定文件集合、worker 对比和事实摘要 | scripts/profile_clang_derived.py |
 | 规模、歧义、恢复和真实 clangd 回归 | tests/test_clang_usr_resolution.py |
 
 ## 解析与正确性
 
 1. 当前文件复用 semantic tokens，保留局部遮蔽、字段和函数式宏过滤。仅 C 文件自身拥有的唯一全局定义与可靠全局作用域 token 可走本地快路径。
-2. symbol/type 共享使用坐标的完整 symbolInfo 和 definition 结果，按当前 TU 上下文与构建身份隔离。正常稳定坐标只发送一次各类请求。
+2. symbol/type 共享使用坐标的完整 symbolInfo、definition 和 declaration 结果，按当前 TU 上下文与构建身份隔离。正常稳定坐标只发送一次各类请求。
 3. symbolInfo 保留全部候选，优先使用 USR 及 declarationRange / definitionRange 映射记录。USR 映射保存稳定声明身份集合，不能用 SQLite 自增 ID 或 (file, name) 表示绑定。
 4. 只有身份、类别和编译器目标坐标能唯一对应时才绑定，否则调用 definition。匹配保留规范路径、列与 UTF-8/16/32 位置编码；已有准确标识符位置时，不用外层声明区间匹配同名成员。
-5. MethodNotFound 只禁用当前 clangd 进程代次的 symbolInfo；其他错误独立统计。缺少 USR 映射、基础事实未收录、范围外定义分别记录。
+5. definition 无法映射时优先查询使用位置 declaration，适配缺少 symbolInfo 可选坐标的版本。MethodNotFound 只禁用当前 clangd 进程代次的对应方法，declaration 还检查服务端能力；其他错误独立统计。缺少 USR 映射、基础事实未收录、范围外定义分别记录。
 6. include closure 不完整时仍解析使用位置，不按名字判定外部符号，也不依据可见候选数量确认身份。
-7. 未闭合的位置先在文件内分组，再按声明查询补证。声明身份能通过 USR 闭合时直接绑定；否则复用有 lease 的声明文档查询 references，并将结果与这一组全部待判坐标相交。
-8. references 明确限制为 1000 个结果。达到上限、请求失败、未就绪或多个命中都不能形成唯一绑定；当前匹配集合与 LRU 生命周期无关。跨宏/全局变量类别的补证同样不能用另一类别的失败推导唯一性。
+7. 未闭合的位置先按单一 USR 从使用文件查询一次包含声明的 references，精确匹配声明选择位置并保存身份映射。仍不足时，按声明查询 references，与整组待判坐标相交；仅对实际命中的声明查询 USR，合并同实体多重声明。禁止先给全体同名候选查询 USR。使用文件 lease 延续到补证及第二次事实收集完成。
+8. references 明确限制为 1000 个结果。候选查询达到上限、请求失败、未就绪或多个不同身份命中都不能推导唯一绑定；当前匹配集合与 LRU 生命周期无关。使用位置已知单一 USR 时，返回的精确声明可作为该身份的正向证据，但空或截断结果从不排除其余候选。跨宏/全局变量类别的补证同样不能用另一类别的失败推导唯一性。
 
 声明文档 lease 每个 worker 最多保留 4 个，退出文件时释放。没有请求超时、错误或未就绪结果的文件才可写入可恢复检查点。
 
@@ -43,6 +43,18 @@
 
 rpc_methods 记录物理发送量、成功空/非空、错误码、超时和平均延迟。p95 使用最近至多 256 个完成请求，并公开样本量。日志同时记录候选组规模、RPC 缓存命中、磁盘命中、淘汰、SQLite 时间、身份校验时间、未解析原因、文件恢复数及 Python/clangd RSS。RSS 峰值是周期采样值。
 
+会话内每 30 秒独立输出 derived-heartbeat，覆盖单 worker 和全部 worker 等待 RPC 的情况。输出活跃文件/阶段、候选补证完成量、当前查询文档/方法/耗时、RPC 增量、缓存队列及内存；心跳只读内存快照，不向 SQLite owner 排队。旧日志的文件完成事件不能替代心跳。
+
+## 客户现场停滞修复
+
+客户 clangd 20.1.0 的线程栈显示 8 个 worker 均在 flush → _canonical_candidate_groups → _candidate_canonical_identity → symbolInfo 路径等待。旧实现仍预取整个同名组的声明身份；最大组 6508 个候选，以现场 symbolInfo 平均 340 ms 粗估，一轮串行请求约 37 分钟，期间没有文件完成日志。该估算用于解释请求放大，不能作为现场墙钟的精确归因。
+
+版本 6 移除此预取阶段，增加上述使用位置补证与心跳。tests/test_clang_derived_stall.py 覆盖 6508 个 global/type 同名候选、1/8 worker、小缓存及候选逆序，验证使用位置证据可用时没有候选文档 RPC；并验证只有正向命中的声明需要 USR、证据不足不缩小候选范围、全部 worker 等待时仍有心跳。真实 clangd 用例主动去除 symbolInfo 可选坐标并禁用 definition 结果，分别检验 declaration 和使用位置 references 两条路径。
+
+这次派生算法身份与两类 extractor 版本一并更新，旧派生检查点保守失效；已有基础 TU 事实与主库已发布事实保留。若所有使用位置证据都不足，最终候选 references 扫描仍可能较慢，心跳会明确显示其进度，不能把修复宣称为任意项目的恒定请求量。
+
+修复验证：Windows 官方 clangd 20.1.0 与本机 21.1.8 均通过四项真实 LSP 回归。仅包含待推送修改的独立副本在 clangd 20.1.0 下通过全部 280 项相关测试及 compileall；当前工作区全库 mypy 129 条既有诊断，使用此次四个产品文件的 HEAD 内容做 shadow-file 基线，新增/减少均为 0。这里的 Windows 用例证明协议兼容与绑定行为，客户 Linux 大仓性能仍需复测。
+
 测量脚本在 KnowledgeDB 的独立副本上运行，不修改原始事实，不启动 LLM，也不清除 clangd 自身缓存：
 
     python -m scripts.profile_clang_derived --project-root /path/to/project --knowledge-db /path/to/project/.zscope_knowledge/code_knowledge.db --compile-commands-dir /path/to/project/build --workers 1 2 4 8 --repeats 3 --file-limit 200 --output /path/to/results/derived-profile.json
@@ -55,7 +67,7 @@ rpc_methods 记录物理发送量、成功空/非空、错误码、超时和平�
 
 目标千万行项目仍需执行：固定约 100–300 文件分层样本、相同基础索引上的完整派生重建、冷缓存/恢复、旧实现与新实现的绑定差异审计。references 请求下降至少 90%、派生墙钟降至原来的 1/3 以下是验收目标，并非已证明的收益。完整项目、硬件和历史全程基线未提供，不能把本机小样本结果外推为该目标项目的提速倍数。
 
-## 本机验证记录
+## 首版（版本 5）本机验证记录
 
 - 263 项相关测试通过，包含 transport、derived、incremental、partial rebuild、pool、KnowledgeDB、查询契约和文档检查。compileall 与本次修改的 diff 空白检查通过。
 - 全库 mypy 仍有 136 条诊断，分布于 31 个文件。使用改动前的 extractor/backend 作为 shadow-file 基线核对，没有新增诊断；不能将全库类型检查标记为通过。

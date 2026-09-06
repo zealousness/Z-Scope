@@ -6,6 +6,7 @@ import threading
 import functools
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -17,6 +18,7 @@ from typing import Any, Callable, Iterator, Optional, Tuple, Dict, TypeVar, cast
 from .clang_derived_cache import DerivedCache, cache_key
 
 _F = TypeVar("_F", bound=Callable[..., Any])
+logger = logging.getLogger(__name__)
 
 
 def process_rss(pid: int) -> int | None:
@@ -113,12 +115,13 @@ def derived_session(method: _F) -> _F:
         resolver.validate = validate
         ex._derived_resolver = resolver
         try:
-            result = method(ex, db, *args, **kwargs)
-            if not resolver.validate():
-                raise RuntimeError(
-                    "Source, dependencies or base facts changed during derived rebuild"
-                )
-            return result
+            with resolver.heartbeat():
+                result = method(ex, db, *args, **kwargs)
+                if not resolver.validate():
+                    raise RuntimeError(
+                        "Source, dependencies or base facts changed during derived rebuild"
+                    )
+                return result
         finally:
             cache.pump()
             ex._last_resolution_cache_stats = dict(
@@ -248,7 +251,7 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
     digest.update(
         json.dumps(
             [
-                "derived-v5",
+                "derived-v6",
                 str(ex.project_root),
                 ex.clangd_path,
                 ex._server_info,
@@ -274,6 +277,8 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
 
 
 class DerivedResolver:
+    HEARTBEAT_SECONDS = 30.0
+
     def __init__(self, extractor: Any, cache: DerivedCache):
         self.ex = extractor
         self.cache = cache
@@ -286,6 +291,82 @@ class DerivedResolver:
         self._group_count = self._group_sum = self._group_max = 0
         self._memory: dict[str, Any] = {}
         self._memory_time = 0.0
+        self._progress_lock = threading.Lock()
+        self._active: dict[int, dict[str, Any]] = {}
+        self._files_total = self._files_completed = 0
+
+    def workload(self, total: int) -> None:
+        with self._progress_lock:
+            self._files_total = total
+            self._files_completed = 0
+
+    def file_completed(self) -> None:
+        with self._progress_lock:
+            self._files_completed += 1
+
+    def progress(self, **values: Any) -> None:
+        with self._progress_lock:
+            active = self._active.get(threading.get_ident())
+            if active is not None:
+                active.update(values)
+
+    @contextmanager
+    def operation(self, method: str, path: Path, line: int) -> Iterator[None]:
+        self.progress(method=method, query_file=str(path), line=line, rpc_started=time.monotonic())
+        try:
+            yield
+        finally:
+            self.progress(method="", query_file="", rpc_started=None)
+
+    def progress_snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._progress_lock:
+            active = [dict(value) for value in self._active.values()]
+            result = {
+                "files_completed": self._files_completed,
+                "files_total": self._files_total,
+            }
+        for value in active:
+            value["elapsed_seconds"] = round(now - value.pop("started"), 1)
+            rpc_started = value.pop("rpc_started", None)
+            value["operation_seconds"] = round(now - rpc_started, 1) if rpc_started else 0.0
+        return dict(result, active=active)
+
+    @contextmanager
+    def heartbeat(self) -> Iterator[None]:
+        # Independent of the file loop, including its single-worker inline path.
+        # This thread only snapshots memory; it must never ask the SQLite owner
+        # for work, send LSP requests, or hold a lock while logging.
+        stop = threading.Event()
+
+        def report() -> None:
+            previous_sent = previous_completed = 0
+            while not stop.wait(self.HEARTBEAT_SECONDS):
+                try:
+                    rpc = self.rpc_snapshot()
+                    sent = sum(int(v.get("sent", 0)) for v in rpc.values())
+                    completed = sum(int(v.get("count", 0)) for v in rpc.values())
+                    logger.info(
+                        "[derived-heartbeat] progress=%s rpc_delta(sent=%d completed=%d) "
+                        "methods=%s cache=%s memory=%s",
+                        self.progress_snapshot(),
+                        sent - previous_sent,
+                        completed - previous_completed,
+                        rpc,
+                        self.cache.snapshot(),
+                        self.memory_snapshot(),
+                    )
+                    previous_sent, previous_completed = sent, completed
+                except Exception:
+                    logger.exception("Failed to collect derived heartbeat")
+
+        monitor = threading.Thread(target=report, name="ClangDerivedHeartbeat", daemon=True)
+        monitor.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            monitor.join()
 
     @property
     def index_names(self) -> list[str]:
@@ -379,12 +460,20 @@ class DerivedResolver:
             "leases": OrderedDict(),
         }
         self.local.state = state
+        with self._progress_lock:
+            self._active[threading.get_ident()] = {
+                "file": str(path),
+                "phase": "use-sites",
+                "started": time.monotonic(),
+            }
         try:
             yield state
         finally:
             for leased in state["leases"]:
                 self.ex.close_document(Path(leased))
             self.local.state = None
+            with self._progress_lock:
+                self._active.pop(threading.get_ident(), None)
 
     @contextmanager
     def lease(self, path: Path) -> Iterator[bool]:
@@ -401,7 +490,8 @@ class DerivedResolver:
         leases = state["leases"]
         if key not in leases:
             if len(leases) >= 4:
-                previous, _ = leases.popitem(last=False)
+                previous = next(item for item in leases if item != state["path"])
+                leases.pop(previous)
                 self.ex.close_document(Path(previous))
             if not self.ex.open_document(path):
                 state["transient"] = True
@@ -432,16 +522,27 @@ class DerivedResolver:
         key = cache_key([self._context(path), str(path.resolve()), line, char])
 
         def compute() -> dict[str, Any]:
-            metric = "symbol_info_requests" if method == "symbolInfo" else "definition_requests"
+            metric = "symbol_info_requests" if method == "symbolInfo" else method + "_requests"
             stats[metric] = int(stats.get(metric, 0)) + 1
             rpc_method = "textDocument/" + method
             self.ex.get_thread_rpc_outcome(rpc_method, clear=True)
             ready = self.index_ready()
             try:
-                if method == "symbolInfo":
-                    raw = self.ex.get_symbol_details(path, line - 1, char)
-                else:
-                    raw = self.ex.get_definition(path, line - 1, char)
+                # Acquire lazily: candidate-free/local-only files need no extra
+                # document open. Retain the use TU through both resolver passes.
+                with self.operation(rpc_method, path, line), self.lease(path) as opened:
+                    if not opened:
+                        return {
+                            "items": [],
+                            "status": "document_unavailable",
+                            "_volatile": True,
+                        }
+                    if method == "symbolInfo":
+                        raw = self.ex.get_symbol_details(path, line - 1, char)
+                    elif method == "declaration":
+                        raw = self.ex.get_declaration(path, line - 1, char)
+                    else:
+                        raw = self.ex.get_definition(path, line - 1, char)
                 outcome = self.ex.get_thread_rpc_outcome(rpc_method)
                 status = str(
                     outcome.get("status") or ("success" if raw is not None else "unavailable")
@@ -451,7 +552,7 @@ class DerivedResolver:
             if status == "timeout" and method == "definition":
                 stats["definition_timeouts"] = int(stats.get("definition_timeouts", 0)) + 1
             return {
-                "items": raw if isinstance(raw, list) else [],
+                "items": (raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []),
                 "status": status,
                 "_volatile": status not in {"success", "success_nonempty", "success_empty"}
                 or (not raw and not (ready and self.index_ready())),
@@ -513,6 +614,17 @@ class DerivedResolver:
     def match(
         self, candidates: list[dict[str, Any]], locations: list[Any], context: dict[str, Any]
     ) -> dict[str, Any] | None:
+        matches = self.matching_declarations(candidates, locations, context)
+        return matches[0] if len(matches) == 1 else None
+
+    def matching_declarations(
+        self,
+        candidates: list[dict[str, Any]],
+        locations: list[Any],
+        context: dict[str, Any],
+        *,
+        selection_only: bool = False,
+    ) -> list[dict[str, Any]]:
         matches: dict[tuple[Any, ...], dict[str, Any]] = {}
         index = self.candidate_index(candidates)
         for raw in locations:
@@ -523,8 +635,15 @@ class DerivedResolver:
                 continue
             target_file, line, char = target
             for candidate in index["by_file"].get(self.normalized_path(target_file), []):
+                start = int(candidate.get("line") or candidate.get("start_line") or 0)
+                end = max(start, int(candidate.get("end_line") or start))
+                if not start <= line <= end:
+                    continue
                 declaration = self.ex._candidate_declaration_position(candidate, context)
-                exact = declaration is not None and (declaration[1], declaration[2]) == (line, char)
+                exact = declaration is not None and (declaration[1], declaration[2]) == (
+                    line,
+                    char,
+                )
                 # A compiler selection must never bind to a different member or
                 # initializer merely because it is inside an enclosing record.
                 lines = self.ex._read_source_lines(
@@ -537,14 +656,16 @@ class DerivedResolver:
                     else None
                 )
                 spelled = bool(token and token.group() == name)
-                start = int(candidate.get("start_line") or candidate.get("line") or 0)
-                end = int(candidate.get("end_line") or start)
                 ranged = bool(
-                    declaration is None and spelled and start <= line <= end and end >= start > 0
+                    not selection_only
+                    and declaration is None
+                    and spelled
+                    and start <= line <= end
+                    and end >= start > 0
                 )
                 if exact or ranged:
                     matches[self.ex._candidate_identity(candidate)] = candidate
-        return next(iter(matches.values())) if len(matches) == 1 else None
+        return list(matches.values())
 
     def resolve(
         self,
@@ -630,13 +751,26 @@ class DerivedResolver:
             return matched, ""
         if len(identities_info) > 1:
             return None, "symbol_info_ambiguous"
+        # Older clangd symbolInfo responses omit locations. Declaration lookup
+        # uses the current TU's AST; it does not require parsing candidate files.
+        declarations: dict[str, Any] = {"items": []}
+        if self.ex._declaration_supported is not False and (
+            self.ex.process is not None or "get_declaration" in self.ex.__dict__
+        ):
+            declarations = self._rpc("declaration", path, line, char, stats)
+            matched = self.match(candidates, declarations["items"], context)
+            if matched is not None:
+                if identity_key:
+                    self.remember_identity(identity_key, [matched])
+                self.local.last_binding = "declaration"
+                return matched, ""
         if state is None:
             return self.references(candidates, kind, path, line, char, context, stats)
         state["pending"][occurrence] = (candidates, kind, path, line, char, context, stats)
         state["use_identities"][occurrence] = next(iter(identities_info)) if identity_key else ""
         target_locations = [
             loc
-            for raw in definitions["items"]
+            for raw in definitions["items"] + declarations["items"]
             if isinstance(raw, dict)
             if (loc := self.location(raw)) is not None
         ]
@@ -676,6 +810,52 @@ class DerivedResolver:
             return matched, ""
         return None, "definition_unresolved"
 
+    def use_reference_declarations(
+        self,
+        candidates: list[dict[str, Any]],
+        path: Path,
+        line: int,
+        char: int,
+        context: dict[str, Any],
+        stats: dict[str, Any],
+        usr: str,
+    ) -> list[dict[str, Any]]:
+        # A single compiler identity is required: locations from an ambiguous
+        # use must never be interpreted as redeclarations of one symbol. Reuse
+        # only within this TU; headers may mean different things in another TU.
+        key = cache_key([self._context(path), str(path.resolve()), usr])
+
+        def compute() -> dict[str, Any]:
+            method = "textDocument/references"
+            self.ex.get_thread_rpc_outcome(method, clear=True)
+            ready = self.index_ready()
+            try:
+                with self.operation(method, path, line), self.lease(path) as opened:
+                    if not opened:
+                        return {"items": [], "_volatile": True}
+                    stats["references_requests"] = int(stats.get("references_requests", 0)) + 1
+                    raw = self.ex.get_references(path, line - 1, char, include_declaration=True)
+                    outcome = self.ex.get_thread_rpc_outcome(method)
+            except Exception:
+                raw, outcome = None, {"status": "rpc_error"}
+            success = isinstance(raw, list) and outcome.get("status", "success").startswith(
+                "success"
+            )
+            return {
+                "items": raw if success else [],
+                "complete": success and ready and self.index_ready() and len(raw or []) < 1000,
+                "_volatile": not success or not (ready and self.index_ready()),
+            }
+
+        result = self.cache.compute("use_references", key, compute)
+        state = getattr(self.local, "state", None)
+        if state is not None and result.get("_volatile"):
+            state["transient"] = True
+        # Even a capped response can positively identify a declaration of the
+        # known use-site USR. Absence never eliminates a candidate. Only exact
+        # declaration selections qualify; ordinary uses inside a range do not.
+        return self.matching_declarations(candidates, result["items"], context, selection_only=True)
+
     def reference_locations(
         self,
         candidate: dict[str, Any],
@@ -701,7 +881,10 @@ class DerivedResolver:
             self.ex.get_thread_rpc_outcome("textDocument/references", clear=True)
             ready = self.index_ready()
             try:
-                with self.lease(path) as opened:
+                with (
+                    self.operation("textDocument/references", path, line),
+                    self.lease(path) as opened,
+                ):
                     if not opened:
                         return {"locations": [], "complete": False, "_volatile": True}
                     stats["references_requests"] = int(stats.get("references_requests", 0)) + 1
@@ -755,58 +938,34 @@ class DerivedResolver:
                     int(c.get("line") or c.get("start_line") or 0),
                 ),
             )
-            groups = self.ex._canonical_candidate_groups(
-                candidates, kind=kind, semantic_context=context, stats=stats
-            )
-            if any(state["use_identities"].get(occurrence) for occurrence, _ in uses):
-                canonicalized: dict[Any, list[dict[str, Any]]] = {}
-                for canonical, representative, members in groups:
-                    if canonical[0] == "candidate":
-                        canonical = self.ex._candidate_canonical_identity(
-                            representative, kind=kind, semantic_context=context, stats=stats
-                        )
-                    canonicalized.setdefault(canonical, []).extend(members)
-                groups = [
-                    (canonical, self.ex._canonical_candidate_representative(members, kind), members)
-                    for canonical, members in canonicalized.items()
-                ]
-                remaining = []
-                for occurrence, args in uses:
-                    wanted_identity = state["use_identities"].get(occurrence)
-                    matching = [
-                        rep
-                        for canonical, rep, _ in groups
-                        if canonical[0] in {"usr", "symbol_id"} and canonical[2] == wanted_identity
-                    ]
-                    if wanted_identity and len(matching) == 1:
-                        state["completed"][occurrence] = (matching[0], "")
-                        state["binding_sources"][occurrence] = "identity"
-                        stats["usr_resolved"] = int(stats.get("usr_resolved", 0)) + 1
-                        members = next(
-                            m
-                            for canonical, _, m in groups
-                            if canonical[0] in {"usr", "symbol_id"}
-                            and canonical[2] == wanted_identity
-                        )
+            self.progress(phase="use-references", group_size=len(candidates), candidate_done=0)
+            # Resolve from the already parsed use TU before opening any candidate
+            # document. Never prefetch every same-name declaration's symbolInfo.
+            by_usr: dict[str, list[dict[str, Any]]] = {}
+            remaining = []
+            for occurrence, args in uses:
+                usr = state["use_identities"].get(occurrence, "")
+                if usr and usr not in by_usr:
+                    by_usr[usr] = self.use_reference_declarations(
+                        candidates, path, args[3], args[4], context, stats, usr
+                    )
+                    if by_usr[usr]:
                         self.remember_identity(
-                            cache_key([self._context(path), kind, wanted_identity]), members
+                            cache_key([self._context(path), kind, usr]), by_usr[usr]
                         )
-                    elif wanted_identity and all(
-                        c[0] in {"usr", "symbol_id"} for c, _, _ in groups
-                    ):
-                        reason = state["target_reasons"].get(occurrence, "definition_not_indexed")
-                        state["completed"][occurrence] = (None, reason)
-                        if reason == "definition_outside_scope":
-                            self.cache.put(
-                                "identity",
-                                cache_key([self._context(path), kind, wanted_identity]),
-                                {"outside_scope_group": occurrence[0]},
-                            )
-                    else:
-                        remaining.append((occurrence, args))
-                uses = remaining
-                if not uses:
-                    continue
+                members = by_usr.get(usr, [])
+                if members:
+                    state["completed"][occurrence] = (
+                        self.ex._canonical_candidate_representative(members, kind),
+                        "",
+                    )
+                    state["binding_sources"][occurrence] = "identity"
+                    stats["usr_resolved"] = int(stats.get("usr_resolved", 0)) + 1
+                else:
+                    remaining.append((occurrence, args))
+            uses = remaining
+            if not uses:
+                continue
             wanted = {
                 (
                     self.ex._reference_file_key(self.ex._project_relative_path(args[2])),
@@ -817,16 +976,54 @@ class DerivedResolver:
             }
             matches: dict[Any, list[dict[str, Any]]] = {}
             complete = True
-            for canonical, representative, _ in groups:
-                locations = self.reference_locations(
-                    representative, kind, context, stats, canonical
-                )
+            self.progress(phase="declaration-references", candidate_done=0)
+            for ordinal, candidate in enumerate(candidates, 1):
+                canonical = ("candidate", kind, self.ex._candidate_identity(candidate))
+                locations = self.reference_locations(candidate, kind, context, stats, canonical)
                 complete &= bool(context.get("_last_reference_complete"))
                 for coordinate in locations.intersection(wanted):
-                    matches.setdefault(wanted[coordinate], []).append(representative)
+                    matches.setdefault(wanted[coordinate], []).append(candidate)
+                self.progress(candidate_done=ordinal)
             for occurrence, _args in uses:
                 values = matches.get(occurrence, [])
-                if complete and len(values) == 1:
+                occurrence_complete = complete
+                usr = state["use_identities"].get(occurrence, "")
+                # USRs are only needed for positive evidence: distinguish two
+                # matches from two declarations of the same entity. Failed or
+                # capped candidate queries still cannot prove uniqueness.
+                groups: dict[Any, list[dict[str, Any]]] = {}
+                if len(values) > 1 or (values and usr):
+                    self.progress(phase="matched-declaration-identities")
+                    for candidate in values:
+                        canonical = self.ex._candidate_canonical_identity(
+                            candidate, kind=kind, semantic_context=context, stats=stats
+                        )
+                        groups.setdefault(canonical, []).append(candidate)
+                    known = [
+                        members
+                        for canonical, members in groups.items()
+                        if usr and canonical[0] in {"usr", "symbol_id"} and canonical[2] == usr
+                    ]
+                    if len(known) == 1:
+                        self.remember_identity(
+                            cache_key([self._context(path), kind, usr]), known[0]
+                        )
+                        state["completed"][occurrence] = (
+                            self.ex._canonical_candidate_representative(known[0], kind),
+                            "",
+                        )
+                        state["binding_sources"][occurrence] = "identity"
+                        stats["usr_resolved"] = int(stats.get("usr_resolved", 0)) + 1
+                        continue
+                    values = [
+                        self.ex._canonical_candidate_representative(m, kind)
+                        for m in groups.values()
+                    ]
+                    if usr and any(c[0] in {"usr", "symbol_id"} for c in groups):
+                        # Conflicting compiler identities are not repaired by
+                        # an otherwise unique reverse-reference hit.
+                        occurrence_complete = False
+                if occurrence_complete and len(values) == 1:
                     state["completed"][occurrence] = (values[0], "")
                     state["binding_sources"][occurrence] = "references"
                     stats["references_resolved"] = int(stats.get("references_resolved", 0)) + 1
@@ -838,11 +1035,12 @@ class DerivedResolver:
                             if len(values) > 1
                             else (
                                 "reference_incomplete"
-                                if not complete
+                                if not occurrence_complete
                                 else state["target_reasons"].get(
                                     occurrence, "definition_unresolved"
                                 )
                             )
                         ),
                     )
+        self.progress(phase="materialize", method="")
         state["final"] = True

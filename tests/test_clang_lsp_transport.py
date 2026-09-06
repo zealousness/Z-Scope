@@ -879,3 +879,47 @@ def test_symbol_info_ast_and_range_helpers(tmp_path, monkeypatch) -> None:
     capabilities = extractor._client_capabilities()["textDocument"]
     assert capabilities["symbolInfo"] == {}
     assert capabilities["ast"] == {}
+
+
+def test_declaration_fallback_preserves_encoding_and_server_capability(tmp_path, monkeypatch):
+    extractor = ClangExtractor(tmp_path)
+    source = tmp_path / "declaration.cpp"
+    source.write_text("/*名*/ shared;\n", encoding="utf-8")
+    extractor._apply_server_capabilities({"positionEncoding": "utf-8", "declarationProvider": {}})
+    calls = []
+    response = {
+        "targetUri": source.as_uri(),
+        "targetSelectionRange": {
+            "start": {"line": 0, "character": 8},
+            "end": {"line": 0, "character": 14},
+        },
+    }
+    outcome = {"status": "success_nonempty", "error": None}
+
+    def request(method, params, timeout):
+        calls.append((method, params, timeout))
+        extractor._record_rpc_outcome(method, outcome["status"], outcome["error"])
+        return response if outcome["status"].startswith("success") else None
+
+    monkeypatch.setattr(extractor, "send_request", request)
+    assert extractor.get_declaration(source, 0, 6) == [response]
+    assert calls[-1] == (
+        "textDocument/declaration",
+        {"textDocument": {"uri": source.as_uri()}, "position": {"line": 0, "character": 8}},
+        30,
+    )
+    outcome.update(status="rpc_error", error={"code": -32603})
+    assert extractor.get_declaration(source, 0, 6) is None
+    assert extractor._declaration_supported is True
+    outcome["error"] = {"code": -32601}
+    assert extractor.get_declaration(source, 0, 6) is None
+    assert extractor._declaration_supported is False
+    assert extractor.get_declaration(source, 0, 6) is None
+    assert len(calls) == 3
+    # A new initialize response starts a new capability generation.
+    extractor._apply_server_capabilities({"declarationProvider": True})
+    outcome.update(status="success_nonempty", error=None)
+    assert extractor.get_declaration(source, 0, 6) == [response]
+    extractor._apply_server_capabilities({})
+    assert extractor.get_declaration(source, 0, 6) is None
+    assert len(calls) == 4
