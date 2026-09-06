@@ -387,6 +387,62 @@ def test_reader_eof_wakes_pending_request(tmp_path, monkeypatch) -> None:
     assert extractor._transport_closed is True
 
 
+def test_reader_eof_logs_unexpected_exit_diagnostics(tmp_path, caplog) -> None:
+    """Mid-run clangd death must record the exit code and diagnostics (M5 finding)."""
+    import logging as _logging
+
+    extractor = ClangExtractor(tmp_path)
+
+    class FakeStdout:
+        @staticmethod
+        def fileno() -> int:
+            return 99
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def poll(self):
+            return -11  # SIGSEGV-style exit code
+
+    extractor.process = FakeProcess()
+    extractor._running = True
+    with caplog.at_level(_logging.ERROR, logger="zscope.retrieval.clang_extractor"):
+        extractor._read_loop()
+    assert extractor._transport_closed is True
+    unexpected_logs = [
+        record for record in caplog.records if "exited unexpectedly" in record.getMessage()
+    ]
+    assert unexpected_logs, "expected an unexpected-exit diagnostic record"
+    message = unexpected_logs[0].getMessage()
+    assert "returncode=-11" in message
+    assert "transport diagnostics" in message
+
+
+def test_reader_stop_keeps_quiet_when_transport_closes_normally(tmp_path, caplog) -> None:
+    """stop()-driven EOF (generation bumped / _running False) must not log an error."""
+    import logging as _logging
+
+    extractor = ClangExtractor(tmp_path)
+
+    class FakeStdout:
+        @staticmethod
+        def fileno() -> int:
+            return 99
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def poll(self):
+            return 0
+
+    extractor.process = FakeProcess()
+    extractor._running = False  # stop() already ran
+    with caplog.at_level(_logging.ERROR, logger="zscope.retrieval.clang_extractor"):
+        extractor._read_loop()
+    assert extractor._transport_closed is True
+    assert not [record for record in caplog.records if "exited unexpectedly" in record.getMessage()]
+
+
 def test_semantic_capabilities_and_server_legend_are_preserved(tmp_path) -> None:
     extractor = ClangExtractor(tmp_path)
     capabilities = extractor._client_capabilities()
@@ -578,14 +634,12 @@ def test_writer_failure_wakes_pending_request(tmp_path) -> None:
     assert extractor.get_transport_metrics()["write_failures"] == 1
 
 
-def test_reader_frames_fragmented_large_utf8_payload_with_bytearray(
-    tmp_path, monkeypatch
-) -> None:
+def test_reader_frames_fragmented_large_utf8_payload_with_bytearray(tmp_path, monkeypatch) -> None:
     extractor = ClangExtractor(tmp_path)
     result = {"名字": "值", "blob": "x" * 100_000}
-    body = json.dumps(
-        {"jsonrpc": "2.0", "id": 41, "result": result}, ensure_ascii=False
-    ).encode("utf-8")
+    body = json.dumps({"jsonrpc": "2.0", "id": 41, "result": result}, ensure_ascii=False).encode(
+        "utf-8"
+    )
     wire = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
     chunks = iter(wire[index : index + 997] for index in range(0, len(wire), 997))
 
@@ -689,9 +743,9 @@ def test_start_replaces_dead_process_with_new_generation(tmp_path, monkeypatch) 
     monkeypatch.setattr(
         extractor,
         "send_request",
-        lambda method, _params, timeout=120: {"capabilities": {}}
-        if method == "initialize"
-        else None,
+        lambda method, _params, timeout=120: (
+            {"capabilities": {}} if method == "initialize" else None
+        ),
     )
     monkeypatch.setattr(extractor, "send_notification", lambda _method, _params: True)
 
