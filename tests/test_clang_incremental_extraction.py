@@ -612,7 +612,10 @@ def test_clang_extractor_rebuilds_function_global_and_macro_refs(tmp_path, monke
         db.commit()
 
         extractor = ClangExtractor(project_root=tmp_path)
-        monkeypatch.setattr(extractor, "open_document", lambda _path: False)
+        # The lexical fallback may lack semantic tokens, but definition RPCs
+        # still require an opened document.
+        monkeypatch.setattr(extractor, "open_document", lambda _path: True)
+        monkeypatch.setattr(extractor, "get_semantic_tokens", lambda _path: None)
 
         def definition_for_token(_file_path, line, character=0):
             raw_line = source.read_text(encoding="utf-8").splitlines()[line]

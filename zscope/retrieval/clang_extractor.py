@@ -229,6 +229,7 @@ class ClangExtractor:
         self._lsp_request_metrics: Dict[str, Dict[str, Any]] = {}
         self._request_outcome_local = threading.local()
         self._symbol_info_supported: Optional[bool] = None
+        self._declaration_supported: Optional[bool] = None
         self._derived_index_ready = False
         self._server_info: Dict[str, Any] = {}
         self._transport_metrics: Dict[str, Any] = {
@@ -465,6 +466,7 @@ class ClangExtractor:
                 "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
                 "callHierarchy": {"dynamicRegistration": False},
                 "definition": {},
+                "declaration": {},
                 "references": {},
                 "hover": {},
                 "typeDefinition": {},
@@ -482,6 +484,8 @@ class ClangExtractor:
         }
 
     def _apply_server_capabilities(self, capabilities: Dict[str, Any]) -> None:
+        declaration = capabilities.get("declarationProvider")
+        self._declaration_supported = declaration is True or isinstance(declaration, dict)
         self._call_hierarchy_supported = bool(capabilities.get("callHierarchyProvider"))
         self._position_encoding = str(capabilities.get("positionEncoding") or "utf-16")
         semantic_tokens = capabilities.get("semanticTokensProvider")
@@ -1303,6 +1307,27 @@ class ClangExtractor:
         )
         return cast(Optional[List], result)
 
+    def get_declaration(self, file_path: Path, line: int, character: int = 0) -> Optional[List]:
+        """Resolve in the use TU even when symbolInfo supplies no coordinates."""
+        method = "textDocument/declaration"
+        if self._declaration_supported is False:
+            self._record_rpc_outcome(method, "unsupported")
+            return None
+        result = self.send_request(
+            method,
+            {
+                "textDocument": {"uri": file_path.as_uri()},
+                "position": {
+                    "line": line,
+                    "character": self._python_offset_to_lsp(file_path, line, character),
+                },
+            },
+            timeout=30,
+        )
+        if self.get_thread_rpc_outcome(method).get("code") == -32601:
+            self._declaration_supported = False
+        return [result] if isinstance(result, dict) else cast(Optional[List], result)
+
     def get_references(
         self,
         file_path: Path,
@@ -2110,6 +2135,7 @@ class ClangExtractor:
         "references_resolved",
         "reference_cache_evictions",
         "definition_requests",
+        "declaration_requests",
         "definition_timeouts",
         "usr_resolved",
         "files_reused",
@@ -2192,6 +2218,16 @@ class ClangExtractor:
         worker_count = self._derived_worker_count(len(work_items))
         resolver = self._derived_resolver
         original_worker = worker
+        original_consume = consume
+        if resolver is not None:
+            resolver.workload(len(work_items))
+
+        def consume_completed(result: _DerivedFileResult) -> None:
+            original_consume(result)
+            if resolver is not None:
+                resolver.file_completed()
+
+        consume = consume_completed
 
         def resolve_file(item: Tuple[str, List[Dict[str, Any]]]) -> _DerivedFileResult:
             if resolver is None:
@@ -2243,6 +2279,7 @@ class ClangExtractor:
                             "symbol_info_requests",
                             "references_requests",
                             "definition_requests",
+                            "declaration_requests",
                             "definition_timeouts",
                             "reference_cache_evictions",
                             "canonical_groups",

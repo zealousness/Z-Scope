@@ -122,6 +122,17 @@ class DerivedCache:
             except BaseException as exc:
                 future.set_exception(exc)
 
+    def snapshot(self) -> dict[str, Any]:
+        """Nonblocking with respect to the SQLite owner, suitable for heartbeats."""
+        with self._lock:
+            return dict(
+                self.stats,
+                rpc_cache_hits=dict(self.stats["rpc_cache_hits"]),
+                pending_sqlite=self._requests.qsize(),
+                inflight_computations=len(self._inflight),
+                hot_bytes=self._bytes,
+            )
+
     def _remember(self, key: tuple[str, str], blob: bytes) -> None:
         with self._lock:
             old = self._hot.pop(key, None)
@@ -136,7 +147,12 @@ class DerivedCache:
             self.stats["peak_hot_bytes"] = max(self.stats["peak_hot_bytes"], self._bytes)
 
     def get(self, namespace: str, key: str) -> Any:
-        rpc = namespace if namespace in {"symbolInfo", "definition", "references"} else ""
+        rpc = (
+            namespace
+            if namespace
+            in {"symbolInfo", "definition", "declaration", "references", "use_references"}
+            else ""
+        )
         namespace = self.identity + ":" + namespace
         identity = (namespace, key)
         with self._lock:

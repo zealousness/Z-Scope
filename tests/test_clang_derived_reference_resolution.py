@@ -772,7 +772,7 @@ def test_reference_location_conversion_reads_each_target_file_once(
     assert target_reads == 1
 
 
-def test_usr_groups_redeclarations_before_reverse_reference_lookup(
+def test_usr_groups_only_positive_redeclarations_after_reverse_reference_lookup(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -831,7 +831,7 @@ def test_usr_groups_redeclarations_before_reverse_reference_lookup(
         context = db.get_function_symbol_context("f", "use.c")
         assert context["referenced_globals"][0]["file_path"] == "shared.c"
         assert sorted(path.name for path in symbol_info_calls) == ["shared.c", "shared.h", "use.c"]
-        assert reference_calls == []
+        assert sorted(path.name for path in reference_calls) == ["shared.c", "shared.h", "use.c"]
         assert calls == {"semantic": 1, "definition": 1}
         assert all(
             not semantic_context["reference_cache"]
@@ -901,7 +901,9 @@ def test_usr_groups_redeclarations_across_many_occurrences(
         assert extractor.rebuild_function_symbol_refs(db) == 1
         stats = extractor.get_last_derived_stats("function_symbol_context")
         assert len(symbol_info_calls) == 5
-        assert len(reference_calls) == 0
+        # One forward query per USR/TU, then one query per declaration. Only
+        # the two positive declarations need symbolInfo for alias equivalence.
+        assert len(reference_calls) == 3
         assert stats["usr_resolved"] == 3
         assert stats["definition_requests"] == 3
     finally:
