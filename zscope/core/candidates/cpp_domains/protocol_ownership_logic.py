@@ -2252,7 +2252,7 @@ class ClangProtocolOwnershipLogicRules:
             validation_required=not audit_only,
             finding_kind="audit_observation" if audit_only else "clang_ast_cfg_candidate",
             audit_observation_reason=(
-                "raw fd/encoded fd semantic mismatch has no visible security sink in the local CFG"
+                "原始 fd/编码 fd 语义不匹配，且在本地 CFG 中没有可见的安全相关汇点"
                 if audit_only
                 else ""
             ),

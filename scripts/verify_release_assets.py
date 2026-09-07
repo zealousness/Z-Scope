@@ -51,6 +51,18 @@ def verify_release_assets(
     directory = directory.resolve()
     manifest_path = directory / "release-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") == "zscope.release-assets.v2":
+        try:
+            from scripts.portable.verify import verify_matrix
+        except ModuleNotFoundError:
+            from portable.verify import verify_matrix
+        if manifest.get("package_version") != package_version():
+            raise ReleaseAssetError("portable manifest version does not match the package")
+        try:
+            return verify_matrix(directory, require_signature=verify_signature,
+                                 inspect_archives=inspect_archives)
+        except (ValueError, KeyError, subprocess.CalledProcessError) as exc:
+            raise ReleaseAssetError(str(exc)) from exc
     version = str(manifest.get("package_version", ""))
     if version != package_version():
         raise ReleaseAssetError(

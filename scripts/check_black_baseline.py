@@ -33,7 +33,7 @@ def _collect() -> tuple[int, dict[str, str], str]:
             "black",
             "--check",
             "--target-version",
-            "py39",
+            "py313",
             *SCOPES,
         ],
         cwd=ROOT,
@@ -66,7 +66,7 @@ def main() -> int:
     if args.update:
         payload = {
             "schema_version": "zscope.black-debt-baseline.v1",
-            "target_version": "py39",
+            "target_version": "py313",
             "unformatted_files": dict(sorted(current.items())),
         }
         BASELINE.write_text(

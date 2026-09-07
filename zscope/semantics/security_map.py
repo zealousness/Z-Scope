@@ -1410,6 +1410,29 @@ class ZeroLLMSecurityMapBuilder:
         self.project_root = Path(project_root).resolve() if project_root else None
         self.max_functions = max(1, int(max_functions))
         self.callee_limit = max(1, int(callee_limit))
+        self._overlay_api_re = self._compile_overlay_api_pattern()
+
+    def _compile_overlay_api_pattern(self) -> Optional[re.Pattern[str]]:
+        """Compile user-defined risk API names from the semantic overlay.
+
+        The static ``_EVENT_PATTERNS`` only know standard-library API names;
+        user-defined wrappers (``_safe_malloc``, ``file_open_wrap``, ...)
+        would never produce ``resource_transition`` events without this.
+        """
+
+        names = set()
+        for row in self.semantic_overlay.get("resource_models") or []:
+            if not isinstance(row, Mapping):
+                continue
+            name = str(row.get("name") or "").strip()
+            if re.fullmatch(r"[A-Za-z_]\w*", name):
+                names.add(name)
+        if not names:
+            return None
+        alternation = "|".join(
+            sorted((re.escape(name) for name in names), key=len, reverse=True)
+        )
+        return re.compile(rf"\b(?:{alternation})\s*\(")
 
     def build(self, entries: Sequence[FunctionEntry]) -> SecuritySemanticMap:
         mutable: Dict[str, Dict[str, Any]] = {}
@@ -1820,6 +1843,24 @@ class ZeroLLMSecurityMapBuilder:
                         event_id=event_id,
                         family=family,
                         kind=kind,
+                        function_uid=function_uid,
+                        file=file_path,
+                        line=line,
+                        expression=expression.strip()[:400],
+                        evidence_ref=evidence_ref,
+                    ),
+                )
+            if self._overlay_api_re is not None and self._overlay_api_re.search(expression):
+                evidence_ref = f"source:{file_path}:{line}"
+                event_id = (
+                    f"EVT_{_digest((function_uid, 'resource_lifecycle', 'resource_transition', line, expression.strip()))}"
+                )
+                result.setdefault(
+                    event_id,
+                    SecurityEvent(
+                        event_id=event_id,
+                        family="resource_lifecycle",
+                        kind="resource_transition",
                         function_uid=function_uid,
                         file=file_path,
                         line=line,

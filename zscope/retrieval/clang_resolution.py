@@ -10,8 +10,9 @@ import logging
 import os
 import re
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextlib import contextmanager
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, Tuple, Dict, TypeVar, cast
 
@@ -19,6 +20,39 @@ from .clang_derived_cache import DerivedCache, cache_key
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
+
+
+def input_stamp(path: Path) -> tuple[int, ...] | None:
+    try:
+        stat = path.stat()
+        return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+    except OSError:
+        return None
+
+
+def _scope_path(value: str, project_root: Path) -> Path:
+    """Normalize an include-graph path into a resolved stampable path."""
+    path = Path(str(value or ""))
+    if not path.is_absolute():
+        path = project_root / path
+    try:
+        return path.resolve()
+    except OSError:
+        return path.absolute()
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(str(os.environ.get(name, "") or default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _prepare_checkpoint(ex: Any) -> None:
+    callback = getattr(ex, "_type_prepare_checkpoint", None)
+    if callback is not None:
+        callback()
 
 
 def process_rss(pid: int) -> int | None:
@@ -45,8 +79,9 @@ def process_rss(pid: int) -> int | None:
                 ("pagefile_peak", ctypes.c_size_t),
             ]
 
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        api = ctypes.WinDLL("psapi", use_last_error=True)
+        dll = getattr(ctypes, "WinDLL")
+        kernel = dll("kernel32", use_last_error=True)
+        api = dll("psapi", use_last_error=True)
         kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel.OpenProcess.restype = wintypes.HANDLE
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -91,7 +126,7 @@ def derived_session(method: _F) -> _F:
                 ):
                     getattr(ex, name).clear()
         ex._semantic_epoch = epoch
-        path = getattr(db, "_db_path", None)
+        path = getattr(db, "_derived_cache_owner_path", None) or getattr(db, "_db_path", None)
         cache_path = Path(path).parent / "clang_derived_cache.sqlite3" if path is not None else None
         # An incomplete dependency inventory never authorizes cross-process reuse.
         if not reusable:
@@ -108,31 +143,40 @@ def derived_session(method: _F) -> _F:
         def validate() -> bool:
             started = time.monotonic()
             try:
+                resolver.set_phase("source-validation")
+                resolver.sources.validate_all(resolver.phase_progress)
+                resolver.set_phase("identity-validation")
                 return build_identity(ex, db)[0] == original_epoch
             finally:
                 cache.stats["identity_seconds"] += time.monotonic() - started
 
         resolver.validate = validate
         ex._derived_resolver = resolver
-        try:
-            with resolver.heartbeat():
+        with resolver.heartbeat():
+            try:
                 result = method(ex, db, *args, **kwargs)
                 if not resolver.validate():
                     raise RuntimeError(
                         "Source, dependencies or base facts changed during derived rebuild"
                     )
                 return result
-        finally:
-            cache.pump()
-            ex._last_resolution_cache_stats = dict(
-                cache.stats, resumable=reusable, identity_reason=reason
-            )
-            for name in resolver.index_names:
-                snapshot = getattr(ex, "_last_derived_stats", {}).get(name)
-                if snapshot is not None:
-                    snapshot["resolution_cache"] = dict(ex._last_resolution_cache_stats)
-            cache.close()
-            ex._derived_resolver = None
+            finally:
+                resolver.set_phase("cache-close")
+                try:
+                    cache.pump()
+                    cache.close()
+                finally:
+                    ex._last_resolution_cache_stats = dict(
+                        cache.stats,
+                        resumable=reusable,
+                        identity_reason=reason,
+                        sources=resolver.sources.snapshot(),
+                    )
+                    for name in resolver.index_names:
+                        snapshot = getattr(ex, "_last_derived_stats", {}).get(name)
+                        if snapshot is not None:
+                            snapshot["resolution_cache"] = dict(ex._last_resolution_cache_stats)
+                    ex._derived_resolver = None
 
     return cast(_F, wrapped)
 
@@ -145,9 +189,16 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
     """
     digest = hashlib.sha256()
     inventory: set[Path] = set()
+    dependencies_by_source: dict[str, set[Path]] = {}
+    # Per-TU attestation: only TUs whose full depfile is fresh and self-consistent
+    # may scope completeness-critical decisions (candidate pre-pruning).
+    attested_by_source: dict[str, set[Path]] = {}
+    command_sources: list[str] = []
+    observed: dict[Path, tuple[int, ...] | None] = {}
     complete = bool(ex._server_info)
     reason = "complete_dependency_manifest"
     compilation = Path(ex.compile_commands_dir or ex.project_root) / "compile_commands.json"
+    observed[compilation] = input_stamp(compilation)
     try:
         raw = compilation.read_bytes()
         digest.update(raw)
@@ -155,15 +206,19 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
         if not isinstance(commands, list) or not commands:
             raise ValueError("empty compilation database")
         for command in commands:
+            _prepare_checkpoint(ex)
             directory = Path(command["directory"])
             args = command.get("arguments")
+            source = Path(command["file"])
+            source = source if source.is_absolute() else directory / source
+            command_sources.append(str(source.resolve()))
             # Shell strings need platform-specific parsing: do not guess.
             if not isinstance(args, list) or "-MD" not in args or "-MMD" in args:
                 complete = False
                 continue
-            source = Path(command["file"])
-            source = source if source.is_absolute() else directory / source
-            inventory.add(source.resolve())
+            source = source.resolve()
+            inventory.add(source)
+            source_dependencies: set[Path] = {source}
             depfile = None
             for i, arg in enumerate(args):
                 if arg == "-MF" and i + 1 < len(args):
@@ -176,7 +231,8 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
                     output = args[args.index("-o") + 1]
                 depfile = Path(output).with_suffix(".d") if output else source.with_suffix(".d")
             depfile = depfile if depfile.is_absolute() else directory / depfile
-            if compilation.stat().st_mtime_ns > depfile.stat().st_mtime_ns:
+            compile_stale = compilation.stat().st_mtime_ns > depfile.stat().st_mtime_ns
+            if compile_stale:
                 complete = False
             deptext = depfile.read_text(encoding="utf-8").replace("\\\n", " ")
             # Split the make target separator, leaving Windows drive colons intact.
@@ -185,6 +241,7 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
                 raise ValueError("invalid dependency file")
             dependencies = re.findall(r"(?:\\.|[^\s])+", parts[1].split("\n\n", 1)[0])
             found_source = False
+            dep_newer = False
             for token in dependencies:
                 if token.endswith(":"):
                     break  # -MP phony rules are not dependencies
@@ -194,10 +251,16 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
                 path = path.resolve()
                 if path.stat().st_mtime_ns > depfile.stat().st_mtime_ns:
                     complete = False
+                    dep_newer = True
                 inventory.add(path)
+                source_dependencies.add(path)
                 found_source |= path == source.resolve()
             complete &= found_source
             inventory.add(depfile.resolve())
+            source_dependencies.add(depfile.resolve())
+            dependencies_by_source[str(source.resolve())] = source_dependencies
+            if found_source and not compile_stale and not dep_newer:
+                attested_by_source[str(source.resolve())] = source_dependencies
     except (OSError, ValueError, KeyError, IndexError, TypeError):
         complete = False
     attested_files = set(inventory)
@@ -216,7 +279,9 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
             "include_edges",
             "translation_units",
         ):
-            for row in connection.execute(f"SELECT * FROM {table} ORDER BY rowid"):
+            for ordinal, row in enumerate(connection.execute(f"SELECT * FROM {table} ORDER BY rowid")):
+                if ordinal % 64 == 0:
+                    _prepare_checkpoint(ex)
                 digest.update(repr(tuple(row)).encode("utf-8"))
                 if "file_path" in row.keys():
                     path = Path(str(row["file_path"]))
@@ -229,9 +294,33 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
         config_parents.update(source_path.parents)
     for parent in sorted(config_parents):
         config = parent / ".clangd"
+        observed[config] = input_stamp(config)
         digest.update(str(config).encode())
         if config.is_file():
             inventory.add(config)
+    # Conservative invalidation scopes for TUs without a trusted full depfile:
+    # the lexical include closure is a superset of the true dependencies, so
+    # scoping the in-session staleness gate with it can only over-invalidate.
+    # Durable restart reuse still requires `complete`; consumers validate the
+    # files a cached row actually read via receipts, which stays the exact
+    # backstop. Best-effort: on failure consumers fall back to the full
+    # inventory gate, which is slower but equally correct.
+    invalidation_scope_by_source: dict[str, set[Path]] = {}
+    try:
+        scope_targets = [
+            source for source in dict.fromkeys(command_sources) if source not in attested_by_source
+        ]
+        closures = (
+            ex._load_include_closures(db, scope_targets) if scope_targets else {}
+        )
+        for source_name in scope_targets:
+            scope = {Path(source_name)}
+            for included in closures.get(source_name) or ():
+                scope.add(_scope_path(str(included), ex.project_root))
+            invalidation_scope_by_source[source_name] = scope
+            inventory.update(scope)
+    except Exception:
+        invalidation_scope_by_source = {}
     user_config = (
         Path(os.environ.get("LOCALAPPDATA", "")) / "clangd/config.yaml"
         if os.name == "nt"
@@ -240,14 +329,27 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
     )
     if user_config.is_file():
         inventory.add(user_config)
+    observed[user_config] = input_stamp(user_config)
+    tool = Path(ex.clangd_path)
+    observed[tool] = input_stamp(tool)
+    if tool.is_file():
+        inventory.add(tool)
     for path in sorted(inventory):
+        _prepare_checkpoint(ex)
         try:
+            observed[path] = input_stamp(path)
             digest.update(str(path.resolve()).encode("utf-8"))
             with path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1 << 20), b""):
                     digest.update(chunk)
         except OSError:
             complete = False
+    # Captured once per session; consumers validate just their TU's dependencies.
+    # Missing manifests use the entire known inventory and never permit restart reuse.
+    ex._derived_input_stamps = observed
+    ex._derived_dependencies_by_source = dependencies_by_source
+    ex._derived_attested_by_source = attested_by_source
+    ex._derived_invalidation_scope_by_source = invalidation_scope_by_source
     digest.update(
         json.dumps(
             [
@@ -283,6 +385,8 @@ class DerivedResolver:
         self.ex = extractor
         self.cache = cache
         self.local = threading.local()
+        from .clang_source_snapshot import DerivedSourceSnapshots
+        self.sources = DerivedSourceSnapshots(extractor, cache, self.local)
         self.scope = ""
         self.reusable = False
         self.identity_reason = ""
@@ -294,11 +398,49 @@ class DerivedResolver:
         self._progress_lock = threading.Lock()
         self._active: dict[int, dict[str, Any]] = {}
         self._files_total = self._files_completed = 0
+        self._phase = "preparing"
+        self._phase_started = time.monotonic()
+        self._phase_details: dict[str, Any] = {}
+        self.cooperative = False
+        # Candidate-probe governance: a super-large same-name candidate group
+        # otherwise issues one references RPC per candidate and saturates
+        # clangd, which in turn fails exactly the batched use-site bindings
+        # that would have avoided the per-candidate fallback. The budget caps
+        # one flush group; the breaker pauses probing while transport failures
+        # dominate the recent window, then resumes with a halved budget.
+        self.probe_budget = _env_positive_int("ZSCOPE_CANDIDATE_PROBE_BUDGET", 128)
+        self._effective_probe_budget = self.probe_budget
+        self._probe_window: deque[int] = deque(maxlen=100)
+        self._probe_lock = threading.Lock()
+        self._probe_pause_until = 0.0
+        self._probe_pause_trips = 0
+
+    def checkpoint(self) -> None:
+        callback = getattr(self.local, "checkpoint", None)
+        if callback is not None:
+            callback()
 
     def workload(self, total: int) -> None:
         with self._progress_lock:
             self._files_total = total
             self._files_completed = 0
+        self.set_phase("collecting")
+
+    def set_phase(self, phase: str) -> None:
+        with self._progress_lock:
+            previous = self._phase
+            elapsed = time.monotonic() - self._phase_started
+            self._phase = phase
+            self._phase_started = time.monotonic()
+            self._phase_details = {}
+        logger.info(
+            "[derived-phase] phase=%s previous=%s previous_seconds=%.3f", phase, previous, elapsed
+        )
+
+    def phase_progress(self, **values: Any) -> None:
+        with self._progress_lock:
+            self._phase_details.update(values)
+            self._phase_details["checked"] = self._phase_details.get("checked", 0) + 1
 
     def file_completed(self) -> None:
         with self._progress_lock:
@@ -325,6 +467,9 @@ class DerivedResolver:
             result = {
                 "files_completed": self._files_completed,
                 "files_total": self._files_total,
+                "phase": self._phase,
+                "phase_seconds": round(now - self._phase_started, 1),
+                "phase_progress": dict(self._phase_details),
             }
         for value in active:
             value["elapsed_seconds"] = round(now - value.pop("started"), 1)
@@ -348,12 +493,13 @@ class DerivedResolver:
                     completed = sum(int(v.get("count", 0)) for v in rpc.values())
                     logger.info(
                         "[derived-heartbeat] progress=%s rpc_delta(sent=%d completed=%d) "
-                        "methods=%s cache=%s memory=%s",
+                        "methods=%s cache=%s sources=%s memory=%s",
                         self.progress_snapshot(),
                         sent - previous_sent,
                         completed - previous_completed,
                         rpc,
                         self.cache.snapshot(),
+                        self.sources.snapshot(),
                         self.memory_snapshot(),
                     )
                     previous_sent, previous_completed = sent, completed
@@ -445,8 +591,9 @@ class DerivedResolver:
 
     @contextmanager
     def file(self, path: Path) -> Iterator[dict[str, Any]]:
+        self.sources.validate_path(path)
         state: dict[str, Any] = {
-            "path": str(path.resolve()),
+            "path": self.canonical_path(path),
             "pending": {},
             "completed": {},
             "binding_sources": {},
@@ -468,6 +615,8 @@ class DerivedResolver:
             }
         try:
             yield state
+            self.progress(phase="source-validation")
+            self.sources.validate_used(state)
         finally:
             for leased in state["leases"]:
                 self.ex.close_document(Path(leased))
@@ -478,7 +627,7 @@ class DerivedResolver:
     @contextmanager
     def lease(self, path: Path) -> Iterator[bool]:
         state = getattr(self.local, "state", None)
-        key = str(path.resolve())
+        key = self.canonical_path(path)
         if state is None:
             opened = bool(self.ex.open_document(path))
             try:
@@ -505,21 +654,54 @@ class DerivedResolver:
         state = getattr(self.local, "state", None)
         if state:
             return str(state["path"])
-        return str(path.resolve())
+        return self.canonical_path(path)
+
+    def canonical_path(self, path: Path) -> str:
+        return str(self.sources.path(path)["absolute"])
 
     def index_ready(self) -> bool:
         if self.ex.process is None:
             return True  # injected, synchronous compiler fixtures
+        healthy = self.ex.is_healthy() if self.cooperative else False
         with self.ex._condition:
+            if (self.cooperative and healthy
+                    and not self.ex._has_active_progress_locked()
+                    and time.monotonic() - self.ex._last_progress_time >= 5.0):
+                # Background collection does not synchronously wait for the
+                # whole index. Observe the same idle criterion as wait_for_indexing.
+                self.ex._derived_index_ready = True
             return bool(
                 getattr(self.ex, "_derived_index_ready", False)
                 and not self.ex._has_active_progress_locked()
             )
 
+    def semantic_tokens(self, path: Path) -> Any:
+        """Persist successful token RPCs before yielding a function continuation."""
+        method = "textDocument/semanticTokens/full"
+        key = cache_key([self._context(path), self.canonical_path(path)])
+
+        def compute() -> dict[str, Any]:
+            self.ex.get_thread_rpc_outcome(method, clear=True)
+            try:
+                response = self.ex.get_semantic_tokens(path)
+            except Exception:
+                response = None
+            outcome = self.ex.get_thread_rpc_outcome(method)
+            valid = isinstance(response, dict) and isinstance(response.get("data"), list)
+            return {"response": response, "_volatile": not valid,
+                    "status": outcome.get("status", "unavailable")}
+
+        result = self.cache.compute("semanticTokens", key, compute)
+        state = getattr(self.local, "state", None)
+        if state is not None and result.get("_volatile"):
+            state["transient"] = True
+        self.checkpoint()
+        return result.get("response")
+
     def _rpc(
         self, method: str, path: Path, line: int, char: int, stats: dict[str, Any]
     ) -> dict[str, Any]:
-        key = cache_key([self._context(path), str(path.resolve()), line, char])
+        key = cache_key([self._context(path), self.canonical_path(path), line, char])
 
         def compute() -> dict[str, Any]:
             metric = "symbol_info_requests" if method == "symbolInfo" else method + "_requests"
@@ -562,6 +744,7 @@ class DerivedResolver:
         state = getattr(self.local, "state", None)
         if state is not None and result.get("_volatile"):
             state["transient"] = True
+        self.checkpoint()
         return cast(dict[str, Any], result)
 
     def location(self, raw: dict[str, Any]) -> tuple[str, int, int] | None:
@@ -570,21 +753,55 @@ class DerivedResolver:
         if not uri or not isinstance(rng, dict) or not isinstance(rng.get("start"), dict):
             return None
         start = rng["start"]
-        file = self.ex._uri_to_project_path(str(uri))
+        if not str(uri).startswith("file://"):
+            return None
+        info = self.sources.path(str(uri), uri=True)
         line, char = int(start.get("line", 0)), int(start.get("character", 0))
-        lines = self.ex._read_source_lines(self.ex._resolve_indexed_source_path(file))
-        if lines and 0 <= line < len(lines):
-            char = self.ex._lsp_offset_to_python_in_text(lines[line], char)
-        return file, line + 1, char
+        return self.sources.coordinate(info, line, char)
+
+    def unique_locations(self, locations: list[Any]) -> Iterator[dict[str, Any]]:
+        """Group URIs and discard duplicate selections before touching source text."""
+        grouped: dict[str, dict[tuple[int, int], dict[str, Any]]] = {}
+        for raw in locations:
+            if not isinstance(raw, dict):
+                continue
+            uri = str(raw.get("uri") or raw.get("targetUri") or "")
+            rng = raw.get("targetSelectionRange") or raw.get("range") or raw.get("targetRange")
+            if not uri.startswith("file://") or not isinstance(rng, dict):
+                continue
+            start = rng.get("start")
+            if not isinstance(start, dict):
+                continue
+            key = (int(start.get("line", 0)), int(start.get("character", 0)))
+            grouped.setdefault(uri, {}).setdefault(key, raw)
+        for values in grouped.values():
+            yield from values.values()
 
     def normalized_path(self, file: str) -> str:
         state = getattr(self.local, "state", None)
         paths = state["paths"] if state is not None else {}
         if file not in paths:
-            paths[file] = self.ex._reference_file_key(
-                str(self.ex._resolve_indexed_source_path(file).resolve())
-            )
+            paths[file] = self.ex._reference_file_key(self.sources.path(file)["absolute"])
         return cast(str, paths[file])
+
+    def locations(self, locations: list[Any]) -> Iterator[tuple[str, int, int]]:
+        for uri, group in groupby(
+            self.unique_locations(locations),
+            lambda raw: str(raw.get("uri") or raw.get("targetUri")),
+        ):
+            info = self.sources.path(uri, uri=True)
+            # Keep one active file view even if it exceeds the hot LRU budget.
+            # Otherwise each coordinate would decode the entire file from SQLite.
+            view = self.sources.source_for_path(info)
+            for ordinal, raw in enumerate(group):
+                if ordinal and ordinal % 64 == 0:
+                    self.checkpoint()
+                rng = raw.get("targetSelectionRange") or raw.get("range") or raw.get("targetRange")
+                assert isinstance(rng, dict)
+                start = rng["start"]
+                yield self.sources.coordinate(
+                    info, int(start.get("line", 0)), int(start.get("character", 0)), view=view
+                )
 
     def candidate_index(self, candidates: list[dict[str, Any]]) -> dict[str, Any]:
         state = getattr(self.local, "state", None)
@@ -627,14 +844,32 @@ class DerivedResolver:
     ) -> list[dict[str, Any]]:
         matches: dict[tuple[Any, ...], dict[str, Any]] = {}
         index = self.candidate_index(candidates)
-        for raw in locations:
-            if not isinstance(raw, dict):
+        previous_uri, info, in_file = "", {}, []
+        view = None
+        for raw in self.unique_locations(locations):
+            uri = str(raw.get("uri") or raw.get("targetUri"))
+            if uri != previous_uri:
+                previous_uri, view = uri, None
+                info = self.sources.path(uri, uri=True)
+                in_file = index["by_file"].get(self.ex._reference_file_key(info["absolute"]), [])
+            if not in_file:
                 continue
-            target = self.location(raw)
-            if target is None:
+            rng = raw.get("targetSelectionRange") or raw.get("range") or raw.get("targetRange")
+            assert isinstance(rng, dict)
+            target_line = int(rng["start"].get("line", 0)) + 1
+            in_range = [candidate for candidate in in_file
+                        if int(candidate.get("line") or candidate.get("start_line") or 0)
+                        <= target_line <= max(int(candidate.get("end_line") or 0),
+                                             int(candidate.get("line") or candidate.get("start_line") or 0))]
+            if not in_range:
                 continue
-            target_file, line, char = target
-            for candidate in index["by_file"].get(self.normalized_path(target_file), []):
+            if view is None:
+                view = self.sources.source_for_path(info)
+            target_file, line, char = self.sources.coordinate(
+                info, target_line - 1, int(rng["start"].get("character", 0)), view=view
+            )
+            lines = view["lines"]
+            for candidate in in_range:
                 start = int(candidate.get("line") or candidate.get("start_line") or 0)
                 end = max(start, int(candidate.get("end_line") or start))
                 if not start <= line <= end:
@@ -646,9 +881,6 @@ class DerivedResolver:
                 )
                 # A compiler selection must never bind to a different member or
                 # initializer merely because it is inside an enclosing record.
-                lines = self.ex._read_source_lines(
-                    self.ex._resolve_indexed_source_path(target_file)
-                )
                 name = str(candidate.get("name") or "")
                 token = (
                     re.match(r"[A-Za-z_]\w*", lines[line - 1][char:])
@@ -823,7 +1055,7 @@ class DerivedResolver:
         # A single compiler identity is required: locations from an ambiguous
         # use must never be interpreted as redeclarations of one symbol. Reuse
         # only within this TU; headers may mean different things in another TU.
-        key = cache_key([self._context(path), str(path.resolve()), usr])
+        key = cache_key([self._context(path), self.canonical_path(path), usr])
 
         def compute() -> dict[str, Any]:
             method = "textDocument/references"
@@ -848,6 +1080,7 @@ class DerivedResolver:
             }
 
         result = self.cache.compute("use_references", key, compute)
+        self.checkpoint()
         state = getattr(self.local, "state", None)
         if state is not None and result.get("_volatile"):
             state["transient"] = True
@@ -876,7 +1109,13 @@ class DerivedResolver:
 
         def compute() -> dict[str, Any]:
             if declaration is None:
-                return {"locations": [], "complete": False, "_volatile": True}
+                return {
+                    "locations": [],
+                    "complete": False,
+                    "capped": False,
+                    "status": "no_declaration",
+                    "_volatile": True,
+                }
             path, line, char = declaration
             self.ex.get_thread_rpc_outcome("textDocument/references", clear=True)
             ready = self.index_ready()
@@ -886,7 +1125,13 @@ class DerivedResolver:
                     self.lease(path) as opened,
                 ):
                     if not opened:
-                        return {"locations": [], "complete": False, "_volatile": True}
+                        return {
+                            "locations": [],
+                            "complete": False,
+                            "capped": False,
+                            "status": "document_unavailable",
+                            "_volatile": True,
+                        }
                     stats["references_requests"] = int(stats.get("references_requests", 0)) + 1
                     raw = self.ex.get_references(path, line - 1, char, include_declaration=False)
                     outcome = self.ex.get_thread_rpc_outcome("textDocument/references")
@@ -895,35 +1140,71 @@ class DerivedResolver:
             success = isinstance(raw, list) and outcome.get("status", "success").startswith(
                 "success"
             )
-            locations = [
-                loc
-                for item in raw or []
-                if isinstance(item, dict)
-                if (loc := self.location(item)) is not None
-            ]
+            locations = list(self.locations(raw or []))
             ready = ready and self.index_ready()
+            capped = bool(success and len(raw or []) >= 1000)
             return {
                 "locations": locations,
-                "complete": success and ready and len(raw or []) < 1000,
+                "complete": success and ready and not capped,
+                "capped": capped,
+                "status": str(
+                    outcome.get("status") or ("success" if success else "rpc_error")
+                ),
                 "_volatile": not success or not ready,
             }
 
         result = self.cache.compute("references", key, compute)
+        self.checkpoint()
         context["_last_reference_complete"] = bool(result["complete"])
+        self._record_probe_outcome(result)
         state = getattr(self.local, "state", None)
-        if state is not None and not result["complete"]:
+        if state is not None and not result["complete"] and not result.get("capped"):
+            # A capped response is permanent for this session (retrying cannot
+            # shrink a >=1000-location reference set), so it must not poison
+            # the whole function into a transient retry. Transport failures
+            # may genuinely recover on a later attempt and stay transient.
             state["transient"] = True
         return {
             (self.ex._reference_file_key(loc[0]), loc[1], loc[2]) for loc in result["locations"]
         }
 
+    def _record_probe_outcome(self, result: dict[str, Any]) -> None:
+        """Track candidate-probe health; trip the breaker on failure storms."""
+        status = str(result.get("status") or "")
+        failed = status in {"rpc_error", "timeout", "unavailable", "document_unavailable"}
+        with self._probe_lock:
+            self._probe_window.append(0 if failed else 1)
+            window = self._probe_window
+            now = time.monotonic()
+            if len(window) >= 20 and now >= self._probe_pause_until and sum(window) * 2 < len(window):
+                self._probe_pause_until = now + 10.0
+                self._probe_pause_trips += 1
+                self._effective_probe_budget = max(8, self._effective_probe_budget // 2)
+                logger.warning(
+                    "[derived-resolver] candidate probe breaker open trips=%d "
+                    "failure_rate=%.2f effective_budget=%d",
+                    self._probe_pause_trips,
+                    1.0 - (sum(window) / len(window)),
+                    self._effective_probe_budget,
+                )
+            elif (
+                len(window) == window.maxlen
+                and all(window)
+                and self._effective_probe_budget < self.probe_budget
+            ):
+                self._effective_probe_budget = min(
+                    self.probe_budget, self._effective_probe_budget * 2
+                )
+
     def flush(self, state: dict[str, Any]) -> None:
         # All unresolved uses are collected before querying declarations. Group
         # results and the disk cache are shared across files, unlike the old LRU.
+        self.progress(function=None, function_start_line=None)
         grouped: dict[str, list[Any]] = {}
         for occurrence, args in state["pending"].items():
             grouped.setdefault(occurrence[0], []).append((occurrence, args))
         for uses in grouped.values():
+            self.checkpoint()
             candidates, kind, path, _, _, context, stats = uses[0][1]
             priority = state.get("include_priority", {})
             # Visibility changes search order only. Keep every candidate, and
@@ -938,6 +1219,52 @@ class DerivedResolver:
                     int(c.get("line") or c.get("start_line") or 0),
                 ),
             )
+            # Attested-dependency scoping (P4): with a fresh, compiler-proven
+            # dependency manifest for this TU, an internal-linkage candidate
+            # declared outside the TU's compilation cannot be referenced from
+            # it, and candidates declared outside it rank behind visible ones.
+            # External-linkage candidates are never dropped: a forward
+            # declaration inside the TU can still bind to a definition whose
+            # file the manifest never lists.
+            attested = getattr(self.ex, "_derived_attested_by_source", None) or {}
+            tu_deps = attested.get(str(state["path"]))
+            if tu_deps is not None:
+                tu_path_keys = {
+                    self.ex._reference_file_key(str(dep)) for dep in tu_deps
+                } | {self.ex._reference_file_key(str(state["path"]))}
+                outside_flags = [
+                    (
+                        candidate,
+                        self.normalized_path(str(candidate.get("file_path") or ""))
+                        not in tu_path_keys,
+                    )
+                    for candidate in candidates
+                ]
+                prune_count = sum(
+                    1 for candidate, outside in outside_flags if outside and candidate.get("is_static")
+                )
+                if prune_count:
+                    candidates = [
+                        candidate
+                        for candidate, outside in outside_flags
+                        if not (outside and candidate.get("is_static"))
+                    ]
+                    stats["probe_pruned_candidates"] = (
+                        int(stats.get("probe_pruned_candidates") or 0) + prune_count
+                    )
+                    outside_flags = [
+                        (candidate, outside)
+                        for candidate, outside in outside_flags
+                        if not (outside and candidate.get("is_static"))
+                    ]
+                if any(outside for _, outside in outside_flags) and not all(
+                    outside for _, outside in outside_flags
+                ):
+                    # Probe visible candidates first so a truncated budget
+                    # spends itself on plausible bindings. Stable sort keeps
+                    # the include-priority order inside each class.
+                    rank = {id(candidate): outside for candidate, outside in outside_flags}
+                    candidates.sort(key=lambda candidate: rank[id(candidate)])
             self.progress(phase="use-references", group_size=len(candidates), candidate_done=0)
             # Resolve from the already parsed use TU before opening any candidate
             # document. Never prefetch every same-name declaration's symbolInfo.
@@ -976,17 +1303,42 @@ class DerivedResolver:
             }
             matches: dict[Any, list[dict[str, Any]]] = {}
             complete = True
-            self.progress(phase="declaration-references", candidate_done=0)
+            # Probe governance applies to the cooperative background collector,
+            # where one saturated group starves every waiter. Rebuild sessions
+            # keep the unbounded all-candidates semantics their consumers and
+            # tests rely on.
+            governed = bool(self.cooperative)
+            paused = governed and time.monotonic() < self._probe_pause_until
+            budget = max(1, int(self._effective_probe_budget))
+            probed = 0
+            budget_exhausted = paused
+            if paused:
+                stats["probe_paused_groups"] = int(stats.get("probe_paused_groups") or 0) + 1
+            else:
+                self.progress(phase="declaration-references", candidate_done=0)
             for ordinal, candidate in enumerate(candidates, 1):
+                if governed and probed >= budget:
+                    # Unprobed candidates leave uniqueness unproven for every
+                    # use in this group: record the truncation explicitly
+                    # instead of pretending the evidence is complete, and let
+                    # the group resolve as unresolved rather than transient.
+                    budget_exhausted = True
+                    stats["probe_budget_exhausted"] = (
+                        int(stats.get("probe_budget_exhausted") or 0) + 1
+                    )
+                    break
                 canonical = ("candidate", kind, self.ex._candidate_identity(candidate))
                 locations = self.reference_locations(candidate, kind, context, stats, canonical)
+                probed += 1
                 complete &= bool(context.get("_last_reference_complete"))
                 for coordinate in locations.intersection(wanted):
                     matches.setdefault(wanted[coordinate], []).append(candidate)
                 self.progress(candidate_done=ordinal)
+                if ordinal % 64 == 0:
+                    self.checkpoint()
             for occurrence, _args in uses:
                 values = matches.get(occurrence, [])
-                occurrence_complete = complete
+                occurrence_complete = complete and not budget_exhausted
                 usr = state["use_identities"].get(occurrence, "")
                 # USRs are only needed for positive evidence: distinguish two
                 # matches from two declarations of the same entity. Failed or
@@ -1034,7 +1386,11 @@ class DerivedResolver:
                             "reference_ambiguous"
                             if len(values) > 1
                             else (
-                                "reference_incomplete"
+                                "reference_probe_paused"
+                                if paused
+                                else "reference_budget_exhausted"
+                                if budget_exhausted
+                                else "reference_incomplete"
                                 if not occurrence_complete
                                 else state["target_reasons"].get(
                                     occurrence, "definition_unresolved"

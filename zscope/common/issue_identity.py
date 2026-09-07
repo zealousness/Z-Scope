@@ -17,14 +17,56 @@ def _as_dict(value: Any) -> Dict[str, Any]:
     return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
 
 
+def _same_defect_site(
+    left: Dict[str, Any],
+    right: Dict[str, Any],
+    tolerance: int = 8,
+) -> bool:
+    """Return True when two issues point at the same defect site.
+
+    Site-aware dedup guard: a destructive merge must not swallow a distinct
+    finding merely because both items share a root-cause token or call path.
+    Primary lines within ``tolerance`` lines (the benchmark scorer's own
+    tolerance) count as the same site; unknown lines fall back to the
+    equivalence decision.
+    """
+    # Endpoint coordinates are the strongest site identity: when both issues
+    # carry source/sink flow keys, the equivalence check has already required
+    # their equality, so the endpoints decide the site.
+    left_flow = source_sink_location_issue_key(left)
+    right_flow = source_sink_location_issue_key(right)
+    if left_flow and right_flow:
+        return True
+    left_file, left_line = parse_issue_location(
+        str(left.get("location") or left.get("file") or "")
+    )
+    right_file, right_line = parse_issue_location(
+        str(right.get("location") or right.get("file") or "")
+    )
+    if left_file and right_file and left_file != right_file:
+        return False
+    if left_line is not None and right_line is not None:
+        return abs(left_line - right_line) <= tolerance
+    return True
+
+
 def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Merge findings that point at the same root cause."""
+    """Merge findings that point at the same root cause.
+
+    A destructive merge additionally requires both issues to sit at the same
+    defect site (primary lines within the scorer tolerance).  This prevents a
+    distant second truth in the same function from being silently swallowed by
+    a shared root-cause token or call path.
+    """
     records: Dict[str, Dict[str, Any]] = {}
     merge_cache: Dict[int, Dict[str, Any]] = {}
     for issue in issues:
         normalize_issue_fields(issue)
         source_sink_key = source_sink_location_issue_key(issue)
         key = source_sink_key or canonical_issue_key(issue)
+        if issue.get("analysis_scope") == "conditional_source_branch":
+            condition_hash = hashlib.sha256(str(issue.get("trigger_condition") or "unknown").encode("utf-8")).hexdigest()[:16]
+            key += "|conditional=" + condition_hash
         decision_method = "source_sink_location" if source_sink_key else "canonical_issue_key"
         existing = records.get(key)
         if existing is None:
@@ -37,7 +79,10 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             records[key] = issue
             continue
 
-        if not issues_have_destructive_equivalence(existing, issue):
+        equivalent = issues_have_destructive_equivalence(existing, issue)
+        if equivalent and not _same_defect_site(existing, issue):
+            equivalent = False
+        if not equivalent:
             occurrence_key = _independent_occurrence_key(issue, key)
             suffix = 1
             unique_key = occurrence_key
@@ -80,6 +125,10 @@ def issues_have_destructive_equivalence(
     right: Dict[str, Any],
 ) -> bool:
     """Return True only when deleting one occurrence is structurally safe."""
+
+    if "conditional_source_branch" in {left.get("analysis_scope"), right.get("analysis_scope")}:
+        if (left.get("analysis_scope"), left.get("trigger_condition")) != (right.get("analysis_scope"), right.get("trigger_condition")):
+            return False
 
     left_internal = _internal_occurrence_identity(left)
     right_internal = _internal_occurrence_identity(right)

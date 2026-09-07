@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -329,6 +331,39 @@ def _matrix(tmp_path: Path) -> dict[str, Any]:
     }
 
 
+@pytest.fixture(scope="module")
+def pristine_matrix(tmp_path_factory) -> dict[str, Any]:
+    """Build the 25-pair frozen matrix once and share it as copy source.
+
+    Every test receives its own ``copytree`` so tampering tests mutate only
+    their copy; content hashes recorded by ``_matrix`` stay valid because
+    copied bytes are identical.
+    """
+
+    root = tmp_path_factory.mktemp("ablation-pristine")
+    matrix = _matrix(root)
+    matrix["root"] = root
+    return matrix
+
+
+def _copied_matrix(pristine: Mapping[str, Any], target: Path) -> dict[str, Any]:
+    shutil.copytree(Path(pristine["root"]), target)
+    matrix = copy.deepcopy(pristine)
+    matrix.pop("root", None)
+    matrix["plan_path"] = target / Path(pristine["plan_path"]).name
+    matrix["truth_path"] = target / Path(pristine["truth_path"]).name
+    matrix["executions"] = {
+        key: target / path.name for key, path in pristine["executions"].items()
+    }
+    matrix["reports"] = {
+        key: target / path.name for key, path in pristine["reports"].items()
+    }
+    matrix["usage_sidecars"] = {
+        key: target / path.name for key, path in pristine["usage_sidecars"].items()
+    }
+    return matrix
+
+
 def _score(matrix: Mapping[str, Any]) -> dict[str, Any]:
     return score_discovery_ablation_experiment(
         plan_path=matrix["plan_path"],
@@ -368,8 +403,10 @@ def _replace_report(
     matrix["expected_execution_files"][key] = _file_sha(execution_path)
 
 
-def test_scores_five_frozen_trials_with_both_views_and_attribution(tmp_path: Path) -> None:
-    result = _score(_matrix(tmp_path))
+def test_scores_five_frozen_trials_with_both_views_and_attribution(
+    pristine_matrix, tmp_path: Path
+) -> None:
+    result = _score(_copied_matrix(pristine_matrix, tmp_path / "matrix"))
 
     validate_discovery_ablation_experiment(result)
     assert result["release_eligible"] is False
@@ -408,8 +445,10 @@ def test_scores_five_frozen_trials_with_both_views_and_attribution(tmp_path: Pat
     assert result["interpretation"]["selection_performed"] is False
 
 
-def test_round_trip_validates_hash_and_aggregates(tmp_path: Path) -> None:
-    result = _score(_matrix(tmp_path))
+def test_round_trip_validates_hash_and_aggregates(
+    pristine_matrix, tmp_path: Path
+) -> None:
+    result = _score(_copied_matrix(pristine_matrix, tmp_path / "matrix"))
     output = tmp_path / "experiment.json"
 
     write_discovery_ablation_experiment(output, result)
@@ -425,9 +464,9 @@ def test_round_trip_validates_hash_and_aggregates(tmp_path: Path) -> None:
 
 
 def test_rejects_external_file_hash_mismatch_before_truth_is_opened(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pristine_matrix, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    matrix = _matrix(tmp_path)
+    matrix = _copied_matrix(pristine_matrix, tmp_path / "matrix")
     matrix["expected_report_files"][("D0", 1)] = "0" * 64
     original_load = experiment_module._stable_json_load
     truth_opened = False
@@ -446,9 +485,9 @@ def test_rejects_external_file_hash_mismatch_before_truth_is_opened(
 
 
 def test_rejects_usage_sidecar_tamper_before_truth_is_opened(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pristine_matrix, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    matrix = _matrix(tmp_path)
+    matrix = _copied_matrix(pristine_matrix, tmp_path / "matrix")
     usage_path = matrix["usage_sidecars"][("D0", 1)]
     usage_path.write_text(
         usage_path.read_text(encoding="utf-8") + "\n",
@@ -471,9 +510,9 @@ def test_rejects_usage_sidecar_tamper_before_truth_is_opened(
 
 
 def test_rejects_missing_view_incomplete_usage_and_release_eligible_report(
-    tmp_path: Path,
+    pristine_matrix, tmp_path: Path
 ) -> None:
-    matrix = _matrix(tmp_path)
+    matrix = _copied_matrix(pristine_matrix, tmp_path / "matrix")
     report_path = matrix["reports"][("D1", 2)]
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["release_eligible"] = True
@@ -483,8 +522,10 @@ def test_rejects_missing_view_incomplete_usage_and_release_eligible_report(
         _score(matrix)
 
 
-def test_rejects_missing_with_review_view_before_truth_is_opened(tmp_path: Path) -> None:
-    matrix = _matrix(tmp_path)
+def test_rejects_missing_with_review_view_before_truth_is_opened(
+    pristine_matrix, tmp_path: Path
+) -> None:
+    matrix = _copied_matrix(pristine_matrix, tmp_path / "matrix")
     key = ("D2", 3)
     report_path = matrix["reports"][key]
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -495,8 +536,10 @@ def test_rejects_missing_with_review_view_before_truth_is_opened(tmp_path: Path)
         _score(matrix)
 
 
-def test_rejects_incomplete_provider_usage_before_truth_is_opened(tmp_path: Path) -> None:
-    matrix = _matrix(tmp_path)
+def test_rejects_incomplete_provider_usage_before_truth_is_opened(
+    pristine_matrix, tmp_path: Path
+) -> None:
+    matrix = _copied_matrix(pristine_matrix, tmp_path / "matrix")
     key = ("D3", 4)
     report_path = matrix["reports"][key]
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -514,13 +557,15 @@ def test_rejects_incomplete_provider_usage_before_truth_is_opened(tmp_path: Path
         _score(matrix)
 
 
-def test_requires_exact_25_pair_matrix_and_cold_attestation(tmp_path: Path) -> None:
-    matrix = _matrix(tmp_path)
+def test_requires_exact_25_pair_matrix_and_cold_attestation(
+    pristine_matrix, tmp_path: Path
+) -> None:
+    matrix = _copied_matrix(pristine_matrix, tmp_path / "matrix")
     del matrix["reports"][("D4", 5)]
     with pytest.raises(DiscoveryAblationExperimentError, match="D0-D4 trials 1-5"):
         _score(matrix)
 
-    complete = _matrix(tmp_path / "second")
+    complete = _copied_matrix(pristine_matrix, tmp_path / "second")
     with pytest.raises(DiscoveryAblationExperimentError, match="cold trial attestation"):
         score_discovery_ablation_experiment(
             plan_path=complete["plan_path"],

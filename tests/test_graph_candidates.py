@@ -1,8 +1,23 @@
 from pathlib import Path
 
+import pytest
+
 from zscope.core.candidates.regex import LocalPatternSemantics
 from zscope.core.candidates.graph import FunctionView, GraphCandidateGenerator
 from zscope.retrieval.code_index import CodeIndex
+
+
+@pytest.fixture(scope="module")
+def range_index() -> CodeIndex:
+    """Share one lazily-warmed index across the range-project tests.
+
+    ``CodeIndex`` over ``test/range`` pays a multi-second lazy load on first
+    query and is read-only for ``GraphCandidateGenerator`` (queries only fill
+    internal caches), so building it once per module keeps every observation
+    point while removing the repeated warm-up cost.
+    """
+
+    return _range_index()
 
 
 def _range_index() -> CodeIndex:
@@ -16,9 +31,8 @@ def _range_semantics() -> LocalPatternSemantics:
     return semantics
 
 
-def test_graph_candidates_cover_cross_function_protocols() -> None:
-    index = _range_index()
-    generator = GraphCandidateGenerator(index, _range_semantics())
+def test_graph_candidates_cover_cross_function_protocols(range_index) -> None:
+    generator = GraphCandidateGenerator(range_index, _range_semantics())
     issues = generator.generate_for_functions(
         [
             "_plugin_unregister",
@@ -39,9 +53,8 @@ def test_graph_candidates_cover_cross_function_protocols() -> None:
     assert "paired_child_list_cleanup_omitted" in rules
 
 
-def test_graph_candidates_cover_open_global_registration_cleanup_pair() -> None:
-    index = _range_index()
-    generator = GraphCandidateGenerator(index, _range_semantics())
+def test_graph_candidates_cover_open_global_registration_cleanup_pair(range_index) -> None:
+    generator = GraphCandidateGenerator(range_index, _range_semantics())
     issues = generator.generate_for_functions(
         [
             "_lifecycle_customize_control_message",
@@ -62,9 +75,8 @@ def test_graph_candidates_cover_open_global_registration_cleanup_pair() -> None:
     }
 
 
-def test_graph_candidates_cover_liveness_and_lock_order_shapes() -> None:
-    index = _range_index()
-    generator = GraphCandidateGenerator(index, _range_semantics())
+def test_graph_candidates_cover_liveness_and_lock_order_shapes(range_index) -> None:
+    generator = GraphCandidateGenerator(range_index, _range_semantics())
     issues = generator.generate_for_functions(
         [
             "_lifecycle_dispatch_pipe_tick",
@@ -94,9 +106,8 @@ def test_graph_candidates_cover_liveness_and_lock_order_shapes() -> None:
     assert cascade["scheduler_holder"]["function"] == "_lifecycle_dispatch_pipe_tick"
 
 
-def test_graph_candidates_cover_issue41_42_system_protocol_shapes() -> None:
-    index = _range_index()
-    generator = GraphCandidateGenerator(index, _range_semantics())
+def test_graph_candidates_cover_issue41_42_system_protocol_shapes(range_index) -> None:
+    generator = GraphCandidateGenerator(range_index, _range_semantics())
     issues = generator.generate_for_functions(
         [
             "_peer_send_control_reply",
@@ -143,9 +154,8 @@ def test_graph_candidates_cover_issue41_42_system_protocol_shapes() -> None:
     assert "unchecked_param_indexes_fixed_global_array" not in bridge_rules
 
 
-def test_graph_candidates_lift_callee_key_generation_race() -> None:
-    index = _range_index()
-    generator = GraphCandidateGenerator(index, _range_semantics())
+def test_graph_candidates_lift_callee_key_generation_race(range_index) -> None:
+    generator = GraphCandidateGenerator(range_index, _range_semantics())
     issues = generator.generate_for_functions(["_runtime_shutdown_local_session"])
 
     lifted = next(

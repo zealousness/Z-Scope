@@ -19,16 +19,15 @@ from .build_llvm import BitcodeBuilder
 from .knowledge_db import KnowledgeDB
 from .svf_parser import SvfOutputMapper
 from .svf_runner import SvfResult, SvfRunner
+from .indexing_identity import atomic_json, digest_json, command_identity
+from .indexing_runtime import admitted_workers, heartbeat, observed
+from .llvm_toolchain import svf_identity
 
 logger = logging.getLogger(__name__)
 
-# Upper bound of concurrent saber processes per 8 GiB of configured heap budget.
-_SABER_HEAP_PER_WORKER_MB = 8192
-
-# Whole-program Andersen memory scales roughly linearly with the merged bitcode
-# size.  The factor is intentionally conservative; tune via
-# Z_SCOPE_SVF_BC_MEMORY_FACTOR (<= 0 disables the pre-check) without a config
-# schema change.  Calibrate on test/range before adjusting.
+# Retain the existing optional input-size admission heuristic. This is not a
+# runtime estimate or evidence of coverage; actual RSS admission also applies.
+# Z_SCOPE_SVF_BC_MEMORY_FACTOR <= 0 disables this additional pre-check.
 _WPA_MEMORY_FACTOR_PER_BC_MB = 25.0
 
 
@@ -77,6 +76,7 @@ class SvfAnalyzer:
         self._parallel_workers = max(1, int(parallel_workers or 1))
         self._project_root: Optional[Path] = None
 
+    @observed("svf-validate-build-analyze-import")
     def run(
         self,
         source_path: Path,
@@ -92,6 +92,15 @@ class SvfAnalyzer:
         self._project_root = Path(project_root)
 
         try:
+            self.__dict__.pop("_analysis_tools", None)
+            runner = SvfRunner(
+                svf_bin_dir=self._svf_bin_dir,
+                heap_limit_mb=self._heap_limit,
+                timeout=self._timeout,
+            )
+            validate = getattr(runner, "validate_llvm", None)
+            if callable(validate):
+                validate(self._llvm_link)
             groups = self._load_groups_config(project_root, svf_groups_config)
             normalized_entries = self._normalize_entry_functions(entry_functions)
             scope_entries = list(entry_functions or normalized_entries)
@@ -101,46 +110,9 @@ class SvfAnalyzer:
                 self._cache_config(),
                 normalized_entries,
             )
-            legacy_cache_fingerprint = self._compute_aggregate_hash(
-                compile_commands_path,
-                groups,
-                self._cache_config(),
-                normalized_entries,
-                sort_entry_functions=False,
-            )
-            old_hash = self._db.get_svf_hash()
             materialization_current = self._materialization_current(project_root)
-            if (
-                cache_fingerprint
-                and old_hash
-                in {
-                    cache_fingerprint,
-                    legacy_cache_fingerprint,
-                }
-                and materialization_current
-            ):
-                if old_hash == legacy_cache_fingerprint and old_hash != cache_fingerprint:
-                    self._db.set_svf_hash(cache_fingerprint)
-                logger.info("SVF incremental: cache fingerprint unchanged; reusing cached data")
-                return True
-            if cache_fingerprint and old_hash in {
-                cache_fingerprint,
-                legacy_cache_fingerprint,
-            }:
-                logger.info(
-                    "SVF incremental: source cache hit but DB materialization is stale; "
-                    "event=materialization_recovery"
-                )
-            if old_hash:
-                logger.info(
-                    "SVF incremental: cache miss (old=%s, new=%s, entries=%d)",
-                    old_hash[:12],
-                    (cache_fingerprint or "")[:12],
-                    len(normalized_entries),
-                )
-            else:
-                logger.info("SVF incremental: no previous cache fingerprint; building SVF data")
-
+            # Always validate the bitcode dependency manifests before considering
+            # analysis reuse. A source-only hash cannot validate changed headers.
             builder = BitcodeBuilder(
                 source_root=source_path,
                 compile_commands_path=compile_commands_path,
@@ -166,7 +138,7 @@ class SvfAnalyzer:
                 only_sources=only_sources,
             )
             failed_tus = list(getattr(builder, "failed_tus", []))
-            bitcode_complete = not failed_tus
+            bitcode_complete = not failed_tus and not getattr(builder, "failed_links", [])
             if failed_tus:
                 logger.warning(
                     "Bitcode build incomplete: %d translation unit(s) failed; "
@@ -174,9 +146,9 @@ class SvfAnalyzer:
                     len(failed_tus),
                 )
 
-            if not bc_paths:
-                logger.warning("Bitcode build failed or no bitcode generated; SVF skipped")
-                return True
+            if not bc_paths or not bitcode_complete:
+                logger.warning("SVF inputs incomplete; preserving published analysis facts")
+                return False
 
             artifact_fingerprint = self._compute_artifact_hash(
                 bc_paths,
@@ -201,36 +173,10 @@ class SvfAnalyzer:
                         "SVF incremental: bitcode build is incomplete; "
                         "leaving source cache fingerprint unset"
                     )
+                self._save_run_report(builder, bc_paths, cache_hit=True)
                 return True
-            reused_linked_groups = set(getattr(builder, "reused_linked_groups", set()))
-            if (
-                old_hash
-                and bc_paths
-                and set(bc_paths.keys()) == reused_linked_groups
-                and materialization_current
-            ):
-                logger.info(
-                    "SVF incremental: merged bitcode reused for all groups; "
-                    "refreshing cache fingerprint without rerunning SVF"
-                )
-                if cache_fingerprint and bitcode_complete:
-                    self._db.set_svf_hash(cache_fingerprint)
-                elif not bitcode_complete:
-                    logger.info(
-                        "SVF incremental: bitcode build is incomplete; "
-                        "leaving source cache fingerprint unset"
-                    )
-                if artifact_fingerprint:
-                    self._db.set_metadata("svf_artifact_hash", artifact_fingerprint)
-                return True
-
-            runner = SvfRunner(
-                svf_bin_dir=self._svf_bin_dir,
-                heap_limit_mb=self._heap_limit,
-                timeout=self._timeout,
-            )
-
             had_timeout = self._run_split_svf(runner, bc_paths, project_root)
+            self._save_run_report(builder, bc_paths)
 
             if had_timeout:
                 logger.warning(
@@ -253,6 +199,55 @@ class SvfAnalyzer:
         except Exception as exc:
             logger.error("SVF analysis failed: %s", exc)
             return False
+
+    def _save_run_report(
+        self, builder: Any, paths: Dict[str, Path], *, cache_hit: bool = False
+    ) -> None:
+        output = getattr(builder, "output_dir", None)
+        if output is None:
+            return
+        stages = {}
+        for tool in ("ander", "saber"):
+            groups = {
+                group: path
+                for group, path in paths.items()
+                if (group.startswith("saber:")) == (tool == "saber")
+            }
+            if cache_hit:
+                stats = {
+                    "tool": tool,
+                    "planned_tasks": len(groups),
+                    "executed": 0,
+                    "cache_reused": len(groups),
+                    "completed": len(groups),
+                    "import_seconds": 0.0,
+                    "complete": True,
+                }
+                self._db.set_metadata("svf_run_stats:" + tool, json.dumps(stats, sort_keys=True))
+            else:
+                stats = json.loads(self._db.get_metadata("svf_run_stats:" + tool) or "{}")
+            stages[tool] = {
+                "stats": stats,
+                "tasks": [
+                    {
+                        "group": group,
+                        "bitcode": str(path),
+                        "bitcode_sha256": self._file_hash(path),
+                        **self._load_tool_status(tool, group),
+                    }
+                    for group, path in groups.items()
+                ],
+            }
+        atomic_json(
+            Path(output) / "svf_run_report.json",
+            {
+                "schema": "zscope.svf-run.v1",
+                "scope": "selected bitcode analysis tasks",
+                "manifest_sha256": self._file_hash(Path(output) / "bitcode_manifest.json"),
+                "stages": stages,
+                "full_cache_hit": cache_hit,
+            },
+        )
 
     @staticmethod
     def _lazy_bitcode_enabled() -> bool:
@@ -282,15 +277,11 @@ class SvfAnalyzer:
                     entry_functions=scope_entries,
                     knowledge_db=self._db,
                     project_root=project_root,
-                    auto_entry_clusters=(
-                        self._scope_config.mode != "full" and bool(scope_entries)
-                    ),
+                    auto_entry_clusters=(self._scope_config.mode != "full" and bool(scope_entries)),
                 ),
             )
         except Exception as exc:
-            logger.warning(
-                "SVF lazy bitcode planning failed; compiling all TUs: %s", exc
-            )
+            logger.warning("SVF lazy bitcode planning failed; compiling all TUs: %s", exc)
             return None
 
     def _build_bitcode(
@@ -348,157 +339,8 @@ class SvfAnalyzer:
             had_timeout = True
         return had_timeout
 
-    def _run_wpa_groups(
-        self,
-        runner: Any,
-        wpa_paths: Dict[str, Path],
-        project_root: Path,
-    ) -> bool:
-        if not wpa_paths:
-            return False
-        max_workers = max(1, min(self._parallel_workers, len(wpa_paths)))
-        logger.info("Running %d WPA group(s) with %d worker(s)", len(wpa_paths), max_workers)
-        had_timeout = False
-        pending_paths: Dict[str, Path] = {}
-        for group_name, bc_path in wpa_paths.items():
-            fingerprint = self._tool_artifact_fingerprint("ander", group_name, bc_path)
-            status = self._load_tool_status("ander", group_name)
-            artifact = self._validated_replay_artifact(
-                "ander", group_name, fingerprint, status, project_root
-            )
-            if artifact and self._materialization_marker_valid(
-                "ander", group_name, fingerprint, artifact[1]
-            ):
-                logger.info(
-                    "SVF resume: event=cache_skip tool=ander group=%s",
-                    group_name,
-                )
-                continue
-            if artifact:
-                artifact_path, artifact_hash, artifact_relpath = artifact
-                if self._materialize_group(
-                    "ander",
-                    group_name,
-                    fingerprint,
-                    artifact_path,
-                    artifact_hash,
-                    artifact_relpath,
-                ):
-                    logger.info(
-                        "SVF resume: event=artifact_reimport tool=ander group=%s",
-                        group_name,
-                    )
-                    continue
-                logger.warning(
-                    "SVF resume: event=recovery_failed tool=ander group=%s; rerunning tool",
-                    group_name,
-                )
-            if self._wpa_memory_budget_exceeded(bc_path):
-                factor = self._wpa_memory_factor()
-                bc_size_mb = max(
-                    0.0, Path(bc_path).stat().st_size / (1024.0 * 1024.0)
-                )
-                logger.warning(
-                    "SVF memory budget: event=skip tool=ander group=%s "
-                    "bc_size_mb=%.1f estimated_mb=%.1f heap_limit_mb=%d factor=%.1f",
-                    group_name,
-                    bc_size_mb,
-                    bc_size_mb * factor,
-                    int(self._heap_limit),
-                    factor,
-                )
-                self._write_tool_status(
-                    "ander",
-                    group_name,
-                    fingerprint,
-                    status="skipped_memory_budget",
-                    timed_out=False,
-                )
-                had_timeout = True
-                continue
-            pending_paths[group_name] = bc_path
-        if not pending_paths:
-            # Every group was already satisfied (cache/reimport/budget-skip).
-            return had_timeout
-        with ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="zscope-wpa"
-        ) as executor:
-            futures = {
-                executor.submit(
-                    self._run_one_wpa_group, runner, group_name, bc_path, project_root
-                ): (
-                    group_name,
-                    bc_path,
-                )
-                for group_name, bc_path in pending_paths.items()
-            }
-            for future in as_completed(futures):
-                group_name, _bc_path = futures[future]
-                fingerprint = self._tool_artifact_fingerprint("ander", group_name, _bc_path)
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    logger.warning("WPA group '%s' failed: %s", group_name, exc)
-                    self._write_tool_status(
-                        "ander",
-                        group_name,
-                        fingerprint,
-                        status="failed",
-                        timed_out=False,
-                    )
-                    had_timeout = True
-                    continue
-                if result.timed_out:
-                    self._write_tool_status(
-                        "ander",
-                        group_name,
-                        fingerprint,
-                        status="timed_out",
-                        timed_out=True,
-                        result=result,
-                    )
-                    had_timeout = True
-                    continue
-                output_file = Path(result.output_file) if result.output_file else None
-                if not result.success or not output_file or not output_file.is_file():
-                    self._write_tool_status(
-                        "ander",
-                        group_name,
-                        fingerprint,
-                        status="failed",
-                        timed_out=False,
-                        result=result,
-                    )
-                    had_timeout = True
-                    continue
-                artifact_hash = self._file_hash(output_file)
-                artifact_relpath = self._relative_artifact_path(output_file, project_root)
-                self._write_tool_status(
-                    "ander",
-                    group_name,
-                    fingerprint,
-                    status="success",
-                    timed_out=False,
-                    result=result,
-                    artifact_path=artifact_relpath,
-                    artifact_hash=artifact_hash,
-                )
-                if not self._materialize_group(
-                    "ander",
-                    group_name,
-                    fingerprint,
-                    output_file,
-                    artifact_hash,
-                    artifact_relpath,
-                ):
-                    logger.warning(
-                        "SVF group failed: event=recovery_failed tool=ander group=%s",
-                        group_name,
-                    )
-                    had_timeout = True
-                    continue
-                logger.info("SVF resume: event=tool_rerun tool=ander group=%s", group_name)
-        return had_timeout
+    def _run_wpa_groups(self, runner: Any, wpa_paths: Dict[str, Path], project_root: Path) -> bool:
+        return self._run_tool_groups("ander", runner, wpa_paths, project_root)
 
     @staticmethod
     def _wpa_memory_factor() -> float:
@@ -527,200 +369,198 @@ class SvfAnalyzer:
         return bc_size_mb * factor > float(self._heap_limit)
 
     def _saber_worker_count(self, group_count: int) -> int:
-        """Bound parallel saber processes by configured workers and heap headroom.
-
-        Each saber process may allocate up to the configured heap limit; the
-        memory cap keeps concurrent tool processes within a bounded budget.
-        """
-        if group_count <= 0:
-            return 0
-        heap_workers = max(1, int(self._heap_limit) // _SABER_HEAP_PER_WORKER_MB)
-        return max(1, min(int(self._parallel_workers or 1), group_count, heap_workers))
+        return admitted_workers(self._parallel_workers, group_count, self._heap_limit)
 
     def _run_saber_groups(
-        self,
-        runner: Any,
-        saber_paths: Dict[str, Path],
-        project_root: Path,
+        self, runner: Any, saber_paths: Dict[str, Path], project_root: Path
     ) -> bool:
-        if not saber_paths:
-            return False
-        # Resume checks touch the DB and cached artifacts only; keep them serial
-        # so cached groups never occupy a worker slot.
-        pending_paths: Dict[str, Path] = {}
-        fingerprints: Dict[str, str] = {}
-        for group_name, bc_path in sorted(saber_paths.items()):
-            fingerprint = self._tool_artifact_fingerprint("saber", group_name, bc_path)
-            fingerprints[group_name] = fingerprint
-            status = self._load_tool_status("saber", group_name)
-            artifact = self._validated_replay_artifact(
-                "saber", group_name, fingerprint, status, project_root
-            )
-            if artifact and self._materialization_marker_valid(
-                "saber", group_name, fingerprint, artifact[1]
-            ):
-                logger.info(
-                    "SVF resume: event=cache_skip tool=saber group=%s",
-                    group_name,
-                )
-                continue
-            if artifact:
-                artifact_path, artifact_hash, artifact_relpath = artifact
-                if self._materialize_group(
-                    "saber",
-                    group_name,
-                    fingerprint,
-                    artifact_path,
-                    artifact_hash,
-                    artifact_relpath,
-                ):
-                    logger.info(
-                        "SVF resume: event=artifact_reimport tool=saber group=%s",
-                        group_name,
-                    )
-                    continue
-                logger.warning(
-                    "SVF resume: event=recovery_failed tool=saber group=%s; rerunning tool",
-                    group_name,
-                )
-            pending_paths[group_name] = bc_path
-        if not pending_paths:
-            return False
+        return self._run_tool_groups("saber", runner, saber_paths, project_root)
 
-        max_workers = self._saber_worker_count(len(pending_paths))
-        logger.info(
-            "Running %d Saber group(s) with %d worker(s)",
-            len(pending_paths),
-            max_workers,
-        )
+    def _run_tool_groups(
+        self, tool: str, runner: Any, paths: Dict[str, Path], project_root: Path
+    ) -> bool:
+        pending: Dict[str, List[tuple[str, Path]]] = {}
         had_failure = False
-        if max_workers <= 1:
-            for group_name, bc_path in pending_paths.items():
-                if not self._run_one_saber_group(
-                    runner,
-                    group_name,
-                    bc_path,
-                    project_root,
-                    fingerprints[group_name],
-                ):
-                    had_failure = True
-            return had_failure
-        with ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="zscope-saber"
-        ) as executor:
-            futures = {
-                executor.submit(
-                    self._run_one_saber_group,
-                    runner,
-                    group_name,
-                    bc_path,
-                    project_root,
-                    fingerprints[group_name],
-                ): group_name
-                for group_name, bc_path in pending_paths.items()
-            }
-            for future in as_completed(futures):
-                group_name = futures[future]
-                try:
-                    if not future.result():
+        stats: Dict[str, Any] = {
+            "tool": tool,
+            "planned_tasks": len(paths),
+            "executed": 0,
+            "cache_reused": 0,
+            "deduplicated": 0,
+            "completed": 0,
+            "import_seconds": 0.0,
+        }
+        started = time.monotonic()
+        for group, path in paths.items():
+            if not path.is_file():
+                self._write_tool_status(tool, group, "", status="input_missing", timed_out=False)
+                had_failure = True
+                continue
+            fingerprint = self._tool_artifact_fingerprint(tool, group, path)
+            status = self._load_tool_status(tool, group)
+            artifact = self._validated_replay_artifact(
+                tool, group, fingerprint, status, project_root
+            )
+            if artifact is None:
+                status = self._content_artifact_status(project_root, fingerprint)
+                artifact = self._validated_replay_artifact(
+                    tool, group, fingerprint, status, project_root
+                )
+            if artifact:
+                if not self._materialization_marker_valid(tool, group, fingerprint, artifact[1]):
+                    import_started = time.monotonic()
+                    imported = self._materialize_group(tool, group, fingerprint, *artifact)
+                    stats["import_seconds"] += time.monotonic() - import_started
+                    if not imported:
                         had_failure = True
-                except Exception as exc:
-                    logger.warning("Saber group failed: group=%s error=%s", group_name, exc)
+                        continue
+                self._write_tool_status(
+                    tool,
+                    group,
+                    fingerprint,
+                    status="success",
+                    timed_out=False,
+                    artifact_path=artifact[2],
+                    artifact_hash=artifact[1],
+                    metrics=status.get("metrics", {}),
+                )
+                stats["cache_reused"] += 1
+                stats["completed"] += 1
+                continue
+            if tool == "ander" and self._wpa_memory_budget_exceeded(path):
+                self._write_tool_status(
+                    tool, group, fingerprint, status="skipped_memory_budget", timed_out=False
+                )
+                had_failure = True
+                continue
+            pending.setdefault(fingerprint, []).append((group, path))
+        workers = admitted_workers(self._parallel_workers, len(pending), self._heap_limit)
+        if pending and not workers:
+            for fingerprint, aliases in pending.items():
+                for group, _path in aliases:
                     self._write_tool_status(
-                        "saber",
-                        group_name,
-                        fingerprints.get(group_name, ""),
-                        status="failed",
-                        timed_out=False,
+                        tool, group, fingerprint, status="insufficient_memory", timed_out=False
                     )
-                    had_failure = True
+            logger.error("SVF %s has no worker within the available-memory budget", tool)
+            stats.update(workers=0, complete=False, wall_seconds=time.monotonic() - started)
+            self._db.set_metadata("svf_run_stats:" + tool, json.dumps(stats, sort_keys=True))
+            return True
+        # Largest real input first supplies useful calibration; group contents
+        # and algorithms are unchanged. File size is scheduling, not a time model.
+        ordered = sorted(
+            pending.items(), key=lambda pair: pair[1][0][1].stat().st_size, reverse=True
+        )
+        stats["workers"] = workers
+
+        def execute(fingerprint: str, aliases: List[tuple[str, Path]]) -> SvfResult:
+            group, path = aliases[0]
+            output = project_root / ".zscope_svf_cache" / fingerprint
+            if tool == "ander":
+                return cast(SvfResult, runner.run_ander(path, output))
+            return cast(SvfResult, runner.run_saber(path, output))
+
+        if ordered:
+            with (
+                heartbeat("svf-" + tool, stats),
+                ThreadPoolExecutor(
+                    max_workers=workers, thread_name_prefix="zscope-" + tool
+                ) as pool,
+            ):
+                futures = {
+                    pool.submit(execute, key, aliases): (key, aliases) for key, aliases in ordered
+                }
+                try:
+                    for future in as_completed(futures):
+                        fingerprint, aliases = futures[future]
+                        stats["executed"] += 1
+                        stats["deduplicated"] += len(aliases) - 1
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            result = SvfResult(tool=tool, stderr=str(exc))
+                        artifact_path = None
+                        if result.success and not result.timed_out:
+                            if tool == "saber":
+                                artifact_path = self._write_saber_artifact(
+                                    project_root / ".zscope_svf_cache" / fingerprint, result.bugs
+                                )
+                            elif result.output_file and Path(result.output_file).is_file():
+                                artifact_path = Path(result.output_file)
+                        if artifact_path is None:
+                            had_failure = True
+                            for group, _path in aliases:
+                                self._write_tool_status(
+                                    tool,
+                                    group,
+                                    fingerprint,
+                                    status="timed_out" if result.timed_out else "failed",
+                                    timed_out=result.timed_out,
+                                    result=result,
+                                )
+                            continue
+                        artifact_hash = self._file_hash(artifact_path)
+                        relative = self._relative_artifact_path(artifact_path, project_root)
+                        # Only the coordinator writes checkpoints and KnowledgeDB.
+                        self._save_content_artifact_status(
+                            project_root, fingerprint, relative, artifact_hash, result
+                        )
+                        for group, _path in aliases:
+                            self._write_tool_status(
+                                tool,
+                                group,
+                                fingerprint,
+                                status="success",
+                                timed_out=False,
+                                result=result,
+                                artifact_path=relative,
+                                artifact_hash=artifact_hash,
+                            )
+                            import_started = time.monotonic()
+                            imported = self._materialize_group(
+                                tool, group, fingerprint, artifact_path, artifact_hash, relative
+                            )
+                            stats["import_seconds"] += time.monotonic() - import_started
+                            had_failure = not imported or had_failure
+                            stats["completed"] += int(imported)
+                        logger.info("[svf-progress] %s", stats)
+                except BaseException:
+                    cancel = getattr(runner, "cancel_event", None)
+                    if cancel is not None:
+                        cancel.set()
+                    for future in futures:
+                        future.cancel()
+                    raise
+        stats.update(complete=not had_failure, wall_seconds=time.monotonic() - started)
+        self._db.set_metadata("svf_run_stats:" + tool, json.dumps(stats, sort_keys=True))
+        logger.info("[svf-stage] %s", stats)
         return had_failure
 
-    def _run_one_saber_group(
-        self,
-        runner: Any,
-        group_name: str,
-        bc_path: Path,
-        project_root: Path,
-        fingerprint: str,
-    ) -> bool:
-        """Run and materialize one saber group. Returns False on any failure."""
-        output_dir = project_root / f".zscope_svf_{self._safe_output_suffix(group_name)}"
-        logger.info("Running Saber analysis for group %s using %s", group_name, bc_path)
+    @staticmethod
+    def _content_artifact_status(project_root: Path, fingerprint: str) -> Dict[str, Any]:
         try:
-            result = runner.run_saber(bc_path, output_dir)
-        except Exception as exc:
-            logger.warning("Saber group %s failed: %s", group_name, exc)
-            self._write_tool_status(
-                "saber",
-                group_name,
-                fingerprint,
-                status="failed",
-                timed_out=False,
+            value = json.loads(
+                (project_root / ".zscope_svf_cache" / fingerprint / "complete.json").read_text(
+                    encoding="utf-8"
+                )
             )
-            return False
-        if result.timed_out:
-            self._write_tool_status(
-                "saber",
-                group_name,
-                fingerprint,
-                status="timed_out",
-                timed_out=True,
-                result=result,
-            )
-            return False
-        if not result.success:
-            self._write_tool_status(
-                "saber",
-                group_name,
-                fingerprint,
-                status="failed",
-                timed_out=False,
-                result=result,
-            )
-            return False
-        try:
-            artifact_path = self._write_saber_artifact(output_dir, result.bugs)
-            artifact_hash = self._file_hash(artifact_path)
-            artifact_relpath = self._relative_artifact_path(artifact_path, project_root)
-        except (OSError, TypeError, ValueError) as exc:
-            logger.warning(
-                "Saber artifact persistence failed for group %s: %s", group_name, exc
-            )
-            self._write_tool_status(
-                "saber",
-                group_name,
-                fingerprint,
-                status="failed",
-                timed_out=False,
-                result=result,
-            )
-            return False
-        self._write_tool_status(
-            "saber",
-            group_name,
-            fingerprint,
-            status="success",
-            timed_out=False,
-            result=result,
-            artifact_path=artifact_relpath,
-            artifact_hash=artifact_hash,
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    @staticmethod
+    def _save_content_artifact_status(
+        project_root: Path, fingerprint: str, path: str, digest: str, result: SvfResult
+    ) -> None:
+        atomic_json(
+            project_root / ".zscope_svf_cache" / fingerprint / "complete.json",
+            {
+                "artifact_fingerprint": fingerprint,
+                "status": "success",
+                "artifact_path": path,
+                "artifact_hash": digest,
+                "metrics": getattr(result, "metrics", {}),
+            },
         )
-        if not self._materialize_group(
-            "saber",
-            group_name,
-            fingerprint,
-            artifact_path,
-            artifact_hash,
-            artifact_relpath,
-        ):
-            logger.warning(
-                "SVF group failed: event=recovery_failed tool=saber group=%s",
-                group_name,
-            )
-            return False
-        logger.info("SVF resume: event=tool_rerun tool=saber group=%s", group_name)
-        return True
 
     @staticmethod
     def _is_saber_group(group_name: str) -> bool:
@@ -766,6 +606,7 @@ class SvfAnalyzer:
         result: Optional[SvfResult] = None,
         artifact_path: str = "",
         artifact_hash: str = "",
+        metrics: Optional[Dict[str, Any]] = None,
     ) -> None:
         payload = {
             "artifact_fingerprint": artifact_fingerprint,
@@ -775,6 +616,8 @@ class SvfAnalyzer:
             "artifact_path": artifact_path,
             "artifact_hash": artifact_hash,
             "output_hash": artifact_hash,
+            "metrics": getattr(result, "metrics", {}) if result else (metrics or {}),
+            "error": str(getattr(result, "stderr", ""))[-2000:] if result else "",
         }
         self._db.set_metadata(
             self._tool_status_key(tool, group_name),
@@ -845,6 +688,7 @@ class SvfAnalyzer:
             and row_count >= 0
         )
 
+    @observed("svf-import")
     def _materialize_group(
         self,
         tool: str,
@@ -854,6 +698,7 @@ class SvfAnalyzer:
         artifact_hash: str,
         artifact_relpath: str,
     ) -> bool:
+        started = time.monotonic()
         try:
             bugs: List[Dict[str, Any]] = []
             if tool == "saber":
@@ -884,12 +729,20 @@ class SvfAnalyzer:
                     "imported_row_count": int(row_count),
                     "db_generation": generation,
                     "imported_at": time.time(),
+                    "import_seconds": time.monotonic() - started,
                 }
                 self._db.set_metadata(
                     self._materialization_marker_key(tool, group_name),
                     json.dumps(marker, sort_keys=True),
                     commit=False,
                 )
+            logger.info(
+                "[svf-import] tool=%s group=%s rows=%d wall_seconds=%.3f",
+                tool,
+                group_name,
+                row_count,
+                time.monotonic() - started,
+            )
             return True
         except Exception as exc:
             logger.warning(
@@ -1039,15 +892,18 @@ class SvfAnalyzer:
 
     def _tool_artifact_fingerprint(self, tool: str, group_name: str, bc_path: Path) -> str:
         payload = {
+            "schema": 2,
             "tool": tool,
-            "group": group_name,
-            "bc_path": str(Path(bc_path).resolve()),
+            "options": ["-ander", "-dump-callgraph"] if tool == "ander" else ["-leak", "-dfree"],
             "bc_hash": self._file_hash(Path(bc_path)),
-            "timeout": self._timeout,
-            "heap_limit_mb": self._heap_limit,
-            "svf_bin_dir": str(self._svf_bin_dir or ""),
+            "identity": self._analysis_identity(),
         }
-        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+        return digest_json(payload)
+
+    def _analysis_identity(self) -> Dict[str, Any]:
+        if not hasattr(self, "_analysis_tools"):
+            self._analysis_tools = svf_identity(self._svf_bin_dir)
+        return self._analysis_tools
 
     @staticmethod
     def _file_hash(path: Path) -> str:
@@ -1095,13 +951,12 @@ class SvfAnalyzer:
 
     def _cache_config(self) -> Dict[str, Any]:
         return {
-            "cache_schema_version": 3,
+            "cache_schema_version": 4,
+            "tool_identity": self._analysis_identity(),
             "svf_bin_dir": str(self._svf_bin_dir or ""),
             "gclang_path": str(self._gclang),
             "get_bc_path": str(self._get_bc),
             "llvm_link_path": str(self._llvm_link),
-            "heap_limit_mb": self._heap_limit,
-            "timeout": self._timeout,
             "scope": self._scope_config.mode,
             "entry_depth": self._scope_config.entry_depth,
             "max_selected_tus": self._scope_config.max_selected_tus,
@@ -1111,7 +966,6 @@ class SvfAnalyzer:
             "exclusive_pools": self._scope_config.exclusive_pools,
             "shared_pools": self._scope_config.shared_pools,
             "execution_lanes": "parallel_wpa_resumable_saber_groups",
-            "parallel_workers": self._parallel_workers,
         }
 
     @staticmethod
@@ -1158,6 +1012,12 @@ class SvfAnalyzer:
         source_files.sort()
 
         agg = hashlib.sha256()
+        agg.update(
+            json.dumps(
+                [command_identity(row, compile_commands_path.parent) for row in commands],
+                sort_keys=True,
+            ).encode()
+        )
         if groups_config:
             agg.update(json.dumps(groups_config, sort_keys=True).encode("utf-8"))
         if execution_config:

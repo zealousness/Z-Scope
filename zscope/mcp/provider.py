@@ -247,7 +247,12 @@ class ZScopeMcpProvider:
                     "type": "function",
                     "function": {
                         "name": "query_knowledge",
-                        "description": "Run a safe read-only SELECT query against code_knowledge.db.",
+                        "description": (
+                            "Run a safe read-only SELECT query against code_knowledge.db. "
+                            "Rows are paged: returns up to `limit` rows starting at "
+                            "`offset`, with has_more=true when more rows match; page "
+                            "through by re-running with a larger offset."
+                        ),
                         "_meta": {"anthropic/maxResultSizeChars": self.max_result_chars},
                         "parameters": {
                             "type": "object",
@@ -255,6 +260,11 @@ class ZScopeMcpProvider:
                                 "sql": {"type": "string"},
                                 "params": {"type": "array", "items": {"type": "string"}},
                                 "limit": {"type": "integer", "default": 100},
+                                "offset": {
+                                    "type": "integer",
+                                    "default": 0,
+                                    "description": "Rows to skip before this page",
+                                },
                             },
                             "required": ["sql"],
                         },
@@ -361,6 +371,7 @@ class ZScopeMcpProvider:
                     arguments.get("sql", ""),
                     arguments.get("params") or [],
                     int(arguments.get("limit") or 100),
+                    int(arguments.get("offset") or 0),
                 ),
             )
             return self._post_tool_result(requested_name, arguments, result, start)
@@ -555,7 +566,13 @@ class ZScopeMcpProvider:
             }
         return {"available": False, "path": ""}
 
-    def _query_knowledge(self, sql: str, params: List[Any], limit: int = 100) -> Dict[str, Any]:
+    def _query_knowledge(
+        self,
+        sql: str,
+        params: List[Any],
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
         safety_error = self._validate_readonly_sql(sql)
         if safety_error:
             return {"success": False, "error": safety_error}
@@ -569,17 +586,35 @@ class ZScopeMcpProvider:
         if not db_path.exists():
             return {"success": False, "error": f"Knowledge DB not found: {db_path}"}
 
-        limited_sql = stripped
-        if " limit " not in lowered:
-            limited_sql = f"{stripped} LIMIT {max(1, min(limit, 1000))}"
+        page_limit = max(1, min(int(limit), 1000))
+        page_offset = max(0, int(offset))
+        has_user_limit = " limit " in lowered
+        if has_user_limit:
+            # The user's own LIMIT bounds the page; fetch one extra row via a
+            # wrapper projection so overflow (has_more) is detectable without
+            # rewriting their SQL.
+            limited_sql = f"SELECT * FROM ({stripped}) LIMIT {page_limit + 1} OFFSET {page_offset}"
+        else:
+            limited_sql = f"{stripped} LIMIT {page_limit + 1} OFFSET {page_offset}"
 
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(limited_sql, params).fetchall()
-            return {
-                "success": True,
-                "data": {"rows": [dict(row) for row in rows], "count": len(rows)},
+            has_more = len(rows) > page_limit
+            page_rows = [dict(row) for row in rows[:page_limit]]
+            data: Dict[str, Any] = {
+                "rows": page_rows,
+                "count": len(page_rows),
+                "offset": page_offset,
+                "has_more": has_more,
             }
+            if has_more:
+                data["note"] = (
+                    "More rows match this query; re-run with offset="
+                    f"{page_offset + page_limit} (or a larger limit) to page "
+                    "through the remaining rows."
+                )
+            return {"success": True, "data": data}
 
     def _knowledge_db_path(self) -> Path:
         configured = Path(self.config.indexing.knowledge_db_path)
@@ -702,6 +737,10 @@ class ZScopeMcpProvider:
         text = json.dumps(result, ensure_ascii=False)
         if len(text) <= self.max_result_chars:
             return result
+        # Keep a head preview (mirroring _bounded_json_text) so an oversized
+        # result still exposes its leading content instead of replacing the
+        # whole payload with a metadata-only stub the caller cannot act on.
+        preview_budget = max(0, self.max_result_chars - 800)
         return {
             "success": bool(result.get("success", True)),
             "data": {
@@ -709,7 +748,12 @@ class ZScopeMcpProvider:
                 "tool": name,
                 "max_result_chars": self.max_result_chars,
                 "original_chars": len(text),
-                "message": "MCP tool result exceeded the configured hard limit; request a smaller page or limit.",
+                "message": (
+                    "MCP tool result exceeded the configured hard limit; request a "
+                    "smaller page or limit. The preview contains the leading "
+                    f"{preview_budget} characters of the original result."
+                ),
+                "preview": text[:preview_budget],
             },
         }
 

@@ -30,6 +30,36 @@ api_roles:
     - UNLOCK
     - pthread_mutex_unlock
     - pthread_rwlock_unlock
+  io_acquirers:
+    - open
+    - fopen
+    - creat
+    - socket
+    - accept
+  io_releasers:
+    - close
+    - fclose
+    - closesocket
+    - munmap
+  send_sinks:
+    - send
+    - write
+    - sendto
+    - sendmsg
+    - _net_send_data
+  recv_sources:
+    - recv
+    - read
+    - recvfrom
+    - _net_recv_data
+  format_sinks:
+    - printf
+    - fprintf
+    - syslog
+    - vprintf
+    - vfprintf
+  callback_registrars:
+    - register_callback
 
 type_aliases:
   size_t: size_t
@@ -66,3 +96,9 @@ checker_roles:
     - destroy
     - release
     - delete
+  extended_send_sinks: []
+  extended_recv_sources: []
+  extended_format_sinks: []
+  extended_io_acquirers: []
+  extended_io_releasers: []
+  extended_callback_registrars: []

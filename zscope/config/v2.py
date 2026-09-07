@@ -18,6 +18,8 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional,
 
 import yaml
 
+from ..common.portable import default_svf_directory, default_tool
+
 from .config import (
     AgentConfig,
     AnalysisConfig,
@@ -39,7 +41,6 @@ from .config import (
     UserConfigV2,
     _optional_positive_int,
 )
-
 
 PUBLIC_CONFIG_VERSION = 2
 RUNTIME_SPEC_VERSION = 1
@@ -160,6 +161,26 @@ def _positive_number_or_none(value: Any, path: str) -> Optional[float]:
     return float(value)
 
 
+def _optional_bool_or_none(value: Any, path: str) -> Optional[bool]:
+    """Parse an optional tri-state boolean (absent -> None = depth-scoped)."""
+    if value is None:
+        return None
+    return _boolean(value, path)
+
+
+def _optional_fraction_or_none(value: Any, path: str) -> Optional[float]:
+    """Validate an optional confidence threshold in (0.5, 1.0]; None disables."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{path} must be a number in (0.5, 1.0] or null")
+    parsed = float(value)
+    if not 0.5 < parsed <= 1.0:
+        raise ValueError(f"{path} must be in (0.5, 1.0] or null")
+    return parsed
+
+
 def _boolean(value: Any, path: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{path} must be true or false")
@@ -245,6 +266,10 @@ def _validate_runtime_shape(raw: Mapping[str, Any], *, partial: bool) -> None:
             "max_premodel_depth",
             "max_premodel_callees",
             "trivial_function_max_lines",
+            "llm_interface_inference",
+            "llm_interface_inference_budget",
+            "llm_decision_explanation",
+            "llm_decision_explanation_budget",
             "enable_subagent_workers",
             "security_semantic_enrichment_mode",
             "max_subagent_tickets",
@@ -259,6 +284,17 @@ def _validate_runtime_shape(raw: Mapping[str, Any], *, partial: bool) -> None:
             "subagent_skill_llm_refs",
             "subagent_skill_efforts",
             "tool_audit_log",
+            "validation_uncertain_confirm_threshold",
+            "validation_v3_reattempt",
+            "validation_v2b_adjudication",
+            "validation_review_protocol",
+            "validation_checked_proofs",
+            "validation_positive_case",
+            "validation_related_findings",
+            "validation_review_checkpoint",
+            "validation_uncertain_replay_review",
+            "validation_demote_source_lifecycle_confirm",
+            "validation_obligation_infunction_release_guard",
         },
         "runtime.analysis",
     )
@@ -325,6 +361,14 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
         max_premodel_depth=integer("max_premodel_depth", 3, non_negative=True),
         max_premodel_callees=integer("max_premodel_callees", 20, non_negative=True),
         trivial_function_max_lines=integer("trivial_function_max_lines", 5, non_negative=True),
+        llm_interface_inference=boolean("llm_interface_inference", True),
+        llm_interface_inference_budget=integer(
+            "llm_interface_inference_budget", 50, non_negative=True
+        ),
+        llm_decision_explanation=boolean("llm_decision_explanation", True),
+        llm_decision_explanation_budget=integer(
+            "llm_decision_explanation_budget", 50, non_negative=True
+        ),
         enable_subagent_workers=boolean("enable_subagent_workers", False),
         security_semantic_enrichment_mode=_string(
             data.get("security_semantic_enrichment_mode", "shadow"),
@@ -333,7 +377,7 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
         max_subagent_tickets=integer("max_subagent_tickets", 4, non_negative=True),
         subagent_max_turns=integer("subagent_max_turns", 20),
         request_deadline_seconds=deadline("request_deadline_seconds", 120.0),
-        validation_deadline_seconds=deadline("validation_deadline_seconds", 240.0),
+        validation_deadline_seconds=deadline("validation_deadline_seconds", 600.0),
         subagent_ticket_timeout=deadline("subagent_ticket_timeout", 300.0),
         entry_deadline_seconds=deadline("entry_deadline_seconds", 1800.0),
         scan_deadline_seconds=deadline("scan_deadline_seconds", None),
@@ -348,6 +392,32 @@ def _runtime_analysis(data: Mapping[str, Any]) -> AnalysisConfig:
             data.get("tool_audit_log", ""),
             "runtime.analysis.tool_audit_log",
             allow_empty=True,
+        ),
+        validation_uncertain_confirm_threshold=_optional_fraction_or_none(
+            data.get("validation_uncertain_confirm_threshold"),
+            "runtime.analysis.validation_uncertain_confirm_threshold",
+        ),
+        validation_v3_reattempt=boolean("validation_v3_reattempt", True),
+        validation_v2b_adjudication=boolean("validation_v2b_adjudication", False),
+        validation_review_protocol=boolean("validation_review_protocol", False),
+        validation_checked_proofs=_optional_bool_or_none(
+            data.get("validation_checked_proofs"),
+            "runtime.analysis.validation_checked_proofs",
+        ),
+        validation_positive_case=boolean("validation_positive_case", False),
+        validation_related_findings=boolean("validation_related_findings", False),
+        validation_review_checkpoint=boolean("validation_review_checkpoint", False),
+        validation_uncertain_replay_review=_optional_bool_or_none(
+            data.get("validation_uncertain_replay_review"),
+            "runtime.analysis.validation_uncertain_replay_review",
+        ),
+        validation_demote_source_lifecycle_confirm=_optional_bool_or_none(
+            data.get("validation_demote_source_lifecycle_confirm"),
+            "runtime.analysis.validation_demote_source_lifecycle_confirm",
+        ),
+        validation_obligation_infunction_release_guard=_optional_bool_or_none(
+            data.get("validation_obligation_infunction_release_guard"),
+            "runtime.analysis.validation_obligation_infunction_release_guard",
         ),
     )
 
@@ -560,6 +630,9 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         "project",
     )
     root = _string(data.get("root"), "project.root")
+    # 相对 project.root 保持既有约定：基于加载进程的当前工作目录解析（子进程继承
+    # 同一 CWD，因此 CLI / Web 仪表盘 / MCP 对同一份配置得到一致的工程路径）。
+    root_path = Path(root)
     source_root = _string(data.get("source_root", "."), "project.source_root")
     compile_commands = data.get("compile_commands_path")
     if language == "java" and compile_commands is not None:
@@ -596,7 +669,19 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
     wiki_data = _mapping(data.get("wiki"), "project.wiki")
     _check_keys(
         wiki_data,
-        {"mode", "auto_maintain", "state_dir", "compiler_enabled", "documents", "max_file_bytes", "max_files", "max_total_bytes", "compiler_max_tokens", "max_wall_seconds", "max_constraints"},
+        {
+            "mode",
+            "auto_maintain",
+            "state_dir",
+            "compiler_enabled",
+            "documents",
+            "max_file_bytes",
+            "max_files",
+            "max_total_bytes",
+            "compiler_max_tokens",
+            "max_wall_seconds",
+            "max_constraints",
+        },
         "project.wiki",
     )
     documents = _mapping(wiki_data.get("documents"), "project.wiki.documents")
@@ -615,9 +700,7 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         classify.get("generated", []),
         "project.wiki.documents.classify.generated",
     )
-    conflicting_overrides = sorted(
-        set(explanatory_overrides).intersection(generated_overrides)
-    )
+    conflicting_overrides = sorted(set(explanatory_overrides).intersection(generated_overrides))
     if conflicting_overrides:
         raise ValueError(
             "project.wiki.documents.classify assigns the same glob to explanatory "
@@ -626,21 +709,29 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
     wiki = WikiConfig(
         mode=_string(wiki_data.get("mode", "off"), "project.wiki.mode"),
         auto_maintain=_boolean(wiki_data.get("auto_maintain", False), "project.wiki.auto_maintain"),
-        state_dir=_string(wiki_data.get("state_dir", ".zscope_knowledge/wiki"), "project.wiki.state_dir"),
-        compiler_enabled=_boolean(wiki_data.get("compiler_enabled", False), "project.wiki.compiler_enabled"),
+        state_dir=_string(
+            wiki_data.get("state_dir", ".zscope_knowledge/wiki"), "project.wiki.state_dir"
+        ),
+        compiler_enabled=_boolean(
+            wiki_data.get("compiler_enabled", False), "project.wiki.compiler_enabled"
+        ),
         document_exclude=document_exclude,
         explanatory_overrides=explanatory_overrides,
         generated_overrides=generated_overrides,
-        max_file_bytes=_positive_int(wiki_data.get("max_file_bytes", 10 * 1024 * 1024), "project.wiki.max_file_bytes"),
+        max_file_bytes=_positive_int(
+            wiki_data.get("max_file_bytes", 10 * 1024 * 1024), "project.wiki.max_file_bytes"
+        ),
         max_files=_positive_int(wiki_data.get("max_files", 10_000), "project.wiki.max_files"),
-        max_total_bytes=_positive_int(wiki_data.get("max_total_bytes", 100 * 1024 * 1024), "project.wiki.max_total_bytes"),
+        max_total_bytes=_positive_int(
+            wiki_data.get("max_total_bytes", 100 * 1024 * 1024), "project.wiki.max_total_bytes"
+        ),
         compiler_max_tokens=_optional_positive_int(wiki_data.get("compiler_max_tokens"), None),
         max_wall_seconds=_optional_positive_int(wiki_data.get("max_wall_seconds"), None),
         max_constraints=_optional_positive_int(wiki_data.get("max_constraints"), None),
     )
 
     project = ProjectConfig(
-        project_root=Path(root),
+        project_root=root_path,
         source_root=Path(source_root),
         project_id=_string(data.get("id", ""), "project.id", allow_empty=True),
         language=language,
@@ -677,10 +768,11 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
     )
     if project.entry_discovery.search_root:
         try:
-            project.entry_discovery.search_root.relative_to(project.project_root)
+            # search_root 必须位于 source_root 之下（相对路径同样基于 source_root 解析）。
+            project.entry_discovery.search_root.relative_to(project.source_root)
         except ValueError as exc:
             raise ValueError(
-                "project.entry_discovery.search_root must be inside project.root"
+                "project.entry_discovery.search_root must be inside project.source_root"
             ) from exc
     return project
 
@@ -816,7 +908,7 @@ def _parse_pool_list(value: Any, path: str, *, shared: bool) -> List[Dict[str, A
 
 def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> IndexingConfig:
     data = _mapping(raw, "indexing", required=True)
-    _check_keys(data, {"backend", "svf", "java", "tools"}, "indexing")
+    _check_keys(data, {"backend", "clang", "svf", "java", "tools"}, "indexing")
     backend = _string(data.get("backend"), "indexing.backend").lower().replace("-", "_")
     allowed_backends = (
         {"unified", "clang", "regex"}
@@ -830,8 +922,12 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
     tools = _mapping(data.get("tools"), "indexing.tools")
     svf = _mapping(data.get("svf"), "indexing.svf")
     java = _mapping(data.get("java"), "indexing.java")
+    clang = _mapping(data.get("clang"), "indexing.clang")
+    _check_keys(clang, {"frontend"}, "indexing.clang")
 
     if language == "java":
+        if clang:
+            raise ValueError("indexing.clang is not valid for Java")
         if svf:
             raise ValueError("indexing.svf is not valid for Java")
         _check_keys(
@@ -878,7 +974,10 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
             ),
             java_signal_backends=signals,
             java_signal_provider_commands=provider_commands,
-            joern_path=_string(joern.get("command", "joern"), "indexing.tools.joern.command"),
+            joern_path=_string(
+                joern["command"] if "command" in joern else default_tool("joern"),
+                "indexing.tools.joern.command",
+            ),
             joern_server_host=_string(joern.get("host", "127.0.0.1"), "indexing.tools.joern.host"),
             joern_server_port=port,
             joern_heap_size=_string(joern.get("heap", "8g"), "indexing.tools.joern.heap"),
@@ -888,7 +987,7 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
         raise ValueError("indexing.java is not valid for C/C++")
     _check_keys(
         tools,
-        {"clangd", "svf_bin_dir", "gclang", "get_bc", "llvm_link"},
+        {"clangd", "clang_indexer", "svf_bin_dir", "gclang", "get_bc", "llvm_link"},
         "indexing.tools",
     )
     _check_keys(
@@ -938,13 +1037,31 @@ def _parse_indexing(raw: Any, *, language: str, runtime: RuntimeSpec) -> Indexin
     return IndexingConfig(
         backend=backend,
         knowledge_db_path=runtime.knowledge_db_path,
-        clangd_path=_string(tools.get("clangd", "clangd"), "indexing.tools.clangd"),
-        svf_bin_dir=_string(
-            tools.get("svf_bin_dir", ""), "indexing.tools.svf_bin_dir", allow_empty=True
+        clang_frontend=_string(clang.get("frontend", "auto"), "indexing.clang.frontend"),
+        clang_indexer_path=_string(
+            tools["clang_indexer"] if "clang_indexer" in tools else default_tool("zscope-clang-indexer"),
+            "indexing.tools.clang_indexer",
         ),
-        gclang_path=_string(tools.get("gclang", "gclang"), "indexing.tools.gclang"),
-        get_bc_path=_string(tools.get("get_bc", "get-bc"), "indexing.tools.get_bc"),
-        llvm_link_path=_string(tools.get("llvm_link", "llvm-link"), "indexing.tools.llvm_link"),
+        clangd_path=_string(
+            tools["clangd"] if "clangd" in tools else default_tool("clangd"),
+            "indexing.tools.clangd",
+        ),
+        svf_bin_dir=_string(
+            tools["svf_bin_dir"] if "svf_bin_dir" in tools else default_svf_directory(),
+            "indexing.tools.svf_bin_dir", allow_empty=True
+        ),
+        gclang_path=_string(
+            tools["gclang"] if "gclang" in tools else default_tool("gclang"),
+            "indexing.tools.gclang",
+        ),
+        get_bc_path=_string(
+            tools["get_bc"] if "get_bc" in tools else default_tool("get-bc"),
+            "indexing.tools.get_bc",
+        ),
+        llvm_link_path=_string(
+            tools["llvm_link"] if "llvm_link" in tools else default_tool("llvm-link"),
+            "indexing.tools.llvm_link",
+        ),
         svf_heap_limit_mb=_positive_int(
             svf.get("heap_limit_mb", 32768), "indexing.svf.heap_limit_mb"
         ),

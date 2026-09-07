@@ -1,5 +1,7 @@
 import json
 import threading
+
+import pytest
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -12,7 +14,7 @@ from zscope.mcp.provider import ZScopeMcpProvider
 
 
 class FakeCodeIndex:
-    def list_functions(self, pattern=None, limit=100000):
+    def list_functions(self, pattern=None, limit=100000, offset=0):
         return ["api_entry"][:limit]
 
     def resolve_existing_file(self, file_path):
@@ -64,120 +66,103 @@ def _request(url: str, payload=None, headers=None):
         return response, response.read().decode("utf-8")
 
 
-def test_streamable_http_initialize_marks_remote_mcp_experimental(tmp_path: Path) -> None:
-    server = create_http_server("127.0.0.1", 0, _provider(tmp_path))
+@pytest.fixture(scope="module")
+def unauthenticated_server(tmp_path_factory):
+    """One shared no-auth HTTP server for read-only endpoint checks.
+
+    The five unauthenticated tests only issue stateless requests (initialize,
+    tools/list, SSE, healthz, method-not-allowed), so a single server keeps
+    every observation point while paying provider/server startup once.
+    """
+
+    server = create_http_server("127.0.0.1", 0, _provider(tmp_path_factory.mktemp("mcp-http")))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address[:2]
+    yield f"http://{host}:{port}"
+    server.shutdown()
+    server.server_close()
 
+
+def test_streamable_http_initialize_marks_remote_mcp_experimental(
+    unauthenticated_server: str,
+) -> None:
+    response, body = _request(
+        f"{unauthenticated_server}/mcp",
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {},
+        },
+    )
+    payload = json.loads(body)
+
+    assert response.headers["X-ZScope-Experimental-MCP"] == "streamable-http"
+    assert payload["result"]["serverInfo"]["experimental"] is True
+    assert payload["result"]["_meta"]["zscope/remoteExperimental"] is True
+
+
+def test_streamable_http_tools_list_uses_provider_policy(
+    unauthenticated_server: str,
+) -> None:
+    _, body = _request(
+        f"{unauthenticated_server}/mcp",
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {},
+        },
+    )
+    names = {
+        tool["function"]["name"]
+        for tool in json.loads(body)["result"]["tools"]
+    }
+
+    assert names == {"list_known_functions"}
+
+
+def test_streamable_http_can_return_sse_for_post_response(
+    unauthenticated_server: str,
+) -> None:
+    response, body = _request(
+        f"{unauthenticated_server}/mcp",
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "initialize",
+            "params": {},
+        },
+        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+    )
+
+    assert response.headers["Content-Type"].startswith("text/event-stream")
+    assert body.startswith("event: message\n")
+    assert '"jsonrpc": "2.0"' in body
+
+
+def test_streamable_http_health_endpoint_reports_experimental_status(
+    unauthenticated_server: str,
+) -> None:
+    response, body = _request(f"{unauthenticated_server}/healthz")
+    payload = json.loads(body)
+
+    assert response.headers["X-ZScope-Experimental-MCP"] == "streamable-http"
+    assert payload["transport"] == "streamable-http"
+    assert payload["experimental"] is True
+
+
+def test_streamable_http_get_mcp_is_method_not_allowed(
+    unauthenticated_server: str,
+) -> None:
     try:
-        response, body = _request(
-            f"http://{host}:{port}/mcp",
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {},
-            },
-        )
-        payload = json.loads(body)
-
-        assert response.headers["X-ZScope-Experimental-MCP"] == "streamable-http"
-        assert payload["result"]["serverInfo"]["experimental"] is True
-        assert payload["result"]["_meta"]["zscope/remoteExperimental"] is True
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_streamable_http_tools_list_uses_provider_policy(tmp_path: Path) -> None:
-    server = create_http_server("127.0.0.1", 0, _provider(tmp_path))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host, port = server.server_address[:2]
-
-    try:
-        _, body = _request(
-            f"http://{host}:{port}/mcp",
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/list",
-                "params": {},
-            },
-        )
-        names = {
-            tool["function"]["name"]
-            for tool in json.loads(body)["result"]["tools"]
-        }
-
-        assert names == {"list_known_functions"}
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_streamable_http_can_return_sse_for_post_response(tmp_path: Path) -> None:
-    server = create_http_server("127.0.0.1", 0, _provider(tmp_path))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host, port = server.server_address[:2]
-
-    try:
-        response, body = _request(
-            f"http://{host}:{port}/mcp",
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "initialize",
-                "params": {},
-            },
-            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-        )
-
-        assert response.headers["Content-Type"].startswith("text/event-stream")
-        assert body.startswith("event: message\n")
-        assert '"jsonrpc": "2.0"' in body
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_streamable_http_health_endpoint_reports_experimental_status(tmp_path: Path) -> None:
-    server = create_http_server("127.0.0.1", 0, _provider(tmp_path))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host, port = server.server_address[:2]
-
-    try:
-        response, body = _request(f"http://{host}:{port}/healthz")
-        payload = json.loads(body)
-
-        assert response.headers["X-ZScope-Experimental-MCP"] == "streamable-http"
-        assert payload["transport"] == "streamable-http"
-        assert payload["experimental"] is True
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_streamable_http_get_mcp_is_method_not_allowed(tmp_path: Path) -> None:
-    server = create_http_server("127.0.0.1", 0, _provider(tmp_path))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host, port = server.server_address[:2]
-
-    try:
-        try:
-            _request(f"http://{host}:{port}/mcp")
-        except urllib.error.HTTPError as exc:
-            assert exc.code == 405
-            assert exc.headers["Allow"] == "POST, OPTIONS"
-        else:
-            raise AssertionError("GET /mcp should return 405")
-    finally:
-        server.shutdown()
-        server.server_close()
+        _request(f"{unauthenticated_server}/mcp")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 405
+        assert exc.headers["Allow"] == "POST, OPTIONS"
+    else:
+        raise AssertionError("GET /mcp should return 405")
 
 
 def test_streamable_http_auth_token_is_required_when_configured(tmp_path: Path) -> None:

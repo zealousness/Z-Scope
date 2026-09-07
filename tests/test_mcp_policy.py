@@ -17,7 +17,7 @@ from zscope.mcp.security import validate_remote_mcp_security
 
 
 class FakeCodeIndex:
-    def list_functions(self, pattern=None, limit=100000):
+    def list_functions(self, pattern=None, limit=100000, offset=0):
         return [f"func_{idx}" for idx in range(20)][:limit]
 
     def resolve_existing_file(self, file_path):
@@ -367,3 +367,110 @@ def test_remote_mcp_security_validation_requires_https_audience_and_scopes() -> 
     assert any("ambient user token" in error for error in errors)
     assert any("audience or resource" in error for error in errors)
     assert any("too broad" in error for error in errors)
+
+
+def _seed_knowledge_db(tmp_path: Path) -> Path:
+    import sqlite3
+
+    db_path = tmp_path / "knowledge.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE functions (name TEXT)")
+        conn.executemany(
+            "INSERT INTO functions (name) VALUES (?)",
+            [(f"func_{index:02d}",) for index in range(12)],
+        )
+    return db_path
+
+
+def _knowledge_provider(
+    tmp_path: Path,
+    policy: ToolPolicy,
+    db_path: Path,
+) -> ZScopeMcpProvider:
+    llm = LLMConfig(api_key="test", base_url="http://localhost", models=["test"])
+    config = ZScopeConfig(
+        llm=llm,
+        llms={"default": llm},
+        indexing=IndexingConfig(knowledge_db_path=str(db_path)),
+        analysis=AnalysisConfig(snapshot_dir=str(tmp_path / "snapshots")),
+        project=ProjectConfig(project_root=tmp_path, source_root=tmp_path),
+    )
+    code_index = FakeCodeIndex()
+    snapshots = FakeSnapshotStore()
+    runtime = ToolsRuntime(code_index, snapshots, tool_policy=policy)
+    return ZScopeMcpProvider(
+        config,
+        code_index=code_index,
+        snapshot_store=snapshots,
+        tools_runtime=runtime,
+        tool_policy=policy,
+    )
+
+
+def test_mcp_query_knowledge_pages_with_offset_and_has_more(tmp_path: Path) -> None:
+    db_path = _seed_knowledge_db(tmp_path)
+    provider = _knowledge_provider(
+        tmp_path,
+        ToolPolicy(allowed_tools={"query_knowledge"}),
+        db_path,
+    )
+    sql = "SELECT name FROM functions ORDER BY name"
+
+    page = provider.call_tool("query_knowledge", {"sql": sql, "limit": 5, "offset": 2})
+    last_page = provider.call_tool("query_knowledge", {"sql": sql, "limit": 5, "offset": 10})
+
+    data = page["data"]
+    assert [row["name"] for row in data["rows"]] == [f"func_{index:02d}" for index in range(2, 7)]
+    assert data["count"] == 5
+    assert data["offset"] == 2
+    assert data["has_more"] is True
+    assert "offset=7" in data["note"]
+    assert last_page["data"]["rows"] == [{"name": "func_10"}, {"name": "func_11"}]
+    assert last_page["data"]["has_more"] is False
+
+
+def test_mcp_query_knowledge_respects_user_limit_clause(tmp_path: Path) -> None:
+    db_path = _seed_knowledge_db(tmp_path)
+    provider = _knowledge_provider(
+        tmp_path,
+        ToolPolicy(allowed_tools={"query_knowledge"}),
+        db_path,
+    )
+
+    bounded = provider.call_tool(
+        "query_knowledge", {"sql": "SELECT name FROM functions ORDER BY name LIMIT 3"}
+    )
+    paged = provider.call_tool(
+        "query_knowledge",
+        {"sql": "SELECT name FROM functions ORDER BY name LIMIT 3", "offset": 2},
+    )
+
+    assert bounded["data"]["count"] == 3
+    assert bounded["data"]["has_more"] is False
+    assert [row["name"] for row in bounded["data"]["rows"]] == [
+        "func_00",
+        "func_01",
+        "func_02",
+    ]
+    assert [row["name"] for row in paged["data"]["rows"]] == ["func_02"]
+
+
+def test_mcp_tool_result_over_limit_keeps_head_preview(tmp_path: Path) -> None:
+    provider = _provider(
+        tmp_path,
+        ToolPolicy(allowed_tools={"list_known_functions"}),
+        max_result_chars=1000,
+    )
+    provider.code_index.list_functions = lambda pattern=None, limit=100000, offset=0: [
+        f"func_{index}_" + "x" * 200 for index in range(20)
+    ][:limit]
+
+    result = provider.call_tool("list_known_functions", {})
+
+    data = result["data"]
+    assert data["truncated"] is True
+    assert data["tool"] == "list_known_functions"
+    assert data["max_result_chars"] == 1000
+    assert data["original_chars"] > 1000
+    assert len(data["preview"]) == 200  # max_result_chars - 800
+    assert data["preview"].startswith('{"success": true')

@@ -76,7 +76,7 @@ def test_java_preview_structural_baseline_is_explicit_and_non_numeric_for_llm() 
     coverage = _load_json(BENCHMARK_ROOT / "benchmark" / "maintenance" / "entry_rule_coverage.json")
     vulnerabilities = truth["vulnerabilities"]
 
-    assert baseline["package_version"] == "1.3.1"
+    assert baseline["package_version"] == "1.3.2"
     assert baseline["truth_records"] == len(truth["vulnerabilities"]) == 58
     assert (
         baseline["rule_backed_truth_ids"]

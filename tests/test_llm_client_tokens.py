@@ -1155,3 +1155,192 @@ def test_run_conversation_reports_final_tool_call_after_tools_disabled(monkeypat
     assert result["truncated"] is True
     assert result["tool_call_count"] == 0
     assert "lookup" in result["last_assistant_preview"]
+
+
+def test_max_iterations_exit_after_length_continuation_returns_model_content(monkeypatch) -> None:
+    # When the final iteration hits finish_reason=length, the loop appends the
+    # "请继续" continuation prompt and exits via the max-iterations path.  The
+    # result content must be the model's combined assistant output, never the
+    # trailing user prompt itself.
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append(list(messages))
+        return {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"role": "assistant", "content": f"partial-{len(calls)}"},
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[],
+        tool_executor=lambda name, args: (_ for _ in ()).throw(AssertionError("no tools")),
+        max_iterations=2,
+    )
+
+    assert len(calls) == 2
+    assert result["truncated"] is True
+    assert result["finish_reason"] == "length"
+    assert result["conversation"][-1]["role"] == "user"
+    assert result["conversation"][-1]["content"] == "请继续"
+    assert result["content"] == "partial-1partial-2"
+
+
+def test_max_iterations_exit_after_reprompts_returns_model_content(monkeypatch) -> None:
+    # Terminal prose reprompts and the "请继续" length continuation both append
+    # user messages to the transcript.  When the iteration budget runs out with
+    # such a trailing user message, the exit must still surface the combined
+    # assistant output instead of the reprompt text itself.
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "prose draft"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            }
+        return {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"role": "assistant", "content": "partial"},
+                }
+            ],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[
+            {"type": "function", "function": {"name": "emit_result", "parameters": {}}},
+        ],
+        tool_executor=lambda name, args: (_ for _ in ()).throw(AssertionError("no tools")),
+        terminal_tool_name="emit_result",
+        terminal_tool_required=True,
+        max_iterations=2,
+    )
+
+    assert len(calls) == 2
+    assert result["truncated"] is True
+    assert result["conversation"][-1]["role"] == "user"
+    assert result["conversation"][-1]["content"] == "请继续"
+    assert result["content"] == "prose draftpartial"
+
+
+def test_tool_result_with_non_json_native_value_is_stringified(monkeypatch) -> None:
+    # A single non-JSON-native value (bytes) in a tool result must degrade to
+    # its string form instead of discarding the whole result as an error.
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+
+    def fake_chat_completion(messages, **kwargs):
+        if len([m for m in messages if m.get("role") == "assistant"]) == 0:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": json.dumps({"name": "demo"}),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            }
+        return {
+            "choices": [
+                {"finish_reason": "stop", "message": {"role": "assistant", "content": "done"}}
+            ],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 3},
+        }
+
+    def fake_tool_executor(name, args):
+        return {"success": True, "data": {"raw_bytes": b"\x00\x01bin", "note": "ok"}}
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[],
+        tool_executor=fake_tool_executor,
+        max_iterations=3,
+    )
+
+    tool_messages = [msg for msg in result["conversation"] if msg.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    payload = json.loads(tool_messages[0]["content"])
+    assert payload["success"] is True
+    assert "error" not in payload
+    assert isinstance(payload["data"]["raw_bytes"], str)
+    assert payload["data"]["note"] == "ok"
+
+
+def test_estimate_tokens_counts_cjk_separately_from_ascii() -> None:
+    # ASCII-only text keeps the historical ~3.8 chars/token estimate, while
+    # CJK characters are counted at ~1.5 chars/token so Chinese-heavy prompts
+    # no longer undercount their context size by nearly 3x.
+    ascii_only = [{"role": "user", "content": "a" * 38}]
+    assert LLMClient.estimate_tokens(ascii_only) == 10
+
+    cjk_only = [{"role": "user", "content": "字" * 15}]
+    assert LLMClient.estimate_tokens(cjk_only) == 10
+
+    mixed = [{"role": "user", "content": "a" * 38 + "字" * 3}]
+    assert LLMClient.estimate_tokens(mixed) == 12
+
+    arguments = json.dumps({"query": "查询"}, ensure_ascii=False)
+    tool_call_message = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": arguments},
+                }
+            ],
+        }
+    ]
+    cjk_chars = 2  # "查询"
+    other_chars = len(arguments) - cjk_chars
+    expected = int(cjk_chars / 1.5 + other_chars / 3.8)
+    assert LLMClient.estimate_tokens(tool_call_message) == expected

@@ -179,3 +179,42 @@ def test_validator_json_candidate_counter_accepts_repair_output_spec() -> None:
     )
 
     assert count == 1
+
+
+def test_v3_slice_keeps_every_wiki_selected_constraint() -> None:
+    # The Wiki selector may return up to MAX_WIKI_CONSTRAINTS constraints; the
+    # v3 projection compaction must not silently drop the tail of that
+    # selection (it previously capped lists at 16 entries with no identity
+    # for the omitted items).
+    from zscope.core.validation.evidence import build_validator_evidence_slice_v3
+    from zscope.wiki.service import MAX_WIKI_CONSTRAINTS
+
+    constraints = [
+        {
+            "constraint_id": f"CON_{index:02d}",
+            "kind": "requirement",
+            "subject_id": f"SUBJ_{index:02d}",
+            "subject_kind": "function",
+            "statement": f"constraint statement {index}",
+            "authority": "wiki",
+            "normativity": "must",
+            "status": "active",
+            "source_refs": [],
+        }
+        for index in range(MAX_WIKI_CONSTRAINTS)
+    ]
+    pack = {
+        "function_context": {"code": "void sink(void) {}"},
+        "project_knowledge": {
+            "project_id": "demo",
+            "target": {"project_id": "demo"},
+            "constraints": constraints,
+        },
+    }
+
+    slice_v3 = build_validator_evidence_slice_v3(_issue(0), pack, "")
+
+    projected = slice_v3["project_knowledge"]["constraints"]
+    assert len(projected) == MAX_WIKI_CONSTRAINTS
+    kept_ids = {item.get("constraint_id") for item in projected}
+    assert kept_ids == {f"CON_{index:02d}" for index in range(MAX_WIKI_CONSTRAINTS)}

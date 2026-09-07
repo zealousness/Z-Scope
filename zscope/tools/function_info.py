@@ -51,13 +51,14 @@ class GetFunctionInfoTool(BaseTool):
         if not isinstance(file_path, str):
             return {"success": False, "error": "file_path must be a string"}
 
-        matches = self.code_index.find_function_infos(
+        find_metadata = getattr(self.code_index, "find_function_metadata", self.code_index.find_function_infos)
+        matches = find_metadata(
             func_name,
             file_path=file_path,
         )
         file_path_fallback = None
         if not matches and file_path:
-            matches = self.code_index.find_function_infos(func_name, file_path="")
+            matches = find_metadata(func_name, file_path="")
             if matches:
                 file_path_fallback = {
                     "reason": "file_path_not_matched",

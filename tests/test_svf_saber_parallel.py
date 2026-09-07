@@ -7,6 +7,17 @@ import time
 from pathlib import Path
 from typing import Dict, List
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def deterministic_memory_budget(monkeypatch):
+    monkeypatch.setattr(
+        "zscope.retrieval.indexing_runtime.resource_limits",
+        lambda: {"cpu_count": 16, "task_memory_budget_bytes": 128 * 1024**3},
+    )
+
+
 from zscope.retrieval.knowledge_db import KnowledgeDB
 from zscope.retrieval.svf_analyzer import SvfAnalyzer
 from zscope.retrieval.svf_runner import SvfResult
@@ -27,7 +38,7 @@ class FakeSaberRunner:
     def run_saber(self, bc_path: Path, output_dir: Path) -> SvfResult:
         stem = Path(bc_path).stem
         prefix = "merged_"
-        group_name = "saber:" + stem[len(prefix):] if stem.startswith(prefix) else stem
+        group_name = "saber:" + stem[len(prefix) :] if stem.startswith(prefix) else stem
         with self.calls_lock:
             self.calls.append(group_name)
         with self.active_lock:
@@ -66,20 +77,20 @@ def make_paths(tmp_path: Path, group_names: List[str]) -> Dict[str, Path]:
     paths: Dict[str, Path] = {}
     for name in group_names:
         bc = tmp_path / f"merged_{name}.bc"
-        bc.write_bytes(b"fake-bitcode")
+        bc.write_bytes(("fake-bitcode:" + name).encode())
         paths[f"saber:{name}"] = bc
     return paths
 
 
 def test_saber_worker_count_bounds(tmp_path: Path) -> None:
     analyzer = make_analyzer(tmp_path, parallel_workers=8)
-    # Heap budget caps concurrency: 32 GiB // 8 GiB = 4 workers max.
+    # Reserve 32 GiB per process from the simulated 128 GiB task budget.
     assert analyzer._saber_worker_count(10) == 4
     assert analyzer._saber_worker_count(2) == 2
     assert analyzer._saber_worker_count(0) == 0
 
     small_heap = make_analyzer(tmp_path, parallel_workers=8, heap_limit_mb=8192)
-    assert small_heap._saber_worker_count(10) == 1
+    assert small_heap._saber_worker_count(10) == 8
 
     few_workers = make_analyzer(tmp_path, parallel_workers=2)
     assert few_workers._saber_worker_count(10) == 2

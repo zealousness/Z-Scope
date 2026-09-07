@@ -10,9 +10,12 @@ import json
 import logging
 import os
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from .indexing_runtime import run_process
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,7 @@ class SvfResult:
     output_file: Optional[Path] = None
     stderr: str = ""
     bugs: List[Dict[str, Any]] = field(default_factory=list)
+    metrics: Dict[str, Any] = field(default_factory=dict)
 
 
 class SvfRunner:
@@ -40,56 +44,37 @@ class SvfRunner:
         self.svf_bin_dir = Path(svf_bin_dir) if svf_bin_dir else None
         self.heap_limit_mb = heap_limit_mb
         self.timeout = timeout
+        self.cancel_event = threading.Event()
 
     def _tool_path(self, name: str) -> str:
         """解析 SVF 工具的完整路径。"""
         if self.svf_bin_dir:
             p = self.svf_bin_dir / name
-            if p.exists():
-                return str(p)
+            return str(p)  # An explicit directory must never fall back to PATH.
         return name  # 依赖 PATH
+
+    def validate_llvm(self, llvm_link: str) -> None:
+        from .llvm_toolchain import validate_svf_llvm
+        validate_svf_llvm(str(self.svf_bin_dir or ""), llvm_link)
 
     def _make_env(self) -> Dict[str, str]:
         """构建带内存限制和库搜索路径的环境变量。"""
-        env = os.environ.copy()
+        from .llvm_toolchain import svf_environment
+        env = svf_environment(str(self.svf_bin_dir or ""))
         # ulimit 风格的软限制（Linux）；SVF 自身也会检查
         env["SVF_MEMORY_LIMIT"] = str(self.heap_limit_mb)
-        # 确保关键系统路径在 PATH 中
-        path = env.get("PATH", "")
-        for d in ["/usr/bin", "/usr/local/bin"]:
-            if d not in path:
-                path = d + ":" + path
-        env["PATH"] = path
-        # 自动发现 SVF 共享库路径（libLLVM.so, libSvf*.so）
-        if self.svf_bin_dir:
-            extra_lib_dirs = set()
-            # SVF bin 目录的兄弟 lib 目录
-            lib_dir = self.svf_bin_dir / ".." / "lib"
-            if lib_dir.exists():
-                extra_lib_dirs.add(str(lib_dir.resolve()))
-            # SVF LLVM 构建目录（通常在同级目录）
-            svf_parent = self.svf_bin_dir / ".." / ".."
-            import glob
-            for pattern in ["llvm-*/lib", "llvm-*.obj/lib"]:
-                for d in glob.glob(str(svf_parent / pattern)):
-                    if Path(d).exists():
-                        extra_lib_dirs.add(str(Path(d).resolve()))
-            if extra_lib_dirs:
-                existing = env.get("LD_LIBRARY_PATH", "")
-                env["LD_LIBRARY_PATH"] = ":".join(extra_lib_dirs) + (":" + existing if existing else "")
-                logger.info("SVF LD_LIBRARY_PATH: %s", env["LD_LIBRARY_PATH"])
+        if env.get("LD_LIBRARY_PATH"):
+            logger.info("SVF LD_LIBRARY_PATH: %s", env["LD_LIBRARY_PATH"])
         return env
 
     def _run_cmd(self, cmd: List[str], work_dir: Path) -> subprocess.CompletedProcess:
         """执行子进程，统一超时和内存防护。"""
         logger.info("SVF cmd: %s", " ".join(cmd))
-        return subprocess.run(
-            cmd,
-            cwd=str(work_dir),
-            env=self._make_env(),
-            timeout=self.timeout,
-            capture_output=True,
-            text=True,
+        return run_process(  # type: ignore[return-value]
+            cmd, cwd=work_dir, output_prefix=work_dir / "analysis",
+            env=self._make_env(), timeout=self.timeout,
+            memory_limit_mb=self.heap_limit_mb, label=Path(cmd[0]).name,
+            cancel=self.cancel_event,
         )
 
     def run_ander(self, bc_path: Path, output_dir: Path) -> SvfResult:
@@ -100,6 +85,7 @@ class SvfRunner:
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         result = SvfResult(tool="wpa-ander")
+        (output_dir / "callgraph_final.dot").unlink(missing_ok=True)
 
         cmd = [
             self._tool_path("wpa"),
@@ -110,8 +96,10 @@ class SvfRunner:
 
         try:
             proc = self._run_cmd(cmd, output_dir)
+            result.metrics = getattr(proc, "metrics", {})
+            result.timed_out = bool(result.metrics.get("timed_out"))
             result.stderr = proc.stderr
-            result.success = proc.returncode == 0
+            result.success = proc.returncode == 0 and not result.timed_out and not result.metrics.get("memory_exceeded")
             # wpa 在 cwd 下生成 .dot 文件
             cg_file = output_dir / "callgraph_final.dot"
             if cg_file.exists():
@@ -149,8 +137,10 @@ class SvfRunner:
 
         try:
             proc = self._run_cmd(cmd, output_dir)
+            result.metrics = getattr(proc, "metrics", {})
+            result.timed_out = bool(result.metrics.get("timed_out"))
             result.stderr = proc.stderr
-            result.success = proc.returncode == 0
+            result.success = proc.returncode == 0 and not result.timed_out and not result.metrics.get("memory_exceeded") and not result.metrics.get("output_truncated")
             result.bugs = self._parse_saber_output(proc.stdout + proc.stderr)
             logger.info(
                 "saber %s, found %d bugs",

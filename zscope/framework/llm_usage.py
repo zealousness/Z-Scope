@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Union
 
-
 USAGE_EVENT_SCHEMA_VERSION = "zscope.llm-usage-event.v1"
 USAGE_ATTRIBUTION_SCHEMA_VERSION = "zscope.llm-usage-attribution.v1"
 TOKEN_USAGE_SCHEMA_VERSION = "zscope.scan-token-usage.v1"
@@ -28,8 +27,31 @@ TOKEN_USAGE_STAGES = (
     "reserve",
 )
 _VALIDATOR_V3_CALL_KINDS = frozenset(
-    {"length_retry", "json_repair", "investigation_synthesis", "targeted_investigation"}
+    {
+        "length_retry",
+        "json_repair",
+        "investigation_synthesis",
+        "targeted_investigation",
+        "v2b_adjudication",
+    }
 )
+
+# Escalation-rung observability (new_docs/balanced_confirmed_tp_plan.md Phase 5).
+# Derives the ladder rung that produced one LLM call from its validator
+# ``call_kind``.  Empty string means "not an escalation-tagged call"; consumers
+# treat first-pass validator traffic as the R1 baseline bucket.
+_ESCALATION_RUNG_BY_CALL_KIND = {
+    "initial": "R1_validator_v1",
+    "targeted_investigation": "R2_v3_reattempt",
+    "investigation_synthesis": "R2_v3_reattempt",
+    "v2b_adjudication": "R3_v2b_adjudication",
+}
+
+
+def escalation_rung_for_call_kind(value: Any) -> str:
+    """Map one validator call kind to its escalation-ladder rung label."""
+
+    return _ESCALATION_RUNG_BY_CALL_KIND.get(_clean(value).lower(), "")
 
 
 def canonical_usage_stage(value: Any) -> str:
@@ -243,6 +265,7 @@ class LLMUsageEvent:
     tool_call_count: int = 0
     new_fact_count: int = 0
     duration_ms: int = 0
+    escalation_rung: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         attribution = self.attribution.to_dict()
@@ -285,6 +308,8 @@ class LLMUsageEvent:
             "tool_call_count": self.tool_call_count,
             "new_fact_count": self.new_fact_count,
             "duration_ms": self.duration_ms,
+            "escalation_rung": self.escalation_rung
+            or escalation_rung_for_call_kind(self.attribution.call_kind),
         }
 
 

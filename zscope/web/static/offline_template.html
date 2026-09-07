@@ -137,6 +137,14 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
         </div>
         <label style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted);">Validator 验证说明（只读）</label>
         <textarea id="reason" readonly placeholder="Validator 未提供验证说明" style="background:rgba(148,163,184,0.08);"></textarea>
+        <div id="llmExplanationWrap" style="display:none; margin-top:8px;">
+          <label style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted);">决策解释（LLM 补充，只读）</label>
+          <div id="llmExplanation" style="font-size:13px; line-height:1.6; color:#d1d5db; white-space:pre-wrap; background:rgba(148,163,184,0.08); border-radius:6px; padding:8px;"></div>
+        </div>
+        <div id="promotionReviewWrap" style="display:none; margin-top:8px;">
+          <label style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted);">未晋级为 validated 的原因（只读）</label>
+          <div id="promotionReview" style="font-size:13px; line-height:1.6; color:#d1d5db; white-space:pre-wrap; background:rgba(148,163,184,0.08); border-radius:6px; padding:8px;"></div>
+        </div>
         <label style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-top:8px;">人工反驳 / 复核说明</label>
         <textarea id="rebuttal" placeholder="填写人工验证依据，例如：为什么确认为真阳性 / 为什么拒绝 / 还需要检查哪些路径（支持多行文本）"></textarea>
       </div>
@@ -416,6 +424,10 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   const sevEl = document.getElementById('sev');
   const statusEl = document.getElementById('status');
   const reasonEl = document.getElementById('reason');
+  const llmExplanationEl = document.getElementById('llmExplanation');
+  const llmExplanationWrapEl = document.getElementById('llmExplanationWrap');
+  const promotionReviewEl = document.getElementById('promotionReview');
+  const promotionReviewWrapEl = document.getElementById('promotionReviewWrap');
   const rebuttalEl = document.getElementById('rebuttal');
   const snippetEl = document.getElementById('snippet');
   const reasoningEl = document.getElementById('reasoning');
@@ -609,6 +621,20 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     return cls[(level||'').toLowerCase()] || 'var(--border)';
   }
 
+  function setLlmExplanation(value) {
+    const text = String(value || '').trim();
+    if (!llmExplanationEl || !llmExplanationWrapEl) return;
+    llmExplanationEl.textContent = text;
+    llmExplanationWrapEl.style.display = text ? 'block' : 'none';
+  }
+
+  function setPromotionReview(value) {
+    const text = String(value || '').trim();
+    if (!promotionReviewEl || !promotionReviewWrapEl) return;
+    promotionReviewEl.textContent = text;
+    promotionReviewWrapEl.style.display = text ? 'block' : 'none';
+  }
+
   function formatFindingEvidence(finding) {
     if (!finding) return '';
     const lines = [];
@@ -745,6 +771,8 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
 
     statusEl.value = f.validation_status || 'pending';
     reasonEl.value = f.validation_reasoning || '';
+    setLlmExplanation(f.llm_explanation);
+    setPromotionReview(f.promotion_review_reason);
     rebuttalEl.value = f.user_rebuttal || '';
 
     snippetEl.textContent = f.code_snippet || '暂无代码片段';
@@ -769,6 +797,8 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
       detailsCardEl.style.borderLeftColor = getBorderColor(f.impact_level);
       statusEl.value = f.validation_status || 'pending';
       reasonEl.value = f.validation_reasoning || '';
+      setLlmExplanation(f.llm_explanation);
+      setPromotionReview(f.promotion_review_reason);
       rebuttalEl.value = f.user_rebuttal || '';
       snippetEl.textContent = f.code_snippet || '暂无代码片段';
       reasoningEl.textContent = f.reasoning || f.reasoning_process || '暂无推理过程';

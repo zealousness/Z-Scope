@@ -61,6 +61,8 @@ def project_finding_roots(
     """Return deterministic primary/alias outcomes without losing evidence."""
 
     copied = [deepcopy(dict(item)) for item in outcomes]
+    conditional = [item for item in copied if item.get("analysis_scope") == "conditional_source_branch"]
+    copied = [item for item in copied if item.get("analysis_scope") != "conditional_source_branch"]
     attachment_buckets: Dict[str, List[Dict[str, Any]]] = {}
     for item in copied:
         signature = _attachment_signature(item)
@@ -122,7 +124,7 @@ def project_finding_roots(
             continue
         buckets.setdefault(signature, []).append(item)
 
-    projected: List[Dict[str, Any]] = list(passthrough)
+    projected: List[Dict[str, Any]] = list(passthrough) + conditional
     alias_count = 0
     for signature in sorted(buckets):
         group = sorted(buckets[signature], key=_primary_sort_key)

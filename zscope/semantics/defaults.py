@@ -22,6 +22,12 @@ _ROLE_TO_CATEGORY = {
     "copy_sinks": "copy",
     "lock_apis": "lock",
     "unlock_apis": "unlock",
+    "io_acquirers": "io_acquire",
+    "io_releasers": "io_release",
+    "send_sinks": "send_sink",
+    "recv_sources": "recv_source",
+    "format_sinks": "format_sink",
+    "callback_registrars": "callback_register",
 }
 
 
@@ -106,6 +112,18 @@ def _carrier(kind: str) -> str:
         return "copy_arguments"
     if kind in {"lock", "unlock"}:
         return "lock_argument"
+    if kind == "io_acquire":
+        return "return_value"
+    if kind == "io_release":
+        return "argument_resource"
+    if kind == "send_sink":
+        return "copy_arguments"
+    if kind == "recv_source":
+        return "return_value"
+    if kind == "format_sink":
+        return "format_arguments"
+    if kind == "callback_register":
+        return "callback_arguments"
     return "unknown"
 
 

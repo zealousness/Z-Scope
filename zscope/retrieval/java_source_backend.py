@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..common.portable import bundle_root, default_tool, java_jar
 from ..semantics.java_frameworks import build_java_framework_semantics
 from .backend_base import CodeBackend
 from .java_models import JavaCallableRecord, JavaClassRecord
@@ -60,6 +61,9 @@ class JavaSourceBackend(CodeBackend):
 
     @classmethod
     def _ensure_default_spoon_jar(cls, source_root: Path, project_root: Path) -> tuple[str, str]:
+        bundled = java_jar("structure-spoon")
+        if bundled is not None:
+            return str(bundled), ""
         if not cls._find_maven_project_root(project_root, source_root):
             return "", "pom.xml not found for Spoon MavenLauncher"
         mvn = shutil.which("mvn")
@@ -90,6 +94,9 @@ class JavaSourceBackend(CodeBackend):
 
     @staticmethod
     def _ensure_default_javaparser_jar() -> tuple[str, str]:
+        bundled = java_jar("structure-javaparser")
+        if bundled is not None:
+            return str(bundled), ""
         mvn = shutil.which("mvn")
         if not mvn:
             return "", "mvn not found on PATH"
@@ -185,15 +192,19 @@ class JavaSourceBackend(CodeBackend):
                 return classes
             last_reason = extractor.last_error or "sidecar returned no classes"
             self._record_frontend_attempt(frontend, "failed", command, last_reason)
+        if self.extractor_command or bundle_root() is not None:
+            raise RuntimeError(f"Java structure extraction failed: {last_reason}")
         self.frontend = "builtin"
         self.frontend_fallback_reason = last_reason
         return []
 
     def _frontend_plan(self) -> List[str]:
+        if self.extractor_command:
+            return ["spoon" if self.requested_frontend == "auto" else self.requested_frontend]
         if self.requested_frontend == "auto":
-            return ["spoon", "javaparser", "builtin"]
+            return ["spoon", "javaparser"] if bundle_root() else ["spoon", "javaparser", "builtin"]
         if self.requested_frontend in {"spoon", "javaparser"}:
-            return [self.requested_frontend, "builtin"]
+            return [self.requested_frontend] if bundle_root() else [self.requested_frontend, "builtin"]
         return ["builtin"]
 
     def _command_for_frontend(
@@ -218,7 +229,7 @@ class JavaSourceBackend(CodeBackend):
                 return [], reason
             maven_root = self._find_maven_project_root(project_root, source_root) or project_root
             return [
-                "java",
+                default_tool("java"),
                 "-jar",
                 jar,
                 "--project-root",
@@ -230,7 +241,7 @@ class JavaSourceBackend(CodeBackend):
             if not jar:
                 return [], reason
             return [
-                "java",
+                default_tool("java"),
                 "-jar",
                 jar,
                 "--project-root",

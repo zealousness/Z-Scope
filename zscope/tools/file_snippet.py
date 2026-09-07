@@ -19,7 +19,10 @@ class GetFileSnippetTool(BaseTool):
                 "lines. Do not repeat the same or covered line range; use the prior "
                 "tool result directly. If more context is needed, request one wider "
                 "range instead of several overlapping ranges. A valid end_line returns "
-                "up to 500 lines; an omitted or invalid end_line returns up to 50 lines."
+                "up to 500 lines; an end_line past the end of the file reads to the "
+                "end of the file (up to 500 lines); an omitted or invalid end_line "
+                "returns up to 50 lines. The result reports total_lines and truncated "
+                "so you always know whether the file continues past end_line."
             ),
         )
         self.code_index = code_index
@@ -85,8 +88,10 @@ class GetFileSnippetTool(BaseTool):
                             "type": "integer",
                             "description": (
                                 "Optional inclusive 1-based last line to read. "
-                                "A valid range returns up to 500 lines; "
-                                "an omitted or invalid end_line returns up to 50 lines."
+                                "A valid range returns up to 500 lines; an end_line "
+                                "past the end of the file reads to the end of the "
+                                "file (up to 500 lines); an omitted or invalid "
+                                "end_line returns up to 50 lines."
                             ),
                         },
                     },

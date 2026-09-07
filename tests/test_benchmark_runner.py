@@ -190,6 +190,20 @@ def test_trial_workspace_is_temporary_and_removed(monkeypatch, tmp_path: Path) -
     assert not observed["workspace"].exists()
 
 
+def test_experimental_review_workspace_keeps_bound_dependency_paths(monkeypatch, tmp_path: Path) -> None:
+    work_parent = tmp_path / "work"
+    work_parent.mkdir()
+    monkeypatch.setattr(benchmark_runner, "_benchmark_work_parent", lambda _: work_parent)
+
+    def run(spec, run_dir, run_number, *, mode, workspace, scan_depth):
+        (workspace / ".review-checkpoints-retained.json").write_text("{}", encoding="utf-8")
+        return {"workspace": workspace}
+
+    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", run)
+    result = benchmark_runner._run_trial(SPECS["c_cpp"], tmp_path / "artifact", 1, mode="trial")
+    assert result["workspace"].is_dir()
+
+
 def test_score_exposes_confirmed_and_with_review_views(monkeypatch, tmp_path: Path) -> None:
     report = tmp_path / "report.json"
     truth = tmp_path / "truth.json"

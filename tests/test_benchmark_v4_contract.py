@@ -412,6 +412,57 @@ def test_candidate_funnel_reports_v3_eligibility_entry_and_fact_breakdown() -> N
     assert funnel["canonical_group_attribution"]["transition_counts"]["V1->V3"] == 1
     assert "V1->V2" not in funnel["canonical_group_attribution"]["transition_counts"]
 
+    rung = funnel["canonical_group_attribution"]
+    assert rung["reached_by_rung"]["R1_validator_v1"] == 1
+    assert rung["reached_by_rung"]["R2_v3_reattempt"] == 1
+    assert rung["reached_by_rung"]["R3_v2b_adjudication"] == 0
+    assert rung["confirmed_by_rung"]["R2_v3_reattempt"] == 1
+    assert rung["confirmed_by_rung"]["R1_validator_v1"] == 0
+    assert rung["drop_reason_by_rung"]["R2_v3_reattempt"]
+
+
+def test_candidate_funnel_rung_projection_covers_r1_only_and_r3_marker() -> None:
+    report = {
+        "candidate_terminal_states": [
+            {
+                "validation_cluster_uid": "VAL-R1",
+                "candidate_uid": "CAND-R1",
+                "candidate_disposition": "needs_review",
+                "validation_attempt_count": 1,
+                "issue": {
+                    "attribution": {"decided_by": "unresolved", "decision_level": "V1"},
+                    "validator_pass_history": [{"pass": "initial", "verdict": "uncertain"}],
+                    "stop_reason": "no_evidence_gain",
+                },
+            },
+            {
+                "validation_cluster_uid": "VAL-R3",
+                "candidate_uid": "CAND-R3",
+                "candidate_disposition": "confirmed",
+                "validation_attempt_count": 2,
+                "issue": {
+                    "attribution": {"decided_by": "validator_llm", "decision_level": "V3"},
+                    "validator_v2b_entered": True,
+                    "validator_pass_history": [
+                        {"pass": "initial", "verdict": "uncertain"},
+                        {"pass": "v2b_adjudication", "verdict": "verified"},
+                    ],
+                },
+            },
+        ],
+        "issues": [],
+    }
+
+    funnel = candidate_funnel(report)
+    rung = funnel["canonical_group_attribution"]
+    assert rung["reached_by_rung"] == {
+        "R1_validator_v1": 2,
+        "R2_v3_reattempt": 0,
+        "R3_v2b_adjudication": 1,
+    }
+    assert rung["confirmed_by_rung"]["R3_v2b_adjudication"] == 1
+    assert rung["drop_reason_by_rung"]["R1_validator_v1"]["no_evidence_gain"] == 1
+
 
 def test_validator_replay_bundle_excludes_truth_and_prior_outcomes() -> None:
     report = {

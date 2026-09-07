@@ -1,0 +1,127 @@
+{
+  "schema_version": "zscope.web-assets.v1",
+  "inputs": {
+    "tailwind-cli": {
+      "version": "3.4.17",
+      "url": "https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-linux-x64",
+      "sha256": "7d24f7fa191d2193b78cd5f5a42a6093e14409521908529f42d80b11fde1f1d4",
+      "license": "MIT"
+    },
+    "tailwind.LICENSE": {
+      "version": "3.4.17",
+      "url": "https://raw.githubusercontent.com/tailwindlabs/tailwindcss/v3.4.17/LICENSE",
+      "sha256": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985",
+      "license": "MIT"
+    },
+    "daisyui.css": {
+      "version": "4.4.19",
+      "url": "https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.css",
+      "sha256": "d5514aacaf99f4eca9e73fa6a27d485b3eb76e2f35c6d8f86ed343770269b1b0",
+      "license": "MIT"
+    },
+    "daisyui.LICENSE": {
+      "version": "4.4.19",
+      "url": "https://cdn.jsdelivr.net/npm/daisyui@4.4.19/LICENSE",
+      "sha256": "8709e3ac65c84637c422dc8082b893d9997fce093751c77b2f1983bf29dbf9ea",
+      "license": "MIT"
+    },
+    "alpine.js": {
+      "version": "3.14.9",
+      "url": "https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js",
+      "sha256": "3ed1eed252488921df65e363d6715deb04d7f92aaedb9e52199fdf73cb1e0ad3",
+      "license": "MIT"
+    },
+    "alpine.LICENSE": {
+      "version": "3.14.9",
+      "url": "https://raw.githubusercontent.com/alpinejs/alpine/v3.14.9/LICENSE.md",
+      "sha256": "5f05c4925dd3edf049a70b4b403ac0dd43b20f72501d9359911ddd25d5ac657d",
+      "license": "MIT"
+    },
+    "prism.css": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css",
+      "sha256": "1b15fe2971998a048aebb60f26f6eed76122071db9ef3b995abd003224f52a98",
+      "license": "MIT"
+    },
+    "prism.js": {
+      "version": "1.29.0",
+      "url": "https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js",
+      "sha256": "e7b88bddc6c757b2fc8cb113e2469801ab14a78ec1a8fada4d6391e3573f5f9f",
+      "license": "MIT"
+    },
+    "prism-c.js": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-c.min.js",
+      "sha256": "9e05cf21207bff46afbf80cb8f43bb58bc4a4a87b68f28bc0470342f69345209",
+      "license": "MIT"
+    },
+    "prism.LICENSE": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/LICENSE",
+      "sha256": "2b947f0901a7ffcf08a89957da9783c0e9c6e72cb6ce8e959f501ab5409e4d2b",
+      "license": "MIT"
+    }
+  },
+  "files": {
+    "tailwind.LICENSE": {
+      "version": "3.4.17",
+      "url": "https://raw.githubusercontent.com/tailwindlabs/tailwindcss/v3.4.17/LICENSE",
+      "sha256": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985",
+      "license": "MIT"
+    },
+    "daisyui.css": {
+      "version": "4.4.19",
+      "url": "https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.css",
+      "sha256": "d5514aacaf99f4eca9e73fa6a27d485b3eb76e2f35c6d8f86ed343770269b1b0",
+      "license": "MIT"
+    },
+    "daisyui.LICENSE": {
+      "version": "4.4.19",
+      "url": "https://cdn.jsdelivr.net/npm/daisyui@4.4.19/LICENSE",
+      "sha256": "8709e3ac65c84637c422dc8082b893d9997fce093751c77b2f1983bf29dbf9ea",
+      "license": "MIT"
+    },
+    "alpine.js": {
+      "version": "3.14.9",
+      "url": "https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js",
+      "sha256": "3ed1eed252488921df65e363d6715deb04d7f92aaedb9e52199fdf73cb1e0ad3",
+      "license": "MIT"
+    },
+    "alpine.LICENSE": {
+      "version": "3.14.9",
+      "url": "https://raw.githubusercontent.com/alpinejs/alpine/v3.14.9/LICENSE.md",
+      "sha256": "5f05c4925dd3edf049a70b4b403ac0dd43b20f72501d9359911ddd25d5ac657d",
+      "license": "MIT"
+    },
+    "prism.css": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css",
+      "sha256": "1b15fe2971998a048aebb60f26f6eed76122071db9ef3b995abd003224f52a98",
+      "license": "MIT"
+    },
+    "prism.js": {
+      "version": "1.29.0",
+      "url": "https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js",
+      "sha256": "e7b88bddc6c757b2fc8cb113e2469801ab14a78ec1a8fada4d6391e3573f5f9f",
+      "license": "MIT"
+    },
+    "prism-c.js": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-c.min.js",
+      "sha256": "9e05cf21207bff46afbf80cb8f43bb58bc4a4a87b68f28bc0470342f69345209",
+      "license": "MIT"
+    },
+    "prism.LICENSE": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/LICENSE",
+      "sha256": "2b947f0901a7ffcf08a89957da9783c0e9c6e72cb6ce8e959f501ab5409e4d2b",
+      "license": "MIT"
+    },
+    "tailwind.css": {
+      "version": "3.4.17",
+      "generated_from": "tailwind-cli",
+      "license": "MIT",
+      "sha256": "ef25aaa28b00d1bbb1a4cccc467a138e7624cf1a71721b817c30e50ed06a0cce"
+    }
+  }
+}

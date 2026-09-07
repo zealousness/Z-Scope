@@ -12,6 +12,10 @@ sources:
   - zscope/benchmarking/replay_provider.py
   - zscope/benchmarking/validator_replay.py
   - zscope/benchmarking/validator_experiment.py
+  - zscope/benchmarking/review_experiment.py
+  - scripts/replay_review_experiment.py
+  - scripts/score_review_experiment.py
+  - scripts/pilot_review_claims.py
   - zscope/benchmarking/discovery_ablation.py
   - zscope/benchmarking/discovery_ablation_experiment.py
   - zscope/cli/benchmark.py
@@ -19,6 +23,7 @@ sources:
   - scripts/evaluate_range_regression.py
   - scripts/aggregate_range_release_runs.py
   - scripts/check_benchmark_hygiene.py
+  - scripts/portable_release.py
   - scripts/evaluate_release_candidate.py
   - scripts/run_validator_replay.py
   - scripts/describe_validator_replay_provider.py
@@ -29,7 +34,9 @@ sources:
   - docs/range-benchmark.md
   - test/range/benchmark/check_entry_coverage.py
 tests:
+  - tests/test_portable_release.py
   - tests/test_benchmark_protocol.py
+  - tests/test_review_experiment_protocol.py
   - tests/test_benchmark_leakage.py
   - tests/test_benchmark_runner.py
   - tests/test_range_benchmark_regression.py
@@ -55,7 +62,8 @@ tests:
 
 ## 主入口和数据流
 
-- `zscope/benchmarking/protocol.py` 提供 `zscope.benchmark.v4` 单次评分、候选生命周期漏斗、发现/决策二维归因和成本指标；旧 schema 仅作只读兼容。
+- `zscope/benchmarking/protocol.py` 提供 `zscope.benchmark.v4` 单次评分、候选生命周期漏斗、发现/决策二维归因和成本指标；旧 schema 仅作只读兼容。漏斗的 `canonical_group_attribution` 同时投影验证升级阶梯：`reached_by_rung`/`confirmed_by_rung`/`drop_reason_by_rung`（R1=R1_validator_v1、R2=R2_v3_reattempt、R3=R3_v2b_adjudication，R3 臂交付前恒 0）。
+- 验证级 rung 实验（R2/R3/τ）用 answer-free replay 臂离线差分：`scripts/replay_tau_channel.py`（τ 扫描，谓词与 pipeline 逐项对齐）与 `scripts/run_validator_replay.py`/`scripts/score_validator_replay_experiment.py`；扫描级 rung 累积差分用 `scripts/rung_attribution.py`（输入多份 run artifact 输出 TP_added/FP_added/tokens 差分表）。
 - `zscope-benchmark` 是内置 fixture 的唯一公开入口；`smoke`、`trial`、`formal` 分别承担离线结构门禁、单轮预览和至少五轮的发布门禁。
 - `scripts/external_benchmark.py` 是外部 suite 和 Range JSON 报告的标准评测入口。public external formal 当前只接受 `full_zscope_pipeline`，通过 `RootlessOciExecutor` 实际执行 scanner、采集 inspect evidence 并在容器退出后由 host scorer 读 truth；静态 `oci_capability` 不能形成 formal 结果。
 - `scripts/evaluate_range_regression.py` 评估确定性候选的 Range 覆盖。
@@ -72,6 +80,10 @@ tests:
 - `zscope/benchmarking/runner.py` 在 WSL 原生临时文件系统运行 C/C++ scan/state，再导出 artifact；它分别记录 scan wall 与 end-to-end wall、验证队列/API call telemetry、双质量视图、命令哈希、Git tree、输入文件清单和 provenance。正式 Release 按 workflow run ID 下载不可变 artifact，并由 `scripts/evaluate_release_candidate.py` 校验 SHA、输入清单、truth 隔离和门禁。仓库归档只用于历史基线。
 
 ## 必须保持的不变量
+
+- Review 实验 checkpoint 保存完整事实、构建依赖、前序 ValidatorResult 和原始工具结果；拒绝 truth、评分和离线标签字段。报告投影只允许 compiler pilot 诊断，缺少精确前序结果或失效依赖时不得当作可恢复 replay。
+- `replay_review_experiment.py` 在 Linux/WSL 中按冻结 RC 清单恢复，使用真实 ValidationRunner 的最终分流与关联 Ledger；baseline、protocol、facts、neutral、positive、related 各组独立运行。neutral 与 positive 使用相同工具、模型、迭代预算，只有 V3 任务目标不同。输出写在独立实验目录，正式 unified 协议、答案隔离和成本要求保持不变。
+- 独立审计分类为 true_defect、provable_fp、duplicate、out_of_scope、unknown，审计文件以内容哈希冻结，不能以未匹配 truth 推导 FP。`compare_paired_replays` 需要五个独立配对、每轮 truth 集合不退化、confirmed FP 不增加、全部原候选可追踪，以及自动拒绝可重新检查。新增关联 FP 纳入 review 总量，任何未知审计项或缺失正式 truth 集合都不得给出达标结论。
 
 - 扫描上下文与评分答案严格隔离；benchmark leakage 测试必须持续通过。
 - replay bundle 必须把同一 canonical cluster 的 alias occurrences、evidence 和 facts 做顺序无关的 union，并绑定 candidate/occurrence/entry/evidence/facts 的内容哈希；初始 facts 与 frozen reservoir 必须分区且无 record/UID 重叠。执行时还必须由调用方提供预期 bundle SHA，防止攻击者修改内容后自行重算内部哈希。
@@ -126,9 +138,17 @@ python scripts/evaluate_range_regression.py --deterministic-candidates
 
 完整 LLM/unified 扫描需要有效模型配置和 Linux 工具链，不应作为普通单元测试自动启动。
 
+Review 实验由 `replay_review_experiment.py` 读取无答案的完整检查点；`score_review_experiment.py` 在回放输出冻结后独立读取审计和 truth，复用官方评分并重放拒绝证明。五轮必须属于同一 arm、拥有不同 pair ID，并绑定相同输入、模型、调查限额和审计摘要。所有 unknown 审计项仍阻止验收通过；未匹配 truth 不能推断为 FP。
+
+开启 review RuntimeSpec 的 trial 会保留原生 Linux 工作目录，并在产物目录写 `review-workspace.json`，确保绝对依赖路径可重放；源码归档仍只复制密封输入。失败或中断也保留已产生的检查点。默认 trial 继续清理临时目录。此实验能力尚未取得正式资格，formal 入口拒绝这些开关，既有发布门禁不变。
+
 ## 权威源码和关联文档
 
 - 稳定入口见本文 frontmatter 的 `sources`。
 - Range 执行、隔离和评分协议以 `docs/range-benchmark.md` 为准。
 - 外部 suite 协议见 `docs/progress_docs/external_benchmark_protocol.md`。
 - 历史结果只从当次 run 目录和 release 报告读取，不复制到本模块说明。
+
+## Portable 发行验证
+
+`scripts/portable_release.py` 负责四个语言/架构发行件，`scripts/portable/abi.py` 分开审计运行 ELF、当前架构的 JAR 原生资源和编译 sysroot。manifest v2 校验要求四包、哈希、逐包 SPDX 与实际离线 smoke；正式发布另要求干净源码、匹配 tag 和签名，旧 v1 资产校验继续兼容。兼容性 smoke 使用普通用户、只读发布目录和断网容器，ARM 证据注明 QEMU。该证据验证发行可用性，不替代本模块的正式 benchmark、源码隔离和受保护 attestation 门禁。具体命令统一维护在根 `AGENTS.md`。

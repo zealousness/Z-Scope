@@ -45,3 +45,6 @@ context_policy: Verify only the alert-relevant code path, then fetch callees or 
 
 verdict 取值: confirmed / rejected / uncertain
 severity_adjustment: 为空表示不调整，否则为建议的新严重级别
+
+【语言要求】
+`reasoning` 与 `missing_context` 中所有面向用户的说明文字必须使用简体中文；文件路径、函数名、符号与证据编号保持原样。

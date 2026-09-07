@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "14"
+    SCHEMA_VERSION = "15"
     SUPPORTS_DEFERRED_TU_COMMITS = True
     DERIVED_INDEX_SYMBOL_CONTEXT = "function_symbol_context"
     DERIVED_INDEX_TYPE_REFS = "function_type_refs"
@@ -438,6 +438,25 @@ class KnowledgeDB:
                 ON function_type_refs(type_id);
             CREATE INDEX IF NOT EXISTS idx_function_type_refs_name
                 ON function_type_refs(referenced_name);
+
+            CREATE TABLE IF NOT EXISTS function_type_ref_state (
+                function_id INTEGER PRIMARY KEY,
+                identity TEXT NOT NULL,
+                context TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                start_line INTEGER NOT NULL,
+                generation TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempt TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                retry_after REAL NOT NULL DEFAULT 0,
+                FOREIGN KEY(function_id) REFERENCES functions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_type_ref_pending
+                ON function_type_ref_state(generation, status, file_path, start_line, function_id);
+            CREATE INDEX IF NOT EXISTS idx_type_ref_retry
+                ON function_type_ref_state(generation, status, retry_after);
 
             CREATE TABLE IF NOT EXISTS include_edges (
                 id          INTEGER PRIMARY KEY,
@@ -1008,6 +1027,11 @@ class KnowledgeDB:
             if batch_active:
                 self._thread_local.tu_facts_batch_derived_dirty = True
         deleted_svf_rows = 0
+        self._conn.execute(
+            "DELETE FROM function_type_ref_state WHERE function_id IN "
+            "(SELECT id FROM functions WHERE tu_id = ?)",
+            (tu_id,),
+        )
         self._conn.execute(
             "DELETE FROM function_type_refs WHERE function_id IN "
             "(SELECT id FROM functions WHERE tu_id = ?)",
@@ -1601,6 +1625,9 @@ class KnowledgeDB:
             dict.fromkeys(self._canonical_derived_index_name(name) for name in requested_names)
         )
         with self._derived_index_lock:
+            if self.DERIVED_INDEX_TYPE_REFS in canonical_names and self.get_metadata("clang_type_refs_generation"):
+                import uuid
+                self._set_metadata_uncommitted("clang_type_refs_generation", uuid.uuid4().hex)
             for canonical in canonical_names:
                 previous = self.get_derived_index_state(canonical)
                 self._write_derived_index_state_uncommitted(

@@ -10,7 +10,6 @@ from ...common.issue_identity import canonical_issue_key, parse_issue_location
 from ...memory import ReviewMemory
 from .proofs import deterministic_decision_proof
 
-
 FALSE_POSITIVE_BASELINE_STATUSES = {"false_positive", "suppressed"}
 TRUE_POSITIVE_BASELINE_STATUSES = {"accepted", "verified", "true_positive"}
 VALIDATOR_DETAIL_FIELDS = (
@@ -52,6 +51,219 @@ LOCATION_STRING_FIELDS = (
     "target_location",
 )
 
+# Plan Phase 3.1: needs_review presentation sub-states.  They refine the
+# user-facing review bucket without changing scoring attribution.
+NEEDS_REVIEW_SUB_STATES = {
+    "model_uncertain",
+    "model_rejected_unproven",
+    "policy_pending_promotion",
+}
+
+
+def needs_review_sub_state(issue: Any) -> str:
+    """Classify a needs_review item into one of the plan's three sub-states.
+
+    - ``model_rejected_unproven``: the model rejected the finding, but the
+      rejection never became a deterministic proof (evidence completion did
+      not supply the decisive fact), so the shipped disposition stays
+      needs_review.
+    - ``policy_pending_promotion``: the obligation is complete and no
+      negative evidence contradicts the finding; it qualifies for a policy
+      promotion channel (e.g. the high-confidence band) that is currently
+      disabled or awaiting rollout.
+    - ``model_uncertain``: the model could not decide and evidence remains
+      missing.
+
+    Anything else (verified-unproven, evidence conflicts, pre-validation
+    holds) returns an empty sub-state on purpose.
+    """
+
+    issue_dict = issue if isinstance(issue, dict) else {}
+    disposition = str(issue_dict.get("candidate_disposition") or "").lower()
+    status = str(issue_dict.get("validation_status") or "").lower()
+    if disposition != "needs_review" and status != "needs_review":
+        return ""
+    verdict = str(issue_dict.get("validator_verdict") or "").lower()
+    if verdict == "rejected":
+        return "model_rejected_unproven"
+    if verdict == "uncertain":
+        if not issue_dict.get("missing_fact_kinds") and not _has_negative_evidence(issue_dict):
+            return "policy_pending_promotion"
+        return "model_uncertain"
+    return ""
+
+
+def _has_negative_evidence(issue: Dict[str, Any]) -> bool:
+    if issue.get("blocking_negative_evidence") is True:
+        return True
+    return bool(issue.get("negative_evidence"))
+
+
+def _score_text(score_data: Dict[str, Any], key: str) -> str:
+    try:
+        return f"{float(score_data.get(key, 0.0) or 0.0):.2f}"
+    except (TypeError, ValueError):
+        return "0.00"
+
+
+def _confirmed_evidence_gap_texts(
+    issue: Dict[str, Any],
+    score_data: Dict[str, Any],
+    val_data: Dict[str, Any],
+) -> List[str]:
+    """List the unmet automatic-promotion criteria for a ``verified`` verdict.
+
+    Mirrors ``_has_confirmed_evidence`` so the report can say exactly which
+    promotion tier condition failed instead of a generic "not promoted".
+    """
+
+    gaps: List[str] = []
+    final_score = _score_text(score_data, "final_score")
+    path = _score_text(score_data, "path_completeness")
+    contract = _score_text(score_data, "contract_consistency")
+    validator_conf = _score_text(score_data, "validation_confidence")
+    negative = val_data.get("negative_evidence")
+    has_negative = (
+        bool(negative) if isinstance(negative, list) else bool(str(negative or "").strip())
+    )
+    if float(score_data.get("final_score", 0.0) or 0.0) < 0.60:
+        gaps.append(f"综合评分 {final_score} 低于自动确认线 0.60")
+    if float(score_data.get("path_completeness", 0.0) or 0.0) < 0.75:
+        gaps.append(f"路径完整度 {path} 低于 0.75")
+    if float(score_data.get("contract_consistency", 0.0) or 0.0) < 0.55:
+        gaps.append(f"调用契约一致度 {contract} 低于 0.55")
+    if float(score_data.get("validation_confidence", 0.0) or 0.0) < 0.80:
+        gaps.append(f"模型验证置信度 {validator_conf} 低于 0.80")
+    if has_negative:
+        gaps.append("存在未关闭的负面证据")
+    context_version = str(issue.get("decision_context_version") or "")
+    if context_version in {
+        "zscope.decision-context.v3.1",
+        "zscope.decision-context.v3.2",
+        "zscope.decision-context.v3.3",
+    }:
+        fact_slice = issue.get("decision_fact_slice")
+        if not isinstance(fact_slice, dict) or not (fact_slice.get("fact_uids") or []):
+            gaps.append("缺少可审计的确定性决策事实切片")
+        coverage = str(issue.get("decision_fact_coverage") or "")
+        if coverage not in {"complete", "partial"}:
+            gaps.append("决策事实覆盖率不足")
+        blocking = val_data.get("blocking_negative_evidence")
+        if not isinstance(blocking, bool):
+            gaps.append("模型未给出阻断性负面证据的明确结论")
+        if issue.get("source") in (None, "", {}, []) or issue.get("sink") in (None, "", {}, []):
+            gaps.append("缺少明确的 source/sink 定位")
+    if not gaps:
+        gaps.append("未满足完整证据层级要求")
+    return gaps
+
+
+def _uncertain_promotion_gap_texts(
+    issue: Dict[str, Any],
+    val_data: Dict[str, Any],
+    final_score: float,
+    threshold: Optional[float],
+) -> List[str]:
+    """List the unmet high-confidence-band conditions for an ``uncertain`` verdict."""
+
+    gaps: List[str] = []
+    if threshold is None:
+        gaps.append("高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）")
+    else:
+        confidence = val_data.get("confidence_score", issue.get("confidence", 0.5))
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = -1.0
+        if confidence < threshold:
+            gaps.append(
+                f"模型置信度 {confidence:.2f} 低于自动确认阈值 {threshold:.2f}"
+            )
+    if final_score < 0.6:
+        gaps.append(f"综合评分 {final_score:.2f} 低于 0.60")
+    missing = issue.get("missing_fact_kinds")
+    if isinstance(missing, list) and missing:
+        gaps.append("仍缺少关键决策事实：" + "、".join(str(kind) for kind in missing))
+    if issue.get("blocking_negative_evidence") is True:
+        gaps.append("存在阻断性负面证据")
+    elif issue.get("negative_evidence"):
+        count = len(issue["negative_evidence"]) if isinstance(issue["negative_evidence"], list) else 1
+        gaps.append(f"存在 {count} 条未关闭的负面证据")
+    if not gaps:
+        gaps.append("未满足自动确认条件")
+    return gaps
+
+
+def promotion_review_reason(
+    issue: Dict[str, Any],
+    *,
+    kind: str,
+    final_score: float = 0.0,
+    val_data: Optional[Dict[str, Any]] = None,
+    uncertain_confirm_threshold: Optional[float] = None,
+    score_data: Optional[Dict[str, Any]] = None,
+    corrected_category: str = "",
+) -> str:
+    """Build the user-facing Chinese explanation of why a candidate stayed
+    ``needs_review`` instead of being promoted to ``validated``.
+
+    The text is derived deterministically from the same policy data the
+    promotion branches evaluate, so it always matches the real decision.
+    """
+
+    val_data = val_data if isinstance(val_data, dict) else {}
+    score_data = score_data if isinstance(score_data, dict) else {}
+    if kind == "evidence_conflict":
+        return (
+            "完整的确定性确认证明与拒绝证明同时成立并相互冲突，无法自动裁决为"
+            "确认或拒绝；需要人工复核后再定论。"
+        )
+    if kind == "verified_unpromoted":
+        gaps = _confirmed_evidence_gap_texts(issue, score_data, val_data)
+        return (
+            "模型判定为 verified，但未满足自动确认（晋级 validated）的证据标准："
+            + "；".join(gaps)
+            + "。因此保留待人工复核，而不是自动确认为真实缺陷。"
+        )
+    if kind == "uncertain_unpromoted":
+        gaps = _uncertain_promotion_gap_texts(
+            issue, val_data, final_score, uncertain_confirm_threshold
+        )
+        return (
+            "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件："
+            + "；".join(gaps)
+            + "。因此保留待人工复核。"
+        )
+    if kind == "rejected_unproven":
+        return (
+            "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、"
+            "所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，"
+            "保留待人工复核。"
+        )
+    if kind == "structural_rejection_review":
+        return (
+            "该候选为结构性风险且具有具体代码证据，模型否决仅基于当前调用方可控性，"
+            "并未证明沉没点本身安全；按策略保留待人工复核，而不是跟随模型否决。"
+        )
+    if kind == "corrected_category_review":
+        category = corrected_category or str(issue.get("category") or "")
+        confidence = val_data.get("confidence_score", issue.get("confidence", 0.5))
+        try:
+            confidence_text = f"{float(confidence):.2f}"
+        except (TypeError, ValueError):
+            confidence_text = "未知"
+        return (
+            f"模型否决了原类别，但在同一代码证据上识别出具体的 `{category}` 问题；"
+            f"自动确认还需模型置信度与综合评分达标（当前置信度 {confidence_text}、"
+            f"综合评分 {final_score:.2f}）。因此保留待人工复核。"
+        )
+    if kind == "unvalidated":
+        return (
+            "Validator 未启用：候选未经模型验证，缺少自动确认所需的验证结论与"
+            "置信度；保留待人工复核。"
+        )
+    return "该候选未满足自动确认（晋级 validated）的策略条件，保留待人工复核。"
+
 
 @dataclass
 class PreValidationDecision:
@@ -91,6 +303,7 @@ class ValidationPipeline:
         ] = None,
         *,
         enable_deterministic_proof_routing: bool = True,
+        uncertain_confirm_threshold: Optional[float] = None,
     ):
         self.user_config = user_config
         self.review_memory = (
@@ -101,6 +314,12 @@ class ValidationPipeline:
         # Validator JSON is untrusted and cannot self-attest a contradiction.
         self.deterministic_proof_verifier = deterministic_proof_verifier
         self.enable_deterministic_proof_routing = bool(enable_deterministic_proof_routing)
+        # Escalation rung R3 pilot knob (balanced_confirmed_tp_plan.md Phase 2).
+        # None keeps the shipped behavior: uncertain verdicts never confirm.
+        # When set, an uncertain verdict at or above the threshold confirms
+        # only when the security obligation has no missing facts and no
+        # negative evidence is on record.
+        self.uncertain_confirm_threshold = uncertain_confirm_threshold
 
     def suppression_category(self, issue: Dict[str, Any]) -> str:
         return str(
@@ -196,9 +415,8 @@ class ValidationPipeline:
                     "deterministic_prevalidation_decision": "shadow_observation",
                     "rollout_shadow_evidence_outcome": shadow_outcome,
                     "validation_reasoning": (
-                        "Candidate was evaluated during semantic/discovery shadow rollout; "
-                        "its proof result is retained as telemetry and cannot enter the "
-                        "default finding view."
+                        "该候选在语义/发现影子灰度期间完成评估；其证明结果仅作为遥测保留，"
+                        "不会进入默认发现视图。"
                     ),
                 }
             )
@@ -217,9 +435,11 @@ class ValidationPipeline:
                     "finding_kind": "needs_review",
                     "evidence_conflict": True,
                     "deterministic_prevalidation_decision": "evidence_conflict",
+                    "promotion_review_reason": promotion_review_reason(
+                        issue, kind="evidence_conflict"
+                    ),
                     "validation_reasoning": (
-                        "Conflicting complete deterministic confirmation and rejection proofs "
-                        "require human review."
+                        "完整的确定性确认证明与拒绝证明相互冲突，需要人工复核。"
                     ),
                 }
             )
@@ -284,7 +504,7 @@ class ValidationPipeline:
         reason = str(
             issue.get("audit_observation_reason")
             or evidence_pack.get("audit_observation_reason")
-            or "static validation gate"
+            or "静态验证门控"
         )
         finding_kind = str(issue.get("finding_kind") or "").strip().lower()
         if finding_kind == "audit_observation" or reason:
@@ -389,8 +609,7 @@ class ValidationPipeline:
             final_score = self._final_score(score_data)
             issue["final_score"] = final_score
             issue["validation_reasoning"] = (
-                "Shadow discovery candidate was retained without promotion because "
-                "Validator was disabled."
+                "Validator 已被禁用，影子发现候选仅保留记录而未晋级。"
             )
             return ValidationOutcome(
                 report_bucket=None,
@@ -400,6 +619,8 @@ class ValidationPipeline:
         issue["validation_status"] = "needs_review"
         issue["candidate_disposition"] = "needs_review"
         issue.setdefault("finding_kind", "needs_review")
+        issue["needs_review_sub_state"] = needs_review_sub_state(issue)
+        issue["promotion_review_reason"] = promotion_review_reason(issue, kind="unvalidated")
         issue["score_components"] = score_data
         final_score = self._final_score(score_data)
         issue["final_score"] = final_score
@@ -408,6 +629,41 @@ class ValidationPipeline:
             verdict="needs_review",
             final_score=final_score,
         )
+
+    def _high_confidence_uncertain_confirms(
+        self,
+        issue: Dict[str, Any],
+        val_data: Dict[str, Any],
+        final_score: float,
+    ) -> bool:
+        """Return True when the R3 ``high_confidence_band`` rung may confirm.
+
+        Enabled only via ``validation_uncertain_confirm_threshold``.  A model
+        ``uncertain`` verdict confirms solely when its confidence clears the
+        threshold, the security obligation has no missing decision facts, and
+        no negative evidence contradicts the finding.  Any doubt keeps the
+        shipped needs_review disposition.
+        """
+
+        threshold = self.uncertain_confirm_threshold
+        if threshold is None:
+            return False
+        if final_score < 0.6:
+            return False
+        confidence = val_data.get("confidence_score", issue.get("confidence", 0.5))
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            return False
+        if confidence < threshold:
+            return False
+        if issue.get("missing_fact_kinds"):
+            return False
+        if issue.get("blocking_negative_evidence") is True:
+            return False
+        if issue.get("negative_evidence"):
+            return False
+        return True
 
     def apply_validator_result(
         self,
@@ -461,14 +717,41 @@ class ValidationPipeline:
         # A proof is an explicit, reproducible decision authority.  Conflicting
         # complete proofs must be visible for review rather than silently
         # following a model verdict or whichever branch happened to run first.
+        review_reason = str(issue.get("review_disposition_reason") or "")
+        review_forced = review_reason in {
+            "rejection_refuted_unconfirmed",
+            "positive_case_incomplete",
+            "invalid_review_envelope",
+            # M1: a replay escalation that started from ``uncertain`` and ended
+            # ``verified`` is held for review instead of auto-confirming.
+            "uncertain_confirm_hold",
+        }
+        conditional = issue.get("analysis_scope") == "conditional_source_branch"
+        model_proof_conflict = bool(rejection_proof and verdict == "verified" and issue.get("review_adjudication"))
+        if conditional or review_forced or model_proof_conflict:
+            issue["validation_status"] = "needs_review"
+            issue["candidate_disposition"] = "needs_review"
+            issue["finding_kind"] = "needs_review"
+            issue["evidence_conflict"] = model_proof_conflict
+            issue["needs_review_sub_state"] = needs_review_sub_state(issue)
+            issue["review_disposition_reason"] = (
+                "conditional_build_facts_required" if conditional else
+                "positive_negative_evidence_conflict" if model_proof_conflict else review_reason
+            )
+            issue["validation_reasoning"] = val_data.get("reasoning")
+            return ValidationOutcome(report_bucket="observations", memory_status="needs_review",
+                                     verdict="needs_review", final_score=final_score)
         if confirmation_proof is not None and rejection_proof is not None:
             issue["validation_status"] = "needs_review"
             issue["candidate_disposition"] = "needs_review"
             issue["finding_kind"] = "needs_review"
             issue["evidence_conflict"] = True
+            issue["needs_review_sub_state"] = needs_review_sub_state(issue)
+            issue["promotion_review_reason"] = promotion_review_reason(
+                issue, kind="evidence_conflict"
+            )
             issue["validation_reasoning"] = (
-                "Conflicting complete deterministic confirmation and rejection proofs "
-                "require human review."
+                "完整的确定性确认证明与拒绝证明相互冲突，无法自动裁决，需要人工复核。"
             )
             return ValidationOutcome(
                 report_bucket="observations",
@@ -528,6 +811,14 @@ class ValidationPipeline:
                 issue["validation_status"] = "needs_review"
                 issue["candidate_disposition"] = "needs_review"
                 issue["finding_kind"] = "needs_review"
+                issue["needs_review_sub_state"] = needs_review_sub_state(issue)
+                issue["promotion_review_reason"] = promotion_review_reason(
+                    issue,
+                    kind="verified_unpromoted",
+                    final_score=final_score,
+                    val_data=val_data,
+                    score_data=score_data,
+                )
                 report_bucket = "observations"
 
             issue["validation_reasoning"] = val_data.get("reasoning")
@@ -548,6 +839,14 @@ class ValidationPipeline:
             issue["validation_status"] = "needs_review"
             issue["candidate_disposition"] = "needs_review"
             issue["finding_kind"] = "needs_review"
+            issue["needs_review_sub_state"] = needs_review_sub_state(issue)
+            issue["promotion_review_reason"] = promotion_review_reason(
+                issue,
+                kind="verified_unpromoted",
+                final_score=final_score,
+                val_data=val_data,
+                score_data=score_data,
+            )
             issue["validation_reasoning"] = val_data.get("reasoning")
             preserve_issue_location(issue, val_data)
             return ValidationOutcome(
@@ -558,12 +857,33 @@ class ValidationPipeline:
             )
 
         if verdict == "uncertain":
+            issue["validation_reasoning"] = val_data.get("reasoning")
+            self._copy_validator_detail_fields(issue, val_data)
+            if self._high_confidence_uncertain_confirms(issue, val_data, final_score):
+                issue["validation_status"] = "validated"
+                issue["candidate_disposition"] = "confirmed"
+                issue["finding_kind"] = val_data.get("finding_kind") or "verified_vulnerability"
+                issue["promotion_reason"] = "model_high_confidence_confirmation"
+                issue["confirmed_via"] = "high_confidence_band"
+                preserve_issue_location(issue, val_data)
+                return ValidationOutcome(
+                    report_bucket="issues",
+                    memory_status="validated",
+                    verdict=verdict,
+                    final_score=final_score,
+                )
             issue["validation_status"] = "needs_review"
             issue["candidate_disposition"] = "needs_review"
             issue["finding_kind"] = "needs_review"
+            issue["needs_review_sub_state"] = needs_review_sub_state(issue)
+            issue["promotion_review_reason"] = promotion_review_reason(
+                issue,
+                kind="uncertain_unpromoted",
+                final_score=final_score,
+                val_data=val_data,
+                uncertain_confirm_threshold=self.uncertain_confirm_threshold,
+            )
             memory_status = "needs_review"
-            issue["validation_reasoning"] = val_data.get("reasoning")
-            self._copy_validator_detail_fields(issue, val_data)
             preserve_issue_location(issue, val_data)
             return ValidationOutcome(
                 report_bucket="observations",
@@ -593,9 +913,8 @@ class ValidationPipeline:
                 issue["cwe"] = _CWE_BY_CORRECTED_CATEGORY[corrected_category]
             issue["validator_verdict"] = "corrected"
             issue["validation_reasoning"] = (
-                "Validator rejected the original category but identified a concrete "
-                f"`{corrected_category}` on the same code evidence. Original validator reasoning: "
-                f"{str(val_data.get('reasoning') or '').strip()}"
+                f"模型否决了原类别，但在同一代码证据上识别出具体的 `{corrected_category}` 问题。"
+                f"模型原始推理：{str(val_data.get('reasoning') or '').strip()}"
             ).strip()
             issue["confidence"] = val_data.get(
                 "confidence_score",
@@ -615,6 +934,15 @@ class ValidationPipeline:
             issue["finding_kind"] = (
                 "verified_vulnerability" if corrected_status == "validated" else "needs_review"
             )
+            if corrected_status == "needs_review":
+                issue["needs_review_sub_state"] = needs_review_sub_state(issue)
+                issue["promotion_review_reason"] = promotion_review_reason(
+                    issue,
+                    kind="corrected_category_review",
+                    final_score=final_score,
+                    val_data=val_data,
+                    corrected_category=corrected_category,
+                )
             return ValidationOutcome(
                 report_bucket="issues" if corrected_status == "validated" else "observations",
                 memory_status=corrected_status,
@@ -627,11 +955,14 @@ class ValidationPipeline:
             issue["validation_status"] = "needs_review"
             issue["candidate_disposition"] = "needs_review"
             issue["finding_kind"] = "needs_review"
+            issue["needs_review_sub_state"] = needs_review_sub_state(issue)
             issue["rejection_source"] = "validator_structural_review"
+            issue["promotion_review_reason"] = promotion_review_reason(
+                issue, kind="structural_rejection_review"
+            )
             issue["validation_reasoning"] = (
-                "Validator rejected this structural-risk candidate, but the candidate has "
-                "concrete code evidence and the rejection is based on current controllability "
-                f"rather than proof that the sink is safe. Original validator reasoning: {original_reason}"
+                "该候选为结构性风险且具有具体代码证据，模型否决仅基于当前调用方可控性，"
+                f"并未证明沉没点本身安全。模型原始推理：{original_reason}"
             ).strip()
             self._copy_validator_detail_fields(issue, val_data)
             preserve_issue_location(issue, val_data)
@@ -662,10 +993,14 @@ class ValidationPipeline:
         issue["validation_status"] = "needs_review"
         issue["candidate_disposition"] = "needs_review"
         issue["finding_kind"] = "needs_review"
+        issue["needs_review_sub_state"] = needs_review_sub_state(issue)
         issue["rejection_source"] = "validator_without_deterministic_proof"
+        issue["promotion_review_reason"] = promotion_review_reason(
+            issue, kind="rejected_unproven"
+        )
         issue["validation_reasoning"] = (
-            "Validator proposed rejection without a deterministic contradiction; "
-            "the candidate remains reviewable. " + str(val_data.get("reasoning") or "")
+            "模型否决该候选但未给出确定性反驳证明，候选保留待人工复核。"
+            + str(val_data.get("reasoning") or "")
         ).strip()
         preserve_issue_location(issue, val_data)
         return ValidationOutcome(
@@ -1235,9 +1570,7 @@ class ValidationPipeline:
         resolved = {
             str(value)
             for value in (
-                (closure.get("resolved_fact_kinds") or [])
-                if isinstance(closure, dict)
-                else []
+                (closure.get("resolved_fact_kinds") or []) if isinstance(closure, dict) else []
             )
             if str(value)
         }
@@ -1273,9 +1606,7 @@ class ValidationPipeline:
         resolved = {
             str(value)
             for value in (
-                (closure.get("resolved_fact_kinds") or [])
-                if isinstance(closure, dict)
-                else []
+                (closure.get("resolved_fact_kinds") or []) if isinstance(closure, dict) else []
             )
             if str(value)
         }

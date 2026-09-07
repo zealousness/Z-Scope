@@ -574,6 +574,43 @@ class CandidateLedger:
         self.project_root = str(project_root or "")
         self.revision = str(revision or "")
         self._frozen = False
+        self._review_appendices: List["CandidateLedger"] = []
+
+    def attach_review_appendix(self, ledger: "CandidateLedger") -> None:
+        """Attach a separately frozen discovery generation without reopening this ledger."""
+        if ledger is self or ledger._review_appendices or not ledger._frozen:
+            raise ValueError("review appendix must be frozen and exactly one generation")
+        with self._lock:
+            if ledger not in self._review_appendices:
+                self._review_appendices.append(ledger)
+
+    def restore_review_candidate(self, issue: Dict[str, Any]) -> None:
+        """Restore a driver-verified checkpoint without recomputing identity.
+
+        Restoration is distinct from registering a newly discovered candidate:
+        the original UID/cluster and evidence hashes bind the prior result.
+        """
+        if not issue.get("candidate_uid") or not issue.get("validation_cluster_uid"):
+            raise ValueError("review restoration requires frozen candidate and cluster identities")
+        evidence = deepcopy(issue.get("evidence_pack") or {})
+        for key in ("candidate_uid", "validation_cluster_uid", "obligation_uid", "evidence_hash",
+                    "decision_evidence_hash", "context_signature", "history_key", "defect_class",
+                    "decision_context_version", "source", "sink"):
+            if issue.get(key) is not None:
+                evidence[key] = deepcopy(issue[key])
+        evidence["candidate_payload"] = {key: deepcopy(value) for key, value in issue.items()
+                                         if key not in {"evidence_pack", "review_validation_evidence", "review_function_context"}}
+        ticket = SubAgentTicket(id=str(issue.get("id") or issue["candidate_uid"]),
+                                skill=str(issue.get("skill") or issue.get("category") or "security_review"),
+                                task=str(issue.get("description") or "Review candidate"),
+                                trigger=str(issue.get("rule_id") or issue.get("category") or ""),
+                                context_slice=str(issue.get("review_function_context") or issue.get("code_snippet") or ""),
+                                line=CandidateRegistrar._line_number(issue),
+                                source=str(issue.get("candidate_source") or "review_checkpoint"),
+                                origin=str(issue.get("source") or ""), sink=str(issue.get("sink") or ""),
+                                evidence=evidence)
+        self.add(ticket, source=ticket.source, record_role="validation_obligation",
+                 entry_identity=str(issue.get("entry_identity") or issue.get("function") or ""))
 
     def add(
         self,
@@ -914,13 +951,25 @@ class CandidateLedger:
                 if outcome is not None:
                     outcomes.append(outcome)
             outcomes.sort(key=lambda item: item.validation_cluster_uid)
-            return {
+            result: Dict[str, Any] = {
                 "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
                 "entry_identity": entry_identity,
                 "records": projected,
                 "outcomes": [item.to_dict() for item in outcomes],
                 "summary": self._summary_unlocked(),
             }
+            for appendix in self._review_appendices:
+                extra = appendix.lifecycle_snapshot(entry_identity=entry_identity, include_triage=include_triage)
+                result["records"].extend(extra["records"])
+                result["outcomes"].extend(extra["outcomes"])
+                result["summary"]["review_appendix_count"] = int(result["summary"].get("review_appendix_count", 0)) + len(extra["records"])
+                for key in ("total", "validation_group_count", "triage_lead_count", "raw_occurrence_count", "nonterminal_validation_count", "duplicates_merged"):
+                    result["summary"][key] += extra["summary"][key]
+                for key in ("by_status", "by_disposition", "triage_by_status"):
+                    for status, count in extra["summary"][key].items():
+                        result["summary"][key][status] = result["summary"][key].get(status, 0) + count
+                result["summary"]["incomplete"] |= extra["summary"]["incomplete"]
+            return result
 
     def freeze(self) -> Dict[str, Any]:
         """Seal candidate discovery and return the final atomic snapshot."""
@@ -939,7 +988,7 @@ class CandidateLedger:
 
     def summary(self) -> Dict[str, Any]:
         with self._lock:
-            return self._summary_unlocked()
+            return self.lifecycle_snapshot()["summary"] if self._review_appendices else self._summary_unlocked()
 
     def _summary_unlocked(self) -> Dict[str, Any]:
         counts: Dict[str, int] = {}

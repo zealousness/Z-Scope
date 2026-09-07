@@ -865,7 +865,7 @@ class LLMClient:
             pass
         try:
             retry_at = parsedate_to_datetime(retry_after)
-            return max(0.0, retry_at.timestamp() - time.time())
+            return max(0.0, float(retry_at.timestamp() - time.time()))
         except (TypeError, ValueError, OverflowError):
             return None
 
@@ -1858,6 +1858,7 @@ class LLMClient:
         reasoning_pieces: List[str] = []
         tool_calls_map: Dict[Any, Dict[str, Any]] = {}
         finish_reason = "stop"
+        saw_finish_reason = False
         provider_usage: Dict[str, Any] = {}
 
         # A stream that continues to yield valid provider chunks is healthy.
@@ -1900,6 +1901,28 @@ class LLMClient:
 
             if choice.get("finish_reason"):
                 finish_reason = choice["finish_reason"]
+                saw_finish_reason = True
+
+        if not saw_finish_reason:
+            if not content_pieces and not tool_calls_map and not reasoning_pieces:
+                # A stream that delivers no content, no tool call, and no
+                # finish_reason chunk ended before the provider framed a
+                # complete response (proxy/provider truncation).  Surface it
+                # as a chunked-encoding failure so the caller's retry and
+                # endpoint-cooldown path treats it like any broken stream
+                # instead of silently returning an empty "stop" response.
+                raise requests.exceptions.ChunkedEncodingError(
+                    "Chat completion stream ended without any content, reasoning, "
+                    "tool calls, or a finish_reason chunk (stream truncated)."
+                )
+            logger.warning(
+                "Chat completion stream ended without a finish_reason chunk; "
+                "treating %d content chars, %d reasoning chars, and %d tool "
+                "calls as a complete response.",
+                sum(len(piece) for piece in content_pieces),
+                sum(len(piece) for piece in reasoning_pieces),
+                len(tool_calls_map),
+            )
 
         assembled_message: Dict[str, Any] = {"role": "assistant"}
         if content_pieces:
@@ -2001,29 +2024,46 @@ class LLMClient:
                 content_chunks.append(msg.get("content", ""))
         return "".join(content_chunks)
 
-    @staticmethod
-    def estimate_tokens(conversation: List[Dict[str, Any]]) -> int:
+    # Code points whose characters tokenize at roughly one token per 1-1.5
+    # characters on mainstream BPE tokenizers, versus ~3.8 chars/token for
+    # ASCII-heavy text.  CJK is counted separately so the estimate does not
+    # silently undercount context size for Chinese-heavy prompts.
+    _CJK_TOKEN_CHARS_PER_TOKEN = 1.5
+    _ASCII_TOKEN_CHARS_PER_TOKEN = 3.8
+    _CJK_CHAR_RE = re.compile(
+        "[\u3000-\u303f\u3040-\u30ff\u3130-\u318f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]"
+    )
+
+    @classmethod
+    def estimate_tokens(cls, conversation: List[Dict[str, Any]]) -> int:
         """Estimate the total token count of a conversation.
 
-        Uses a simple heuristic: ~3.5 chars per token for CJK-heavy text,
-        ~4 chars per token for ASCII. This avoids a tiktoken dependency.
+        Uses a simple heuristic: ~1.5 chars per token for CJK characters and
+        ~3.8 chars per token for the rest. This avoids a tiktoken dependency.
         """
-        total_chars = 0
+        cjk_chars = 0
+        other_chars = 0
         for msg in conversation:
             content = msg.get("content") or ""
             if isinstance(content, str):
-                total_chars += len(content)
+                cjk_chars += len(cls._CJK_CHAR_RE.findall(content))
+                other_chars += len(content)
             # Count tool call arguments as part of the context
             for tc in msg.get("tool_calls", []):
                 args = tc.get("function", {}).get("arguments", "")
                 if isinstance(args, str):
-                    total_chars += len(args)
+                    cjk_chars += len(cls._CJK_CHAR_RE.findall(args))
+                    other_chars += len(args)
             # Count reasoning_content if present (e.g. DeepSeek R1)
             rc = msg.get("reasoning_content") or ""
             if isinstance(rc, str):
-                total_chars += len(rc)
-        # Heuristic: average 3.8 chars per token for mixed CJK/ASCII codebases
-        return int(total_chars / 3.8)
+                cjk_chars += len(cls._CJK_CHAR_RE.findall(rc))
+                other_chars += len(rc)
+        other_chars -= cjk_chars
+        estimate = cjk_chars / cls._CJK_TOKEN_CHARS_PER_TOKEN + (
+            other_chars / cls._ASCII_TOKEN_CHARS_PER_TOKEN
+        )
+        return int(estimate)
 
     def _prepare_messages_for_model(
         self,
@@ -3082,7 +3122,10 @@ class LLMClient:
                         {
                             "role": "tool",
                             "tool_call_id": tool_id,
-                            "content": json.dumps(result, ensure_ascii=False),
+                            # default=str keeps a single non-JSON-native value
+                            # (bytes, set, Path) from discarding the whole tool
+                            # result and replacing it with an error message.
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
                         }
                     )
                     tool_call_history.setdefault(signature, []).append(
@@ -3222,7 +3265,12 @@ class LLMClient:
             terminal_valid=terminal_tool_valid,
         )
         result_payload = {
-            "content": conversation[-1].get("content", "") if not message.get("tool_calls") else "",
+            # The loop can exit with a trailing user message ("请继续" length
+            # continuation, loop-guard notice, final-iteration instruction),
+            # so the last conversation entry is not the model's answer.  Use
+            # the same combined-assistant-content projection as the normal
+            # completion paths instead of leaking the prompt text as content.
+            "content": self._get_combined_content(conversation),
             "conversation": conversation,
             "iterations": iterations,
             "truncated": iterations >= max_iterations,

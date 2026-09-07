@@ -40,8 +40,8 @@ from zscope.framework.llm_usage import (
     USAGE_ATTRIBUTION_SCHEMA_VERSION,
     USAGE_EVENT_SCHEMA_VERSION,
     canonical_usage_stage,
+    escalation_rung_for_call_kind,
 )
-
 
 FORMAL_SCHEMA_VERSION = DEFAULT_BENCHMARK_POLICY.formal_schema_version
 MIN_FORMAL_RUNS = DEFAULT_BENCHMARK_POLICY.minimum_formal_trials
@@ -439,12 +439,34 @@ def _require_llm_environment() -> None:
         raise BenchmarkError("missing required benchmark environment: " + ", ".join(missing))
 
 
+def _fixture_c_compiler() -> Optional[str]:
+    """Pin the fixture build to the fact compiler when Clang is available.
+
+    Checked proofs bind facts to the recorded compile driver; building the
+    fixture with the same Clang keeps that binding satisfiable.  Returns None
+    when Clang is absent so the build falls back and checked proofs
+    auto-disable downstream (CompleteFactStore.driver_bound).
+    """
+    return shutil.which("clang")
+
+
 def _build_fixture(spec: BenchmarkSpec, scan_root: Path, run_dir: Path) -> float:
     if spec.language == "c_cpp":
         build = scan_root / "build"
         started = time.monotonic()
+        configure_argv = [
+            "cmake",
+            "-S",
+            str(scan_root),
+            "-B",
+            str(build),
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        ]
+        fact_clang = _fixture_c_compiler()
+        if fact_clang:
+            configure_argv.append(f"-DCMAKE_C_COMPILER={fact_clang}")
         _run_command(
-            ["cmake", "-S", str(scan_root), "-B", str(build), "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
+            configure_argv,
             cwd=repository_root(),
             environment=_benchmark_environment(),
             log_path=run_dir / "configure.log",
@@ -918,6 +940,7 @@ _USAGE_EVENT_FIELDS = frozenset(
         "tool_call_count",
         "new_fact_count",
         "duration_ms",
+        "escalation_rung",
     }
 )
 _USAGE_ATTRIBUTION_FIELDS = frozenset(
@@ -951,6 +974,7 @@ _USAGE_EVENT_STRING_FIELDS = frozenset(
         "model",
         "reason",
         "finish_reason",
+        "escalation_rung",
     }
 )
 _USAGE_EVENT_BOOLEAN_FIELDS = frozenset(
@@ -1122,6 +1146,13 @@ def _read_usage_events_jsonl(path: Path) -> List[Dict[str, Any]]:
             ) from exc
         if not isinstance(raw, dict):
             raise BenchmarkError(f"LLM usage event line {line_number} is not an object")
+        # Compatibility shim: archives written before escalation-rung
+        # observability (balanced_confirmed_tp_plan.md Phase 5) lack the
+        # field.  Backfill it from call_kind so historical artifacts stay
+        # readable for replay and marginal attribution; fresh producers must
+        # still emit the field explicitly.
+        if "escalation_rung" not in raw:
+            raw["escalation_rung"] = escalation_rung_for_call_kind(raw.get("call_kind"))
         sequence = _validate_usage_event_v1(raw, line_number=line_number)
         call_id = raw["call_id"]
         if call_id in call_ids:
@@ -1292,6 +1323,21 @@ def _run_trial_in_workspace(
     config_path = run_dir / "zscope.execution.yaml"
     _write_execution_config(spec, execution_root, config_path, scan_depth=scan_depth)
     effective = _validate_config(config_path, smoke=False)
+    review_experiment = any(bool(getattr(effective.analysis, name, False)) for name in (
+        "validation_review_checkpoint", "validation_review_protocol", "validation_checked_proofs",
+        "validation_positive_case", "validation_related_findings",
+    ))
+    if review_experiment and mode == "formal":
+        raise BenchmarkError("review experiment capabilities are not qualified for formal runs")
+    if review_experiment:
+        # Absolute compiler dependencies must remain replayable after trial.
+        # The retained workspace contains only scanner inputs and outputs;
+        # independent scoring still runs outside it.
+        retained = {"schema_version": "zscope.review-workspace.v1", "workspace": str(workspace),
+                    "source": str(execution_root), "snapshot_dir": str(effective.analysis.snapshot_dir),
+                    "reason": "retain original dependency paths for review checkpoint replay"}
+        _json_dump(workspace / ".review-checkpoints-retained.json", retained)
+        _json_dump(run_dir / "review-workspace.json", retained)
     environment = _benchmark_environment()
     environment["Z_SCOPE_BENCHMARK_LANGUAGE"] = spec.language
     environment["Z_SCOPE_BENCHMARK_SOURCE"] = str(execution_root)
@@ -1350,6 +1396,9 @@ def _run_trial_in_workspace(
                     "/zscope-cache/project/build",
                     "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
                 ]
+                fact_clang = shutil.which("clang")
+                if fact_clang:
+                    configure_argv.append(f"-DCMAKE_C_COMPILER={fact_clang}")
                 executor.execute_phase(
                     "build-configure", configure_argv, log_path=run_dir / "configure.log"
                 )
@@ -1486,9 +1535,12 @@ def _run_trial_in_workspace(
         if generated_entries.is_symlink():
             raise BenchmarkError("generated entry manifest must not be a symbolic link")
         shutil.copy2(generated_entries, run_dir / "entry_functions_list.json")
-    restore_scan_input(scan_root, input_manifest)
     archived_scan_root = run_dir / "scan-input"
-    shutil.copytree(scan_root, archived_scan_root)
+    if review_experiment:
+        copy_scan_input(scan_root, archived_scan_root, spec.language)
+    else:
+        restore_scan_input(scan_root, input_manifest)
+        shutil.copytree(scan_root, archived_scan_root)
     if scan_input_manifest(archived_scan_root) != input_manifest:
         raise BenchmarkError("archived scan input does not match the sealed input manifest")
     truth_environment = dict(environment)
@@ -1539,6 +1591,9 @@ def _run_trial_in_workspace(
     _json_dump(score_path, score)
     gate_failures = _gate_c(score, scan_depth=scan_depth) if spec.language == "c_cpp" else []
     sealed_failures = _gate_c_sealed(score) if spec.language == "c_cpp" else []
+    if review_experiment:
+        gate_failures.append("review experiment requires independent audit and paired qualification")
+        sealed_failures.append("review experiment is not release eligible")
     report = _load_json_object(report_path)
     report_ablation = _as_dict(_as_dict(report.get("metadata")).get("benchmark_ablation"))
     if report_ablation:
@@ -1597,7 +1652,8 @@ def _run_trial_in_workspace(
             "score_argv": [python, "-m", "zscope.cli.benchmark", "_score"],
         },
         "workspace": {
-            "temporary": True,
+            "temporary": not review_experiment,
+            "retained_for_review": review_experiment,
             "storage_class": _workspace_storage_class(workspace),
             "artifact_exported": True,
         },
@@ -1645,7 +1701,8 @@ def _run_trial(
             scan_depth=scan_depth,
         )
     finally:
-        shutil.rmtree(workspace, ignore_errors=True)
+        if not (workspace / ".review-checkpoints-retained.json").is_file():
+            shutil.rmtree(workspace, ignore_errors=True)
 
 
 def _git_identity() -> Tuple[str, str]:
@@ -1886,7 +1943,9 @@ def _default_output(language: str, mode: str) -> Path:
     return repository_root() / "benchmark-artifacts" / language / mode / stamp
 
 
-def benchmark_plan(language: str, mode: str, runs: int, *, scan_depth: str = "fast") -> Dict[str, Any]:
+def benchmark_plan(
+    language: str, mode: str, runs: int, *, scan_depth: str = "fast"
+) -> Dict[str, Any]:
     spec = SPECS[language]
     isolation = oci_capability(
         runtime=os.environ.get("Z_SCOPE_BENCHMARK_OCI_RUNTIME", ""),
@@ -1991,9 +2050,7 @@ def run_benchmark(
     for index in range(1, run_count + 1):
         run_dir = destination / f"run-{index:02d}"
         run_dir.mkdir()
-        summaries.append(
-            _run_trial(spec, run_dir, index, mode=mode, scan_depth=scan_depth)
-        )
+        summaries.append(_run_trial(spec, run_dir, index, mode=mode, scan_depth=scan_depth))
     aggregate = _aggregate(spec, summaries, mode, scan_depth=scan_depth)
     if mode == "trial":
         aggregate["release_eligible"] = False

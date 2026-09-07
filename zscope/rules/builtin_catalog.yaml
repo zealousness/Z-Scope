@@ -821,7 +821,7 @@ rules:
   cwe: CWE-667
   skill: concurrency_lock_order
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: Callback While Lock Held
   summary: Built-in cpp_regex detector for held lock callback.
@@ -1106,7 +1106,7 @@ rules:
   cwe: CWE-195
   skill: bounds_and_integer
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: Negative Length Cast To Size T
   summary: Built-in cpp_regex detector for signed unsigned.
@@ -1166,7 +1166,7 @@ rules:
   cwe: CWE-457
   skill: bounds_and_integer
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: Partial Struct Sent
   summary: Built-in cpp_regex detector for uninitialized read.
@@ -1241,7 +1241,7 @@ rules:
   cwe: CWE-667
   skill: concurrency_lock_order
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: Return While Lock Held
   summary: Built-in cpp_regex detector for missing unlock.
@@ -1562,7 +1562,7 @@ rules:
   cwe: CWE-667
   skill: concurrency_lock_order
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: Callback While Lock Held
   summary: Built-in cpp_clang_cfg detector for held lock callback.
@@ -1658,7 +1658,7 @@ rules:
   cwe: CWE-672
   skill: resource_lifecycle
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: Fd Closed Without Owner Invalidation
   summary: Built-in cpp_clang_cfg detector for stale fd.
@@ -1674,7 +1674,7 @@ rules:
   cwe: CWE-775
   skill: resource_lifecycle
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: Fd Open Return Without Close
   summary: Built-in cpp_clang_cfg detector for fd leak.
@@ -1978,7 +1978,7 @@ rules:
   cwe: CWE-195
   skill: bounds_and_integer
   default_severity: high
-  revision: 1
+  revision: 2
   status: stable
   title: Negative Length Cast To Size T
   summary: Built-in cpp_clang_cfg detector for signed unsigned.

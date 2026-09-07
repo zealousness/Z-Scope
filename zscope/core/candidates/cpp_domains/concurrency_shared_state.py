@@ -163,8 +163,7 @@ class RegexConcurrencySharedStateRules:
             if self._unlock_re.search(line.text) and held:
                 held.pop()
 
-    @staticmethod
-    def _callback_like_call(text: str) -> str:
+    def _callback_like_call(self, text: str) -> str:
         pointer_call = re.search(r"\(\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*\)\s*\(", text)
         if pointer_call:
             name = pointer_call.group("name")
@@ -180,6 +179,9 @@ class RegexConcurrencySharedStateRules:
         leaf = name.split("->")[-1].split(".")[-1]
         if leaf in {"if", "for", "while", "switch", "return", "sizeof"}:
             return ""
+        registrar_names = set(getattr(self, "_callback_registrar_names", set()) or set())
+        if leaf in registrar_names:
+            return name
         if re.search(r"(?:callback|cb|handler|hook|pfn|^on_|^on[A-Z])", leaf, re.I):
             return name
         return ""
@@ -2186,9 +2188,12 @@ class ClangConcurrencySharedStateRules:
     ) -> None:
         if not held_locks:
             return
-        if not re.search(
+        callback_shape = re.search(
             r"\b[A-Za-z_]\w*(?:callback|cb|handler)[A-Za-z_0-9]*\s*\(", line.text, re.IGNORECASE
-        ):
+        )
+        registrar_call = getattr(self, "_callback_registrar_call_re", None)
+        registrar_hit = bool(registrar_call and registrar_call.search(line.text))
+        if not callback_shape and not registrar_hit:
             return
         lock_line = held_locks[-1]
         self._emit(

@@ -99,6 +99,7 @@ from ..validation.evidence import (
 )
 from ...semantics.inference import (
     LocalPatternSemanticBuilder,
+    classify_api_name,
 )
 from ...semantics.user_config_context import relevant_user_config_context
 from ...snapshots.policy import (
@@ -115,7 +116,6 @@ from ...framework.llm_usage import (
 )
 from ...agents.semantic_modeler.agent import SemanticModeler
 from ...agents.semantic_modeler.retry import run_semantic_model_with_retries
-from ...agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from ...wiki.service import ProjectKnowledgeService
 from ...wiki.source_index import SourceIndex
 from ...wiki.source_manifest import build_source_manifest
@@ -146,7 +146,7 @@ from ...common.issue_identity import (
 from ...reporting.assembler import ReportAssembler
 from ...common.cancellation import CancellationToken, bind_cancellation_token
 from ...orchestration.workflow_runner import WorkflowRunner
-from ...common.utils import extract_json_blocks, validate_json_schema
+from ...common.utils import extract_json_blocks
 from ..._version import __version__
 from ...orchestration.specs import SpecRegistry, WorkflowStep
 from ...orchestration.workflow_executor import WorkflowExecutor, WorkflowStepHandler
@@ -314,6 +314,9 @@ class Analyzer:
         self.validation_pipeline = ValidationPipeline(
             self.user_config,
             enable_deterministic_proof_routing=True,
+            uncertain_confirm_threshold=getattr(
+                config.analysis, "validation_uncertain_confirm_threshold", None
+            ),
         )
         self.candidate_pipeline = CandidatePipeline(
             local_detector=self._detect_local_rule_candidates,
@@ -324,6 +327,19 @@ class Analyzer:
             candidate_persister=self._persist_candidate_ir_records,
         )
         self._owns_llm_clients = llm_clients is None
+        self._interface_probe_used = 0
+        # M6 6.1 visibility: per-run interface-probe accounting so the A/B
+        # pilot can attribute scan-side effects of the custom-interface
+        # change directly instead of degenerating to a pure diff.
+        self._interface_probe_stats: Dict[str, Any] = {
+            "probed": 0,
+            "classified": 0,
+            "declined": 0,
+            "skipped_budget": 0,
+            "skipped_known_role": 0,
+            "roles": {},
+            "classified_functions": [],
+        }
         self.validation_result_cache = validation_result_cache
         self.llm_clients: Dict[str, LLMClient]
         if llm_clients is not None:
@@ -626,8 +642,7 @@ class Analyzer:
                     ),
                 )
                 compiler_workers = int(
-                    getattr(getattr(config, "concurrency", None), "wiki_compiler_workers", 4)
-                    or 4
+                    getattr(getattr(config, "concurrency", None), "wiki_compiler_workers", 4) or 4
                 )
                 compiler = WikiCompiler(max_workers=compiler_workers)
                 if (
@@ -1321,260 +1336,6 @@ class Analyzer:
             reason="stable_candidate_first_lifecycle",
         )
         return
-
-        va_agent_cfg = next(
-            (
-                a
-                for a in self.config.project.agents
-                if a.enabled and a.name == "vulnerability_analyzer"
-            ),
-            None,
-        )
-        if not va_agent_cfg:
-            return
-        if not self._should_spawn_subagents(va_agent_cfg):
-            state["notes"].append(
-                "Focused investigator planning skipped; deep workers are disabled "
-                "for the default deterministic-discovery/validation flow."
-            )
-            return
-
-        va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
-        va_client = self.llm_clients.get(va_llm_ref, self.llm_clients.get("default"))
-        selection = self._select_vulnerability_skills_for_config(va_agent_cfg, va_client)
-        tools = self._get_tools(
-            "deep_worker",
-            enable_on_demand_snapshots=False,
-            active_skill_names=selection.skills,
-        )
-        orchestrator = SubAgentOrchestrator(
-            self.spec_registry,
-            tools,
-            scheduler=getattr(self, "scheduler", None),
-        )
-        ledger = state.get("candidate_ledger")
-        if not isinstance(ledger, CandidateLedger):
-            ledger = CandidateLedger(
-                project_id=str(
-                    getattr(self.config.project, "project_id", "")
-                    or self.config.project.project_root.name
-                ),
-                project_root=str(self.config.project.project_root),
-                revision=self._git_commit_sha(self.config.project.project_root),
-            )
-            state["candidate_ledger"] = ledger
-
-        local_records = []
-        source_candidates = orchestrator.plan_candidates(
-            state["entry_func"],
-            state["agent_context"]["code"],
-            allowed_skills=selection.skills,
-        )
-        for ticket in source_candidates:
-            record, _ = ledger.add(
-                ticket,
-                source=f"source_rule:{state['entry_func']}",
-                call_path=[state["entry_func"]],
-            )
-            local_records.append(record)
-        collection_budget = self._refresh_effective_budget(state, "subagent_collect")
-        snapshot_candidate_count = self._add_snapshot_candidates_to_ledger(
-            ledger,
-            orchestrator,
-            state["entry_index_name"],
-            selection.skills,
-            local_records,
-            max_depth=collection_budget.premodel_depth,
-            max_callees=collection_budget.premodel_callees,
-        )
-        local_rule_tickets = self._detect_local_rule_tickets(state, selection.skills)
-        for ticket in local_rule_tickets:
-            record, _ = ledger.add(
-                ticket,
-                source=f"local_rule:{state['entry_func']}",
-                call_path=[state["entry_func"]],
-            )
-            local_records.append(record)
-        graph_tickets = self._detect_graph_rule_tickets(state, selection.skills)
-        for ticket in graph_tickets:
-            record, _ = ledger.add(
-                ticket,
-                source=f"graph_rule:{state['entry_func']}",
-                call_path=[state["entry_func"]],
-            )
-            local_records.append(record)
-        backend_tickets = self._detect_backend_signal_tickets(state, selection.skills)
-        for ticket in backend_tickets:
-            record, _ = ledger.add(
-                ticket,
-                source=f"static_backend_signal:{state['entry_func']}",
-                call_path=[state["entry_func"]],
-            )
-            local_records.append(record)
-
-        seen_local_keys = set()
-        candidates = []
-        for record in local_records:
-            if record.dedup_key in seen_local_keys or record.status != "pending":
-                continue
-            seen_local_keys.add(record.dedup_key)
-            candidates.append(record.to_ticket())
-        planning_budget = self._refresh_effective_budget(
-            state,
-            "subagent_planning",
-            subagent_candidates=candidates,
-        )
-        investigator_candidates = [
-            ticket for ticket in candidates if self._is_high_risk_conflicting_ticket(ticket)
-        ]
-        proposed_tickets = orchestrator.select_tickets(
-            investigator_candidates,
-            planning_budget.subagent_tickets,
-        )
-        unassigned = orchestrator.unassigned_candidates(
-            investigator_candidates,
-            proposed_tickets,
-        )
-        ledger.mark_unassigned(unassigned)
-        tickets = ledger.claim_pending(proposed_tickets)
-
-        candidate_plan = [record.to_dict(include_context=False) for record in ledger.records()]
-        ticket_plan = [ticket.to_dict() for ticket in tickets]
-        unassigned_plan = [ticket.to_dict() for ticket in unassigned]
-        ledger_context = ledger.to_context()
-        ledger_summary = ledger.summary()
-
-        state["subagent_candidates"] = candidate_plan
-        state["agent_context"]["subagent_candidates"] = candidate_plan
-        state["subagent_unassigned_candidates"] = unassigned_plan
-        state["agent_context"]["subagent_unassigned_candidates"] = unassigned_plan
-        state["candidate_ledger_context"] = ledger_context
-        state["agent_context"]["candidate_ledger"] = ledger_context
-        state["candidate_ledger_summary"] = ledger_summary
-        state["agent_context"]["candidate_ledger_summary"] = ledger_summary
-        state["agent_context"]["active_skills"] = selection.skills
-        state["agent_context"]["skill_selection_restricted"] = selection.restricted
-
-        if not tickets:
-            if candidates:
-                state["notes"].append(
-                    f"Found {len(candidates)} focused subagent candidate(s), but ticket budget is 0."
-                )
-            else:
-                state["notes"].append(
-                    "Focused subagent planning produced no candidates "
-                    f"for active skills: {', '.join(selection.skills) or 'none'}."
-                )
-                logger.info(
-                    "Focused subagent planning produced no candidates for %s "
-                    "(active skills: %s).",
-                    state["entry_func"],
-                    ", ".join(selection.skills) or "none",
-                )
-            return
-
-        state["subagent_ticket_plan"] = ticket_plan
-        state["agent_context"]["subagent_plan"] = ticket_plan
-        state["notes"].append(
-            f"Planned {len(tickets)} focused subagent ticket(s) from {len(candidates)} "
-            f"pending candidate(s); merged {ledger_summary.get('duplicates_merged', 0)} "
-            f"duplicate candidate source(s), including {snapshot_candidate_count} "
-            f"semantic snapshot candidate(s) and {len(local_rule_tickets)} "
-            f"local rule candidate(s), {len(graph_tickets)} graph/protocol "
-            f"candidate(s), plus {len(backend_tickets)} backend signal candidate(s)."
-        )
-        if unassigned:
-            state["notes"].append(
-                f"Deferred {len(unassigned)} subagent candidate(s) due to ticket budget."
-            )
-
-        va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
-        va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
-        va_agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
-        max_worker_cap = (
-            int(va_agent_spec.max_subagents or len(tickets)) if va_agent_spec else len(tickets)
-        )
-        max_workers = max(
-            1,
-            min(
-                len(tickets),
-                self.config.concurrency.investigator_workers,
-                max_worker_cap,
-            ),
-        )
-        subagent_max_turns = int(getattr(self.config.analysis, "subagent_max_turns", 20) or 20)
-        max_turns = max(1, min(int(self.config.analysis.max_tool_iterations), subagent_max_turns))
-        skill_llm_refs = dict(getattr(self.config.analysis, "subagent_skill_llm_refs", {}) or {})
-        skill_efforts = dict(getattr(self.config.analysis, "subagent_skill_efforts", {}) or {})
-
-        def llm_client_for_ticket(ticket: Any) -> LLMClient:
-            ref = self._subagent_llm_ref_for_ticket(ticket, skill_llm_refs, va_llm_ref)
-            return self.llm_clients.get(ref, va_client)
-
-        def execution_policy_for_ticket(ticket: Any) -> Dict[str, Any]:
-            ref = self._subagent_llm_ref_for_ticket(ticket, skill_llm_refs, va_llm_ref)
-            client = self.llm_clients.get(ref, va_client)
-            models = getattr(client, "models", []) or []
-            return {
-                "llm_ref": ref,
-                "model": str(models[0]) if models else "",
-                "reasoning_effort": str(
-                    skill_efforts.get(getattr(ticket, "skill", "")) or skill_efforts.get("*") or ""
-                ),
-            }
-
-        reports = orchestrator.run_tickets(
-            va_client,
-            tickets,
-            max_iterations=max_turns,
-            tool_policy=self._tool_policy_for_agent(
-                "deep_worker",
-                active_skill_names=selection.skills,
-            ),
-            max_workers=max_workers,
-            ticket_timeout=float(
-                getattr(self.config.analysis, "subagent_ticket_timeout", 0.0) or 0.0
-            ),
-            budget_exhaustion_policy=str(
-                getattr(
-                    self.config.analysis,
-                    "budget_exhaustion_policy",
-                    "observe",
-                )
-                or "observe"
-            ),
-            agent_type="deep_worker",
-            spawn_allowlist=list(
-                getattr(self.config.analysis, "subagent_spawn_allowlist", ["deep_worker"])
-                or ["deep_worker"]
-            ),
-            nested_spawn_allowed=False,
-            llm_client_resolver=llm_client_for_ticket,
-            execution_policy_resolver=execution_policy_for_ticket,
-            worktree_isolation={"mode": "read_only", "snapshot_writes": False},
-        )
-        ledger.mark_reported(reports)
-        report_summary = orchestrator.summarize_reports(reports)
-        state["subagent_reports"] = reports
-        state["agent_context"]["subagent_reports"] = reports
-        state["subagent_report_summary"] = report_summary
-        state["agent_context"]["subagent_report_summary"] = report_summary
-        state["candidate_ledger_context"] = ledger.to_context()
-        state["agent_context"]["candidate_ledger"] = state["candidate_ledger_context"]
-        state["candidate_ledger_summary"] = ledger.summary()
-        state["agent_context"]["candidate_ledger_summary"] = state["candidate_ledger_summary"]
-        state["total_context_tokens"] += sum(
-            int(report.get("metadata", {}).get("context_tokens", 0) or 0) for report in reports
-        )
-        for report in reports:
-            self._accumulate_cumulative_token_metadata(
-                state,
-                report.get("metadata", {}) if isinstance(report.get("metadata"), dict) else {},
-            )
-        state["notes"].append(
-            "Executed focused subagent ticket(s): "
-            + ", ".join(f"{key}={value}" for key, value in report_summary.items())
-        )
 
     def _add_snapshot_candidates_to_ledger(
         self,
@@ -5691,6 +5452,18 @@ class Analyzer:
             "llm_usage": llm_usage,
             "engine_capabilities": engine_capabilities,
             "wiki_telemetry": wiki_telemetry,
+            "interface_probe": {
+                "probed": int(self._interface_probe_stats["probed"]),
+                "classified": int(self._interface_probe_stats["classified"]),
+                "declined": int(self._interface_probe_stats["declined"]),
+                "skipped_budget": int(self._interface_probe_stats["skipped_budget"]),
+                "skipped_known_role": int(self._interface_probe_stats["skipped_known_role"]),
+                "skipped_external": int(self._interface_probe_stats.get("skipped_external", 0)),
+                "skipped_no_client": int(self._interface_probe_stats.get("skipped_no_client", 0)),
+                "errors": int(self._interface_probe_stats.get("errors", 0)),
+                "roles": dict(sorted(self._interface_probe_stats["roles"].items())),
+                "classified_functions": list(self._interface_probe_stats["classified_functions"]),
+            },
             "version": __version__,
             "knowledge_db_version": self._knowledge_db_version(),
             "snapshot_schema_version": "semantic_snapshot_v1",
@@ -6643,6 +6416,9 @@ class Analyzer:
 
             if self._is_lightweight_snapshot_candidate(context["func_name"], context):
                 snapshot = self._build_lightweight_snapshot(context["func_name"], context)
+                snapshot = self._maybe_inject_interface_role(
+                    context["func_name"], snapshot, context
+                )
                 self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
                 success = True
                 return {
@@ -6767,6 +6543,105 @@ class Analyzer:
     @staticmethod
     def _build_lightweight_snapshot(func_name: str, impl: Dict[str, Any]) -> Dict[str, Any]:
         return build_lightweight_snapshot(func_name, impl)
+
+    def _maybe_inject_interface_role(
+        self,
+        func_name: str,
+        snapshot: Dict[str, Any],
+        impl: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """LLM-classify an unknown lightweight wrapper and stamp its role.
+
+        The stamped ``role`` field is consumed by
+        ``semantics_from_snapshots`` (this scan and future ones), so the cost
+        is paid once per function and the result feeds rule-facing semantics.
+        """
+
+        analysis_cfg = self.config.analysis
+        if not bool(getattr(analysis_cfg, "llm_interface_inference", True)):
+            return snapshot
+        if snapshot.get("role") or classify_api_name(func_name):
+            self._interface_probe_stats["skipped_known_role"] = (
+                int(self._interface_probe_stats["skipped_known_role"]) + 1
+            )
+            return snapshot
+        budget = int(getattr(analysis_cfg, "llm_interface_inference_budget", 50) or 0)
+        if budget <= 0 or self._interface_probe_used >= budget:
+            self._interface_probe_stats["skipped_budget"] = (
+                int(self._interface_probe_stats["skipped_budget"]) + 1
+            )
+            return snapshot
+        if self.user_config.get_external_function(func_name):
+            self._interface_probe_stats["skipped_external"] = (
+                int(self._interface_probe_stats.get("skipped_external", 0)) + 1
+            )
+            return snapshot
+        llm_client = self._scan_role_llm_client("analysis")
+        if llm_client is None:
+            self._interface_probe_stats["skipped_no_client"] = (
+                int(self._interface_probe_stats.get("skipped_no_client", 0)) + 1
+            )
+            return snapshot
+
+        from ...orchestration.user_config_inference import (
+            classify_single_interface_with_llm,
+        )
+
+        try:
+            decision = classify_single_interface_with_llm(
+                llm_client,
+                func_name,
+                {
+                    "file": str(impl.get("file") or ""),
+                    "signature": str(impl.get("signature") or ""),
+                    "code_excerpt": str(impl.get("code") or ""),
+                },
+            )
+        except Exception as exc:
+            logger.debug(
+                "[interface-probe] LLM classification failed for '%s': %s",
+                func_name,
+                exc,
+            )
+            self._interface_probe_stats["errors"] = (
+                int(self._interface_probe_stats.get("errors", 0)) + 1
+            )
+            return snapshot
+        self._interface_probe_used += 1
+        self._interface_probe_stats["probed"] = int(self._interface_probe_stats["probed"]) + 1
+        if not decision:
+            # Mark as probed so later scans do not re-ask for a function the
+            # model already declined to classify.
+            snapshot["role"] = ""
+            snapshot["role_source"] = "llm_interface_probe"
+            self._interface_probe_stats["declined"] = (
+                int(self._interface_probe_stats["declined"]) + 1
+            )
+            return snapshot
+        snapshot["role"] = str(decision.get("kind") or "")
+        snapshot["role_confidence"] = float(decision.get("confidence") or 0.0)
+        snapshot["role_source"] = "llm_interface_probe"
+        role = str(decision.get("kind") or "unknown")
+        roles = self._interface_probe_stats["roles"]
+        roles[role] = int(roles.get(role, 0)) + 1
+        if len(self._interface_probe_stats["classified_functions"]) < 64:
+            self._interface_probe_stats["classified_functions"].append(
+                {
+                    "function": func_name,
+                    "role": role,
+                    "confidence": snapshot["role_confidence"],
+                }
+            )
+        self._interface_probe_stats["classified"] = (
+            int(self._interface_probe_stats["classified"]) + 1
+        )
+        logger.info(
+            "[interface-probe] classified '%s' as '%s' (confidence %.2f)",
+            func_name,
+            snapshot["role"],
+            snapshot["role_confidence"],
+        )
+        return snapshot
 
     def _premodel_callees(
         self,
@@ -7066,6 +6941,9 @@ class Analyzer:
                 if self._is_lightweight_snapshot_candidate(func, context):
                     logger.info(f"[premodel] Auto-summarizing lightweight helper '{func}'")
                     snapshot = self._build_lightweight_snapshot(context["func_name"], context)
+                    snapshot = self._maybe_inject_interface_role(
+                        context["func_name"], snapshot, context
+                    )
                     self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
                     success = True
                     modeled += 1
@@ -7389,8 +7267,6 @@ class Analyzer:
         """
         Extract JSON block from text using robust utility.
         """
-        from ...common.utils import extract_json_blocks
-
         candidates = extract_json_blocks(text)
 
         for data in candidates:
@@ -7407,8 +7283,6 @@ class Analyzer:
             else:
                 # If no hint, return the first dictionary found
                 return data
-
-        return None
 
         return None
 

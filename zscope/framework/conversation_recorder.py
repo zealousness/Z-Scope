@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
+from .llm_usage import LLMUsageAttribution, escalation_rung_for_call_kind
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +91,11 @@ class _ReasoningPolicy:
 
 
 def _parse_reasoning_policy(raw: Optional[str] = None) -> _ReasoningPolicy:
-    value = str(
-        raw if raw is not None else os.environ.get("Z_SCOPE_CONVERSATION_REASONING", "")
-    ).strip().lower()
+    value = (
+        str(raw if raw is not None else os.environ.get("Z_SCOPE_CONVERSATION_REASONING", ""))
+        .strip()
+        .lower()
+    )
     if not value or value in {"0", "off", "false", "none", "no"}:
         return _ReasoningPolicy(mode="off")
     if value in {"1", "full", "true", "yes", "all"}:
@@ -120,6 +123,10 @@ class ConversationSession:
     label: str
     md_path: Path
     jsonl_path: Path
+    # Escalation-ladder rung derived from the label's ``call_kind`` (plan
+    # Phase 5: conversation session metadata rung sync).  Empty for
+    # non-escalation calls.
+    escalation_rung: str = ""
 
 
 @dataclass
@@ -182,9 +189,7 @@ class ConversationRecorder:
         self._manifest_path = self.run_dir / "manifest.json"
         self._index_path = self.run_dir / "index.jsonl"
         if flush_interval_seconds is None:
-            flush_interval_seconds = _env_float(
-                "Z_SCOPE_CONVERSATION_FLUSH_INTERVAL_SECONDS", 0.0
-            )
+            flush_interval_seconds = _env_float("Z_SCOPE_CONVERSATION_FLUSH_INTERVAL_SECONDS", 0.0)
         self.flush_interval_seconds = max(0.0, float(flush_interval_seconds or 0.0))
         self.reasoning_policy = _parse_reasoning_policy()
         self.max_field_bytes = _env_int(
@@ -215,7 +220,9 @@ class ConversationRecorder:
                 "event_schema_version": CONVERSATION_EVENT_SCHEMA_VERSION,
                 "reasoning_policy": self.reasoning_policy.mode,
                 "reasoning_tail_chars": (
-                    self.reasoning_policy.tail_chars if self.reasoning_policy.mode == "tail" else None
+                    self.reasoning_policy.tail_chars
+                    if self.reasoning_policy.mode == "tail"
+                    else None
                 ),
                 "max_field_bytes": self.max_field_bytes,
                 "md_tail_exchanges": self.md_tail_exchanges,
@@ -309,6 +316,11 @@ class ConversationRecorder:
                 label=label or "",
                 md_path=md_path,
                 jsonl_path=jsonl_path,
+                escalation_rung=escalation_rung_for_call_kind(
+                    LLMUsageAttribution.from_trace(
+                        trace_agent=agent, trace_label=label or ""
+                    ).call_kind
+                ),
             )
             state = _ConversationSessionState(
                 session=session,
@@ -440,7 +452,7 @@ class ConversationRecorder:
                     event[key] = value
             self._append_event(state, event)
             state.recent_exchanges.append(event)
-            del state.recent_exchanges[:-self.md_tail_exchanges]
+            del state.recent_exchanges[: -self.md_tail_exchanges]
         self._maybe_rewrite_markdown(state)
 
     def record_attempt_failure(
@@ -564,12 +576,10 @@ class ConversationRecorder:
                 "blocked": blocked,
                 "cached_replay": cached_replay,
                 "repeat_count": repeat_count,
-                "args_raw": self._fit_text(args_raw, self.max_field_bytes)
-                if args_raw
-                else None,
-                "args_parse_error": self._truncate(args_parse_error, 500)
-                if args_parse_error
-                else None,
+                "args_raw": self._fit_text(args_raw, self.max_field_bytes) if args_raw else None,
+                "args_parse_error": (
+                    self._truncate(args_parse_error, 500) if args_parse_error else None
+                ),
             }
             for key, value in optional_fields.items():
                 if value is not None:
@@ -718,7 +728,9 @@ class ConversationRecorder:
             if not state.md_dirty:
                 return
             elapsed = time.monotonic() - float(state.last_md_write_monotonic or 0.0)
-            interval_due = self.flush_interval_seconds > 0 and elapsed >= self.flush_interval_seconds
+            interval_due = (
+                self.flush_interval_seconds > 0 and elapsed >= self.flush_interval_seconds
+            )
             events_due = state.events_since_md_write >= self.md_rewrite_event_interval
             if not (interval_due or events_due):
                 return
@@ -814,7 +826,7 @@ class ConversationRecorder:
 
     @staticmethod
     def _session_dict(session: ConversationSession) -> Dict[str, Any]:
-        return {
+        result = {
             "id": session.id,
             "thread_name": session.thread_name,
             "agent_name": session.agent_name,
@@ -822,6 +834,9 @@ class ConversationRecorder:
             "agent_session_index": session.agent_session_index,
             "label": session.label,
         }
+        if session.escalation_rung:
+            result["escalation_rung"] = session.escalation_rung
+        return result
 
     @staticmethod
     def _format_session_header(state: _ConversationSessionState) -> str:
@@ -1063,7 +1078,9 @@ class ConversationRecorder:
 
     @staticmethod
     def _fenced_json(value: Any) -> str:
-        return "```json\n" + json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n```\n"
+        return (
+            "```json\n" + json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n```\n"
+        )
 
 
 _RECORDER: Optional[ConversationRecorder] = None

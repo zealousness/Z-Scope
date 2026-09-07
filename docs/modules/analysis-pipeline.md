@@ -10,6 +10,10 @@ sources:
   - zscope/core/validation/pipeline.py
   - zscope/core/validation/runner.py
   - zscope/core/validation/evidence_completion.py
+  - zscope/core/validation/review_checks.py
+  - zscope/core/validation/review_protocol.py
+  - zscope/core/validation/review_session.py
+  - zscope/core/validation/review_checkpoint.py
   - zscope/common/validator_protocol.py
   - zscope/rules/builtin_catalog.yaml
   - zscope/rules/catalog.py
@@ -22,12 +26,19 @@ tests:
   - tests/test_candidate_ledger.py
   - tests/test_validation_pipeline.py
   - tests/test_validation_runner.py
+  - tests/test_review_fact_checks.py
+  - tests/test_review_experiment_protocol.py
+  - tests/test_review_runtime.py
   - tests/test_validator_v3_protocol.py
   - tests/test_evidence_completion.py
   - tests/test_alert_verifier_parallel.py
   - tests/test_rule_extensions.py
   - tests/test_rule_catalog.py
   - tests/test_rule_runtime_governance.py
+  - tests/test_escalation_observability.py
+  - tests/test_needs_review_sub_states.py
+  - tests/test_evidence_completeness_chain.py
+  - tests/test_interface_probe_visibility.py
 ---
 
 # 分析流水线
@@ -48,15 +59,29 @@ tests:
 - `fast` 只运行确定性/backend 候选快车道；`balanced`/`deep` 还可接收 candidate-blind 主动发现产生的 hypothesis。所有来源完成后先冻结全局 Ledger，再按 validation cluster 验证一次。
 - Validation runner 依次执行 V0 确定性 proof、V1 单次结构化判定、按 obligation 全部必需 fact kinds 定向补证后的单次 V2 无状态复判，以及分档 V3 调查；balanced 覆盖 high/critical 或外部可达的可闭合未决 cluster，deep 覆盖全部无完整反证的非 shadow 未决 cluster。validation pipeline 再应用 suppression、baseline、评分和状态分流。
 - Finding attribution 显式区分 `discovered_by` 集合与 `decided_by`/`decision_level`，因此“规则发现、LLM 判定”和“LLM 独占发现”不会混为一类。
+- 验证升级阶梯（balanced confirmed TP 计划）由 `runtime.analysis` 独立开关控制，默认全关：`validation_v3_reattempt`（R2 V3 复判）、`validation_v2b_adjudication`（R3 V2b 二次裁决）、`validation_uncertain_confirm_threshold`（τ 高置信确认通道，null 关闭；离线测量未找到通过 FDR 门禁的 τ，保持关闭）。usage 事件按 `call_kind` 派生 `escalation_rung`（initial→R1、targeted_investigation/investigation_synthesis→R2、v2b_adjudication→R3），确认项写入 `confirmed_via`（deterministic_proof | validator_model | high_confidence_band）。
+- `needs_review` 落点带呈现子状态 `needs_review_sub_state`：`model_uncertain`（证据仍缺失）、`policy_pending_promotion`（义务完整且无反证、等待策略通道）、`model_rejected_unproven`（模型否决未获确定性证明）；该字段只描述呈现，不改变 disposition 语义。报告视图可用 `build_report_views(..., demote_unproven_rejections=True)` 把 rejected-unproven 在 review 视图内降级呈现（带 `downgraded_from_disposition` 痕迹），计分归因不受影响。
+- 报告级 `evidence_completeness` 由验证终点从 `decision_fact_coverage`（优先）与 `evidence_completion_status`（兜底）派生；扫描期 envelope 只能是 `unknown`。
+- v12 事件形态 fact provider（`_source_lifecycle_acquire_exit_proof`、`_source_lockset_dominance_proof`、`_caller_lock_context_proof`）在引擎事件缺失时从验证用函数源码/调用点锁态重建生命周期与锁集事实，规则表与 proof requirement 表一一对应；不满足条件一律保持 needs_review。
+- 扫描期接口探测（`analysis.llm_interface_inference`）的分类计数、skip 原因与 role 分布以 `run_manifest.interface_probe` 汇总，供扫描侧 A/B 归因。
 - Rule engine 和 alert verifier 将规则或外部告警转换为相同的验证/报告语义。
 
 ## 必须保持的不变量
+
+- 实验性 review 链路使用 `zscope.review-adjudication.v1` 封套，分别记录旧拒绝的事实／范围审查和具体缺陷案例；内部校验后仍交给 ValidatorResult v3 的统一策略。只推翻拒绝而未闭合正面案例时保留 review，原因记录在 `review_disposition_reason`，不得扩充旧 `stop_reason` 枚举或借高置信 uncertain 通道晋升。
+- `check_validation_claim` 只核验绑定的原候选。当前支持完整类型中的不存在成员／内联字节数组、受限结构化所有权路径、常量或规范归纳循环的固定数组下标、明确检查成功返回值的静态互斥锁访问。递归、未知别名、辅助函数失败出口、复杂整数转换和未闭合并发条件返回 unknown。支持的反证带进程内签名、依赖哈希、编译环境与候选绑定；恢复时重新运行检查，报告字典不能自行授权拒绝。此能力按检查器版本管理，未改变默认检测器契约或现有规则资格状态。
+- 检查器显式绑定所支持规则的 revision；旧报告没有 revision 或规则契约升级后，必须补做资格验证才能产生该规则的反证。不存在成员的反证可根据对象构造函数中的实际字段赋值登记关联清理假设，按父对象合并，启用关联回收后正常验证；仅有指针类型不会生成候选。C++ 隐式生命周期、锁别名泄漏及同语句内未建模的锁状态变化保持 unknown。
+- V3 正面举证和 V2b 拒绝审查分别记录入口池、目标、工具原始结果和复核封套。正面证据仍须通过现有确认验收；完整正反证据冲突进入 review。事实摘要、TOOLFACT 引用以及调用次数都不等于程序证明。
+- `propose_related_candidate` 只能登记原函数或已查询函数中的具体位置，并关联父候选和工具证据。主 Ledger 保持冻结，关联候选通过独立追加 Ledger 登记、冻结、验证，最多一代；主 Ledger 的最终快照包含追加区。未完成的关联候选保留 review。条件宏风险绑定触发条件，未获得对应构建事实时不能确认或自动拒绝。
+- 事实组发现的条件宏风险即使未开启一般关联回收，也进入追加 review 区并计数。检查点恢复保留原 UID、cluster、验证证据包和完整前序结果，不通过重新注册改变原裁决对象；恢复粒度是候选验证阶段，并不恢复供应商的会话执行状态。
 
 - 候选不得因调度边界、超时或阶段失败而静默丢失；未深挖候选必须保留可审计状态。
 - `verified`、`rejected`、`uncertain`/`needs_review` 的含义不能混淆，退出策略只消费约定视图。
 - 去重必须保留 occurrence、替代证据和来源，不能仅按文本或行号合并。
 - 确定性 proof、LLM 判断和引擎失败必须在元数据中可区分。
 - 完整且无冲突的 proof 才能确定性确认或拒绝；正反 proof 冲突直接进入 `needs_review`。没有确定性反证时，模型的 `rejected` 只是一项模型意见，不能把候选从审计视图静默隐藏。
+- `confirmed_via` 只在 confirmed 落点写入；`needs_review_sub_state` 与 review 视图的 rejected 呈现降级都不得改变 `candidate_disposition`、计分或 truth 归因。
+- τ 通道、V3 复判与 V2b 裁决每个 rung 只允许一个手段且独立开关；同一 rung 不得叠加两个确认来源。
 - V2 只能在合法的单一 `missing_fact_request` 得到新证据且 `evidence_delta_hash` 改变后运行；重复、无增益、超时或不支持的请求必须停止为待复核。
 - 主动发现 Agent 只能写 hypothesis/observation，不能写 confirmed finding；其 prompt 不得包含 Candidate Ledger 内容、候选/规则身份、benchmark、truth 或历史 verdict。
 - 已启用阶段因超时、取消或工具失败未能覆盖全部审计单元时，已有结果仍需保存并标记 `completeness=partial`；未启用的阶段不构成 partial。token 成本只在 Benchmark 完成后评价。

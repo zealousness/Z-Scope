@@ -250,9 +250,46 @@ class ClangAstCfgCandidateGenerator(
         self._copy_sink_names = self._semantics_names(
             semantics, "copy_sinks"
         ) | self._checker_defaults("string_copy_sinks")
-        self._send_sink_names = {"send", "write", "sendto", "sendmsg", "_net_send_data"}
-        self._format_sink_names = {"printf", "fprintf", "syslog", "vprintf", "vfprintf"}
-        self._open_sink_names = {"open", "fopen", "creat"}
+        # Builtin base sets are kept verbatim so stock projects keep identical
+        # candidate behavior; user-defined wrappers join through semantics,
+        # checker defaults, and semantic-overlay rows.
+        self._send_sink_names = (
+            {"send", "write", "sendto", "sendmsg", "_net_send_data"}
+            | self._semantics_names(semantics, "send_sinks")
+            | self._checker_defaults("extended_send_sinks")
+        )
+        self._format_sink_names = (
+            {"printf", "fprintf", "syslog", "vprintf", "vfprintf"}
+            | self._semantics_names(semantics, "format_sinks")
+            | self._checker_defaults("extended_format_sinks")
+        )
+        self._open_sink_names = (
+            {"open", "fopen", "creat"}
+            | self._semantics_names(semantics, "io_acquirers")
+            | self._checker_defaults("extended_io_acquirers")
+        )
+        self._recv_source_names = (
+            {"recv", "read", "recvfrom", "_net_recv_data"}
+            | self._semantics_names(semantics, "recv_sources")
+            | self._checker_defaults("extended_recv_sources")
+        )
+        self._callback_registrar_names = (
+            {"register_callback"}
+            | self._semantics_names(semantics, "callback_registrars")
+            | self._checker_defaults("extended_callback_registrars")
+        )
+        self._io_acquire_names = self._semantics_names(
+            semantics, "io_acquirers"
+        ) | self._checker_defaults("extended_io_acquirers")
+        self._io_release_names = (
+            {"close", "closesocket"}
+            | self._semantics_names(semantics, "io_releasers")
+            | self._checker_defaults("extended_io_releasers")
+        )
+        self._user_io_acquire_names = semantics.names_from_nondefault_sources("io_acquirers")
+        self._user_io_release_names = semantics.names_from_nondefault_sources("io_releasers")
+        self._user_send_sink_names = semantics.names_from_nondefault_sources("send_sinks")
+        self._user_recv_source_names = semantics.names_from_nondefault_sources("recv_sources")
         self._macro_lock_names: Set[str] = set()
         self._macro_unlock_names: Set[str] = set()
 
@@ -262,6 +299,7 @@ class ClangAstCfgCandidateGenerator(
         self._out_param_acquirers: Set[str] = set()
         self._release_names = set(self._deallocator_names)
 
+        _RESOURCE_KIND_RETURN_ACQUIRERS = {"allocator", "calloc", "reallocator", "resource", "resource_acquire"}
         for row in self._overlay_rows("resource_models"):
             name = str(row.get("name") or "").strip()
             if not self._is_ident(name):
@@ -272,7 +310,7 @@ class ClangAstCfgCandidateGenerator(
                 str(row.get(key) or "")
                 for key in ("description", "return_semantics", "memory_behavior")
             ).lower()
-            if kind in {"allocator", "calloc", "reallocator", "resource", "resource_acquire"}:
+            if kind in _RESOURCE_KIND_RETURN_ACQUIRERS:
                 if carrier == "return_value":
                     self._return_acquirers.add(name)
                 if self._mentions_output_argument(text):
@@ -281,6 +319,24 @@ class ClangAstCfgCandidateGenerator(
                 self._release_names.add(name)
             if kind == "copy" or carrier == "copy_arguments":
                 self._copy_sink_names.add(name)
+            if kind == "io_acquire":
+                self._io_acquire_names.add(name)
+                self._user_io_acquire_names.add(name)
+                if self._mentions_output_argument(text):
+                    self._out_param_acquirers.add(name)
+            if kind == "io_release":
+                self._io_release_names.add(name)
+                self._user_io_release_names.add(name)
+            if kind == "send_sink":
+                self._send_sink_names.add(name)
+                self._user_send_sink_names.add(name)
+            if kind == "recv_source":
+                self._recv_source_names.add(name)
+                self._user_recv_source_names.add(name)
+            if kind == "format_sink":
+                self._format_sink_names.add(name)
+            if kind == "callback_register":
+                self._callback_registrar_names.add(name)
 
         for row in self._overlay_rows("macro_models"):
             name = str(row.get("name") or "").strip()
@@ -316,6 +372,39 @@ class ClangAstCfgCandidateGenerator(
             self._lock_names, extra_patterns=[r"pthread_rwlock_[rw]dlock"]
         )
         self._unlock_call_re = self._call_re(self._unlock_names)
+        self._send_call_re = self._call_re(self._send_sink_names)
+        self._recv_call_re = self._call_re(self._recv_source_names)
+        self._format_call_re = self._call_re(self._format_sink_names)
+        self._io_acquire_call_re = self._call_re(self._io_acquire_names)
+        self._io_release_call_re = self._call_re(self._io_release_names)
+        self._callback_registrar_call_re = self._call_re(self._callback_registrar_names)
+
+    _FD_OPEN_EXCLUDED_NAMES = {"fopen", "fdopen", "freopen", "popen"}
+
+    @staticmethod
+    def _names_pattern(names: Iterable[str]) -> str:
+        """Bare alternation for embedding into larger patterns."""
+
+        escaped = [
+            re.escape(str(item))
+            for item in sorted({str(name) for name in names if name}, key=len, reverse=True)
+        ]
+        return "|".join(escaped) or r"__zscope_no_api_match__"
+
+    def _fd_open_names(self) -> Set[str]:
+        """Builtin fd-open APIs plus user-defined io_acquire wrappers.
+
+        ``fopen``/``popen``-style FILE* APIs stay excluded exactly as before the
+        user-defined extension so stock projects keep identical candidates.
+        """
+
+        return (
+            {"open", "creat", "socket", "accept", "dup", "eventfd", "memfd_create"}
+            | set(self._user_io_acquire_names)
+        ) - self._FD_OPEN_EXCLUDED_NAMES
+
+    def _fd_close_names(self) -> Set[str]:
+        return {"close", "closesocket"} | set(self._user_io_release_names)
 
     def _emit(
         self,

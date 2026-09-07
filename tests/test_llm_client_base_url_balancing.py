@@ -29,6 +29,33 @@ class _FakeResponse:
         self.closed = True
 
 
+@pytest.fixture()
+def fast_llm_backoff(monkeypatch):
+    """Collapse real cooldown/backoff waits in retry tests.
+
+    Retry tests observe call order and response closing, never timing.  The
+    client waits on ``_base_url_condition`` using cooldown deadlines, which
+    ``time.sleep`` monkeypatching cannot reach, so clamp the cooldown seconds
+    instead of burning multi-second real waits per retry.
+    """
+
+    original_mark_one = llm_client_module.LLMClient._mark_base_url_cooldown
+    original_mark_all = llm_client_module.LLMClient._mark_all_base_urls_cooldown
+
+    def _clamped(seconds: float) -> float:
+        return 0.001 if seconds and seconds > 0.001 else seconds or 0.0
+
+    def mark_one(self, state, seconds):
+        original_mark_one(self, state, _clamped(seconds))
+
+    def mark_all(self, seconds):
+        original_mark_all(self, _clamped(seconds))
+
+    monkeypatch.setattr(llm_client_module.LLMClient, "_mark_base_url_cooldown", mark_one)
+    monkeypatch.setattr(llm_client_module.LLMClient, "_mark_all_base_urls_cooldown", mark_all)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_process_capacity_state(monkeypatch) -> None:
     monkeypatch.setattr(llm_client_module, "_ENDPOINT_CAPACITY_STATES", {})
@@ -114,6 +141,7 @@ def test_llm_client_falls_back_to_another_base_url_after_rate_limit(monkeypatch)
     ]
 
 
+@pytest.mark.usefixtures("fast_llm_backoff")
 def test_llm_client_retries_transient_errors_until_service_recovers(
     monkeypatch,
 ) -> None:
@@ -188,6 +216,7 @@ def test_llm_client_closes_error_response_before_retry(monkeypatch) -> None:
     assert [response.closed for response in responses] == [True, True]
 
 
+@pytest.mark.usefixtures("fast_llm_backoff")
 def test_llm_client_retries_one_isolated_401_after_prior_success(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",
@@ -239,6 +268,7 @@ def test_llm_client_does_not_retry_first_401_without_prior_success(monkeypatch) 
     assert len(calls) == 1
 
 
+@pytest.mark.usefixtures("fast_llm_backoff")
 def test_llm_client_retries_repeated_401_only_once(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",
@@ -897,3 +927,124 @@ def test_config_loader_parses_multiple_llm_base_urls(tmp_path) -> None:
     assert config.llms["default"].base_url_rate_limit_per_minute == 12
     assert config.llms["default"].base_url_max_concurrent_requests == 5
     assert config.llms["default"].retry_until_available is True
+
+
+class _SseResponse:
+    """A raw SSE response whose lines are fully controlled by the test."""
+
+    def __init__(self, lines):
+        self.status_code = 200
+        self.text = "ok"
+        self._lines = list(lines)
+
+    def iter_lines(self):
+        yield from self._lines
+
+    def close(self):
+        pass
+
+
+def test_assembly_raises_on_stream_without_payload_or_finish_reason() -> None:
+    # A stream that ends without any content, reasoning, tool call, or
+    # finish_reason chunk is a truncated stream and must surface as a
+    # retryable chunked-encoding failure instead of an empty "stop" response.
+    client = LLMClient(
+        api_key="test",
+        base_url=f"http://empty-stream-{uuid.uuid4().hex}.example/v1",
+        models=["unit-model"],
+    )
+
+    with pytest.raises(requests.exceptions.ChunkedEncodingError):
+        client._assemble_chat_response(_SseResponse([]))
+
+
+def test_assembly_raises_on_usage_only_stream_without_finish_reason() -> None:
+    # The terminal usage chunk (include_usage) carries no choices; a stream
+    # that delivers only it never framed a complete response.
+    client = LLMClient(
+        api_key="test",
+        base_url=f"http://usage-only-{uuid.uuid4().hex}.example/v1",
+        models=["unit-model"],
+    )
+
+    with pytest.raises(requests.exceptions.ChunkedEncodingError):
+        client._assemble_chat_response(
+            _SseResponse([b'data: {"usage":{"prompt_tokens":5,"completion_tokens":0}}'])
+        )
+
+
+def test_assembly_tolerates_missing_finish_reason_when_content_present(monkeypatch, caplog) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url=f"http://no-finish-{uuid.uuid4().hex}.example/v1",
+        models=["unit-model"],
+    )
+
+    with caplog.at_level("WARNING", logger="zscope.framework.llm_client"):
+        message, finish_reason = client._assemble_chat_response(
+            _SseResponse([b'data: {"choices":[{"delta":{"content":"partial"}}]}'])
+        )
+
+    assert message["content"] == "partial"
+    assert finish_reason == "stop"
+    assert any("finish_reason" in record.getMessage() for record in caplog.records)
+
+
+def test_assembly_tolerates_done_marker_without_finish_reason() -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url=f"http://done-marker-{uuid.uuid4().hex}.example/v1",
+        models=["unit-model"],
+    )
+
+    message, finish_reason = client._assemble_chat_response(
+        _SseResponse(
+            [
+                b'data: {"choices":[{"delta":{"content":"ok"}}]}',
+                b"data: [DONE]",
+            ]
+        )
+    )
+
+    assert message["content"] == "ok"
+    assert finish_reason == "stop"
+
+
+def test_chat_completion_retries_after_empty_truncated_stream(
+    monkeypatch, fast_llm_backoff
+) -> None:
+    # The empty-stream ChunkedEncodingError must ride the existing transport
+    # retry path: a failed attempt is retried, and a later healthy stream
+    # completes the request.
+    client = LLMClient(
+        api_key="test",
+        base_url=f"http://empty-retry-{uuid.uuid4().hex}.example/v1",
+        models=["unit-model"],
+        max_retries=1,
+    )
+    calls = 0
+
+    class FakeSession:
+        def post(self, url, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return _SseResponse([])
+            return _SseResponse(
+                [
+                    b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+                    b"data: [DONE]",
+                ]
+            )
+
+    monkeypatch.setattr(client, "_session_for_thread", lambda: FakeSession())
+    monkeypatch.setattr(
+        "zscope.framework.llm_client.random.uniform",
+        lambda _a, _b: 0.0,
+    )
+
+    response = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert calls == 2
+    assert response["choices"][0]["message"]["content"] == "ok"
+    assert response["choices"][0]["finish_reason"] == "stop"

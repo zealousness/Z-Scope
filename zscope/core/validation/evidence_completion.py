@@ -12,7 +12,6 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, c
 from .evidence import normalize_missing_fact_kinds
 from .proofs import deterministic_decision_proof
 
-
 IssueFactProvider = Callable[[Mapping[str, Any]], Optional[Dict[str, Any]]]
 EvidenceFactProvider = Callable[
     [Mapping[str, Any], Optional[Mapping[str, Any]]],
@@ -781,17 +780,24 @@ class EvidenceCompletionQueue:
             "ownership_transfer": [
                 self._ownership_transfer_v12_rejection_proof,
                 self._caller_owned_field_transfer_v12_rejection_proof,
+                self._source_lifecycle_acquire_exit_proof,
             ],
             "cleanup_coverage": [
                 self._exact_leak_path_v12_proof,
+                self._source_lifecycle_acquire_exit_proof,
                 self._matching_release_before_exit_v12_rejection_proof,
                 self._zero_initialized_member_failure_v12_rejection_proof,
             ],
             "lockset": [
                 self._external_callback_under_lock_v12_proof,
                 self._single_shared_access_v12_rejection_proof,
+                self._caller_lock_context_proof,
+                self._source_lockset_dominance_proof,
             ],
-            "happens_before": [self._external_callback_under_lock_v12_proof],
+            "happens_before": [
+                self._external_callback_under_lock_v12_proof,
+                self._source_lockset_dominance_proof,
+            ],
             "object_identity": [self._caller_owned_field_transfer_v12_rejection_proof],
             "value_range": [
                 self._allocation_overflow_v12_proof,
@@ -1205,8 +1211,8 @@ class EvidenceCompletionQueue:
                 "no_upper_bound_guard",
             ],
             "completeness": "complete",
-            "scope": "complete entry-to-allocation caller contract",
-            "summary": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+            "scope": "完整的入口到分配点调用契约",
+            "summary": "外部可控值在完整路径上到达分配点，且缺少上界防护",
         }
 
     @staticmethod
@@ -1253,8 +1259,8 @@ class EvidenceCompletionQueue:
                 "arithmetic_precedes_guard",
                 "allocation_sink_reached",
             ],
-            summary="unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
-            scope="complete intraprocedural allocation expression",
+            summary="未检查的分配大小算术运算先于任何溢出防护求值，并最终到达分配器",
+            scope="完整的过程内分配表达式",
             subject_identity=EvidenceCompletionQueue._normalize_symbol(
                 event.get("variable") or expression
             ),
@@ -1306,8 +1312,8 @@ class EvidenceCompletionQueue:
             code=code,
             line_numbers=[line],
             facts=["signal_context_reachable", "async_signal_unsafe_operation"],
-            summary="a signal-context entry reaches an operation outside the async-signal-safe subset",
-            scope="signal-root reachability and target function snapshot",
+            summary="信号上下文入口到达了异步信号安全子集之外的操作",
+            scope="信号根可达性与目标函数快照",
             subject_identity=str(obligation.get("subject_uid") or "signal_context"),
         )
 
@@ -1397,8 +1403,8 @@ class EvidenceCompletionQueue:
                 "entry_to_sink_path_complete",
                 "no_structured_command_sanitizer",
             ],
-            summary="a scanned entry parameter reaches system() on a complete path without a structured sanitizer",
-            scope="entry-parameter to command-sink data flow",
+            summary="扫描入口参数在完整路径上到达 system()，且缺少结构化清洗",
+            scope="入口参数到命令执行汇点的数据流",
             subject_identity=source,
         )
 
@@ -1473,9 +1479,12 @@ class EvidenceCompletionQueue:
                 source_edges.append(edge)
         if not source_formals or not source_edges:
             return None
-        code = str(issue.get("code_snippet") or "")
+        # Prefer the full numbered function body: the ordering proof compares
+        # absolute source lines, and the short snippet window can miss the
+        # assignment or unlock and strand a provable claim in review.
+        code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
         if not code:
-            code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
+            code = str(issue.get("code_snippet") or "")
         if not code:
             return None
         assignment_line = 0
@@ -1549,8 +1558,8 @@ class EvidenceCompletionQueue:
                 "entry_to_callback_path_complete",
             ],
             "completeness": "complete",
-            "scope": "complete external-callback critical section",
-            "summary": "an entry-supplied callback is invoked after lock acquisition and before the matching unlock",
+            "scope": "完整的外部回调临界区",
+            "summary": "入口提供的回调在加锁之后、匹配解锁之前被调用",
         }
 
     @staticmethod
@@ -1606,9 +1615,266 @@ class EvidenceCompletionQueue:
                 "container_traversal_reachable",
                 "cycle_guard_missing",
             ],
-            summary="a reachable container node is self-linked while the traversal has no cycle guard",
-            scope="complete container mutation and traversal snapshot",
+            summary="可达容器节点存在自链接，而遍历过程没有环防护",
+            scope="完整的容器修改与遍历快照",
             subject_identity=variable,
+        )
+
+    @staticmethod
+    def _source_lifecycle_acquire_exit_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Derive ``event:acquire``/``event:exit`` facts from the function body.
+
+        Serves value-flow leak candidates whose security obligation requests
+        acquire/exit lifecycle facts but whose engine supplied no CFG events:
+        the clang CFG checkers attach event evidence only to their own
+        candidates, so value-flow leak reports reach fact resolution with an
+        empty event stream and every event-shaped provider declines.  This
+        provider re-derives the same lifecycle facts straight from the
+        validator's function source (the same signal the
+        ``clang_cfg_acquire_without_release_on_exit`` checker extracts).
+
+        The claim resolved here is deliberately the path-independent negative
+        existential only: when the whole function body contains neither a
+        release of an allocated resource nor an ownership transfer of it, no
+        intraprocedural path can clean the resource up, so the leak claim is
+        confirmed without relying on path completeness.  Branch-dependent
+        (partial) claims and ambiguous releases stay reviewable on purpose.
+        """
+
+        rule = str(issue.get("rule") or "").lower()
+        if rule not in {"svf_value_flow_memory_leak", "svf_value_flow_partial_memory_leak"}:
+            return None
+        code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
+        if not code or len(code) > 64 * 1024:
+            return None
+
+        allocation = re.compile(
+            r"\b([A-Za-z_]\w*)\s*=\s*(?:\(\s*[\w\s\*]+?\s*\)\s*)?"
+            r"[A-Za-z_]\w*(?:malloc|calloc|realloc|strdup)\s*\(",
+            re.IGNORECASE,
+        )
+        release_call = re.compile(
+            r"\b(?:free|safe_free|safe_delete|destroy|release|close|unlink)\s*"
+            r"\(\s*&?\s*([A-Za-z_][\w.>\-]*)",
+            re.IGNORECASE,
+        )
+
+        allocations: list[tuple[str, int]] = []
+        for line_number, text in enumerate(code.splitlines(), start=1):
+            match = allocation.search(text)
+            if match:
+                allocations.append((match.group(1), line_number))
+        if not allocations:
+            return None
+        # Address-of escapes (e.g. ``&var[i]`` handed to pthread_create) may
+        # transfer ownership implicitly; such bodies stay reviewable instead
+        # of risking a wrong deterministic confirm.
+        if any(re.search(rf"&\s*\b{re.escape(name)}\b", code) for name, _ in allocations):
+            return None
+
+        def var_released_or_transferred(variable: str, code_text: str) -> bool:
+            pattern = rf"\b{re.escape(variable)}\b"
+            for line in code_text.splitlines():
+                release_match = release_call.search(line)
+                if release_match and re.search(pattern, release_match.group(1)):
+                    return True
+                if re.search(rf"\breturn\b[^;\n]*{pattern}", line, re.IGNORECASE):
+                    return True
+                if re.search(
+                    rf"(?:\*\s*[A-Za-z_]\w*|g_[A-Za-z_]\w*|[A-Za-z_]\w*(?:->|\.))[^\n;=]*="
+                    rf"[^;\n]*{pattern}",
+                    line,
+                ):
+                    return True
+            return False
+
+        for variable, acquire_line in allocations:
+            if var_released_or_transferred(variable, code):
+                continue
+            return EvidenceCompletionQueue._proof_from_code(
+                issue,
+                outcome="confirm",
+                proof_kind="source_lifecycle_acquire_without_release",
+                producer_engine="source_lifecycle_event_facts_v12",
+                code=code,
+                line_numbers=[acquire_line],
+                facts=[
+                    "event:acquire",
+                    "event:exit",
+                    "no_intraprocedural_release",
+                    "no_ownership_transfer",
+                ],
+                summary=(
+                    f"第 {acquire_line} 行的分配 '{variable}' 在整个函数体内没有任何释放，"
+                    "也没有所有权转移"
+                ),
+                scope="整个函数体；路径无关的否定存在证明",
+                subject_identity=variable,
+            )
+        return None
+
+    _SOURCE_LOCKSET_RULES = frozenset(
+        {
+            "clang_cfg_unsynchronized_shared_flag_or_counter",
+            "clang_cfg_global_state_written_with_and_without_lock",
+            "clang_cfg_global_state_write_without_lock",
+            "clang_cfg_global_pointer_length_pair_published_without_lock",
+            "clang_cfg_global_mapping_unmapped_without_invalidation",
+            "clang_cfg_lookup_before_insert_lock",
+            "clang_cfg_global_registration_slot_checked_before_lock",
+        }
+    )
+
+    @staticmethod
+    def _caller_lock_context_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Refute interprocedural lock-protocol claims from caller lock state.
+
+        The pack builder records, for every recorded direct caller, whether
+        the call site is lexically under a held mutex.  When every resolvable
+        caller holds the same mutex, claims such as "unlock without matching
+        lock" or "refcount updated after unlock" are balanced cross-function
+        protocols and are deterministically rejected.  Any unresolved caller
+        or any caller without a held lock keeps the claim reviewable.
+        """
+
+        rule = str(issue.get("rule") or "").lower()
+        if rule not in {
+            "clang_cfg_unlock_without_matching_lock",
+            "clang_cfg_refcount_update_after_unlock",
+        }:
+            return None
+        pack = _as_mapping(validation_evidence)
+        raw_states = (
+            pack.get("caller_lock_states")
+            or _as_mapping(issue.get("evidence_pack")).get("caller_lock_states")
+            or []
+        )
+        states = (
+            [state for state in raw_states if isinstance(state, Mapping)]
+            if isinstance(raw_states, (list, tuple))
+            else []
+        )
+        if not states or any(not state.get("resolved") for state in states):
+            return None
+        held = {str(state.get("held_lock") or "") for state in states}
+        if "" in held or len(held) != 1:
+            return None
+        lock_name = next(iter(held))
+        code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
+        if not code:
+            return None
+        return EvidenceCompletionQueue._proof_from_code(
+            issue,
+            outcome="reject",
+            proof_kind="caller_lock_context_dominates",
+            producer_engine="caller_lock_context_v12",
+            code=code,
+            line_numbers=[EvidenceCompletionQueue._issue_line(issue)],
+            facts=[
+                "event:shared_state_access",
+                "lockset",
+                "caller_lock_held_at_every_call_site",
+                f"caller_lock:{lock_name}",
+            ],
+            summary=(
+                f"所有已记录的调用方都在调用点持有 '{lock_name}'，与所报告的跨函数锁协议保持平衡"
+            ),
+            scope=f"{issue.get('function')} 的全部已记录调用点",
+            subject_identity=str(lock_name),
+        )
+
+    @staticmethod
+    def _source_lockset_dominance_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Refute unsynchronized-access claims when one lock dominates writes.
+
+        Serves shared-global-state rules whose obligation requests
+        ``event:shared_state_access``/``lockset`` facts.  The deterministic
+        refutation is intraprocedural and path-independent for the write set:
+        when every write to the reported global inside the function body is
+        nested under the same LOCK (with a matching UNLOCK present), no
+        intraprocedural path exhibits the claimed unsynchronized write.
+        Reads and callee-side behaviour stay reviewable; any unguarded write
+        leaves the claim untouched.
+        """
+
+        rule = str(issue.get("rule") or "").lower()
+        if rule not in EvidenceCompletionQueue._SOURCE_LOCKSET_RULES:
+            return None
+        code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
+        if not code or len(code) > 64 * 1024:
+            return None
+        resource = EvidenceCompletionQueue._normalize_symbol(
+            issue.get("source") or issue.get("resource_identity") or ""
+        )
+        if not resource or len(resource) > 120:
+            return None
+
+        write_pattern = re.compile(
+            rf"\b{re.escape(resource)}\b\s*(?:\[[^\]]*\]\s*)?"
+            r"(?:=(?!=)|\+=|-=|\*=|/=|%=|\|\|=|&=|\^=|<<=|>>=|\+\+|--)"
+            rf"|\b{re.escape(resource)}\b\s*\.\s*[A-Za-z_]\w*\s*=(?!=)"
+            rf"|\b{re.escape(resource)}\b\s*->\s*[A-Za-z_]\w*\s*=(?!=)"
+        )
+        held: list[str] = []
+        write_locks: list[str] = []
+        write_lines: list[int] = []
+        saw_unlock = False
+        for line_number, text in enumerate(code.splitlines(), start=1):
+            acquire = EvidenceCompletionQueue._lock_argument(text, acquire=True)
+            if acquire:
+                held.append(acquire)
+            release = EvidenceCompletionQueue._lock_argument(text, acquire=False)
+            if release:
+                saw_unlock = True
+                for index in range(len(held) - 1, -1, -1):
+                    if held[index] == release:
+                        held.pop(index)
+                        break
+            if write_pattern.search(text):
+                if not held:
+                    return None
+                write_locks.append(held[-1])
+                write_lines.append(line_number)
+        if not write_lines or len(set(write_locks)) != 1:
+            return None
+        if not saw_unlock:
+            return None
+        # The refutation targets unsynchronized-WRITE claims.  A flagged
+        # unlocked read (e.g. the double-checked-locking idiom) is not
+        # refuted by a locked write set and stays reviewable.
+        sink_text = str(issue.get("sink") or "")
+        if not write_pattern.search(sink_text):
+            return None
+        lock_name = write_locks[0]
+        return EvidenceCompletionQueue._proof_from_code(
+            issue,
+            outcome="reject",
+            proof_kind="source_lockset_dominates_access",
+            producer_engine="source_lockset_event_facts_v12",
+            code=code,
+            line_numbers=write_lines,
+            facts=[
+                "event:shared_state_access",
+                "lockset",
+                "lock_dominates_access",
+                "all_writes_guarded",
+                f"all_writes_guarded_by:{lock_name}",
+            ],
+            summary=(
+                f"本函数体内对 '{resource}' 的全部 {len(write_lines)} 次写入都嵌套在 "
+                f"'{lock_name}' 之下，且存在匹配的解锁"
+            ),
+            scope=f"{resource} 的全部本地写入",
+            subject_identity=resource,
         )
 
     @staticmethod
@@ -1663,8 +1929,8 @@ class EvidenceCompletionQueue:
                 "reachable_exit_without_release",
                 "ownership_not_transferred",
             ],
-            summary="a successful field-sensitive acquisition reaches an exit without release or ownership transfer",
-            scope="complete acquisition-to-exit ownership path",
+            summary="成功的字段敏感获取到达某个出口，且没有释放或所有权转移",
+            scope="完整的获取到出口所有权路径",
             subject_identity=subject,
         )
 
@@ -1787,8 +2053,8 @@ class EvidenceCompletionQueue:
             producer_engine="project_call_contract_allocation_v12",
             events=[event],
             facts=["all_reachable_callers_bounded", "guard_dominates_allocation"],
-            summary="every reachable caller supplies a constant capacity or a terminating upper-bound guard",
-            scope="complete reachable caller set",
+            summary="每个可达调用方都提供常量容量或终止性上界防护",
+            scope="完整的可达调用方集合",
             subject_identity=EvidenceCompletionQueue._normalize_symbol(event.get("variable")),
         )
 
@@ -1815,8 +2081,8 @@ class EvidenceCompletionQueue:
             producer_engine="clang_value_range_v12",
             events=selected,
             facts=["allocation_capacity_covers_sink", "signedness_safe"],
-            summary="the proven allocation capacity covers the sink length with compatible signedness",
-            scope="complete allocation-to-sink value relation",
+            summary="已证明的分配容量覆盖汇点长度，且符号类型兼容",
+            scope="完整的分配到汇点值关系",
         )
 
     @staticmethod
@@ -1853,8 +2119,8 @@ class EvidenceCompletionQueue:
             producer_engine="clang_value_range_v12",
             events=[arrays[0], loops[0]],
             facts=["all_paths_index_in_range", "fixed_array_capacity"],
-            summary="a terminating guard caps the loop bound to the fixed-array capacity on every path",
-            scope="complete guarded loop",
+            summary="终止性防护在每条路径上都将循环上界限制在定长数组容量之内",
+            scope="完整的受防护循环",
             subject_identity=EvidenceCompletionQueue._normalize_symbol(arrays[0].get("variable")),
         )
 
@@ -1881,8 +2147,8 @@ class EvidenceCompletionQueue:
             producer_engine="clang_ownership_cfg_v12",
             events=events,
             facts=["same_field_sensitive_object", "all_exits_release_or_transfer"],
-            summary="every feasible exit releases or transfers the same field-sensitive resource",
-            scope="complete ownership exit set",
+            summary="每个可行出口都释放或转移同一个字段敏感资源",
+            scope="完整的所有权出口集合",
             subject_identity=str(ownership.get("field_sensitive_object")),
         )
 
@@ -1913,8 +2179,8 @@ class EvidenceCompletionQueue:
             producer_engine="clang_concurrency_v12",
             events=accesses,
             facts=["single_shared_access_event"],
-            summary="only one shared-state access event exists in the complete candidate evidence, so no conflicting pair is established",
-            scope="complete candidate concurrency evidence",
+            summary="完整候选证据中仅存在一次共享状态访问事件，因此不构成冲突访问对",
+            scope="完整的候选并发证据",
             subject_identity=EvidenceCompletionQueue._normalize_symbol(accesses[0].get("variable")),
         )
 
@@ -2002,8 +2268,8 @@ class EvidenceCompletionQueue:
                         "same_field_sensitive_object",
                         "allocation_length_equals_copy_length",
                     ],
-                    summary="the allocation and copy use the same exact length expression for the same object",
-                    scope="complete local allocation-to-copy relation",
+                    summary="分配与拷贝对同一对象使用完全相同的长度表达式",
+                    scope="完整的本地分配到拷贝关系",
                     subject_identity=allocated_object,
                 )
         return None
@@ -2092,8 +2358,8 @@ class EvidenceCompletionQueue:
                         "same_field_sensitive_object",
                         "release_dominates_reported_exit",
                     ],
-                    summary="the same field-sensitive resource is released before the reported exit edge",
-                    scope="complete reported acquisition-to-exit path",
+                    summary="同一字段敏感资源在所报告的出口边之前已被释放",
+                    scope="完整的已报告获取到出口路径",
                     subject_identity=subject,
                 )
         return None
@@ -2161,8 +2427,8 @@ class EvidenceCompletionQueue:
                 "member_acquisition_failed",
                 "parent_cleanup_on_failure_only",
             ],
-            summary="the zero-initialized member is null on its acquisition-failure branch before the parent is released",
-            scope="complete member-acquisition failure branch",
+            summary="在父对象释放之前，零初始化成员在其获取失败分支上为空",
+            scope="完整的成员获取失败分支",
             subject_identity=member,
         )
 
@@ -2213,8 +2479,8 @@ class EvidenceCompletionQueue:
                     "caller_owned_parent",
                     "successful_return_transfers_responsibility",
                 ],
-                summary="the acquired object is stored in a field of a caller-provided owner before successful return",
-                scope="complete caller-owner field transfer path",
+                summary="获取的对象在成功返回之前被存入调用方提供的所有者字段",
+                scope="完整的调用方所有者字段转移路径",
                 subject_identity=subject,
             )
         return None
@@ -2294,8 +2560,8 @@ class EvidenceCompletionQueue:
                         "terminating_guard",
                         "guard_dominates_allocation",
                     ],
-                    summary="a terminating upper bound on the sole dynamic source propagates to the derived allocation size",
-                    scope="complete local bound-to-allocation relation",
+                    summary="唯一动态源上的终止性上界会传播到派生的分配大小",
+                    scope="完整的本地上界到分配关系",
                     subject_identity=derived,
                 )
         return None
@@ -2340,7 +2606,7 @@ class EvidenceCompletionQueue:
                 events=selected,
                 facts=facts,
                 summary=summary,
-                scope="complete intraprocedural ownership/concurrency protocol path",
+                scope="完整的过程内所有权/并发协议路径",
                 subject_identity=subject,
             )
 
@@ -2374,7 +2640,7 @@ class EvidenceCompletionQueue:
                         "owned_member_left_live_when_parent_released",
                         [leaks[0]],
                         ["field_sensitive_owned_member", "parent_release", "member_not_released"],
-                        "a field identified as owned remains live when its parent is released",
+                        "被识别为归属成员的字段在其父对象被释放时仍然存活",
                         member,
                     )
 
@@ -2608,8 +2874,8 @@ class EvidenceCompletionQueue:
                     code=code,
                     line_numbers=[acquire_index + 1, index + 1],
                     facts=["matching_lock_dominates_unlock"],
-                    summary="a matching local lock acquisition precedes the reported unlock on the same complete path",
-                    scope="complete lexical lock protocol segment",
+                    summary="在同一完整路径上，匹配的本地加锁先于所报告的解锁",
+                    scope="完整的词法锁协议片段",
                     subject_identity=lock,
                 )
             return None
@@ -2648,8 +2914,8 @@ class EvidenceCompletionQueue:
                 code=code,
                 line_numbers=return_lines,
                 facts=["all_return_paths_unlocked"],
-                summary="every reachable return in the complete local lock protocol is preceded by matching unlocks",
-                scope="complete branch-free local lock protocol",
+                summary="完整本地锁协议中的每个可达 return 之前都存在匹配的解锁",
+                scope="完整的无分支本地锁协议",
             )
         return None
 
@@ -2719,8 +2985,8 @@ class EvidenceCompletionQueue:
                 code=code,
                 line_numbers=[guard, allocation_line, index],
                 facts=["allocation_capacity_exceeds_copy", "same_length_symbol"],
-                summary="a guarded allocation of n + 1 bytes dominates a copy of n bytes",
-                scope="complete allocation-to-copy capacity relation",
+                summary="受防护的 n + 1 字节分配支配 n 字节的拷贝",
+                scope="完整的分配到拷贝容量关系",
                 subject_identity=call.group("dst"),
             )
         return None
@@ -2769,8 +3035,8 @@ class EvidenceCompletionQueue:
                 code=code,
                 line_numbers=[index],
                 facts=["member_acquisition_failed", "parent_cleanup_on_failure_only"],
-                summary="the parent is released only on the branch where its owned member acquisition failed",
-                scope="complete member-acquisition failure branch",
+                summary="父对象仅在其归属成员获取失败的分支上被释放",
+                scope="完整的成员获取失败分支",
                 subject_identity=f"{parent}->{member}",
             )
         return None
@@ -2809,8 +3075,8 @@ class EvidenceCompletionQueue:
                 code=code,
                 line_numbers=[index],
                 facts=["pointer_derived_from_pointer_base", "not_data_integer_cast"],
-                summary="the reported cast is derived from a pointer parameter plus an offset, not from serialized integer data",
-                scope="complete local pointer provenance",
+                summary="所报告的转换来自指针参数加偏移，而非序列化的整数数据",
+                scope="完整的本地指针来源",
                 subject_identity=match.group(1),
             )
         return None
@@ -2870,8 +3136,8 @@ class EvidenceCompletionQueue:
             producer_engine="clang_ast_cfg_async_lifetime",
             events=[stack, escaped],
             facts=["stack_object_address_escapes", "async_lifetime_unbounded"],
-            summary="a local stack object is passed to a detached worker without a completing join",
-            scope="complete local asynchronous thread handoff",
+            summary="本地栈对象被传递给分离线程，且没有配套的 join",
+            scope="完整的本地异步线程交接",
             subject_identity=EvidenceCompletionQueue._normalize_symbol(stack.get("variable")),
         )
 
@@ -2942,8 +3208,8 @@ class EvidenceCompletionQueue:
             code=code,
             line_numbers=[unlink_line],
             facts=["container_owner_unlinked", "ownership_not_transferred_or_released"],
-            summary="the container ownership link is removed and no release or transfer of the detached object follows",
-            scope="complete local container-detach path",
+            summary="容器所有权链接被移除，其后对被分离对象没有任何释放或转移",
+            scope="完整的本地容器分离路径",
             subject_identity=subject,
         )
 
@@ -2992,8 +3258,8 @@ class EvidenceCompletionQueue:
                 code=code,
                 line_numbers=[lock_line, index],
                 facts=["lock_acquired_before_failure", "failure_returns_with_lock_held"],
-                summary="a failure branch returns after a matching local lock acquisition without an intervening unlock",
-                scope="complete local failure-return lock path",
+                summary="失败分支在匹配的本地加锁之后返回，且中途没有解锁",
+                scope="完整的本地失败返回锁路径",
                 subject_identity=lock,
             )
         return None
@@ -3066,8 +3332,8 @@ class EvidenceCompletionQueue:
                 code=code,
                 line_numbers=[owner_release_line],
                 facts=["multiple_owned_members_initialized", "owned_member_not_released"],
-                summary="a cleanup/reset path releases an owner while initialized owned members remain uncleaned",
-                scope="complete field-sensitive owner cleanup path",
+                summary="清理/重置路径释放了所有者，但已初始化的归属成员仍未被清理",
+                scope="完整的字段敏感所有者清理路径",
                 subject_identity=owner,
             )
         return None
@@ -3147,8 +3413,8 @@ class EvidenceCompletionQueue:
                             "guard_dominates_reported_use",
                             "guard_dominates_sink",
                         ],
-                        summary="a terminating null guard dominates the reported allocation use",
-                        scope="complete intraprocedural allocation-to-use path",
+                        summary="终止性 null 防护支配所报告的分配使用",
+                        scope="完整的过程内分配到使用路径",
                         subject_identity=symbol,
                     )
         return None
@@ -3191,8 +3457,8 @@ class EvidenceCompletionQueue:
                     producer_engine="clang_ast_cfg_fd_ownership",
                     events=[opened],
                     facts=["fd_stored_in_global_owner", "ownership_transfer_complete"],
-                    summary="the descriptor is assigned to an explicit global owner",
-                    scope="descriptor ownership transfer",
+                    summary="描述符被赋给显式的全局所有者",
+                    scope="描述符所有权转移",
                     subject_identity=lhs,
                 )
             for exited in exits:
@@ -3208,8 +3474,8 @@ class EvidenceCompletionQueue:
                         producer_engine="clang_ast_cfg_fd_ownership",
                         events=[opened, exited],
                         facts=["descriptor_returned_to_caller", "ownership_transfer_complete"],
-                        summary="the descriptor is returned to the caller as the ownership result",
-                        scope="descriptor ownership transfer",
+                        summary="描述符作为所有权结果返回给调用方",
+                        scope="描述符所有权转移",
                         subject_identity=fd,
                     )
                 if not re.search(r"\breturn\s*-1\s*;", return_expression):
@@ -3244,8 +3510,8 @@ class EvidenceCompletionQueue:
                                 exited,
                             ],
                             facts=["fd_failure_guard", "failure_return"],
-                            summary="the reported return is guarded by a failed descriptor acquisition",
-                            scope="failed descriptor acquisition branch",
+                            summary="所报告的 return 受失败的描述符获取所防护",
+                            scope="描述符获取失败分支",
                             subject_identity=fd,
                         )
         return None
@@ -3315,8 +3581,8 @@ class EvidenceCompletionQueue:
                         "terminating_guard",
                         "guard_dominates_allocation",
                     ],
-                    summary="a terminating upper-bound guard dominates the allocation",
-                    scope="complete intraprocedural allocation path",
+                    summary="终止性上界防护支配该分配",
+                    scope="完整的过程内分配路径",
                 )
         return None
 
@@ -3356,8 +3622,8 @@ class EvidenceCompletionQueue:
                 producer_engine="clang_ast_cfg_bounds",
                 events=[fixed, write],
                 facts=["fixed_array_identity", "write_identity_mismatch"],
-                summary="the reported write targets a different object than the modeled fixed array",
-                scope="complete intraprocedural array access path",
+                summary="所报告的写入目标与建模的定长数组不是同一对象",
+                scope="完整的过程内数组访问路径",
                 subject_identity=f"{fixed_var}!={write_var}",
             )
         declarations = _as_list(ast_cfg.get("declarations"))
@@ -3374,8 +3640,8 @@ class EvidenceCompletionQueue:
                 producer_engine="clang_ast_cfg_bounds",
                 events=[fixed, write],
                 facts=["pointer_declaration", "dynamic_array_storage"],
-                summary="the indexed object is declared as dynamic pointer storage, not a fixed array",
-                scope="complete intraprocedural array access path",
+                summary="被索引对象声明为动态指针存储，而非定长数组",
+                scope="完整的过程内数组访问路径",
                 subject_identity=fixed_var,
             )
         loop_expression = str(loop.get("expression") or "")
@@ -3410,8 +3676,8 @@ class EvidenceCompletionQueue:
                         "terminating_upper_bound_guard",
                         "guard_dominates_loop",
                     ],
-                    summary="a terminating array-size guard dominates the counted loop",
-                    scope="complete intraprocedural fixed-array loop",
+                    summary="终止性数组大小防护支配该计数循环",
+                    scope="完整的过程内定长数组循环",
                     subject_identity=fixed_var,
                 )
         return None
@@ -3438,8 +3704,8 @@ class EvidenceCompletionQueue:
                     producer_engine="clang_ast_cfg_ownership",
                     events=[acquire],
                     facts=["resource_stored_in_global_owner", "ownership_transfer_complete"],
-                    summary="the acquired resource is stored in explicit global ownership",
-                    scope="resource ownership transfer",
+                    summary="获取的资源被存入显式全局所有权",
+                    scope="资源所有权转移",
                     subject_identity=lhs,
                 )
             if lhs.startswith("*"):
@@ -3450,8 +3716,8 @@ class EvidenceCompletionQueue:
                     producer_engine="clang_ast_cfg_ownership",
                     events=[acquire],
                     facts=["resource_stored_in_output_parameter", "ownership_transfer_complete"],
-                    summary="the resource is returned through an output ownership parameter",
-                    scope="resource ownership transfer",
+                    summary="资源通过输出所有权参数返回",
+                    scope="资源所有权转移",
                     subject_identity=lhs,
                 )
             parent = lhs.split("->", 1)[0].strip() if "->" in lhs else ""
@@ -3472,8 +3738,8 @@ class EvidenceCompletionQueue:
                         "parent_returned_to_caller",
                         "ownership_transfer_complete",
                     ],
-                    summary="the parent holding the resource is returned to the caller",
-                    scope="resource ownership transfer",
+                    summary="持有该资源的父对象被返回给调用方",
+                    scope="资源所有权转移",
                     subject_identity=parent,
                 )
         return None
@@ -3542,8 +3808,8 @@ class EvidenceCompletionQueue:
                     "code_hash": EvidenceCompletionQueue._code_hash(code, issue),
                     "facts": ["guard_dominates_sink"],
                     "completeness": "complete",
-                    "scope": f"allocation `{var}` through reported dereference",
-                    "summary": f"a terminating NULL guard for `{var}` dominates the reported use",
+                    "scope": f"经所报告解引用到达的分配 `{var}`",
+                    "summary": f"针对 `{var}` 的终止性 NULL 防护支配所报告的使用",
                 }
         return None
 
@@ -3577,8 +3843,8 @@ class EvidenceCompletionQueue:
             "code_hash": EvidenceCompletionQueue._code_hash(code, issue),
             "facts": ["distinct_object_identity"],
             "completeness": "complete",
-            "scope": "source and sink access paths",
-            "summary": f"`{source_path}` and `{sink_path}` are distinct object access paths",
+            "scope": "源对象与汇点的访问路径",
+            "summary": f"`{source_path}` 与 `{sink_path}` 是不同的对象访问路径",
         }
 
     @staticmethod
@@ -3590,6 +3856,51 @@ class EvidenceCompletionQueue:
         if not candidates:
             return ""
         return re.sub(r"\s+", "", max(candidates, key=len))
+
+    _FREE_CALL_RE = re.compile(r"\b(?:SAFE_FREE|SAFE_free|free)\s*\(\s*([^)]*)\)")
+    _SINK_IS_FREE_RE = re.compile(r"^\s*(?:SAFE_FREE|SAFE_free|free)\s*\(")
+    _IDENT_RE = re.compile(r"\b[A-Za-z_]\w*\b")
+    _SINK_RESERVED = {
+        "if", "for", "while", "switch", "return", "sizeof", "else", "do",
+        "case", "break", "continue", "NULL", "free", "SAFE_FREE", "const",
+        "unsigned", "signed", "struct", "size_t",
+    }
+
+    @staticmethod
+    def _infunction_release_contradiction(sink_expression: str, function_code: str) -> bool:
+        """Return True when the function body frees an object named in the sink.
+
+        Deterministic and purely textual: the obligation sink names an object
+        (call arguments, or the assigned value of a store); if the same
+        function body contains a ``free``/``SAFE_FREE`` of that identifier,
+        the acquire/release obligation is self-contradicted.  Same-name means
+        same variable intraprocedurally, so this cannot cross functions.
+        """
+        sink = str(sink_expression or "").strip()
+        if not sink or not str(function_code or "").strip():
+            return False
+        # For call-shaped sinks only the arguments name the obligation object;
+        # the callee identifier itself is never the freed object.
+        inner = sink
+        call = re.match(r"^[A-Za-z_]\w*\s*\((.*)\)\s*;?\s*$", sink, re.S)
+        if call:
+            inner = call.group(1)
+        tokens = {
+            token
+            for token in EvidenceCompletionQueue._IDENT_RE.findall(inner)
+            if token not in EvidenceCompletionQueue._SINK_RESERVED
+        }
+        if not tokens:
+            return False
+        for match in EvidenceCompletionQueue._FREE_CALL_RE.finditer(str(function_code)):
+            freed = {
+                token
+                for token in EvidenceCompletionQueue._IDENT_RE.findall(match.group(1) or "")
+                if token not in EvidenceCompletionQueue._SINK_RESERVED
+            }
+            if freed & tokens:
+                return True
+        return False
 
     @staticmethod
     def _cfg_obligation_confirmation_proof(
@@ -3691,6 +4002,23 @@ class EvidenceCompletionQueue:
         if matched is None:
             return None
         code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
+        # M3' guard: scoped to the acquire-without-release family
+        # (memory_leak).  A sink that is itself a free call (invalid_free /
+        # refcount obligations) is excluded: the release there is the claim
+        # under test, not a contradiction.  When the confirmed function body
+        # releases the obligation object on its own, an acquire/release
+        # confirmation is self-contradictory and the proof is dropped so the
+        # item routes through the normal ladder.
+        sink_expression = str(issue.get("sink") or "")
+        if (
+            issue.get("obligation_infunction_release_guard") is True
+            and str(issue.get("category") or "") == "memory_leak"
+            and not EvidenceCompletionQueue._SINK_IS_FREE_RE.match(sink_expression)
+            and EvidenceCompletionQueue._infunction_release_contradiction(
+                sink_expression, str(code or "")
+            )
+        ):
+            return None
         fact_ids = [
             f"cfg:{item.get('line')}:{item.get('kind')}"
             for item in events
@@ -3707,8 +4035,8 @@ class EvidenceCompletionQueue:
             producer_engine="clang_ast_cfg_obligation_prover",
             events=[item for item in events if str(item.get("kind") or "").lower() in matched],
             facts=["source_to_sink_complete", "event_path_complete", *sorted(matched)],
-            summary="deterministic AST/CFG events establish the reported safety obligation",
-            scope="complete intraprocedural AST/CFG source-to-sink path",
+            summary="确定性 AST/CFG 事件证实了所报告的安全义务",
+            scope="完整的过程内 AST/CFG 源到汇点路径",
             subject_identity=str(
                 issue.get("resource_identity")
                 or issue.get("source_identity")
@@ -3756,8 +4084,8 @@ class EvidenceCompletionQueue:
                 "code_hash": EvidenceCompletionQueue._evidence_code_hash(issue, path),
                 "facts": ["allocation_before_publication", "publication_before_initialization"],
                 "completeness": "complete",
-                "scope": "complete same-function publication lifecycle",
-                "summary": "the object is published before a later member initialization",
+                "scope": "完整的同函数发布生命周期",
+                "summary": "对象在后续的成员初始化之前已被发布",
             }
         if rule == "same_function_helper_alloc_wrapper_member_leak":
             try:
@@ -3783,8 +4111,8 @@ class EvidenceCompletionQueue:
                 "code_hash": EvidenceCompletionQueue._evidence_code_hash(issue, path),
                 "facts": ["same_function_helper_contract", "owned_member_not_released"],
                 "completeness": "complete",
-                "scope": "complete same-function helper allocation and cleanup path",
-                "summary": "the wrapper is released while its modeled owned member is not released",
+                "scope": "完整的同函数辅助分配与清理路径",
+                "summary": "包装器被释放，而其建模的归属成员未被释放",
             }
         return None
 
@@ -3849,8 +4177,8 @@ class EvidenceCompletionQueue:
             "code_hash": code_hash,
             "facts": ["lock_dominates_access", "all_accesses_guarded"],
             "completeness": "complete",
-            "scope": f"all local assignments to {resource}",
-            "summary": f"all local assignments to {resource} are nested under {lock_name}",
+            "scope": f"{resource} 的全部本地赋值",
+            "summary": f"{resource} 的全部本地赋值都嵌套在 {lock_name} 之下",
         }
 
     @staticmethod

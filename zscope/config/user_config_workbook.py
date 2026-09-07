@@ -15,6 +15,30 @@ from xml.sax.saxutils import escape
 
 SYMBOL_SHEETS = ("resource", "lock")
 
+# Extra documentation sheet written into every workbook.  It is intentionally
+# NOT part of SHEET_HEADERS so the reader ignores it while Excel shows it.
+README_SHEET_NAME = "README"
+
+RESOURCE_KINDS = frozenset(
+    {
+        "allocator",
+        "calloc",
+        "reallocator",
+        "deallocator",
+        "copy",
+        "resource_acquire",
+        "resource_release",
+        "io_acquire",
+        "io_release",
+        "send_sink",
+        "recv_source",
+        "format_sink",
+        "callback_register",
+    }
+)
+LOCK_KINDS = frozenset({"lock", "unlock"})
+VALID_KINDS = RESOURCE_KINDS | LOCK_KINDS
+
 SHEET_HEADERS: Dict[str, List[str]] = {
     "resource": [
         "symbol_name",
@@ -88,6 +112,7 @@ class UserConfigWorkbook:
         self._cache_lock = threading.RLock()
         self._rows_cache_key: Tuple[int, int] = (-2, -2)
         self._rows_cache: Optional[Dict[str, List[Dict[str, str]]]] = None
+        self.read_warnings: List[str] = []
 
     def exists(self) -> bool:
         return self.path.exists()
@@ -101,6 +126,7 @@ class UserConfigWorkbook:
         rows: Dict[str, List[Dict[str, str]]] = {name: [] for name in SHEET_HEADERS}
         if self.path.exists():
             rows = _read_xlsx(self.path)
+        self.read_warnings = _collect_kind_warnings(rows)
 
         after_key = self._cache_key()
         with self._cache_lock:
@@ -220,11 +246,18 @@ class UserConfigWorkbook:
                 if not _is_active(row):
                     continue
                 acquire = row.get("symbol_name", "")
+                acquire_kind = str(row.get("kind") or "").strip().lower()
+                if sheet == "lock":
+                    category = "lock"
+                elif acquire_kind in {"io_acquire", "io_release"}:
+                    category = "io"
+                else:
+                    category = "memory"
                 for release in _split_csv(row.get("pair", "")):
                     result.append(
                         {
                             "id": next_id,
-                            "category": "memory" if sheet == "resource" else sheet,
+                            "category": category,
                             "acquire_func": acquire,
                             "release_func": release,
                             "description": row.get("description", ""),
@@ -246,7 +279,7 @@ class UserConfigWorkbook:
         if acquire_row is None:
             acquire_row = {
                 "symbol_name": acquire_func,
-                "kind": _acquire_kind_for_sheet(sheet_name),
+                "kind": _acquire_kind_for_category(category),
                 "symbol_type": "function",
                 "source": "user",
             }
@@ -260,7 +293,7 @@ class UserConfigWorkbook:
             rows.setdefault(sheet_name, []).append(
                 {
                     "symbol_name": release_func,
-                    "kind": _release_kind_for_sheet(sheet_name),
+                    "kind": _release_kind_for_category(category),
                     "symbol_type": "function",
                     "description": "",
                     "source": "user",
@@ -562,6 +595,24 @@ def _release_kind_for_sheet(sheet: str) -> str:
     return {"resource": "deallocator", "lock": "unlock"}.get(sheet, "deallocator")
 
 
+def _acquire_kind_for_category(category: str) -> str:
+    text = str(category or "").lower()
+    if _sheet_for_pair_category(text) == "lock":
+        return "lock"
+    if any(word in text for word in ("file", "fd", "socket", "io", "handle", "描述符", "句柄", "文件", "套接字")):
+        return "io_acquire"
+    return "allocator"
+
+
+def _release_kind_for_category(category: str) -> str:
+    text = str(category or "").lower()
+    if _sheet_for_pair_category(text) == "lock":
+        return "unlock"
+    if any(word in text for word in ("file", "fd", "socket", "io", "handle", "描述符", "句柄", "文件", "套接字")):
+        return "io_release"
+    return "deallocator"
+
+
 def _kind_from_semantics(
     memory_behavior: Optional[Dict[str, Any]],
     concurrency_behavior: Optional[Dict[str, Any]],
@@ -671,8 +722,23 @@ def _col_letter(index: int) -> str:
     return result
 
 
+def _collect_kind_warnings(rows: Dict[str, List[Dict[str, str]]]) -> List[str]:
+    """Report symbol rows whose kind is outside the documented enum."""
+
+    warnings: List[str] = []
+    for sheet in SYMBOL_SHEETS:
+        for row in rows.get(sheet, []):
+            kind = str(row.get("kind") or "").strip().lower()
+            if kind and kind not in VALID_KINDS:
+                warnings.append(
+                    f"{sheet}:{row.get('symbol_name', '')} unknown kind '{kind}' "
+                    f"(valid: {', '.join(sorted(VALID_KINDS))})"
+                )
+    return warnings
+
+
 def _write_xlsx(path: Path, rows_by_sheet: Dict[str, List[Dict[str, str]]]) -> None:
-    sheet_names = list(SHEET_HEADERS)
+    sheet_names = list(SHEET_HEADERS) + [README_SHEET_NAME]
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", _content_types(sheet_names))
         zf.writestr("_rels/.rels", _root_rels())
@@ -680,10 +746,11 @@ def _write_xlsx(path: Path, rows_by_sheet: Dict[str, List[Dict[str, str]]]) -> N
         zf.writestr("xl/_rels/workbook.xml.rels", _workbook_rels(sheet_names))
         zf.writestr("xl/styles.xml", _styles_xml())
         for idx, name in enumerate(sheet_names, start=1):
-            zf.writestr(
-                f"xl/worksheets/sheet{idx}.xml",
-                _worksheet_xml(name, rows_by_sheet.get(name, [])),
-            )
+            if name == README_SHEET_NAME:
+                xml = _readme_worksheet_xml()
+            else:
+                xml = _worksheet_xml(name, rows_by_sheet.get(name, []))
+            zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
 
 def _worksheet_xml(sheet: str, rows: List[Dict[str, str]]) -> str:
@@ -695,13 +762,65 @@ def _worksheet_xml(sheet: str, rows: List[Dict[str, str]]) -> str:
         for col_idx, header in enumerate(headers, start=1):
             ref = f"{_col_letter(col_idx)}{row_idx}"
             value = escape(str(row.get(header, "")))
-            cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{value}</t></is></c>')
+            style = ' s="1"' if row_idx == 1 else ""
+            cells.append(f'<c r="{ref}"{style} t="inlineStr"><is><t>{value}</t></is></c>')
         xml_rows.append(f'<row r="{row_idx}">{"".join(cells)}</row>')
     max_col = _col_letter(len(headers))
+    col_widths = "".join(
+        f'<col min="{idx}" max="{idx}" width="{_column_width(header)}" customWidth="1"/>'
+        for idx, header in enumerate(headers, start=1)
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetViews><sheetView workbookViewId="0">'
+        '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+        "</sheetView></sheetViews>"
         f'<dimension ref="A1:{max_col}{len(all_rows)}"/>'
+        f"<cols>{col_widths}</cols>"
+        f"<sheetData>{''.join(xml_rows)}</sheetData>"
+        "</worksheet>"
+    )
+
+
+def _column_width(header: str) -> int:
+    if header in {"description", "notes"}:
+        return 52
+    if header in {"symbol_name", "pair", "dispatcher_name", "handler_name", "pointer_location",
+                  "target_functions", "file_path"}:
+        return 30
+    return 16
+
+
+README_LINES = (
+    "Z-Scope user_config 工作簿说明 / User Config Workbook Guide",
+    "",
+    "1. 本工作簿由 Z-SCOPE 读取,是规则层的用户自定义风险接口配置。Z-SCOPE reads this workbook as the rule-facing user-defined risk interface configuration.",
+    "2. 只编辑数据行;不要修改表头名称、列顺序或本 README 表。Edit data rows only; never rename headers or reorder columns.",
+    "3. resource 表 kind 枚举: " + ", ".join(sorted(RESOURCE_KINDS)),
+    "4. lock 表 kind 枚举: " + ", ".join(sorted(LOCK_KINDS)),
+    "5. pair 列填逗号分隔的互补接口名(allocator 的 pair 是 deallocator;io_acquire 的 pair 是 io_release;lock 的 pair 是 unlock)。",
+    "6. description 定位标记: resource_output=return|argN|argN_deref, resource_input=argN, old_resource=argN, size_arg=argN, lock_arg=argN, format_arg=argN, callback_arg=argN, failure_values=...",
+    "7. source 列约定: 手动维护行保持原值;inferred:* 由 --infer-user-config 生成(重跑会刷新或清理);llm:* 由 LLM 审查产生,建议人工复核。",
+    "8. confidence 为 0~1;低于 0.75 或 notes 含 llm:conflict 的行请优先人工确认。",
+    "9. kind 拼写错误的行会被忽略并在推理报告中记录告警,请按第 3/4 条修正。",
+    "10. --infer-user-config 会在同目录生成 user_config.infer_report.md,含全部推理行、低置信度清单与统计。",
+    "11. 扫描时的 LLM 接口识别由 analysis.llm_interface_inference 开关控制(默认开启),识别结果只进入语义层,不回写本工作簿。",
+)
+
+
+def _readme_worksheet_xml() -> str:
+    xml_rows = []
+    for row_idx, line in enumerate(README_LINES, start=1):
+        value = escape(line)
+        xml_rows.append(
+            f'<row r="{row_idx}"><c r="A{row_idx}" t="inlineStr"><is><t>{value}</t></is></c></row>'
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<dimension ref="A1:A%d"/>' % max(len(README_LINES), 1)
+        + '<cols><col min="1" max="1" width="120" customWidth="1"/></cols>'
         f"<sheetData>{''.join(xml_rows)}</sheetData>"
         "</worksheet>"
     )
@@ -865,10 +984,21 @@ def _styles_xml() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
-        '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+        '<fonts count="2">'
+        '<font><sz val="11"/><name val="Calibri"/></font>'
+        '<font><b/><sz val="11"/><color rgb="FF1F1F1F"/><name val="Calibri"/></font>'
+        "</fonts>"
+        '<fills count="3">'
+        '<fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/>'
+        '<bgColor indexed="64"/></patternFill></fill>'
+        "</fills>"
         '<borders count="1"><border/></borders>'
         '<cellStyleXfs count="1"><xf/></cellStyleXfs>'
-        '<cellXfs count="1"><xf xfId="0"/></cellXfs>'
+        '<cellXfs count="2">'
+        '<xf xfId="0"/>'
+        '<xf xfId="0" fontId="1" fillId="2" applyFont="1" applyFill="1"/>'
+        "</cellXfs>"
         "</styleSheet>"
     )

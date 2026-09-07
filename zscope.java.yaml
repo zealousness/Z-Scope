@@ -32,10 +32,6 @@ indexing:
   java:
     structure_frontend: auto
     signals: [joern]
-    # provider_commands: # 外部信号 provider 的命令及参数；provider 名应同时写入 signals。
-    #   semgrep: [semgrep, --json, --config, auto, .]
-  # tools: # 仅在 Joern 不可从 PATH 或默认服务地址访问时配置。
-  #   joern: {command: joern, host: 127.0.0.1, port: 8080, heap: 8g}
 
 concurrency:
   entry_workers: 4

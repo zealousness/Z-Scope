@@ -497,8 +497,22 @@ class ClangExtractor:
 
     # ── JSON-RPC 通信 ──
 
+    def cancel_pending_requests(self) -> None:
+        """Wake collectors before a resource handoff, without waiting for clangd."""
+        with self._condition:
+            identifiers = [key for key, value in self._pending_requests.items() if value is None]
+            for key in identifiers:
+                self._pending_requests[key] = {"id": key, "error": {
+                    "code": -32800, "message": "type collection suspended"}}
+            self._condition.notify_all()
+        for key in identifiers:
+            self.send_notification("$/cancelRequest", {"id": key})
+
     def send_request(self, method: str, params: Any, timeout: float = 120) -> Any:
         """发送 JSON-RPC 请求，在固定 monotonic deadline 内等待响应。"""
+        prepare_checkpoint = getattr(self, "_type_prepare_checkpoint", None)
+        if method != "shutdown" and prepare_checkpoint is not None:
+            prepare_checkpoint()
         started_at = time.monotonic()
         deadline = started_at + max(0.0, float(timeout))
         with self._condition:
@@ -1189,8 +1203,14 @@ class ClangExtractor:
 
     # ── 文档管理 ──
 
+    def _document_path(self, file_path: Path) -> Path:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return Path(resolver.canonical_path(file_path))
+        return Path(file_path).resolve()
+
     def open_document(self, file_path: Path) -> bool:
-        file_path = Path(file_path).resolve()
+        file_path = self._document_path(file_path)
         uri = file_path.as_uri()
         with self._documents_lock:
             lease_count = self._opened_documents.get(uri, 0)
@@ -1220,7 +1240,7 @@ class ClangExtractor:
             return True
 
     def close_document(self, file_path: Path) -> None:
-        uri = Path(file_path).resolve().as_uri()
+        uri = self._document_path(file_path).as_uri()
         with self._documents_lock:
             lease_count = self._opened_documents.get(uri, 0)
             if lease_count <= 0:
@@ -1247,7 +1267,7 @@ class ClangExtractor:
 
     def get_file_status(self, file_path: Path) -> Optional[str]:
         """Return clangd's latest extension status for a file, when available."""
-        uri = Path(file_path).resolve().as_uri()
+        uri = self._document_path(file_path).as_uri()
         with self._condition:
             value = self._file_status.get(uri)
             return value[0] if value is not None else None
@@ -1260,7 +1280,7 @@ class ClangExtractor:
         require_notification: bool = False,
     ) -> bool:
         """Wait for clangd fileStatus=idle without penalizing servers lacking the extension."""
-        uri = Path(file_path).resolve().as_uri()
+        uri = self._document_path(file_path).as_uri()
         deadline = time.monotonic() + max(0.0, float(timeout))
         with self._condition:
             while True:
@@ -1360,7 +1380,7 @@ class ClangExtractor:
         self, file_path: Path, range_info: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict]:
         """Query clangd's AST extension without coupling it to extraction policy."""
-        params: Dict[str, Any] = {"textDocument": {"uri": Path(file_path).resolve().as_uri()}}
+        params: Dict[str, Any] = {"textDocument": {"uri": self._document_path(file_path).as_uri()}}
         if range_info is not None:
             params["range"] = range_info
         result = self.send_request("textDocument/ast", params, timeout=60)
@@ -2063,12 +2083,32 @@ class ClangExtractor:
             with self._project_file_index_lock:
                 path_index = self._project_file_index
                 if not isinstance(path_index, dict):
+                    # The backend did not seed the project file index: one
+                    # synchronous whole-project walk. Bounded to once per
+                    # process, but on network filesystems it is expensive
+                    # enough to warrant visibility; prefer seeding via
+                    # seed_project_file_index at extractor start.
+                    started = time.monotonic()
+                    self._project_file_index_fallback_walks = (
+                        int(getattr(self, "_project_file_index_fallback_walks", 0)) + 1
+                    )
+                    logger.warning(
+                        "[clang-extractor] project file index not seeded; "
+                        "walking %s (occurrence=%d)",
+                        self.project_root,
+                        self._project_file_index_fallback_walks,
+                    )
                     path_index = {}
                     for project_path in self.project_root.rglob("*"):
                         if project_path.is_file():
                             resolved = project_path.resolve()
                             path_index.setdefault(resolved.name, []).append(resolved)
                     self._project_file_index = path_index
+                    logger.info(
+                        "[clang-extractor] project file walk completed in %.1fs (%d files)",
+                        time.monotonic() - started,
+                        sum(len(paths) for paths in path_index.values()),
+                    )
                 basename_candidates = list(path_index.get(Path(clean).name, []))
             candidates = [
                 path
@@ -2139,6 +2179,9 @@ class ClangExtractor:
         "definition_timeouts",
         "usr_resolved",
         "files_reused",
+        "probe_budget_exhausted",
+        "probe_paused_groups",
+        "probe_pruned_candidates",
     )
 
     @staticmethod
@@ -2239,8 +2282,15 @@ class ClangExtractor:
             saved_by_index = {
                 name: value
                 for name in names
-                if (value := resolver.cache.get("file", cache_key([name, item[0]]))) is not None
+                if (
+                    value := resolver.cache.get(
+                        "file", cache_key([name, item[0], "source-views-v1"])
+                    )
+                )
+                is not None
             }
+            for saved in saved_by_index.values():
+                resolver.sources.validate_receipts(saved["source_views"])
 
             def restore(result: _DerivedFileResult) -> _DerivedFileResult:
                 for name, saved in saved_by_index.items():
@@ -2295,30 +2345,35 @@ class ClangExtractor:
                         )
                 else:
                     result = first
-                for name, local_stats in result.stats_by_index.items():
-                    if name in saved_by_index:
-                        continue
-                    if (
-                        name not in result.errors
-                        and not local_stats.get("_incomplete")
-                        and not state["transient"]
-                    ):
-                        resolver.cache.put(
-                            "file",
-                            cache_key([name, item[0]]),
-                            {
-                                "symbols": (
-                                    result.symbol_rows if name == "function_symbol_context" else []
-                                ),
-                                "macros": (
-                                    result.macro_rows if name == "function_symbol_context" else []
-                                ),
-                                "types": result.type_rows if name == "function_type_refs" else [],
-                                "unresolved_reasons": local_stats.get("unresolved_reasons", {}),
-                                "unresolved_samples": local_stats.get("unresolved_samples", []),
-                            },
-                        )
-                return restore(result)
+            # file() validates once at completion. Save checkpoints only after
+            # that succeeds, instead of loading and validating every referenced
+            # file twice (and decoding its full source a third time for receipts).
+            receipts = resolver.sources.receipts(state)
+            for name, local_stats in result.stats_by_index.items():
+                if name in saved_by_index:
+                    continue
+                if (
+                    name not in result.errors
+                    and not local_stats.get("_incomplete")
+                    and not state["transient"]
+                ):
+                    resolver.cache.put(
+                        "file",
+                        cache_key([name, item[0], "source-views-v1"]),
+                        {
+                            "symbols": (
+                                result.symbol_rows if name == "function_symbol_context" else []
+                            ),
+                            "macros": (
+                                result.macro_rows if name == "function_symbol_context" else []
+                            ),
+                            "types": result.type_rows if name == "function_type_refs" else [],
+                            "unresolved_reasons": local_stats.get("unresolved_reasons", {}),
+                            "unresolved_samples": local_stats.get("unresolved_samples", []),
+                            "source_views": receipts,
+                        },
+                    )
+            return restore(result)
 
         worker = resolve_file
         metrics["worker_count"] = worker_count
@@ -2418,6 +2473,17 @@ class ClangExtractor:
             resolver = self._derived_resolver
             state = getattr(resolver.local, "state", None)
             scope = state["path"] if state else ""
+            if resolver.cooperative:
+                # A continuation must never park while owning an auxiliary
+                # single-flight Future that the next task might need. RPC
+                # single-flight still completes before each scheduling boundary.
+                namespace = "aux:" + cache_name
+                identity = cache_key([scope, encode_value(key)])
+                result = resolver.cache.get(namespace, identity)
+                if result is None:
+                    result = {"value": encode_value(compute()), "_volatile": True}
+                    resolver.cache.put(namespace, identity, result)
+                return decode_value(result["value"])
             result = resolver.cache.compute(
                 "aux:" + cache_name,
                 cache_key([scope, encode_value(key)]),
@@ -3090,13 +3156,21 @@ class ClangExtractor:
         )
         if state and "function_type_refs" in state.get("skip_indexes", ()):
             return []
+        if self._derived_resolver is not None:
+            self._derived_resolver.progress(
+                layer="type-refs",
+                function=function.get("name"),
+                function_start_line=function.get("start_line"),
+            )
         function_id = int(function.get("id") or 0)
         if function_id <= 0:
             return []
         candidates = self._direct_function_type_candidates(function, lines, indexed_type_names)
         resolved_cache: Dict[Tuple[str, int, int], Tuple[Optional[Dict[str, Any]], str]] = {}
         rows: List[Tuple[Any, ...]] = []
-        for candidate in candidates:
+        for ordinal, candidate in enumerate(candidates, 1):
+            if ordinal % 64 == 0 and self._derived_resolver is not None:
+                self._derived_resolver.checkpoint()
             stats["candidates"] += 1
             if int(stats["candidates"]) % 1000 == 0:
                 self._log_derived_progress(stats)
@@ -3177,6 +3251,7 @@ class ClangExtractor:
         parameter_names = self._signature_parameter_names(signature_text, function_name)
         candidates: List[Dict[str, Any]] = []
         seen: set[Tuple[str, int, int, str]] = set()
+        candidate_work = 0
 
         def add(
             name: str,
@@ -3187,6 +3262,10 @@ class ClangExtractor:
             lookup_line: Optional[int] = None,
             lookup_char: Optional[int] = None,
         ) -> None:
+            nonlocal candidate_work
+            candidate_work += 1
+            if candidate_work % 64 == 0 and self._derived_resolver is not None:
+                self._derived_resolver.checkpoint()
             clean_name = str(name or "")
             if (
                 not clean_name
@@ -3215,6 +3294,8 @@ class ClangExtractor:
 
         running_offset = 0
         for line_offset, raw_line in enumerate(source_lines):
+            if line_offset % 64 == 0 and self._derived_resolver is not None:
+                self._derived_resolver.checkpoint()
             absolute_line = start_line + line_offset
             signature_line = absolute_line <= signature_end_line
             line_limit = len(raw_line)
@@ -3279,6 +3360,8 @@ class ClangExtractor:
             ),
         )
         for line_offset, raw_line in enumerate(source_lines):
+            if line_offset % 64 == 0 and self._derived_resolver is not None:
+                self._derived_resolver.checkpoint()
             absolute_line = start_line + line_offset
             if absolute_line <= signature_end_line:
                 continue
@@ -3407,6 +3490,12 @@ class ClangExtractor:
         )
         if state and "function_symbol_context" in state.get("skip_indexes", ()):
             return
+        if self._derived_resolver is not None:
+            self._derived_resolver.progress(
+                layer="symbol-context",
+                function=function.get("name"),
+                function_start_line=function.get("start_line"),
+            )
         start_line = max(1, int(function.get("start_line") or 1))
         end_line = min(len(lines), max(start_line, int(function.get("end_line") or start_line)))
         body_lines = lines[start_line - 1 : end_line]
@@ -3557,7 +3646,9 @@ class ClangExtractor:
             )
             for raw_line in lines[start_line - 1 : end_line]:
                 masked = self._mask_c_comments_and_literals(raw_line)
-                for token in re.finditer(r"\b[A-Za-z_]\w*\b", masked):
+                for ordinal, token in enumerate(re.finditer(r"\b[A-Za-z_]\w*\b", masked), 1):
+                    if ordinal % 64 == 0 and self._derived_resolver is not None:
+                        self._derived_resolver.checkpoint()
                     if token.group(0) in candidate_names:
                         return True
         return False
@@ -3799,18 +3890,20 @@ class ClangExtractor:
         enabled: bool = True,
         stats: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        try:
-            stat = source_path.stat()
-            cache_key = (str(source_path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
-        except OSError:
-            cache_key = (str(source_path.resolve()), 0, 0)
+        cache_key = self._source_cache_key(source_path)
+        if cache_key is None:
+            cache_key = (str(self._document_path(source_path)), 0, 0)
         with self._derived_cache_lock:
             cache = getattr(self, "_semantic_context_cache", None)
             if not isinstance(cache, OrderedDict):
                 cache = OrderedDict()
                 setattr(self, "_semantic_context_cache", cache)
             cached = cache.get(cache_key)
-            if isinstance(cached, dict):
+            if isinstance(cached, dict) and (
+                self._derived_resolver is None
+                or not self._derived_resolver.cooperative
+                or cached.get("available")
+            ):
                 cache.move_to_end(cache_key)
                 return cached
 
@@ -3830,6 +3923,8 @@ class ClangExtractor:
         }
         can_query = enabled and (self.process is not None or "get_semantic_tokens" in self.__dict__)
         getter = getattr(self, "get_semantic_tokens", None)
+        if self._derived_resolver is not None and self._derived_resolver.cooperative:
+            getter = self._derived_resolver.semantic_tokens
         if can_query and callable(getter):
             if stats is not None:
                 stats["semantic_requests"] = int(stats.get("semantic_requests") or 0) + 1
@@ -3855,7 +3950,11 @@ class ClangExtractor:
 
         with self._derived_cache_lock:
             cached = cache.get(cache_key)
-            if isinstance(cached, dict):
+            if isinstance(cached, dict) and (
+                self._derived_resolver is None
+                or not self._derived_resolver.cooperative
+                or cached.get("available")
+            ):
                 cache.move_to_end(cache_key)
                 return cached
             cache[cache_key] = context
@@ -4245,7 +4344,7 @@ class ClangExtractor:
                 and len(candidates) == 1
                 and not candidates[0].get("is_extern")
                 and self._resolve_indexed_source_path(str(candidates[0].get("file_path") or ""))
-                == source_path.resolve()
+                == self._document_path(source_path)
                 and self._semantic_token_proves_kind(semantic_token, "global")
             ):
                 stats["semantic_resolved"] += 1
@@ -4856,7 +4955,7 @@ class ClangExtractor:
         stats: Dict[str, Any],
     ) -> List[Tuple[str, int]]:
         cache = semantic_context.setdefault("definition_cache", {})
-        cache_key = (str(source_path.resolve()), int(line), int(character))
+        cache_key = (str(self._document_path(source_path)), int(line), int(character))
         if cache_key in cache:
             return list(cache[cache_key])
         self._consume_thread_request_timeout("textDocument/definition")
@@ -4878,6 +4977,9 @@ class ClangExtractor:
         return locations
 
     def _resolve_indexed_source_path(self, file_path: str) -> Path:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return Path(resolver.sources.path(file_path)["absolute"])
         path = Path(str(file_path or ""))
         if not path.is_absolute():
             path = self.project_root / path
@@ -5648,6 +5750,9 @@ class ClangExtractor:
     def _uri_to_project_path(self, uri: str) -> str:
         if not uri or not uri.startswith("file://"):
             return ""
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return str(resolver.sources.path(uri, uri=True)["project"])
         try:
             from urllib.parse import urlparse
             from urllib.request import url2pathname
@@ -5659,6 +5764,9 @@ class ClangExtractor:
             return ""
 
     def _project_relative_path(self, path: Path) -> str:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return str(resolver.sources.path(path)["project"])
         resolved = Path(path).resolve()
         try:
             return resolved.relative_to(self.project_root).as_posix()
@@ -5719,6 +5827,9 @@ class ClangExtractor:
         return False
 
     def _source_cache_key(self, file_path: Path) -> Optional[Tuple[str, int, int]]:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return cast(Optional[Tuple[str, int, int]], resolver.sources.version_key(file_path))
         try:
             resolved = Path(file_path).resolve()
             stat = resolved.stat()
@@ -5727,6 +5838,10 @@ class ClangExtractor:
         return (str(resolved), int(stat.st_mtime_ns), int(stat.st_size))
 
     def _read_source_text(self, file_path: Path) -> Optional[str]:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            lines = resolver.sources.lines(file_path)
+            return "".join(lines) if lines is not None else None
         cache_key = self._source_cache_key(file_path)
         if cache_key is None:
             return None
@@ -5753,6 +5868,9 @@ class ClangExtractor:
         return text
 
     def _read_source_lines(self, file_path: Path) -> Optional[List[str]]:
+        resolver = getattr(self, "_derived_resolver", None)
+        if resolver is not None:
+            return cast(Optional[List[str]], resolver.sources.lines(file_path))
         cache_key = self._source_cache_key(file_path)
         if cache_key is None:
             return None

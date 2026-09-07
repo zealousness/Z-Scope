@@ -1,6 +1,6 @@
 {
   "schema_version": "zscope.black-debt-baseline.v1",
-  "target_version": "py39",
+  "target_version": "py313",
   "unformatted_files": {
     "scripts/aggregate_range_release_runs.py": "facf834c36b114f5bff289f3b58013ac1ce68ac601afbbeab0f9f48fa9e90327",
     "scripts/evaluate_range_regression.py": "bf9cbf9836e1fae2b73f7347c5d6d201085e689ea7e7586795b1942f6f44edbb",

@@ -22,12 +22,26 @@ class GetCallGraphTool(BaseTool):
         func_name = sanitize_func_name(arguments.get("func_name", ""))
         depth = arguments.get("depth", 1)
         limit = arguments.get("limit", 30)
-        result = {"function": func_name, "callers": [], "callees": []}
+        # An explicit value type keeps mypy from joining the heterogeneous
+        # initial literal into Sequence[str] and rejecting the truncated flag.
+        result: Dict[str, Any] = {
+            "function": func_name,
+            "callers": [],
+            "callees": [],
+        }
         # Build graph up to requested depth
         visited_up: Set[str] = set()
         visited_down: Set[str] = set()
         self._collect_callers(func_name, result["callers"], visited_up, depth, limit)
         self._collect_callees(func_name, result["callees"], visited_down, depth, limit)
+        # A side hitting its node limit means the graph is incomplete; report
+        # it so the model does not treat a full-looking list as exhaustive.
+        if len(result["callers"]) >= limit or len(result["callees"]) >= limit:
+            result["truncated"] = True
+            result["note"] = (
+                f"The caller or callee list hit the {limit}-node limit; re-run "
+                "with a larger limit for the complete neighborhood."
+            )
         return {"success": True, "data": result}
 
     def _collect_callers(self, name, out, visited, depth, limit):

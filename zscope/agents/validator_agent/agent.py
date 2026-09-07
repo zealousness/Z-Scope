@@ -9,6 +9,7 @@ from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
 from ...common.utils import extract_json_blocks
 from ...common.validator_protocol import (
+    VALIDATOR_PASSES,
     VALIDATOR_PROTOCOL_VERSION as VALIDATOR_PROTOCOL_V3,
     VALIDATOR_RESULT_VERSION,
     ValidatorResultV3,
@@ -285,6 +286,36 @@ class ValidatorAgent(JsonToolAgent):
                 metadata=token_metadata,
             )
         self._merge_v3_response_metadata(token_metadata, response, messages, result)
+
+        if str(result.get("finish_reason") or "") == "length":
+            # The provider output limit truncated the structured result before
+            # the strict schema could complete.  Retry once with a doubled
+            # ceiling so a long-but-valid verdict is not systematically
+            # degraded to uncertain/output_truncated.
+            retry_cap = self._v3_length_retry_max_tokens()
+            token_metadata["validator_length_retry_count"] = 1
+            logger.info(
+                "Validator v3 output truncated by provider limit; retrying once "
+                "with max_tokens=%d (candidate_uid=%s, pass=%s)",
+                retry_cap,
+                candidate_uid[:120],
+                expected_pass,
+            )
+            retry_response, retry_result = self._direct_v3_completion(
+                messages,
+                trace_label=(
+                    f"validator_v3; pass={expected_pass}; call_kind={expected_pass}; "
+                    f"candidate_uid={candidate_uid[:120]}; "
+                    f"validation_cluster_uid={cluster_uid[:120]}; "
+                    f"new_fact_count={new_fact_count}; length_retry=1"
+                ),
+                max_tokens=retry_cap,
+            )
+            if retry_response is not None and retry_result is not None:
+                self._merge_v3_response_metadata(
+                    token_metadata, retry_response, messages, retry_result
+                )
+                response, result = retry_response, retry_result
         parsed = self._extract_v3_result(
             result,
             candidate_uid=candidate_uid,
@@ -469,6 +500,19 @@ class ValidatorAgent(JsonToolAgent):
         }
         return response, result
 
+    def _v3_length_retry_max_tokens(self) -> int:
+        """Doubled output ceiling for the single v3 length-truncation retry."""
+
+        configured = getattr(self.llm_client, "max_tokens", None)
+        try:
+            configured = int(configured or 0)
+        except (TypeError, ValueError):
+            configured = 0
+        if configured <= 0:
+            # Mirrors the LLMClient/LLMConfig default output ceiling.
+            configured = 4096
+        return max(2 * configured, 8192)
+
     def _extract_v3_result(
         self,
         result: Dict[str, Any],
@@ -557,8 +601,18 @@ class ValidatorAgent(JsonToolAgent):
         input_data: Dict[str, Any],
         *,
         max_iterations: int = 50,
+        pass_kind: str = "investigation_synthesis",
     ) -> AgentResponse:
-        """Run one continuous, tool-backed V3 investigation session."""
+        """Run one continuous, tool-backed V3 investigation session.
+
+        ``pass_kind="v2b_adjudication"`` selects the R3 adjudication variant:
+        an adversarial audit of a prior rejection that would otherwise park as
+        model_rejected_unproven (plan M5 R3 rung).
+        """
+        if pass_kind not in VALIDATOR_PASSES:
+            return AgentResponse(
+                success=False, data={}, error=f"Unsupported validation pass: {pass_kind}"
+            )
 
         evidence_slice = input_data.get("evidence_slice")
         if not isinstance(evidence_slice, dict):
@@ -614,6 +668,15 @@ class ValidatorAgent(JsonToolAgent):
         }
         spec = self._validation_json_output_spec_v3()
         terminal_schema = self._final_json_tool_schema(spec)
+        review_enabled = input_data.get("review_protocol_enabled") is True
+        review_session = input_data.get("_review_session")
+        review_schemas = review_session.schemas() if review_session is not None else []
+        review_tools = {value["function"]["name"] for value in review_schemas}
+        accepted_review: Dict[str, Any] = {}
+        if review_enabled:
+            from ...core.validation.review_protocol import review_result_schema
+
+            terminal_schema["function"]["parameters"] = review_result_schema()
         fact_tool_name = "record_validator_investigation_fact"
         fact_tool_schema = {
             "type": "function",
@@ -637,29 +700,77 @@ class ValidatorAgent(JsonToolAgent):
                             "maxItems": 8,
                             "items": {"type": "string"},
                         },
-                        "summary": {"type": "string", "minLength": 1, "maxLength": 1000},
+                        "summary": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1000,
+                            "description": (
+                                "Evidence-backed fact summary written in Simplified Chinese."
+                            ),
+                        },
                     },
                     "required": ["fact_kind", "evidence_refs", "summary"],
                 },
             },
         }
-        prompt = (
-            "Targeted Validator V3 investigation. Use only the supplied read-only repository "
-            "tools. There is no independent tool-query quota, but the entire session has at "
-            f"most {iteration_limit} model iterations. Every useful repository result returns "
-            "a TOOLFACT evidence_ref (raw evidence progress, not an obligation-closing fact). "
-            "When it resolves a required fact, call "
-            f"{fact_tool_name} with that TOOLFACT ref before the final decision. The final "
-            "evidence_refs must cite recorded FACT_V3 refs or supplied catalog refs. A rejected "
-            "verdict requires blocking evidence; missing context is uncertain. Finish with one "
-            "strict investigation_synthesis result.\n\n"
-            + json.dumps(evidence_slice, ensure_ascii=False, separators=(",", ":"))
+        if pass_kind == "v2b_adjudication":
+            session_directive = (
+                "Validator V2b adjudication (R3 rung). A prior validator pass REJECTED this "
+                "candidate without deterministic proof; your job is to adversarially audit "
+                "that rejection. Actively hunt counter-evidence with the read-only repository "
+                "tools: missed cleanup or release paths, guard dominance, ownership transfer, "
+                "reachability or lock-coverage constraints, and any fact that makes the "
+                "rejection wrong. Overturn (verdict=verified) only with concrete, tool-backed "
+                "confirmation-grade evidence. Uphold (verdict=rejected) only when you can cite "
+                "blocking negative evidence; otherwise verdict=uncertain. There is no "
+                "independent tool-query quota, but the entire session has at most "
+                f"{iteration_limit} model iterations. Every useful repository result returns a "
+                "TOOLFACT evidence_ref; resolved facts must be recorded via "
+                f"{fact_tool_name} with that TOOLFACT ref before the final decision, and the "
+                "final evidence_refs must cite recorded FACT refs or supplied catalog refs. "
+                "Finish with one strict v2b_adjudication result. The end user reads reports "
+                "in Chinese: write every free-text field (reasoning, evidence items, fact "
+                "summaries, missing-fact reasons) in Simplified Chinese while keeping file "
+                "paths, symbols, and evidence ref UIDs unchanged.\n\n"
+            )
+        else:
+            session_directive = (
+                "Targeted Validator V3 investigation. Use only the supplied read-only repository "
+                "tools. There is no independent tool-query quota, but the entire session has at "
+                f"most {iteration_limit} model iterations. Every useful repository result returns "
+                "a TOOLFACT evidence_ref (raw evidence progress, not an obligation-closing fact). "
+                "When it resolves a required fact, call "
+                f"{fact_tool_name} with that TOOLFACT ref before the final decision. The final "
+                "evidence_refs must cite recorded FACT_V3 refs or supplied catalog refs. A rejected "
+                "verdict requires blocking evidence; missing context is uncertain. Finish with one "
+                "strict investigation_synthesis result. The end user reads reports in Chinese: "
+                "write every free-text field (reasoning, evidence items, fact summaries, "
+                "missing-fact reasons) in Simplified Chinese while keeping file paths, symbols, "
+                "and evidence ref UIDs unchanged.\n\n"
+            )
+        if review_enabled:
+            session_directive += (
+                "The final tool now requires a versioned review envelope containing decision, prior_rejection, and defect_case. "
+                "Audit facts AND inference/scope separately. Refuting a rejection never proves a defect. "
+                "A supported defect_case must identify the actual subject, source, sink, feasible path, trigger, and guard analysis, "
+                "cite recorded tool evidence, and have no missing conditions. Otherwise keep uncertain. "
+                "Only check_validation_claim can issue a program counterproof; summaries and complete=true are not proof authority. "
+                "Current-build facts do not confirm a different macro configuration. Query further only for a specific missing fact or conflict.\n\n"
+            )
+        if input_data.get("review_positive_case") is True:
+            session_directive += (
+                "Positive-case experiment: prioritize the uncertain candidate's missing conditions. Construct one concrete defect witness "
+                "and test each condition against tools; preserve uncertain when the witness does not close. Do not lower confidence thresholds.\n\n"
+            )
+        prompt = session_directive + json.dumps(
+            evidence_slice, ensure_ascii=False, separators=(",", ":")
         )
         messages = self._messages(input_data, prompt)
         tool_result_hashes: set[str] = set()
         tool_call_signatures: set[str] = set()
         evidence_atoms: set[str] = set()
         tool_fact_catalog: Dict[str, Dict[str, Any]] = {}
+        review_tool_results: List[Dict[str, Any]] = []
         investigation_facts: List[Dict[str, Any]] = []
         consecutive_no_evidence_fact_iterations = 0
         current_model_iteration = 0
@@ -727,6 +838,8 @@ class ValidatorAgent(JsonToolAgent):
                 if not any(value.get("fact_uid") == fact_uid for value in investigation_facts):
                     investigation_facts.append(fact)
                 allowed_refs.add(fact_uid)
+                if review_session is not None:
+                    review_session.record_result(name, args, {"success": True, "fact": fact})
                 return {"success": True, "fact": fact}
 
             stable_args = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
@@ -742,7 +855,13 @@ class ValidatorAgent(JsonToolAgent):
                     "success": False,
                     "error": "validator_v3_no_new_evidence_fact_stop; emit the final result",
                 }
-            tool_result = self._tool_executor(name, args)
+            if name == "propose_related_candidate":
+                refs = args.get("evidence_refs", []) if isinstance(args, dict) else []
+                if not refs or any(ref not in tool_fact_catalog and ref not in {f["fact_uid"] for f in investigation_facts} for ref in refs):
+                    return {"success": False, "error": "related proposal requires recorded tool evidence"}
+            tool_result = review_session.execute(name, args) if review_session is not None and name in review_tools else self._tool_executor(name, args)
+            if review_enabled or review_session is not None:
+                review_tool_results.append({"name": name, "arguments": args, "result": tool_result})
             stable_result = json.dumps(
                 tool_result,
                 ensure_ascii=False,
@@ -760,6 +879,8 @@ class ValidatorAgent(JsonToolAgent):
                     "This result is only an observation. Record a structured fact if it closes "
                     "an obligation gap; otherwise synthesize from existing facts."
                 )
+                if review_session is not None:
+                    review_session.record_result(name, args, result)
                 return result
             tool_result_hashes.add(fingerprint)
             evidence_atoms.update(new_atoms)
@@ -785,6 +906,8 @@ class ValidatorAgent(JsonToolAgent):
             result["instruction"] = (
                 f"If this resolves a required fact, call {fact_tool_name} citing {ref}."
             )
+            if review_session is not None:
+                review_session.record_result(name, args, result)
             return result
 
         def set_model_iteration(iteration: int) -> None:
@@ -826,11 +949,25 @@ class ValidatorAgent(JsonToolAgent):
         setattr(session_executor, "_zscope_start_iteration", start_model_iteration)
 
         def terminal_handler(payload: Dict[str, Any]) -> Dict[str, Any]:
+            if review_enabled:
+                from ...core.validation.review_protocol import parse_review_result, adjudicate_review
+
+                envelope = parse_review_result(
+                    payload, candidate_uid=candidate_uid, cluster_uid=cluster_uid,
+                    expected_pass=pass_kind, allowed_refs=allowed_refs,
+                    rejection_expected=input_data.get("review_rejection_expected") is True,
+                )
+                if envelope is None:
+                    return {"valid": False, "error": "invalid versioned review envelope"}
+                backed = set(tool_fact_catalog) | {f["fact_uid"] for f in investigation_facts}
+                decision, reason = adjudicate_review(envelope, backed_refs=backed)
+                accepted_review.update(envelope=envelope, decision=decision, reason=reason)
+                return {"valid": True, "payload": decision}
             parsed = parse_validator_result_v3(
                 payload,
                 candidate_uid=candidate_uid,
                 validation_cluster_uid=cluster_uid,
-                expected_pass="investigation_synthesis",
+                expected_pass=pass_kind,
                 allowed_evidence_refs=sorted(allowed_refs),
             )
             if parsed is None:
@@ -838,15 +975,20 @@ class ValidatorAgent(JsonToolAgent):
             return {"valid": True, "payload": parsed.to_dict()}
 
         try:
+            trace_prefix = (
+                "validator_v3_investigation; call_kind=targeted_investigation; "
+                if pass_kind == "investigation_synthesis"
+                else "validator_v2b_adjudication; call_kind=v2b_adjudication; "
+            )
             result = self._run_tool_conversation(
                 messages,
                 max_iterations=iteration_limit,
                 trace_label=(
-                    "validator_v3_investigation; call_kind=targeted_investigation; "
-                    f"candidate_uid={candidate_uid[:120]}; "
-                    f"validation_cluster_uid={cluster_uid[:120]}"
+                    trace_prefix
+                    + f"candidate_uid={candidate_uid[:120]}; "
+                    + f"validation_cluster_uid={cluster_uid[:120]}"
                 ),
-                additional_tools_schema=[fact_tool_schema, terminal_schema],
+                additional_tools_schema=[fact_tool_schema, *review_schemas, terminal_schema],
                 terminal_tool_name=spec.final_tool_name,
                 terminal_tool_handler=terminal_handler,
                 terminal_tool_required=True,
@@ -867,21 +1009,28 @@ class ValidatorAgent(JsonToolAgent):
             consecutive_no_evidence_fact_iterations
         )
         aggregate["validator_no_new_evidence_fact_stop"] = no_new_evidence_fact_stop
+        if review_enabled or review_session is not None:
+            aggregate["review_tool_results"] = review_tool_results
+        if review_enabled:
+            aggregate["review_adjudication"] = accepted_review.get("envelope", {})
+            aggregate["review_disposition_reason"] = accepted_review.get("reason", "invalid_review_envelope")
         parsed = self._extract_v3_result(
             result,
             candidate_uid=candidate_uid,
             cluster_uid=cluster_uid,
-            expected_pass="investigation_synthesis",
+            expected_pass=pass_kind,
             allowed_refs=sorted(allowed_refs),
         )
         self._finalize_slice_metadata(aggregate)
+        if review_enabled:
+            parsed = accepted_review.get("decision")
         if parsed is None:
             return AgentResponse(
                 success=True,
                 data=self._v3_uncertain_result(
                     candidate_uid,
                     cluster_uid,
-                    "investigation_synthesis",
+                    pass_kind,
                     stop_reason="investigation_exhausted",
                     reasoning="Targeted investigation ended without a valid terminal decision.",
                 ),
