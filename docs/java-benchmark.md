@@ -12,7 +12,7 @@
 
 ## 正式执行协议
 
-正式基线仅在 Linux x86_64 自托管 runner 手工触发，固定 Git SHA、配置、prompt、工具版本和 GLM-5.1 参数。每轮必须：
+正式基线在满足工具链与隔离要求的 Linux x86_64 环境手工执行，固定 Git SHA、配置、prompt、工具版本和 GLM-5.1 参数。每轮必须：
 
 1. 验证 Temurin 21、Maven、SootUp、WALA、Joern 和目录权限；CodeQL 若启用则为用户自备。
 2. 新建扫描副本和缓存，不复制 `GROUND_TRUTH.md` 或 `benchmark/ground_truth.json`。
@@ -20,7 +20,7 @@
 4. 归档报告、评分、候选统计、token、耗时、失败和工具健康日志；不归档 API Key、认证头或本地环境文件。
 5. 连续完成五次冷启动，队列清空且默认结构/信号后端健康。
 
-`.github/workflows/formal-benchmark.yml` 直接调用 `zscope-benchmark run --language java --mode formal --runs 5`。环境只提供 LLM 凭据、模型和工具位置；health/index/scan 子进程不会获得 truth 路径，独立 score 阶段才注入。
+直接运行 `zscope-benchmark run --language java --mode formal --runs 5`；GitHub benchmark 工作流已移除。环境只提供 LLM 凭据、模型和工具位置；health/index/scan 子进程不会获得 truth 路径，独立 score 阶段才注入。
 
 评分 artifact 同时给出 `confirmed_recall`/`confirmed_precision` 与 `with_review_recall`/`with_review_precision`；后者将 needs-review 作为人工复核队列纳入。旧顶层 `recall` 仅是 confirmed 视图的兼容字段。性能字段同样区分用于比较的 `scan_wall_seconds` 和完整 runner 的 `end_to_end_wall_seconds`。
 

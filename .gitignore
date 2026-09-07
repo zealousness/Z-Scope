@@ -140,6 +140,5 @@ benchmark-artifacts/
 release-evidence/
 .mypy_cache/
 .ruff_cache/
-ai-review.md
 entry_functions_list.json
 entry_functions_diff*.json

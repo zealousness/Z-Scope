@@ -998,7 +998,6 @@ def test_review_material_allowlists_cover_current_p6_quality_and_proof_authority
         {"zscope/benchmarking/p6_expected_proxy_attestation.schema.json"}
     )
     common = {
-        ".github/workflows/p6-pilot-validation.yml",
         "scripts/qualify_p6_proof_promotion.py",
         "tests/test_p6_proof_promotion_qualification.py",
         "zscope/benchmarking/p6_review.py",
@@ -1050,7 +1049,6 @@ def test_review_material_allowlists_cover_current_p6_quality_and_proof_authority
     }
     assert proof_critical <= set(p6_review.ROLE_REVIEW_MATERIAL_PATHS["proof_security"])
     quality_critical = {
-        ".github/actions/validate-p6-artifact/action.yml",
         "containers/p6/Containerfile",
         "containers/p6/runtime-lock.json",
         "containers/p6/verify_toolchain.py",

@@ -60,7 +60,7 @@ zscope-maven-cache install --source ./customer-maven-cache
 
 ## 发布制作
 
-Release runner 必须预置经过审批的 CPython 3.13 relocatable runtime、C/C++ 工具集、Java 工具集、pip zipapp 和第三方许可证目录。受保护 tag 必须等于 `v{zscope._version.__version__}`。人工批准 `release` environment 后执行 `.github/workflows/release.yml`，它调用：
+发布构建环境必须预置经过审批的 CPython 3.13 relocatable runtime、C/C++ 工具集、Java 工具集、pip zipapp 和第三方许可证目录。受保护 tag 必须等于 `v{zscope._version.__version__}`。GitHub Release 工作流已移除；准备好 wheelhouse 与审批后的发布材料后，手工调用：
 
 ```bash
 scripts/build_release_assets.sh \
@@ -77,7 +77,7 @@ scripts/build_release_assets.sh \
 
 ## 验收
 
-CI 用伪 runtime 执行确定性构建、安装、签名/篡改校验、启动、升级布局和回滚 smoke；该结果必须标记为 synthetic，不能替代生产资产验收。正式发布须在外部强制断网的 Ubuntu 24.04 普通用户环境，用审批后的 C/Java smoke 脚本执行：
+手工运行 `bash scripts/smoke_offline_install.sh`，用伪 runtime 执行确定性构建、安装、签名/篡改校验、启动、升级布局和回滚 smoke；该结果必须标记为 synthetic，不能替代生产资产验收。正式发布须在外部强制断网的 Ubuntu 24.04 普通用户环境，用审批后的 C/Java smoke 脚本执行：
 
 ```bash
 Z_SCOPE_NETWORK_ISOLATION_CONFIRMED=1 \
