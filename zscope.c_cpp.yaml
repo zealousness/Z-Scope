@@ -41,7 +41,6 @@ indexing:
     shared_pools: [] # 元素可增加 conflicts_with，引用 exclusive_pools 中的名称。
     heap_limit_mb: 32768
     timeout_seconds: 1800
-  # tools 可选；省略时从 PATH 查找 clangd、gclang、get-bc、llvm-link、wpa 和 saber。
 
 concurrency:
   entry_workers: 4

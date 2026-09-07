@@ -111,36 +111,23 @@ def test_package_version_is_semver_and_shared_by_user_surfaces() -> None:
     assert result.stdout.strip() == __version__
 
 
-def test_python_39_314_constraints_and_ci_are_declared() -> None:
+def test_python_313_baseline_is_declared() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'requires-python = ">=3.9"' in pyproject
+    assert 'requires-python = ">=3.13"' in pyproject
     assert "[tool.zscope.runtime-requirements]" in pyproject
     assert 'sqlite = ">=3.8.10.2"' in pyproject
-    assert "target-version = ['py39']" in pyproject
-    assert 'python_version = "3.9"' in pyproject
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    for suffix, version in (
-        ("39", "3.9"),
-        ("310", "3.10"),
-        ("311", "3.11"),
-        ("312", "3.12"),
-        ("313", "3.13"),
-        ("314", "3.14"),
-    ):
-        constraint = ROOT / "requirements" / "constraints" / f"py{suffix}.txt"
-        assert constraint.stat().st_size > 1000
-        assert f'python: "{version}"' in workflow
-        assert f'lock: "py{suffix}"' in workflow
-    assert "scripts/check_mypy_baseline.py" in workflow
-    assert "scripts/check_black_baseline.py" in workflow
-    assert "test/range/benchmark test/java_range/benchmark" in workflow
-    assert "zscope scripts test tests tools" not in workflow
-    assert "scan_git_history_secrets.py --ref HEAD" in workflow
-    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in workflow
-    assert "actions/dependency-review-action" not in workflow
-    assert "dependency-policy:" in workflow
-    assert "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266" in workflow
-    assert "scripts/check_dependency_licenses.py" in workflow
+    assert "target-version = ['py313']" in pyproject
+    assert 'python_version = "3.13"' in pyproject
+    constraint = ROOT / "requirements" / "constraints" / "py313.txt"
+    assert constraint.stat().st_size > 1000
+    # The Python 3.9-3.14 matrix CI and per-version constraints were removed in
+    # v1.3.2; the workflow set is now release/benchmark/attestation/ai-review.
+    assert not (ROOT / ".github/workflows/ci.yml").exists()
+    for suffix in ("py39", "py310", "py311", "py312", "py314"):
+        assert not (ROOT / "requirements" / "constraints" / f"{suffix}.txt").exists()
+    for workflow in ("formal-benchmark.yml", "balanced-default-attestation.yml"):
+        text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+        assert "requirements/constraints/py313.txt" in text
 
 
 def test_sqlite_queries_stay_compatible_with_declared_3_8_10_2_floor() -> None:
@@ -198,7 +185,13 @@ def test_release_lock_contains_runtime_and_java_extra_but_not_dev_tools() -> Non
     assert "black==" not in lock
     assert "mypy==" not in lock
     assert "pytest==" not in lock
-    assert "requirements/release/py313.txt" in workflow
+    assert "scripts/portable_release.py fetch" in workflow
+    assert "scripts/portable_release.py build --formal" in workflow
+    assert "scripts/portable_release.py verify --run-smoke" in workflow
+    cpp = (ROOT / "requirements/portable/py313-cpp.txt").read_text(encoding="utf-8")
+    java = (ROOT / "requirements/portable/py313-java.txt").read_text(encoding="utf-8")
+    assert "cpgqls-client==" not in cpp and "websockets==" not in cpp
+    assert "cpgqls-client==" in java and "websockets==" in java
 
 
 def test_joern_client_is_java_optional_not_base_dependency() -> None:
@@ -211,7 +204,6 @@ def test_joern_client_is_java_optional_not_base_dependency() -> None:
 def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
     ai = (ROOT / ".github/workflows/ai-review.yml").read_text(encoding="utf-8")
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     benchmark = (ROOT / ".github/workflows/formal-benchmark.yml").read_text(encoding="utf-8")
     installer = (ROOT / "install.sh").read_text(encoding="utf-8")
     assert "pull_request_target" not in ai
@@ -235,16 +227,13 @@ def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
     assert 'install_requirement="zscope[java]"' in installer
     assert "command -v zstd" in installer
     assert ">>/etc/profile" not in installer.replace(" ", "")
-    workflows = "\n".join((ai, release, ci, benchmark))
+    workflows = "\n".join((ai, release, benchmark))
     for action in (
         "actions/checkout@v7",
         "actions/setup-python@v7",
-        "actions/setup-java@v5",
         "actions/github-script@v9",
         "actions/upload-artifact@v7",
         "actions/download-artifact@v8",
-        "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266",
-        "gitleaks/gitleaks-action@v3",
     ):
         assert action in workflows
     for deprecated in (

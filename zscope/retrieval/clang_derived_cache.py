@@ -70,9 +70,19 @@ class DerivedCache:
             "evictions": 0,
             "singleflight_waits": 0,
             "sqlite_seconds": 0.0,
+            "sqlite_queue_wait_seconds": 0.0,
             "peak_hot_bytes": 0,
             "rpc_cache_hits": {},
+            "sqlite_selects": 0,
+            "sqlite_read_bytes": 0,
+            "sqlite_write_bytes": 0,
+            "presence_misses": 0,
         }
+        # An in-memory Bloom filter proves only absence. False positives still
+        # consult SQLite, and all durable keys are loaded before it is enabled.
+        # Reserve its fixed storage from the existing hot-cache allowance.
+        self._presence = bytearray(min(1 << 20, self.max_bytes // 16))
+        self.max_bytes -= len(self._presence)
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path) if path is not None else "")
@@ -94,6 +104,26 @@ class DerivedCache:
             self.db.execute("DELETE FROM entries")
             self.db.execute("INSERT OR REPLACE INTO metadata VALUES ('identity',?)", (identity,))
         self.db.commit()
+        if self._presence:
+            for namespace, key in self.db.execute("SELECT namespace,key FROM entries"):
+                self._presence_add((namespace, key))
+
+    def _presence_bits(self, identity: tuple[str, str]) -> list[int]:
+        digest = hashlib.blake2b(
+            (identity[0] + "\0" + identity[1]).encode(), digest_size=16
+        ).digest()
+        first, step = int.from_bytes(digest[:8], "little"), int.from_bytes(digest[8:], "little") | 1
+        return [(first + i * step) % (8 * len(self._presence)) for i in range(6)]
+
+    def _presence_add(self, identity: tuple[str, str]) -> None:
+        if self._presence:
+            for bit in self._presence_bits(identity):
+                self._presence[bit // 8] |= 1 << (bit % 8)
+
+    def _possibly_present(self, identity: tuple[str, str]) -> bool:
+        return not self._presence or all(
+            self._presence[bit // 8] & (1 << (bit % 8)) for bit in self._presence_bits(identity)
+        )
 
     def _call(self, action: Callable[[], Any]) -> Any:
         if threading.get_ident() == self.owner:
@@ -103,10 +133,16 @@ class DerivedCache:
             finally:
                 self.stats["sqlite_seconds"] += time.monotonic() - started
         future: Future[Any] = Future()
+        queued = time.monotonic()
+
+        def timed_action() -> Any:
+            self.stats["sqlite_queue_wait_seconds"] += time.monotonic() - queued
+            return action()
+
         with self._lock:
             if self._closed:
                 raise RuntimeError("derived cache closed")
-            self._requests.put_nowait((action, future))
+            self._requests.put_nowait((timed_action, future))
             self.wakeup.set()
         return future.result()
 
@@ -122,6 +158,16 @@ class DerivedCache:
             except BaseException as exc:
                 future.set_exception(exc)
 
+    def wait_for(self, future: Future[Any]) -> Any:
+        """Joining a worker on the broker owner must keep servicing its SQL."""
+        if threading.get_ident() == self.owner:
+            while not future.done():
+                self.wakeup.clear()
+                self.pump()
+                if not future.done():
+                    self.wakeup.wait(0.01)
+        return future.result()
+
     def snapshot(self) -> dict[str, Any]:
         """Nonblocking with respect to the SQLite owner, suitable for heartbeats."""
         with self._lock:
@@ -131,6 +177,7 @@ class DerivedCache:
                 pending_sqlite=self._requests.qsize(),
                 inflight_computations=len(self._inflight),
                 hot_bytes=self._bytes,
+                presence_bytes=len(self._presence),
             )
 
     def _remember(self, key: tuple[str, str], blob: bytes) -> None:
@@ -150,7 +197,14 @@ class DerivedCache:
         rpc = (
             namespace
             if namespace
-            in {"symbolInfo", "definition", "declaration", "references", "use_references"}
+            in {
+                "symbolInfo",
+                "definition",
+                "declaration",
+                "references",
+                "use_references",
+                "semanticTokens",
+            }
             else ""
         )
         namespace = self.identity + ":" + namespace
@@ -163,7 +217,16 @@ class DerivedCache:
                 if rpc:
                     hits = self.stats["rpc_cache_hits"]
                     hits[rpc] = int(hits.get(rpc, 0)) + 1
-                return json.loads(blob)
+            elif not self._possibly_present(identity):
+                self.stats["misses"] += 1
+                self.stats["presence_misses"] += 1
+                return None
+        # Decoding a large references/source value must not hold the registry
+        # lock, which also protects heartbeat snapshots and worker admission.
+        if blob is not None:
+            return json.loads(blob)
+        with self._lock:
+            self.stats["sqlite_selects"] += 1
         row = self._call(
             lambda: self.db.execute(
                 "SELECT value FROM volatile_entries WHERE namespace=? AND key=? UNION ALL "
@@ -177,11 +240,55 @@ class DerivedCache:
             return None
         with self._lock:
             self.stats["disk_hits"] += 1
+            self.stats["sqlite_read_bytes"] += len(row[0])
             if rpc:
                 hits = self.stats["rpc_cache_hits"]
                 hits[rpc] = int(hits.get(rpc, 0)) + 1
         self._remember(identity, row[0])
         return json.loads(row[0])
+
+    def get_many(self, namespace: str, keys: list[str]) -> dict[str, Any]:
+        """Fetch small validation receipts in batches on the SQLite owner."""
+        namespace = self.identity + ":" + namespace
+        blobs: dict[str, bytes] = {}
+        missing = []
+        with self._lock:
+            for key in dict.fromkeys(keys):
+                identity = (namespace, key)
+                blob = self._hot.get(identity)
+                if blob is not None:
+                    self._hot.move_to_end(identity)
+                    self.stats["memory_hits"] += 1
+                    blobs[key] = blob
+                elif self._possibly_present(identity):
+                    missing.append(key)
+                else:
+                    self.stats["misses"] += 1
+                    self.stats["presence_misses"] += 1
+        for offset in range(0, len(missing), 400):
+            batch = missing[offset : offset + 400]
+            marks = ",".join("?" for _ in batch)
+            with self._lock:
+                self.stats["sqlite_selects"] += 1
+            rows = self._call(
+                lambda: self.db.execute(
+                    f"SELECT key,value FROM volatile_entries WHERE namespace=? AND key IN ({marks}) "
+                    f"UNION ALL SELECT key,value FROM entries WHERE namespace=? AND key IN ({marks})",
+                    (namespace, *batch, namespace, *batch),
+                ).fetchall()
+            )
+            # Volatile values override a previous durable value, just as get().
+            found: dict[str, bytes] = {}
+            for key, blob in rows:
+                found.setdefault(key, blob)
+            with self._lock:
+                self.stats["misses"] += len(batch) - len(found)
+                self.stats["disk_hits"] += len(found)
+                self.stats["sqlite_read_bytes"] += sum(len(row[1]) for row in rows)
+            for key, blob in found.items():
+                self._remember((namespace, key), blob)
+            blobs.update(found)
+        return {key: json.loads(blob) for key, blob in blobs.items()}
 
     def put(self, namespace: str, key: str, value: Any) -> None:
         namespace = self.identity + ":" + namespace
@@ -189,11 +296,16 @@ class DerivedCache:
         table = (
             "volatile_entries" if isinstance(value, dict) and value.get("_volatile") else "entries"
         )
-        self._call(
-            lambda: self.db.execute(
+
+        def write() -> None:
+            self.db.execute(
                 f"INSERT OR REPLACE INTO {table} VALUES (?,?,?)", (namespace, key, blob)
             )
-        )
+            with self._lock:
+                self._presence_add((namespace, key))
+                self.stats["sqlite_write_bytes"] += len(blob)
+
+        self._call(write)
         self._remember((namespace, key), blob)
 
     def compute(self, namespace: str, key: str, action: Callable[[], Any]) -> Any:
@@ -208,7 +320,7 @@ class DerivedCache:
                 self.stats["singleflight_waits"] += 1
         assert future is not None
         if not owner:
-            return future.result()
+            return self.wait_for(future)
         try:
             value = self.get(namespace, key)
             if value is None:
@@ -223,8 +335,40 @@ class DerivedCache:
             with self._lock:
                 self._inflight.pop(identity, None)
 
+    def visit_volatile(self, namespace: str, visitor: Callable[[Any], None]) -> None:
+        """Stream validation receipts on the owner without materializing all files."""
+        with self._lock:
+            self.stats["sqlite_selects"] += 1
+        cursor = self._call(
+            lambda: self.db.execute(
+                "SELECT value FROM volatile_entries WHERE namespace=?",
+                (self.identity + ":" + namespace,),
+            )
+        )
+        try:
+            while (row := self._call(cursor.fetchone)) is not None:
+                # File validation must not inflate SQLite execution timing.
+                with self._lock:
+                    self.stats["sqlite_read_bytes"] += len(row[0])
+                visitor(json.loads(row[0]))
+        finally:
+            self._call(cursor.close)
+
     def checkpoint(self) -> None:
         self._call(self.db.commit)
+
+    def discard_volatile(self) -> None:
+        """Start a new retry without turning transient RPC errors into negatives."""
+        assert threading.get_ident() == self.owner
+        views = tuple(
+            self.identity + ":source_view_" + kind for kind in ("path", "source", "stamp")
+        )
+        self.db.execute("DELETE FROM volatile_entries WHERE namespace NOT IN (?,?,?)", views)
+        with self._lock:
+            for key, blob in list(self._hot.items()):
+                value = json.loads(blob)
+                if isinstance(value, dict) and value.get("_volatile") and key[0] not in views:
+                    self._bytes -= len(self._hot.pop(key))
 
     def close(self) -> None:
         assert threading.get_ident() == self.owner

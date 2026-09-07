@@ -1173,6 +1173,30 @@ def test_get_function_info_tool_and_runtime_return_match_count(tmp_path) -> None
         assert field not in tool_result["data"]["matches"][0]
     assert runtime_result["success"] is True
     assert runtime_result["data"]["match_count"] == 1
+    assert backend.type_context_calls == 0
+
+
+def test_type_backend_error_cannot_be_reported_as_empty_context(tmp_path, monkeypatch):
+    import pytest
+    from zscope.retrieval.clang_type_state import TypeContextUnavailable
+    from zscope.snapshots.modeling_input import SemanticModelInputError
+
+    (tmp_path / "a.c").write_text("int Target(void) { return 0; }\n", encoding="utf-8")
+    backend = FunctionInfoBackend({"Target": {
+        "name": "Target", "file": "a.c", "start_line": 1, "end_line": 1,
+        "signature": "int Target(void)"}})
+    index = _index(tmp_path, backend, "unified")
+
+    def failed_context(*args):
+        raise RuntimeError("injected database failure")
+
+    monkeypatch.setattr(backend, "get_function_type_context", failed_context)
+    assert GetFunctionInfoTool(index).execute({"func_name": "Target"})["success"]
+    with pytest.raises(TypeContextUnavailable, match="database failure"):
+        index.get_function_type_context("Target", "a.c", 1)
+    with pytest.raises(SemanticModelInputError) as error:
+        build_semantic_model_input(index, "Target", file_path="a.c")
+    assert error.value.reason == "type_context_unavailable"
 
 
 def test_get_function_info_returns_function_like_macro_context(tmp_path) -> None:

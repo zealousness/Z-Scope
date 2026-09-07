@@ -10,10 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
-
 VALIDATOR_RESULT_VERSION = "zscope.validator-result.v3"
 VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v3"
-VALIDATOR_PASSES = frozenset({"initial", "evidence_recheck", "investigation_synthesis"})
+# "v2b_adjudication" is the plan M5 R3 rung: an independent audit of a
+# rejection that would otherwise park as model_rejected_unproven.
+VALIDATOR_PASSES = frozenset(
+    {"initial", "evidence_recheck", "investigation_synthesis", "v2b_adjudication"}
+)
 VALIDATOR_VERDICTS = frozenset({"verified", "rejected", "uncertain"})
 VALIDATOR_MISSING_FACT_KINDS = frozenset(
     {
@@ -64,14 +67,24 @@ def validator_result_schema_v3() -> Dict[str, Any]:
             "validation_cluster_uid": {"type": "string", "minLength": 1},
             "pass": {"type": "string", "enum": sorted(VALIDATOR_PASSES)},
             "verdict": {"type": "string", "enum": sorted(VALIDATOR_VERDICTS)},
-            "reasoning": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "reasoning": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000,
+                "description": (
+                    "Concise decision rationale written in Simplified Chinese; keep "
+                    "file paths, symbols, and evidence ref UIDs unchanged."
+                ),
+            },
             "positive_evidence": {
                 "type": "array",
+                "description": "Supporting evidence items written in Simplified Chinese.",
                 "items": {"type": "string", "minLength": 1, "maxLength": 1000},
                 "maxItems": 12,
             },
             "negative_evidence": {
                 "type": "array",
+                "description": "Counter-evidence items written in Simplified Chinese.",
                 "items": {"type": "string", "minLength": 1, "maxLength": 1000},
                 "maxItems": 12,
             },
@@ -90,7 +103,12 @@ def validator_result_schema_v3() -> Dict[str, Any]:
                     },
                     "subject_uid": {"type": "string", "maxLength": 512},
                     "function_uid": {"type": "string", "maxLength": 512},
-                    "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+                    "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1000,
+                        "description": "Why this fact is missing, in Simplified Chinese.",
+                    },
                 },
                 "required": ["fact_kind", "reason"],
                 "additionalProperties": False,

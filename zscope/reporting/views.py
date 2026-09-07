@@ -471,8 +471,33 @@ def _compact_observation(issue: Dict[str, Any]) -> Dict[str, Any]:
         "verification_error",
         "deferred_reason",
         "validation_reasoning",
+        "llm_explanation",
+        "promotion_review_reason",
+        "review_disposition_reason",
+        "review_adjudication",
+        "review_fact_store",
+        "review_claim_checks",
+        "review_checked_proof",
+        "review_conditional_risks",
+        "review_macro_branches",
+        "review_guard_coverage",
+        "review_checkpoint_id",
+        "review_priority_signal",
+        "review_v3_entry_pool",
+        "review_v3_objective",
+        "parent_candidate_uid",
+        "parent_candidate_uids",
+        "related_generation",
+        "analysis_scope",
+        "trigger_condition",
         "confidence",
         "impact_level",
+        "validator_verdict",
+        "missing_fact_kinds",
+        "negative_evidence",
+        "blocking_negative_evidence",
+        "needs_review_sub_state",
+        "needs_review_presentation",
         "dedup_key",
         "entry_function",
         "sink_function",
@@ -587,6 +612,9 @@ def attach_related_needs_review(
     attachment_cache: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
 
     for review_issue in review_issues:
+        if review_issue.get("analysis_scope") == "conditional_source_branch":
+            independent.append(review_issue)
+            continue
         normalize_issue_fields(review_issue)
         review_issue["dedup_key"] = canonical_issue_key(review_issue)
         candidate_indices: List[int] = []
@@ -630,11 +658,53 @@ def attach_related_needs_review(
     return independent, attached_count
 
 
+def annotate_needs_review_sub_state(issue: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach the Phase 3 review sub-state and presentation bundle in place.
+
+    The sub-state comes from the issue field when the scan pipeline already
+    annotated it, and is derived from the same pure policy otherwise (older
+    reports).  Non needs_review items are left untouched.  Returns the
+    presentation bundle (empty when there is no sub-state).
+    """
+
+    from ..core.validation.pipeline import needs_review_sub_state
+
+    sub_state = str(issue.get("needs_review_sub_state") or "") or needs_review_sub_state(issue)
+    if not sub_state:
+        return {}
+    issue["needs_review_sub_state"] = sub_state
+    missing = issue.get("missing_fact_kinds") or []
+    if sub_state == "model_rejected_unproven":
+        action = (
+            "模型否决了该问题，但否决没有确定性证明支撑；补齐缺失证据并重新验证后，"
+            "才能最终定论（确认或拒绝）。"
+        )
+    elif sub_state == "policy_pending_promotion":
+        action = (
+            "安全义务完整且没有负面证据反驳；该问题正在等待策略提升通道"
+            "（如高置信度自动确认）自动晋级为 validated。"
+        )
+    else:
+        action = "补齐缺失的决策事实后重新验证。"
+    presentation: Dict[str, Any] = {
+        "model_verdict": issue.get("validator_verdict"),
+        "rejection_reason": issue.get("validation_reasoning"),
+        "missing_fact_kinds": list(missing) if isinstance(missing, list) else missing,
+        "suggested_action": action,
+    }
+    promotion_reason = str(issue.get("promotion_review_reason") or "").strip()
+    if promotion_reason:
+        presentation["promotion_review_reason"] = promotion_reason
+    issue["needs_review_presentation"] = presentation
+    return presentation
+
+
 def build_report_views(
     issues: Iterable[Any],
     audit_observations: Iterable[Any],
     *,
     canonical_projection: bool = False,
+    demote_unproven_rejections: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """Build default and needs-review-inclusive issue lists.
 
@@ -643,6 +713,12 @@ def build_report_views(
     to a confirmed finding at this point would change the ledger decision and
     break the public count invariant.  The legacy behaviour remains available
     for reports that predate lifecycle outcomes.
+
+    ``demote_unproven_rejections`` is the plan Phase 3.3 operator opt-in: it
+    re-dispositions ``model_rejected_unproven`` review rows to
+    ``dismissed_unproven_rejection`` in the review-inclusive view only.  The
+    default view and every scoring attribution stay untouched, and each
+    demoted row keeps a ``downgraded_from_disposition`` trail marker.
     """
     raw_issues = issue_dicts(issues)
     base_issues = raw_issues if canonical_projection else deduplicate_issues(raw_issues)
@@ -665,6 +741,24 @@ def build_report_views(
         )
         with_review = deduplicate_issues(review_base_issues + independent_review_issues)
     review_count = len(review_issues)
+    if any(item.get("review_priority_signal") for item in with_review):
+        severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        with_review.sort(key=lambda item: (
+            severity_rank.get(str(item.get("impact_level") or "").lower(), 4),
+            0 if item.get("review_disposition_reason") == "rejection_refuted_unconfirmed" else 1,
+        ))
+    demoted_count = 0
+    for item in with_review:
+        presentation = annotate_needs_review_sub_state(item)
+        if (
+            presentation
+            and demote_unproven_rejections
+            and item.get("needs_review_sub_state") == "model_rejected_unproven"
+        ):
+            item["downgraded_from_disposition"] = item.get("candidate_disposition")
+            item["candidate_disposition"] = "dismissed_unproven_rejection"
+            item["finding_kind"] = "dismissed_unproven_rejection"
+            demoted_count += 1
     governance = review_governance_summary(
         raw_observations,
         canonical_review=review_issues,
@@ -684,9 +778,12 @@ def build_report_views(
             "description": "Default issues plus validator needs_review observations.",
             "issue_count": len(with_review),
             "included_needs_review_count": review_count,
+            "conditional_needs_review_count": sum(item.get("analysis_scope") == "conditional_source_branch" for item in review_issues),
+            "rejection_refuted_unconfirmed_count": sum(item.get("review_disposition_reason") == "rejection_refuted_unconfirmed" for item in review_issues),
             "independent_needs_review_count": len(independent_review_issues),
             "attached_needs_review_count": attached_review_count,
             "needs_review_governance": governance,
+            "unproven_rejection_dismissed_count": demoted_count,
             "issues": with_review,
             "issues_by_severity": group_by_severity(with_review),
         },

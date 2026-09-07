@@ -1,10 +1,12 @@
-# Z-SCOPE 架构文档（v1.3.1）
+# Z-SCOPE 架构文档（v1.3.2）
 
 ## 1. 架构定位
 
 Z-SCOPE 是面向大型 C/C++ 项目的证据优先静态分析平台，并提供 Java Preview。系统以结构化代码事实、程序分析后端信号、项目语义快照和多智能体验证为基础，构建可审计、可恢复、可扩展的缺陷发现流水线。
 
 平台采用“静态事实先行、语义推理收敛”的架构原则。C/C++ 内存、资源生命周期和并发问题首先由 Regex、Clang、SVF/Saber 与规则产生证据；Java 由 source/java_unified 结构索引、SootUp/WALA/Joern 信号和 Java 规则产生证据。LLM Agent 负责在受控上下文中补全跨模块意图、判断业务约束、验证可利用性，并将结果收敛为可追踪报告。C/C++ Joern 在 1.x 中仅保留弃用兼容入口。
+
+Review 完整事实实验默认关闭：底层保留绑定编译配置的完整相关事实，模型按需分页，程序检查器独立核对候选义务。V3 可实验性构建 uncertain 项的正面案例，V2b 审查旧拒绝；版本化复核封套经过验收后仍由统一 ValidationPipeline 分流。关联发现进入最多一代的独立追加 Ledger，原主 Ledger 保持冻结。具体边界见[分析流水线](modules/analysis-pipeline.md)和[Benchmark](modules/benchmarking.md)。
 
 Z-SCOPE 的定位可以归纳为三个层面：
 
@@ -446,7 +448,7 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 - 显式支持批量入口 `entry_functions_list`。
 - `--discover-entries` 或 `project.entry_discovery.enabled` 能扫描头文件公共 API、网络/IPC、线程创建、文件/环境/标准输入等入口。
 - 自动发现结果会写入 `entry_functions_list.json`，包含 exposure、reasons、confidence 和入口级审计提示，可由人工继续编辑后复用。
-- `entry_discovery.search_root` 可把入口发现限制到指定绝对目录，适合只审计大型仓库中的某个模块。
+- `entry_discovery.search_root` 可把入口发现限制到指定目录（支持相对路径，固定基于 `source_root` 解析），适合只审计大型仓库中的某个模块。
 - handler、allocator、release、dispatch 等项目语义由 `user_config.xlsx` 与 `--infer-user-config` 承担，不再通过批量 prompt autofill 注入。
 
 ### 8.3 事实覆盖

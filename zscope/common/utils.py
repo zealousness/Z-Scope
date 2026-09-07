@@ -294,11 +294,6 @@ def truncate_string(s: str, max_length: int = 1000, ellipsis: str = "...") -> st
     return s[: max_length - len(ellipsis)] + ellipsis
 
 
-def validate_json_schema(data: dict, required_fields: list[str]) -> bool:
-    """Validate that a dictionary contains all required fields."""
-    return all(field in data for field in required_fields)
-
-
 def is_valid_snapshot(d: dict) -> bool:
     """Check if dictionary looks like a function snapshot."""
     if not isinstance(d, dict):

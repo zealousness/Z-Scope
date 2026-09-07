@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Z-SCOPE: AI-powered defect detection for C/C++ and Java projects"
 readme = "README.md"
 # Python compatibility and the linked SQLite runtime are independent on Linux.
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 license = {text = "MIT"}
 authors = [
     {name = "Z-SCOPE Team"}
@@ -38,6 +38,7 @@ dev = [
 zscope = "zscope.cli.cli:main"
 zscope-init = "zscope.cli.init:main"
 zscope-doctor = "zscope.cli.doctor:main"
+zscope-index-audit = "zscope.cli.index_audit:main"
 zscope-config = "zscope.cli.config_cli:main"
 zscope-rules = "zscope.cli.rules:main"
 zscope-maven-cache = "zscope.cli.maven_cache:main"
@@ -56,6 +57,7 @@ include = ["zscope*"]
 
 [tool.setuptools.package-data]
 zscope = [
+    "retrieval/compiler_argument_policy.json",
     "benchmarking/*.json",
     "config/*.yaml",
     "rules/*.yaml",
@@ -67,6 +69,7 @@ zscope = [
     "workflows/*.yaml",
     "wiki/schemas/*.json",
     "web/static/*.html",
+    "web/static/vendor/*",
 ]
 
 [tool.setuptools.dynamic]
@@ -74,10 +77,10 @@ version = {attr = "zscope._version.__version__"}
 
 [tool.black]
 line-length = 100
-target-version = ['py39']
+target-version = ['py313']
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false

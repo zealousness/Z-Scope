@@ -462,9 +462,15 @@ def test_provider_registry_rejects_duplicate_selection_and_installed_entrypoint_
     class EntryPoint:
         name = "acme"
 
+    class _EntryPoints:
+        @staticmethod
+        def select(group: str) -> list:
+            assert group == "zscope.rule_providers"
+            return [EntryPoint(), EntryPoint()]
+
     monkeypatch.setattr(
         "zscope.rules.extensions.importlib.metadata.entry_points",
-        lambda: {"zscope.rule_providers": [EntryPoint(), EntryPoint()]},
+        lambda: _EntryPoints,
     )
     with pytest.raises(RulePackError, match="duplicate installed rule provider entry point"):
         RuleRegistry._provider_entry_points()

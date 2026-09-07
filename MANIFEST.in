@@ -1,0 +1,2 @@
+recursive-include native/clang-indexer *.cpp CMakeLists.txt *.md
+include scripts/build_clang_indexer.py

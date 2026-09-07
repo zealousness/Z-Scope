@@ -37,9 +37,10 @@ tests:
 - framework 基类定义 Agent 运行协议，`LLMClient` 处理 OpenAI 兼容 endpoint、重试、容量和 call 级 token 结算。一次扫描的所有 profile 共享同一个 `ScanTokenUsageLedger`；它只计量，不限流。
 - `zscope/agents/*/AGENT.md` 是产品运行时系统 prompt，由 spec registry 加载。
 - `zscope/skills/*/SKILL.md` 提供按风险领域激活的审计知识和检查策略。
-- Tool registry 暴露 schema，runtime 执行查询，ToolPolicy 根据 Agent 白名单、后端能力和敏感路径规则过滤。
+- Tool registry 暴露 schema，runtime 执行查询，ToolPolicy 根据 Agent 白名单、后端能力和敏感路径规则过滤。工具结果按条数截断时必须带显式标记（`truncated`、`total_lines`、`has_more`、`caller_count` 等）并提供续取手段（`offset`/`limit`），不得静默丢弃超出上限的证据行。
 - Agent 输出回到分析/验证流水线，不能绕过统一 schema 和 issue identity 直接持久化最终报告。
 - Validator v3 的 V1/V2 使用无状态、严格 schema 的直接 chat completion；V1 不进入通用工具循环，V2 只携带原候选摘要和新增证据。V3 才能按档位使用有界只读工具轨迹。
+- 流式响应未携带任何内容、工具调用与 finish_reason 块时按被截断的流处理并进入传输重试；通用工具循环任何退出路径都返回全部 assistant 文本的拼接内容，不得把循环内追加的用户提示词当作模型输出。
 - 每个真实 HTTP attempt 在发出前原子预留估算 prompt 与最大 completion，返回后按 provider usage 结算。usage event 只保存计量和归因，不保存 prompt、源码正文或模型思维正文。
 
 ## 必须保持的不变量
@@ -48,7 +49,7 @@ tests:
 - 运行时必须默认完整加载 `AGENT.md` 与 `SKILL.md` 契约，不得静默截断规范性 system prompt；上下文压缩应作用于动态证据，只有显式调用限长接口时才允许截断契约。
 - Agent/Skill 声明的工具必须在 registry 中存在，并通过 ToolPolicy 和后端能力 gate。
 - 模型输出解析失败必须可观测并受重试/回退边界控制，不能把任意文本当作已验证 finding。
-- `finish_reason=length` 只允许一次无历史紧凑重试；malformed 输出只允许一次小型格式修复。repair、retry、fallback 和连接中断都必须各自计费。
+- `finish_reason=length` 只允许一次无历史紧凑重试（validator v3 直连完成同样适用：重试携带加倍的输出上限并计入 `validator_length_retry_count`）；malformed 输出只允许一次小型格式修复。repair、retry、fallback 和连接中断都必须各自计费。
 - cached prompt token 是 prompt 子集，reasoning token 是 completion 子集，不得重复加入总 token；provider 不报告 usage 时必须标记 estimated，已发出但用量未知的调用保守扣除全部预留。
 - usage 账本不得拒绝新的 HTTP attempt，也不得缩短模型的 completion allowance；连接中断时仅做保守计量。token 成本是否超出预期由 Benchmark 在扫描完成后判定。
 - 多轮 provider reasoning metadata 只在请求链内原样传递，不得写入普通日志、usage event 或报告。

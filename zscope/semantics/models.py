@@ -4,7 +4,25 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Set
+
+DEFAULT_SEMANTICS_SOURCE = "builtin_defaults"
+
+MERGE_ATTRS = (
+    "allocators",
+    "calloc_allocators",
+    "reallocators",
+    "deallocators",
+    "copy_sinks",
+    "lock_apis",
+    "unlock_apis",
+    "io_acquirers",
+    "io_releasers",
+    "send_sinks",
+    "recv_sources",
+    "format_sinks",
+    "callback_registrars",
+)
 
 
 @dataclass
@@ -19,6 +37,12 @@ class LocalPatternSemantics:
     copy_sinks: Dict[str, List[str]] = field(default_factory=dict)
     lock_apis: Dict[str, List[str]] = field(default_factory=dict)
     unlock_apis: Dict[str, List[str]] = field(default_factory=dict)
+    io_acquirers: Dict[str, List[str]] = field(default_factory=dict)
+    io_releasers: Dict[str, List[str]] = field(default_factory=dict)
+    send_sinks: Dict[str, List[str]] = field(default_factory=dict)
+    recv_sources: Dict[str, List[str]] = field(default_factory=dict)
+    format_sinks: Dict[str, List[str]] = field(default_factory=dict)
+    callback_registrars: Dict[str, List[str]] = field(default_factory=dict)
 
     def add_api(self, category: str, name: str, source: str) -> None:
         target = {
@@ -29,6 +53,12 @@ class LocalPatternSemantics:
             "copy": self.copy_sinks,
             "lock": self.lock_apis,
             "unlock": self.unlock_apis,
+            "io_acquire": self.io_acquirers,
+            "io_release": self.io_releasers,
+            "send_sink": self.send_sinks,
+            "recv_source": self.recv_sources,
+            "format_sink": self.format_sinks,
+            "callback_register": self.callback_registrars,
         }.get(category)
         if target is None:
             return
@@ -41,18 +71,26 @@ class LocalPatternSemantics:
 
     def merge(self, other: "LocalPatternSemantics") -> None:
         self.type_aliases.update(other.type_aliases)
-        for attr in (
-            "allocators",
-            "calloc_allocators",
-            "reallocators",
-            "deallocators",
-            "copy_sinks",
-            "lock_apis",
-            "unlock_apis",
-        ):
+        for attr in MERGE_ATTRS:
             for name, sources in getattr(other, attr).items():
                 for source in sources:
                     self.add_api(CATEGORY_BY_ATTR[attr], name, source)
+
+    def names_from_nondefault_sources(self, attr: str) -> Set[str]:
+        """Return names under ``attr`` that did not come from the builtin defaults.
+
+        Checkers that must keep their hardcoded builtin API base sets unchanged
+        use this to pick up only user-defined wrappers.
+        """
+
+        names = getattr(self, attr, {})
+        if not isinstance(names, dict):
+            return set()
+        return {
+            str(name)
+            for name, sources in names.items()
+            if any(str(source) != DEFAULT_SEMANTICS_SOURCE for source in sources or ())
+        }
 
 
 CATEGORY_BY_ATTR = {
@@ -63,6 +101,28 @@ CATEGORY_BY_ATTR = {
     "copy_sinks": "copy",
     "lock_apis": "lock",
     "unlock_apis": "unlock",
+    "io_acquirers": "io_acquire",
+    "io_releasers": "io_release",
+    "send_sinks": "send_sink",
+    "recv_sources": "recv_source",
+    "format_sinks": "format_sink",
+    "callback_registrars": "callback_register",
+}
+
+_CATEGORY_ATTRS = {
+    "allocator": "allocators",
+    "calloc": "calloc_allocators",
+    "reallocator": "reallocators",
+    "deallocator": "deallocators",
+    "copy": "copy_sinks",
+    "lock": "lock_apis",
+    "unlock": "unlock_apis",
+    "io_acquire": "io_acquirers",
+    "io_release": "io_releasers",
+    "send_sink": "send_sinks",
+    "recv_source": "recv_sources",
+    "format_sink": "format_sinks",
+    "callback_register": "callback_registrars",
 }
 
 
@@ -90,16 +150,29 @@ def classify_api_name(name: str) -> str:
         return "deallocator"
     if re.search(r"(?:mem)?(?:copy|cpy|move)", lower):
         return "copy"
+    if last_token_is(tokens, {"recv", "receive", "read", "input"}) or "recv" in lower:
+        return "recv_source"
+    if last_token_is(tokens, {"send", "write", "emit", "transmit"}) or "send" in lower:
+        return "send_sink"
+    if (
+        last_token_is(tokens, {"open", "fopen", "socket", "accept", "connect", "mmap"})
+        or "open" in lower
+    ):
+        return "io_acquire"
+    if last_token_is(tokens, {"close", "fclose", "munmap", "disconnect"}) or "close" in lower:
+        return "io_release"
+    if "printf" in lower or last_token_is(tokens, {"log", "print", "syslog"}):
+        return "format_sink"
+    if last_token_is(tokens, {"register", "subscribe", "hook", "install"}) and "unregister" not in lower:
+        return "callback_register"
     return ""
 
 
+def last_token_is(tokens: List[str], candidates: Set[str]) -> bool:
+    return bool(tokens) and tokens[-1] in candidates
+
+
 def attr_for_category(category: str) -> str:
-    return {
-        "allocator": "allocators",
-        "calloc": "calloc_allocators",
-        "reallocator": "reallocators",
-        "deallocator": "deallocators",
-        "copy": "copy_sinks",
-        "lock": "lock_apis",
-        "unlock": "unlock_apis",
-    }[category]
+    if category in _CATEGORY_ATTRS:
+        return _CATEGORY_ATTRS[category]
+    raise KeyError(category)

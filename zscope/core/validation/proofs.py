@@ -125,6 +125,18 @@ _REJECTION_REQUIREMENTS = {
         "caller_owned_parent",
         "successful_return_transfers_responsibility",
     },
+    # Source-level unsynchronized-write refutation (Phase 1.2/1.3): the
+    # reported global's write set is dominated by one lock inside the
+    # function body.  Read-shaped claims are never refuted here.
+    "source_lockset_dominates_access": {
+        "lock_dominates_access",
+        "all_writes_guarded",
+    },
+    # Interprocedural lock-protocol refutation (Phase 1.2 "调用方持锁"):
+    # every recorded caller holds the same mutex at the call site.
+    "caller_lock_context_dominates": {
+        "caller_lock_held_at_every_call_site",
+    },
 }
 
 _CONFIRMATION_REQUIREMENTS = {
@@ -204,6 +216,17 @@ _CONFIRMATION_REQUIREMENTS = {
         "reachable_exit_without_release",
         "ownership_not_transferred",
     },
+    # Source-level twin of the CFG event leak proof (Phase 1.2/1.3):
+    # lifecycle facts re-derived from the validator's function source when
+    # the engine supplied no CFG events.  The fact set pins the
+    # path-independent negative existential exactly; no model text can mint
+    # these facts.
+    "source_lifecycle_acquire_without_release": {
+        "event:acquire",
+        "event:exit",
+        "no_intraprocedural_release",
+        "no_ownership_transfer",
+    },
 }
 
 
@@ -220,6 +243,24 @@ def deterministic_decision_proof(
     """
 
     expected = str(outcome or "").lower()
+    if issue.get("analysis_scope") == "conditional_source_branch":
+        return None
+    if expected == "reject" and issue.get("review_checked_proofs_enabled") is True:
+        from .review_checks import checked_receipt
+
+        receipt = checked_receipt(dict(issue))
+        if receipt is None:
+            return None
+        return DecisionProof(
+            outcome="reject", proof_kind="compiler_checked_review_claim",
+            producer_engine=str(receipt["checker_version"]),
+            fact_ids=(str(receipt["fact_store_id"]),),
+            code_hash=str(receipt["candidate_binding"]),
+            assumptions=("bound compiler configuration",),
+            contradiction_or_obligation=str(receipt["reason"]),
+            scope="candidate_obligation_in_current_build", completeness="complete",
+            subject_identity=str(issue.get("candidate_uid") or ""),
+        )
     requirements = _REJECTION_REQUIREMENTS if expected == "reject" else _CONFIRMATION_REQUIREMENTS
     for proof in _proof_records(issue):
         proof_outcome = str(proof.get("outcome") or proof.get("decision") or "").lower()
@@ -228,6 +269,16 @@ def deterministic_decision_proof(
         kind = str(proof.get("proof_kind") or proof.get("kind") or "").lower()
         required = requirements.get(kind)
         if not required:
+            continue
+        # M2 guard: the source_lifecycle acquire-without-release proof loses
+        # its confirm authority when the demotion flag rides on the issue
+        # (measured 0TP/1FP on the frozen balanced run).  The record stays
+        # attached for diagnostics; it simply cannot decide a confirmation.
+        if (
+            expected == "confirm"
+            and kind == "source_lifecycle_acquire_without_release"
+            and issue.get("demote_source_lifecycle_confirm") is True
+        ):
             continue
         facts = _fact_names(proof)
         if not required.issubset(facts):

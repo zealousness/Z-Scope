@@ -186,6 +186,22 @@ def test_joern_cli_import_reuses_existing_cpg(tmp_path) -> None:
     assert client._cpg_path == str(cpg_path)
 
 
+def test_java_source_uses_javasrc_in_server_and_cli(monkeypatch, tmp_path) -> None:
+    client = JoernClient(joern_path="joern", language="java")
+    assert client._build_import_code_query(str(tmp_path)).startswith("importCode.javasrc(")
+    calls = []
+
+    def parse(cmd, **kwargs):
+        calls.append(cmd)
+        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"cpg")
+        return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("zscope.common.joern_client.subprocess.run", parse)
+    client._cli_mode = True
+    assert client.import_cpg(str(tmp_path))
+    assert calls[0][calls[0].index("--language") + 1] == "JAVASRC"
+
+
 def test_joern_windows_batch_launcher_prefers_cli_mode() -> None:
     client = JoernClient(joern_path=r"C:\tmp\joern\joern-cli\joern.bat")
 

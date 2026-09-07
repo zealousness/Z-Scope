@@ -11,11 +11,28 @@ from ...common.issue_identity import canonical_issue_key, flatten_issue_text, pa
 from ..candidates.evidence_models import build_evidence_models
 from ...snapshots.modeling_input import SemanticModelInputError, resolve_function_info
 
-
 VALIDATOR_EVIDENCE_SLICE_VERSION = "zscope.validator-evidence-slice.v2"
 VALIDATOR_EVIDENCE_SLICE_V3 = "zscope.validator-evidence-slice.v3"
 VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v2"
 VALIDATOR_PROTOCOL_V3 = "zscope.validator-protocol.v3"
+
+# Baseline list cap for the project-knowledge projection compaction.  The
+# effective cap is raised to the Wiki selection caps (resolved lazily to avoid
+# an import cycle) so no already-selected constraint/excerpt is dropped here.
+_PROJECT_KNOWLEDGE_PROJECTION_LIST_ITEMS = 16
+
+
+def _wiki_selection_max_list_items() -> int:
+    try:
+        from ...wiki.service import MAX_SOURCE_EXCERPTS, MAX_WIKI_CONSTRAINTS
+
+        return int(max(MAX_WIKI_CONSTRAINTS, MAX_SOURCE_EXCERPTS))
+    except Exception:
+        return _PROJECT_KNOWLEDGE_PROJECTION_LIST_ITEMS
+
+
+_WIKI_SELECTION_MAX_LIST_ITEMS = _wiki_selection_max_list_items()
+
 VALIDATOR_MISSING_FACT_KINDS = frozenset(
     {
         "guard_dominance",
@@ -103,6 +120,96 @@ def is_entry_root_dead_code_rejection(
     return any(term in text for term in dead_code_terms)
 
 
+# Interprocedural lock-protocol claims whose deterministic resolution needs
+# the callers' lock state at the call site (plan Phase 1.2 "调用方持锁").
+_CALLER_LOCK_RULES = frozenset(
+    {
+        "clang_cfg_unlock_without_matching_lock",
+        "clang_cfg_refcount_update_after_unlock",
+    }
+)
+
+
+def _direct_callers_from_paths(issue: Mapping[str, Any]) -> List[str]:
+    """Extract direct caller names from the candidate's recorded call paths."""
+
+    callers: List[str] = []
+    raw_paths = issue.get("call_paths")
+    paths: List[Any] = list(raw_paths) if isinstance(raw_paths, (list, tuple)) else []
+    single = issue.get("call_path")
+    if isinstance(single, (list, tuple)):
+        paths.append(single)
+    for path in paths:
+        if not isinstance(path, (list, tuple)) or len(path) < 2:
+            continue
+        direct = str(path[-2] or "").strip()
+        if direct and direct not in callers:
+            callers.append(direct)
+    return callers
+
+
+def _caller_lock_states(
+    code_index: Any,
+    issue_func: str,
+    caller_names: List[str],
+    limit: int = 8,
+) -> List[Dict[str, Any]]:
+    """Derive each caller's held lock at its call site of ``issue_func``.
+
+    Lexical bracket analysis of every resolvable caller body: a call site is
+    guarded by ``held_lock`` when a LOCK of that mutex appears before the
+    call with no matching UNLOCK in between.  Unresolvable callers are
+    reported with ``resolved: False`` so consumers can distinguish "unknown"
+    from "unlocked" and stay conservative.  Only the first call site per
+    caller is analysed by design.
+    """
+
+    from .evidence_completion import EvidenceCompletionQueue  # lazy: avoids import cycle
+
+    target = str(issue_func or "").strip()
+    call_pattern = re.compile(rf"\b{re.escape(target)}\s*\(") if target else None
+    states: List[Dict[str, Any]] = []
+    for raw in caller_names:
+        caller = str(raw or "").strip()
+        if not caller or not call_pattern or len(states) >= limit:
+            continue
+        try:
+            impl = code_index.get_function_impl(caller, warn_missing=False)
+        except Exception:
+            impl = None
+        code = str((impl or {}).get("code") or "")
+        held_lock = ""
+        call_site_line = 0
+        if code:
+            stack: List[str] = []
+            for line_number, text in enumerate(code.splitlines(), start=1):
+                if call_pattern.search(text):
+                    call_site_line = line_number
+                    held_lock = stack[-1] if stack else ""
+                    break
+                acquired = EvidenceCompletionQueue._lock_argument(text, acquire=True)
+                if acquired:
+                    stack.append(acquired)
+                    continue
+                released = EvidenceCompletionQueue._lock_argument(text, acquire=False)
+                if released:
+                    for index in range(len(stack) - 1, -1, -1):
+                        if stack[index] == released:
+                            stack.pop(index)
+                            break
+        states.append(
+            {
+                "caller": caller,
+                "call_site_line": call_site_line,
+                "held_lock": held_lock,
+                # A retrievable body without the call site says nothing about
+                # the lock state; treat it as unresolved, not as unguarded.
+                "resolved": bool(code) and call_site_line > 0,
+            }
+        )
+    return states
+
+
 def build_validation_evidence_pack(
     issue: Dict[str, Any],
     state: Dict[str, Any],
@@ -167,6 +274,13 @@ def build_validation_evidence_pack(
     )
     validation_requirements = _base_validation_requirements()
     validation_requirements.extend(category_validation_requirements(issue))
+    caller_lock_states: List[Dict[str, Any]] = []
+    if str(issue.get("rule") or "") in _CALLER_LOCK_RULES:
+        caller_lock_states = _caller_lock_states(
+            code_index,
+            issue_func,
+            _direct_callers_from_paths(issue),
+        )
     return {
         "mode": "tri_state_exploitability_validation",
         "dedup_key": issue.get("dedup_key") or issue_key_fn(issue),
@@ -194,6 +308,7 @@ def build_validation_evidence_pack(
         "semantic_overlay_evidence": issue.get("semantic_overlay_evidence")
         or candidate_evidence.get("semantic_overlay_evidence")
         or {},
+        "caller_lock_states": caller_lock_states,
         "finding_kind": issue.get("finding_kind"),
         "defect_class": issue.get("defect_class") or issue.get("subcategory"),
         "rule_confidence": issue.get("rule_confidence"),
@@ -426,13 +541,17 @@ def build_validator_project_knowledge_projection(
     """Project Wiki context into the compact shape shown to Validator LLMs."""
 
     target = knowledge.get("target") if isinstance(knowledge.get("target"), Mapping) else {}
-    issue_file = str(
-        issue.get("candidate_file")
-        or issue.get("relative_file")
-        or issue.get("file_path")
-        or issue.get("file")
-        or ""
-    ).replace("\\", "/").lstrip("/")
+    issue_file = (
+        str(
+            issue.get("candidate_file")
+            or issue.get("relative_file")
+            or issue.get("file_path")
+            or issue.get("file")
+            or ""
+        )
+        .replace("\\", "/")
+        .lstrip("/")
+    )
     if not issue_file:
         location = str(issue.get("location") or "").replace("\\", "/")
         match = re.match(r"^(.*?):\d+(?::\d+)?$", location)
@@ -458,14 +577,15 @@ def build_validator_project_knowledge_projection(
         "obligation_kinds": target_obligation_kinds,
         "candidate_file": str(
             issue_file
-            or ("" if str(target.get("candidate_file") or "") == "unknown.md" else target.get("candidate_file"))
+            or (
+                ""
+                if str(target.get("candidate_file") or "") == "unknown.md"
+                else target.get("candidate_file")
+            )
             or "unknown.md"
         ),
         "function_name": str(
-            target.get("function_name")
-            or target.get("function_id")
-            or issue.get("function")
-            or ""
+            target.get("function_name") or target.get("function_id") or issue.get("function") or ""
         ),
     }
     constraints = []
@@ -493,7 +613,9 @@ def build_validator_project_knowledge_projection(
                 "conflicts_with": list(item.get("conflicts_with") or []),
             }
         )
-    selection = knowledge.get("selection") if isinstance(knowledge.get("selection"), Mapping) else {}
+    selection = (
+        knowledge.get("selection") if isinstance(knowledge.get("selection"), Mapping) else {}
+    )
     return {
         "resolution_mode": knowledge.get("resolution_mode"),
         "wiki_revision_id": knowledge.get("wiki_revision_id"),
@@ -620,7 +742,13 @@ def build_validator_evidence_slice_v3(
     if isinstance(project_knowledge, Mapping):
         result["project_knowledge"] = _compact_validation_value(
             build_validator_project_knowledge_projection(project_knowledge, issue),
-            max_list_items=16,
+            # The list cap must not be lower than the Wiki selection caps:
+            # a selected constraint that is silently dropped here is lost with
+            # no omitted-entry identity, unlike the token-budget selector.
+            max_list_items=max(
+                _WIKI_SELECTION_MAX_LIST_ITEMS,
+                _PROJECT_KNOWLEDGE_PROJECTION_LIST_ITEMS,
+            ),
             max_string_chars=1800,
         )
 

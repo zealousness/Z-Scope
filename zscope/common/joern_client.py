@@ -223,7 +223,7 @@ class JoernClient:
         """Build importCode CPGQL query, optionally with compile_commands.json."""
         normalized_language = self._normalize_language(language or self.language)
         if normalized_language == "java":
-            return f'importCode.java(inputPath="{source_path_escaped}")'
+            return f'importCode.javasrc(inputPath="{source_path_escaped}")'
         if compile_commands_path:
             cc_escaped = compile_commands_path.replace("\\", "\\\\")
             return (
@@ -344,7 +344,7 @@ class JoernClient:
             "-o",
             str(cpg_path),
         ]
-        parse_cmd.extend(["--language", normalized_language])
+        parse_cmd.extend(["--language", "JAVASRC" if normalized_language == "java" else normalized_language])
         if compile_commands_path and normalized_language == "c":
             parse_cmd.extend(
                 [

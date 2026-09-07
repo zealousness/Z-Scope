@@ -83,6 +83,34 @@ def _impl(index_name="target@src/target.c:10-20"):
     }
 
 
+def test_type_demand_only_after_unique_resolution_and_failure_blocks_snapshot():
+    from zscope.retrieval.clang_type_state import TypeContextUnavailable
+
+    class DemandIndex(FakeCodeIndex):
+        type_calls = []
+        find_function_metadata = FakeCodeIndex.find_function_infos
+
+        def find_function_infos(self, *args, **kwargs):
+            pytest.fail("metadata enumeration must not request type enrichment")
+
+        def get_function_type_context(self, name, file, line):
+            self.type_calls.append((name, file, line))
+            raise TypeContextUnavailable("type_context_timeout")
+
+    first = _info()
+    second = _info(index_name="target@other.c:10-20", file_path="other.c")
+    index = DemandIndex([first, second], {first["index_name"]: _impl()})
+    with pytest.raises(SemanticModelInputError) as ambiguous:
+        build_semantic_model_input(index, "target")
+    assert ambiguous.value.reason == "function_info_ambiguous"
+    assert index.type_calls == []
+    with pytest.raises(SemanticModelInputError) as unavailable:
+        build_semantic_model_input(index, "target", file_path="src/target.c")
+    assert unavailable.value.reason == "type_context_unavailable"
+    assert index.type_calls == [(first["index_name"], "src/target.c", 10)]
+    assert index.impl_queries == []
+
+
 def test_build_semantic_model_input_uses_unique_function_info_and_indexed_impl():
     info = _info(project_callees_truncation={"returned": 1, "total": 2})
     index = FakeCodeIndex([info], {info["index_name"]: _impl()})

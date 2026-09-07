@@ -7,6 +7,8 @@ import logging
 import os
 import re
 import threading
+import time
+from bisect import bisect_right
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, Dict, Any, Iterable, List, Sequence, Union, Tuple
@@ -18,6 +20,7 @@ from ..common.utils import (
 )
 from ..common.runtime_limits import ensure_linux_nofile_limit
 from .backend_base import CodeBackend
+from .indexing_runtime import observed
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +117,8 @@ class CodeIndex:
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._function_alias_index: Dict[str, str] = {}
         self._ambiguous_function_aliases: set[str] = set()
+        self._function_query_index: Dict[str, set[str]] = {}
+        self._function_record_variants: Dict[str, set[str]] = {}
         self._function_file_index: Dict[str, set[str]] = {}
         self._function_file_resolution_cache: Dict[Tuple[str, str], str] = {}
         self._declaration_comment_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
@@ -289,10 +294,12 @@ class CodeIndex:
 
             cfg = indexing_config
             cb = ClangBackend(
+                frontend=getattr(cfg, "clang_frontend", "auto"),
+                clang_indexer_path=getattr(cfg, "clang_indexer_path", "zscope-clang-indexer"),
                 clangd_path=cfg.clangd_path if cfg else "clangd",
                 db_path=cfg.knowledge_db_path if cfg else ".zscope_knowledge/code_knowledge.db",
                 batch_size=cfg.batch_size if cfg else 50,
-                max_threads=cfg.max_clangd_threads if cfg else 8,
+                max_threads=cfg.max_clangd_threads if cfg else 4,
             )
             cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
             ok = cb.initialize(
@@ -312,10 +319,12 @@ class CodeIndex:
 
             cfg = indexing_config
             ub = UnifiedBackend(
+                clang_frontend=getattr(cfg, "clang_frontend", "auto"),
+                clang_indexer_path=getattr(cfg, "clang_indexer_path", "zscope-clang-indexer"),
                 clangd_path=cfg.clangd_path if cfg else "clangd",
                 db_path=cfg.knowledge_db_path if cfg else ".zscope_knowledge/code_knowledge.db",
                 batch_size=cfg.batch_size if cfg else 50,
-                max_threads=cfg.max_clangd_threads if cfg else 8,
+                max_threads=cfg.max_clangd_threads if cfg else 4,
                 svf_bin_dir=cfg.svf_bin_dir if cfg else "",
                 gclang_path=cfg.gclang_path if cfg else "gclang",
                 get_bc_path=cfg.get_bc_path if cfg else "get-bc",
@@ -496,6 +505,7 @@ class CodeIndex:
             return self._backend.joern_client
         return None
 
+    @observed("function-name-index")
     def _build_index(self) -> None:
         """Build function index from project."""
         with self._cache_lock:
@@ -503,6 +513,8 @@ class CodeIndex:
             self._function_index.clear()
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
+            self._function_query_index.clear()
+            self._function_record_variants.clear()
             self._function_file_index.clear()
             self._function_file_resolution_cache.clear()
 
@@ -572,7 +584,14 @@ class CodeIndex:
         with self._cache_lock:
             index_key = self._unique_function_index_key(canonical_name, record)
             record["index_name"] = index_key
+            if index_key in self._function_index:
+                # A lazy backend may replace a signature at the same location.
+                # Its old fast aliases must not outlive the old variant postings.
+                for alias, target in list(self._function_alias_index.items()):
+                    if target == index_key:
+                        self._function_alias_index.pop(alias, None)
             self._function_index[index_key] = record
+            self._register_function_query_index(index_key, record)
             self._register_function_file_index(index_key, record)
             self._function_file_resolution_cache.clear()
 
@@ -679,12 +698,12 @@ class CodeIndex:
         *,
         file_path: str = "",
     ) -> List[Tuple[str, Dict[str, Any]]]:
-        query_variants = set(self._function_query_variants(func_name))
+        ordered_variants = self._function_query_variants(func_name)
+        query_variants = set(ordered_variants)
         if not query_variants:
             return []
 
         if not file_path:
-            ordered_variants = self._function_query_variants(func_name)
             with self._cache_lock:
                 for variant in ordered_variants:
                     info = self._function_index.get(variant)
@@ -695,20 +714,21 @@ class CodeIndex:
                     if alias and alias in self._function_index:
                         return [(alias, dict(self._function_index[alias]))]
 
-        records: List[Tuple[str, Dict[str, Any]]] = []
-        if file_path:
-            records = self._function_records_for_file_hint(file_path)
-        if not records:
-            with self._cache_lock:
-                records = [(key, dict(info)) for key, info in self._function_index.items()]
-
-        matches: List[Tuple[str, Dict[str, Any]]] = []
-        for index_key, info in records:
-            if file_path and not self._record_matches_file_hint(info, file_path):
-                continue
-            record_variants = self._function_record_query_variants(index_key, info)
-            if query_variants.intersection(record_variants):
-                matches.append((index_key, info))
+        # Missing names and ambiguous aliases used to copy and normalize every
+        # function for every query. Preserve all matches in an inverted index.
+        with self._cache_lock:
+            candidate_keys: set[str] = set()
+            for variant in query_variants:
+                candidate_keys.update(self._function_query_index.get(variant, ()))
+            matches = [
+                (key, dict(self._function_index[key]))
+                for key in candidate_keys
+                if key in self._function_index
+                and (
+                    not file_path
+                    or self._record_matches_file_hint(self._function_index[key], file_path)
+                )
+            ]
 
         matches.sort(
             key=lambda item: (
@@ -719,6 +739,29 @@ class CodeIndex:
             )
         )
         return matches
+
+    def _register_function_query_index(self, index_key: str, record: Dict[str, Any]) -> None:
+        """Maintain postings on insert/replace, independently of evictable query caches."""
+        for variant in self._function_record_variants.pop(index_key, ()):
+            keys = self._function_query_index[variant]
+            keys.discard(index_key)
+            if not keys:
+                del self._function_query_index[variant]
+        variants = self._function_record_query_variants(index_key, record)
+        self._function_record_variants[index_key] = variants
+        for variant in variants:
+            self._function_query_index.setdefault(variant, set()).add(index_key)
+
+    def _has_indexed_function(self, name: str) -> bool:
+        """Header enumeration only needs existence, including ambiguous names."""
+        variants = self._function_query_variants(name)
+        with self._cache_lock:
+            return any(
+                variant in self._function_index
+                or self._function_alias_index.get(variant) in self._function_index
+                or bool(self._function_query_index.get(variant))
+                for variant in variants
+            )
 
     def _try_backend_function_lookup(self, func_name: str, *, file_path: str = "") -> bool:
         if not self._backend:
@@ -969,11 +1012,12 @@ class CodeIndex:
 
     def _function_query_variants(self, func_name: str) -> List[str]:
         raw = str(func_name or "").strip()
+        normalized = self._normalize_function_query(raw)
         variants = []
         for candidate in (
             raw,
-            self._normalize_function_query(raw),
-            self._strip_cpp_template_args(self._normalize_function_query(raw)),
+            normalized,
+            self._strip_cpp_template_args(normalized),
         ):
             if candidate and candidate not in variants:
                 variants.append(candidate)
@@ -1046,6 +1090,9 @@ class CodeIndex:
         seen = set()
 
         bases_to_search = self.include_paths if self.include_paths else [self.source_root]
+        # Overlapping include roots otherwise walk the same subtree once per
+        # covering root; drop any base nested inside an already-kept root.
+        bases_to_search = self._dedupe_contained_bases(bases_to_search)
 
         for base in bases_to_search:
             for file_path in base.rglob("*"):
@@ -1060,6 +1107,25 @@ class CodeIndex:
                 files.append(str(file_path))
 
         return sorted(files)
+
+    @staticmethod
+    def _dedupe_contained_bases(bases: Iterable[Path]) -> List[Path]:
+        """Drop include roots nested inside another root (single walk each)."""
+        kept: List[Path] = []
+        for base in sorted(
+            {Path(value) for value in bases}, key=lambda p: len(p.parts)
+        ):
+            covered = False
+            for parent in kept:
+                try:
+                    base.relative_to(parent)
+                    covered = True
+                    break
+                except ValueError:
+                    continue
+            if not covered:
+                kept.append(base)
+        return kept
 
     def _build_index_regex(self) -> None:
         """Build index using regex pattern matching (fallback)."""
@@ -1077,6 +1143,8 @@ class CodeIndex:
         signature_text: str,
         lines: Optional[Sequence[str]] = None,
         start_line: int = 1,
+        *,
+        class_scope: Optional[str] = None,
     ) -> Optional[Dict[str, str]]:
         """Best-effort parser for C/C++ function, method, constructor, and destructor heads."""
         original = str(signature_text or "").strip()
@@ -1106,14 +1174,17 @@ class CodeIndex:
         if not canonical_name:
             return None
 
-        class_scope = self._enclosing_cpp_type_name(lines or (), start_line)
+        if class_scope is None:
+            class_scope = self._enclosing_cpp_type_name(lines or (), start_line)
         simple_name = self._cpp_simple_name(self._strip_cpp_template_args(canonical_name))
         parent_name = ""
         if "::" in canonical_name:
             parent_name = self._cpp_tail_name(
                 self._strip_cpp_template_args(canonical_name),
                 2,
-            ).split("::")[0]
+            ).split(
+                "::"
+            )[0]
         class_simple = self._cpp_simple_name(class_scope) if class_scope else ""
         is_destructor = simple_name.startswith("~")
         destructor_target = simple_name[1:] if is_destructor else ""
@@ -1139,31 +1210,42 @@ class CodeIndex:
         line: str,
         lines: Sequence[str],
         line_no: int,
+        *,
+        class_scope: Optional[str] = None,
     ) -> Optional[Dict[str, str]]:
         stripped = str(line or "").strip()
         if not stripped.endswith(";") or "(" not in stripped or "{" in stripped:
             return None
         if stripped.startswith(("#", "typedef ", "using ")):
             return None
-        return self._parse_cpp_function_signature(stripped[:-1], lines, line_no)
+        return self._parse_cpp_function_signature(
+            stripped[:-1], lines, line_no, class_scope=class_scope
+        )
 
     def _enclosing_cpp_type_name(self, lines: Sequence[str], start_line: int) -> str:
         """Return the innermost class/struct name active before start_line."""
         if not lines or start_line <= 1:
             return ""
+        return self._cpp_type_scopes(lines[: max(0, start_line - 1)])[-1]
+
+    @staticmethod
+    def _cpp_type_scopes(lines: Sequence[str]) -> List[str]:
+        """Scope before each line, plus the final scope, in a single file pass."""
+        scopes = [""]
 
         stack: List[Tuple[str, int]] = []
         brace_depth = 0
         pending_type = ""
         in_block_comment = False
 
-        for raw_line in lines[: max(0, start_line - 1)]:
+        for raw_line in lines:
             line = raw_line
             if in_block_comment:
                 if "*/" in line:
                     line = line.split("*/", 1)[1]
                     in_block_comment = False
                 else:
+                    scopes.append(scopes[-1])
                     continue
             while "/*" in line:
                 before, after = line.split("/*", 1)
@@ -1189,12 +1271,14 @@ class CodeIndex:
             brace_depth -= line.count("}")
             while stack and brace_depth < stack[-1][1]:
                 stack.pop()
+            scopes.append("::".join(item[0] for item in stack))
 
-        return "::".join(item[0] for item in stack)
+        return scopes
 
     def _extract_functions_regex(self, file_path: Union[str, Path], content: str) -> None:
         """Extract function definitions using regex."""
         lines = content.split("\n")
+        scopes = self._cpp_type_scopes(lines)
         pending_signature: List[str] = []
         pending_start = 0
         in_block_comment = False
@@ -1245,7 +1329,9 @@ class CodeIndex:
                 continue
 
             before_brace = signature_text.split("{", 1)[0]
-            parsed = self._parse_cpp_function_signature(before_brace, lines, pending_start)
+            parsed = self._parse_cpp_function_signature(
+                before_brace, lines, pending_start, class_scope=scopes[pending_start - 1]
+            )
             if not parsed:
                 pending_signature = []
                 line_no += 1
@@ -1604,8 +1690,11 @@ class CodeIndex:
                 if not lines:
                     continue
 
+                scopes = self._cpp_type_scopes(lines)
                 for line_no, line in enumerate(lines, start=1):
-                    parsed = self._parse_function_declaration_line(line, lines, line_no)
+                    parsed = self._parse_function_declaration_line(
+                        line, lines, line_no, class_scope=scopes[line_no - 1]
+                    )
                     if not parsed:
                         continue
                     block = self._find_leading_c_comment_block(lines, line_no)
@@ -1890,6 +1979,8 @@ class CodeIndex:
                     "start_line": 1,
                     "end_line": 0,
                     "code": "",
+                    "total_lines": 0,
+                    "truncated": False,
                 }
             if start_line is None or start_line < 1:
                 start_line = 1
@@ -1897,14 +1988,14 @@ class CodeIndex:
                 requested_end_line = int(end_line) if end_line is not None else None
             except (TypeError, ValueError):
                 requested_end_line = None
-            if (
-                requested_end_line is None
-                or requested_end_line < start_line
-                or requested_end_line > total_lines
-            ):
-                end_line = min(total_lines, start_line + default_max_lines - 1)
+            if requested_end_line is None or requested_end_line < start_line:
+                desired_end_line = start_line + default_max_lines - 1
             else:
-                end_line = min(requested_end_line, start_line + max_lines - 1)
+                # An end_line past EOF is a "read to the end of the file"
+                # request: clamp it to EOF (within the hard max_lines ceiling)
+                # instead of silently falling back to the short default window.
+                desired_end_line = min(requested_end_line, total_lines)
+            end_line = min(desired_end_line, start_line + max_lines - 1, total_lines)
             start = max(0, start_line - 1)
             end = min(total_lines, end_line)
             code_lines = lines[start:end]
@@ -1914,6 +2005,8 @@ class CodeIndex:
                 "start_line": start_line,
                 "end_line": end_line,
                 "code": code,
+                "total_lines": total_lines,
+                "truncated": end_line < desired_end_line,
             }
         except Exception as e:
             logger.error(f"Failed to read file snippet: {e}")
@@ -2055,10 +2148,16 @@ class CodeIndex:
             for index_key, info in matches
         ]
 
+    def find_function_metadata(self, func_name: str, file_path: str = "") -> List[Dict[str, Any]]:
+        """Enumerate identities without starting type materialization."""
+        return self.find_function_infos(func_name, file_path, include_type_context=False)
+
     def find_function_infos(
         self,
         func_name: str,
         file_path: str = "",
+        *,
+        include_type_context: bool = True,
     ) -> List[Dict[str, Any]]:
         """Return structured function metadata for every matching function record."""
         raw_query = str(func_name or "").strip()
@@ -2075,7 +2174,8 @@ class CodeIndex:
         strict_matches = self._find_function_matches(raw_query, file_path=file_path)
         if strict_matches:
             return [
-                self._function_info_payload(index_key, info) for index_key, info in strict_matches
+                self._function_info_payload(index_key, info, include_type_context=include_type_context)
+                for index_key, info in strict_matches
             ]
 
         location_name, _, _, _ = self._function_location_query_parts(raw_query)
@@ -2098,7 +2198,8 @@ class CodeIndex:
         )
         if fallback_matches:
             return [
-                self._function_info_payload(index_key, info) for index_key, info in fallback_matches
+                self._function_info_payload(index_key, info, include_type_context=include_type_context)
+                for index_key, info in fallback_matches
             ]
 
         macro_impls = self._find_macro_impls(
@@ -2455,6 +2556,8 @@ class CodeIndex:
         self,
         index_key: str,
         info: Dict[str, Any],
+        *,
+        include_type_context: bool = True,
     ) -> Dict[str, Any]:
         raw_file = str(info.get("file") or info.get("filename") or "")
         function_name = str(info.get("name") or info.get("qualified_name") or index_key)
@@ -2479,13 +2582,13 @@ class CodeIndex:
                 extra_macros=macro_edges,
             )
         )
-        payload.update(
-            self._function_info_type_context(
-                index_key,
-                raw_file,
-                self._safe_int(info.get("start_line") or info.get("lineNumber")),
+        if include_type_context:
+            payload.update(
+                self._function_info_type_context(
+                    index_key, raw_file,
+                    self._safe_int(info.get("start_line") or info.get("lineNumber")),
+                )
             )
-        )
         return payload
 
     def get_function_type_context(
@@ -2502,6 +2605,9 @@ class CodeIndex:
                 file_path=file_path,
                 allow_simple_fallback=True,
             )
+        if start_line:
+            matches = [(key, info) for key, info in matches
+                       if self._safe_int(info.get("start_line") or info.get("lineNumber")) == start_line]
         if len(matches) != 1:
             return {"referenced_types": []}
         index_key, info = matches[0]
@@ -2531,22 +2637,15 @@ class CodeIndex:
             except TypeError:
                 raw_context = getter(backend_lookup, raw_file)
         except Exception as exc:
+            from .clang_type_state import TypeContextUnavailable
+            if isinstance(exc, TypeContextUnavailable):
+                raise
             logger.warning(
                 "[type-context] query failed index_name=%s reason=backend_query_failed error=%s",
                 index_key,
                 exc,
             )
-            return {
-                "referenced_types": [],
-                "unresolved_referenced_types": [
-                    {
-                        "name": "[type-context]",
-                        "reference_kinds": [],
-                        "reference_lines": [],
-                        "reason": "backend_query_failed",
-                    }
-                ],
-            }
+            raise TypeContextUnavailable("backend_query_failed", str(exc)) from exc
         result = self._normalize_and_budget_type_context(raw_context)
         logger.debug(
             "[type-context] query index_name=%s resolved=%d unresolved=%d bytes=%d truncated=%s",
@@ -3928,13 +4027,21 @@ class CodeIndex:
         self, header_files: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """Get functions declared in header files (public API)."""
+        from .indexing_runtime import heartbeat
+
+        started = time.monotonic()
+        progress: Dict[str, Any] = {"stage": "backend", "files": 0, "declarations": 0}
+        logger.info("[entry-headers] started indexed_functions=%d", len(self._function_index))
         results: List[Dict[str, Any]] = []
-        if self._backend:
-            try:
-                results.extend(self._backend.get_header_declared_functions(header_files))
-            except Exception as exc:
-                logger.debug("Backend header declaration lookup failed: %s", exc)
-        results.extend(self._get_header_funcs_regex(header_files))
+        with heartbeat("entry-headers", progress):
+            if self._backend:
+                try:
+                    results.extend(self._backend.get_header_declared_functions(header_files))
+                except Exception as exc:
+                    logger.debug("Backend header declaration lookup failed: %s", exc)
+            progress["backend_declarations"] = len(results)
+            progress["stage"] = "source_headers"
+            results.extend(self._get_header_funcs_regex(header_files, progress=progress))
 
         deduped: Dict[tuple[str, str], Dict[str, Any]] = {}
         for item in results:
@@ -3951,10 +4058,17 @@ class CodeIndex:
             if previous and int(previous.get("lineNumber") or 0) > 0:
                 continue
             deduped[key] = {"name": name, "filename": filename, "lineNumber": line_no}
+        logger.info(
+            "[entry-headers] completed files=%d checked=%d matched=%d elapsed=%.3fs",
+            progress["files"],
+            progress["declarations"],
+            len(deduped),
+            time.monotonic() - started,
+        )
         return list(deduped.values())
 
     def _get_header_funcs_regex(
-        self, header_files: Optional[List[str]] = None
+        self, header_files: Optional[List[str]] = None, *, progress: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         func_decl_re = re.compile(
             r"^\s*(?:extern\s+)?"
@@ -3964,20 +4078,33 @@ class CodeIndex:
             re.MULTILINE | re.DOTALL,
         )
         results = []
+        progress = progress if progress is not None else {"files": 0, "declarations": 0}
+        seen: set[Path] = set()
         globs = self._header_globs(header_files)
         for pattern in globs:
             for fp in self.source_root.rglob(pattern):
+                if fp in seen:
+                    continue
+                seen.add(fp)
+                progress.update(file=str(fp), line=0)
                 try:
                     content = self._read_file_text(fp)
                 except Exception:
                     continue
                 lines = content.splitlines()
+                scopes = self._cpp_type_scopes(lines)
+                line_starts = [0] + [m.end() for m in re.finditer("\n", content)]
                 for line_no, line in enumerate(lines, start=1):
-                    parsed = self._parse_function_declaration_line(line, lines, line_no)
+                    if line_no % 64 == 0:
+                        progress["line"] = line_no
+                    parsed = self._parse_function_declaration_line(
+                        line, lines, line_no, class_scope=scopes[line_no - 1]
+                    )
                     if not parsed:
                         continue
                     name = parsed["name"]
-                    if self._resolve_function_name(name) in self._function_index:
+                    progress["declarations"] += 1
+                    if self._has_indexed_function(name):
                         results.append(
                             {
                                 "name": name,
@@ -3987,10 +4114,11 @@ class CodeIndex:
                         )
                 for m in func_decl_re.finditer(content):
                     name = m.group("name")
-                    line_no = content[: m.start()].count("\n") + 1
-                    if self._enclosing_cpp_type_name(lines, line_no):
+                    line_no = bisect_right(line_starts, m.start())
+                    if scopes[line_no - 1]:
                         continue
-                    if self._resolve_function_name(name) in self._function_index:
+                    progress["declarations"] += 1
+                    if self._has_indexed_function(name):
                         results.append(
                             {
                                 "name": name,
@@ -3998,6 +4126,7 @@ class CodeIndex:
                                 "lineNumber": line_no,
                             }
                         )
+                progress["files"] += 1
         return results
 
     @staticmethod
@@ -4480,6 +4609,8 @@ class CodeIndex:
             self._declaration_comment_index = None
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
+            self._function_query_index.clear()
+            self._function_record_variants.clear()
             self._macro_definition_index = None
             self._global_definition_index = None
             self._macro_definition_miss_cache.clear()

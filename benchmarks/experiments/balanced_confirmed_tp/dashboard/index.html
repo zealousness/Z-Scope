@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<title>M5 balanced confirmed TP — 试点看板</title>
+<style>
+:root{--bg:#0f1420;--card:#171e2e;--ink:#e8edf7;--mut:#93a0b8;--acc:#5aa2ff;--ok:#3ddc97;--warn:#ffcc66;--bad:#ff6b81;--line:#26314a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 "Segoe UI",system-ui,sans-serif}
+header{padding:18px 26px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:16px}
+header h1{font-size:19px;margin:0}header .sub{color:var(--mut);font-size:12px}
+nav{display:flex;gap:4px;padding:10px 26px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+nav button{background:var(--card);color:var(--mut);border:1px solid var(--line);border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px}
+nav button.on{color:var(--ink);border-color:var(--acc);background:#1b2345}
+main{padding:20px 26px;max-width:1280px}
+section{display:none}section.on{display:block}
+h2{font-size:15px;margin:22px 0 10px;color:var(--acc)}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card .k{color:var(--mut);font-size:12px}.card .v{font-size:24px;font-weight:600;margin-top:2px}
+.card .d{font-size:12px;color:var(--mut);margin-top:2px}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:10px;overflow:hidden;font-size:13px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--mut);font-weight:600;font-size:12px;background:#1b2338}
+tr:last-child td{border-bottom:none}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px}
+.ok{background:#123b2e;color:var(--ok)}.warn{background:#3b3212;color:var(--warn)}.bad{background:#3b1620;color:var(--bad)}.info{background:#12283b;color:var(--acc)}
+.bar{height:8px;border-radius:6px;background:#22304d;overflow:hidden;margin-top:4px}.bar i{display:block;height:100%;background:var(--acc)}
+.small{color:var(--mut);font-size:12px}
+code{background:#111827;border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:12px}
+</style></head><body>
+<header><h1>M5 balanced confirmed TP — 试点看板</h1><span class="sub">scorer: truth-matcher v2 · 数据: 冻结 run 20260905T130307Z / 20260906T132051Z</span></header>
+<nav id="nav"></nav><main id="main"></main>
+<script>
+const D = {"runs": {"r2": {"label": "R2 基线", "run": "20260905T130307Z", "v2": {"default": {"tp": 96, "fp_raw": 43, "fp_eff": 22, "recall": 0.7059, "precision": 0.8136, "dup": 0}, "with_needs_review": {"tp": 124, "fp_raw": 113, "fp_eff": 66, "recall": 0.9118, "precision": 0.6526, "dup": 0}}, "v1": {"default": {"tp": 119, "fp_raw": 20, "fp_eff": 0, "recall": 0.875, "precision": 85.61, "dup": 20}, "with_needs_review": {"tp": 135, "fp_raw": 102, "fp_eff": 0, "recall": 0.9926, "precision": 0.5696, "dup": 20}}}, "guards": {"label": "守卫 run", "run": "20260906T132051Z", "v2": {"default": {"tp": 92, "fp_raw": 40, "fp_eff": 21, "recall": 0.6765, "precision": 0.8142, "dup": 0}, "with_needs_review": {"tp": 123, "fp_raw": 113, "fp_eff": 66, "recall": 0.9044, "precision": 0.6508, "dup": 0}}, "v1": {"default": {"tp": 116, "fp_raw": 16, "fp_eff": 0, "recall": 0.8529, "precision": 87.88, "dup": 16}, "with_needs_review": {"tp": 134, "fp_raw": 102, "fp_eff": 0, "recall": 0.9853, "precision": 0.5678, "dup": 16}}}}, "funnel": [{"run": "trial/20260905T130307Z/run-01", "candidates_in_validation": 237, "engines": {"cpp_clang_cfg": 169, "cpp_graph": 57, "?": 11}, "V0_deterministic": {"confirm_TP": 59, "confirm_FP": 4, "precision": 93.7}, "V1_initial": {"conversations": 176, "tokens": 1830763, "verdicts": {"uncertain": 166, "rejected": 5, "verified": 3}}, "V3_investigation": {"conversations": 1529, "tokens": 34634950, "candidates_with_v3": 143, "transitions": {"uncertain -> verified": 74, "uncertain -> rejected": 44, "uncertain -> uncertain": 21, "rejected -> rejected": 3, "verified -> verified": 1}}, "V3_confirmed": {"TP": 59, "FP": 16, "precision": 78.7}, "V1_confirmed": {"TP": 1, "FP": 0}, "terminal": {"confirmed": 139, "needs_review_pure": 98, "confirmed_matched_truths": 119, "confirmed_FP": 20}, "review_pool": {"covers_unmatched_truth_items": 81, "covers_unmatched_truths_distinct": 14, "no_truth": -42}, "tokens_other_layers": {"?": 5338223}}, {"run": "trial/20260906T132051Z/run-01", "candidates_in_validation": 236, "engines": {"cpp_clang_cfg": 168, "cpp_graph": 57, "?": 11}, "V0_deterministic": {"confirm_TP": 59, "confirm_FP": 2, "precision": 96.7}, "V1_initial": {"conversations": 177, "tokens": 1854437, "verdicts": {"uncertain": 164, "verified": 6, "rejected": 4}}, "V3_investigation": {"conversations": 1620, "tokens": 38736729, "candidates_with_v3": 141, "transitions": {"uncertain -> verified": 67, "uncertain -> rejected": 36, "uncertain -> uncertain": 31, "rejected -> rejected": 4, "verified -> verified": 3}}, "V3_confirmed": {"TP": 55, "FP": 13, "precision": 80.9}, "V1_confirmed": {"TP": 2, "FP": 1}, "terminal": {"confirmed": 132, "needs_review_pure": 104, "confirmed_matched_truths": 116, "confirmed_FP": 16}, "review_pool": {"covers_unmatched_truth_items": 86, "covers_unmatched_truths_distinct": 16, "no_truth": -46}, "tokens_other_layers": {"?": 4247783}}], "fp_counts": {"truth_covered_additional": 19, "cross_anchor_overlap": 13, "weak_legacy_overlap": 8}, "fp_rows": [{"id": "?", "cat": "bounds", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "heap_overflow", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "integer_overflow", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "integer_overflow", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "integer_overflow", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "invalid_free", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "memory_leak", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "memory_leak", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "resource_allocation_without_limits", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "signal_race", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}, {"id": "?", "cat": "uninitialized_pointer", "site": "None:None", "dl": "?", "rule": "", "proof": "-"}], "milestones": [["M5-1", "FP 双视图解剖", "完成", "V3 16 / V0 4 / positive-case 6；根因：所有权盲区、尺寸无界、无对冲辩护"], ["M5-2", "措施设计 + TP 损害核算", "完成", "M1-M5 措施表；M4 废案"], ["M5-3", "M1/M2/M3′ 落地 + 离线精算", "完成", "−2 FP / 0 TP（冻结 run 实测）"], ["M5-4", "正式 benchmark（守卫全开）", "完成", "v1口径 precision 85.61→87.88；v2 重出见分数卡"], ["M5-5", "去重机制重构", "完成", "site-aware merge 无条件开启；dedup_key 吞 truth 边界修复"], ["M5-6", "checked_proofs", "完成", "cc/clang 驱动门 + benchmark 构建钉 clang；5 收据 / 0 TP 损伤"], ["M5-7", "深度化 rollout", "完成", "四特性 balanced 默认开（tri-state）"], ["M5-8", "FP 治理（v2 口径重定义）", "进行中", "21 有效 FP = 尺寸族 14 + 泄漏 3 + 散发 4；8a 合并实测 −6FP/0TP；8c 工作表已出"], ["M5-9", "V2b 重评", "等 M5-8", "R3 replay 净负，暂缓"], ["M5-10", "成本收敛", "部分", "V3 占 85% token，~600k tok/TP"], ["M5-11", "formal 双臂 A/B", "未开始", "分离 V3 方差（±3 TP）"]], "guards": [["M1 uncertain 翻案复核", "深度门（balanced 开）", "单测 + spot-check"], ["M2 source_lifecycle 降级", "深度门", "冻结精算 −1FP/0TP"], ["M3′ 函数体矛盾守卫", "深度门", "冻结精算 −1FP/35TP 无损"], ["checked_proofs", "深度门 ∧ 驱动绑定门", "5 收据 / 0 TP 损伤"], ["site-aware dedup", "无条件", "157 回归 + 冻结复验零扰动"]], "agg": [["展示聚合（家族+函数+sink签名+行单链≤8/24）", "24 条冗余 → 12 组", "0（定义保证）", "推荐：呈现层"], ["M5-8a 尺寸族窗口（±16 行物理合并）", "10 条", "0（实测）", "已验证可物理合并"], ["通用键物理合并（反例）", "24 条", "−6/−7 TP", "禁止——机制组多 truth"]]};
+const tabs = ["总览","分数卡","验证漏斗","FP 解剖","复核工作表","聚合方案","守卫与机制","工件索引"];
+const main = document.getElementById("main"), nav = document.getElementById("nav");
+tabs.forEach((t,i)=>{const b=document.createElement("button");b.textContent=t;b.onclick=()=>show(i);nav.appendChild(b);});
+function show(i){[...nav.children].forEach((b,j)=>b.classList.toggle("on",j===i));
+  main.innerHTML = [vOverview,vScore,vFunnel,vFP,vSheet,vAgg,vGuards,vFiles][i]();}
+function tbl(head,rows,cls=""){return `<table class="${cls}"><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr>`+
+  rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("")+"</table>";}
+function pill(v){const cls=v.includes("完成")||v.startsWith("0")||v.includes("无损")?"ok":(v.includes("进行")||v.includes("部分")?"warn":"info");return `<span class="pill ${cls}">${v}</span>`;}
+function vOverview(){
+  const ms = D.milestones.map(m=>`<tr><td><b>${m[0]}</b></td><td>${m[1]}</td><td>${pill(m[2])}</td><td class="small">${m[3]}</td></tr>`).join("");
+  const g = D.guards.map(x=>`<tr><td>${x[0]}</td><td class="small">${x[1]}</td><td class="small">${x[2]}</td></tr>`).join("");
+  const v2 = D.runs.guards.v2.default, v1 = D.runs.guards.v1.default;
+  return `<h2>里程碑</h2><div class="grid">
+   <div class="card"><div class="k">确认层 precision (v2)</div><div class="v">${(v2.precision*100).toFixed(2)}%</div><div class="d">tp=${v2.tp} fp_raw=${v2.fp_raw}</div></div>
+   <div class="card"><div class="k">确认层 recall (v2)</div><div class="v">${(v2.recall*100).toFixed(2)}%</div><div class="d">truth 136</div></div>
+   <div class="card"><div class="k">合并视图 recall (v2)</div><div class="v">${(D.runs.guards.v2.with_needs_review.recall*100).toFixed(2)}%</div><div class="d">确认+复核兜底</div></div>
+   <div class="card"><div class="k">有效 FP（确认层）</div><div class="v">${v2.fp_eff}</div><div class="d">raw ${v2.fp_raw}，其中 ${v2.fp_raw-v2.fp_eff} 为 truth 附加锚点覆盖</div></div></div>
+   <h2>守卫与机制（balanced 默认生效）</h2>${tbl(["机制","门","验证"],g)}
+   <h2>里程碑明细</h2>${tbl(["阶段","内容","状态","说明"],ms)}`;
+}
+function vScore(){
+  const rows=[];for(const k of ["r2","guards"]){const r=D.runs[k];
+   for(const sc of ["v2","v1"]){for(const vw of ["default","with_needs_review"]){const m=r[sc][vw];
+    rows.push([r.label,sc==="v2"?"v2 (truth-matcher)":("v1 (旧口径)"),vw,m.tp,m.fp_raw,m.fp_eff,
+      (m.recall*100).toFixed(2)+"%",(m.precision*100).toFixed(2)+"%",m.dup]);}}}
+  return `<h2>分数卡（两轮冻结 run × 两代口径 × 两视图）</h2>
+  <p class="small">v2 = truth-matcher（当前对齐口径）；v1 = 旧口径（历史对照，勿与 v2 混读）。fp_eff = 官方 effective（去 truth 附加锚点覆盖）。</p>`+
+  tbl(["run","口径","视图","TP","FP_raw","FP_eff","recall","precision","dup_of_matched"],rows)+
+  `<h2>守卫差分（v2）</h2>`+tbl(["指标","R2 基线","守卫 run","Δ"],
+   [["确认层 TP",D.runs.r2.v2.default.tp,D.runs.guards.v2.default.tp,D.runs.guards.v2.default.tp-D.runs.r2.v2.default.tp],
+    ["确认层 FP_raw",D.runs.r2.v2.default.fp_raw,D.runs.guards.v2.default.fp_raw,D.runs.guards.v2.default.fp_raw-D.runs.r2.v2.default.fp_raw],
+    ["确认层 recall",(D.runs.r2.v2.default.recall*100).toFixed(2)+"%",(D.runs.guards.v2.default.recall*100).toFixed(2)+"%",((D.runs.guards.v2.default.recall-D.runs.r2.v2.default.recall)*100).toFixed(2)+"pp"],
+    ["合并 TP",D.runs.r2.v2.with_needs_review.tp,D.runs.guards.v2.with_needs_review.tp,D.runs.guards.v2.with_needs_review.tp-D.runs.r2.v2.with_needs_review.tp]])+
+  `<p class="small">TP Δ 为 V3 抽样方差量级（丢失 truth 候选均在复核池兜底）；FP Δ 为守卫因果（M2/M3′ 精算 + 正式 run 双重验证）。</p>`;
+}
+function vFunnel(){
+  const f = D.funnel;const row=(l,r)=>`<tr><td>${l}</td><td>${r.candidates_in_validation}</td>
+   <td>${r.V0_deterministic.confirm_TP}/${r.V0_deterministic.confirm_FP} (${r.V0_deterministic.precision}%)</td>
+   <td>${r.V1_initial.conversations} / ${(r.V1_initial.tokens/1e6).toFixed(2)}M</td>
+   <td>${r.V3_investigation.conversations} / ${(r.V3_investigation.tokens/1e6).toFixed(1)}M</td>
+   <td>${r.V3_confirmed.TP}/${r.V3_confirmed.FP} (${r.V3_confirmed.precision}%)</td>
+   <td>${r.terminal.confirmed} / ${r.terminal.needs_review_pure}</td></tr>`;
+  return `<h2>验证梯子漏斗（候选 → V0 → V1 → V3 → 终态）</h2>`+
+  tbl(["run","进入验证候选","V0 确认 TP/FP (精度)","V1 对话/token","V3 对话/token","V3 确认 TP/FP (精度)","终态 确认/复核池"],
+      [row("R2 基线",f[1]),row("守卫 run",f[0])])+
+  `<h2>层贡献画像</h2>`+tbl(["层","TP 贡献","FP","token 成本","说明"],
+   [["V0 确定性证明","59 (44%)","4→2（M2/M3′ 后）","0","零成本确认主干"],
+    ["V1 初始验证","1-2 (1%)","0-1","1.8M","分诊层，93% 打回 V3"],
+    ["V3 调查","59→55 (44%)","16→13","34.6M→38.7M","recall 主力 + FP 大户（M5-8 靶区）"],
+    ["复核池（人工）","13-16 truth 机会","噪声 17-18","人工","兜底层 +9.6pp recall 机会"]])+
+  `<p class="small">V3 的不确定沉淀是主要出口：初始 uncertain 166 中仅 67-74 翻案成功。成本集中在 V3（85% 验证 token）。</p>`;
+}
+function vFP(){
+  const c = D.fp_counts;const rows = D.fp_rows.map((r,i)=>[i+1,r.id,r.cat,r.site,r.dl,r.proof]);
+  const cls = Object.entries(c).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`);
+  return `<h2>确认层 FP 解剖（v2，守卫 run）</h2>
+  <div class="grid"><div class="card"><div class="k">fp-audit 分类</div>${tbl(["类","数"],cls)}</div>
+  <div class="card"><div class="k">口径</div><div class="small">raw ${D.runs.guards.v2.default.fp_raw} = effective ${D.runs.guards.v2.default.fp_eff} + truth_covered_additional ${c["truth_covered_additional"]||0}<br>effective 21 = cross_anchor_overlap 13 + weak_legacy_overlap 8<br>簇：尺寸族 14 (67%) · 泄漏/所有权 3 · 散发 4</div></div></div>
+  <h2>21 个有效 FP 清单</h2>`+tbl(["#","id","类别","位点","DL","确定性证明"],rows)+
+  `<p class="small">处置工作表（含代码上下文与确认理由）见 <code>m5_8c_review_worksheet.md</code>：truth_gap 4 / design_exemption 3 / model_error 4 / m5_8a_merge 10（预处理建议，人工裁定为准）。</p>`;
+}
+function vSheet(){
+  return `<h2>M5-8 子措施与聚合方案</h2>`+
+  tbl(["措施","内容","实测效果","状态"],
+   [["M5-8a 同位点跨框架合并","尺寸族：同函数±16行，特异性代表（int_ovf/unchecked > resource）","−6 FP / 0 TP（两轮 run）","实测通过，待落地 reporting 层"],
+    ["M5-8b wrapper 锚定降级","_safe_malloc/_safe_calloc/_str_dup 站点不自动确认","−3~5 FP / 0 TP（wrapper 位点无 truth）","待落地"],
+    ["M5-8c 真值治理","V0 证明确认但 truth 未列的发现 → truth_gap/design_exemption/model_error 三分类","FP 可解释性；真值扩充队列","复核工作表已生成"]])+
+  `<h2>聚合方案（同问题不同类别的显示聚合）</h2>
+  <p class="small">跨类别聚合的合法桥梁 = 语义家族（窄域三族）；位点身份 = 端点/sink 签名 + 行单链（gap≤8/跨度≤24）。</p>`+
+  tbl(["键变体","折叠量","ΔTP（确认层）","判定"],D.agg.map(a=>[a[0],a[1],a[2],pill(a[3])]))+
+  `<p class="small">制度护栏：任何新物理合并键上线前必须过「冻结双 run + 官方 scorer ΔTP=0」测试。</p>`;
+}
+function vGuards(){
+  return `<h2>守卫与机制清单</h2>`+tbl(["机制","门","验证"],D.guards.map(x=>[x[0],x[1],x[2]]))+
+  `<h2>未验证特性队列</h2>`+tbl(["特性","说明","建议"],
+   [["validation_related_findings","关联候选扩展验证","单臂 balanced 实测"],
+    ["validation_uncertain_confirm_threshold","高置信 uncertain 自动确认带","replay 扫阈值（与 M1 交互）"],
+    ["semantic_dedup.llm_enabled","LLM 语义去重","冻结 run 折叠模拟 + ΔTP 测试"],
+    ["enable_global_model / enable_subagent_workers","分析层架构特性","A/B run"],
+    ["security_semantic_enrichment_mode=active","影子→active","治理决策"]]);
+}
+function vFiles(){
+  const base="benchmarks/experiments/balanced_confirmed_tp/";
+  const files=[["score.v2.json（×2 run）","v2 口径正式基线"],["funnel_view.json","验证梯子漏斗数据"],
+   ["m5_8c_review_worksheet.md","21 有效 FP 复核工作表"],["m58a_merge_sim.py / agg_scheme_sim.py","合并/聚合模拟"],
+   ["replay_r3_review_pool.py","R3 replay 驱动"],["r3_replay_results.jsonl","R3 95 项结果"],
+   ["guards_trial_console.log","守卫 trial 控制台日志"],["dedup_fix_verify.py / fold_tp_safety.py","dedup/折叠 TP 安全测试"]];
+  return `<h2>工件索引</h2><p class="small">目录前缀：<code>${base}</code></p>`+tbl(["工件","内容"],files.map(f=>[`<code>${f[0]}</code>`,f[1]]))+
+  `<h2>刷新方式</h2><p class="small">重新生成：<code>python benchmarks/experiments/balanced_confirmed_tp/gen_dashboard.py</code> 后刷新本页。服务器：127.0.0.1:8787（静态）。</p>`;
+}
+show(0);
+</script></body></html>

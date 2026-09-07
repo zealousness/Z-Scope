@@ -66,14 +66,13 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.balanced_attestation_run_id }}
           digest-mismatch: error
-      - name: Build wheelhouse from locked Python 3.13 dependencies
+      - name: Build four portable assets from locked inputs
         run: |
-          rm -rf dist/release dist/wheelhouse
-          mkdir -p dist/wheelhouse
-          python3 -m build --wheel
-          python3 -m pip download --require-hashes -r requirements/release/py313.txt -d dist/wheelhouse
-          cp dist/zscope-*.whl dist/wheelhouse/
-      - name: Build signed split assets and SBOMs
+          python3 scripts/portable_release.py bootstrap
+          python3 scripts/portable_release.py fetch
+          python3 scripts/portable_release.py build --formal --output dist/release --arm-compiler-helper
+          python3 scripts/portable_release.py verify --run-smoke --output dist/release
+      - name: Sign verified portable assets
         env:
           Z_SCOPE_RELEASE_PRIVATE_KEY: ${{ secrets.Z_SCOPE_RELEASE_PRIVATE_KEY }}
         run: |
@@ -81,18 +80,10 @@ jobs:
           key_file="$(mktemp)"
           trap 'rm -f "$key_file"' EXIT
           printf '%s' "$Z_SCOPE_RELEASE_PRIVATE_KEY" > "$key_file"
-          bash scripts/build_release_assets.sh \
-            --runtime "$Z_SCOPE_CPYTHON_313_RUNTIME" \
-            --wheelhouse dist/wheelhouse \
-            --pip-pyz "$Z_SCOPE_PIP_PYZ" \
-            --cpp-deps "$Z_SCOPE_CPP_TOOLSET" \
-            --java-deps "$Z_SCOPE_JAVA_TOOLSET" \
-            --licenses "$Z_SCOPE_THIRD_PARTY_LICENSES" \
-            --private-key "$key_file"
+          python3 scripts/portable_release.py sign --output dist/release --private-key "$key_file"
       - name: Verify release assets and release-candidate evidence
-        env:
-          Z_SCOPE_OFFLINE_SMOKE_EVIDENCE: ${{ vars.Z_SCOPE_OFFLINE_SMOKE_EVIDENCE }}
         run: |
+          python3 scripts/portable_release.py verify --formal --output dist/release
           python3 scripts/verify_release_assets.py --asset-dir dist/release
           python3 scripts/evaluate_release_candidate.py \
             --release-sha "$(git rev-parse HEAD)" \
@@ -101,7 +92,7 @@ jobs:
             --balanced-default-attestation "$GITHUB_WORKSPACE/release-evidence/balanced-default/balanced-default-attestation.json" \
             --balanced-attestation-workflow-run-id '${{ inputs.balanced_attestation_run_id }}' \
             --asset-dir dist/release \
-            --offline-smoke-evidence "$Z_SCOPE_OFFLINE_SMOKE_EVIDENCE" \
+            --offline-smoke-evidence release-evidence/portable-offline-smoke.json \
             --output dist/release-candidate-audit.json
       - name: Create draft release
         env:

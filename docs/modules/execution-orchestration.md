@@ -42,10 +42,13 @@ tests:
 
 ## 必须保持的不变量
 
+- Review 关联发现使用独立冻结的追加 Ledger，不能重新打开主 Ledger 的发现阶段。主 Ledger 的最终 lifecycle snapshot 和 summary 合并追加区；子候选走正常验证，最多一代，中断时保留未完成义务。追加区参与报告去重和计数，不应仅停留在入口报告的原始 observations 中。
+
 - `--resume`、`--maintain` 和 diff impact 的互斥规则必须在真正开始扫描前验证。
 - `analysis.workflow_name` 是运行时字段，不允许作为用户 YAML 配置项。
 - 没有匹配入口的 diff path 应明确停止，不能静默回退到 `main`。
 - 入口发现、断点续扫、历史报告备份和取消状态必须保持可审计。
+- 自动入口发现区分头文件 API、函数体信号和候选选择阶段，打印阶段耗时及数量。头文件遍历及函数体发现有独立的 30 秒心跳，不依赖单个文件或函数完成后才能报告进度；这些优化不改变入口选择范围。
 - 批量完整性检查必须以实际物化并调度的入口身份对齐结果，不能用签名不完整的原始入口把已完成任务误判为中断。
 - Workflow 文件和 handler 名称必须一一对应，未知 step 应明确失败。
 - 启用 Wiki 时，每个 scan session 只能编译并固定一次 `ProjectKnowledgeService`；所有入口和 scan-level Validator 共享该只读实例，入口 Analyzer 不得再次编译或提前关闭它，session 结束后统一释放。

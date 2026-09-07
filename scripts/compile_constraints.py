@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate hash-locked Linux constraints for every verified Python minor."""
+"""Generate the hash-locked Linux constraints for the supported Python minor."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSIONS = ("3.9", "3.10", "3.11", "3.12", "3.13", "3.14")
+VERSIONS = ("3.13",)
 
 
 def main() -> None:

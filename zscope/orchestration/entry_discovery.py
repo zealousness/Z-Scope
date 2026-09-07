@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -11,6 +13,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from ..config.function_entry import FunctionEntry
 from ..common.utils import matches_interface_path
 from ..retrieval.code_index import CodeIndex
+from ..retrieval.indexing_runtime import heartbeat
+
+logger = logging.getLogger(__name__)
 
 
 API_PROMPT = (
@@ -260,10 +265,26 @@ class EntryDiscovery:
         self._function_impl_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
         self._inactive_implementation_identities: set[Tuple[str, str]] = set()
         self._active_translation_units = self._load_active_translation_units()
+        self._discovery_progress: Dict[str, Any] = {}
 
     def discover(self, max_candidates: int = 200) -> EntryDiscoveryResult:
+        started = time.monotonic()
+        logger.info("[entry-discovery] phase=headers started")
         header_candidates = self._discover_header_api()
-        body_candidates = self._discover_body_entries()
+        logger.info(
+            "[entry-discovery] phase=headers completed candidates=%d elapsed=%.3fs",
+            len(header_candidates),
+            time.monotonic() - started,
+        )
+        self._discovery_progress = {"functions": 0, "function": "", "stage": "bodies"}
+        with heartbeat("entry-bodies", self._discovery_progress):
+            body_candidates = self._discover_body_entries()
+        logger.info(
+            "[entry-discovery] phase=bodies completed functions=%d candidates=%d elapsed=%.3fs",
+            self._discovery_progress["functions"],
+            len(body_candidates),
+            time.monotonic() - started,
+        )
 
         merged = self._merge_candidates(header_candidates + body_candidates)
         merged.sort(
@@ -277,6 +298,13 @@ class EntryDiscovery:
         selected = self._select_stratified(merged, max_candidates)
         selected_ids = {id(candidate) for candidate in selected}
         deferred = [candidate for candidate in merged if id(candidate) not in selected_ids]
+        logger.info(
+            "[entry-discovery] completed candidates=%d selected=%d deferred=%d elapsed=%.3fs",
+            len(merged),
+            len(selected),
+            len(deferred),
+            time.monotonic() - started,
+        )
         for candidate in selected:
             candidate.selection_status = "selected"
             candidate.deferred_reason = ""
@@ -419,6 +447,8 @@ class EntryDiscovery:
     def _discover_body_entries(self) -> List[EntryCandidate]:
         candidates: List[EntryCandidate] = []
         for name, impl in self._body_function_implementations():
+            self._discovery_progress["functions"] = self._discovery_progress.get("functions", 0) + 1
+            self._discovery_progress["function"] = name
             if not impl:
                 continue
             file_path = str(impl.get("file") or "")
@@ -436,9 +466,7 @@ class EntryDiscovery:
             shm_hits = self._find_calls(
                 call_search_code, self.shared_memory_calls, code_is_stripped=True
             )
-            thread_hits = self._find_calls(
-                call_search_code, self.thread_calls, code_is_stripped=True
-            )
+            thread_hits = self._find_calls(call_search_code, self.thread_calls, code_is_stripped=True)
             input_hits = self._find_calls(call_search_code, self.input_calls, code_is_stripped=True)
 
             if comm_hits or shm_hits:

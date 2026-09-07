@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -117,7 +118,12 @@ def test_zscope_init_generates_language_isolated_java_config(tmp_path: Path, mon
     assert ConfigLoader.load(str(output)).project.language == "java"
 
 
-def test_doctor_checks_only_the_explicit_regex_backend(tmp_path: Path) -> None:
+def test_doctor_checks_only_the_explicit_regex_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The interpreter floor is a runtime environment diagnostic; decouple this
+    # backend-coverage unit test from the host interpreter version.
+    monkeypatch.setattr("zscope.cli.doctor.sys.version_info", (3, 13, 0))
     path = tmp_path / "zscope.yaml"
     path.write_text(json.dumps(_regex_config(tmp_path)), encoding="utf-8")
 

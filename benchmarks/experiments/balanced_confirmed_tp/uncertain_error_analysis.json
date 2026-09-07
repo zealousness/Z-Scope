@@ -1,0 +1,2611 @@
+{
+  "schema_version": "zscope.uncertain-error-analysis.v1",
+  "population": 150,
+  "truth_match": {
+    "UNMATCHED": 147,
+    "TP": 3
+  },
+  "by_missing_fact_bucket": {
+    "event_lifecycle": {
+      "UNMATCHED": 39,
+      "TP": 1
+    },
+    "lockset": {
+      "UNMATCHED": 14
+    },
+    "lockset_pair": {
+      "UNMATCHED": 29,
+      "TP": 1
+    },
+    "obligation_complete": {
+      "UNMATCHED": 65,
+      "TP": 1
+    }
+  },
+  "by_confidence_band": {
+    "0.60-0.69": {
+      "UNMATCHED": 1
+    },
+    "0.70-0.79": {
+      "UNMATCHED": 72,
+      "TP": 1
+    },
+    ">=0.80": {
+      "UNMATCHED": 74,
+      "TP": 2
+    }
+  },
+  "by_sub_state": {
+    "None": {
+      "UNMATCHED": 147,
+      "TP": 3
+    }
+  },
+  "by_completion_status": {
+    "exhausted": {
+      "UNMATCHED": 145,
+      "TP": 3
+    },
+    "not_applicable": {
+      "UNMATCHED": 2
+    }
+  },
+  "by_passes_shape": {
+    "initial": 150
+  },
+  "tp_rows": [
+    {
+      "validation_cluster_uid": "VAL_982ac47b92b84f7ba1166e3e8e8aec11",
+      "rule": "path_state_checked_separately_from_key_generation",
+      "cwe": "CWE-362",
+      "truth_match": "TP",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7665
+    },
+    {
+      "validation_cluster_uid": "VAL_524029da072c3cf5df4694f65101274d",
+      "rule": "unchecked_param_indexes_fixed_global_array",
+      "cwe": "CWE-125",
+      "truth_match": "TP",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7845
+    },
+    {
+      "validation_cluster_uid": "VAL_00f0f9334193a3c72c67b738e74250d6",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "TP",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    }
+  ],
+  "top_rules_unmatched": {
+    "clang_cfg_unsynchronized_shared_flag_or_counter": 14,
+    "clang_cfg_external_size_allocation_without_limit": 12,
+    "clang_cfg_acquire_without_release_on_exit": 9,
+    "clang_cfg_parent_release_without_owned_member_cleanup": 8,
+    "svf_value_flow_memory_leak": 7,
+    "clang_cfg_unchecked_insert_after_ownership_handoff": 5,
+    "clang_cfg_allocation_size_arithmetic_without_overflow_guard": 5,
+    "container_unlink_free_after_unlock": 4,
+    "clang_cfg_unbounded_count_indexes_fixed_array": 4,
+    "svf_value_flow_partial_memory_leak": 4
+  },
+  "rows": [
+    {
+      "validation_cluster_uid": "VAL_015d6ef51100f520072d1aada48923a9",
+      "rule": "svf_value_flow_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_37a1745bc126c8d46e0ad704fd8f2a99",
+      "rule": "cleanup_contract_type_mismatch",
+      "cwe": "CWE-843",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7665
+    },
+    {
+      "validation_cluster_uid": "VAL_3eb9f291a883852d6496fa90d1f8728c",
+      "rule": "container_unlink_free_after_unlock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_ea8a31ac6aa51b5963f4577c9452cd05",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_49685aecd0f31d4b8af8194202a5245f",
+      "rule": "clang_cfg_file_type_validation_after_mapping_size_check",
+      "cwe": "CWE-20",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_d28aa83ed704c3dea876d6a45bf0ac84",
+      "rule": "clang_cfg_global_mapping_unmapped_without_invalidation",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.788
+    },
+    {
+      "validation_cluster_uid": "VAL_bca001bff5679b9a5a9ff5aa89d185e6",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_1c87e32b995ade83c2105062b6f05092",
+      "rule": "clang_cfg_borrowed_pointer_returned_after_unlock",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.838
+    },
+    {
+      "validation_cluster_uid": "VAL_5ce98d1e1ef3ba0f2ae58285d4cf5aa5",
+      "rule": "clang_cfg_refcount_update_after_unlock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.806
+    },
+    {
+      "validation_cluster_uid": "VAL_7375b250bd667eae3243d3824f387dbf",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_65df6ea395866a54b553031f381ff5a3",
+      "rule": "clang_cfg_system_with_nonliteral_command",
+      "cwe": "CWE-78",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.788
+    },
+    {
+      "validation_cluster_uid": "VAL_8f6867cd7982d6a52244fd6dd5ea5b00",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_2d0fab844de4b5d12ae2bfdf3452d05e",
+      "rule": "clang_cfg_allocation_result_used_without_null_check",
+      "cwe": "CWE-690",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_c462defd4928404379128f34bdea69f2",
+      "rule": "regular_file_size_check_applied_to_device_mapping",
+      "cwe": "CWE-20",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.7485
+    },
+    {
+      "validation_cluster_uid": "VAL_a5ea4b22a1f3caf587ed71091a6807eb",
+      "rule": "clang_cfg_recv_retry_loop_without_timeout_or_budget",
+      "cwe": "CWE-835",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "not_applicable",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.847
+    },
+    {
+      "validation_cluster_uid": "VAL_537e2712f73114a18ed1a10691c83585",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_bb8ebb274cd04107cce3156e8db4789b",
+      "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+      "cwe": "CWE-787",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_4f3e1b5d45db1a95844933031c14b5c1",
+      "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+      "cwe": "CWE-787",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_7a123dbedff35aed63ab219507048964",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_cb253da32e5f7da5796df20caafe3717",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_e1966c9a9d8ff15e60c59127391bc609",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_63438577986d46403dd130b8f826b3ff",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_b42d294330783eafa6100e496a851eaa",
+      "rule": "clang_cfg_global_callback_stores_borrowed_object",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_9e64fbe39a2a6744f3d77fa6608bd549",
+      "rule": "svf_value_flow_partial_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_ddc51652d7910ea394efd219c256a6e8",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_d05a7c5c3ce1ee5c8cc9bf067091bd09",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_b07b63cf02c206160186609cf49ed953",
+      "rule": "svf_value_flow_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_be1dac7957ef048ffb5f749badd1af6b",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_82ad9eda9fc8146454f872df874043b2",
+      "rule": "clang_cfg_unchecked_insert_after_ownership_handoff",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_16ec6d4051d5448d75f9546cc6ae0582",
+      "rule": "paired_self_referential_traversal_log_amplification",
+      "cwe": "CWE-400",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7165
+    },
+    {
+      "validation_cluster_uid": "VAL_9f5543fe1ea3e3727fea326690c5e212",
+      "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+      "cwe": "CWE-190",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_3386adeba02d634c81671cacb9fd5710",
+      "rule": "clang_cfg_callback_while_lock_held",
+      "cwe": "CWE-667",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.60-0.69",
+      "final_score": 0.716
+    },
+    {
+      "validation_cluster_uid": "VAL_228499425b51e37021d5ace3b11b9ac9",
+      "rule": "clang_cfg_wire_integer_cast_to_pointer_deref",
+      "cwe": "CWE-822",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.856
+    },
+    {
+      "validation_cluster_uid": "VAL_48bb33f540049f6554737a6b1963eab4",
+      "rule": "clang_cfg_unchecked_insert_after_ownership_handoff",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_fa5e7b48d1249c9d6ccefdb430e6f34e",
+      "rule": "partial_stack_struct_copied_to_output",
+      "cwe": "CWE-457",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7165
+    },
+    {
+      "validation_cluster_uid": "VAL_ac501bc38dd2925bf0fcf4bea087f037",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_4ac6ce43393a5f30817402cfb003ffa1",
+      "rule": "clang_cfg_narrowed_allocation_original_length_copy",
+      "cwe": "CWE-122",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.806
+    },
+    {
+      "validation_cluster_uid": "VAL_5be13df62bf665e78743f9dc176e99ab",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_cfbcedf0287e88c5609947a7f3e7b7aa",
+      "rule": "svf_value_flow_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_da3190b84ab9a22385cbea747e23b251",
+      "rule": "clang_cfg_same_object_released_twice",
+      "cwe": "CWE-415",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.856
+    },
+    {
+      "validation_cluster_uid": "VAL_123c650e98502f626864e38cf69b3546",
+      "rule": "composed_string_copied_to_member_buffer_without_bound",
+      "cwe": "CWE-121",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7665
+    },
+    {
+      "validation_cluster_uid": "VAL_a96aee279dad6276f5ca9a8436734d00",
+      "rule": "role_specific_release_uses_hardcoded_role",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7755
+    },
+    {
+      "validation_cluster_uid": "VAL_fea333e128f1d4f669b4269b02dd0184",
+      "rule": "paired_self_referential_traversal_log_amplification",
+      "cwe": "CWE-400",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7165
+    },
+    {
+      "validation_cluster_uid": "VAL_f206e57f8fa810b571d68f59ce82ed2f",
+      "rule": "clang_cfg_macro_guarded_lock_may_compile_to_noop",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.743
+    },
+    {
+      "validation_cluster_uid": "VAL_3c56d87447d2f24cbc02d157e5f8ebbc",
+      "rule": "clang_cfg_acquire_without_release_on_exit",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_4ab1afaa21e142b5af4ec82356ee437e",
+      "rule": "paired_global_registration_cleanup_omitted",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7665
+    },
+    {
+      "validation_cluster_uid": "VAL_982ac47b92b84f7ba1166e3e8e8aec11",
+      "rule": "path_state_checked_separately_from_key_generation",
+      "cwe": "CWE-362",
+      "truth_match": "TP",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7665
+    },
+    {
+      "validation_cluster_uid": "VAL_89259234640c8b9bfafc630e9cc428ac",
+      "rule": "peer_write_without_sigpipe_handling",
+      "cwe": "CWE-404",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7255
+    },
+    {
+      "validation_cluster_uid": "VAL_53c2e3d8d71388db04310b8fa7a4351f",
+      "rule": "caller_limit_indexes_fixed_local_array",
+      "cwe": "CWE-125",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7755
+    },
+    {
+      "validation_cluster_uid": "VAL_6d1bb31f23d3028d226607fc23cc2057",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_0f412b2c4eaf890f3b986f5b56f973cb",
+      "rule": "clang_cfg_use_after_release",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.847
+    },
+    {
+      "validation_cluster_uid": "VAL_e954267cb6c21cb61e1f736dddbd02c5",
+      "rule": "encoded_or_reliable_fd_passed_to_raw_fd_contract",
+      "cwe": "CWE-628",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7345
+    },
+    {
+      "validation_cluster_uid": "VAL_29d7a0872d5b984d08c20ddeb964b968",
+      "rule": "container_unlink_free_after_unlock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_177056e1b79c459855d66291ed41c5df",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_88e3978e6a767284f5e6505ab1b7dcba",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_27e9cc32ae64db01227eda4afdbb8116",
+      "rule": "partial_state_machine_publication",
+      "cwe": "CWE-672",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_935966d2f7598ecf07821999bbe8a73f",
+      "rule": "clang_cfg_registry_unlink_free_after_unlock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_d4fe3bc837daf83d674026c3e2cdd88c",
+      "rule": "clang_cfg_registry_unlink_free_after_unlock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_3ec118636acb20b30cf0f0c963d82fb0",
+      "rule": "svf_value_flow_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_35cdad5c3130babc63da353d67b4f4d5",
+      "rule": "clang_cfg_object_published_before_initialization",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.838
+    },
+    {
+      "validation_cluster_uid": "VAL_c9a6bf29f2a593e3118cc8f27b5d01d7",
+      "rule": "clang_cfg_same_object_released_twice",
+      "cwe": "CWE-415",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.856
+    },
+    {
+      "validation_cluster_uid": "VAL_39deeed72a8dbe6c3d3a409bbbdb9d13",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_fec97f04edb53b7a7a0f2496c404fd45",
+      "rule": "clang_cfg_acquire_without_release_on_exit",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_325f01d31231e1a044a83d8d93aaa77c",
+      "rule": "container_unlink_free_after_unlock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_213af8afdff5edb2046e1c547d1f97b8",
+      "rule": "destroy_shared_pool_while_active_tasks_remain",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7345
+    },
+    {
+      "validation_cluster_uid": "VAL_cadaa773ebd44122065fb6d6786afcff",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_6f576a6c58109070373b6d3b4bd7d592",
+      "rule": "clang_cfg_narrowing_size_cast_without_range_guard",
+      "cwe": "CWE-190",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_85de1276a76a79042ee4755569b75ae1",
+      "rule": "callback_can_free_current_event_before_reacquire",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7435
+    },
+    {
+      "validation_cluster_uid": "VAL_48e9502ad70e0efed25889e826cdcd9f",
+      "rule": "clang_cfg_refcount_update_after_unlock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.806
+    },
+    {
+      "validation_cluster_uid": "VAL_a0be57f638d2c49bb525bbed2ca0a1ba",
+      "rule": "log_inside_poisoned_traversal",
+      "cwe": "CWE-400",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7575
+    },
+    {
+      "validation_cluster_uid": "VAL_51cbaace72e69ee3c928b91454bdc712",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_3824069e24e219ef8ba332f4f0f77428",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_9c1c5eefd91d4adc63035f2047cd9cba",
+      "rule": "svf_value_flow_partial_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_4d43691b6e9ba4d878da46ded62eae8c",
+      "rule": "cross_function_lock_order_inversion",
+      "cwe": "CWE-833",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7255
+    },
+    {
+      "validation_cluster_uid": "VAL_32c9e260a10f2db3fffd2d66a3f584c2",
+      "rule": "lookup_before_insert_lock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7255
+    },
+    {
+      "validation_cluster_uid": "VAL_22ddc13e681213f5b2c944226ddcc399",
+      "rule": "clang_cfg_unchecked_insert_after_ownership_handoff",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_524029da072c3cf5df4694f65101274d",
+      "rule": "unchecked_param_indexes_fixed_global_array",
+      "cwe": "CWE-125",
+      "truth_match": "TP",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7845
+    },
+    {
+      "validation_cluster_uid": "VAL_696cc3c6cb49204bc8c804322d6fea50",
+      "rule": "role_specific_release_uses_hardcoded_role",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7755
+    },
+    {
+      "validation_cluster_uid": "VAL_3be93f1778b965ffa17876fdd9f2201c",
+      "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+      "cwe": "CWE-190",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_8c32850b4f43760a9385bac16abaddd0",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_569faaf0922b506e6261638aca60bff2",
+      "rule": "svf_value_flow_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_3c660eed9eed0c1d7791537557500d0a",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_ffd0071eee74c854d86280bedb8b94a3",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_53d7717a5eaa67b8266b15cf5d0f4c3f",
+      "rule": "clang_cfg_double_checked_global_without_atomic",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_a84a1fd6ca129ee076e8ab5ecaa45f0a",
+      "rule": "clang_cfg_acquire_without_release_on_exit",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_98beef3928e207e3d282be76e1bbe5c6",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_796519bee2908e3969806bc78a5a2fd2",
+      "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+      "cwe": "CWE-190",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_ba655c803e7b67d4e670a07918e81e55",
+      "rule": "full_key_lookup_truncated_insert",
+      "cwe": "CWE-187",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_5f8c20f7583ed096869736bd5573666a",
+      "rule": "clang_cfg_refcount_update_after_unlock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.806
+    },
+    {
+      "validation_cluster_uid": "VAL_3fd1ac964b3498522d8c35d09265295c",
+      "rule": "clang_cfg_sizeof_index_write",
+      "cwe": "CWE-193",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.865
+    },
+    {
+      "validation_cluster_uid": "VAL_b2baeb9b4f6cad73287ed7ae7c524e97",
+      "rule": "clang_cfg_acquire_without_release_on_exit",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_cfde40689852d1eb8180dee3d4b687f3",
+      "rule": "timer_callback_cascade_wait",
+      "cwe": "CWE-833",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7665
+    },
+    {
+      "validation_cluster_uid": "VAL_4c7caecb7b2f1bf1b509488864cd44d9",
+      "rule": "clang_cfg_acquire_without_release_on_exit",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_e27f29b03a595af25b7a6ee93e866a6a",
+      "rule": "timer_callback_cascade_wait",
+      "cwe": "CWE-833",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7165
+    },
+    {
+      "validation_cluster_uid": "VAL_01c4eace1a4cc179d14931af78490f68",
+      "rule": "cached_group_pointer_reused_across_partition_index",
+      "cwe": "CWE-682",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6985
+    },
+    {
+      "validation_cluster_uid": "VAL_4c1f224f031a0faef3f991ed9126411e",
+      "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+      "cwe": "CWE-190",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_c96d323545b4352dba67b7d9c312bc3c",
+      "rule": "clang_cfg_acquire_without_release_on_exit",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_e1c0d15bcb612814f270d7d4f7dcbca8",
+      "rule": "clang_cfg_unchecked_object_offset_deref",
+      "cwe": "CWE-823",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.788
+    },
+    {
+      "validation_cluster_uid": "VAL_73d29427fc43fc2b2e216964648f1dd3",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_5c3bbc61663ed251a28bd939dce22b62",
+      "rule": "clang_cfg_log_error_path_allocation_not_released",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.788
+    },
+    {
+      "validation_cluster_uid": "VAL_8d7c5ce871937f111ffe2507d614150a",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_df79e00da8a93d3dca172191731ed7eb",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_ea7d41baef2378640b575ae4f5a5da9e",
+      "rule": "peer_write_without_sigpipe_handling",
+      "cwe": "CWE-404",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7755
+    },
+    {
+      "validation_cluster_uid": "VAL_6fe279d2ff387756aac64c3a89fa6796",
+      "rule": "svf_value_flow_partial_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_bd344dad718e60525435f73e72573e73",
+      "rule": "clang_cfg_narrowed_allocation_original_length_copy",
+      "cwe": "CWE-122",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.806
+    },
+    {
+      "validation_cluster_uid": "VAL_ca880612fcab07922875913d69893e4d",
+      "rule": "clang_cfg_protocol_units_length_reaches_copy_without_packet_bound",
+      "cwe": "CWE-125",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.838
+    },
+    {
+      "validation_cluster_uid": "VAL_91b79fb49488411c64b7f888346c048d",
+      "rule": "svf_value_flow_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_35ce4c3fc8002559484effc953cc9cfb",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_96481bb1dcb933020de0f598f3c01a24",
+      "rule": "clang_cfg_acquire_without_release_on_exit",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_69d62463da1053ea811637a175294019",
+      "rule": "clang_cfg_object_published_before_initialization",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.838
+    },
+    {
+      "validation_cluster_uid": "VAL_c9a3325f904831381da4cd51efbddc09",
+      "rule": "cross_function_recursive_lock",
+      "cwe": "CWE-833",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7345
+    },
+    {
+      "validation_cluster_uid": "VAL_82d42d85c48e25d516f6813075b936ee",
+      "rule": "insert_failure_leaves_stale_tree_node",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7665
+    },
+    {
+      "validation_cluster_uid": "VAL_101aff8aeb9c21b1d18adf10d4f83d1a",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_9b49b31eed0358bcb9b47e9e04e7dbbf",
+      "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset",
+      "missing_fact_kinds": [
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.734
+    },
+    {
+      "validation_cluster_uid": "VAL_5ea67564a0b8ac96265b14010bb9a127",
+      "rule": "clang_cfg_acquire_without_release_on_exit",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_00f0f9334193a3c72c67b738e74250d6",
+      "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "cwe": "CWE-401",
+      "truth_match": "TP",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_f1f5904ed8b928705e8f4d3678285286",
+      "rule": "encoded_or_reliable_fd_passed_to_raw_fd_contract",
+      "cwe": "CWE-628",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7345
+    },
+    {
+      "validation_cluster_uid": "VAL_131ff20e188c9fc5cf94a85d9661c2c9",
+      "rule": "clang_cfg_active_owner_destroy_without_quiescence",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "not_applicable",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    },
+    {
+      "validation_cluster_uid": "VAL_848b169ce0d6a7994b340f1357ecd939",
+      "rule": "cas_result_ignored_before_slot_publication",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7845
+    },
+    {
+      "validation_cluster_uid": "VAL_b0263859f71269680f00fea2620f9a47",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_815f0df6238fe546febea87b230cb93d",
+      "rule": "clang_cfg_global_state_written_with_and_without_lock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.743
+    },
+    {
+      "validation_cluster_uid": "VAL_d3dc619cd42818f29102fc7bfd974e4d",
+      "rule": "caller_limit_indexes_fixed_member_array",
+      "cwe": "CWE-125",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7075
+    },
+    {
+      "validation_cluster_uid": "VAL_04e98b7bdb113fdea876e975055b0864",
+      "rule": "svf_value_flow_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_03f0745930da0187a9f05208b11fc379",
+      "rule": "global_container_registration_without_cleanup_path",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6805
+    },
+    {
+      "validation_cluster_uid": "VAL_2f07d59541b55c00d4db9eb93d898354",
+      "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+      "cwe": "CWE-787",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_64d9467e3da693239b3f95b662cf8955",
+      "rule": "clang_cfg_borrowed_pointer_returned_after_unlock",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.838
+    },
+    {
+      "validation_cluster_uid": "VAL_2f5ce4c8935795e412c4864ccc333f4a",
+      "rule": "mutable_global_mode_drives_callback_without_lock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7665
+    },
+    {
+      "validation_cluster_uid": "VAL_2a0cd02ae6fa769d412d51010d41dc86",
+      "rule": "queued_local_event_without_scheduler_wakeup",
+      "cwe": "CWE-366",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7165
+    },
+    {
+      "validation_cluster_uid": "VAL_250a4e14919352cf3448786aaf37c1e6",
+      "rule": "single_reader_field_under_shared_reader_count",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7255
+    },
+    {
+      "validation_cluster_uid": "VAL_d72ae942627e1d66c7042aa13cd314cc",
+      "rule": "cross_function_recursive_lock",
+      "cwe": "CWE-833",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7845
+    },
+    {
+      "validation_cluster_uid": "VAL_ee6813369dc8c24023527c1ab87424d1",
+      "rule": "global_registration_slot_checked_before_lock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7845
+    },
+    {
+      "validation_cluster_uid": "VAL_e66124525178d95027ce8836b79e13a2",
+      "rule": "partial_state_machine_publication",
+      "cwe": "CWE-672",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_27877618764154e44da9a937df3a4e3e",
+      "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+      "cwe": "CWE-787",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_90613b8ee21815db4e91823f4d8936c6",
+      "rule": "clang_cfg_free_non_owner_pointer_expression",
+      "cwe": "CWE-590",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.865
+    },
+    {
+      "validation_cluster_uid": "VAL_2d9b3da7b38ecc94b851a020194c8acb",
+      "rule": "svf_value_flow_partial_memory_leak",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.6895
+    },
+    {
+      "validation_cluster_uid": "VAL_3e8f6667d472269ac82e41bf8f0762e5",
+      "rule": "heap_thread_argument_not_released",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.7485
+    },
+    {
+      "validation_cluster_uid": "VAL_e4f6a740935c1cf6667b5454df8fc044",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_d820896941ed1225668ec0f2747421bc",
+      "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+      "cwe": "CWE-190",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_00c418f731443a75282ca3a044facfd0",
+      "rule": "clang_cfg_global_pointer_length_pair_published_without_lock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.743
+    },
+    {
+      "validation_cluster_uid": "VAL_aec401771adaf73aa12eedaa8f458e17",
+      "rule": "registered_global_object_missing_release_hook",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.7395
+    },
+    {
+      "validation_cluster_uid": "VAL_2b7873dc44544f3f7ea6d936b7a1666c",
+      "rule": "container_unlink_free_after_unlock",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_9558198d2cf851574a6188a2e6048c68",
+      "rule": "unchecked_ownership_transfer_return_loses_node",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.779
+    },
+    {
+      "validation_cluster_uid": "VAL_4f709c29dd3db97df714efeb287e9820",
+      "rule": "clang_cfg_macro_guarded_lock_may_compile_to_noop",
+      "cwe": "CWE-362",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "lockset_pair",
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.743
+    },
+    {
+      "validation_cluster_uid": "VAL_19bbd8d030dd31dba913c6dccf99cf3f",
+      "rule": "caller_limit_indexes_fixed_member_array",
+      "cwe": "CWE-125",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7575
+    },
+    {
+      "validation_cluster_uid": "VAL_9bd68e5cf436c1c9ff09308253321460",
+      "rule": "clang_cfg_unchecked_insert_after_ownership_handoff",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_d34eab1c9a4605dbf53594ac57a60bab",
+      "rule": "clang_cfg_external_size_allocation_without_limit",
+      "cwe": "CWE-770",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.725
+    },
+    {
+      "validation_cluster_uid": "VAL_6ac3035a4f587ad9c07e94c9e07732f6",
+      "rule": "protocol_mismatch_accepted_under_non_strict_auth",
+      "cwe": "CWE-346",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.7255
+    },
+    {
+      "validation_cluster_uid": "VAL_ae71ea41c898270d772a859044b8de5e",
+      "rule": "clang_cfg_global_callback_stores_borrowed_object",
+      "cwe": "CWE-416",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.761
+    },
+    {
+      "validation_cluster_uid": "VAL_bccc5b1174dbe781d637043e5867520d",
+      "rule": "clang_cfg_unchecked_insert_after_ownership_handoff",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "event_lifecycle",
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": ">=0.80",
+      "final_score": 0.77
+    },
+    {
+      "validation_cluster_uid": "VAL_07ef775bb0953d9fbe3db866a2a5e1eb",
+      "rule": "clang_cfg_acquire_without_release_on_exit",
+      "cwe": "CWE-401",
+      "truth_match": "UNMATCHED",
+      "missing_fact_bucket": "obligation_complete",
+      "missing_fact_kinds": [],
+      "evidence_completion_status": "exhausted",
+      "needs_review_sub_state": null,
+      "passes": [
+        "initial"
+      ],
+      "confidence_band": "0.70-0.79",
+      "final_score": 0.752
+    }
+  ]
+}

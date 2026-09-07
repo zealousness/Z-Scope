@@ -6,7 +6,7 @@ from zscope.tools.runtime import ToolsRuntime
 
 
 class FakeCodeIndex:
-    def list_functions(self, pattern=None, limit=50):
+    def list_functions(self, pattern=None, limit=50, offset=0):
         return ["api_entry"][:limit]
 
     def resolve_existing_file(self, file_path):

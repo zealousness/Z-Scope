@@ -9,6 +9,7 @@ from zscope.framework.conversation_recorder import (
     disable_conversation_recording,
     enable_conversation_recording,
 )
+from zscope.framework import llm_client as llm_client_module
 from zscope.framework.llm_client import LLMClient
 
 
@@ -17,6 +18,27 @@ def recorder(tmp_path):
     rec = enable_conversation_recording(tmp_path)
     yield rec
     disable_conversation_recording()
+
+
+@pytest.fixture()
+def fast_backoff(monkeypatch):
+    """Collapse retry cooldown/backoff waits; recorded events assert order, not timing."""
+
+    original_mark_one = llm_client_module.LLMClient._mark_base_url_cooldown
+    original_mark_all = llm_client_module.LLMClient._mark_all_base_urls_cooldown
+
+    def _clamped(seconds):
+        return 0.001 if seconds and seconds > 0.001 else seconds or 0.0
+
+    def mark_one(self, state, seconds):
+        original_mark_one(self, state, _clamped(seconds))
+
+    def mark_all(self, seconds):
+        original_mark_all(self, _clamped(seconds))
+
+    monkeypatch.setattr(llm_client_module.LLMClient, "_mark_base_url_cooldown", mark_one)
+    monkeypatch.setattr(llm_client_module.LLMClient, "_mark_all_base_urls_cooldown", mark_all)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
 
 
 def _jsonl_events(path):
@@ -62,7 +84,9 @@ class _ScriptedSession:
         return item
 
 
-def test_timeout_attempt_then_success_records_attempt_and_exchange(recorder, monkeypatch):
+def test_timeout_attempt_then_success_records_attempt_and_exchange(
+    recorder, monkeypatch, fast_backoff
+):
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid/v1",

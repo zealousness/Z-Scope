@@ -68,6 +68,7 @@ def _runner(
     memory=None,
     analysis=None,
     code_index=None,
+    llm_clients=None,
     validator_agent_factory=None,
     result_cache=None,
     scheduler=None,
@@ -90,7 +91,7 @@ def _runner(
     )
     return ValidationRunner(
         config=config,
-        llm_clients={"default": object()},
+        llm_clients=llm_clients if llm_clients is not None else {"default": object()},
         validation_pipeline=ValidationPipeline(FakeUserConfig()),
         code_index=code_index or FakeCodeIndex(),
         snapshot_store=FakeSnapshotStore(),
@@ -594,6 +595,124 @@ def test_validation_runner_maps_fact_provider_timeout_to_canonical_stop(monkeypa
     assert issue["validator_fact_resolution"]["status"] == "timeout"
     assert issue["validator_stop_reason"] == "fact_timeout"
     assert issue["candidate_disposition"] == "needs_review"
+
+
+def test_v2b_adjudication_gated_off_by_default() -> None:
+    """Plan M5 R3: V2b runs only when runtime.analysis.validation_v2b_adjudication is True."""
+    agent = FakeValidatorAgent([])
+    runner = _runner(agent)
+    item = _PreparedValidationShim()
+    val_data = _validator_v3_result(verdict="rejected", stop_reason="decision_complete")
+    result = runner._run_v2b_adjudication(item, agent, val_data, {})
+    assert result is val_data
+    assert agent.inputs == []
+    assert item.raw_issue.get("validator_v2b_entered") is None
+
+
+def test_v2b_adjudication_overturns_rejection_to_confirmation() -> None:
+    class AdjudicatingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([])
+            self.calls = []
+
+        def investigate(self, input_data, **kwargs):
+            self.calls.append((input_data, kwargs))
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="verified",
+                    validation_pass="v2b_adjudication",
+                    stop_reason="adjudication_complete",
+                ),
+            )
+
+    agent = AdjudicatingValidator()
+    analysis = SimpleNamespace(validation_v2b_adjudication=True)
+    runner = _runner(agent, analysis=analysis)
+    item = _PreparedValidationShim()
+    val_data = _validator_v3_result(verdict="rejected", stop_reason="decision_complete")
+    result = runner._run_v2b_adjudication(item, agent, val_data, {})
+    assert len(agent.calls) == 1
+    input_data, kwargs = agent.calls[0]
+    assert kwargs.get("pass_kind") == "v2b_adjudication"
+    assert input_data["evidence_slice"]["validation_pass"] == "v2b_adjudication"
+    assert (
+        input_data["evidence_slice"]["evidence_delta"]["adjudication_context"][
+            "adjudication_objective"
+        ]
+        == "audit-the-rejection"
+    )
+    assert result["verdict"] == "verified"
+    assert item.raw_issue["validator_v2b_entered"] is True
+    assert item.raw_issue["validator_v2b_action"] == "overturn"
+    history = item.raw_issue["validator_pass_history"]
+    assert history[-1]["pass"] == "v2b_adjudication" and history[-1]["action"] == "overturn"
+
+
+def test_v2b_adjudication_uphold_keeps_review_with_marker() -> None:
+    class UpholdingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([])
+
+        def investigate(self, input_data, **kwargs):
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="rejected",
+                    validation_pass="v2b_adjudication",
+                    stop_reason="adjudication_complete",
+                ),
+            )
+
+    analysis = SimpleNamespace(validation_v2b_adjudication=True)
+    runner = _runner(UpholdingValidator(), analysis=analysis)
+    item = _PreparedValidationShim()
+    val_data = _validator_v3_result(verdict="rejected", stop_reason="decision_complete")
+    result = runner._run_v2b_adjudication(item, UpholdingValidator(), val_data, {})
+    assert result["verdict"] == "rejected"
+    assert item.raw_issue["validator_v2b_action"] == "uphold"
+    assert item.raw_issue["validator_pass_history"][-1]["pass"] == "v2b_adjudication"
+
+
+def test_v2b_adjudication_skips_non_rejected_and_proof_grade() -> None:
+    class SilentValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([])
+            self.calls = 0
+
+        def investigate(self, input_data, **kwargs):
+            self.calls += 1
+            return AgentResponse(success=True, data=_validator_v3_result())
+
+    agent = SilentValidator()
+    analysis = SimpleNamespace(validation_v2b_adjudication=True)
+    runner = _runner(agent, analysis=analysis)
+    item = _PreparedValidationShim()
+    # uncertain verdict: not a rejection — skip
+    val_data = _validator_v3_result(verdict="uncertain")
+    assert runner._run_v2b_adjudication(item, agent, val_data, {}) is val_data
+    assert agent.calls == 0
+    assert item.raw_issue.get("validator_v2b_entered") is None
+
+
+class _PreparedValidationShim:
+    """Minimal _PreparedValidation stand-in for direct method invocation."""
+
+    def __init__(self):
+        from types import SimpleNamespace as _NS
+
+        self.raw_issue = {
+            "id": "CAND_V2B",
+            "candidate_uid": "CAND_V2B",
+            "validation_cluster_uid": "VAL_V2B",
+        }
+        self.issue_func = "f"
+        self.issue_code = "C"
+        self.evidence_pack = {}
+        self.index = 0
+        self.allow_v3 = False
+        self.v3_max_iterations = 0
+        self._ns = _NS
 
 
 def test_balanced_runs_long_v3_for_high_risk_external_candidate() -> None:

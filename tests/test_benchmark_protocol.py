@@ -15,10 +15,13 @@ from zscope.benchmarking.protocol import (
     CONDITION_FULL_ZSCOPE,
     DEFAULT_BOOTSTRAP_SAMPLES,
     FP_AUDIT_DUPLICATE_OF_GT,
+    FP_AUDIT_SAME_PRODUCT_ROOT,
+    FP_AUDIT_TRUTH_COVERED_ADDITIONAL,
     FP_AUDIT_FALSE_POSITIVE_SUPPRESS,
     FP_AUDIT_NEEDS_REVIEW_ONLY,
     FP_AUDIT_TRUE_EXTRA_ADD_GT,
     SCHEMA_VERSION,
+    MATCHER_VERSION,
     aggregate_trial_summaries,
     build_benchmark_artifact_manifest,
     build_trial_summary,
@@ -35,6 +38,7 @@ from zscope.benchmarking.protocol import (
     _select_max_weight_pairs,
 )
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
+from zscope.benchmarking.isolation import ISOLATION_SCHEMA_VERSION
 from zscope.benchmarking.attestation import (
     ATTESTATION_SCHEMA_VERSION,
     finalize_balanced_attestation,
@@ -160,7 +164,7 @@ def test_max_weight_pair_selection_keeps_cardinality_for_large_reports() -> None
     assert selected == [pair]
 
 
-def test_issue_matches_secondary_sink_and_call_path_anchor() -> None:
+def test_call_path_function_cannot_supply_a_missing_secondary_location() -> None:
     truth = {
         "id": "RANGE-012",
         "category": "command_injection",
@@ -181,7 +185,98 @@ def test_issue_matches_secondary_sink_and_call_path_anchor() -> None:
         "description": "Shell command injection reaches system() through argv construction.",
     }
 
-    assert issue_matches(issue, truth, line_tolerance=8)
+    assert not issue_matches(issue, truth, line_tolerance=8)
+
+
+def test_issue_matches_coherent_secondary_anchor() -> None:
+    truth = {
+        "id": "RANGE-012",
+        "category": "command_injection",
+        "function": "_executor_execute_command",
+        "file": "src/executor.c",
+        "line": 220,
+        "end_line": 225,
+        "secondary_function": "_executor_build_command_args",
+        "secondary_line": 234,
+        "secondary_end_line": 240,
+    }
+    issue = {
+        "category": "command_injection",
+        "function": "_executor_build_command_args",
+        "location": "src/executor.c:236",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=2)
+
+
+def test_keyword_only_category_match_is_diagnostic_not_true_positive() -> None:
+    truth = {
+        "benchmark": "unit_suite",
+        "vulnerabilities": [
+            {
+                "id": "STATE-1",
+                "category": "state_machine_violation",
+                "function": "advance_state",
+                "file": "src/state.c",
+                "line": 50,
+                "keywords": ["bounds", "transition", "state"],
+            }
+        ],
+    }
+    report = {
+        "issues": [
+            {
+                "category": "bounds",
+                "function": "advance_state",
+                "location": "src/state.c:50",
+                "description": "A bounds transition can corrupt state.",
+            }
+        ]
+    }
+
+    scored = score_report(report, truth, line_tolerance=0)
+
+    assert scored["true_positives"] == 0
+    assert scored["false_positives_raw"] == 1
+    assert scored["false_positives_effective"] == 1
+    assert scored["weak_legacy_overlap_count"] == 1
+    assert scored["matched"] == []
+
+
+def test_cross_anchor_overlap_remains_effective_false_positive() -> None:
+    truth = {
+        "benchmark": "unit_suite",
+        "vulnerabilities": [
+            {
+                "id": "LEAK-1",
+                "category": "memory_leak",
+                "function": "cleanup_owner",
+                "file": "src/owner.c",
+                "line": 80,
+                "keywords": ["owner", "cleanup", "leak"],
+            }
+        ],
+    }
+    report = {
+        "issues": [
+            {
+                "category": "memory_leak",
+                "function": "other_function",
+                "location": "src/owner.c:80",
+                "call_path": ["cleanup_owner", "other_function"],
+                "description": "cleanup_owner leaks owner on this path",
+            }
+        ]
+    }
+
+    scored = score_report(report, truth, line_tolerance=0)
+
+    assert scored["true_positives"] == 0
+    assert scored["cross_anchor_overlap_count"] == 1
+    assert scored["false_positives_effective"] == 1
+    classification = scored["unmatched_issue_classifications"][0]
+    assert classification["classification"] == "cross_anchor_overlap"
+    assert classification["pair_strength"] == "weak_diagnostic"
 
 
 def test_benchmark_issue_identity_prefers_line_insensitive_fingerprint() -> None:
@@ -226,7 +321,7 @@ def test_score_report_emits_auditable_identity_records() -> None:
     assert scored["false_positive_issue_records"][0]["baseline_match_strategy"] == "dedup_key"
 
 
-def test_score_report_classifies_duplicate_of_matched_separately() -> None:
+def test_score_report_classifies_truth_covered_additional_separately() -> None:
     truth = {
         "benchmark": "unit_suite",
         "suite": "unit",
@@ -268,7 +363,9 @@ def test_score_report_classifies_duplicate_of_matched_separately() -> None:
     assert scored["true_positives"] == 1
     assert scored["false_positives_raw"] == 1
     assert scored["false_positives"] == 0
-    assert scored["duplicate_of_matched_count"] == 1
+    assert scored["duplicate_of_matched_count"] == 0
+    assert scored["same_product_root_count"] == 0
+    assert scored["truth_covered_additional_count"] == 1
     assert scored["actionable_precision"] == 0.5
     assert scored["actionable_f1"] == 0.6667
     assert scored["actionable_false_discovery_rate"] == 0.5
@@ -280,7 +377,43 @@ def test_score_report_classifies_duplicate_of_matched_separately() -> None:
     assert "standard_false_positive_rate_metric" not in scored["scoring_contract"]
     assert raw_scored["false_positives"] == 1
     assert raw_scored["precision"] == raw_scored["actionable_precision"] == 0.5
-    assert scored["false_positive_audit"]["counts"][FP_AUDIT_DUPLICATE_OF_GT] == 1
+    assert scored["false_positive_audit"]["counts"][FP_AUDIT_TRUTH_COVERED_ADDITIONAL] == 1
+    assert scored["scoring_contract"]["matcher_version"] == MATCHER_VERSION
+
+
+def test_score_report_same_product_root_requires_explicit_equal_root_uid() -> None:
+    truth = {
+        "benchmark": "unit_suite",
+        "vulnerabilities": [
+            {
+                "id": "BUG-1",
+                "category": "memory_leak",
+                "function": "leaky",
+                "file": "src/demo.c",
+                "line": 10,
+            }
+        ],
+    }
+    common = {
+        "category": "memory_leak",
+        "function": "leaky",
+        "finding_root_uid": "ROOT_explicit",
+    }
+    report = {
+        "issues": [
+            {**common, "location": "src/demo.c:10"},
+            {**common, "location": "src/demo.c:11"},
+        ]
+    }
+
+    scored = score_report(report, truth, line_tolerance=2)
+
+    assert scored["same_product_root_count"] == 1
+    assert scored["duplicate_of_matched_count"] == 1
+    assert scored["truth_covered_additional_count"] == 0
+    assert scored["false_positives_raw"] == 1
+    assert scored["false_positives_effective"] == 0
+    assert scored["false_positive_audit"]["counts"][FP_AUDIT_SAME_PRODUCT_ROOT] == 1
 
 
 def test_default_false_positive_audit_keeps_unmatched_findings_for_review() -> None:
@@ -546,7 +679,7 @@ def test_issue_matches_nested_evidence_location_anchor() -> None:
     assert issue_matches(issue, truth, line_tolerance=4)
 
 
-def test_issue_matches_race_when_report_describes_dangling_unmap() -> None:
+def test_explicit_use_after_free_does_not_match_race_truth_from_description() -> None:
     truth = {
         "id": "RANGE-053",
         "category": "race",
@@ -574,7 +707,7 @@ def test_issue_matches_race_when_report_describes_dangling_unmap() -> None:
         "description": "Reader can dereference dangling g_rules_map after concurrent munmap of global state.",
     }
 
-    assert issue_matches(issue, truth, line_tolerance=4)
+    assert not issue_matches(issue, truth, line_tolerance=4)
 
 
 def test_issue_matches_sibling_role_release_location_anchor() -> None:
@@ -624,6 +757,24 @@ def test_issue_matches_ignores_placeholder_truth_line() -> None:
     }
 
     assert issue_matches(issue, truth, line_tolerance=8)
+
+
+def test_issue_matches_generic_allocation_limit_family() -> None:
+    truth = {
+        "id": "ALLOC-1",
+        "category": "excessive_allocation",
+        "function": "reserve_batch",
+        "file": "src/stream.c",
+        "line": 80,
+        "end_line": 88,
+    }
+    issue = {
+        "category": "resource_allocation_without_limits",
+        "function": "reserve_batch",
+        "location": "src/stream.c:86",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=0)
 
 
 def test_issue_matches_custom_category_aliases() -> None:
@@ -687,10 +838,16 @@ def test_issue_matches_unlock_without_lock_alias() -> None:
     assert issue_matches(issue, truth, line_tolerance=12)
 
 
-def test_issue_matches_thread_cache_leak_without_cross_function_match() -> None:
+@pytest.mark.parametrize(
+    "truth_category",
+    ["thread_cache_leak", "optimization_resource_lifecycle"],
+)
+def test_issue_matches_resource_leak_family_without_cross_function_match(
+    truth_category: str,
+) -> None:
     truth = {
         "id": "THREAD-CACHE-1",
-        "category": "thread_cache_leak",
+        "category": truth_category,
         "cwe": "CWE-772",
         "function": "_thread_cache_release",
         "file": "src/lifecycle.c",
@@ -699,7 +856,7 @@ def test_issue_matches_thread_cache_leak_without_cross_function_match() -> None:
     }
     matching_issue = {
         "category": "memory_leak",
-        "cwe": "CWE-772",
+        "cwe": "CWE-401",
         "function": "_thread_cache_release",
         "location": "src/lifecycle.c:121",
         "description": "Thread cache cached blocks are leaked on release.",
@@ -941,7 +1098,7 @@ def test_issue_matches_callback_deadlock_primary_anchor() -> None:
     assert issue_matches(issue, truth, line_tolerance=8)
 
 
-def test_score_report_uses_max_weight_matching_to_preserve_cardinality() -> None:
+def test_keyword_and_text_overlap_never_increase_strong_match_cardinality() -> None:
     truth = {
         "benchmark": "unit_suite",
         "suite": "unit",
@@ -983,8 +1140,13 @@ def test_score_report_uses_max_weight_matching_to_preserve_cardinality() -> None
 
     scored = score_report(report, truth, line_tolerance=8)
 
-    assert scored["matched"] == ["T0", "T1"]
-    assert scored["true_positives"] == 2
+    assert scored["matched"] == ["T0"]
+    assert scored["true_positives"] == 1
+    assert scored["false_positives_raw"] == 1
+    assert scored["truth_covered_additional_count"] == 1
+    assert scored["actionable_precision"] == 0.5
+    assert scored["false_positives_effective"] == 0
+    assert scored["match_diagnostics"]["weak_pair_count"] >= 1
 
 
 def test_score_report_prefers_strong_function_match_over_earlier_weak_truth() -> None:
@@ -1163,6 +1325,7 @@ def _release_summary(
             "chain_sha256": "a" * 64,
         },
         "isolation": {
+            "schema_version": ISOLATION_SCHEMA_VERSION,
             "mode": "oci",
             "runtime": "podman",
             "runtime_path": "/usr/bin/podman",
@@ -1178,6 +1341,9 @@ def _release_summary(
             "mounts_verified": True,
             "security_verified": True,
             "network_restriction_verified": True,
+            "proxy_credential_metadata_safe": True,
+            "provider_identity_sha256": "5" * 64,
+            "endpoint_origin": "https://models.internal:443",
             "network_mode": "model-endpoint-only",
             "network_policy_sha256": "6" * 64,
             "image": "registry.example/zscope@sha256:" + "a" * 64,
@@ -1211,7 +1377,14 @@ def _release_summary(
                     "network_peers_verified": True,
                     "network_contract_verified": True,
                     "proxy_verified": True,
+                    "proxy_credential_metadata_safe": True,
+                    "provider_identity_sha256": "5" * 64,
                     "scanner_labels_verified": True,
+                    "scanner_provider_environment_verified": True,
+                    "scanner_provider_environment_keys": ["Z_SCOPE_API_KEY"],
+                    "stdout_persisted": False,
+                    "stderr_persisted": False,
+                    "cancellation_cleanup_guard_verified": True,
                     "image_verified": True,
                     "unexpected_mount_count": 0,
                     "container_inspect_sha256": "7" * 64,
@@ -1236,6 +1409,7 @@ def _release_summary(
             "benchmark_policy_sha256": DEFAULT_BENCHMARK_POLICY.sha256,
         },
         "evaluation": {
+            "scoring_contract": {"matcher_version": MATCHER_VERSION},
             "true_positives": true_positives,
             "actionable_precision": actionable_precision,
             "actionable_false_discovery_rate": actionable_fdr,
@@ -1450,6 +1624,26 @@ def test_release_readiness_enforces_111_tp_and_two_token_caps() -> None:
         high_one, baseline_summaries=baseline, bootstrap_samples=20
     )["release_readiness"]
     assert readiness["hard_gates"]["per_run_tokens"]["passed"] is False
+
+
+def test_release_readiness_rejects_legacy_matcher_v4_trials() -> None:
+    current = [_release_summary(index) for index in range(1, 6)]
+    for summary in current:
+        summary["evaluation"]["scoring_contract"] = {}
+    baseline = [
+        _release_summary(index, validator_arm="A", baseline_frozen=True) for index in range(1, 6)
+    ]
+
+    readiness = aggregate_trial_summaries(
+        current,
+        baseline_summaries=baseline,
+        bootstrap_samples=20,
+    )["release_readiness"]
+
+    assert readiness["status"] == "not_evaluated"
+    assert readiness["trial_protocol"]["passed"] is False
+    invalid = readiness["trial_protocol"]["conditions"][CONDITION_FULL_ZSCOPE]["invalid_trials"]
+    assert any(MATCHER_VERSION in error for trial in invalid for error in trial["errors"])
 
 
 def test_release_readiness_rejects_unfrozen_or_non_arm_a_baseline() -> None:

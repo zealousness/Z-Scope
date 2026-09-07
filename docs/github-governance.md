@@ -2,17 +2,15 @@
 
 ## main 保护
 
-仓库管理员应启用 GitHub ruleset：禁止直接 push 和 force-push，要求线性历史、至少一名 CODEOWNER 审批、对话解决并通过所有必需检查。功能分支应短生命周期并使用 squash merge；不重写现有 main 历史。
+仓库管理员应启用 GitHub ruleset：禁止直接 push 和 force-push，要求线性历史、至少一名 CODEOWNER 审批、对话解决。功能分支应短生命周期并使用 squash merge；不重写现有 main 历史。
 
-必需检查对应 `.github/workflows/ci.yml`：Python 3.9–3.14 全量测试与 wheel/pip check、mypy、Black、compileall、文档与规则 schema、Java build/test、benchmark 泄漏回归、secret scan、依赖/许可证 review 和离线安装 smoke。
+v1.3.2 起 Python 基线为 3.13，CI workflow（`.github/workflows/ci.yml`）与 Python 3.9–3.14 兼容矩阵已移除。PR 质量验证转为提交前本地命令：全量 `pytest`、`compileall`、mypy/Black 基线、Java sidecar 构建测试、benchmark hygiene、依赖/许可证审计与离线安装 smoke（命令见 `README.md` 开发命令与 `requirements/README.md`）。这些命令一律在 Linux 环境执行，Windows 上在 WSL Linux 用户态中运行，不用原生 Windows 解释器形成测试结论。仓库保留的 workflow 只有 `ai-review.yml`（PR advisory）、`formal-benchmark.yml`、`balanced-default-attestation.yml` 和 `release.yml`（手工触发的发布门禁）。
 
-当前 mypy 与 Black 存在显式、可审计的存量债务基线：mypy 按归一化错误及次数校验，不允许新增错误；Black 按未格式化文件的内容哈希锁定，新增文件或再次修改存量未格式化文件时必须完成格式化。基线只允许在人工审查确认后用 `scripts/check_mypy_baseline.py --update` 或 `scripts/check_black_baseline.py --update` 收敛，不得为绕过失败而扩张。新代码仍以 Python 3.9 为类型和格式目标。
+当前 mypy 与 Black 存在显式、可审计的存量债务基线：mypy 按归一化错误及次数校验，不允许新增错误；Black 按未格式化文件的内容哈希锁定，新增文件或再次修改存量未格式化文件时必须完成格式化。基线只允许在人工审查确认后用 `scripts/check_mypy_baseline.py --update` 或 `scripts/check_black_baseline.py --update` 收敛，不得为绕过失败而扩张。新代码以 Python 3.13 为类型和格式目标。
 
 `compileall` 覆盖产品代码、维护脚本、自动化测试、工具和一方 C/Java benchmark runner，不递归编译 `test/range/codeql_runs` 等归档的第三方 benchmark 数据集；这些数据可能故意包含不能作为独立 Python 模块执行的测试片段，不能据此判断 Z-SCOPE 的 Python 兼容性。
 
-push/PR 的 `secret-scan` 对 `HEAD` 的完整可达历史和当前工作树分别扫描，因此某个短分支只能被其自身历史阻断，不会因无关远端分支而误判。仓库级全引用审计仍使用不带 `--ref` 的 `scripts/scan_git_history_secrets.py`；管理员应在分支清理或历史迁移窗口执行它，并单独处置仍引用已吊销凭据历史的遗留分支。
-
-建议在仓库设置中把以下 job 设为 required：六个 `Python x.y`、`quality`、`java`、`offline-smoke`、`secret-scan`，PR 上再要求 `dependency-review`。
+`scripts/scan_git_history_secrets.py` 仍在仓库中：管理员应在分支清理或历史迁移窗口对全引用执行不带 `--ref` 的审计，并单独处置仍引用已吊销凭据历史的遗留分支；处理单个分支时可用 `--ref HEAD` 只检查自身历史。
 
 ## CODEOWNERS 与 AI Review
 

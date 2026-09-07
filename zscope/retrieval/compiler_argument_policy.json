@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "max_attempts": 2,
+  "remove_warning_options": ["-Werror"],
+  "warning_error_prefix": "-Werror=",
+  "warning_prefix": "-W",
+  "forwarded_options": ["-Xclang", "-Xpreprocessor"],
+  "operand_options": [
+    "-I", "-F", "-D", "-U", "-o", "-x", "-std", "-target", "--target",
+    "-arch", "-isystem", "-iquote", "-idirafter", "-isysroot", "--sysroot",
+    "-include", "-imacros", "-include-pch", "-include-pth", "-ivfsoverlay",
+    "-iprefix", "-iwithprefix", "-iwithprefixbefore", "-iframework",
+    "-iframeworkwithsysroot", "-internal-isystem", "-internal-externc-isystem",
+    "-MF", "-MT", "-MQ", "-MJ", "-B", "-L", "-l", "-resource-dir",
+    "-gcc-toolchain", "--gcc-toolchain", "--gcc-install-dir", "--config",
+    "-working-directory", "-fmodule-map-file", "-fmodule-file", "-fmodules-cache-path",
+    "-mllvm", "-Xassembler", "-Xlinker", "-Xcuda-ptxas", "-Xcuda-fatbinary",
+    "-load", "-plugin", "-add-plugin", "-dependency-file", "-main-file-name",
+    "-triple", "-aux-triple", "-target-cpu", "-target-feature", "-tune-cpu",
+    "-serialize-diagnostic-file", "-fdebug-compilation-dir", "-fcoverage-compilation-dir"
+  ]
+}

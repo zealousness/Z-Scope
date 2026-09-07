@@ -1,0 +1,1826 @@
+[
+ {
+  "id": "CLANG_CFG_UNSYNCHRONIZED_SHARED_STATE_a7fb3ee62f",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_lifecycle_map_rules",
+  "cat": "unsynchronized_shared_state",
+  "model_verdict": "uncertain",
+  "stop": "missing_fact",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：caller_contract；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_056bc8178dbc638048737cdd54326974"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_b190d0371a",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_safe_malloc",
+  "cat": "resource_allocation_without_limits",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_7d6fdbd94fe1819c9d7b766a957985e7"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_BOUNDS_29ab4c4126",
+  "cls": "dupe",
+  "sub_state": "model_rejected_unproven",
+  "func": "_parse_task_buffer",
+  "cat": "bounds",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "value_range"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_61bf47c708da7209b61ad58357ef326d",
+    "FACT_V3_747efd438bf0f00d2eb991b6b16d8efd"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_USE_AFTER_FREE_d2bc61827f",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_lifecycle_get_value",
+  "cat": "use_after_free",
+  "model_verdict": "uncertain",
+  "stop": "missing_fact",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：caller_contract；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_8a093335d0a2c22f64227734102e7b08"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_UNTRUSTED_POINTER_89e6f8c2aa",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_stream_commit_cursor",
+  "cat": "untrusted_pointer",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "source_controllability",
+    "source_sink_reachability"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_5423c3880ac3c2ea26c20dae2152bbf8",
+    "FACT_V3_6efa41d1489775f9635be2794077166f",
+    "FACT_V3_daae3ae57dea39150e55ab116f152904"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_d5613adb28",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_insert_policy_node",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "required_facts_still_missing",
+   "resolved_fact_kinds": [
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [
+    "cleanup_coverage"
+   ],
+   "fact_uids": [
+    "FACT_V3_7923b76dc9651752219876ce345ee261"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_HEAP_OVERFLOW_72b0bfc19a",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_parse_control_message",
+  "cat": "heap_overflow",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "source_controllability"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_8e05ac9f0d0a131f90d46ad990c31276",
+    "FACT_V3_c04c8dc25793fff0188401a2859d89ba"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_RACE_df30109e43",
+  "cls": "new_tp_cand",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_remove_module_record",
+  "cat": "race",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "该候选为结构性风险且具有具体代码证据，模型否决仅基于当前调用方可控性，并未证明沉没点本身安全；按策略保留待人工复核，而不是跟随模型否决。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_b61f8ff236cc9101e674258148042995"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_LOST_WAKEUP_6be0f5880f",
+  "cls": "dupe",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_queue_local_flush",
+  "cat": "lost_wakeup",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "container_reachability",
+    "source_controllability",
+    "source_sink_reachability",
+    "value_range"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_0ada877ec70a6d17b329540464a97298",
+    "FACT_V3_9af51d896199b6f8abb5d5c9ba5da0fd",
+    "FACT_V3_b2cdd51efa07b9b12ce0870cb6d3c578",
+    "FACT_V3_f4d11ff8f2c5dbe007796a0919cfe316"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_RACE_2d39c26c53",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_detach_component_record",
+  "cat": "race",
+  "model_verdict": "uncertain",
+  "stop": "investigation_complete",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_41035316d5b1580265811d1c8fc1a400",
+    "FACT_V3_41085f5388a2bb48d55c512cc008223f",
+    "FACT_V3_dcfd89cf676992b1d9d2b156150a2771"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_GLOBAL_MODE_RACE_c0ee703b47",
+  "cls": "new_tp_cand",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_schedule_rcu_release",
+  "cat": "global_mode_race",
+  "model_verdict": "uncertain",
+  "stop": "missing_fact",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：caller_contract；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_4e5e437a1bab26ee8fcc3f552b41e4e5"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_RACE_1730171e8b",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_activate_service_path",
+  "cat": "race",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_129a305491be9f2617cfe1945b3423fe",
+    "FACT_V3_ba04e150d11c5899723ac33da4901b25",
+    "FACT_V3_d76321340eb170aec933b9c592d02cee"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_OBJECT_PUBLICATION_a819f5b365",
+  "cls": "new_tp_cand",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_read_service_flag",
+  "cat": "object_publication",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "signal_context",
+    "source_sink_reachability"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_0558ba5c08bc78435029bb7f98fb36ec",
+    "FACT_V3_54cd35a56754ecce05f44e9eb559b5d0",
+    "FACT_V3_fc1373cdb37b4fd0d33f715f5a21352a"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RACE_2efb19bf24",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "td_cleanup",
+  "cat": "race",
+  "model_verdict": "uncertain",
+  "stop": "investigation_complete",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 1 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_812bae0fd9b97eec38401d51dfd4f257"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_RACE_48fc77634c",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_remove_system_node",
+  "cat": "race",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_7f6a0eb0498361bbd8a24ca7e814a378"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_6126a64506",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_route_by_partition_key",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "required_facts_still_missing",
+   "resolved_fact_kinds": [
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [
+    "cleanup_coverage"
+   ],
+   "fact_uids": [
+    "FACT_V3_6e532ea3fec532da4d895b3972d5f2eb"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_FILE_TYPE_VALIDATION_6a2f730589",
+  "cls": "dupe",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_map_reserved_region",
+  "cat": "file_type_validation",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "该候选为结构性风险且具有具体代码证据，模型否决仅基于当前调用方可控性，并未证明沉没点本身安全；按策略保留待人工复核，而不是跟随模型否决。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "signal_context",
+    "source_controllability",
+    "source_sink_reachability"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_052b7be1e74db24de3c380cb2928c9cb",
+    "FACT_V3_066b869e81c102cd8d137e45a3b07540",
+    "FACT_V3_0ce89b3f6669e29f7f5b8131e9c840ad",
+    "FACT_V3_b70af6efe20001b8d60f6731b2fc771e"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_HEAP_OVERFLOW_e7dce26746",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_header_alloc",
+  "cat": "heap_overflow",
+  "model_verdict": "uncertain",
+  "stop": "investigation_complete",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 4 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "source_controllability",
+    "source_sink_reachability",
+    "value_range"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_1b5c19fc8495f16bdc6d05804b12c7b3",
+    "FACT_V3_8ab0f7c027b9512211abb57858bd1805",
+    "FACT_V3_950febd7a63915b7d1369fbc8868c6c8",
+    "FACT_V3_c51ec8bf4014c48209782367f78afd4f"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_DEADLOCK_a08c91748f",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_lifecycle_close_pipe",
+  "cat": "deadlock",
+  "model_verdict": "uncertain",
+  "stop": "investigation_exhausted",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_83a6a2286d02d852de9855e313336a0d"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_OUT_OF_BOUNDS_WRITE_ea7dee3072",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_parse_task_buffer",
+  "cat": "out_of_bounds_write",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "value_range"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_52402136e630286351519c25a5ec926a",
+    "FACT_V3_f1926a0727ad888b221b0f873cf4317e"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RACE_f86cdf2f47",
+  "cls": "new_tp_cand",
+  "sub_state": "model_uncertain",
+  "func": "_lifecycle_update_counter_slot",
+  "cat": "race",
+  "model_verdict": "uncertain",
+  "stop": "missing_fact",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：guard_dominance；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_b5b6a6a9e6b41d29f0fd5697c1082998",
+    "FACT_V3_fd0efc3a05304b77a893c44067f9f4b1"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_09bddbc6d6",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_parse_task_buffer",
+  "cat": "resource_allocation_without_limits",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "container_reachability",
+    "guard_dominance",
+    "source_controllability",
+    "source_sink_reachability"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_2a858256ada867d709836b372a1ea9d2",
+    "FACT_V3_2bc74ef25efc789db575e0f50c33559a",
+    "FACT_V3_d934400bca62077ac73b91b2d0a254d9",
+    "FACT_V3_fd96b4ca766d2de3453e0ef71d682930"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_a01f90eac6",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_remove_module_record",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "required_facts_still_missing",
+   "resolved_fact_kinds": [
+    "cleanup_coverage"
+   ],
+   "remaining_fact_kinds": [
+    "ownership_transfer"
+   ],
+   "fact_uids": [
+    "FACT_V3_3a91e8d5d77083cc5bfa1ad72cf7ef19"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_DOUBLE_CHECKED_LOCKING_e6f54fde1a",
+  "cls": "new_tp_cand",
+  "sub_state": "model_uncertain",
+  "func": "_lifecycle_get_config_length",
+  "cat": "double_checked_locking",
+  "model_verdict": "uncertain",
+  "stop": "missing_fact",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：caller_contract；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_ea3a9c7da73fae48d135826c891da570"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_USE_AFTER_FREE_cd11e74fa8",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_plugin_lookup",
+  "cat": "use_after_free",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_2be9dad16702adf3548c25e8d3bf821f",
+    "FACT_V3_d34ca23a36e9eb862aeb976643d44d0a"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_OBJECT_PUBLICATION_fefc731039",
+  "cls": "dupe",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_add_entry",
+  "cat": "object_publication",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_df7f5f4142e2d0ec567c1a4058e55566"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_PROTOCOL_MIXUP_6f7c953bf7",
+  "cls": "dupe",
+  "sub_state": "model_rejected_unproven",
+  "func": "_peer_route_protocol_context",
+  "cat": "protocol_mixup",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "caller_contract",
+    "source_sink_reachability",
+    "value_range"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_6d44d191f706b9da8b567d291faa90fd",
+    "FACT_V3_7ae730483eeff76aea5934637e5df18e",
+    "FACT_V3_b4c151f05094e69df483860525e680f0"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RACE_796872a077",
+  "cls": "new_tp_cand",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_update_metric_counter",
+  "cat": "race",
+  "model_verdict": "uncertain",
+  "stop": "investigation_complete",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_ed3fec2da53f2ac8a4a155118c54a724"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_FILE_TYPE_VALIDATION_fc758c3beb",
+  "cls": "dupe",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_map_reserved_region",
+  "cat": "file_type_validation",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "source_controllability",
+    "source_sink_reachability"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_6f659590ec9547a5a415dd387050da44",
+    "FACT_V3_a16dadf06f102b8346ef242e6f76a09b",
+    "FACT_V3_ecc0a0ebdb4f9de32f471ebd7dd6aedf"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_UNSYNCHRONIZED_SHARED_STATE_7b3a6ef07c",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_stream_update_watermark",
+  "cat": "unsynchronized_shared_state",
+  "model_verdict": "uncertain",
+  "stop": "investigation_complete",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_34bece0e3f305b38f248b39f609593da",
+    "FACT_V3_b66a0595d086fa452c6c1a926a97a836",
+    "FACT_V3_c6bf04490df76a0bed82e1d6099c5ad3"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_ec3072fe3e",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_avl_policy_upsert",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "cleanup_coverage",
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_2d17881a0d0eb3ab08850433896eecec",
+    "FACT_V3_d83fcbc996432ff598b4b000bd09bfc6"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_47706a2d57",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_apply_component_stage",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "required_facts_still_missing",
+   "resolved_fact_kinds": [
+    "cleanup_coverage"
+   ],
+   "remaining_fact_kinds": [
+    "ownership_transfer"
+   ],
+   "fact_uids": [
+    "FACT_V3_d3597d8c87535ee17dbacb785bd8efa0"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_55f1649d57",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_stream_open_segment_handles",
+  "cat": "resource_allocation_without_limits",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "source_controllability",
+    "source_sink_reachability",
+    "value_range"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_051c921d33486eddc093661aff618a5c",
+    "FACT_V3_419027fa1e0edbae42497c5779091570",
+    "FACT_V3_91da0f21f91e418db3f24a632039bfef"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RACE_5c560a26ca",
+  "cls": "new_tp_cand",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_remove_module_record",
+  "cat": "race",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_d657615cdc306a6e65e049dc2beab90d"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_MEMORY_LEAK_1c5f5edf9c",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_insert_policy_node",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "cleanup_coverage",
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_465a5009a1804861dbff7fdec1483d11",
+    "FACT_V3_ca47ac1b927843ffff18ab2859ac2918"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_3eb1e38331",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_avl_register_route",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "caller_contract",
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_6e6e7710cdc43756d36282bad2667295",
+    "FACT_V3_a6ae6437b4c106abe528d43537a944eb"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RACE_7472324edd",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "td_init",
+  "cat": "race",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_6ee8fd31a714568606c7f7d276dce558"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RACE_294b7f6ab0",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "td_init",
+  "cat": "race",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_bdd9f7a3521566aab119d0c93cb86f74"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_668388db40",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_release_packet_pool",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "cleanup_coverage",
+    "guard_dominance"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_6b0d6eecd5089784276f67716135e2df",
+    "FACT_V3_7f6926a735f9efc2b6065834aad212a4"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_USE_AFTER_FREE_8d1bc36f9b",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_notify_registry_listener",
+  "cat": "use_after_free",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "cleanup_coverage",
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_0d8860ef60210ba35f14257ad1499d9c",
+    "FACT_V3_1bda5ee5de72be5fc00f22f911abee29"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_LOCK_PROTOCOL_VIOLATION_5fc3de1b7e",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_record_signal_event",
+  "cat": "lock_protocol_violation",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_5124edf2e6e17a93ca6b185d9527c85e"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_11b5b4c97c",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_avl_policy_upsert",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_b599775f80ad676ba244cdf56d12c833"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_USE_AFTER_FREE_dbbdf13934",
+  "cls": "new_tp_cand",
+  "sub_state": "model_uncertain",
+  "func": "_lifecycle_register_entry_callback",
+  "cat": "use_after_free",
+  "model_verdict": "uncertain",
+  "stop": "investigation_complete",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "cleanup_coverage",
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_98ec3f54eba59df428b22dcd3696635e",
+    "FACT_V3_cd9f913c1aefe36648a807d4184382d9"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_OUT_OF_BOUNDS_WRITE_25a3344cc8",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_capture_signal_stack",
+  "cat": "out_of_bounds_write",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_eaa2f18560e97d6718ec79871078d43a"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_6cca00bb2f",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_link_allocated_node",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "required_facts_still_missing",
+   "resolved_fact_kinds": [
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [
+    "cleanup_coverage"
+   ],
+   "fact_uids": [
+    "FACT_V3_f99c4692829a20330f2ed1876bbeaf50"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_c296c79054",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_publish_init_sequence",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "required_facts_still_missing",
+   "resolved_fact_kinds": [
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [
+    "cleanup_coverage"
+   ],
+   "fact_uids": [
+    "FACT_V3_c9d7df12492d16cc71b7e9f49bc02826"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_8806e35df0",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_create_shared_zone",
+  "cat": "resource_allocation_without_limits",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "source_controllability",
+    "source_sink_reachability"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_540a2f09d4aa2d18e2eae1166d00fe44",
+    "FACT_V3_5e0e4273317d73029b361cd7571e8bd7",
+    "FACT_V3_73bb65c55b0c5262fad821d653c06412"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_UNSYNCHRONIZED_SHARED_STATE_f27eff829f",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_finish_current_event",
+  "cat": "unsynchronized_shared_state",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "该候选为结构性风险且具有具体代码证据，模型否决仅基于当前调用方可控性，并未证明沉没点本身安全；按策略保留待人工复核，而不是跟随模型否决。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_566824fa4dbf0ea3b3c70fb8b2ae8fa9"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_DOUBLE_FREE_020eb3a819",
+  "cls": "dupe",
+  "sub_state": "model_rejected_unproven",
+  "func": "_executor_cleanup_resources",
+  "cat": "double_free",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "该候选为结构性风险且具有具体代码证据，模型否决仅基于当前调用方可控性，并未证明沉没点本身安全；按策略保留待人工复核，而不是跟随模型否决。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "cleanup_coverage",
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_62fcca29ee8e13340c51fca0522815b0",
+    "FACT_V3_6a982dd043f08b06389ecff5896fab7c"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_BOUNDS_f97fb398ee",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_protocol_frame_length",
+  "cat": "bounds",
+  "model_verdict": "uncertain",
+  "stop": "decision_complete",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "caller_contract",
+    "guard_dominance",
+    "source_controllability",
+    "source_sink_reachability",
+    "value_range"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_4d5b63e053942368fd5e3378570dfeb2",
+    "FACT_V3_ac87b6b3197d82d74b0dadffa9507c4d",
+    "FACT_V3_b1fd1e7ef01c6382267d198e65353d47",
+    "FACT_V3_b66fbf5e387763090f327ea649c8bc13",
+    "FACT_V3_f6ed3efcdff092ef45bd1165b60b6397"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RACE_023db213d7",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_read_service_flag",
+  "cat": "race",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_450a916249ff5be52b7b3e6b739b0bfb"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_DEADLOCK_4468db20f9",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_lifecycle_dispatch_pipe_tick",
+  "cat": "deadlock",
+  "model_verdict": "uncertain",
+  "stop": "investigation_exhausted",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_58af371c12f359ee5761bc434ed3d97d",
+    "FACT_V3_d1b3b2a06009b88bbc3592d46d30fccc"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_73ad154c7c",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_stream_copy_fragment",
+  "cat": "resource_allocation_without_limits",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "source_controllability",
+    "source_sink_reachability"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_24aec957cd603c482606c7cdeb201db6",
+    "FACT_V3_7eeaf5ad55c1a589045d286bb8c6d7fd",
+    "FACT_V3_a586aab01a9cee2ed2c70b495fb852ec"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_INTEGER_OVERFLOW_51dd9ca229",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_parse_control_message",
+  "cat": "integer_overflow",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "source_controllability",
+    "value_range"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_97fabb46d16c3e5357f1757526aa63b8",
+    "FACT_V3_d9e91141dc49dd8410c45eb8e60281a7",
+    "FACT_V3_e14aefb11024b91d81f3d0c0442bbe15"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_68975524a4",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_apply_component_stage",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "cleanup_coverage",
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_5c8cca3b8b2179ba2f23de8dfffedb48",
+    "FACT_V3_9f97976a2b67340d837037a2afd0830d"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_3d45764188",
+  "cls": "new_tp_cand",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_unregister_topic_subscription",
+  "cat": "memory_leak",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "cleanup_coverage",
+    "ownership_transfer"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_6e816e23d89ba9ee117c4dbfd008fc62",
+    "FACT_V3_c8d699848670194f4198ab5439f9061f"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RACE_b304fb97a7",
+  "cls": "dupe",
+  "sub_state": "model_rejected_unproven",
+  "func": "td_submit_task",
+  "cat": "race",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_f6f4fe9727935a84bee8c285914fd63b"
+   ]
+  }
+ },
+ {
+  "id": "CLANG_CFG_RACE_c58386ea68",
+  "cls": "new_tp_cand",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_update_counter_slot",
+  "cat": "race",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_7cc9e660ff1797366e0a5159c1e9b0eb"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_DEADLOCK_34cdee58fa",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_lifecycle_tick_timer_callback",
+  "cat": "deadlock",
+  "model_verdict": "uncertain",
+  "stop": "investigation_exhausted",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 5 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "lockset"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_8198cb521b8f9f9ae1a8b91aa1d77b04",
+    "FACT_V3_a0b0b61926e1c32c2da452aca7978be9"
+   ]
+  }
+ },
+ {
+  "id": "GRAPH_LOG_AMPLIFICATION_f412140192",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_tick_timer_callback",
+  "cat": "log_amplification",
+  "model_verdict": "rejected",
+  "stop": "decision_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": true,
+   "reason": "required_facts_closed",
+   "resolved_fact_kinds": [
+    "guard_dominance",
+    "source_controllability",
+    "source_sink_reachability"
+   ],
+   "remaining_fact_kinds": [],
+   "fact_uids": [
+    "FACT_V3_46fecb2476024c5d3bc7dd1ec9277542",
+    "FACT_V3_8ba4c9a46a36e66e7cdacc3434dd6aa6",
+    "FACT_V3_b7f1f0a1d32ea4f008ca5755e6e5630b"
+   ]
+  }
+ },
+ {
+  "id": "SVF_VALUE_FLOW_f80a097e0ba3",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_accept_session_frame",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_24714c94dd",
+  "cls": "no_truth",
+  "sub_state": "policy_pending_promotion",
+  "func": "_lifecycle_parse_control_message",
+  "cat": "resource_allocation_without_limits",
+  "model_verdict": "uncertain",
+  "stop": "investigation_exhausted",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）。因此保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "no_cited_tool_backed_fact",
+   "resolved_fact_kinds": []
+  }
+ },
+ {
+  "id": "GRAPH_FILE_TYPE_VALIDATION_8c73b06bfa",
+  "cls": "dupe",
+  "sub_state": "policy_pending_promotion",
+  "func": "_runtime_map_reserved_region",
+  "cat": "file_type_validation",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_RACE_a1ce8b9442",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_worker_thread",
+  "cat": "race",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：lockset；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "SVF_VALUE_FLOW_613db066b5d4",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_net_recv_string",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "SVF_VALUE_FLOW_07d01aff45d5",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_serialize_task",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_fa28fadf43",
+  "cls": "no_truth",
+  "sub_state": "None",
+  "func": "_control_session_add_to_global",
+  "cat": "memory_leak",
+  "model_verdict": "None",
+  "stop": "None",
+  "reason": "完整的确定性确认证明与拒绝证明同时成立并相互冲突，无法自动裁决为确认或拒绝；需要人工复核后再定论。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_RACE_3404b05cfa",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_lifecycle_get_config_length",
+  "cat": "race",
+  "model_verdict": "uncertain",
+  "stop": "investigation_complete",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：lockset；存在 1 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "no_cited_tool_backed_fact",
+   "resolved_fact_kinds": []
+  }
+ },
+ {
+  "id": "SVF_VALUE_FLOW_644d4f137727",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_close_thread_cache",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_RACE_93ad3006ec",
+  "cls": "new_tp_cand",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_update_metric_counter",
+  "cat": "race",
+  "model_verdict": "uncertain",
+  "stop": "investigation_complete",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:shared_state_access、lockset；存在 5 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "no_cited_tool_backed_fact",
+   "resolved_fact_kinds": []
+  }
+ },
+ {
+  "id": "GRAPH_KEY_GENERATION_RACE_d8a57ae4a1",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_make_shared_key",
+  "cat": "key_generation_race",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:shared_state_access、lockset；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "GRAPH_FD_TYPE_MISMATCH_90761fa5b5",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_peer_validate_encoded_fd",
+  "cat": "fd_type_mismatch",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "GRAPH_STATE_MACHINE_0b13f52710",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_mark_process_online",
+  "cat": "state_machine",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 1 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "SVF_VALUE_FLOW_19602bef19a9",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_query_peak_stats",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_RACE_392ad2ce09",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_packet_receiver_thread",
+  "cat": "race",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：lockset；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_HELD_LOCK_CALLBACK_39b4136293",
+  "cls": "no_truth",
+  "sub_state": "model_rejected_unproven",
+  "func": "_lifecycle_notify_entry_callback",
+  "cat": "held_lock_callback",
+  "model_verdict": "rejected",
+  "stop": "investigation_complete",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "no_cited_tool_backed_fact",
+   "resolved_fact_kinds": []
+  }
+ },
+ {
+  "id": "GRAPH_LOG_AMPLIFICATION_af1ef6d0b8",
+  "cls": "dupe",
+  "sub_state": "policy_pending_promotion",
+  "func": "_lifecycle_dispatch_pipe_tick",
+  "cat": "log_amplification",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "SVF_VALUE_FLOW_41d86f968e46",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_td_alloc_worker_args",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_RACE_b13deb109d",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_worker_thread",
+  "cat": "race",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：lockset；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_e4a26f3daf",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_header_alloc",
+  "cat": "resource_allocation_without_limits",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 2 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "GRAPH_BYTE_ORDER_LOGIC_73e18a6b7c",
+  "cls": "new_tp_cand",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_find_bitmap_delta",
+  "cat": "byte_order_logic",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 4 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "GRAPH_SEMANTIC_MISMATCH_65051a7c03",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_init_sleep_window",
+  "cat": "semantic_mismatch",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 1 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "GRAPH_KEY_TRUNCATION_61cbbbd69c",
+  "cls": "new_tp_cand",
+  "sub_state": "policy_pending_promotion",
+  "func": "_lifecycle_avl_policy_upsert",
+  "cat": "key_truncation",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_REFCOUNT_RACE_8990d2c18b",
+  "cls": "new_tp_cand",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_release_shared_node",
+  "cat": "refcount_race",
+  "model_verdict": "uncertain",
+  "stop": "investigation_exhausted",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:shared_state_access、lockset。因此保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "no_cited_tool_backed_fact",
+   "resolved_fact_kinds": []
+  }
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_9fc6cbc5b6",
+  "cls": "no_truth",
+  "sub_state": "policy_pending_promotion",
+  "func": "_runtime_publish_init_sequence",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "investigation_exhausted",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）。因此保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "no_cited_tool_backed_fact",
+   "resolved_fact_kinds": []
+  }
+ },
+ {
+  "id": "SVF_VALUE_FLOW_8383c29b3f9f",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_peer_prepare_retry_context",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "SVF_VALUE_FLOW_bbbaa268e158",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "td_init",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "GRAPH_LOGIC_ERROR_fb65461c47",
+  "cls": "new_tp_cand",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_walk_arena_groups",
+  "cat": "logic_error",
+  "model_verdict": "rejected",
+  "stop": "no_evidence_gain",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "GRAPH_FD_TYPE_MISMATCH_22e335de77",
+  "cls": "dupe",
+  "sub_state": "model_uncertain",
+  "func": "_peer_bridge_descriptor",
+  "cat": "fd_type_mismatch",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_d3c9b15e0a",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_header_alloc",
+  "cat": "resource_allocation_without_limits",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 1 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "SVF_VALUE_FLOW_aa4033ec29f8",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_get_thread_cache",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 3 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_OUT_OF_BOUNDS_WRITE_b2ad9ee9c4",
+  "cls": "no_truth",
+  "sub_state": "",
+  "func": "_runtime_rebuild_available_list",
+  "cat": "out_of_bounds_write",
+  "model_verdict": "verified",
+  "stop": "decision_complete",
+  "reason": "模型判定为 verified，但未满足自动确认（晋级 validated）的证据标准：存在未关闭的负面证据。因此保留待人工复核，而不是自动确认为真实缺陷。",
+  "closure": {
+   "complete": false,
+   "reason": "no_cited_tool_backed_fact",
+   "resolved_fact_kinds": []
+  }
+ },
+ {
+  "id": "GRAPH_STATE_MACHINE_a6f759e369",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_rcu_register_callback",
+  "cat": "state_machine",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；存在 5 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "SVF_VALUE_FLOW_8fb988e52d4b",
+  "cls": "no_truth",
+  "sub_state": "model_uncertain",
+  "func": "_runtime_cleanup_tls_reserve",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）；仍缺少关键决策事实：event:acquire、event:exit；存在 4 条未关闭的负面证据。因此保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "GRAPH_MEMORY_LEAK_fcf0c72267",
+  "cls": "dupe",
+  "sub_state": "",
+  "func": "td_init",
+  "cat": "memory_leak",
+  "model_verdict": "verified",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 verified，但未满足自动确认（晋级 validated）的证据标准：模型验证置信度 0.78 低于 0.80。因此保留待人工复核，而不是自动确认为真实缺陷。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_4979a43ac2",
+  "cls": "dupe",
+  "sub_state": "policy_pending_promotion",
+  "func": "_runtime_stream_reserve_replay_window",
+  "cat": "resource_allocation_without_limits",
+  "model_verdict": "uncertain",
+  "stop": "investigation_exhausted",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）。因此保留待人工复核。",
+  "closure": {
+   "complete": false,
+   "reason": "no_cited_tool_backed_fact",
+   "resolved_fact_kinds": []
+  }
+ },
+ {
+  "id": "GRAPH_UNINITIALIZED_OUTPUT_288f683fbd",
+  "cls": "new_tp_cand",
+  "sub_state": "model_rejected_unproven",
+  "func": "_runtime_query_arena_usage",
+  "cat": "uninitialized_output",
+  "model_verdict": "rejected",
+  "stop": "no_evidence_gain",
+  "reason": "模型倾向于否决该候选，但未形成可复现的确定性反驳证明（例如支配性防护、所有权转移、锁覆盖或不可达路径的完整证据）；按策略不能仅凭模型意见拒绝，保留待人工复核。",
+  "closure": null
+ },
+ {
+  "id": "CLANG_CFG_MEMORY_LEAK_6f2c5187d8",
+  "cls": "no_truth",
+  "sub_state": "policy_pending_promotion",
+  "func": "_runtime_header_alloc",
+  "cat": "memory_leak",
+  "model_verdict": "uncertain",
+  "stop": "no_evidence_gain",
+  "reason": "模型判定为 uncertain（无法确认也无充分反驳证据），未满足自动确认条件：高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）。因此保留待人工复核。",
+  "closure": null
+ }
+]

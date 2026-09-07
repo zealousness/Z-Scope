@@ -4,14 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Z-SCOPE | AI 代码审计看板</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.css" rel="stylesheet" type="text/css" />
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
+    <link rel="stylesheet" href="vendor/tailwind.css">
+    <link href="vendor/daisyui.css" rel="stylesheet" type="text/css" />
+    <script defer src="vendor/alpine.js"></script>
+    <link rel="stylesheet" href="vendor/prism.css">
+    <script src="vendor/prism.js"></script>
+    <script src="vendor/prism-c.js"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;600;700&display=swap');
         body { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
         .code-font { font-family: 'Fira Code', monospace; }
         .glass {
@@ -668,7 +667,7 @@
         <div class="flex items-center gap-3">
             <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-white">Z</div>
             <div>
-                <h1 class="text-lg font-bold tracking-tight text-slate-950">Z-SCOPE <span class="text-xs font-normal text-slate-500" x-text="appVersion">v1.3.1</span></h1>
+                <h1 class="text-lg font-bold tracking-tight text-slate-950">Z-SCOPE <span class="text-xs font-normal text-slate-500" x-text="appVersion">v1.3.2</span></h1>
                 <p class="text-xs text-slate-500">AI 代码审计工作台</p>
             </div>
         </div>
@@ -989,6 +988,16 @@
                             <p class="text-xs subtle-text">Validator 说明保留原始结论；反驳 / 复核说明可直接引用 evidence ref、文件路径和行号。</p>
                         </div>
                         <div class="audit-decision-fields">
+                            <div class="audit-decision-field" x-show="selectedFinding.llm_explanation">
+                                <label class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">决策解释（LLM 补充，只读）</label>
+                                <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap"
+                                    x-text="selectedFinding.llm_explanation || ''"></p>
+                            </div>
+                            <div class="audit-decision-field" x-show="selectedFinding.promotion_review_reason">
+                                <label class="text-[11px] font-semibold uppercase tracking-wider text-amber-700">未晋级为 validated 的原因（只读）</label>
+                                <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap"
+                                    x-text="selectedFinding.promotion_review_reason || ''"></p>
+                            </div>
                             <div class="audit-decision-field">
                                 <label class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Validator 验证说明（只读）</label>
                                 <textarea
@@ -1576,7 +1585,7 @@
                 reportViewCache: {},
                 reportViewRequests: {},
                 findingsRequestSeq: 0,
-                appVersion: 'v1.3.1',
+                appVersion: 'v1.3.2',
                 statusText: '就绪',
                 statusClass: 'badge-ghost',
                 statusDotClass: 'bg-ghost',
@@ -2465,6 +2474,8 @@
                         reasoning: 10000,
                         reasoning_process: 10000,
                         validation_reasoning: 10000,
+                        llm_explanation: 4000,
+                        promotion_review_reason: 2000,
                         user_rebuttal: 10000,
                         description: 5000,
                         root_cause: 5000,
@@ -2476,7 +2487,7 @@
                         'id', 'candidate_id', 'candidate_source', 'finding_kind', 'function', 'location',
                         'category', 'subcategory', 'description', 'root_cause', 'suggested_fix',
                         'reasoning', 'reasoning_process', 'code_snippet', 'validation_status',
-                        'validation_reasoning', 'user_rebuttal', 'confidence', 'impact_level', 'dedup_key',
+                        'validation_reasoning', 'llm_explanation', 'promotion_review_reason', 'user_rebuttal', 'confidence', 'impact_level', 'dedup_key',
                         'stable_fingerprint', 'defect_class', 'rule', 'rule_id', 'cwe', 'source', 'sink',
                         'guard_analysis', 'exploit_scenario', 'final_score', 'file', 'line',
                         'start_line', 'end_line', 'entry_function', 'sink_function', 'target_function',

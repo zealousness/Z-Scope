@@ -909,7 +909,7 @@ def deterministic_proofs_from_facts(
         facts: Sequence[str],
         summary: str,
         *,
-        scope: str = "complete deterministic decision-fact slice",
+        scope: str = "完整的确定性决策事实切片",
     ) -> Dict[str, Any]:
         return {
             "outcome": outcome,
@@ -939,7 +939,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "out_of_range_value_reaches_sink",
                 ("source_to_sink_complete", "out_of_range_value"),
-                "a signed result reaches an unsigned length sink without a terminating range check",
+                "有符号结果到达无符号长度汇点，且缺少终止性范围检查",
             )
         )
 
@@ -979,7 +979,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "use_after_free_path",
                 ("free_before_use", "source_to_sink_complete"),
-                "the same field-sensitive object is released before a reachable use",
+                "同一字段敏感对象在可达使用之前已被释放",
             )
         )
     if len({line for line in release_lines if line}) >= 2:
@@ -988,7 +988,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "double_release_path",
                 ("first_release", "second_release", "same_object_path"),
-                "the same field-sensitive object is released twice on a complete path",
+                "同一字段敏感对象在完整路径上被释放两次",
             )
         )
 
@@ -1000,7 +1000,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "missing_cleanup_path",
                 ("allocation_reachable", "cleanup_missing"),
-                "a successful acquisition reaches an explicit exit without release or transfer",
+                "成功的获取到达显式出口，且没有释放或转移",
             )
         )
 
@@ -1021,7 +1021,7 @@ def deterministic_proofs_from_facts(
                 "confirm",
                 "race_without_happens_before",
                 ("conflicting_accesses", "no_happens_before"),
-                "two conflicting shared-object accesses have no proven happens-before relation",
+                "两个冲突的共享对象访问之间没有已证明的 happens-before 关系",
             )
         )
 
@@ -1034,7 +1034,7 @@ def deterministic_proofs_from_facts(
                 "reject",
                 "guard_dominates_sink",
                 ("guard_dominates_sink",),
-                "an explicit terminating guard dominates the reported sink",
+                "显式的终止性防护支配所报告的汇点",
             )
         )
     if proof_facts.get("cleanup_all_paths") is True:
@@ -1043,7 +1043,7 @@ def deterministic_proofs_from_facts(
                 "reject",
                 "ownership_cleanup_complete",
                 ("cleanup_all_paths",),
-                "all successful ownership paths release or transfer the same resource",
+                "所有成功的所有权路径都释放或转移同一资源",
             )
         )
     if (
@@ -1055,7 +1055,7 @@ def deterministic_proofs_from_facts(
                 "reject",
                 "lock_dominates_access",
                 ("lock_dominates_access", "all_accesses_guarded"),
-                "the same lock covers every conflicting access in the complete decision scope",
+                "同一把锁覆盖完整决策范围内的所有冲突访问",
             )
         )
     if ownership.get("cleanup_all_paths") is True:
@@ -1064,7 +1064,7 @@ def deterministic_proofs_from_facts(
                 "reject",
                 "ownership_cleanup_complete",
                 ("cleanup_all_paths",),
-                "ownership evidence records cleanup or transfer on all complete exits",
+                "所有权证据在所有完整出口上均记录了清理或转移",
             )
         )
     return results

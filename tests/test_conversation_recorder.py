@@ -17,6 +17,33 @@ def _clean_recorder_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+def test_session_metadata_carries_escalation_rung(tmp_path):
+    """Plan Phase 5: session metadata derives the rung from the label call_kind."""
+
+    recorder = ConversationRecorder(tmp_path)
+    session = recorder.begin_session(
+        "validator_agent",
+        "stage=validation; call_kind=investigation_synthesis; candidate_uid=CAND_1",
+    )
+    assert session.escalation_rung == "R2_v3_reattempt"
+
+    r2 = ConversationRecorder(tmp_path / "r2")
+    session_r2 = r2.begin_session(
+        "validator_agent", "call_kind=v2b_adjudication; validation_cluster_uid=VAL_1"
+    )
+    assert session_r2.escalation_rung == "R3_v2b_adjudication"
+
+    # Non-escalation calls keep the key out of the session projection.
+    r1 = ConversationRecorder(tmp_path / "r1")
+    plain = r1.begin_session("validator_agent", "stage=validation")
+    assert plain.escalation_rung == ""
+    events = _jsonl_events(plain.jsonl_path)
+    assert "escalation_rung" not in events[0]["session"]
+
+    events_rung = _jsonl_events(session.jsonl_path)
+    assert events_rung[0]["session"]["escalation_rung"] == "R2_v3_reattempt"
+
+
 def _jsonl_events(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
@@ -98,9 +125,7 @@ def test_recorder_keeps_full_history_and_per_call_tool_events(tmp_path):
         "session_end",
     ]
     assert [event["seq"] for event in events] == list(range(1, len(events) + 1))
-    assert all(
-        event["schema_version"] == "zscope.conversation-event.v2" for event in events
-    )
+    assert all(event["schema_version"] == "zscope.conversation-event.v2" for event in events)
     assert events[0]["tools_schema_hash"] == "schema-hash-1"
     assert events[0]["attribution"] == {"stage": "validation"}
 

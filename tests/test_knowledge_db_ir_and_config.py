@@ -399,7 +399,7 @@ def test_knowledge_db_migrates_legacy_macro_identity_and_range(tmp_path: Path) -
         assert macro["macro_index_name"] == "WRAP@include/wrap.h:10-11"
         assert macro["start_line"] == 10
         assert macro["end_line"] == 11
-        assert db.get_metadata("schema_version") == "14"
+        assert db.get_metadata("schema_version") == KnowledgeDB.SCHEMA_VERSION
     finally:
         db.close()
 
@@ -447,7 +447,7 @@ def test_knowledge_db_migrates_complete_taint_identity_and_forces_reindex(
 
     db = KnowledgeDB(str(db_path))
     try:
-        assert db.get_metadata("schema_version") == "14"
+        assert db.get_metadata("schema_version") == KnowledgeDB.SCHEMA_VERSION
         assert db.get_svf_hash() == ""
         assert db.get_metadata("svf_artifact_hash") == ""
         assert db.get_metadata("svf_tool_status:saber:g1") == ""
@@ -832,8 +832,8 @@ def test_knowledge_db_v14_adds_purge_and_include_indexes(tmp_path: Path) -> None
                 for row in db._conn.execute(f'PRAGMA index_list("{table}")').fetchall()
             }
             assert required_indexes <= actual
-        assert db.get_metadata("schema_version") == "14"
-        assert KnowledgeDB.SCHEMA_VERSION == "14"
+        assert db.get_metadata("schema_version") == KnowledgeDB.SCHEMA_VERSION
+        assert KnowledgeDB.SCHEMA_VERSION == "15"
         assert KnowledgeDB.SUPPORTS_DEFERRED_TU_COMMITS is True
     finally:
         db.close()

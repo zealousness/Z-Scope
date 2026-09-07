@@ -12,7 +12,6 @@ from zscope.agents.semantic_modeler.schema import (
     SUSPICIOUS_POINT_CATEGORY_ENUM,
     llm_function_snapshot_schema,
 )
-from zscope.agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from zscope.common.utils import is_valid_report
 from zscope.orchestration.entry_discovery import COMM_PROMPT
 
@@ -988,47 +987,6 @@ def test_complete_schema_owns_full_project_callee_shape_but_llm_excludes_it() ->
     llm_schema = llm_function_snapshot_schema(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
     assert "project_callees" not in llm_schema["required"]
     assert "project_callees" not in llm_schema["properties"]
-
-
-def test_vulnerability_analyzer_repairs_final_report(monkeypatch) -> None:
-    agent = VulnerabilityAnalyzer(
-        RepairLLM(
-            "emit_final_report",
-            {"type": "final_report", "issues": [], "candidate_coverage": []},
-        ),
-        [],
-    )
-    monkeypatch.setattr(agent, "_run_tool_conversation", lambda *args, **kwargs: _prose_result(""))
-
-    response = agent.run(
-        {"func_name": "api_entry", "code": "void api_entry(void) {}"}, max_iterations=1
-    )
-
-    assert response.success is True
-    assert response.data["type"] == "final_report"
-    assert response.data["issues"] == []
-    assert response.metadata["report_repair_attempted"] == 1
-
-
-def test_entry_focus_rewrites_hidden_get_callers_requirement() -> None:
-    agent = VulnerabilityAnalyzer(
-        RepairLLM("emit_final_report", {"type": "final_report", "issues": []}), []
-    )
-
-    focus = agent._entry_focus_for_available_tools(COMM_PROMPT)
-
-    assert "get_callers" not in focus
-    assert "caller-side parsing and validation" in focus
-    assert "candidate evidence" in focus
-
-
-def test_entry_focus_keeps_get_callers_when_tool_is_visible() -> None:
-    agent = VulnerabilityAnalyzer(
-        RepairLLM("emit_final_report", {"type": "final_report", "issues": []}),
-        [GetCallersTool()],
-    )
-
-    assert "get_callers" in agent._entry_focus_for_available_tools(COMM_PROMPT)
 
 
 def test_final_report_validator_requires_type_and_issues() -> None:

@@ -83,6 +83,16 @@ class RegexCandidateGenerator(
         self._lock_names = set(self.semantics.lock_apis)
         self._unlock_names = set(self.semantics.unlock_apis)
         self._size_type_names = self._DEFAULT_SIZE_TYPES | set(self.semantics.type_aliases)
+        self._io_acquire_names = set(self.semantics.io_acquirers)
+        self._io_release_names = set(self.semantics.io_releasers)
+        self._send_sink_names = set(self.semantics.send_sinks)
+        self._recv_source_names = set(self.semantics.recv_sources)
+        self._format_sink_names = set(self.semantics.format_sinks)
+        self._callback_registrar_names = set(self.semantics.callback_registrars)
+        self._user_io_acquire_names = self.semantics.names_from_nondefault_sources("io_acquirers")
+        self._user_io_release_names = self.semantics.names_from_nondefault_sources("io_releasers")
+        self._user_send_sink_names = self.semantics.names_from_nondefault_sources("send_sinks")
+        self._user_recv_source_names = self.semantics.names_from_nondefault_sources("recv_sources")
 
         self._alloc_re = self._call_re(self._allocator_names)
         self._calloc_re = self._call_re(self._calloc_names)
@@ -481,6 +491,12 @@ class RegexCandidateGenerator(
             ("copy", self.semantics.copy_sinks),
             ("lock", self.semantics.lock_apis),
             ("unlock", self.semantics.unlock_apis),
+            ("io_acquire", self.semantics.io_acquirers),
+            ("io_release", self.semantics.io_releasers),
+            ("send_sink", self.semantics.send_sinks),
+            ("recv_source", self.semantics.recv_sources),
+            ("format_sink", self.semantics.format_sinks),
+            ("callback_register", self.semantics.callback_registrars),
         ]
         for category, mapping in categories:
             for name, sources in mapping.items():

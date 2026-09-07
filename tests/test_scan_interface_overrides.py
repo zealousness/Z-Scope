@@ -90,6 +90,41 @@ def test_interface_scan_request_passes_only_depth_and_returns_usage(
     assert completed["scan_response"]["llm_usage"]["consumed_tokens"] == 11_500_000
 
 
+def test_interface_scan_child_inherits_parent_cwd(tmp_path: Path, monkeypatch) -> None:
+    """子进程继承父进程 CWD，保证相对 project.root 的解析与父进程完全一致。"""
+
+    config_path = tmp_path / "zscope.yaml"
+    config_path.write_text("config_version: 2\n", encoding="utf-8")
+    effective = SimpleNamespace(
+        project=SimpleNamespace(project_root=tmp_path),
+        scan=SimpleNamespace(depth="fast", depth_source="cli", rollout={}),
+        scan_token_usage_ledger=ScanTokenUsageLedger(depth="fast"),
+    )
+    monkeypatch.setattr(
+        "zscope.orchestration.scan_request.ConfigLoader.load",
+        lambda *args, **kwargs: effective,
+    )
+    captured = {}
+
+    class Process:
+        return_code = None
+
+        def poll(self):
+            return self.return_code
+
+    def process_factory(argv, **kwargs):
+        captured["cwd"] = kwargs.get("cwd")
+        return Process()
+
+    service = ScanRequestService(
+        config_path, process_factory=process_factory, python_executable="python-test"
+    )
+    started = service.start()
+
+    assert started["status"] == "running"
+    assert captured["cwd"] == str(Path.cwd())
+
+
 def test_web_scan_accepts_depth_only(monkeypatch) -> None:
     calls = []
     expected = {"scan_id": "scan-1", "status": "running"}

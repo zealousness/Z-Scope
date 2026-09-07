@@ -20,22 +20,26 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, cast
 
 from zscope._version import __version__
-from zscope.common.issue_identity import issues_may_share_root_cause, stable_issue_fingerprint
+from zscope.common.issue_identity import stable_issue_fingerprint
 from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
 from zscope.benchmarking.attestation import validate_balanced_attestation
 from zscope.benchmarking.isolation import validate_oci_execution_evidence
+from zscope.benchmarking.truth_contract import (
+    summarize_truth_contract,
+    truth_records_for_contract,
+)
 from zscope.reporting.attribution import (
     FINDING_ATTRIBUTION_SCHEMA_VERSION,
     FindingAttribution,
     finding_attribution_mapping_errors,
 )
 
-
 SCHEMA_VERSION = "zscope.benchmark.v4"
 INTEGRITY_SCHEMA_VERSION = "zscope.benchmark.integrity.v1"
 ATTRIBUTION_SCHEMA_VERSION = FINDING_ATTRIBUTION_SCHEMA_VERSION
 USAGE_LEDGER_SCHEMA_VERSION = "zscope.llm-usage-ledger.v1"
 CANDIDATE_FUNNEL_SCHEMA_VERSION = "zscope.candidate-funnel.v1"
+MATCHER_VERSION = "zscope.truth-matcher.v2"
 SOURCE_FILE_SUFFIXES = {
     ".c",
     ".cc",
@@ -61,6 +65,10 @@ FP_AUDIT_DUPLICATE_OF_GT = "duplicate_of_gt"
 FP_AUDIT_TRUE_EXTRA_ADD_GT = "true_extra_add_gt"
 FP_AUDIT_NEEDS_REVIEW_ONLY = "needs_review_only"
 FP_AUDIT_FALSE_POSITIVE_SUPPRESS = "false_positive_suppress"
+FP_AUDIT_SAME_PRODUCT_ROOT = "same_product_root"
+FP_AUDIT_TRUTH_COVERED_ADDITIONAL = "truth_covered_additional"
+FP_AUDIT_CROSS_ANCHOR_OVERLAP = "cross_anchor_overlap"
+FP_AUDIT_WEAK_LEGACY_OVERLAP = "weak_legacy_overlap"
 
 CONDITION_PURE_LLM_ENTRY = "pure_llm_entry_source"
 CONDITION_PURE_LLM_REPO = "pure_llm_repo_context"
@@ -242,6 +250,7 @@ def finding_attribution(issue: Dict[str, Any]) -> Dict[str, Any]:
     """Return explicit or conservatively inferred discovery/decision provenance."""
 
     explicit = issue.get("attribution") or issue.get("finding_attribution")
+    confirmed_via = str(issue.get("confirmed_via") or "")
     if isinstance(explicit, dict):
         parsed = FindingAttribution.from_mapping(explicit)
         errors = finding_attribution_mapping_errors(explicit)
@@ -250,6 +259,7 @@ def finding_attribution(issue: Dict[str, Any]) -> Dict[str, Any]:
             "discovered_by": list(parsed.discovered_by) or ["unknown"],
             "decided_by": parsed.decided_by,
             "decision_level": parsed.decision_level,
+            "confirmed_via": confirmed_via or str(explicit.get("confirmed_via") or ""),
             "attribution_inferred": False,
             "inferred": False,
             "valid": not errors,
@@ -317,6 +327,7 @@ def finding_attribution(issue: Dict[str, Any]) -> Dict[str, Any]:
         "discovered_by": sorted(discovered) or ["unknown"],
         "decided_by": decided,
         "decision_level": level,
+        "confirmed_via": confirmed_via,
         "attribution_inferred": True,
         "inferred": True,
         "valid": True,
@@ -339,6 +350,7 @@ def attribution_summary(
     decision: Dict[str, Dict[str, int]] = {}
     decision_level: Dict[str, Dict[str, int]] = {}
     intersections: Dict[str, Dict[str, int]] = {}
+    confirmed_via_counter: Dict[str, Dict[str, int]] = {}
     explicit = 0
     for index, issue in enumerate(issues):
         value = finding_attribution(issue)
@@ -384,6 +396,14 @@ def attribution_summary(
         level["issues"] += 1
         level["true_positives"] += int(outcome == "true_positive")
         level["raw_false_positives"] += int(outcome == "raw_false_positive")
+        confirmed_via = str(value.get("confirmed_via") or "")
+        if confirmed_via:
+            row = confirmed_via_counter.setdefault(
+                confirmed_via, {"issues": 0, "true_positives": 0, "raw_false_positives": 0}
+            )
+            row["issues"] += 1
+            row["true_positives"] += int(outcome == "true_positive")
+            row["raw_false_positives"] += int(outcome == "raw_false_positive")
     return {
         "schema_version": ATTRIBUTION_SCHEMA_VERSION,
         "issue_count": len(issues),
@@ -395,6 +415,7 @@ def attribution_summary(
         "by_decision": decision,
         "by_decision_level": decision_level,
         "by_discovery_and_decision": intersections,
+        "by_confirmed_via": confirmed_via_counter,
         "counting_contract": "discovery is a set and may overlap; decision is terminal and exclusive",
     }
 
@@ -460,6 +481,21 @@ def candidate_funnel(report: Mapping[str, Any]) -> Dict[str, Any]:
     reached_by_level: Dict[str, int] = {f"V{level}": 0 for level in range(5)}
     transition_counts: Dict[str, int] = {}
     drop_reasons: Dict[str, int] = {}
+    # Escalation-rung dimension (plan Phase 5): the same terminal population
+    # projected onto the LLM participation ladder.  ``R3_v2b_adjudication``
+    # is forward-compatible — no runner writes the marker yet, so it stays
+    # zero until the R3 arm ships.
+    reached_by_rung: Dict[str, int] = {
+        "R1_validator_v1": 0,
+        "R2_v3_reattempt": 0,
+        "R3_v2b_adjudication": 0,
+    }
+    confirmed_by_rung: Dict[str, int] = dict(reached_by_rung)
+    drop_reasons_by_rung: Dict[str, Dict[str, int]] = {
+        "R1_validator_v1": {},
+        "R2_v3_reattempt": {},
+        "R3_v2b_adjudication": {},
+    }
     v3_counts = {"eligible": 0, "entered": 0, "confirmed": 0}
     v3_by_source_terminal: Dict[str, int] = {}
     v3_by_risk_layer: Dict[str, Dict[str, int]] = {}
@@ -538,6 +574,40 @@ def candidate_funnel(report: Mapping[str, Any]) -> Dict[str, Any]:
         terminal_transition = f"{terminal_level}->terminal:{terminal_reason}"
         transition_counts[terminal_transition] = transition_counts.get(terminal_transition, 0) + 1
         drop_reasons[terminal_reason] = drop_reasons.get(terminal_reason, 0) + 1
+        # Rung projection: R2 when the V3 reattempt was entered (its pass
+        # marker or the explicit flag), R3 when a V2b adjudication pass is
+        # ever recorded.  The deciding rung for a confirmation is the
+        # highest rung that participated.
+        r2_reached = (
+            item.get("validator_v3_entered") is True or "investigation_synthesis" in history_passes
+        )
+        r3_reached = (
+            item.get("validator_v2b_entered") is True or "v2b_adjudication" in history_passes
+        )
+        rungs: set[str] = set()
+        if "V1" in reached:
+            rungs.add("R1_validator_v1")
+        if r2_reached:
+            rungs.add("R2_v3_reattempt")
+        if r3_reached:
+            rungs.add("R3_v2b_adjudication")
+        for rung in rungs:
+            reached_by_rung[rung] += 1
+        confirmed = disposition in {"confirmed", "validated"}
+        if confirmed and rungs:
+            deciding = (
+                "R3_v2b_adjudication"
+                if r3_reached
+                else ("R2_v3_reattempt" if r2_reached else "R1_validator_v1")
+            )
+            confirmed_by_rung[deciding] += 1
+        deciding_rung_for_drop = (
+            "R3_v2b_adjudication"
+            if r3_reached
+            else ("R2_v3_reattempt" if r2_reached else "R1_validator_v1")
+        )
+        rung_drops = drop_reasons_by_rung[deciding_rung_for_drop]
+        rung_drops[terminal_reason] = rung_drops.get(terminal_reason, 0) + 1
         cluster = str(item.get("validation_cluster_uid") or f"terminal:{index}")
         if int(item.get("validation_attempt_count") or 0) > 0 or decision == "validator_llm":
             invoked_groups.add(cluster)
@@ -703,6 +773,11 @@ def candidate_funnel(report: Mapping[str, Any]) -> Dict[str, Any]:
             "by_decision": dict(sorted(by_decision.items())),
             "by_decision_level": dict(sorted(by_decision_level.items())),
             "reached_by_level": dict(sorted(reached_by_level.items())),
+            "reached_by_rung": dict(sorted(reached_by_rung.items())),
+            "confirmed_by_rung": dict(sorted(confirmed_by_rung.items())),
+            "drop_reason_by_rung": {
+                key: dict(sorted(value.items())) for key, value in drop_reasons_by_rung.items()
+            },
             "transition_counts": dict(sorted(transition_counts.items())),
             "drop_reason": dict(sorted(drop_reasons.items())),
             "by_discovery_and_decision": dict(sorted(intersections.items())),
@@ -743,29 +818,46 @@ def false_positive_audit_summary(
     effective_records: Sequence[Dict[str, Any]],
     duplicate_records: Sequence[Dict[str, Any]],
     fp_audit_classifier: Optional[FalsePositiveClassifier] = None,
+    *,
+    truth_covered_additional_records: Sequence[Dict[str, Any]] = (),
+    overlap_records: Sequence[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
-    """Return an auditable split between duplicates, true extras, review-only, and suppressions."""
+    """Return the matcher-v2 split without conflating truth overlap and product roots."""
 
     classifier = fp_audit_classifier or classify_false_positive_record
     audited_duplicates = [
         {
             **dict(record),
-            "fp_audit_classification": FP_AUDIT_DUPLICATE_OF_GT,
-            "fp_audit_reason": "scorer classified this unmatched issue as duplicate_of_matched",
+            "fp_audit_classification": FP_AUDIT_SAME_PRODUCT_ROOT,
+            "fp_audit_reason": "unmatched issue has the same explicit finding_root_uid",
         }
         for record in duplicate_records
     ]
+    audited_additional = [
+        {
+            **dict(record),
+            "fp_audit_classification": FP_AUDIT_TRUTH_COVERED_ADDITIONAL,
+            "fp_audit_reason": (
+                "different product root has a strong structured match to an already covered truth"
+            ),
+        }
+        for record in truth_covered_additional_records
+    ]
+    audited_overlaps = [dict(record) for record in overlap_records]
     audited_effective = [classifier(record) for record in effective_records]
-    all_records = audited_duplicates + audited_effective
+    all_records = audited_duplicates + audited_additional + audited_overlaps + audited_effective
     counts: Dict[str, int] = {}
     for record in all_records:
         key = str(record.get("fp_audit_classification") or FP_AUDIT_NEEDS_REVIEW_ONLY)
         counts[key] = counts.get(key, 0) + 1
     return {
-        "schema_version": "zscope.fp_audit.v1",
+        "schema_version": "zscope.fp-audit.v2",
         "counts": counts,
         "effective_records": audited_effective,
         "duplicate_of_matched_records": audited_duplicates,
+        "same_product_root_records": audited_duplicates,
+        "truth_covered_additional_records": audited_additional,
+        "overlap_records": audited_overlaps,
     }
 
 
@@ -852,11 +944,19 @@ def score_report(
 ) -> Dict[str, Any]:
     issues = report_issues(report, view)
     issue_texts = [_flatten(issue).lower().replace("\\", "/") for issue in issues]
-    vulns = [item for item in truth.get("vulnerabilities", []) if isinstance(item, dict)]
+    truth_contract = summarize_truth_contract(truth)
+    if truth_contract["present"]:
+        vulns = truth_records_for_contract(
+            truth,
+            kinds=("concrete_trigger", "public_api_contract"),
+        )
+    else:
+        vulns = [item for item in truth.get("vulnerabilities", []) if isinstance(item, dict)]
     matched_truth: Dict[str, int] = {}
     matched_pairs: List[Dict[str, Any]] = []
     matched_issues: Set[int] = set()
     potential_pairs: List[Dict[str, Any]] = []
+    weak_pairs: List[Dict[str, Any]] = []
     for truth_index, vuln in enumerate(vulns):
         truth_id = str(vuln.get("id") or truth_index)
         for issue_index, issue in enumerate(issues):
@@ -881,6 +981,23 @@ def score_report(
                             match_detail,
                             preflattened_text=issue_text,
                         ),
+                    }
+                )
+                continue
+            weak_detail = _legacy_issue_match_detail(
+                issue,
+                vuln,
+                line_tolerance,
+                preflattened_text=issue_text,
+            )
+            if weak_detail is not None:
+                weak_pairs.append(
+                    {
+                        "truth_index": truth_index,
+                        "truth_id": truth_id,
+                        "issue_index": issue_index,
+                        "match": weak_detail,
+                        "classification": _weak_pair_classification(issue, vuln),
                     }
                 )
 
@@ -928,18 +1045,38 @@ def score_report(
         )
     )
 
-    duplicate_of_matched_indices = _duplicate_of_matched_indices(
+    unmatched_classifications = _classify_unmatched_issues(
         issues,
         potential_pairs,
+        weak_pairs,
         matched_issues,
         matched_truth_indices,
         matched_issue_by_truth_index,
     )
+    same_product_root_indices = {
+        index
+        for index, record in unmatched_classifications.items()
+        if record.get("classification") == "same_product_root"
+    }
+    truth_covered_additional_indices = {
+        index
+        for index, record in unmatched_classifications.items()
+        if record.get("classification") == "truth_covered_additional"
+    }
+    cross_anchor_overlap_indices = {
+        index
+        for index, record in unmatched_classifications.items()
+        if record.get("classification") == "cross_anchor_overlap"
+    }
+    weak_legacy_overlap_indices = {
+        index
+        for index, record in unmatched_classifications.items()
+        if record.get("classification") == "weak_legacy_overlap"
+    }
     raw_fp = max(0, len(issues) - len(matched_issues))
+    root_covered_indices = same_product_root_indices | truth_covered_additional_indices
     effective_fp = (
-        raw_fp
-        if count_duplicate_of_matched_as_fp
-        else max(0, raw_fp - len(duplicate_of_matched_indices))
+        raw_fp if count_duplicate_of_matched_as_fp else max(0, raw_fp - len(root_covered_indices))
     )
 
     tp = len(matched_truth)
@@ -967,24 +1104,56 @@ def score_report(
         index for index, _identity in enumerate(issue_ids) if index not in matched_issues
     ]
     effective_fp_indices = [
-        index for index in raw_fp_indices if index not in duplicate_of_matched_indices
+        index
+        for index in raw_fp_indices
+        if count_duplicate_of_matched_as_fp or index not in root_covered_indices
     ]
     fp_issue_ids = [issue_ids[index] for index in effective_fp_indices]
     fp_issue_records = [issue_records[index] for index in effective_fp_indices]
     raw_fp_issue_ids = [issue_ids[index] for index in raw_fp_indices]
     raw_fp_issue_records = [issue_records[index] for index in raw_fp_indices]
-    duplicate_records = [
-        {
+
+    def classified_record(index: int) -> Dict[str, Any]:
+        return {
             **issue_records[index],
             "issue_index": index,
+            **dict(unmatched_classifications.get(index) or {}),
+        }
+
+    duplicate_records = [
+        {
+            **classified_record(index),
             "duplicate_of_matched": True,
         }
-        for index in sorted(duplicate_of_matched_indices)
+        for index in sorted(same_product_root_indices)
+    ]
+    truth_covered_additional_records = [
+        classified_record(index) for index in sorted(truth_covered_additional_indices)
+    ]
+    overlap_indices = cross_anchor_overlap_indices | weak_legacy_overlap_indices
+    overlap_records = [
+        {
+            **classified_record(index),
+            "fp_audit_classification": (
+                FP_AUDIT_CROSS_ANCHOR_OVERLAP
+                if index in cross_anchor_overlap_indices
+                else FP_AUDIT_WEAK_LEGACY_OVERLAP
+            ),
+            "fp_audit_reason": str(
+                unmatched_classifications[index].get("reason") or "weak matcher overlap"
+            ),
+        }
+        for index in sorted(overlap_indices)
+    ]
+    ordinary_effective_records = [
+        issue_records[index] for index in effective_fp_indices if index not in overlap_indices
     ]
     fp_audit = false_positive_audit_summary(
-        fp_issue_records,
+        ordinary_effective_records,
         duplicate_records,
         fp_audit_classifier=fp_audit_classifier,
+        truth_covered_additional_records=truth_covered_additional_records,
+        overlap_records=overlap_records,
     )
     high_critical_truth = [
         (index, vuln)
@@ -1022,6 +1191,8 @@ def score_report(
         "view": view,
         "report_issue_count": len(issues),
         "ground_truth_count": len(vulns),
+        "truth_contract": truth_contract,
+        "required_confirmed_tp": int(truth_contract["required_confirmed_tp"]),
         "safe_entry_count": len(safe_entries),
         "alerted_safe_entry_count": len(alerted_safe_entries),
         "alerted_safe_entries": alerted_safe_entries,
@@ -1034,7 +1205,19 @@ def score_report(
         "false_positives": fp,
         "false_positives_raw": raw_fp,
         "false_positives_effective": effective_fp,
-        "duplicate_of_matched_count": len(duplicate_of_matched_indices),
+        # Deprecated matcher-v1 name.  Under matcher v2 this is intentionally
+        # a strict alias of same_product_root_count, not every second issue
+        # that can mention an already covered truth.
+        "duplicate_of_matched_count": len(same_product_root_indices),
+        "same_product_root_count": len(same_product_root_indices),
+        "truth_covered_additional_count": len(truth_covered_additional_indices),
+        "cross_anchor_overlap_count": len(cross_anchor_overlap_indices),
+        "weak_legacy_overlap_count": len(weak_legacy_overlap_indices),
+        "unclassified_false_positive_count": sum(
+            1
+            for record in unmatched_classifications.values()
+            if record.get("classification") == "false_positive"
+        ),
         "false_negatives": fn,
         "actionable_precision": round(actionable_precision, 4),
         "actionable_f1": round(actionable_f1, 4),
@@ -1071,6 +1254,17 @@ def score_report(
         "false_positive_issue_identities_raw": raw_fp_issue_ids,
         "false_positive_issue_records_raw": raw_fp_issue_records,
         "duplicate_of_matched_issue_records": duplicate_records,
+        "same_product_root_issue_records": duplicate_records,
+        "truth_covered_additional_issue_records": truth_covered_additional_records,
+        "cross_anchor_overlap_issue_records": [
+            classified_record(index) for index in sorted(cross_anchor_overlap_indices)
+        ],
+        "weak_legacy_overlap_issue_records": [
+            classified_record(index) for index in sorted(weak_legacy_overlap_indices)
+        ],
+        "unmatched_issue_classifications": [
+            classified_record(index) for index in sorted(unmatched_classifications)
+        ],
         "false_positive_audit": fp_audit,
         "attribution": attribution_summary(
             issues,
@@ -1084,25 +1278,36 @@ def score_report(
             matched_issue_by_truth_index,
             vulns,
             issues,
+            weak_pairs=weak_pairs,
         ),
         "scoring_contract": {
+            "matcher_version": MATCHER_VERSION,
+            "truth_contract_version": str(truth_contract["schema_version"]),
+            "truth_manifest_sha256": str(truth_contract["manifest_sha256"]),
+            "confirmable_truth_count": int(truth_contract["confirmable_truth_count"]),
             "line_tolerance": line_tolerance,
             "count_duplicate_of_matched_as_fp": count_duplicate_of_matched_as_fp,
-            "function_anchors": [
-                "function",
-                "secondary_function",
-                "sibling_function",
-                "entry_function",
-                "sink_function",
-                "call_path",
-            ],
+            "function_anchors": ["primary", "structured_source_sink", "fact_location"],
             "line_placeholder_policy": "truth line <= 1 is treated as unknown",
-            "category_policy": "category/cwe aliases or at least two ground-truth keyword hits",
+            "category_policy": (
+                "explicit category/defect_family/CWE plus a versioned generic alias family; "
+                "truth keywords never establish an official match"
+            ),
+            "anchor_policy": (
+                "file, function, and line range must come from one coherent issue/truth anchor"
+            ),
+            "weak_match_policy": "keyword/text/cross-anchor pairs are diagnostic and never TP",
             "primary_precision_metric": "actionable_precision",
             "primary_f1_metric": "actionable_f1",
             "primary_recall_metric": "distinct_root_recall",
             "safe_unit_rate_metric": ("safe_entry_alert_rate" if safe_entries else "unavailable"),
-            "legacy_precision_metric": "precision (root-cause/effective; duplicates excluded)",
+            "legacy_precision_metric": (
+                "precision (root-cause/effective; strong truth-covered additions excluded)"
+            ),
+            "deprecated_fields": {
+                "duplicate_of_matched_count": "same_product_root_count",
+                "duplicate_of_matched_issue_records": "same_product_root_issue_records",
+            },
         },
     }
     if standard_false_positive_rate is not None:
@@ -1111,6 +1316,29 @@ def score_report(
         # so its unmatched-alert ratio remains a false-discovery rate.
         result["standard_false_positive_rate"] = round(standard_false_positive_rate, 4)
         result["scoring_contract"]["standard_false_positive_rate_metric"] = "safe_entry_alert_rate"
+    if truth_contract["present"] and int(truth_contract["pattern_model_count"]):
+        design_truth = {
+            "benchmark": truth.get("benchmark", "unknown"),
+            "suite": truth.get("suite", "unknown"),
+            "vulnerabilities": truth_records_for_contract(truth, kinds=("pattern_model",)),
+            "safe_entries": truth.get("safe_entries", []),
+        }
+        design_score = score_report(
+            report,
+            design_truth,
+            view=view,
+            line_tolerance=line_tolerance,
+            count_duplicate_of_matched_as_fp=count_duplicate_of_matched_as_fp,
+            fp_audit_classifier=fp_audit_classifier,
+        )
+        result["design_risk_view"] = {
+            "truth_count": int(design_score["ground_truth_count"]),
+            "true_positives": int(design_score["true_positives"]),
+            "recall": float(design_score["recall"]),
+            "matched": list(design_score["matched"]),
+            "missed": list(design_score["missed"]),
+            "counting_contract": "diagnostic only; excluded from confirmed recall gate",
+        }
     return result
 
 
@@ -1257,6 +1485,8 @@ def _match_diagnostics(
     matched_issue_by_truth_index: Dict[int, int],
     vulns: List[Dict[str, Any]],
     issues: List[Dict[str, Any]],
+    *,
+    weak_pairs: Sequence[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
     """Explain common non-match causes without changing the scoring contract."""
     potentials_by_truth: Dict[int, List[Dict[str, Any]]] = {}
@@ -1297,45 +1527,147 @@ def _match_diagnostics(
         )
 
     return {
+        "matcher_version": MATCHER_VERSION,
         "candidate_still_present_but_matched_another_truth": matched_elsewhere,
         "unmatched_truth_with_potential_pair_count": sum(
             1 for truth_index in potentials_by_truth if truth_index not in matched_truth_indices
         ),
+        "weak_pair_count": len(weak_pairs),
+        "weak_pairs": [
+            {
+                key: pair.get(key)
+                for key in (
+                    "truth_index",
+                    "truth_id",
+                    "issue_index",
+                    "classification",
+                    "match",
+                )
+            }
+            for pair in weak_pairs
+        ],
     }
 
 
-def _duplicate_of_matched_indices(
+def _classify_unmatched_issues(
     issues: List[Dict[str, Any]],
     potential_pairs: List[Dict[str, Any]],
+    weak_pairs: Sequence[Dict[str, Any]],
     matched_issues: Set[int],
     matched_truth_indices: Set[int],
     matched_issue_by_truth_index: Dict[int, int],
-) -> Set[int]:
-    """Classify unmatched report issues that duplicate an already matched TP."""
-    duplicates: Set[int] = set()
+) -> Dict[int, Dict[str, Any]]:
+    """Classify every unmatched issue without equating truth overlap and roots."""
+
     potentials_by_issue: Dict[int, List[Dict[str, Any]]] = {}
     for pair in potential_pairs:
         issue_index = int(pair.get("issue_index") or 0)
         potentials_by_issue.setdefault(issue_index, []).append(pair)
+    weak_by_issue: Dict[int, List[Dict[str, Any]]] = {}
+    for pair in weak_pairs:
+        issue_index = int(pair.get("issue_index") or 0)
+        weak_by_issue.setdefault(issue_index, []).append(dict(pair))
+
+    matched_by_root: Dict[str, tuple[int, int]] = {}
+    for truth_index, issue_index in matched_issue_by_truth_index.items():
+        if not (0 <= issue_index < len(issues)):
+            continue
+        root_uid = str(issues[issue_index].get("finding_root_uid") or "")
+        if root_uid:
+            matched_by_root.setdefault(root_uid, (truth_index, issue_index))
+
+    result: Dict[int, Dict[str, Any]] = {}
 
     for issue_index, issue in enumerate(issues):
         if issue_index in matched_issues:
             continue
-        direct_pairs = potentials_by_issue.get(issue_index, [])
-        if any(int(pair.get("truth_index") or 0) in matched_truth_indices for pair in direct_pairs):
-            duplicates.add(issue_index)
+        root_uid = str(issue.get("finding_root_uid") or "")
+        root_match = matched_by_root.get(root_uid) if root_uid else None
+        if root_match is not None:
+            truth_index, primary_issue_index = root_match
+            result[issue_index] = {
+                "classification": "same_product_root",
+                "matched_truth_index": truth_index,
+                "matched_truth_id": _truth_id_from_pair_index(
+                    potentials_by_issue,
+                    truth_index,
+                ),
+                "matched_primary_issue_index": primary_issue_index,
+                "finding_root_uid": root_uid,
+                "pair_strength": "explicit_product_root",
+                "reason": "explicit finding_root_uid equals the matched primary root",
+            }
             continue
-        for matched_index in matched_issue_by_truth_index.values():
-            if matched_index >= len(issues):
-                continue
-            if issues_may_share_root_cause(
-                issues[matched_index],
-                issue,
-                require_concrete_root=True,
-            ):
-                duplicates.add(issue_index)
-                break
-    return duplicates
+
+        direct_pairs = [
+            pair
+            for pair in potentials_by_issue.get(issue_index, [])
+            if int(pair.get("truth_index") or 0) in matched_truth_indices
+        ]
+        if direct_pairs:
+            best = max(direct_pairs, key=lambda pair: int(pair.get("score") or 0))
+            truth_index = int(best.get("truth_index") or 0)
+            result[issue_index] = {
+                "classification": "truth_covered_additional",
+                "matched_truth_index": truth_index,
+                "matched_truth_id": str(best.get("truth_id") or truth_index),
+                "matched_primary_issue_index": matched_issue_by_truth_index.get(truth_index),
+                "finding_root_uid": root_uid,
+                "pair_strength": "strong_structured",
+                "match": dict(best.get("match") or {}),
+                "reason": (
+                    "different product root has a strong structured pair to an already "
+                    "covered truth"
+                ),
+            }
+            continue
+
+        weak = weak_by_issue.get(issue_index, [])
+        if weak:
+            best = sorted(
+                weak,
+                key=lambda pair: (
+                    0 if pair.get("classification") == "cross_anchor_overlap" else 1,
+                    int(pair.get("truth_index") or 0),
+                ),
+            )[0]
+            classification = str(best.get("classification") or "weak_legacy_overlap")
+            result[issue_index] = {
+                "classification": classification,
+                "matched_truth_index": int(best.get("truth_index") or 0),
+                "matched_truth_id": str(best.get("truth_id") or ""),
+                "matched_primary_issue_index": matched_issue_by_truth_index.get(
+                    int(best.get("truth_index") or 0)
+                ),
+                "finding_root_uid": root_uid,
+                "pair_strength": "weak_diagnostic",
+                "match": dict(best.get("match") or {}),
+                "reason": (
+                    "explicit category overlaps but no coherent structured anchor exists"
+                    if classification == "cross_anchor_overlap"
+                    else "match requires truth keywords or free-form/text function anchors"
+                ),
+            }
+            continue
+
+        result[issue_index] = {
+            "classification": "false_positive",
+            "finding_root_uid": root_uid,
+            "pair_strength": "none",
+            "reason": "no strong or weak truth pair",
+        }
+    return result
+
+
+def _truth_id_from_pair_index(
+    potentials_by_issue: Mapping[int, Sequence[Mapping[str, Any]]],
+    truth_index: int,
+) -> str:
+    for pairs in potentials_by_issue.values():
+        for pair in pairs:
+            if int(pair.get("truth_index") or 0) == truth_index:
+                return str(pair.get("truth_id") or truth_index)
+    return str(truth_index)
 
 
 def score_report_views(
@@ -1377,6 +1709,86 @@ def issue_match_detail(
     *,
     preflattened_text: Optional[str] = None,
 ) -> Optional[Dict[str, str]]:
+    """Return a matcher-v2 pair only for one coherent structured anchor."""
+
+    del preflattened_text
+    category_reason = _structured_category_match_reason(issue, truth)
+    if not category_reason:
+        return None
+    issue_anchors = _issue_structured_anchors(issue)
+    truth_anchors = _truth_structured_anchors(truth)
+    matches: List[tuple[tuple[int, int, int], Dict[str, str]]] = []
+    truth_priority = {"primary": 0, "secondary": 1, "sibling": 2, "additional": 3}
+    issue_priority = {"primary": 0, "sink": 1, "source": 2, "fact": 3}
+    for issue_anchor in issue_anchors:
+        for truth_anchor in truth_anchors:
+            if not _same_source_path(
+                str(issue_anchor.get("file") or ""),
+                str(truth_anchor.get("file") or ""),
+            ):
+                continue
+            if (
+                str(issue_anchor.get("function") or "").lower()
+                != str(truth_anchor.get("function") or "").lower()
+            ):
+                continue
+            issue_start = int(issue_anchor.get("start") or 0)
+            issue_end = int(issue_anchor.get("end") or issue_start)
+            truth_start = int(truth_anchor.get("start") or 0)
+            truth_end = int(truth_anchor.get("end") or truth_start)
+            truth_line_known = truth_start > 1
+            if truth_line_known and not _ranges_overlap_with_tolerance(
+                issue_start, issue_end, truth_start, truth_end, line_tolerance
+            ):
+                continue
+            distance = (
+                min(
+                    abs(issue_start - truth_start),
+                    abs(issue_end - truth_end),
+                )
+                if truth_line_known
+                else 0
+            )
+            issue_kind = str(issue_anchor.get("kind") or "fact")
+            truth_kind = str(truth_anchor.get("kind") or "additional")
+            matches.append(
+                (
+                    (
+                        truth_priority.get(truth_kind, 9),
+                        issue_priority.get(issue_kind, 9),
+                        distance,
+                    ),
+                    {
+                        "category": category_reason,
+                        "function": f"{truth_kind}:coherent_structured_anchor",
+                        "file": "coherent_path",
+                        "line": (
+                            f"{truth_kind}_line:within_tolerance"
+                            if truth_line_known
+                            else f"{truth_kind}_line:unknown"
+                        ),
+                        "pair_strength": "strong_structured",
+                        "issue_anchor_kind": issue_kind,
+                        "truth_anchor_kind": truth_kind,
+                        "issue_anchor": _anchor_label(issue_anchor),
+                        "truth_anchor": _anchor_label(truth_anchor),
+                    },
+                )
+            )
+    if not matches:
+        return None
+    return sorted(matches, key=lambda item: item[0])[0][1]
+
+
+def _legacy_issue_match_detail(
+    issue: Dict[str, Any],
+    truth: Dict[str, Any],
+    line_tolerance: int,
+    *,
+    preflattened_text: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
+    """Return the matcher-v1 text pair for audit only, never official TP."""
+
     text = (
         preflattened_text
         if preflattened_text is not None
@@ -1399,6 +1811,7 @@ def issue_match_detail(
         "function": function_reason,
         "file": file_reason,
         "line": line_reason,
+        "pair_strength": "weak_legacy",
     }
 
 
@@ -1409,59 +1822,355 @@ def _issue_match_score(
     *,
     preflattened_text: Optional[str] = None,
 ) -> int:
-    score = 0
-    issue_category = str(issue.get("category") or issue.get("type") or "").lower().replace("-", "_")
-    truth_category = str(truth.get("category") or "").lower().replace("-", "_")
-    issue_cwe = str(issue.get("cwe") or "").lower()
-    truth_cwe = str(truth.get("cwe") or "").lower()
-    if issue_category and issue_category == truth_category:
-        score += 70
-    elif issue_cwe and truth_cwe and issue_cwe == truth_cwe:
-        score += 65
-    elif str(detail.get("category") or "").startswith("category_alias"):
-        score += 35
-    else:
-        score += 20
-
-    issue_func = _issue_function(issue)
-    anchors = _issue_function_anchors(issue)
-    text = (
-        preflattened_text
-        if preflattened_text is not None
-        else _flatten(issue).lower().replace("\\", "/")
-    )
-    expected_functions = _truth_function_anchors(truth)
-    scored_function = False
-    for kind, func in expected_functions:
-        if issue_func == func:
-            score += 100 if kind == "primary" else 85
-            scored_function = True
-            break
-        if func in anchors:
-            score += 90 if kind == "primary" else 75
-            scored_function = True
-            break
-    if not scored_function:
-        for kind, func in expected_functions:
-            if func in text:
-                score += 45 if kind == "primary" else 35
-                break
-
-    file_reason = str(detail.get("file") or "")
-    if file_reason in {"path", "secondary_path"} or file_reason.startswith("additional_path"):
-        score += 20
-    elif file_reason:
-        score += 10
-
-    line_reason = str(detail.get("line") or "")
-    if "within_tolerance" in line_reason:
-        score += 20
-    elif line_reason == "no_expected_line":
-        score += 2
-
-    keyword_hits = _truth_keyword_hits(text.replace("_", " ").replace("-", " "), truth)
-    score += min(keyword_hits, 4)
+    del issue, truth, preflattened_text
+    category = str(detail.get("category") or "")
+    score = 70 if category.startswith("category_exact") else 0
+    score += 65 if category.startswith("cwe_exact") else 0
+    score += 50 if category.startswith("category_family") else 0
+    truth_kind = str(detail.get("truth_anchor_kind") or "")
+    issue_kind = str(detail.get("issue_anchor_kind") or "")
+    score += {"primary": 120, "secondary": 100, "sibling": 90, "additional": 85}.get(truth_kind, 0)
+    score += {"primary": 40, "sink": 35, "source": 30, "fact": 25}.get(issue_kind, 0)
     return score
+
+
+_STRUCTURED_CATEGORY_FAMILIES: Dict[str, frozenset[str]] = {
+    "bounds": frozenset(
+        {
+            "bounds",
+            "size_limit_mismatch",
+            "out_of_bounds_write",
+            "buffer_overflow",
+            "heap_overflow",
+            "out_of_range_pointer_offset",
+            "buffer_overread",
+            "buffer_over_read",
+            "buffer_underread",
+            "buffer_underwrite",
+            "buffer_underflow",
+        }
+    ),
+    "resource_leak": frozenset(
+        {
+            "memory_leak",
+            "resource_leak",
+            "fd_leak",
+            "file_descriptor_leak",
+            "optimization_resource_lifecycle",
+            "thread_cache_leak",
+        }
+    ),
+    "race": frozenset({"race", "data_race", "shared_state_race", "refcount_race"}),
+    "deadlock": frozenset({"deadlock", "signal_deadlock", "lock_order_deadlock"}),
+    "allocation_limit": frozenset(
+        {
+            "resource_allocation_without_limits",
+            "unchecked_allocation",
+            "excessive_allocation",
+        }
+    ),
+    "use_after_free": frozenset({"use_after_free", "expired_pointer", "stale_pointer"}),
+    "busy_loop": frozenset({"busy_loop", "infinite_loop", "spin_loop"}),
+    "integer_conversion": frozenset(
+        {"integer_overflow", "signed_unsigned", "signed_unsigned_conversion"}
+    ),
+    "file_type_validation": frozenset({"file_type_validation", "incorrect_validation_order"}),
+    "permission": frozenset({"permission", "incorrect_permission_check"}),
+    "shared_state_race": frozenset(
+        {"unsynchronized_shared_state", "race", "data_race", "shared_state_race"}
+    ),
+    "dynamic_array_race": frozenset({"dynamic_array_race", "race", "data_race"}),
+}
+
+
+def _structured_category_match_reason(issue: Mapping[str, Any], truth: Mapping[str, Any]) -> str:
+    issue_categories = _issue_explicit_categories(issue)
+    truth_category = _normalize_category(truth.get("category"))
+    if truth_category and truth_category in issue_categories:
+        return f"category_exact:{truth_category}"
+    issue_cwes = _cwe_values(
+        [
+            issue.get("cwe"),
+            _as_dict(issue.get("evidence_pack")).get("cwe"),
+        ]
+    )
+    truth_cwes = _cwe_values([truth.get("cwe")])
+    common_cwes = sorted(issue_cwes & truth_cwes)
+    if common_cwes:
+        return f"cwe_exact:{common_cwes[0]}"
+    if truth_category:
+        for family, members in _STRUCTURED_CATEGORY_FAMILIES.items():
+            if truth_category in members and issue_categories.intersection(members):
+                return f"category_family:{family}"
+    return ""
+
+
+def _issue_explicit_categories(issue: Mapping[str, Any]) -> Set[str]:
+    values: List[Any] = [
+        issue.get("category"),
+        issue.get("defect_family"),
+        issue.get("defect_class"),
+    ]
+    obligation = issue.get("security_obligation")
+    if isinstance(obligation, Mapping):
+        values.append(obligation.get("defect_family"))
+    pack = issue.get("evidence_pack")
+    if isinstance(pack, Mapping):
+        values.extend((pack.get("defect_family"), pack.get("defect_class")))
+        nested = pack.get("security_obligation")
+        if isinstance(nested, Mapping):
+            values.append(nested.get("defect_family"))
+    return {value for value in (_normalize_category(item) for item in values) if value}
+
+
+def _normalize_category(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def _cwe_values(values: Iterable[Any]) -> Set[str]:
+    result: Set[str] = set()
+    for value in values:
+        normalized = _normalize_cwe(value)
+        if re.fullmatch(r"CWE-\d+", normalized):
+            result.add(normalized)
+        for number in re.findall(r"CWE[-_ ]?(\d+)", str(value or ""), flags=re.IGNORECASE):
+            result.add(f"CWE-{number}")
+    return result
+
+
+def _truth_structured_anchors(truth: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    anchors: List[Dict[str, Any]] = []
+
+    def add(kind: str, file_value: Any, function_value: Any, start: Any, end: Any) -> None:
+        try:
+            numeric_start = int(start or 0)
+        except (TypeError, ValueError):
+            numeric_start = 0
+        anchor = _structured_anchor(
+            kind,
+            file_value,
+            function_value,
+            start,
+            end,
+            allow_unknown_line=kind == "primary" and start not in (None, "") and numeric_start <= 1,
+        )
+        if anchor and anchor not in anchors:
+            anchors.append(anchor)
+
+    primary_file = truth.get("file")
+    add("primary", primary_file, truth.get("function"), truth.get("line"), truth.get("end_line"))
+    add(
+        "secondary",
+        truth.get("secondary_file") or primary_file,
+        truth.get("secondary_function"),
+        truth.get("secondary_line"),
+        truth.get("secondary_end_line"),
+    )
+    add(
+        "sibling",
+        truth.get("sibling_file") or primary_file,
+        truth.get("sibling_function"),
+        truth.get("sibling_line"),
+        truth.get("sibling_end_line"),
+    )
+    locations = truth.get("additional_locations")
+    if isinstance(locations, list):
+        for item in locations:
+            if isinstance(item, Mapping):
+                add(
+                    "additional",
+                    item.get("file"),
+                    item.get("function"),
+                    item.get("line"),
+                    item.get("end_line"),
+                )
+    return anchors
+
+
+def _issue_structured_anchors(issue: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    anchors: List[Dict[str, Any]] = []
+    primary_file = str(issue.get("file_path") or _location_file(dict(issue)) or "")
+    primary_function = str(issue.get("function") or issue.get("func_name") or "")
+    primary_range = _location_line_range(dict(issue))
+    if primary_range:
+        anchor = _structured_anchor(
+            "primary",
+            primary_file,
+            primary_function,
+            primary_range[0],
+            primary_range[1],
+        )
+        if anchor:
+            anchors.append(anchor)
+
+    raw_obligation = issue.get("security_obligation")
+    if isinstance(raw_obligation, Mapping):
+        obligation: Mapping[str, Any] = raw_obligation
+    else:
+        pack = issue.get("evidence_pack")
+        nested_obligation = pack.get("security_obligation") if isinstance(pack, Mapping) else None
+        obligation = nested_obligation if isinstance(nested_obligation, Mapping) else {}
+    for kind, value in (
+        ("source", obligation.get("source_uid")),
+        ("sink", obligation.get("sink_uid")),
+    ):
+        location = _structured_location_value(value)
+        if location:
+            anchor = _structured_anchor(
+                kind,
+                location.get("file") or primary_file,
+                location.get("function") or primary_function,
+                location.get("line"),
+                location.get("end_line"),
+            )
+            if anchor and anchor not in anchors:
+                anchors.append(anchor)
+
+    fact_slices: List[Mapping[str, Any]] = []
+    direct_slice = issue.get("decision_fact_slice")
+    if isinstance(direct_slice, Mapping):
+        fact_slices.append(direct_slice)
+    nested_slice = obligation.get("decision_fact_slice")
+    if isinstance(nested_slice, Mapping):
+        fact_slices.append(nested_slice)
+    for fact_slice in fact_slices:
+        for fact in fact_slice.get("facts") or []:
+            if not isinstance(fact, Mapping):
+                continue
+            for location in fact.get("locations") or []:
+                if not isinstance(location, Mapping) or not location.get("function"):
+                    continue
+                anchor = _structured_anchor(
+                    "fact",
+                    location.get("file"),
+                    location.get("function"),
+                    location.get("start_line") or location.get("line"),
+                    location.get("end_line"),
+                )
+                if anchor and anchor not in anchors:
+                    anchors.append(anchor)
+    pack = issue.get("evidence_pack")
+    if isinstance(pack, Mapping):
+        for kind in ("source", "sink", "entry"):
+            value = pack.get(kind)
+            if not isinstance(value, Mapping):
+                continue
+            file_value, start, end = _mapping_location_range(value)
+            anchor = _structured_anchor(
+                "source" if kind == "entry" else kind,
+                file_value,
+                value.get("function") or primary_function,
+                start,
+                end,
+            )
+            if anchor and anchor not in anchors:
+                anchors.append(anchor)
+    return anchors
+
+
+def _structured_location_value(value: Any) -> Dict[str, Any]:
+    if isinstance(value, Mapping):
+        parsed = value
+    else:
+        try:
+            parsed = json.loads(str(value or ""))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+    if not isinstance(parsed, Mapping):
+        return {}
+    return {
+        "file": parsed.get("file"),
+        "function": parsed.get("function") or parsed.get("func_name"),
+        "line": parsed.get("line") or parsed.get("start_line"),
+        "end_line": parsed.get("end_line"),
+    }
+
+
+def _structured_anchor(
+    kind: str,
+    file_value: Any,
+    function_value: Any,
+    start_value: Any,
+    end_value: Any,
+    *,
+    allow_unknown_line: bool = False,
+) -> Dict[str, Any]:
+    file_path = str(file_value or "").replace("\\", "/").strip().lower()
+    function = str(function_value or "").strip().lower()
+    try:
+        start = int(start_value or 0)
+    except (TypeError, ValueError):
+        return {}
+    try:
+        end = int(end_value if end_value not in (None, "") else start)
+    except (TypeError, ValueError):
+        end = start
+    if not file_path or not function or (start <= 1 and not allow_unknown_line):
+        return {}
+    return {
+        "kind": kind,
+        "file": file_path,
+        "function": function,
+        "start": start,
+        "end": max(start, end),
+    }
+
+
+def _mapping_location_range(value: Mapping[str, Any]) -> tuple[str, int, int]:
+    file_value = str(value.get("file") or "")
+    location = str(value.get("location") or "")
+    if location:
+        parsed = re.match(r"^(.*?):(\d+)(?:-(\d+))?(?::\d+)?$", location)
+        if parsed:
+            file_value = file_value or parsed.group(1)
+            start = int(parsed.group(2))
+            end = int(parsed.group(3) or start)
+            return file_value, start, end
+    try:
+        start = int(value.get("start_line") or value.get("line") or 0)
+    except (TypeError, ValueError):
+        start = 0
+    try:
+        end = int(value.get("end_line") or start)
+    except (TypeError, ValueError):
+        end = start
+    return file_value, start, end
+
+
+def _same_source_path(left: str, right: str) -> bool:
+    left_path = str(left or "").replace("\\", "/").strip("/").lower()
+    right_path = str(right or "").replace("\\", "/").strip("/").lower()
+    return bool(
+        left_path
+        and right_path
+        and (
+            left_path == right_path
+            or left_path.endswith("/" + right_path)
+            or right_path.endswith("/" + left_path)
+        )
+    )
+
+
+def _ranges_overlap_with_tolerance(
+    left_start: int,
+    left_end: int,
+    right_start: int,
+    right_end: int,
+    tolerance: int,
+) -> bool:
+    return right_start - tolerance <= left_end and left_start <= right_end + tolerance
+
+
+def _anchor_label(anchor: Mapping[str, Any]) -> str:
+    return "{file}:{function}:{start}-{end}".format(**anchor)
+
+
+def _weak_pair_classification(issue: Mapping[str, Any], truth: Mapping[str, Any]) -> str:
+    return (
+        "cross_anchor_overlap"
+        if _structured_category_match_reason(issue, truth)
+        else "weak_legacy_overlap"
+    )
 
 
 def collect_environment_metadata(
@@ -2261,6 +2970,13 @@ def _release_trial_errors(summary: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
     if str(summary.get("run_kind") or "") != "formal":
         errors.append("run_kind is not formal")
+    evaluation = summary.get("evaluation")
+    scoring_contract = evaluation.get("scoring_contract") if isinstance(evaluation, dict) else None
+    if (
+        not isinstance(scoring_contract, dict)
+        or scoring_contract.get("matcher_version") != MATCHER_VERSION
+    ):
+        errors.append(f"truth matcher is not {MATCHER_VERSION}")
     integrity = summary.get("integrity")
     if not isinstance(integrity, dict) or integrity.get("status") != "passed":
         errors.append("integrity status is not passed")

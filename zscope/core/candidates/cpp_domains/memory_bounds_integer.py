@@ -388,9 +388,15 @@ class RegexMemoryBoundsIntegerRules:
     def _rule_signed_unsigned(self, lines: List[CodeLine], emit) -> None:
         signed_reads: Dict[str, CodeLine] = {}
         casts: Dict[str, Tuple[CodeLine, str]] = {}
+        user_recv = self._names_pattern(getattr(self, "_user_recv_source_names", set()) or set())
+        user_io_len = self._names_pattern(
+            (getattr(self, "_user_send_sink_names", set()) or set())
+            | (getattr(self, "_user_recv_source_names", set()) or set())
+        )
         for line in lines:
             read = re.search(
-                r"\bint\s+(?P<var>[A-Za-z_]\w*)\s*=\s*(?:recv|read|_net_recv_data)\s*\(", line.text
+                rf"\bint\s+(?P<var>[A-Za-z_]\w*)\s*=\s*(?:recv|read|_net_recv_data|{user_recv})\s*\(",
+                line.text,
             )
             if read:
                 signed_reads[read.group("var")] = line
@@ -402,7 +408,7 @@ class RegexMemoryBoundsIntegerRules:
                 casts[cast.group("size")] = (line, cast.group("src"))
             for size_var, (cast_line, src_var) in list(casts.items()):
                 if re.search(
-                    rf"\b(?:memcpy|memmove|_net_send_data|_net_recv_data)\s*\([^;]*\b{re.escape(size_var)}\b",
+                    rf"\b(?:memcpy|memmove|_net_send_data|_net_recv_data|{user_io_len})\s*\([^;]*\b{re.escape(size_var)}\b",
                     line.text,
                 ):
                     emit(
@@ -530,7 +536,7 @@ class RegexMemoryBoundsIntegerRules:
                 elif re.search(rf"\b{re.escape(var)}\.[A-Za-z_]\w*\s*=", line.text):
                     struct_locals[var] = (decl_line, field_writes + 1, has_memset)
                 elif re.search(
-                    rf"\b(?:_net_send_data|send|write)\s*\([^;]*&{re.escape(var)}\s*,\s*sizeof\s*\(\s*{re.escape(var)}\s*\)",
+                    rf"\b(?:_net_send_data|send|write|{self._names_pattern(getattr(self, '_user_send_sink_names', set()) or set())})\s*\([^;]*&{re.escape(var)}\s*,\s*sizeof\s*\(\s*{re.escape(var)}\s*\)",
                     line.text,
                 ):
                     if not has_memset and field_writes > 0:
@@ -1237,7 +1243,7 @@ class ClangMemoryBoundsIntegerRules:
             validation_required=not audit_only,
             finding_kind="audit_observation" if audit_only else "clang_ast_cfg_candidate",
             audit_observation_reason=(
-                "size/spec limit mismatch has no visible unsafe sink in the local CFG"
+                "大小/规格上限不匹配，且在本地 CFG 中没有可见的不安全汇点"
                 if audit_only
                 else ""
             ),
@@ -1335,8 +1341,8 @@ class ClangMemoryBoundsIntegerRules:
         casts: Dict[str, Tuple[ClangCfgLine, str]],
     ) -> None:
         read = re.search(
-            r"\b(?:int|ssize_t)\s+(?P<var>[A-Za-z_]\w*)\s*=\s*"
-            r"(?:recv|read|recvfrom|_net_recv_data)\s*\(",
+            rf"\b(?:int|ssize_t)\s+(?P<var>[A-Za-z_]\w*)\s*=\s*"
+            rf"(?:recv|read|recvfrom|_net_recv_data|{self._names_pattern(getattr(self, '_user_recv_source_names', set()) or set())})\s*\(",
             line.text,
         )
         if read:

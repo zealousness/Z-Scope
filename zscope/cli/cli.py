@@ -321,6 +321,7 @@ def main(
             from ..config.user_config_workbook import UserConfigWorkbook
             from ..framework.llm_client import LLMClient
             from ..orchestration.user_config_inference import (
+                classify_ambiguous_interfaces_with_llm,
                 filter_user_config_rows_with_llm,
                 infer_user_config_rows,
             )
@@ -376,9 +377,24 @@ def main(
                     llm_client,
                     max_workers=llm_workers,
                 )
+                existing_symbols = {
+                    str(row.get("symbol_name") or "")
+                    for sheet in ("resource", "lock")
+                    for row in generated.get(sheet, [])
+                }
+                ambiguous_rows, ambiguous_stats = classify_ambiguous_interfaces_with_llm(
+                    code_index,
+                    llm_client,
+                    exclude=existing_symbols,
+                    max_workers=llm_workers,
+                )
+                for sheet in ("resource", "lock"):
+                    generated.setdefault(sheet, []).extend(ambiguous_rows.get(sheet, []))
             finally:
                 llm_client.close()
-            stats = UserConfigWorkbook(workbook_path).merge_generated(generated)
+            workbook = UserConfigWorkbook(workbook_path)
+            stats = workbook.merge_generated(generated)
+            read_warnings = list(workbook.read_warnings)
             total_symbols = sum(len(items) for items in generated.values())
             click.echo(f"User config workbook: {workbook_path}")
             click.echo(
@@ -386,13 +402,30 @@ def main(
                 f"{llm_stats['reviewed']} reviewed, "
                 f"{llm_stats['kept']} kept, {llm_stats['revised']} revised, "
                 f"{llm_stats['dropped']} dropped, {llm_stats['unreviewed']} unreviewed, "
+                f"{llm_stats.get('recheck', 0)} rechecked, "
                 f"{llm_stats['errors']} batch error(s)."
+            )
+            click.echo(
+                "LLM ambiguous classification: "
+                f"{ambiguous_stats['collected']} collected, "
+                f"{ambiguous_stats['classified']} classified, "
+                f"{ambiguous_stats['dropped']} dropped, "
+                f"{ambiguous_stats['errors']} batch error(s)."
             )
             click.echo(
                 "Inference complete: "
                 f"{total_symbols} generated row(s), "
                 f"{stats['added']} added, {stats['refreshed']} refreshed, {stats['removed']} removed."
             )
+            report_path = _write_user_config_infer_report(
+                workbook_path.parent / "user_config.infer_report.md",
+                generated,
+                llm_stats,
+                ambiguous_stats,
+                stats,
+                read_warnings=read_warnings,
+            )
+            click.echo(f"Inference report: {report_path}")
             click.echo("Review the workbook, then run Z-SCOPE normally.")
             sys.exit(0)
 
@@ -789,6 +822,88 @@ def _resolve_user_config_workbook_path(zscope_config) -> Path:
     if raw_path.exists() and raw_path.is_file():
         raise ValueError("analysis.user_config_db must point to an .xlsx workbook or a directory.")
     return raw_path / "user_config.xlsx"
+
+
+def _write_user_config_infer_report(
+    report_path: Path,
+    generated: dict,
+    llm_stats: dict,
+    ambiguous_stats: dict,
+    merge_stats: dict,
+    *,
+    read_warnings: Optional[list] = None,
+) -> Path:
+    """Write the human-readable inference report next to the workbook."""
+
+    lines = [
+        "# user_config 推理报告",
+        "",
+        "本报告由 `zscope --infer-user-config` 生成,只做分析不改代码;",
+        "扫描前请复核下列接口(尤其是低置信度与 needs_review 行)。",
+        "",
+    ]
+    for sheet, title in (("resource", "resource 表"), ("lock", "lock 表")):
+        rows = sorted(
+            generated.get(sheet, []), key=lambda item: str(item.get("symbol_name") or "")
+        )
+        lines.append(f"## {title}({len(rows)} 行)")
+        lines.append("")
+        lines.append("| symbol | kind | pair | confidence | source | description/notes |")
+        lines.append("|---|---|---|---|---|---|")
+        for row in rows:
+            description = " ".join(
+                part
+                for part in (str(row.get("description") or ""), str(row.get("notes") or ""))
+                if part
+            )
+            lines.append(
+                "| {symbol} | {kind} | {pair} | {conf} | {source} | {desc} |".format(
+                    symbol=str(row.get("symbol_name") or ""),
+                    kind=str(row.get("kind") or ""),
+                    pair=str(row.get("pair") or ""),
+                    conf=str(row.get("confidence") or ""),
+                    source=str(row.get("source") or ""),
+                    desc=description.replace("|", "\\|")[:200],
+                )
+            )
+        lines.append("")
+    needs_review = [
+        str(row.get("symbol_name") or "")
+        for sheet in ("resource", "lock")
+        for row in generated.get(sheet, [])
+        if "needs_review" in str(row.get("source") or "")
+    ]
+    lines.append("## 需要人工复核")
+    lines.append("")
+    if needs_review:
+        lines.extend(f"- {name}" for name in needs_review)
+    else:
+        lines.append("- 无")
+    lines.append("")
+    if read_warnings:
+        lines.append("## 工作簿告警(未知 kind)")
+        lines.append("")
+        lines.extend(f"- {warning}" for warning in read_warnings)
+        lines.append("")
+    lines.append("## 统计")
+    lines.append("")
+    lines.append(
+        f"- LLM 筛查: reviewed={llm_stats.get('reviewed', 0)}, kept={llm_stats.get('kept', 0)}, "
+        f"revised={llm_stats.get('revised', 0)}, dropped={llm_stats.get('dropped', 0)}, "
+        f"rechecked={llm_stats.get('recheck', 0)}, errors={llm_stats.get('errors', 0)}"
+    )
+    lines.append(
+        f"- 歧义分类: collected={ambiguous_stats.get('collected', 0)}, "
+        f"classified={ambiguous_stats.get('classified', 0)}, "
+        f"dropped={ambiguous_stats.get('dropped', 0)}, errors={ambiguous_stats.get('errors', 0)}"
+    )
+    lines.append(
+        f"- 回写: added={merge_stats.get('added', 0)}, refreshed={merge_stats.get('refreshed', 0)}, "
+        f"removed={merge_stats.get('removed', 0)}"
+    )
+    lines.append("")
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return report_path
 
 
 def _batch_interruption_lines(session_result: ScanSessionResult) -> list[str]:

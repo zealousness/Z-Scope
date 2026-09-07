@@ -23,7 +23,7 @@ class UnifiedBackend(CodeBackend):
         clangd_path: str = "clangd",
         db_path: str = ".zscope_knowledge/code_knowledge.db",
         batch_size: int = 50,
-        max_threads: int = 8,
+        max_threads: int = 4,
         svf_bin_dir: str = "",
         gclang_path: str = "gclang",
         get_bc_path: str = "get-bc",
@@ -40,12 +40,16 @@ class UnifiedBackend(CodeBackend):
         svf_exclusive_pools: Optional[List[Dict[str, Any]]] = None,
         svf_shared_pools: Optional[List[Dict[str, Any]]] = None,
         svf_parallel_workers: int = 1,
+        clang_frontend: str = "auto",
+        clang_indexer_path: str = "zscope-clang-indexer",
     ):
         self._clang = ClangBackend(
             clangd_path=clangd_path,
             db_path=db_path,
             batch_size=batch_size,
             max_threads=max_threads,
+            frontend=clang_frontend,
+            clang_indexer_path=clang_indexer_path,
         )
         self._svf_cfg: Dict[str, Any] = dict(
             svf_bin_dir=svf_bin_dir,
@@ -107,6 +111,10 @@ class UnifiedBackend(CodeBackend):
         return True
 
     def run_svf(self, entry_functions: Optional[List[Any]] = None) -> bool:
+        with self._clang.pause_type_references():
+            return self._run_svf_exclusive(entry_functions)
+
+    def _run_svf_exclusive(self, entry_functions: Optional[List[Any]] = None) -> bool:
         if self._svf_ran:
             return self._svf_available
         if not self._clang._db:
@@ -143,9 +151,12 @@ class UnifiedBackend(CodeBackend):
     def _check_svf_tools(self) -> List[str]:
         missing: List[str] = []
         gclang = str(self._svf_cfg.get("gclang_path", "gclang"))
-        if not shutil.which(gclang):
-            missing.append(f"gclang ({gclang})")
         llvm_link = str(self._svf_cfg.get("llvm_link_path", "llvm-link"))
+        if not shutil.which(gclang):
+            from .llvm_toolchain import matching_clang
+
+            if not matching_clang(llvm_link):
+                missing.append(f"matching Clang or gclang ({gclang})")
         if not shutil.which(llvm_link):
             missing.append(f"llvm-link ({llvm_link})")
 

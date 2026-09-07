@@ -1,0 +1,118 @@
+[
+ {
+  "run": "trial/20260905T130307Z/run-01",
+  "candidates_in_validation": 237,
+  "engines": {
+   "cpp_clang_cfg": 169,
+   "cpp_graph": 57,
+   "?": 11
+  },
+  "V0_deterministic": {
+   "confirm_TP": 59,
+   "confirm_FP": 4,
+   "precision": 93.7
+  },
+  "V1_initial": {
+   "conversations": 176,
+   "tokens": 1830763,
+   "verdicts": {
+    "uncertain": 166,
+    "rejected": 5,
+    "verified": 3
+   }
+  },
+  "V3_investigation": {
+   "conversations": 1529,
+   "tokens": 34634950,
+   "candidates_with_v3": 143,
+   "transitions": {
+    "uncertain -> verified": 74,
+    "uncertain -> rejected": 44,
+    "uncertain -> uncertain": 21,
+    "rejected -> rejected": 3,
+    "verified -> verified": 1
+   }
+  },
+  "V3_confirmed": {
+   "TP": 59,
+   "FP": 16,
+   "precision": 78.7
+  },
+  "V1_confirmed": {
+   "TP": 1,
+   "FP": 0
+  },
+  "terminal": {
+   "confirmed": 139,
+   "needs_review_pure": 98,
+   "confirmed_matched_truths": 119,
+   "confirmed_FP": 20
+  },
+  "review_pool": {
+   "covers_unmatched_truth_items": 81,
+   "covers_unmatched_truths_distinct": 14,
+   "no_truth": -42
+  },
+  "tokens_other_layers": {
+   "?": 5338223
+  }
+ },
+ {
+  "run": "trial/20260906T132051Z/run-01",
+  "candidates_in_validation": 236,
+  "engines": {
+   "cpp_clang_cfg": 168,
+   "cpp_graph": 57,
+   "?": 11
+  },
+  "V0_deterministic": {
+   "confirm_TP": 59,
+   "confirm_FP": 2,
+   "precision": 96.7
+  },
+  "V1_initial": {
+   "conversations": 177,
+   "tokens": 1854437,
+   "verdicts": {
+    "uncertain": 164,
+    "verified": 6,
+    "rejected": 4
+   }
+  },
+  "V3_investigation": {
+   "conversations": 1620,
+   "tokens": 38736729,
+   "candidates_with_v3": 141,
+   "transitions": {
+    "uncertain -> verified": 67,
+    "uncertain -> rejected": 36,
+    "uncertain -> uncertain": 31,
+    "rejected -> rejected": 4,
+    "verified -> verified": 3
+   }
+  },
+  "V3_confirmed": {
+   "TP": 55,
+   "FP": 13,
+   "precision": 80.9
+  },
+  "V1_confirmed": {
+   "TP": 2,
+   "FP": 1
+  },
+  "terminal": {
+   "confirmed": 132,
+   "needs_review_pure": 104,
+   "confirmed_matched_truths": 116,
+   "confirmed_FP": 16
+  },
+  "review_pool": {
+   "covers_unmatched_truth_items": 86,
+   "covers_unmatched_truths_distinct": 16,
+   "no_truth": -46
+  },
+  "tokens_other_layers": {
+   "?": 4247783
+  }
+ }
+]

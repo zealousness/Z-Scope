@@ -47,6 +47,13 @@ def validate_revision_id(revision_id: str) -> str:
     return value
 
 
+def _write_state_text(path: Path, text: str) -> None:
+    # Revision lint compares state projections byte-for-byte against LF
+    # renderings, so writes must bypass platform newline translation.
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
 def resolve_project_state_root(
     project_root: Union[Path, str],
     state_dir: Union[Path, str],
@@ -468,7 +475,7 @@ class WikiStore:
         }
         fd, temp_name = tempfile.mkstemp(prefix="active.", suffix=".json", dir=str(self.state_root))
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
                 handle.write("\n")
                 handle.flush()
@@ -485,9 +492,9 @@ class WikiStore:
                 revision = json.loads(path.read_text(encoding="utf-8"))
                 revision["active"] = False
                 revision["lint"] = {"status": "failed", "errors": 1, "warnings": 0}
-                path.write_text(
+                _write_state_text(
+                    path,
                     json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8",
                 )
                 with self.connection:
                     self.connection.execute(
@@ -569,7 +576,7 @@ class WikiStore:
         from ..schema import validate_instance
 
         validate_instance(event, "zscope.wiki-event.v1")
-        with self.audit_events_path.open("a", encoding="utf-8") as handle:
+        with self.audit_events_path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -699,7 +706,7 @@ class WikiStore:
         for frontmatter, markdown, slug in pages:
             path = revision_dir / "pages" / f"{slug}.md"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(markdown, encoding="utf-8")
+            _write_state_text(path, markdown)
             page_meta.append(
                 {
                     "page_id": frontmatter["page_id"],
@@ -721,7 +728,7 @@ class WikiStore:
             manifest_obj.source_manifest_digest,
             index_pages,
         )
-        (revision_dir / "index.md").write_text(index_text, encoding="utf-8")
+        _write_state_text(revision_dir / "index.md", index_text)
         revision = {
             "schema_version": "zscope.wiki-revision.v1",
             "revision_id": rid,
@@ -742,18 +749,19 @@ class WikiStore:
             "created_at": _utc_now(),
             "active": True,
         }
-        (revision_dir / "refs.json").write_text(
-            json.dumps(refs, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        _write_state_text(
+            revision_dir / "refs.json",
+            json.dumps(refs, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         )
-        (revision_dir / "source-manifest.json").write_text(
+        _write_state_text(
+            revision_dir / "source-manifest.json",
             json.dumps(manifest_obj.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
-        (revision_dir / "constraints.json").write_text("[]\n", encoding="utf-8")
-        (revision_dir / "edges.json").write_text("[]\n", encoding="utf-8")
-        (revision_dir / "revision.json").write_text(
+        _write_state_text(revision_dir / "constraints.json", "[]\n")
+        _write_state_text(revision_dir / "edges.json", "[]\n")
+        _write_state_text(
+            revision_dir / "revision.json",
             json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
         final_dir = self.revisions_root / rid
         if final_dir.exists():
@@ -1229,15 +1237,16 @@ class WikiStore:
         for item in pages_list:
             path = revision_dir / "pages" / f"{item['canonical_slug']}.md"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(str(item["markdown"]), encoding="utf-8")
+            _write_state_text(path, str(item["markdown"]))
         index_text = _render_index(
             manifest_obj.project_id,
             rid,
             manifest_obj.source_manifest_digest,
             pages_list,
         )
-        (revision_dir / "index.md").write_text(index_text, encoding="utf-8")
-        (revision_dir / "refs.json").write_text(
+        _write_state_text(revision_dir / "index.md", index_text)
+        _write_state_text(
+            revision_dir / "refs.json",
             json.dumps(
                 sorted(refs.values(), key=lambda item: str(item["ref_id"])),
                 ensure_ascii=False,
@@ -1245,23 +1254,22 @@ class WikiStore:
                 sort_keys=True,
             )
             + "\n",
-            encoding="utf-8",
         )
-        (revision_dir / "source-manifest.json").write_text(
+        _write_state_text(
+            revision_dir / "source-manifest.json",
             json.dumps(manifest_obj.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
-        (revision_dir / "constraints.json").write_text(
+        _write_state_text(
+            revision_dir / "constraints.json",
             json.dumps(constraints, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
-        (revision_dir / "edges.json").write_text(
+        _write_state_text(
+            revision_dir / "edges.json",
             json.dumps(edges_list, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
-        (revision_dir / "revision.json").write_text(
+        _write_state_text(
+            revision_dir / "revision.json",
             json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
         final_dir = self.revisions_root / rid
         if final_dir.exists():
@@ -1340,9 +1348,9 @@ class WikiStore:
             "warnings": len(linted.warnings),
         }
         revision_path = final_dir / "revision.json"
-        revision_path.write_text(
+        _write_state_text(
+            revision_path,
             json.dumps(revision, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
         with self.connection:
             self.connection.execute(
@@ -1445,7 +1453,7 @@ class WikiStore:
         text = render_log_markdown(replay)
         fd, temp_name = tempfile.mkstemp(prefix="log.", suffix=".md", dir=str(self.state_root))
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())

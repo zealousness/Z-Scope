@@ -144,13 +144,14 @@ def _write_run_matrix(
     catalog: dict,
     counts=None,
     per_call_tokens=None,
+    arms: str = "ABCDE",
 ) -> tuple[list[Path], dict[tuple[str, int], str]]:
     directory.mkdir(parents=True, exist_ok=True)
     selected_counts = counts or {"A": 111, "B": 112, "C": 111, "D": 112, "E": 112}
     selected_tokens = per_call_tokens or {"A": 10, "B": 8, "C": 5, "D": 7, "E": 12}
     paths = []
     hashes = {}
-    for arm_id in "ABCDE":
+    for arm_id in arms:
         cap = 17_000_000 if arm_id == "E" else 12_000_000
         for trial_index in range(1, 6):
             result = run_validator_replay(
@@ -242,12 +243,15 @@ def test_formal_a_e_scorer_selects_lowest_token_arm_within_one_pp(formal_matrix)
 
 
 def test_arm_e_17m_execution_cap_is_not_a_12m_gate_exemption(formal_matrix, tmp_path: Path) -> None:
+    # Only arm E differs from the frozen module matrix, so re-execute just the
+    # five E runs and splice them into the unchanged A-D runs.
     high_paths, high_hashes = _write_run_matrix(
         tmp_path,
         bundle=formal_matrix["bundle"],
         catalog=formal_matrix["catalog"],
         counts={"A": 111, "B": 112, "C": 111, "D": 112, "E": 112},
         per_call_tokens={"A": 10, "B": 8, "C": 5, "D": 7, "E": 91_911},
+        arms="E",
     )
     base_paths = {
         (path.name.split("-")[1], int(path.stem.rsplit("-", 1)[-1])): path

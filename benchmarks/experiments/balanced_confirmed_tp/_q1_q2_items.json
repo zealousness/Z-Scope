@@ -1,0 +1,3161 @@
+{
+ "v3_tp": [
+  {
+   "id": "GRAPH_MEMORY_LEAK_16a37ed549",
+   "truth": "RANGE-039",
+   "rule": "global_container_registration_without_cleanup_path",
+   "cat": "memory_leak",
+   "func": "_lifecycle_customize_control_message",
+   "loc": "src/lifecycle.c:593",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选为 src/lifecycle.c:593 \"OPEN:\" 分支的全局注册动作引发 CWE-401 内存泄漏。源:td_handle_mesh_message(main.c:389-395) 为公开 API 入口,msg 参数由调用方/攻击者控制,在 main.c:393 调用 _lifecycle_customize_control_message;该函数在 lifecycle.c:593 匹配 \"OPEN:\" 前缀,经 _parse_key_and_owner 解析后在 599 行调用 _control_session_add_to_global。汇:_control_session_add_to_global(lifecycle.c:477-501) 在 482 行 _safe_calloc 分配 ControlSession、488 行 _str_dup 复制 owner,并将节点链入全局链表 g_control_sessions(497-498)。守卫分析:释放路径仅存在于 _control_session_drop_from_global(lifecycle.c:503-524,经 EXPIRE 协议消息挂接于 pfnExpireSession,见 549 行),且该函数只释放第一个匹配 key 的节点;add 不检查重复 key,同一 key 多次 OPEN 会产生仅 EXPIRE 一次无法全部释放的累积节点;进程退出路径 td_cleanup(main.c:625-659) 与 _lifecycle_service_shutdown(lifecycle.c:75-88) 均不遍历释放 g_control_sessions;g_mesh_control_hooks.pfnDropSession 从未赋值,_lifecycle_mesh_disconnect 为无效路径。因此每次 \"OPEN:\" 消息都会产生存活至进程结束、且重复 key 场景下不可回收的堆分配,属于可达的确定性泄漏,判定为 verified。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_178acad2419beacc03cc2f2b1633394b",
+     "FACT_V3_5f91ce2cecb9744b0fad2ddbdb246746"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_USE_AFTER_FREE_6826a47ad9",
+   "truth": "ISSUE43-016",
+   "rule": "clang_cfg_use_after_release",
+   "cat": "use_after_free",
+   "func": "_runtime_release_packet_pool",
+   "loc": "src/lifecycle.c:2351",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "函数 _runtime_release_packet_pool 在 src/lifecycle.c:2346 将新分配的 RuntimePbufPool 赋值给全局指针 g_runtime_pbuf_pool 后，若 active_tasks > 0（2348 行分支），在 2349-2350 行依次调用 SAFE_FREE(g_runtime_pbuf_pool->buffer) 和 SAFE_FREE(g_runtime_pbuf_pool)。SAFE_FREE 宏（include/common.h:24）在 free(ptr) 后将 ptr 置 NULL。紧接在 2351 行，代码解引用 g_runtime_pbuf_pool->buffer 和 g_runtime_pbuf_pool->active_tasks，此时 g_runtime_pbuf_pool 已被释放并置 NULL，构成释放后立即使用（CWE-416）——实际表现为对 NULL 指针的解引用（CWE-476）。  \n\n调用链完整确定：td_start_runtime_worker 通过 VOS_TaskCreate 启动 _td_runtime_worker（main.c:804），_td_runtime_worker 调用 td_run_runtime_maintenance（main.c:756），该函数在 main.c:784 以硬编码值 active_tasks=1 调用 td_runtime_refresh_cache(128, stable_name, 42, 1)。active_tasks 逐层透传：td_runtime_refresh_cache（main.c:708）→ _runtime_refresh_worker_context（lifecycle.c:2891）→ _runtime_release_packet_pool(active_tasks)。由于 active_tasks=1 恒大于 0，释放后解引用的缺陷分支必然触发。函数内不存在任何守卫、判空或所有权转移来阻止该",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_03d34284fb41b82592738eec672a85f3",
+     "FACT_V3_32d5632b480aa03dd43ed636fc54073c"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_STACK_OVERFLOW_d0c98324e6",
+   "truth": "ISSUE42-007",
+   "rule": "composed_string_copied_to_member_buffer_without_bound",
+   "cat": "stack_overflow",
+   "func": "_runtime_prepare_worker_label",
+   "loc": "src/lifecycle.c:2377",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选为真实的栈缓冲区溢出（CWE-121）。汇点位于 src/lifecycle.c:2377 的 memcpy(aux.name, composed, strlen(composed) + 1)：aux.name 是 RuntimeThreadAux 的成员，定义为 char name[RUNTIME_THREAD_NAME_SIZE]，而 RUNTIME_THREAD_NAME_SIZE 在 src/lifecycle.c:2008 定义为 16u，即目标缓冲区仅 16 字节；源 composed 为 char[64]，snprintf 最多可生成 63 字符加 NUL 共 64 字节，strlen(composed)+1 最多为 64，远超 16 字节。触发路径完整：公共 API td_start_runtime_worker/td_run_runtime_maintenance（src/main.c:784）以外部可控的 shm_name（NULL 时默认 \"product-namedpipe\"）作为 stable_name 调用 td_runtime_refresh_cache(128, stable_name, 42, 1)，经 _runtime_refresh_worker_context（src/lifecycle.c:2890）将 worker_name 原样传入 _runtime_prepare_worker_label 作为 thread_name。即使取默认路径，\"runtime-42-product-namedpipe\" 为 28 字符加 NUL 共 29 字节，仍会溢出 16 字节的 aux.name 达 13 字节；若外部提供更长的 shm_name，可溢出最多 48 字节，破坏栈上相邻字段（start/arg 指针与后续局部变量）。汇点前不存在任何长度检查或截断防护，snprintf 的边界仅保护 composed 自身。源码、汇点、源可控性、可行调用路径与缺失防护均由代码证据直接证明，判定为 verified。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "type_layout"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_5717645d031e2699c00405abe4ecbdeb",
+     "FACT_V3_768c8f46c0b01abd22ffaee08273eb71",
+     "FACT_V3_985e4e783eb4ad7e15c43a9880f03599",
+     "FACT_V3_e71aed8f53974324a9b18e3ed7eab417"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_PREMATURE_DESTROY_af886ebd47",
+   "truth": "ISSUE42-005",
+   "rule": "clang_cfg_active_owner_destroy_without_quiescence",
+   "cat": "premature_destroy",
+   "func": "_runtime_release_packet_pool",
+   "loc": "src/lifecycle.c:2350",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "函数 _runtime_release_packet_pool (src/lifecycle.c:2339-2358) 中存在明确的 premature destroy 缺陷。当 active_tasks > 0 时（第2348行），代码先在第2349-2350行通过 SAFE_FREE 释放 g_runtime_pbuf_pool->buffer 和 g_runtime_pbuf_pool 自身，然后在第2351-2352行的 return 语句中立即解引用 g_runtime_pbuf_pool->buffer 和 g_runtime_pbuf_pool->active_tasks。SAFE_FREE 宏 (include/common.h:24) 在 free 后将指针置 NULL，因此第2350行后 g_runtime_pbuf_pool 为 NULL，后续访问为 NULL 解引用（确定性崩溃）。仓库内唯一的调用路径 td_run_runtime_maintenance (src/main.c:756) 在第784行以硬编码参数 active_tasks=1 调用 td_runtime_refresh_cache，经 _runtime_refresh_worker_context 传入 _runtime_release_packet_pool，故触发条件恒满足。此外 td_runtime_refresh_cache 是导出 API，外部调用方也可直接传入任意 active_tasks 值。第2348行的 if(active_tasks>0) 是触发条件而非防护性守卫，不存在任何同步或静止期协议阻止该路径。SAFE_FREE 的 NULL 化行为只是将 Use-After-Free 转为 NULL 解引用，并未消除\"销毁后继续使用\"的根本缺陷。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_6bac8ea74bebec6659197ead39d3ef3b",
+     "FACT_V3_8b417bf73cd8ae2767136d3f9b2b803c",
+     "FACT_V3_fdb2924ac0e0c9cba9af930a8fd3b9e2"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_LOG_AMPLIFICATION_f00f0b1b2d",
+   "truth": "RANGE-043",
+   "rule": "paired_self_referential_traversal_log_amplification",
+   "cat": "log_amplification",
+   "func": "_lifecycle_dispatch_pipe_tick",
+   "loc": "src/lifecycle.c:691",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "缺陷完全成立，属于可触发的 CWE-400 日志放大/无限循环 DoS。(1) 源头：src/lifecycle.c:726 的解除链表操作 `*cursor = pipe;` 是错误的无操作（应为 `*cursor = pipe->next;`），随后第732行 `pipe->next = pipe;` 把闭包节点构造成自环，节点仍留在全局链表 g_pipe_scheduler 中且 active=0、diagnostic_marker=0xFFFFFFFF。(2) 汇聚点：_lifecycle_dispatch_pipe_tick（src/lifecycle.c:685-709）以 `while (pipe) { pipe = pipe->next; }` 遍历，遇到 active=0 的节点在第691行执行 LOG_ERROR 后 `pipe = pipe->next`；因自环 `pipe->next == pipe`，循环永不终止，每次迭代都向 stderr 输出错误日志（_log_wrapper 直接 fprintf/vfprintf，无速率限制），同时永久持有 g_pipe_scheduler.sched_lock。(3) 可达路径：公开 API 入口 td_control_pipe（src/main.c:402-408，扫描配置根）一次调用内依次执行 add_pipe(pipe_id) → dispatch → close_pipe(pipe_id) → dispatch，第二次 dispatch 必然遍历到自环节点并死循环；pipe_id 由调用者完全控制，无需任何特殊前置条件。(4) 防护缺失：预期的防护（闭包节点移出链表）因第726行笔误失效；遍历无循环检测、无迭代上限，LOG_ERROR 无日志节流。此前 initial 轮缺失的“遍历能否到达自环节点”事实已由代码证据闭环确认。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_0efd97cf7b5e1b259d1a23d8cc734bcf",
+     "FACT_V3_149f87dc98038f3664b68a2ebca4de54",
+     "FACT_V3_18f7e11b760a5c0d0ccf3c1087aff26d"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_75226a729e",
+   "truth": "ISSUE42-001",
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_runtime_map_linked_segment",
+   "loc": "src/lifecycle.c:2674",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选项 CAND_7055e94d149ce7959d76b55d 为 src/lifecycle.c:2674（及 2668）处 `_safe_malloc(shm_size ? shm_size : 1)` 的无上限资源分配（CWE-770）。证据链完整：公开头文件 include/task_dispatcher.h 第168行声明公开API td_run_runtime_maintenance、第126-130行声明 td_runtime_apply_shared_memory_event，二者直接接收调用者提供的 wire/wire_len；td_run_runtime_maintenance（src/main.c:767-770）将外部 wire 原样转发至 td_runtime_apply_shared_memory_event（main.c:702）→ _runtime_accept_session_frame（src/lifecycle.c:2863 经 _runtime_receive_frame 在 2832-2833 行把 wire 中 RuntimeFrameHeader 整体 memcpy，size 字段（uint32_t，偏移8字节，88字节最小报文即可携带）未经任何校验）→ 2876-2877 行将 (size_t)frame.header.size 作为 shm_size 传入 _runtime_map_linked_segment → 2668/2674 行直接 _safe_malloc(shm_size ? shm_size : 1)。源可控性成立：uint32_t 大小字段由外部调用者完全控制（最大 UINT32_MAX≈4GB），64位 size_t 转换无溢出、无截断。防护缺失：_runtime_receive_frame 仅校验 magic（2850行）与 wire_len≥88，从未限制 header.size；_safe_malloc（src/utils.c:13-20）只是 malloc 的 NULL 检查包装，无任何大",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_0e8cc78ddbe93c89aff54eecae0eb8bb",
+     "FACT_V3_58cfc059d4f361f3bd1985aebb92a571",
+     "FACT_V3_a67aaed92b9b5fedcb457c965ac9a8e3"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_READER_STATE_RACE_16540417f9",
+   "truth": "ISSUE42-004",
+   "rule": "single_reader_field_under_shared_reader_count",
+   "cat": "reader_state_race",
+   "func": "_runtime_read_lock_owner",
+   "loc": "src/lifecycle.c:2329",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选缺陷为 reader_state_race：_runtime_read_lock_owner 在 src/lifecycle.c:2329 以非原子方式写入全局共享字段 g_runtime_rwlock.reader_pid（uint32_t，非 volatile、非 atomic），并在行 2335 再次非原子写入清零。该函数通过 __atomic_fetch_add/__atomic_fetch_sub 操作 cnt 实现的是读者-写者锁语义：bit31 为写锁，多个读者可同时持有读锁进入同一临界区（行 2328-2334），因此并发线程之间的 reader_pid 写入没有任何锁或原子保护，构成真实数据竞争（CWE-362）。竞态双方甚至都会写 reader_pid 与（经 _runtime_reader_owner_matches 行 2317 写）writer_pid。触发路径可达：公开 API td_start_runtime_worker（src/main.c:810-822，非 static）经 VOS_TaskCreate 创建任务线程 _td_runtime_worker，线程入口调用 td_run_runtime_maintenance → td_runtime_apply_shared_memory_event → _runtime_accept_session_frame（行 2871）→ _runtime_read_lock_owner；多个工作线程或外部调用方可并发执行该路径。源值可控：reader_pid 参数源自 _runtime_receive_frame 中从调用方 wire 缓冲区 memcpy 得到的 frame.header.value。防护分析：cnt 读锁仅阻止写锁（bit31）冲突，并不排除并发读者，故对 reader_pid 的并发写缺少充分防护。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_d144eccdd03eaf99c0637c206ca00f85"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_OUT_OF_BOUNDS_WRITE_218d6c42c7",
+   "truth": "ISSUE43-001",
+   "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+   "cat": "out_of_bounds_write",
+   "func": "_runtime_stream_compact_segments",
+   "loc": "src/lifecycle.c:3088",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已用源码证据闭环 CWE-787 越界写候选。源：lifecycle.c:3067-3078 的 _runtime_stream_read_header 在 wire_len>=sizeof(RuntimeStreamHeader) 且 magic 等于 RUNTIME_STREAM_MAGIC(0x5354524du) 时，通过 memcpy 整体采用 wire 中的 RuntimeStreamHeader，segment_count（uint16_t，最大 65535）完全由调用方/攻击者控制且无任何校验。汇：_runtime_stream_compact_segments 中 segments 为 RUNTIME_STREAM_SEGMENT_LIMIT(=8u, lifecycle.c:2973) 元素的固定栈数组，3085-3089 行循环以 header.segment_count 为界写入 segments[i]（3086/3087/3088/3089 行四字段），当 segment_count>8 即发生 16 字节结构的栈越界写。路径：公开入口 td_runtime_process_stream_batch（main.c:741-747，is_static=false 的薄包装）直接透传 wire -> _runtime_process_stream_batch（lifecycle.c:3388 直接调用）-> _runtime_stream_compact_segments，与证据包 canonical occurrence 的 reachable_from_entry=true 及调用路径一致。守卫分析：从入口到汇点的整条链路上均不存在 segment_count<=RUNTIME_STREAM_SEGMENT_LIMIT 的检查（_runtime_stream_compact_segments 内部无检查；_runtime_process_stream_batch 在 3380-3388 行仅解析 header 不校验计数；入口与 td_run_",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_2523da02b514e7e08a40ec8031bbc022",
+     "FACT_V3_4450c532e0f0a21384ffd986d433239a",
+     "FACT_V3_46bf14d010cf434cadac4cc48fa6b8e3",
+     "FACT_V3_7c61b5e9ac6999c4ed60019d2f349a43"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_UNCHECKED_ALLOCATION_de237e6ca9",
+   "truth": "ISSUE43-008",
+   "rule": "clang_cfg_allocation_result_used_without_null_check",
+   "cat": "unchecked_allocation",
+   "func": "_runtime_stream_build_index",
+   "loc": "src/lifecycle.c:3204",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "_runtime_stream_build_index(src/lifecycle.c:3194-3208) 在第3202行调用 _safe_calloc(entry_count, sizeof(RuntimeStreamSegment*))，包装函数 _safe_calloc(src/utils.c:22-29) 在底层 calloc 失败时仅记录日志并返回 NULL，不保证非 NULL 返回值。第3204行 index[0] = &first 在未对 index 进行 NULL 检查的情况下解引用写入，导致空指针解引用（CWE-690/CWE-476）。entry_count 实参来源于 wire 缓冲区中的 header.batch_size（第3396行），通过 _runtime_stream_read_header 直接 memcpy 自外部输入（第3070-3077行），完全由攻击者控制。入口 td_runtime_process_stream_batch(src/main.c:741-747) 经 _runtime_process_stream_batch 直调目标函数，路径可达且无任何数值校验或分配结果检查。攻击者可提供大 batch_size 使 calloc 失败，或利用系统内存压力触发 NULL 返回，进而导致崩溃。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "caller_contract",
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_aeb041f1761bd3420412e561a81ed9b3",
+     "FACT_V3_dc41cbc20406640b5a8b97ff7add49d4",
+     "FACT_V3_ddc6a5ceeb5f5a64c45d0e71fdec86b4",
+     "FACT_V3_ffc8b70ad25a41d64f6be8c3457c646a"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_c383ff5873",
+   "truth": "ISSUE42-020",
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_safe_calloc",
+   "loc": "src/utils.c:22",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选缺陷为 _safe_calloc（src/utils.c:22）对 nmemb*size 的堆分配无任何上限约束（CWE-770）。代码证据确认：_safe_calloc 第 23 行直接 calloc(nmemb, size)，仅在失败后记录日志，分配前无溢出检查、无大小上限。外部可控触发路径已完整确认：公开入口 td_handle_distributed_cs_message / td_run_peer_session_cases → _peer_process_session_message → _peer_receive_frame(work_fd) 从套接字读取 PeerSessionFrame（含攻击者可控的 uint32_t header.request_id）→ _peer_create_task_from_frame 将 request_id 截断为 int 后作为 task_index 传入 _peer_expand_task_table → 第 1787 行 _safe_calloc(new_cap, sizeof(PeerSessionTask*))，其中 new_cap = ((task_index/16u)+1u)*16u，无任何上限校验。当攻击者发送 request_id=0x7FFFFFFF（仅需 12 字节帧头）时 new_cap=0x80000000，64 位平台上 calloc(0x80000000, 8) 将尝试分配约 16GiB，导致资源耗尽/拒绝服务；request_id 取值更大时 (size_t)task_id 变为巨型值，new_cap 计算还可能溢出回绕并随后在第 1803 行产生越界写。守卫分析：_peer_expand_task_table 仅判断 task_index >= g_peer_task_array_cap（初始 4）作为扩容触发条件，非上限守卫；_safe_calloc 自身亦无限制，因此不存在任何 caller 侧上限守卫。其余直接调用者（_lifecycle_add_entry、_net_cr",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_5e051ad87f69ee0bcccb50c2aaf161dd",
+     "FACT_V3_97f371bff6ef9e2a32cec832f93bb31a",
+     "FACT_V3_cbd1155048c0581e9f9f4cbf61977ac6"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_SHARED_MEMORY_RACE_97aa5a3878",
+   "truth": "ISSUE42-021",
+   "rule": "lookup_before_insert_lock",
+   "cat": "shared_memory_race",
+   "func": "_runtime_create_shared_zone",
+   "loc": "src/lifecycle.c:2619",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选缺陷为 _runtime_create_shared_zone（src/lifecycle.c:2617-2638）中共享内存区注册表的 TOCTOU/数据竞争：第 2619 行在未持有 g_runtime_memzone_lock 的情况下调用 _runtime_find_shared_zone 无锁遍历全局链表 g_runtime_memzones 做重名检查，而第 2633-2636 行才在锁保护下执行头插写入 g_runtime_memzones = zone。检查与插入不是原子操作，两个线程对同名 zone 可同时通过检查并各自插入，导致注册表出现重复条目，违反 EEXIST 唯一性契约；同时无锁读与加锁写构成 C11 数据竞争（未定义行为）。线程可达性已由代码证据证实：VOS_TaskCreate（src/main.c:444-457）经 pthread_create/pthread_detach 创建分离线程，td_start_runtime_worker（src/main.c:810-822）以 _td_runtime_worker（src/main.c:799-808）为入口调用 td_run_runtime_maintenance（src/main.c:785）→ td_runtime_configure_memory（src/main.c:714）→ _runtime_apply_memory_plan（src/lifecycle.c:2901）→ _runtime_create_shared_zone；整条调用链未持有任何锁。另一读取点 _runtime_make_shared_key（src/lifecycle.c:2734）使用不同的 g_runtime_ftok_lock 读取同一链表，进一步证明对 g_runtime_memzones 的读写从未用同一把锁串行化，锁协议缺口确凿。source（name 参数，经入口 shm_name 可控，亦可为默认 \"runtime-zone\"）→ sink（第 2635 行 g_runtime_m",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_058c88f0e0a63a38d09f9646e484d097"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_TYPE_CONFUSION_8902aa1e05",
+   "truth": "RANGE-014",
+   "rule": "cleanup_contract_type_mismatch",
+   "cat": "type_confusion",
+   "func": "td_cleanup",
+   "loc": "src/main.c:647",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "类型混淆成立且可触发。源点：src/main.c:647 将 &g_dispatcher.config（TaskConfig*，g_dispatcher 为 include/types.h:117-128 定义的 Dispatcher 全局静态变量，src/main.c:14）作为实参传给形参为 SharedResources* 的 _executor_cleanup_resources（src/executor.c:151-169）。类型布局事实：SharedResources（internal/types.ph:37-42）为 pthread_mutex_t lock_a/lock_b 加 int resource_a/resource_b，而 TaskConfig（include/types.h:41-47）为 queue_size/thread_count/max_tasks_per_client 加 NetworkConfig/SecurityConfig，两者布局完全不同，实参类型与形参类型不兼容。接收端按 SharedResources 解释 TaskConfig 内存：pthread_mutex_destroy(&resources->lock_a)（executor.c:165）与 lock_b（166）在未初始化为互斥锁的内存上执行属未定义行为；resources->resource_a（161）在偏离实际 struct 的偏移处读取非预期数据，若该垃圾值>0 则对已释放的 temp_buffer 再次 free（158 释放、162 再次释放）造成双重释放。可达路径由代码直接证实：main（src/main.c:680）在 td_init 成功后无条件调用 td_cleanup()，td_cleanup（src/main.c:647）无条件调用 _executor_cleanup_resources；该路径在程序正常退出时必达，不受输入控制。守护分析：接收端仅有空指针检查（executor.c:152-154），对类型/布局不一致无任何检查或转换，",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "source_sink_reachability",
+     "type_layout"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_3521910e7dfe85f931ff7d6a18b9b101",
+     "FACT_V3_a14d01ae91377f7b5d64cbe8a780494c"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_393ff1b559",
+   "truth": "ISSUE41-006",
+   "rule": "clang_cfg_acquire_without_release_on_exit",
+   "cat": "memory_leak",
+   "func": "_peer_prepare_retry_context",
+   "loc": "src/lifecycle.c:1774",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "CWE-401 内存泄漏候选经验证成立。源：src/lifecycle.c:1760 的 _safe_calloc 分配 partition（PeerSessionResource），1771 行 _str_dup 分配 partition->tag；汇：1773-1774 行 retry_mode 非零时直接 return -1，两条堆分配均未释放。所有权确认未转移：partition 仅为局部变量，未写入全局/静态变量、未传出参数、未通过返回值传递，调用方不持有任何资源。守卫分析：1779-1780 行的 SAFE_FREE 仅在 retry_mode==0 路径执行，不支配 1774 行提前返回路径，释放守卫完全缺失。触发路径为外部可达：路径A：td_handle_distributed_cs_message（公开 API，src/main.c:415-419）→ _peer_process_session_message（src/lifecycle.c:1967-1986）→ _peer_dispatch_task（src/lifecycle.c:1961 default 分支，硬编码传 retry_mode=1 且忽略返回值）→ _peer_prepare_retry_context，任何 protocol_id 非 PEER_PROTOCOL_MESH/RPC 的任务必触发泄漏；路径B：_td_peer_session_worker（src/main.c:478-488）→ td_run_peer_session_cases（src/main.c:586 传入外部可控 peer_protocol，非零即触发）→ _peer_prepare_retry_context。g_peer_partition_count 在 retry_mode 检查前（1769 行）已递增且不回退，泄漏路径还造成全局计数与实际存活资源不一致，进一步坐实该路径为真实缺陷而非理论问题。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "ownership_transfer",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_5a3e96e24df9e5d986218ae587b65b2d",
+     "FACT_V3_82589a9e6e10380ce46ca1688acd6e31",
+     "FACT_V3_c73b77c4b24a56ee4733d35b3576b016",
+     "FACT_V3_fb2e496f57509ed7e31cd24a1dee042a"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_REFCOUNT_RACE_50bb34d1ac",
+   "truth": "RANGE-020",
+   "rule": "clang_cfg_refcount_update_after_unlock",
+   "cat": "refcount_race",
+   "func": "_lifecycle_ref_put",
+   "loc": "src/lifecycle.c:197",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选为 _lifecycle_ref_put（src/lifecycle.c:185-202）中的引用计数竞态（CWE-362）。代码证据完整：L190-192 在 g_lifecycle.lock 保护下通过 _find_entry_locked(key) 取得指向全局链表节点的原始指针 entry 后立即解锁；L197 在锁外执行 entry->ref_count--（非原子读-改-写）。并发触发路径成立：公共 API td_process_control_message（main.c:337-354，证据包配置的扫描入口）在 L346 调用 _lifecycle_ref_put，同时在 L351 调用 _lifecycle_remove_entry；_lifecycle_remove_entry（L147-167）在锁内摘链并 SAFE_FREE(entry->value)/SAFE_FREE(entry)（L158-159），且不检查 ref_count。当线程 A 在 L192 解锁后、L197 自由减前被抢占，线程 B 调用 _lifecycle_remove_entry 释放该 entry，线程 A 随即对已释放内存执行 ref_count--，构成 use-after-free；即使无移除，两个线程分别执行 ref_get/ref_put 也会对 ref_count 产生无锁数据竞争（丢失更新/计数异常）。源可控性成立：msg 由外部/网络接收线程输入，key 由 _lifecycle_parse_control_message 从 msg 提取，调用者可选择目标 entry。锁集分析（FACT_V3_a438fb194a3d13835a6ebd5c9d2d13db）确认 g_lifecycle.lock 不覆盖 ref_count 修改，无其他锁保护该字段；_lifecycle_remove_entry 亦无引用计数守卫，故防护不足。仓库内 td_process_control_message 无调用者属公共 API/配置入口的正常情形，不影响可达性。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_a438fb194a3d13835a6ebd5c9d2d13db"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_MEMORY_LEAK_f1ce0c8350",
+   "truth": "RANGE-038",
+   "rule": "paired_global_registration_cleanup_omitted",
+   "cat": "memory_leak",
+   "func": "_lifecycle_customize_control_message",
+   "loc": "src/lifecycle.c:593",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "该 memory_leak（CWE-401）候选已验证。触发路径完整：外部入口 td_handle_mesh_message（src/main.c:389-395）接受调用者控制的 msg 和 transport_id 参数。当 msg 以 \"OPEN:\" 开头时，_lifecycle_customize_control_message（src/lifecycle.c:593）解析 key/owner 并调用 _control_session_add_to_global（同文件 477-501），该函数通过 _safe_calloc 分配 ControlSession 节点（sizeof(ControlSession)）、通过 _str_dup 深拷贝 owner 字符串，在 g_control_lock 保护下将节点插入全局链表 g_control_sessions 头部。随后同一函数调用 _lifecycle_customize_transport_cleanup（同文件 604-607），该函数仅执行 LOG_INFO 日志输出，不包含任何从全局链表中摘除节点的操作，不释放 session 节点或 session->owner 堆内存，也不销毁 session->guard 互斥锁。每次 \"OPEN:\" 消息都在全局链表中永久添加一个节点及其 owner 堆副本，内存持续增长且无上限。虽然存在独立的 \"EXPIRE:\" 路径（通过 _control_session_drop_from_global 释放匹配节点），但该路径与 OPEN: 的配对清理函数无关，且调用者必须发送另一条不同前缀的消息才能触发，不影响当前清理路径的缺失。Source 可控（调用者控制 msg 内容和 transport_id），sink 为空的清理函数，无任何 guard 阻止泄漏。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_6f3195ad488497ec46bf3797f1950c4f",
+     "FACT_V3_ae48478ea167318e5da45651d43f1544"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_5fa953e927",
+   "truth": "ISSUE42-023",
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_runtime_map_linked_segment",
+   "loc": "src/lifecycle.c:2668",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已验证 CWE-770 资源无上限分配缺陷。源（source）：调用方提供的 wire 数据的 header.size 字段（RuntimeFrameHeader.size，uint32_t，src/lifecycle.c:2022），经 _runtime_receive_frame 第 2833 行 memcpy 原样复制到帧头，无任何校验。汇点（sink）：_runtime_map_linked_segment 第 2668 行 _safe_malloc(shm_size ? shm_size : 1) → malloc(size)（src/utils.c:14），分配大小无上限。路径：公开入口 td_run_runtime_maintenance（src/main.c:767-770，wire 非空且 wire_len >= sizeof(TdRuntimeMessageHeader) 时）→ td_runtime_apply_shared_memory_event（src/main.c:702）→ _runtime_accept_session_frame（src/lifecycle.c:2876-2877，frame.header.size 转型 size_t 作为 shm_size）→ _runtime_map_linked_segment → _safe_malloc。可控性：调用方控制 wire 全部内容，header.size 字段全量可控（uint32 最大 4GiB）。防护缺失：链路上无任何 size 上限校验；_runtime_receive_frame 仅校验 magic（2850）；bitmap/lock 检查只累加 rc 不跳过分配（2870-2877）；shm_size?shm_size:1 仅保证最小 1 字节（2668）；_safe_malloc 直接调 malloc 无限制（utils.c:14）。仓库内唯一调用方 _td_runtime_worker 传入零化 report（magic 校验失败提前返回，不触及汇点）与固定 loc",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_5f3bd06c44dbc368c375a861e2932bc9",
+     "FACT_V3_746c4a39a42be72863f882becb8ed57a",
+     "FACT_V3_d58e0dc16c2c3bfd92bcd57d9884264b"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_b4734761d0",
+   "truth": "ISSUE41-005",
+   "rule": "clang_cfg_acquire_without_release_on_exit",
+   "cat": "memory_leak",
+   "func": "_peer_prepare_retry_context",
+   "loc": "src/lifecycle.c:1767",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "已验证内存泄漏（CWE-401）。函数 _peer_prepare_retry_context 在 src/lifecycle.c:1760 通过 _safe_calloc 分配 PeerSessionResource 结构体（堆内存，调用者完全所有权）。当 src/lifecycle.c:1766 条件 g_peer_partition_count >= PEER_RESOURCE_LIMIT(2) 为真时，执行 src/lifecycle.c:1767 return tag[0] 提前返回，既不释放 partition 也不释放 partition->tag，造成泄漏。g_peer_partition_count 为 static 全局变量（src/lifecycle.c:1114 定义，初值 0），仅在本函数 1769 行自增且无任何递减或复位操作，因此连续两次调用后上限分支必然命中。当前分析入口 td_run_peer_session_cases（src/main.c:570）在 586 行直接调用此函数，传入外部可控的 peer_protocol；另一调用方 _peer_dispatch_task（src/lifecycle.c:1961）固定以 retry_mode=1 调用，语义映射还确认了 _td_peer_session_worker→td_run_peer_session_cases 和 td_handle_distributed_cs_message→_peer_process_session_message→_peer_dispatch_task 等多条入口路径，对消息驱动型服务而言重复调用极为现实。partition 是纯局部变量，其 next 成员在本函数从未被使用，返回值仅为 int 状态码，快照明确标注无所有权转移，调用方无法回收泄漏内存。正常路径（retry_mode==0 且计数未达上限）在第 1779-1780 行通过 SAFE_FREE 正确释放，但上限分支（1767）和 retry_mode 非零分支（1774）均无任何释放，缺",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_0f6319948eb5f100fdfe079f59fce47d",
+     "FACT_V3_322a91775c89b4990fc427eb4051b59b",
+     "FACT_V3_cbf6ff9b7731202c9e2821cb00c117af"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INTEGER_OVERFLOW_7a299e1d48",
+   "truth": "RANGE-015",
+   "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+   "cat": "integer_overflow",
+   "func": "_net_recv_string",
+   "loc": "src/network.c:175",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "整数溢出验证：_net_recv_string 第 175 行 `max_len + 1` 在 max_len == SIZE_MAX 时回绕为 0，导致 CWE-190 整数溢出。入口 td_receive_string（main.c:313-315）是公开 API 且被配置为扫描根，其函数体仅一行直接转调 _net_recv_string，无任何范围检查；调用方控制的 size_t 参数 max_len 可传入任意值（含 SIZE_MAX）。从入口到 sink 的路径（td_receive_string → _net_recv_string 第 175 行）确认可达。守卫分析：全路径无守卫——入口无检查，_net_recv_string 在加法前无 if 限制，_safe_malloc 不校验 size 上限。溢出后 _safe_malloc(0) 调用 malloc(0)（glibc 下返回非 NULL 最小指针），随后 _net_recv_data(fd, buffer, SIZE_MAX) 因 len!=0 进入 recv 循环，向超小缓冲区写入至多 SIZE_MAX 字节，造成堆越界（可被利用的内存破坏）。所有四个必需事实（source_sink_reachability、source_controllability、guard_dominance、value_range）均已通过代码证据确定。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_1c47c22f19dbba9852b200fd720aa8f2",
+     "FACT_V3_237ce70d882a584c7bacb0d7358b5671",
+     "FACT_V3_667a65bc2a9b1985e466fed4150fd32d",
+     "FACT_V3_93903de076ec9b26d090e95a0d6ef793"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_bdf0431776",
+   "truth": "REAL-018",
+   "rule": "clang_cfg_acquire_without_release_on_exit",
+   "cat": "memory_leak",
+   "func": "_runtime_query_peak_stats",
+   "loc": "src/lifecycle.c:1433",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "候选缺陷为 _runtime_query_peak_stats（src/lifecycle.c:1424-1434）中的内存泄漏（CWE-401）。证据链完整：(1) 源：src/lifecycle.c:1425 通过 _safe_calloc(area+1, sizeof(uint32_t)) 分配 pid_list，_safe_calloc（src/utils.c:22-29）直接调用标准库 calloc，是真实堆分配，无池化或全局登记回收机制；(2) 汇：函数在 src/lifecycle.c:1433 直接 return 0，成功路径上没有任何 free(pid_list) 释放操作，唯一守卫 if(!pid_list) return -1（line 1426-1428）只处理分配失败，不构成释放；(3) 所有权：函数返回类型为 int，无法返回指针；pid_list 未被写入全局/静态变量，out_count 输出参数仅接收 pid_list[0] 的值而非指针，所有权从未转移，外部无法释放该内存；(4) 可达性：证据包指定当前分析入口 td_run_service_resource_cases（src/main.c:505-518）为公开触发根，其 line 515 直接调用 _runtime_query_peak_stats，且 mode 参数由外部调用者控制，经 (uint32_t)(mode+1) 传递为 area，分配规模可控。因此每次成功调用都会泄漏 (area+1)*4 字节内存，调用可重复触发，构成确定的内存泄漏缺陷，而非仅理论性加固建议。依据验证要求，当前分析入口即公开触发器，不因缺少数库调用者而判死代码。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_564657b8fb0563ed4dc7b5536a4234cb",
+     "FACT_V3_bdd1e88fa1ece40781d37a1a00284c99",
+     "FACT_V3_ecfb952b129e16481d5070b238f8a8f7",
+     "FACT_V3_f93efe1b559f37b9d990d3598624bea4"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_7834fbd3f2",
+   "truth": "REAL-013",
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_release_channel_role",
+   "loc": "src/lifecycle.c:1468",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "该候选为确定性内存泄漏(CWE-401),证据链完整。(1) 泄漏源:src/lifecycle.c:1462 `_service_alloc_node(key, \"member\")` 在第1125行执行 `node->payload = _str_dup(payload ? payload : \"payload\")`,`_str_dup`(src/utils.c:40-48)经 `_safe_malloc` 堆分配字符串,故 `node->payload` 必为堆内存且由节点所有。(2) 清理覆盖缺口:src/lifecycle.c:1467 `_service_release_by_role(node, 0)` 因 is_member=0 仅执行第1171行 `SAFE_FREE(node->name)`,而 `node->payload` 只在 is_member 非0 的第1169行被释放;随后第1468行 `SAFE_FREE(node)`(include/common.h:24)只释放结构体本身。函数体为线性路径(1462→1467→1468),无任何分支、析构或所有权转移能够释放 payload,每次成功调用必泄漏该指针。(3) 触发路径:入口 `td_run_protocol_cases`(src/main.c:535-555)在第549行直接调用 `_runtime_release_channel_role`,与代表调用路径一致;另有协议消息路径 `_service_dispatch_protocol_message`(src/lifecycle.c:1637,`SERVICE_PROTOCOL_MSG_POLICY` 分支)经 `td_handle_protocol_message -> _runtime_process_protocol_task` 可达。两个入口均可在重复调用(worker 循环/协议消息处理)中累积泄漏。泄漏字节数为常量(约7字节),但不改变每次调用确定性泄漏的事实,属可反复触发的真实缺陷。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_6e0b1546d4635335dc47d5cb4c9b027c",
+     "FACT_V3_c78e749a35c5871b26b6247b38f557c8"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_BOUNDS_640dfd6d92",
+   "truth": "ISSUE42-025",
+   "rule": "unchecked_param_indexes_fixed_global_array",
+   "cat": "bounds",
+   "func": "_runtime_read_timer_ticks",
+   "loc": "src/lifecycle.c:2361",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已用代码证据完整闭环 CWE-125 越界读候选。汇点 src/lifecycle.c:2361 `g_runtime_timer_ctrl[lcore_id]`：数组声明为 `static RuntimeTimerControl* g_runtime_timer_ctrl[RUNTIME_MAX_CORES]`（src/lifecycle.c:2195），RUNTIME_MAX_CORES=64u（src/lifecycle.c:2006），合法下标 0..63。源头：_runtime_publish_process_record 在 src/lifecycle.c:2942 以 `user_proc_id + RUNTIME_MAX_CORES` 作为 lcore_id 传入，uint32 非负因此索引恒 ≥ 64。触发路径为直接调用链：td_run_runtime_maintenance（当前分析入口，src/main.c:787 无条件 `rc |= td_runtime_publish_process_state(7, ...)`）→ td_runtime_publish_process_state（src/main.c:723）→ _runtime_publish_process_record（src/lifecycle.c:2942）→ _runtime_read_timer_ticks（src/lifecycle.c:2361）；入口常量 user_proc_id=7 产生索引 71，任何一次调用都确定越界。可控性：公开 API td_runtime_publish_process_state 允许外部调用方任意传入 user_proc_id（除 0xFFFFFFC0..0xFFFFFFFF 回绕区间外均越界），且入口固定值 7 本身即触发。防护分析：_runtime_read_timer_ticks 内无 lcore_id 上界检查，2362 行空指针检查位于 2361 行越界访问之后无法补救，调用链各级均无范围校验。规范中的 reachable_fr",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_24136182747893ea188bd4eaa476204b",
+     "FACT_V3_7b9f4012e75c9db869ee8d5fb26eadbb",
+     "FACT_V3_7f2ea245c179f9a69683b303ae4e02d5",
+     "FACT_V3_b3f27882d49d49ca36518ad73881eac5"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_BOUNDS_ba5ddbeb17",
+   "truth": "ISSUE42-010",
+   "rule": "caller_limit_indexes_fixed_local_array",
+   "cat": "bounds",
+   "func": "_runtime_rebuild_available_list",
+   "loc": "src/lifecycle.c:2417",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "RUNTIME_AVAILABLE_LIST_LIMIT 定义为 64（src/lifecycle.c:2009），而当前分析入口 td_run_runtime_maintenance 在 src/main.c:786 以硬编码常量配置调用 td_runtime_configure_pool(128, 96)，使得 configured_lcores=96 作为循环上界写入 g_runtime_slice_list_max_num 后，在 _runtime_rebuild_available_list 中 for 循环（src/lifecycle.c:2416-2417）以 96 为界遍历索引固定容量 64 的栈数组 remain_node[64]，i = 64…95 共 32 次写入超出数组边界，构成确定性栈越界写（CWE-787，切片报告为 CWE-125 但实际操作为写）。完整调用链：td_run_runtime_maintenance → td_runtime_configure_pool → _runtime_apply_pool_plan（lifecycle.c:2929）→ _runtime_rebuild_available_list（lifecycle.c:2412-2420）→ 汇点写操作。路径中无任何边界守卫检查。该入口同时通过 _td_runtime_worker 线程回调和公共 API td_start_runtime_worker 可达。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_98d68f5c86f88166438348e65e316726",
+     "FACT_V3_a6c431fc3feaa81acfadb49eafc4235a",
+     "FACT_V3_c391da4f1a0dad3f2ab62a6e7a56d4cf",
+     "FACT_V3_de753e7cee12ddaf7fa9ad1b568c157d"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_a6325151ec",
+   "truth": "REAL-008",
+   "rule": "clang_cfg_log_error_path_allocation_not_released",
+   "cat": "memory_leak",
+   "func": "_runtime_flush_log_buffer",
+   "loc": "src/lifecycle.c:1305",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "内存泄漏候选成立。源码证据链完整：(1) 分配源：src/lifecycle.c:1305 的 `_str_dup(message ? message : \\\"log\\\")` 经 _safe_malloc（src/utils.c:13-20）调用 malloc 分配堆内存；(2) 泄漏点：当 emit_error 非零时，line 1310 LOG_ERROR(log_copy) 后 line 1311 直接 `return -1`，未执行任何 free；(3) 清理覆盖缺失：唯一的 `SAFE_FREE(log_copy)` 位于 line 1313，仅在 emit_error 为零的非错误路径可达（TOOLFACT_a7b8ebb5569d211a4f7846e8a8ed07ba、TOOLFACT_b5950906d870abf78ad4fb8209e86394 佐证）；(4) 无所有权转移：LOG_ERROR（include/common.h:41）仅调用 _log_wrapper（src/utils.c:63-86），后者只通过 fprintf/vfprintf 写 stderr，不接管也不释放 log_copy（TOOLFACT_2489ea120563a76d6d054ea84d6bb586、TOOLFACT_b2f71f91aa665cde2ecdc7471aad9409 佐证）；(5) 可控触发路径：公开非静态入口 td_run_service_cleanup_cases(const char* key, int mode)（src/main.c:490-503）在 line 501 以 `_runtime_flush_log_buffer(stable_key, mode)` 调用，mode 直接成为 emit_error，调用者传非零 mode 即每次调用泄漏 strlen(message)+1 字节堆内存（message 为 key 或默认 \\\"range-service\\\"）。入口可达性由 path-edge:0:td_run_service_c",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_1a285a5cf6d4a56f70aaaa9f8ea0d0ea",
+     "FACT_V3_a35002c4eb898e90311f22d3e122f127"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_REFCOUNT_RACE_b33ed82664",
+   "truth": "RANGE-021",
+   "rule": "clang_cfg_refcount_update_after_unlock",
+   "cat": "refcount_race",
+   "func": "_lifecycle_ref_get",
+   "loc": "src/lifecycle.c:181",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选为真实的引用计数竞态（refcount_race，CWE-362）。代码证据链完整：(1) 源点 src/lifecycle.c:175 `entry = _find_entry_locked(key)` 返回指向全局链表节点的借用指针，其快照契约明确“返回的指针仅在持有 g_lifecycle.lock 期间保证有效”；(2) src/lifecycle.c:176 立即 UNLOCK，第181行 `entry->ref_count++` 在锁外对非原子 int 字段执行读-改-写；(3) 并发侧 _lifecycle_ref_put（第197行）同样在锁外执行 `entry->ref_count--`，归零时（第199行）调用 _lifecycle_remove_entry，后者在锁内 SAFE_FREE(entry->value) 与 SAFE_FREE(entry)（第158-159行）释放节点内存；(4) 触发路径经公开入口 td_process_control_message（src/main.c:345 调用 _lifecycle_ref_get，key 由第338行从调用方可控的 msg 解析），td_init 通过 pthread_create（src/main.c:172-173、196）创建接收线程与多个工作线程，运行环境为多线程；(5) 防护分析：g_lifecycle.lock（LOCK 宏→_lock_wrapper→pthread_mutex_lock，真实互斥锁）仅保护查找与链表摘除，不保护 ref_count 的增减；未发现原子操作、锁内更新或单线程契约。竞态窗口：线程A在 UNLOCK（176行）与 ref_count++（181行）之间，线程B对同一 key 执行 put 使计数归零并释放节点，线程A即对已释放内存写入（use-after-free）；两个线程并发 get/put 也会对 ref_count 产生数据竞争。锁集事实已记录为 FACT_V3_e27203979e06411a19b84813af08618a。无任何代",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_e27203979e06411a19b84813af08618a"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_3805199847",
+   "truth": "ISSUE42-022",
+   "rule": "clang_cfg_acquire_without_release_on_exit",
+   "cat": "memory_leak",
+   "func": "_runtime_cleanup_tls_reserve",
+   "loc": "src/lifecycle.c:2650",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "函数 _runtime_cleanup_tls_reserve（src/lifecycle.c:2640-2656）中：第 2643 行 `info.reserved_base = _safe_malloc(reserve_size ? reserve_size : 4096)` 分配堆内存；第 2649 行 `if (info.tlscb == NULL) return 0;` 在 tlscb_ready==0 时恒为真（info.tlscb 经 memset 保持 NULL），第 2650 行提前返回，跳过第 2653-2654 行的 SAFE_FREE，导致 reserved_base 泄漏。两个实际调用者均以 tlscb_ready=0 调用：_runtime_apply_memory_plan（src/lifecycle.c:2903，传 (size_t)map_size）与 _runtime_shutdown_local_session（src/lifecycle.c:2967，传 reserve_size），因此泄漏为确定性路径，每次调用泄漏 reserve_size（或 0 时 4096）字节。info 为局部栈变量，reserved_base 指针不逃逸（函数返回 int，不写全局，不传给外部），所有权完全停留本函数，无外部释放可能（FACT_V3_24880f5c7cf0d5ae8f7e72fd04317172）。公共入口 td_runtime_configure_memory（src/main.c:714，被 td_run_runtime_maintenance 在 main.c:785 调用）→ _runtime_apply_memory_plan → 本函数，以及 td_runtime_shutdown_session（src/main.c:738）→ _runtime_shutdown_local_session → 本函数，两条外部可达路径均成立（FACT_V3_367868f833e475f39111472682c94fa6）。泄漏量由调",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "ownership_transfer",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_24880f5c7cf0d5ae8f7e72fd04317172",
+     "FACT_V3_367868f833e475f39111472682c94fa6",
+     "FACT_V3_55c094fc5a6c823821b69e146e5af00e",
+     "FACT_V3_bca80934e8c273b283d27f242421bc48"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_COMMAND_INJECTION_47fad9bafa",
+   "truth": "RANGE-035",
+   "rule": "clang_cfg_system_with_nonliteral_command",
+   "cat": "command_injection",
+   "func": "_executor_execute_command",
+   "loc": "src/executor.c:87",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "命令注入（CWE-78）成立，具备完整且可触发的源-汇路径。源：src/main.c:673 将命令行参数 argv[1] 直接传入公开 API td_execute_command（main.c:265-300），该字符串经 td_submit_task（main.c:295）→ _parse_task_buffer（src/parser.c:55-64）复制为 task->payload.command.command，完全由调用者控制；此外 task_dispatcher.h 将 td_execute_command/td_submit_task 声明为公开 API，任意调用者均可控制命令内容。路径：main → td_execute_command → td_submit_task → 任务队列（main.c:245）→ 工作线程 _plugin_dispatch（plugin.c:185-187 调用注册处理器）→ _default_task_handler（main.c:122）→ _executor_execute_task（src/executor.c:48）→ _executor_execute_command（executor.c:87）→ system(full_command)。守卫不足：_validate_task（parser.c:341）仅拦截 \";\" \"|\" \"&\" 子串，_executor_validate_command（executor.c:207）仅拦截 \"rm \" \"del \" 子串，均未拦截 \"$(...)\" 命令替换、反引号、换行符等；full_command 由 command 与 getenv(\"TASK_ENV\") 拼装后交由 system() 经 /bin/sh -c 执行，注入载荷可绕过全部校验。先前的 source_controllability 缺失事实已通过 main() 的 argv[1]→td_execute_command 直接调用链闭合。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_3dcef566c9be4693d3a234fd091136c4",
+     "FACT_V3_7df3ed76ac124bb531f34739d8c1e623",
+     "FACT_V3_c1c796048625bab2e05ea5045061c971"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_MEMORY_LEAK_821b1ec058",
+   "truth": "REAL-007",
+   "rule": "role_specific_release_uses_hardcoded_role",
+   "cat": "memory_leak",
+   "func": "_runtime_release_reader_channel",
+   "loc": "src/lifecycle.c:1295",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "`_runtime_release_reader_channel`（src/lifecycle.c:1288-1302）中调用 `_service_alloc_node(key, \"reader\")` 分配 ServiceNode，该函数内部通过 `_str_dup(\"reader\")`（第1125行）为 `node->payload` 分配堆内存。随后无论 `role` 取值（==1 分支第1295行 or else 分支第1299行），均以字面量 0 调用 `_service_release_by_role(node, 0)`。该函数（1164-1174行）在 `is_member==0` 时仅执行 `SAFE_FREE(node->name)`（第1171行），不释放 `node->payload`。之后 `SAFE_FREE(node)`（第1296/1300行）仅释放 ServiceNode 结构体本身，不递归释放内部指针。因此每次成功调用均泄漏 `_str_dup(\"reader\")` 分配的堆内存。入口函数 `td_run_service_cleanup_cases`（main.c:500）为公开 API 扫描根，以 `mode` 参数传入 `role`，`key` 参数传入 `_service_alloc_node`。泄漏与 role 值无关，是确定性的全部路径泄漏。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_17d6270d84cf3e75fe7d5e0074650549",
+     "FACT_V3_8987a6fadf87dfc5092980824db55d0f"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INTEGER_OVERFLOW_f7a60dad16",
+   "truth": "RANGE-017",
+   "rule": "clang_cfg_narrowing_size_cast_without_range_guard",
+   "cat": "integer_overflow",
+   "func": "_serialize_task",
+   "loc": "src/parser.c:236",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "整数窄化截断（CWE-190/CWE-681）已验证。源：payload_len 为 size_t（64位），来自调用方可控的 Task->payload.binary.size / text.length 字段，无任何上限约束。汇点：src/parser.c:236 的 header->payload_length = (uint32_t)payload_len 将 64 位值强制窄化到 32 位 uint32_t，payload_len > UINT32_MAX（约4GB）时必然截断。路径：公开 API 入口 td_serialize_task_message（src/main.c:329）→ _serialize_task（src/parser.c:204-245）→ 第 236 行，无中间分支可绕过。守卫分析：窄化之前不存在任何 payload_len <= UINT32_MAX 或 payload_len <= MAX_TASK_SIZE(1MB) 的检查；_safe_malloc 是普通 malloc 包装无大小限制；第 239 行 payload_len > 0 检查位于赋值之后，与截断无关。反序列化侧 _validate_task_header 强制 payload_length <= 1MB（MAX_TASK_SIZE），证明协议存在载荷上限但序列化侧未执行。调用方传 binary.size=0x100000001 且 malloc 成功（内存过量提交下可行）时，第 236 行截断 payload_len 为 1，而第 240 行 memcpy 拷贝完整 4GB+1 字节，序列化头部字段与实际载荷严重不一致，造成协议失真。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_5ae0a10d0afe56167ba73dd8118630c6",
+     "FACT_V3_715cecbb8dc2b2f9035221d444d07547",
+     "FACT_V3_f13b6a511f966a1a7da72b851e3fa088",
+     "FACT_V3_ff7bd88f46e7932078463875c91baf4d"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_7d3eba4f2b",
+   "truth": "RANGE-052",
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_detach_component_record",
+   "loc": "src/lifecycle.c:1253",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选描述存在细节错误（声称 node->tag 未释放，但 ServiceNode 结构体在 src/lifecycle.c:981-993 中无 tag 成员，堆成员仅有 name 和 payload）。但同一函数 _runtime_detach_component_record 存在真实的可触发内存泄漏：\n\n当 config_remove_rc != 0 时，函数在第 1249 行 return -1 提前退出，未释放 node、node->name、node->payload。此时 node 已在第 1245 行从全局链表 g_service_registry 中摘除（head = node->next），node 不再被任何全局指针可达，node、node->name、node->payload 全部泄漏（CWE-401）。\n\n入口 td_run_service_cleanup_cases(src/main.c:490) 是公开 API，其参数 mode 在第 497 行直接作为 config_remove_rc 传入。调用者传入非零 mode 即可触发泄漏路径。仓库内无调用者属于配置入口的正常现象，不影响外部可控性。\n\n无 out-of-line 析构函数可拯救该泄漏路径（搜索 _service_free_node/service_free/_service_destroy_node 均返回空）。成功路径（config_remove_rc == 0）上 name 和 payload 确实在 SAFE_FREE(node) 之前释放，无内存泄漏。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_8255b5086986006e162df58097205407",
+     "FACT_V3_e9b55465043a184fa3e293b7b09dc3f6"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RACE_4d65a01d34",
+   "truth": "RANGE-016",
+   "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+   "cat": "race",
+   "func": "td_cleanup",
+   "loc": "src/main.c:629",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "该候选为真实的竞态条件（CWE-362）。在 main.c 中，全局变量 g_receiver_running 被两个线程并发访问而无任何同步保护：(1) 接收线程 _packet_receiver_thread (main.c:101) 在循环条件中无锁读取该变量；(2) 主线程在 td_cleanup (main.c:629) 中无锁写入 g_receiver_running = 0。td_init (main.c:172) 创建接收线程后，主线程 main (main.c:680) 调用 td_cleanup，写操作发生于 pthread_join (main.c:636) 之前，因此写操作与接收线程的读操作之间没有 happens-before 关系。volatile 不提供同步语义。没有互斥锁（mutex）保护该变量。两处访问均未使用 g_dispatcher.queue.mutex 或 g_dispatcher.state_mutex。该竞态条件可通过默认 main 执行路径触发：td_init 成功创建接收线程，sleep(2) 后 td_cleanup 写入该变量。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_c3199e8138ff2908282b5c5da4d28eb7"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_OUT_OF_BOUNDS_WRITE_74bcee1af5",
+   "truth": "ISSUE43-014",
+   "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+   "cat": "out_of_bounds_write",
+   "func": "_runtime_stream_compact_segments",
+   "loc": "src/lifecycle.c:3087",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选成立，为可利用的 CWE-787 栈越界写。源：公共 API td_runtime_process_stream_batch（src/main.c:741-747）将外部调用者的 wire/wire_len 直接转发给 _runtime_process_stream_batch；_runtime_stream_read_header（src/lifecycle.c:3067-3078）仅校验 magic==0x5354524d，header.segment_count（uint16_t，2979 行）经 memcpy 从外部 wire 原样读取且无任何范围校验。路径：td_runtime_process_stream_batch → _runtime_process_stream_batch（src/lifecycle.c:3388 直接调用，调用前无 segment_count 检查）→ _runtime_stream_compact_segments。sink：循环 3085-3090 以 header.segment_count 为上界向固定 8 元素栈数组 segments[RUNTIME_STREAM_SEGMENT_LIMIT=8u]（2973 行）写 segments[i]，segment_count 取 9..65535 任一值时即越界写栈内存。防护缺失：read_header、process_stream_batch、入口 facade 三层均无 segment_count<=8 的校验。唯一反驳点（td_run_runtime_maintenance 791 行传入本地 local_wire、magic 不匹配回退默认 header segment_count=2）仅覆盖该内部调用，不影响公共 API 入口的直接可利用性，不构成阻断性反证。证据包 entry_context 将该公共 API 列为当前分析入口，外部调用者可控 wire 即可稳定触发。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_283cb5c2502222c29013e4189561612e",
+     "FACT_V3_4cfc5e868ddfb38a5ab80aee4aacd4fd",
+     "FACT_V3_6d3824135596c563cfb5d0764c10bf17",
+     "FACT_V3_b907270e61aa197c7bebe6970696bb19"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RACE_f23409d901",
+   "truth": "RANGE-025",
+   "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+   "cat": "race",
+   "func": "_lifecycle_reload_config",
+   "loc": "src/lifecycle.c:270",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "经代码核实，g_active_config（src/lifecycle.c:49 文件级静态全局）存在真实锁集违规：写入方 _lifecycle_reload_config（263-275 行）在 g_config_lock 保护下于 270-272 行读取、替换并 SAFE_FREE 释放旧指针；而读取方 _lifecycle_get_config_length（277-286 行）在 278 行（if (!g_active_config)）与 285 行（return strlen(g_active_config)）完全无锁读取同一指针，属损坏的双重检查锁模式，且 285 行为配置已初始化后的常走热路径。LOCK/UNLOCK 宏确为 pthread_mutex_lock/pthread_mutex_unlock 包装（include/common.h:33-34、src/utils.c:88-108），SAFE_FREE 即 free+置空（include/common.h:24），语义覆盖成立。并发触发环境由代码证实：td_init（src/main.c:128-210）创建 thread_count 个 worker 线程（194-197 行）与网络接收线程（172 行），_worker_thread 经 _plugin_dispatch 并发调用插件 handler（src/plugin.c:185-191），头文件 task_dispatcher.h:78 明确 handler 在 worker 线程上下文执行，VOS_TaskCreate（src/main.c:444-457）可派发分离线程执行 td_* API；公开入口 td_manage_runtime_config（src/main.c:356-362，配置扫描根，reachable_from_entry=true）在 357/358 行先后调用 _lifecycle_reload_config 与 _lifecycle_get_config_length，构成可行 API 触发路径。竞争后果：线",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_80ea844e34980c3036f319cc8cfc7105"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_c436b2088a",
+   "truth": "RANGE-013",
+   "rule": "clang_cfg_heap_thread_argument_owner_not_released",
+   "cat": "memory_leak",
+   "func": "td_init",
+   "loc": "src/main.c:188",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     2
+    ]
+   ],
+   "reasoning": "内存泄漏候选经验证成立。源：src/main.c:188 局部变量 thread_ids 通过 _safe_calloc(g_dispatcher.config.thread_count, sizeof(int)) 获得堆内存（source 可控，thread_count 来自 config，经 _validate_task_config 校验后非零，主调用路径 main@src/main.c:664 -> td_init 必然到达）。汇聚点：td_init 成功路径第 209 行 return 0 前无任何 free(thread_ids)；文档注释声称初始化内存由 td_cleanup 释放，但 td_cleanup（src/main.c:625-659）仅 SAFE_FREE g_dispatcher.queue.tasks 与 g_dispatcher.threads（第 650-651 行），完全未引用 thread_ids。所有权分析：Dispatcher 结构体（include/types.h:117-128）仅含 pthread_t* threads，无任何可持有 int 数组的成员；td_init 全函数内也未将 thread_ids 基指针赋给任何全局；_worker_thread（src/main.c:57）只以 int thread_id = *(int*)arg 按值读取 &thread_ids[i] 指向的元素，仅借用不释放，且各线程获得的是元素地址而非基地址。因此 td_init 返回后局部指针失效，thread_count*sizeof(int) 字节的堆块不可达，构成确定性泄漏。守卫分析：唯一可能的反证（所有权被全局字段保留以供后续释放）已被结构体定义与 td_cleanup 代码排除，无阻止性反证。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_3abab68406301b949633cf421427cebd"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_USE_AFTER_FREE_55bbf9cc17",
+   "truth": "RANGE-047",
+   "rule": "insert_failure_leaves_stale_tree_node",
+   "cat": "use_after_free",
+   "func": "_lifecycle_avl_register_route",
+   "loc": "src/lifecycle.c:939",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "函数 _lifecycle_avl_register_route(src/lifecycle.c:929-943) 经 _safe_calloc 分配 RouteAvlNode 节点后,在第 937 行调用 _route_avl_insert_node 将节点插入全局静态 AVL 树 g_route_avl_root(当 key==275 时同时头插入全局重复链表 g_route_duplicate_head)。快照确认插入后节点所有权已转移给全局树结构(见 FACT_V3_5d5d8ccc9831928a1107e20084e582a2)。第 938-940 行 route_flags 非零时直接 free(node) 并返回 -1,未做任何树摘除/回滚,导致全局树/链表保留指向已释放内存的悬垂指针。唯一调用方 td_update_os_policy(main.c:427) 以硬编码 route_flags=1 调用,随后在第 428 行立即调用 _lifecycle_avl_walk_duplicate_routes(16) 遍历 g_route_duplicate_head,第 949-950 行无有效性校验地读取 node->key/node->route_state 并沿 duplicate_next 行进(见 FACT_V3_7d505fab43381e34b7831893ef185271)。当传入的 route_key==275 时,该调用链在一次调用内即完成从分配、插入、释放到解引用悬垂指针的完整 use-after-free 触发路径。route_key 由调用方 td_update_os_policy 的 public API 参数控制,来源可控。不存在任何防护性守卫:没有插入前校验、没有释放前摘除、没有有效性检查,因此该缺陷可被外界触发,属于 verified_vulnerability。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_5d5d8ccc9831928a1107e20084e582a2",
+     "FACT_V3_7d505fab43381e34b7831893ef185271"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_SLOT_RACE_acd4f1b0cd",
+   "truth": "ISSUE42-017",
+   "rule": "cas_result_ignored_before_slot_publication",
+   "cat": "slot_race",
+   "func": "_runtime_claim_process_slot",
+   "loc": "src/lifecycle.c:2536",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已确认存在可触发的槽位竞态（CWE-362）。路径：公开入口 td_run_runtime_maintenance（src/main.c:787）→ td_runtime_publish_process_state（src/main.c:723）→ _runtime_publish_process_record（src/lifecycle.c:2938）→ 汇点 _runtime_claim_process_slot（src/lifecycle.c:2536-2542）。并发性由 VOS_TaskCreate（src/main.c:452 pthread_create + pthread_detach）创建的工作线程提供：_td_runtime_worker（src/main.c:804）作为线程入口调用 td_run_runtime_maintenance，公开 API td_start_runtime_worker（src/main.c:817）可多次创建此类独立线程；三个 VOS_TaskCreate 调用点均无任何全局串行化保护。汇点分析：空闲槽位扫描在 g_runtime_pcm_table_lock 内完成（2526-2533），但 UNLOCK 之后（2533）CAS（2536）与 user_proc_id/pid/proc_name 字段写入（2540-2542）全部无锁执行；__sync_bool_compare_and_swap 返回值被 (void) 显式丢弃。两个工作线程可先后在锁内扫描到同一 proc_state==TASK_STATUS_COMPLETED 槽位（扫描被锁串行化但认领不在锁内），随后并发对同一槽位执行 CAS：仅一个 CAS 成功，但失败线程仍无条件覆写字段并返回同一槽位下标，导致两个调用方都认为自己独占该槽位，槽位记录被撕裂覆盖，字段并发写入构成数据竞争（未定义行为）。后续 _runtime_mark_process_online（2717、2721）对 proc_state/pid 的无锁写进一步扩大竞态窗口。守卫不充分：",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_8772a7645acd3af353d74bb2c9ac3309"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_CALLBACK_SELF_DESTROY_RACE_ed58989404",
+   "truth": "ISSUE42-029",
+   "rule": "callback_can_free_current_event_before_reacquire",
+   "cat": "callback_self_destroy_race",
+   "func": "_runtime_finish_current_event",
+   "loc": "src/lifecycle.c:2806",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已用代码证据闭合 source→sink 路径：公开入口 `td_run_runtime_maintenance`（src/main.c:756-797）在 788 行硬编码调用 `td_runtime_schedule_event(1, 1, 1)`，即 destroy_in_callback=1；该参数经 `td_runtime_schedule_event`（main.c:728）透传至 `_runtime_dispatch_event_cycle`（src/lifecycle.c:2946-2953，2951 行调用）再到 `_runtime_finish_current_event`（lifecycle.c:2791-2821）。`_runtime_finish_current_event` 在 2797 行把 `event->callback_arg = event`（自引用）、2798 行设置 `event->callback = _runtime_event_completion_callback`；2806 行于锁外（2802 UNLOCK 与 2809 LOCK 之间）同步调用该回调。回调体（lifecycle.c:2782-2789）在 2787 行对 `arg`（即 event 本身）执行 `SAFE_FREE(event)` 释放对象；返回后 2814 行 `event->running = 0`、2815 行 `event->sched_cnt++` 均为对已释放堆内存的写入（UAF），2819 行 `SAFE_FREE(event)` 再次 free 同一指针构成双重释放。2810 行 `cur_proc_event == NULL` 提前返回检查不会触发，因为回调只释放了 event 而并未把 `g_runtime_event_base.cur_proc_event` 置空；`g_runtime_event_base.lock` 只保护全局指针与 running 标志，无法防止回调自行释放事件对象，属于缺失/不足的防护。该缺陷是同一线程内",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_1e419115755767a95329e12d88eb6992"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_SIGPIPE_UNHANDLED_50608be88a",
+   "truth": "ISSUE41-010",
+   "rule": "peer_write_without_sigpipe_handling",
+   "cat": "sigpipe_unhandled",
+   "func": "_peer_send_control_reply",
+   "loc": "src/lifecycle.c:1854",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选缺陷为 sigpipe_unhandled：src/lifecycle.c:1854 的 _peer_send_control_reply 使用裸 write(peer_fd, payload, len) 向对端 fd 写数据。经代码核实：(1) 源与路径——入口 td_run_peer_session_cases（public API，main.c:570-595）在第 590 行无条件（rc|= 累加、无提前返回）调用 _peer_send_control_reply(work_fd, wire, wire_len)；_peer_dispatch_task 第 1962 行亦以 task->work_fd 调用同一函数，二者均直达 1854 行 write。(2) 源可控性——work_fd 是对端 TCP 连接描述符（network.c:19 用 socket(AF_INET, SOCK_STREAM,0) 创建、network.c:55 accept 取得客户端 fd），远端对端可随时关闭/重置连接；且 _peer_receive_frame 在 recv<=0（对端已关）时仍构造 fallback PING 帧继续执行（lifecycle.c:1879-1892），随后必然执行向已关闭 fd 的 write。(3) 防护缺失——td_init 仅注册 signal(SIGINT/SIGTERM)（main.c:203-204），全代码库及安全语义图（SIGPIPE 查询 0 条记录）均无 signal(SIGPIPE, SIG_IGN)/sigaction(SIGPIPE)/MSG_NOSIGNAL/SO_NOSIGPIPE；write 返回负值的错误处理（1855-1856 行）无法阻止 SIGPIPE，因为信号按默认处置（终止进程）先于返回值生效。对端关闭连接后触发 write 将直接终止整个进程，构成可远程触发的拒绝服务（CWE-404）。入口为头文件/配置声明的公共 API，仓库内无调用者属正常现象，不影响该可达路径。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "signal_context",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_0e9032b8097db5dd8497c969ac75f5d4",
+     "FACT_V3_2db82be02803fd21c1c5279adedc0bdc",
+     "FACT_V3_9ff6a6b47cf1cc7a6a3b5b79d00fc5b8"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INVALID_FREE_86bd5724fd",
+   "truth": "RANGE-032",
+   "rule": "clang_cfg_free_non_owner_pointer_expression",
+   "cat": "invalid_free",
+   "func": "_lifecycle_release_value_slice",
+   "loc": "src/lifecycle.c:354",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "本缺陷为已验证的无效释放（CWE-590）。源：_lifecycle_release_value_slice 的参数 line 来自唯一调用方 td_format_and_parse_frame（src/main.c:364-374，当前分析入口），该函数在 src/main.c:366 声明栈数组 char line[MAX_PATH_LEN]，用 snprintf 以 \"%s=value\" 填充（src/main.c:368），然后传入（src/main.c:372）。汇：函数内 value = strchr(line, '=')（src/lifecycle.c:350）指向栈缓冲区内部的 '='，free(value + 1)（src/lifecycle.c:354）释放的是栈缓冲区内部指针（'=' 之后一字节）。由于 snprintf 中的 \"%s=value\" 硬编码了 '='，strchr 恒命中，故 free(value+1) 在所有调用路径上必然执行。该指针既非 malloc/calloc/realloc 返回的基址，也非栈上可释放对象 — 在 glibc 下直接 abort（\"free(): invalid pointer\"），属于未定义行为。源可控性：prefix 参数影响 line 内容，但 '=' 由格式串保证存在，无论输入如何，非法释放均触发；任何调用该公开入口的调用方都会触发崩溃。防护分析：函数内仅有 line NULL 检查（346-348）和 value NULL 检查（351-353），它们只确保能到达 free，无法阻止对栈内部指针的释放。无任何合法防护可使 value+1 成为有效的 free 目标。已记录 ownership_transfer 事实（FACT_V3_9edc4218f2aef47b2b5a78699380d1fe）：调用方传入栈内存，无堆所有权转移。已记录 cleanup_coverage 事实（FACT_V3_3f920bec5d4b54c84ee12aa8c3f0063e）：唯一释放点，无双重释放；问题本质是释",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_3f920bec5d4b54c84ee12aa8c3f0063e",
+     "FACT_V3_9edc4218f2aef47b2b5a78699380d1fe"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_67a5bea31e",
+   "truth": "REAL-004",
+   "rule": "clang_cfg_unchecked_insert_after_ownership_handoff",
+   "cat": "memory_leak",
+   "func": "_runtime_detach_component_record",
+   "loc": "src/lifecycle.c:1244",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已确认 CWE-401 内存泄漏可触发。源：src/lifecycle.c:1238 经 _service_alloc_node 分配 ServiceNode（_safe_calloc + 两份 _str_dup + pthread_mutex_init），所有权归 _runtime_detach_component_record。泄漏点：第 1244 行 _service_insert_locked(node) 仅把 node 挂到 g_service_registry 链表头，第 1245 行 g_service_registry.head = node->next 又把 node 从注册表摘下，此后 node 不再被任何全局结构引用；当 config_remove_rc != 0 时，函数在第 1248-1249 行直接 return -1，完全跳过第 1251-1253 行的 SAFE_FREE(node->payload/name/node) 与 mutex 销毁，node 及其字段成为不可回收的堆泄漏。源可控性：公开入口 td_run_service_cleanup_cases(src/main.c:490-503) 在 497 行将外部参数 mode 原样作为 config_remove_rc 传入，mode 非零即触发泄漏分支；key 同样为外部输入。调用路径 td_run_service_cleanup_cases -> _runtime_detach_component_record 为直接调用，可达性由 main.c:497 调用点证实。防护分析：if (config_remove_rc != 0) return -1 是泄漏触发条件而非防护，清理序列仅覆盖 config_remove_rc == 0 路径，错误路径无回滚/释放，防护缺失。候选原始表述中“_service_insert_locked 返回值被忽略”不准确——该函数返回 void 且永不失败（src/lifecycle.c:1141-1144），但泄漏事实本身不依赖该机制，仍由提前返",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_bba5cc7ff08fc8eacd26716f74ef1600",
+     "FACT_V3_d069d17ea0cfbb561b30889535923cde"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INTEGER_OVERFLOW_a4fe5d34b7",
+   "truth": "ISSUE42-011",
+   "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+   "cat": "integer_overflow",
+   "func": "_runtime_header_alloc",
+   "loc": "src/lifecycle.c:2681",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "整数溢出缺陷已完整证实。源：公开 API td_runtime_configure_memory（src/main.c:712-715）的 uint64_t 参数 map_size 完全由调用方控制，路径上无任何范围校验。汇：_runtime_header_alloc（src/lifecycle.c:2681）执行 _safe_malloc(size + 8u)，其中 size = node_size + 32u = (size_t)map_size + 32u，即实际分配 _safe_malloc((size_t)map_size + 40u)。逐边验证调用链：src/main.c:714 → _runtime_apply_memory_plan（src/lifecycle.c:2904，_runtime_release_hash_node((size_t)map_size, 1)）→ _runtime_release_hash_node（src/lifecycle.c:2695 将 mem_alloc_func 绑定为 _runtime_header_alloc；2698 调用 mem_alloc_func(node_size + 32u)）→ _runtime_header_alloc。_runtime_apply_memory_plan 中位于其前的 _runtime_map_reserved_region/_runtime_create_shared_zone/_runtime_cleanup_tls_reserve 均无 abort/exit，rc 通过 |= 累积，2904 行必然执行。缺失防护：三层调用均无溢出检查（_runtime_header_alloc 未校验 size > SIZE_MAX - 8，_runtime_release_hash_node 未校验 node_size > SIZE_MAX - 32，入口无 map_size 范围校验）。触发条件：map_size >= SIZE_MAX - 39（64 位下 >= 0xFFFFFFFF",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_202f80b247f1c718a7ec21c50aa83c6a",
+     "FACT_V3_d0df00325970656bc60831168612b0b2",
+     "FACT_V3_eaac18cbe11b68a480936e4482d02068",
+     "FACT_V3_fb73ea0cb808054bd5a0c063610e26b0"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_BUSY_LOOP_11add38e46",
+   "truth": "ISSUE41-003",
+   "rule": "clang_cfg_recv_retry_loop_without_timeout_or_budget",
+   "cat": "busy_loop",
+   "func": "_peer_receive_session_frame",
+   "loc": "src/lifecycle.c:1724",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选成立：`_peer_receive_session_frame`（src/lifecycle.c:1722-1736）的外层 `while (received < want)` 循环存在确定的忙等缺陷（CWE-835）。代码证据链完整：(1) 源：对等连接套接字 work_fd，远程对端可控；(2) 路径：`td_start_peer_session_worker`（公共API）→ `VOS_TaskCreate` → `_td_peer_session_worker` → `td_run_peer_session_cases`（src/main.c:583）→ `_peer_receive_session_frame`，以及 `td_handle_distributed_cs_message` → `_peer_process_session_message`（src/lifecycle.c:1977）→ `_peer_receive_session_frame`；(3) 触发机制：`_net_recv_data`（src/network.c:69-92）在 `recv` 返回 0（对端关闭连接）时 break 并返回 0 或部分字节，在非 EAGAIN/EWOULDBLOCK 错误（如 ECONNRESET）时返回 -1；调用方 `_peer_receive_session_frame` 第 1730-1731 行对 `rc <= 0` 仅执行 `continue`，不增加 `received`，外层循环条件 `received < want` 永远为真，导致无限忙等；(4) 守卫缺失：循环窗口内无超时（未设置 SO_RCVTIMEO）、无重试次数上限、无退避、无连接状态检查，`recv` 以 flags=0 在已关闭的阻塞套接字上立即返回 0，忙等以满 CPU 运行。远程对端只需 connect 后关闭（或发送不完整帧后关闭）即可让工作线程永久自旋，多个连接可耗尽 CPU，构成确定的 DoS 触发路径。无任何反向证据或守卫可反驳。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_6ed66e9b201f88334abf92d6e99024d9",
+     "FACT_V3_763bf7b0dba65d8a82ca59580f8812a3",
+     "FACT_V3_b77b3937b95b43bf90d4a9d0332325f4"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_MEMORY_LEAK_08fbbc3da6",
+   "truth": "REAL-021",
+   "rule": "role_specific_release_uses_hardcoded_role",
+   "cat": "memory_leak",
+   "func": "_runtime_release_channel_role",
+   "loc": "src/lifecycle.c:1467",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选为 _runtime_release_channel_role 中的确定性堆内存泄漏，代码证据完整闭合。泄漏机制：_service_alloc_node(key,\"member\")（src/lifecycle.c:1118-1129）通过 _str_dup 同时分配 node->name 与 node->payload 两块堆内存；而 _service_release_by_role(node, 0)（src/lifecycle.c:1164-1174）在 is_member=0 时仅执行 else 分支 SAFE_FREE(node->name)，不释放 node->payload；随后 SAFE_FREE(node)（include/common.h:24）只释放节点结构体本身，不释放内部 payload 指针。因此每次调用都泄漏一个 strdup(\"member\") 堆字符串，且 node->payload 的所有权从未转移给任何全局注册表或树结构，无其他清理路径。触发路径存在：分析入口 td_run_protocol_cases（src/main.c:549）直接调用本函数；协议路径 _runtime_process_protocol_task -> _service_dispatch_protocol_message（src/lifecycle.c:1637）在收到 SERVICE_PROTOCOL_MSG_POLICY 时以 frame->role 调用本函数，frame->role 来自网络协议帧、调用者可控。node->role=role 的赋值（src/lifecycle.c:1466）与释放调用中使用字面量 0 的不一致，正是 payload 永不被释放的根因。guard 分析：is_member 被硬编码为 0，SAFE_FREE(node) 不释放内部指针，不存在任何释放 payload 的防护或路径，泄漏为确定性缺陷。同样模式的 _runtime_release_reader_channel（src/lifecycle.c:1288-130",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_a5df51232a8ae493861b24a66d7ceab3",
+     "FACT_V3_f562f7217a6c01d0b1f4c6268968c5e5"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_FD_LEAK_ac774b4e26",
+   "truth": "ISSUE43-015",
+   "rule": "clang_cfg_fd_open_return_without_close",
+   "cat": "fd_leak",
+   "func": "_runtime_stream_open_journal",
+   "loc": "src/lifecycle.c:3325",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "_runtime_stream_open_journal（src/lifecycle.c:3316-3332）先在第 3319 行 open(path, O_RDONLY) 获得 fd，失败时第 3321 行回退 open(\"/dev/null\", O_RDONLY)（该回退几乎必然成功）。第 3324-3325 行当 metadata_size > RUNTIME_STREAM_JOURNAL_MAX(4096) 时直接 return -1，此路径上没有任何 close(fd)；唯一的 close(fd) 位于第 3328-3330 行，仅在 metadata_size<=4096 时可达（FACT_V3_786418624f070bf6791ad7536202285b）。fd 是函数局部 int，从不被返回、写入全局或传递给任何 callee，唯一调用方 _runtime_process_stream_batch（src/lifecycle.c:3407）只接收 int 返回值，无法回收该描述符，故不存在所有权转移（FACT_V3_18602daffb924d54c4e61dd6a7205ed1）。metadata_size 来源于 _runtime_process_stream_batch 第 3380 行 _runtime_stream_read_header(wire, wire_len) 解析出的 header.metadata_size，该解析仅校验 magic、其余字段零校验（snapshot 快照证实），因此攻击者可令 metadata_size>4096 且 open 成功同时成立：每次调用泄漏一个 fd，可重复触发直至进程 fd 耗尽（CWE-775）。入口路径 td_run_runtime_maintenance/_td_runtime_worker/td_runtime_process_stream_batch 均可达该函数（evidence:positive:2-4），reachable_from_entry=true。源代码证据、缺失清理、",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_18602daffb924d54c4e61dd6a7205ed1",
+     "FACT_V3_786418624f070bf6791ad7536202285b"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_HEAP_OVERFLOW_401bf1d96e",
+   "truth": "ISSUE43-002",
+   "rule": "clang_cfg_narrowed_allocation_original_length_copy",
+   "cat": "heap_overflow",
+   "func": "_runtime_stream_copy_fragment",
+   "loc": "src/lifecycle.c:3108",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "在 _runtime_stream_copy_fragment(src/lifecycle.c:3108) 中,memcpy(fragment, source, copy_len) 向堆缓冲区写入时,copy_len 可能远超分配大小 alloc_len+1。分配大小由 alloc_len = (uint16_t)header.fragment_len 决定(截断至 16 位,最多 65535),而 copy_len = MIN(header.copy_len, source_len) 只受 source_len(wire_len) 约束,完全不受 fragment_len 限制。_runtime_stream_read_header(lifecycle.c:3067-3078) 在 magic 匹配时直接使用 wire 中所有头部字段,不做任何 copy_len <= fragment_len 的校验,因此缺少防护。入口 td_runtime_process_stream_batch 是公开 API(include/task_dispatcher.h:143-146 声明),wire/wire_len 由调用方完全控制,通过 _runtime_process_stream_batch(lifecycle.c:3389) 直达漏洞函数。构造 wire 令 magic=0x5354524d、fragment_len=1、copy_len=4096、wire_len>=4096,则分配 2 字节(fragment_len=1→alloc_len=1→malloc(2)),memcpy 写入 4096 字节,造成堆缓冲区溢出(CWE-122)。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_00bc09832a1afc6002347e2bc4b9e9e2",
+     "FACT_V3_3840bd65a8a3c7bf40344bcfb4292fd6",
+     "FACT_V3_439513b6668e8f7d05e6b95511856530",
+     "FACT_V3_c112c84cd8c69ee6e02f3e5ec97de59d"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_DEADLOCK_79e90d6a85",
+   "truth": "ISSUE42-027",
+   "rule": "cross_function_recursive_lock",
+   "cat": "deadlock",
+   "func": "_runtime_cancel_wheel_timer",
+   "loc": "src/lifecycle.c:2754",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "经源代码证据确认，该候选为可触发的确定性自死锁（CWE-833）。触发路径：公开入口 td_run_runtime_maintenance（src/main.c:788）硬编码调用 td_runtime_schedule_event(1,1,1)，destroy_in_callback=1 经 _runtime_dispatch_event_cycle（src/lifecycle.c:2950）传播至 _runtime_cancel_wheel_timer（src/lifecycle.c:2750）。call_from_callback=1 时，2752 行通过 LOCK（_lock_wrapper→pthread_mutex_lock，src/utils.c:93）持有 g_runtime_wheel_timer.lock，随后 2754 行调用 _runtime_delete_timer_slot（src/lifecycle.c:2739-2748），该函数在 2743 行再次 LOCK 同一把锁。g_runtime_wheel_timer.lock 以 PTHREAD_MUTEX_INITIALIZER（src/lifecycle.c:2223）初始化，为默认非递归互斥锁，同一线程二次加锁构成 POSIX 未定义行为/自死锁（实现可能挂起或返回 EDEADLK 后继续执行，导致锁协议破坏）。2753 行设置的 g_runtime_wheel_timer.in_callback=1 在 _runtime_delete_timer_slot 中从未被读取，不存在防重入护栏。安全语义映射确认多条入口路径（td_run_runtime_maintenance、td_start_runtime_worker 等）均可达该缺陷。证据充分——source、sink、调用者路径、入口可控性、护栏缺失全部由代码证明。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_d607a75bec753f87e3bedcc628b8ffec"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_f80008f72a",
+   "truth": "RANGE-045",
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_lifecycle_delete_os_node",
+   "loc": "src/lifecycle.c:837",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "`_lifecycle_delete_os_node`（src/lifecycle.c:825-844）在链表中找到匹配的 OSNode 后，先将该节点从全局链表解链（第835行），然后仅调用 `SAFE_FREE(os)`（第837行）释放 OSNode 结构体本身。但 OSNode 含有 `ProcNode* proc_head` 成员（src/lifecycle.c:758-762），该成员指向一个 ProcNode 链表，每个 ProcNode（src/lifecycle.c:752-756）均通过 `_safe_calloc` 堆分配（第799行），其 `proc_name` 字段通过 `_str_dup` 堆分配（第805行，实际分配在 src/utils.c:40-48）。函数内没有任何循环释放 `os->proc_head` 链表的代码，也没有对每个 ProcNode 的 `proc_name` 执行 `SAFE_FREE`。escan 未找到任何 `_lifecycle_delete_proc_node` / `_lifecycle_free_proc_node` / `_lifecycle_cleanup_os_node` 等 out-of-line 清理函数，因此 `proc_head` 链上的所有 ProcNode 及其 `proc_name` 在 OSNode 被释放后永久不可达，构成确凿的内存泄漏（CWE-401）。触发路径：`td_update_os_policy`（main.c:421-431，公共 API 入口）调用 `_lifecycle_delete_os_node(os_name)`。`td_update_os_policy` 自身在第424行先调用 `_lifecycle_attach_proc_node` 附着一个新的 ProcNode，随后在第425行立即删除 OSNode，导致该 ProcNode 及其 `proc_name` 泄漏。Source 为 `os_name` 参数（控制待删除的节点），Sink 为 `SAFE_",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_426bf08b311d6ba86ef67f76f2ecf24c",
+     "FACT_V3_f81bfbe2b706ed3c96acd5356ca3f111"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_USE_AFTER_FREE_9576ecb390",
+   "truth": "RANGE-036",
+   "rule": "clang_cfg_global_mapping_unmapped_without_invalidation",
+   "cat": "use_after_free",
+   "func": "_lifecycle_unload_rules",
+   "loc": "src/lifecycle.c:417",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选 CAND_853ef6022b7cba809016ce4a 为 use-after-free，分析后判定为 verified：\n\n1. **释放点（源）**：`_lifecycle_unload_rules`（src/lifecycle.c:417）在 `g_rules_map && g_rules_len > 0` 时执行 `munmap(g_rules_map, g_rules_len)`，但之后**既不将 `g_rules_map` 置 NULL，也不清空 `g_rules_len`**，导致全局映射指针变为悬垂非 NULL 状态（FACT_V3_cc95b77deefd6f7242fcef6229ecf39c）。\n\n2. **读取点（sink）**：`_lifecycle_match_rule_byte`（src/lifecycle.c:427-428）将 `g_rules_map` 转型为 `const unsigned char*` 并读取 `rules[offset]`。其守卫 `if (!g_rules_map || offset >= g_rules_len)` 无法识别悬垂非 NULL 指针，因为 munmap 后 `g_rules_map` 仍为非 NULL 地址，且 `g_rules_len` 保留旧值。\n\n3. **源可控性**：公开入口 `td_configure_rules`（src/main.c:382-387）的 `path`、`len`、`offset` 参数均由调用者控制。调用者可以构造两次调用序列：第一次有效（map 成功 → match 安全 → unload 留下悬垂指针），第二次 `_lifecycle_map_rules` 提前失败（path==NULL、len==0 或 open 失败，src/lifecycle.c:396-397, 401-402 提前返回且不更新全局状态），此时 `_lifecycle_match_rule_byte` 读取已 munmap 的内存（FACT_V3_ace596ea21dac3",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_ace596ea21dac323a90d42b9fc95da73",
+     "FACT_V3_cc95b77deefd6f7242fcef6229ecf39c"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_BOUNDS_7fe5665c9b",
+   "truth": "ISSUE42-014",
+   "rule": "caller_limit_indexes_fixed_member_array",
+   "cat": "bounds",
+   "func": "_runtime_count_pool_cache",
+   "loc": "src/lifecycle.c:2486",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "CWE-125 越界读候选被完全证实。RuntimeFixpool 的 local_cache 是固定 32 元素的数组（src/lifecycle.c:2090-2094，RuntimeFixpoolCache 仅含 4 字节 int cache_len），而 _runtime_count_pool_cache 在 src/lifecycle.c:2486 用循环变量 lcore_id（0..lcore_limit-1）直接索引 local_cache[lcore_id]，且路径上不存在任何把 lcore_limit 钳制到 <=32 的守卫。扫描根 td_run_runtime_maintenance 在 src/main.c:786 无条件调用 td_runtime_configure_pool(128, 96)，lcore_limit=128 经 td_runtime_configure_pool→_runtime_apply_pool_plan→_runtime_apply_pool_ops→_runtime_count_pool_cache(&pool, 128)（src/lifecycle.c:2923）逐层原样透传；_runtime_apply_pool_ops 中 pool.cache_size=1，保证 cache_size!=0 检查通过后循环体执行。因此 lcore_id=32..127 共 96 次对栈上局部数组 local_cache[32] 的越界读取必然发生，源、汇点、可达路径、可控性（入口 API 接受 uint32_t lcore_limit 且当前唯一调用点传 128）与守卫缺失全部由代码证据闭环。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_386322bbcc074fc3d3aa8101f05349d8",
+     "FACT_V3_5178928c4d5d2ba43a52b79a2ebe28ea",
+     "FACT_V3_59506bbed18cb3d58a55e545b6d2f140"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RACE_40c5665941",
+   "truth": "REAL-023",
+   "rule": "clang_cfg_registry_unlink_free_after_unlock",
+   "cat": "race",
+   "func": "_runtime_detach_component_record",
+   "loc": "src/lifecycle.c:1251",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "_runtime_detach_component_record (src/lifecycle.c:1237-1255) 在持有锁期间插入并摘除节点，然后解锁（第1246行），最后在解锁后释放节点内存（第1251-1253行）。_runtime_route_by_partition_key (第1556-1569行) 在未持有锁的情况下调用 _service_find_locked 遍历共享链表，可在插入后到摘除前的短暂窗口读到节点指针并保留，随后使用已释放节点（existing->state = policy_id 第1559行），构成UAF竞争。外部调用者可通过公开API td_run_service_cleanup_cases 和 td_start_protocol_worker（创建分离线程执行 td_run_protocol_cases）以相同key并发调用触发该路径。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_141a333329145f99050f4af2b6e86a48",
+     "FACT_V3_b8affdac060a620e2fa4e460fcf1ef6a"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_1ab5329b3f",
+   "truth": "RANGE-006",
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_safe_malloc",
+   "loc": "src/utils.c:13",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "已验证 CWE-770（无限制资源分配）漏洞。_safe_malloc (src/utils.c:13-20) 直接将 size 参数传递给 malloc(size)，自身无任何大小限制。存在一条可达的公共 API 触发路径：td_process_control_message (public API, src/main.c:337) → _lifecycle_parse_control_message (src/lifecycle.c:90) → _safe_malloc(key_len+1) (src/lifecycle.c:97)。_lifecycle_parse_control_message 中 key_len = strchr(msg, ':') - msg 完全由外部调用者控制的 msg 字符串决定，无任何长度上限检查（仅检查 msg 是否为 NULL）。攻击者通过构造一个超长的 msg 字符串（例如在 ':' 之前放置巨量数据），可触发 _safe_malloc 分配任意大小的堆内存，导致拒绝服务（内存耗尽）或系统资源枯竭。其他调用路径（如 td_submit_task → _parse_task_buffer 路径）受 MAX_TASK_SIZE=1MB 限制，但 td_process_control_message 路径无此限制。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_25769a8eb90c653aab156d274c6e2d82",
+     "FACT_V3_5ff4e4e19a7531037138a7c3adc27118",
+     "FACT_V3_73500ac2b1294b23b913d129ae10b5db",
+     "FACT_V3_e52bf63eef3cb2f6ca1f04a40bb5dd6d"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_ALLOC_FREE_MISMATCH_68f34122a9",
+   "truth": "ISSUE42-024",
+   "rule": "callback_allocator_pair_not_enforced",
+   "cat": "memory_leak",
+   "func": "_runtime_release_hash_node",
+   "loc": "src/lifecycle.c:2695",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "模型否决了原类别，但在同一代码证据上识别出具体的 `memory_leak` 问题。模型原始推理：候选声称 src/lifecycle.c:2693-2704 的 _runtime_release_hash_node 存在 CWE-762 分配/释放例程错配。本地代码证据否定该错配：第 2695-2696 行分配与释放回调总是从同一个三元表达式选取为匹配对——use_header_pool 非 0 时为 (_runtime_header_alloc, _runtime_noop_free)，为 0 时为 (_safe_malloc, free)，不存在任何控制流路径让一个分配器产出的指针被另一个分配器的释放函数处理。_runtime_header_alloc（2680-2687）内部经 _safe_malloc（utils.c:13-20，封装 malloc）分配 size+8 字节并写入 \"I42ALLOC\" 头后返回 raw+8，_runtime_noop_free（2689-2691）是其配对的 no-op 释放；函数内指针始终由其配对回调处理，未发生错配释放。即使认为头池路径不归还堆，其性质至多是内存泄漏（CWE-401），且两个实际调用点 _runtime_apply_memory_plan:2904 与 _runtime_shutdown_local_session:2968 均以 use_header_pool=1 调用，快照亦表明该 no-op 释放属于头池机制的既定语义（外部回收），不属于 CWE-762 错配缺陷。候选缺少任何可触发的错配源到汇路径，故拒绝。",
+   "closure": {
+    "complete": false,
+    "reason": "required_facts_still_missing",
+    "resolved_fact_kinds": [
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [
+     "cleanup_coverage"
+    ],
+    "fact_uids": [
+     "FACT_V3_69491757cf18f9b39b092c19e6c37b8c"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_DEADLOCK_dfae318cd3",
+   "truth": "RANGE-005",
+   "rule": "cross_function_recursive_lock",
+   "cat": "deadlock",
+   "func": "_plugin_unregister",
+   "loc": "src/plugin.c:99",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "该候选报告的是一个自死锁（self-deadlock）漏洞，证据链完整，已验证。具体触发路径如下：外部公开API `td_unregister_plugin`（src/main.c:622）调用`_plugin_unregister`（src/plugin.c）。`_plugin_unregister`在第97行通过`LOCK(&registry->mutex)`获取互斥锁，此时该锁已被持有。随后在第99行直接调用`_plugin_lookup(registry, name)`，而`_plugin_lookup`在第71行再次通过`LOCK(&registry->mutex)`尝试获取同一个`registry->mutex`。`registry->mutex`是一个`pthread_mutex_t`类型，在`_plugin_registry_init`（src/plugin.c:25）中以`pthread_mutex_init(&registry->mutex, NULL)`初始化，即使用默认非递归属性（PTHREAD_MUTEX_NORMAL）。`_lock_wrapper`（src/utils.c:93）直接调用`pthread_mutex_lock`，不做递归检测。对于非递归的pthread_mutex_t，同一线程对已持有的锁再次调用`pthread_mutex_lock`会导致死锁（POSIX未定义行为，glibc实现中线程永久阻塞）。整个调用链位于同一线程，无任何解锁操作插入在两次加锁之间，也无任何守卫条件可阻止该重入，因此漏洞可被触发。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_6d16bd5ee9faa212eb9174d0b6aa6179"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_DOUBLE_FREE_3f5c7d8dd0",
+   "truth": "REAL-003",
+   "rule": "clang_cfg_same_object_released_twice",
+   "cat": "double_free",
+   "func": "_runtime_apply_component_stage",
+   "loc": "src/lifecycle.c:1226",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "代码证据完整闭环：_service_alloc_node（src/lifecycle.c:1118-1129）在第1125行通过 _str_dup(\"rollback\")（src/utils.c:40-48 执行 malloc 复制）为 node->payload 分配非空堆指针，所有权属于该 node；_runtime_apply_component_stage 的 stage_mode!=0 分支在第1225行 free(node->payload) 后，第1226行对同一指针再次 free，两次调用之间无任何置 NULL、重新赋值或所有权转移语句，构成 CWE-415 双重释放。stage_mode 由公共入口 td_run_service_cleanup_cases 的 mode 参数在 src/main.c:496 直接透传，非零即进入双释放路径，入口在本证据包中被列为当前分析入口/公共触发点，调用路径 td_run_service_cleanup_cases -> _runtime_apply_component_stage 成立。唯一守卫 if(stage_mode)（第1224行）只决定是否进入该分支，未消除第二次释放；代码库已有带置 NULL 语义的 SAFE_FREE（include/common.h:24）但未用于 payload。第1220-1222行的 node==NULL 检查仅覆盖节点分配失败，不覆盖 payload。判定为 verified。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_3f1956709da0c36b59e9b5638d5c05d9",
+     "FACT_V3_afce7b6b06d977a17fcd4b950b42b51b"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_OUT_OF_RANGE_POINTER_OFFSET_5d8e2ee09f",
+   "truth": "ISSUE43-010",
+   "rule": "clang_cfg_unchecked_object_offset_deref",
+   "cat": "out_of_range_pointer_offset",
+   "func": "_runtime_stream_map_object_offset",
+   "loc": "src/lifecycle.c:3229",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选漏洞被代码证据完整证实。源为公共 API td_runtime_process_stream_batch 的 wire 参数（src/main.c:741），经 _runtime_process_stream_batch（src/lifecycle.c:3398）传入 _runtime_stream_read_header；当 wire_len >= sizeof(RuntimeStreamHeader) 且前 4 字节等于 RUNTIME_STREAM_MAGIC(0x5354524du) 时，header 整体从 wire 原样拷贝（src/lifecycle.c:3070-3075），object_offset 完全由攻击者控制。sink 位于 _runtime_stream_map_object_offset（src/lifecycle.c:3228-3230）：((unsigned char*)&object)+object_offset 后写 field[0] 与 field[1]，而 object 是 48 字节的栈上 RuntimeStreamObject，合法偏移上限为 46。整个调用链（td_runtime_process_stream_batch -> _runtime_process_stream_batch -> _runtime_stream_map_object_offset）由 get_callers 与代码片段确认。守卫分析：sink 函数与调用方均未对 object_offset 做任何边界检查，magic 校验只是格式门而非范围保护，默认头（object_offset=4）仅在 wire 缺失/过短/magic 不匹配时生效。因此攻击者可通过合法格式的 wire 构造任意 object_offset，造成栈上越界写（CWE-823，潜在栈破坏/任意写）。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_0afff05cf791e0d517c876d37ade44bf",
+     "FACT_V3_1408e9fb3aed63366f2451cdcab08445",
+     "FACT_V3_6392dfe1792bae96c57576e506f548e8"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_SIGPIPE_UNHANDLED_df68cdb43f",
+   "truth": "RANGE-050",
+   "rule": "peer_write_without_sigpipe_handling",
+   "cat": "sigpipe_unhandled",
+   "func": "_net_send_data",
+   "loc": "src/network.c:101",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选缺陷为 SIGPIPE 未处理（CWE-404）：src/network.c:101-102 的 send(fd, data+total_sent, len-total_sent, 0) 以 flags=0 调用，未使用 MSG_NOSIGNAL；进程初始化路径 td_init（src/main.c:203-204）仅为 SIGINT/SIGTERM 注册 _signal_handler，全库（含安全语义映射）不存在 SIGPIPE 忽略/处理或 SO_NOSIGPIPE，因此 SIGPIPE 保持系统默认动作（终止进程）。可行触发路径：公开 API td_send_message(fd,data,len)（include/task_dispatcher.h:106 声明，src/main.c:306 直连 _net_send_data）与 td_send_status(fd)（src/main.c:310 → _lifecycle_send_status@src/lifecycle.c:342 直连 _net_send_data）均可到达该 send() 调用点。源可控性：服务端流程中 fd 来自 accept()（src/main.c:102、src/network.c:55），即远端可控的 TCP 连接；远端随时关闭连接/发送 RST 后，对同一 fd 的 send() 将触发 SIGPIPE 使进程终止，构成远程可触发的拒绝服务。防护缺失：函数内 errno==EAGAIN/EWOULDBLOCK 分支（src/network.c:104-106）只处理非致命错误，进程在 send() 返回前即被 SIGPIPE 杀死，无法兜底；也没有 MSG_NOSIGNAL/SIGPIPE 忽略/SO_NOSIGPIPE 等任何防护。仓储内 main() 未直接调用这两个公开 API 属公开 API 条目的正常现象，按验证规则不作为死代码证据，也不构成阻断性反证。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "signal_context",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_8edcf49f94b7cb6832067fa1da620b48",
+     "FACT_V3_9f721b7bcf08f0f2acf5607afaf30c3f",
+     "FACT_V3_f4ba8d608a955f23af6cb5ded0cdad96"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RACE_6802e3cf0e",
+   "truth": "RANGE-009",
+   "rule": "clang_cfg_unsynchronized_shared_flag_or_counter",
+   "cat": "race",
+   "func": "td_cleanup",
+   "loc": "src/main.c:626",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "确认存在真实可触发的数据竞争。共享变量 g_running 在 src/main.c:15 声明为 `static volatile int g_running = 1;`，由主线程与工作线程并发访问。写侧：td_cleanup()（src/main.c:625-659）在 src/main.c:626 执行 `g_running = 0;`，该行之前没有任何 LOCK 调用，写操作不持有任何互斥锁。读侧：_worker_thread()（src/main.c:56-95）在 src/main.c:60 `while (g_running)` 于未持锁状态下读取，63/67 行虽持 g_dispatcher.queue.mutex 读取，但写侧从未获取该锁，无共同锁覆盖。触发路径可行：main（src/main.c:680 调用 td_cleanup）在 td_init（src/main.c:196）创建 4 个工作线程后仍存活期间写入该标志，工作线程在 60 行持续无锁轮询。guard 分析：volatile 只阻止编译器优化，不提供原子性/同步语义；pthread_join（636/643 行）发生在 626 行写之后，无法为该写与 60 行读建立 happens-before 边。因此该无同步读写构成 CWE-362/CWE-366 数据竞争，缺锁事实（lockset/happens_before）已由代码证据解决。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_504be53ff2b094c10f3868eed8265390"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_REGISTRATION_RACE_4aac2d5407",
+   "truth": "ISSUE42-013",
+   "rule": "global_registration_slot_checked_before_lock",
+   "cat": "registration_race",
+   "func": "_runtime_register_pool_ops",
+   "loc": "src/lifecycle.c:2462",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "函数 _runtime_register_pool_ops 在 2462 行无锁读取全局 g_runtime_fixpool_ops[ops->type] 来决定分支（更新已有条目 vs 注册新条目），随后在 2463/2471 行才获取 g_runtime_fixpool_lock 互斥锁。这是一个典型的 check-then-act TOCTOU 竞态（CWE-362）。并发路径已证实：入口 td_run_runtime_maintenance（main.c:786）调用 td_runtime_configure_pool(128, 96) → _runtime_apply_pool_plan → _runtime_apply_pool_ops（line 2922）→ _runtime_register_pool_ops（sink 2462-2472）。_td_runtime_worker 是 pthread 工作线程入口（通过 VOS_TaskCreate→pthread_create 创建），多个工作线程可并发执行维护路径，无全局串行化。锁仅保护写入操作，但分支选择读取在锁外进行，导致两个线程可同时观察到 NULL 并都进入注册分支（lost-update），或观察到不一致状态走不同分支。此外，_runtime_apply_pool_ops 将栈局部变量 &ops 传入 _runtime_register_pool_ops，后者将栈指针存入全局槽位（2472 行），函数返回后全局槽位指向悬空栈内存；随后的维护调用在 2462 行读取悬空指针 → 进入更新分支 → 2465 行向已释放栈内存写入 enqueue/dequeue（UAF 写）。竞态与栈生命周期缺陷共同构成可触发的内存安全问题。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_77100d133242c292f7b8afa113e9340b"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_c94aed3115",
+   "truth": "RANGE-007",
+   "rule": "clang_cfg_acquire_without_release_on_exit",
+   "cat": "memory_leak",
+   "func": "_net_handle_error",
+   "loc": "src/network.c:206",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确认存在确定的内存泄漏（CWE-401）。源点：src/network.c:191 通过 _safe_malloc（src/utils.c:13-20，即 malloc 的标准封装，仅记录日志后返回指针）分配 error_msg（256 字节）；ENOMEM 分支 line 200 还分配 recovery_buffer（1024 字节）。汇点：line 206 `return error_code;` 函数返回时两者均未释放。函数体内（190-207 行）经完整检索不存在 free() 或 SAFE_FREE()（common.h:24 定义了 SAFE_FREE 但未使用）；函数返回类型为 int，error_msg/recovery_buffer 为局部指针，从未写入全局变量、传出参数或返回值，所有权不可能转移给调用方。唯一守卫是 line 192 的 `if (!error_msg) return -1;`，仅正确处理分配失败情形，不能阻止分配成功后的泄漏。可达性：公共入口 td_report_network_error（src/main.c:321-323）直接调用 _net_handle_error，作为本次扫描配置的公共 API 入口，无仓库内部调用者属正常情况，不构成死代码证据。源可控性：error_code 由调用方透传控制，影响 ENOMEM 分支是否分配 recovery_buffer，而 error_msg 的分配与泄漏在所有成功路径上无条件发生。综上，源、汇点、可达路径、源可控性与缺失守卫全部由代码证据证明，判定为已验证漏洞。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_5d891be77bfc2aae31c8ad155241c212",
+     "FACT_V3_5eebb7066a7f4b627dc0d1dc0225dfcd",
+     "FACT_V3_7853102cc33dad576d176eb2f9a93415",
+     "FACT_V3_c8e93f1576863db20ecd2091f27364fc"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_23ead1c3a4",
+   "truth": "ISSUE43-007",
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_runtime_stream_reserve_batch",
+   "loc": "src/lifecycle.c:3185",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "CWE-770（无限制资源分配）成立，证据链完整：sink 位于 src/lifecycle.c:3185 的 _safe_malloc(bytes)，分配大小由 (size_t)batch_size * sizeof(RuntimeStreamSegment)（16 字节/段）决定；batch_size 取自 _runtime_stream_read_header 解析的 header.batch_size，该解析函数仅校验 magic，对 batch_size 等字段不做任何范围/上限校验，且该字段由外部 wire 缓冲区 memcpy 而来，因此完全攻击者可控。可达路径由源码调用点证实：公开入口 td_runtime_process_stream_batch（src/main.c:741-747，本证据包指定的当前分析入口）→ _runtime_process_stream_batch（main.c:745 调用）→ _runtime_stream_reserve_batch（lifecycle.c:3395 以 header.batch_size 调用）→ _safe_malloc。从入口到 sink 的整条路径无任何对 batch_size 的上限检查，无支配性守卫；_safe_malloc 仅在 malloc 失败时返回 NULL，函数随后 memset 仅写 MIN(bytes, sizeof(RuntimeStreamSegment)) 字节并立即 SAFE_FREE，这限制了物理内存驻留但并未限制分配请求大小本身。攻击者可令 batch_size=UINT32_MAX 使每次调用提交约 64GiB 的分配请求（64 位 size_t 下无溢出，32 位回绕仍约 4GB），通过反复调用制造无上限分配的资源耗尽/DoS 面。函数内立即释放与单次大分配可能失败返回 -1 属于影响程度问题，不构成对该 sink/守卫的反证，因此判定为 verified。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_6289ba1dc719df8fdcb45349ebe5a2fc",
+     "FACT_V3_69329fc36798c6ed1786bae7c7d720d1",
+     "FACT_V3_c3855e9e40ffc42768e2dde0899ec629",
+     "FACT_V3_e848691fee09789455e448b81170f65a"
+    ]
+   },
+   "v3_turns": null
+  }
+ ],
+ "v3_fp": [
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_dce5a2fbb1",
+   "truth": null,
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_remove_file_record",
+   "loc": "src/lifecycle.c:1263",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "内存泄漏成立且有完整触发路径。源：_runtime_remove_file_record（src/lifecycle.c:1258）调用 _service_alloc_node(name, \"/virtual/fs/node\")，后者在第1125行通过 _str_dup（src/utils.c:40-48，内部 _safe_malloc 堆分配）创建 node->payload，并在1127行初始化 mutex。汇：该函数仅在第1262行释放 node->name、第1263行释放 node，全程未释放 node->payload，且未调用 pthread_mutex_destroy，堆字符串随结构体 free 而泄漏（CWE-401）。所有权确认：本函数未调用 _service_insert_locked，节点未挂入任何全局注册表，payload 无所有权转移（FACT_V3_11e41b28ed6388896ed502e939761fd0）。清理覆盖确认：同文件正确模式 _runtime_detach_component_record（1251-1253行）与 _runtime_apply_component_stage（1231行）均先释放 payload，SAFE_FREE 宏（include/common.h:24）仅释放置空指针，不存在隐式 payload 释放，本函数缺省属遗漏（FACT_V3_03abffbe7c3264ce8af66a6b8afacb6c）。路径：入口 td_run_service_cleanup_cases（src/main.c:490-503）第498行直接调用 _runtime_remove_file_record（path-edge:0 与 evidence:positive:2）。泄漏对象为固定字面量 \"/virtual/fs/node\" 的堆副本，每次成功调用必然泄漏，与 name 取值无关，无任何守卫可阻断。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_03abffbe7c3264ce8af66a6b8afacb6c",
+     "FACT_V3_11e41b28ed6388896ed502e939761fd0"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_PREMATURE_DESTROY_95cf6c8971",
+   "truth": null,
+   "rule": "destroy_shared_pool_while_active_tasks_remain",
+   "cat": "premature_destroy",
+   "func": "_runtime_release_packet_pool",
+   "loc": "src/lifecycle.c:2348",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已证实具体且必然触发的缺陷：_runtime_release_packet_pool（src/lifecycle.c:2339-2358）在 active_tasks>0 分支（2348行）先释放 g_runtime_pbuf_pool->buffer（2349行）与 g_runtime_pbuf_pool（2350行），随后第2351-2352行读取 g_runtime_pbuf_pool->buffer 与 ->active_tasks。SAFE_FREE（include/common.h:24）释放后把指针置 NULL，因此第2351行三元条件 g_runtime_pbuf_pool->buffer 是对 NULL 指针的解引用，进程必然崩溃（SIGSEGV）；若宏不置空则为 use-after-free。源码路径：入口 td_run_runtime_maintenance（src/main.c:756）第784行以字面量 active_tasks=1 调用 td_runtime_refresh_cache（src/main.c:706-710）→ _runtime_refresh_worker_context（src/lifecycle.c:2886-2894，第2891行调用）→ _runtime_release_packet_pool（src/lifecycle.c:2348）。source 可控性为硬编码：active_tasks 恒为 1，分支无任何条件可跳过；guard 分析显示无 NULL 检查，SAFE_FREE 置空反而把读已释放内存变成确定的空指针解引用，缺陷每次调用入口 API 即触发，属于 premature_destroy/CWE-416 语义下的确定性缺陷。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_087f1f7652e8e4e4ca875d8d9338e444",
+     "FACT_V3_1221c277649dccbcc2cf08a3a1836d5a",
+     "FACT_V3_561c3d246d18b8f01d187d08e1fc972b"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_57a2e42dae",
+   "truth": null,
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_release_reader_channel",
+   "loc": "src/lifecycle.c:1300",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "内存泄漏候选经代码验证成立。源头：_runtime_release_reader_channel(src/lifecycle.c:1289) 调用 _service_alloc_node(key, \"reader\")，后者在 1125 行将 _str_dup(\"reader\") 的堆副本赋给 node->payload，同时 1124 行将 _str_dup(key) 赋给 node->name（_str_dup 通过 _safe_malloc/malloc 分配，快照确认返回调用者所有的堆指针）。汇点：SAFE_FREE(node)(src/lifecycle.c:1300) 仅释放结构体本身（include/common.h:24 的宏只对传入指针 free 并置空）。守卫分析：_service_release_by_role(src/lifecycle.c:1164-1174) 在 is_member=0 时只 SAFE_FREE(node->name)，不释放 node->payload；_runtime_release_reader_channel 的两条分支（1295 行 role==1 与 1299 行 else）均以 is_member=0 调用它，随后 SAFE_FREE(node)，因此 node->payload 在两条路径上都从未被释放，也没有任何外部析构器或所有权转移覆盖它。触发路径：公开入口 td_run_service_cleanup_cases(src/main.c:490-503) 在 500 行调用 _runtime_release_reader_channel，每次调用固定泄漏一份 \"reader\" 字符串副本。负向证据（\"成员是否归父节点所有、是否有外部析构器\"）已被代码直接证伪：payload 由 _service_alloc_node 内分配并归 node 所有，函数内无其他释放逻辑。判定 verified，CWE-401 内存泄漏。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_4483d61fdce5af0f46c2a13e7ab35a5a",
+     "FACT_V3_aa781ae4c2c3775354ee1fb8ee1eb61e"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INTEGER_OVERFLOW_c4475510e8",
+   "truth": null,
+   "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+   "cat": "integer_overflow",
+   "func": "_lifecycle_resize_metrics",
+   "loc": "src/lifecycle.c:300",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "整数溢出候选已由代码证据完整证实。源是公共 API td_manage_runtime_config（include/task_dispatcher.h:115 声明）的 size_t 参数 metric_count：头文件对该参数无任何取值范围约束，实现 src/main.c:356-362 也不做校验，调用方可控制完整 size_t 范围。路径是直接无条件调用：src/main.c:360 将 metric_count 原样传给 _lifecycle_resize_metrics。汇点是 src/lifecycle.c:300 的 count * sizeof(size_t)：该乘法前没有任何 a <= SIZE_MAX/sizeof(size_t) 类前置检查，_safe_realloc（src/utils.c:31-38）仅包装 realloc 也不做溢出校验，整条路径无任何等价防护。触发后果明确：64 位下取 count = 0x2000000000000001 时乘积回绕为 8，realloc 仅分配 8 字节，随后 src/lifecycle.c:305-307 的循环向 g_metrics[0..count-1] 写入 count 个元素，形成大规模堆越界写。零仓库内调用者属于头文件声明公共 API 的预期情况，不能作为拒绝依据；该公共 API 本身就是外部触发点，满足 verified 所需的源、汇点、可控性与可行路径。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_5cf641393165b626b160aed0f5eeb876",
+     "FACT_V3_6647c2f0b81a9612f631ec2194940b10",
+     "FACT_V3_c9db836c116b3c289d8434765a1d537e"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_UNCHECKED_ALLOCATION_a39466f5db",
+   "truth": null,
+   "rule": "clang_cfg_allocation_result_used_without_null_check",
+   "cat": "unchecked_allocation",
+   "func": "_runtime_stream_build_index",
+   "loc": "src/lifecycle.c:3205",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "函数 _runtime_stream_build_index（src/lifecycle.c:3194-3208）使用 _safe_calloc 分配 index 数组，但 _safe_calloc 在底层 calloc 失败且 nmemb>0、size>0 时仅记录日志并返回 NULL（src/utils.c:22-29），不保证非 NULL。调用方在 line 3204-3205 直接执行 index[0] = &first 与 (int)index[0]->length，两者之间无任何 NULL 检查，构成 CWE-690 未检查分配返回值导致的空指针解引用。entry_count 源自外部 wire 缓冲区中的 RuntimeStreamHeader.batch_size（uint32_t，由 memcpy 完全覆盖，src/lifecycle.c:3072-3074），通过公开入口 td_runtime_process_stream_batch（src/main.c）→ _runtime_process_stream_batch（line 3396）→ _runtime_stream_build_index 的路径可控。攻击者可构造包含 RUNTIME_STREAM_MAGIC 和大 batch_size 的 wire 数据，使 calloc 分配大块内存失败，触发空指针解引用。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_6e91c0c9e91f9081747654fa3873365b",
+     "FACT_V3_78729ceee23fae8f9b5d24de3554e484",
+     "FACT_V3_d91481d29caa5a31b7d1d4f481297016"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_fa6b779fa3",
+   "truth": null,
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_serialize_task",
+   "loc": "src/parser.c:224",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已验证 CWE-770（无限制资源分配）漏洞。_serialize_task 第224行调用 _safe_malloc(total_len)，其中 total_len = sizeof(TaskHeader) + payload_len。payload_len 来源于三个完全由调用方/攻击者控制的路径：strlen(task->payload.command.command)+1（第213行）、task->payload.text.length（第216行）、task->payload.binary.size（第219行）。入口函数 td_serialize_task_message（src/main.c:329，非静态公开API）在第330行直接调用 _serialize_task，established 调用链 td_serialize_task_message → _serialize_task → _safe_malloc(total_len)。在 total_len 计算之后到 _safe_malloc 调用之前，没有任何大小上限检查、拒绝策略或阈值守卫。_safe_malloc（src/utils.c:13-20）本身仅为 malloc 的简单封装，不实施任何大小限制。攻击者可通过构造包含超大 payload 长度的 Task 结构体，触发巨量内存分配，导致拒绝服务（内存耗尽）。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_0ff1c804a072ab8588c0441b3a56233b",
+     "FACT_V3_1fae9126a989ef0e36b726eae53af193",
+     "FACT_V3_e9d0c3e30aedcf725f6c1f221ba44178"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_PREMATURE_DESTROY_9bf560d822",
+   "truth": null,
+   "rule": "clang_cfg_active_owner_destroy_without_quiescence",
+   "cat": "premature_destroy",
+   "func": "_runtime_release_packet_pool",
+   "loc": "src/lifecycle.c:2349",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "代码证据完整证实了 premature_destroy 缺陷的触发路径。`_runtime_release_packet_pool`（src/lifecycle.c:2339-2358）在 `active_tasks > 0` 时执行 SAFE_FREE(g_runtime_pbuf_pool->buffer)（2349）和 SAFE_FREE(g_runtime_pbuf_pool)（2350），随后 2351-2352 行立即解引用已释放的 `g_runtime_pbuf_pool->buffer` 和 `g_runtime_pbuf_pool->active_tasks`。SAFE_FREE 宏（include/common.h:24）将指针置 NULL，因此 2351 行表现为空指针解引用（等价于释放后使用）。源参数 `active_tasks` 来自公开入口 `td_runtime_refresh_cache`（main.c:706-710）的第 4 个参数，调用方可控；内部路径 `td_run_runtime_maintenance`（main.c:784 硬编码 active_tasks=1）与 `_td_runtime_worker`（main.c:804）也经此链触发。调用链中无任何锁、quiescence 契约或边界检查来阻止该分支的执行。`if(active_tasks>0)` 不是防护条件，而是触发 premature destroy 的条件。该缺陷在 worker 线程中确定性地触发，属于已验证的可利用漏洞。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_c81ca7d2730bf267167f2a042baffde3",
+     "FACT_V3_cbb6f9895b41181ce1b0538ad2d098cc",
+     "FACT_V3_f71d726cdd431b4c884f1023f102d491"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INTEGER_OVERFLOW_a8622033ae",
+   "truth": null,
+   "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+   "cat": "integer_overflow",
+   "func": "_runtime_resize_message_buffer",
+   "loc": "src/lifecycle.c:1531",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已验证整数溢出缺陷（CWE-190）：sink 位于 src/lifecycle.c:1531 的 count * sizeof(size_t)，该乘法结果直接传入 _safe_realloc 作为 realloc 大小。count 为无符号 size_t，当外部调用者传入 count > SIZE_MAX/8 时乘法回绕，实际分配远小于 count 声称的元素个数；随后 1535 行 g_service_metrics[0] = count 向过小分配写入大值，可造成堆内存破坏。源可控性成立：count 是公开头文件 include/task_dispatcher.h:160-161 声明的公共 API td_run_service_coordination_cases 的 size_t 参数，头文件未给出任何取值范围约束；入口函数在 src/main.c:531 将 count 原样透传给 _runtime_resize_message_buffer，全程无范围检查。守卫分析：乘法之前不存在任何上限检查（无 a <= SIZE_MAX/b 式前置条件），_safe_realloc（src/utils.c:31-38）仅包装 realloc，同样不校验溢出，因此缺少或不足以防止溢出的守卫。入口到 sink 的可达路径由代码直接证实（main.c:531 → lifecycle.c:1531），且该入口为本证据包指定的当前分析入口（reachable_from_entry=true）；仓库内零调用者属于头文件声明公共 API 的预期情形，按验证规则不得单独据此判定死代码。综合代码证据，源、sink、可控性、路径与守卫缺失均已证实，判定 verified。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_313c1c44ea4dad802206e99990b5ee77",
+     "FACT_V3_40632ffe5f0a0fcb056d027e8bccd914",
+     "FACT_V3_81b17f415efdfc231b74bf27c811b338",
+     "FACT_V3_d87b6360ba790bcfcec066e8094ce581"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_SIGNAL_RACE_c6a75c8a70",
+   "truth": null,
+   "rule": "signal_path_mutates_shared_state_or_logs",
+   "cat": "signal_race",
+   "func": "td_init",
+   "loc": "src/main.c:133",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "该候选条目描述信号处理器路径中的信号竞争（CWE-479，异步信号安全违规）。代码证据证实：1) td_init（src/main.c:203-204）为 SIGINT/SIGTERM 注册 _signal_handler；2) _signal_handler（src/main.c:51-54）→ td_runtime_handle_signal → _runtime_handle_fault_signal（src/lifecycle.c:2955-2960）；3) _runtime_capture_signal_stack（src/lifecycle.c:2560-2585）在信号上下文中执行 _safe_calloc（calloc 堆分配，非 async-signal-safe）、LOG_ERROR（fprintf/vfprintf 非 async-signal-safe）、无锁写入全局 g_runtime_callstack_info；4) _runtime_write_exception_record（src/lifecycle.c:2772-2780）以 hold_sem=1 执行阻塞 pthread_mutex_lock（非 async-signal-safe，死锁风险）、snprintf、LOG_ERROR；5) 无任何保护措施（无 sigprocmask/pthread_sigmask、无自管管道、无信号安全队列）；6) 信号可在注册后任意时刻递送，可打断工作线程（src/main.c:56-95）及主线程正在执行的分配/日志/锁操作，造成死锁或数据竞争。候选条目将 sink 标注为 src/main.c:182 的 g_dispatcher.threads = _safe_calloc，该分配在信号注册（line 203-204）之前，不被所述信号处理器直接中断；但信号路径本身在 lifecycle.c:2566 执行了同类 _safe_calloc 分配，该行号映射偏移不影响缺陷本质。CWE-479 信号处理函数使用不可重入函数 经代码证据证实。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "lockset"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_fd43046a08d18f229977e6d25e4fe37b"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_OUT_OF_BOUNDS_WRITE_4ad865fa0d",
+   "truth": null,
+   "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+   "cat": "out_of_bounds_write",
+   "func": "_runtime_stream_compact_segments",
+   "loc": "src/lifecycle.c:3086",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "漏洞成立。公开 API 入口 td_runtime_process_stream_batch（src/main.c:741-747）将外部调用方可控的 wire 参数直接转发给 _runtime_process_stream_batch（main.c:745），后者在 src/lifecycle.c:3388 无条件调用 _runtime_stream_compact_segments。sink 位于 src/lifecycle.c:3085-3090 的循环：segments 是固定 8 元素栈数组（RUNTIME_STREAM_SEGMENT_LIMIT=8u，src/lifecycle.c:2973），循环上界 header.segment_count 是 uint16_t，_runtime_stream_read_header（3067-3078）仅校验 magic 字段，segment_count 原样取自线上字节（偏移 4），可被设为 65535，远超数组容量 8。当 segment_count>8 时，segments[i].id= i 等写操作（3086-3089）越界写栈内存，构成 CWE-787 栈越界写。调用链上（_runtime_stream_read_header、_runtime_stream_compact_segments、_runtime_process_stream_batch）均无 segment_count<=RUNTIME_STREAM_SEGMENT_LIMIT 的边界检查；td_run_runtime_maintenance 内部路径使用本地 local_wire（回退默认 header，segment_count=2）虽然安全，但不约束公开入口直接接收外部 wire 的情形，不构成支配性防护。来源可控、路径可达、缺失防护均已被代码证据证实。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_335e30cfa6d5b753e248ea44e34857c7",
+     "FACT_V3_af7fbe76b4a0159965fd95667e49be09",
+     "FACT_V3_da20bb2d890cfd8cfb5be84765a4976a",
+     "FACT_V3_f45cae947ce062f58a0e8d7f848d635a"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_MEMORY_LEAK_4e09b125b2",
+   "truth": null,
+   "rule": "registered_global_object_missing_release_hook",
+   "cat": "memory_leak",
+   "func": "_lifecycle_mesh_disconnect",
+   "loc": "src/lifecycle.c:582",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已验证内存泄漏(CWE-401)。触发路径: 公开API `td_handle_mesh_message(msg, transport_id)` (src/main.c:389) 接收外部可控的 msg 参数。当 msg 以 \"ADD:\" 开头时，`_lifecycle_mesh_control_message` (src/lifecycle.c:558-566) 通过 hook `pfnAddSession` 调用 `_control_session_add_to_global` (line 477-501)，该函数使用 `_safe_calloc` 分配 ControlSession 结构体、`_str_dup` 分配 owner 字符串，并插入全局链表 `g_control_sessions`。随后第 392 行无条件调用 `_lifecycle_mesh_disconnect(msg)` (line 577-586)。该函数在第 582 行检查 `g_mesh_control_hooks.pfnDropSession != NULL`——但此函数指针从未被注册。`_lifecycle_mesh_authorize_init` (line 546-551) 仅注册了 `pfnAddSession` 和 `pfnExpireSession`，没有设置 `pfnDropSession`。由于 `g_mesh_control_hooks` 是静态全局变量且仅在该函数中写入，`pfnDropSession` 永远为 NULL。因此 `_lifecycle_mesh_disconnect` 始终走 `return 0` 路径，不会释放任何已分配的 session。`g_control_sessions` 链表没有其他清理函数（`_lifecycle_service_shutdown` 仅释放 LifecycleEntry 列表，不涉及 ControlSession）。每次调用 ADD: 路径都导致 ControlSession 和 owner 字符串永久泄漏。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_db504c1813b763b9e1ea035a1addc9fd",
+     "FACT_V3_f7836f4a95af55994ef8e60d7a6f559b"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_BOUNDS_41ca788f89",
+   "truth": null,
+   "rule": "unchecked_param_indexes_fixed_global_array",
+   "cat": "bounds",
+   "func": "_peer_expand_task_table",
+   "loc": "src/lifecycle.c:1803",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已验证越界写入漏洞。`_peer_expand_task_table` (src/lifecycle.c:1784-1806) 中，当 `task_index >= SIZE_MAX-15` 时，重分配容量计算 `new_cap = ((task_index / 16u) + 1u) * 16u` 发生无符号整数溢出，结果为 0。`_safe_calloc(0, 8)` 在 glibc 上返回非空指针，随后 line 1803 `g_peer_task_array[task_index] = ...` 以越界索引写入零容量分配。`task_index` 有两个攻击者可控来源：(1) 网络帧 `PeerSessionHeader.request_id` (uint32_t) 经 `(int)→(size_t)` 转换，request_id=0xFFFFFFFF 产生 SIZE_MAX；(2) `td_run_peer_session_cases` 的 `report_len` 参数。`_peer_decode_header_window` 只校验 magic 和最小长度，不对 request_id 做任何范围检查。守卫 `task_index >= g_peer_task_array_cap` 触发了重分配逻辑，但容量计算溢出使守卫失效。`calloc(0, 8)` 在目标平台 (Linux/glibc) 返回非空指针，故写入路径可达。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_35d98d6d094c7d22de19437e550fe6c1",
+     "FACT_V3_65395839effc79202db4016b776d48ee",
+     "FACT_V3_b101bb11b31a2b9feeabd61e04941f8a",
+     "FACT_V3_f480d5613f75f0b7a92f986a8d7970ce"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_aecb80411f",
+   "truth": null,
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_net_recv_string",
+   "loc": "src/network.c:175",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "候选为 src/network.c:175 处 _safe_malloc(max_len + 1) 的无上限堆分配（CWE-770）。源代码证据显示：max_len 是公开 API td_receive_string(int fd, size_t max_len)（声明于 include/task_dispatcher.h:108，src/main.c:313-315）的 size_t 参数，调用方可直接传入任意值直至 SIZE_MAX，无任何调用方侧上限。调用链 td_receive_string → _net_recv_string → _safe_malloc 为直接调用、无分支阻断，且该入口即为本次扫描的当前分析入口（reachable_from_entry=true），按协议视为公共触发点。守卫分析：_safe_malloc（src/utils.c:13-20）只检查 malloc 返回值是否为 NULL（分配失败处理），不施加大小上限；_net_recv_data 的 len==0 检查在分配之后，无法阻止大内存分配；_net_recv_string 在 line 175 之前对 max_len 没有任何检查。源（调用方可控的 max_len）、汇（_safe_malloc(max_len+1)）、可控性（公开 API 参数）、可行路径（td_receive_string→_net_recv_string）、缺失守卫（无上限检查）五项均已由代码证据闭合，故判定为 verified。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_32f9d0e0bffae1198f47e2ca9a59877b",
+     "FACT_V3_90f573636feb9ae6510e853c7895903f",
+     "FACT_V3_b200d84a4106c803f4cfa8ccb2af1862"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_OUT_OF_RANGE_POINTER_OFFSET_15890f30a1",
+   "truth": null,
+   "rule": "clang_cfg_unchecked_object_offset_deref",
+   "cat": "out_of_range_pointer_offset",
+   "func": "_runtime_stream_map_object_offset",
+   "loc": "src/lifecycle.c:3230",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "已验证越界指针偏移（CWE-823）。公开非静态 API td_runtime_process_stream_batch（src/main.c:741-747）接受外部可控的 wire 缓冲区，_runtime_stream_read_header 仅校验 magic（RUNTIME_STREAM_MAGIC=0x5354524du，源码公开常量）与长度，object_offset 字段从 wire 偏移 44 处原样 memcpy 至 header 结构，无任何范围校验。_runtime_process_stream_batch（src/lifecycle.c:3398）直接以 _runtime_stream_map_object_offset(header.object_offset) 透传。目标函数内（3222-3232），栈对象 RuntimeStreamObject（sizeof≈48 字节）的地址加上 object_offset 后，field[0]='X' 与 field[1]='\\0' 写入越界栈内存。object_offset 为 uint32_t 可至 4GB，仅需 >46 即可造成栈破坏。入口到 sink 为全直接调用链，无提前返回路径。内部调用者 td_run_runtime_maintenance 传入固定 local_wire（magic 0x493432u ≠ RUNTIME_STREAM_MAGIC），回退到默认 header object_offset=OFFSET_OF(label)=4，该路径安全，但公开入口的 wire 完全由调用方控制，不存在支配性防护。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "type_layout"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_115a433f7578b35a2316f4946a6d1d37",
+     "FACT_V3_32e9259da9c075491af544300b0fc30b",
+     "FACT_V3_8ac763f9ae11874f61ddf4dbdcff1b61",
+     "FACT_V3_b63ce0b6c4513b91382bfdd0119c428b"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_281ff448f3",
+   "truth": null,
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_release_reader_channel",
+   "loc": "src/lifecycle.c:1296",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "泄漏链已由代码证据完整闭合:1) 源:src/lifecycle.c:1289 调用 _service_alloc_node(key, \"reader\"),其实现(src/lifecycle.c:1118-1129)通过 _safe_calloc 分配 ServiceNode 后执行 node->payload = _str_dup(payload ? payload : \"payload\"),_str_dup(src/utils.c:40-48)使用 _safe_malloc 在堆上复制 \"reader\",即 node->payload 是确定存在的堆分配;2) 汇:src/lifecycle.c:1296 与 1300 的 SAFE_FREE(node) 仅释放结构体本身(include/common.h:24 的宏只 free(ptr));3) 守卫缺失:_runtime_release_reader_channel 两条分支(role==1 与 role!=1)均调用 _service_release_by_role(node, 0),其实现(src/lifecycle.c:1164-1174)在 is_member==0 时只执行 SAFE_FREE(node->name),不释放 node->payload,函数内再无其他清理调用(callees 仅为 _service_alloc_node/_service_release_by_role/SAFE_FREE),节点为函数局部变量、未插入任何全局容器或树,所有权未转移,payload 在两条路径上均无释放点,构成确定性 CWE-401 泄漏;4) 可达性与可控性:当前分析入口 td_run_service_cleanup_cases(src/main.c:490-503)在 500 行以 stable_key/mode 调用 _runtime_release_reader_channel,reachable_from_entry=true,泄漏与 key/mode 取值无关,每次调用必然发生。结论:veri",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "cleanup_coverage",
+     "ownership_transfer"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_5a2ad9f606dbcc6177d928d6221e3442",
+     "FACT_V3_dd43b937f99d0b5294c131e527efd2f9"
+    ]
+   },
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_OUT_OF_BOUNDS_WRITE_c6b2b13933",
+   "truth": null,
+   "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+   "cat": "out_of_bounds_write",
+   "func": "_runtime_stream_compact_segments",
+   "loc": "src/lifecycle.c:3089",
+   "confirmed_via": "validator_model",
+   "pass": "investigation_synthesis",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "函数 _runtime_stream_compact_segments 在 src/lifecycle.c:3085-3089 的循环中，以 header.segment_count 为界写入固定大小数组 segments[8]（RUNTIME_STREAM_SEGMENT_LIMIT=8）。segment_count 是 uint16_t 类型（0~65535），由 _runtime_stream_read_header 从外部可控的 wire 缓冲区通过 memcpy 解析而来，该函数仅校验 parsed.magic，未对 segment_count 做任何范围检查（src/lifecycle.c:3072-3073）。调用链 td_runtime_process_stream_batch → _runtime_process_stream_batch → _runtime_stream_compact_segments 完整可到达，调用方 _runtime_process_stream_batch 在 line 3388 直接传 wire 给 _runtime_stream_compact_segments，未在调用前检查 header.segment_count ≤ RUNTIME_STREAM_SEGMENT_LIMIT。攻击者构造 wire 数据段（magic=0x5354524d, segment_count>8）即可触发对 segments 数组的越界写，写入位置为 segments[i].id/offset/length/fd，覆盖栈上后续数据。该缺陷满足 CWE-787 所有条件：外部可控源、无保护、可到达越界写sink。",
+   "closure": {
+    "complete": true,
+    "reason": "required_facts_closed",
+    "resolved_fact_kinds": [
+     "guard_dominance",
+     "source_controllability",
+     "source_sink_reachability",
+     "value_range"
+    ],
+    "remaining_fact_kinds": [],
+    "fact_uids": [
+     "FACT_V3_15cb006764ac0605c1739bcc7ccea7a9",
+     "FACT_V3_45f6b1cf523f67946c7b645beb99aa7e",
+     "FACT_V3_519949e9f5d958e5de36372447216f0d",
+     "FACT_V3_993191e1a01b30e9be69254ccba7eff4"
+    ]
+   },
+   "v3_turns": null
+  }
+ ],
+ "v1_tp": [
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_2ce921cde6",
+   "truth": "ISSUE42-002",
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_runtime_close_thread_cache",
+   "loc": "src/lifecycle.c:2286",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "外部可控值在完整路径上到达分配点，且缺少上界防护",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_3df9bebea6",
+   "truth": "REAL-019",
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_str_dup",
+   "loc": "src/utils.c:43",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "外部可控值在完整路径上到达分配点，且缺少上界防护",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_fcca1ca44f",
+   "truth": "REAL-002",
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_remove_system_node",
+   "loc": "src/lifecycle.c:1214",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "被识别为归属成员的字段在其父对象被释放时仍然存活",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_HELD_LOCK_CALLBACK_be4d64311e",
+   "truth": "REAL-025",
+   "rule": "clang_cfg_callback_while_lock_held",
+   "cat": "held_lock_callback",
+   "func": "_runtime_notify_registry_listener",
+   "loc": "src/lifecycle.c:1511",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "入口提供的回调在加锁之后、匹配解锁之前被调用",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_KEY_GENERATION_RACE_e28aabc849",
+   "truth": "ISSUE42-026",
+   "rule": "clang_cfg_path_state_key_generation_before_locked_registration",
+   "cat": "key_generation_race",
+   "func": "_runtime_make_shared_key",
+   "loc": "src/lifecycle.c:2733",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INCOMPLETE_CLEANUP_31f32c5f69",
+   "truth": "ISSUE43-018",
+   "rule": "clang_cfg_incomplete_owned_member_cleanup",
+   "cat": "incomplete_cleanup",
+   "func": "_runtime_lock_cache_reset_client",
+   "loc": "src/lifecycle.c:3371",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "清理/重置路径释放了所有者，但已初始化的归属成员仍未被清理",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_DEADLOCK_abb21e8cdd",
+   "truth": "RANGE-044",
+   "rule": "clang_cfg_timer_callback_object_lock_without_scheduler_lock",
+   "cat": "deadlock",
+   "func": "_lifecycle_tick_timer_callback",
+   "loc": "src/lifecycle.c:742",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MISSING_REFCOUNT_74b62d361b",
+   "truth": "ISSUE41-009",
+   "rule": "clang_cfg_shared_resource_freed_without_refcount_protocol",
+   "cat": "missing_refcount",
+   "func": "_peer_publish_shared_session",
+   "loc": "src/lifecycle.c:1840",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_74299e2a73",
+   "truth": "ISSUE43-012",
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_stream_schedule_expired_flush",
+   "loc": "src/lifecycle.c:3277",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "被识别为归属成员的字段在其父对象被释放时仍然存活",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_44d6f5958d",
+   "truth": "REAL-015",
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_unload_resource_table",
+   "loc": "src/lifecycle.c:1394",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "被识别为归属成员的字段在其父对象被释放时仍然存活",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_48c20f7947",
+   "truth": "REAL-011",
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_unload_patch_member",
+   "loc": "src/lifecycle.c:1349",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "被识别为归属成员的字段在其父对象被释放时仍然存活",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_REALLOC_MISUSE_80abd9d376",
+   "truth": "REAL-027",
+   "rule": "clang_cfg_realloc_lost_original",
+   "cat": "realloc_misuse",
+   "func": "_runtime_resize_message_buffer",
+   "loc": "src/lifecycle.c:1531",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_UNINITIALIZED_READ_9d454a073e",
+   "truth": "RANGE-031",
+   "rule": "clang_cfg_partial_aggregate_sent_with_sizeof",
+   "cat": "uninitialized_read",
+   "func": "_lifecycle_send_status",
+   "loc": "src/lifecycle.c:342",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_OBJECT_PUBLICATION_f9494b2649",
+   "truth": "RANGE-019",
+   "rule": "published_before_member_initialization",
+   "cat": "object_publication",
+   "func": "_lifecycle_add_entry",
+   "loc": "src/lifecycle.c:123",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "对象在后续的成员初始化之前已被发布",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_STACK_ESCAPE_53ecdedcb4",
+   "truth": "REAL-026",
+   "rule": "clang_cfg_stack_address_passed_to_thread",
+   "cat": "stack_escape",
+   "func": "_runtime_submit_background_work",
+   "loc": "src/lifecycle.c:1523",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "本地栈对象被传递给分离线程，且没有配套的 join",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_SIGNED_UNSIGNED_1aab7396c6",
+   "truth": "REAL-028",
+   "rule": "clang_cfg_negative_length_cast_to_size_t",
+   "cat": "signed_unsigned",
+   "func": "_runtime_receive_record_payload",
+   "loc": "src/lifecycle.c:1542",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "有符号结果到达无符号长度汇点，且缺少终止性范围检查",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_STACK_OVERFLOW_351cbe8bfb",
+   "truth": "RANGE-033",
+   "rule": "clang_cfg_unbounded_vla_or_stack_array",
+   "cat": "stack_overflow",
+   "func": "_lifecycle_parse_frame",
+   "loc": "src/lifecycle.c:359",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_BOUNDS_f301c95e9b",
+   "truth": "REAL-014",
+   "rule": "clang_cfg_wide_count_before_magic_reaches_memory_sink",
+   "cat": "bounds",
+   "func": "_runtime_read_control_magic",
+   "loc": "src/lifecycle.c:1383",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_LOST_WAKEUP_de25f38482",
+   "truth": "RANGE-027",
+   "rule": "clang_cfg_cond_wait_guarded_by_if",
+   "cat": "lost_wakeup",
+   "func": "_lifecycle_wait_for_work",
+   "loc": "src/lifecycle.c:291",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_OBJECT_PUBLICATION_f001c4b1d9",
+   "truth": "REAL-009",
+   "rule": "published_before_member_initialization",
+   "cat": "object_publication",
+   "func": "_runtime_publish_init_sequence",
+   "loc": "src/lifecycle.c:1325",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "对象在后续的成员初始化之前已被发布",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_8dc00009f9",
+   "truth": "REAL-017",
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_prune_patch_tree",
+   "loc": "src/lifecycle.c:1420",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "清理/重置路径释放了所有者，但已初始化的归属成员仍未被清理",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_OFF_BY_ONE_310c890fdb",
+   "truth": "RANGE-030",
+   "rule": "clang_cfg_sizeof_index_write",
+   "cat": "off_by_one",
+   "func": "_lifecycle_format_topic",
+   "loc": "src/lifecycle.c:333",
+   "confirmed_via": "validator_model",
+   "pass": "initial",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "事实消解未产生新的决策证据。",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_FD_ENCODING_MISMATCH_7dd27fe1f1",
+   "truth": "ISSUE41-004",
+   "rule": "clang_cfg_raw_fd_revalidated_as_encoded",
+   "cat": "fd_encoding_mismatch",
+   "func": "_peer_export_descriptor_token",
+   "loc": "src/lifecycle.c:1863",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INTEGER_OVERFLOW_6b27e078b4",
+   "truth": "REAL-032",
+   "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+   "cat": "integer_overflow",
+   "func": "_runtime_query_peak_stats",
+   "loc": "src/lifecycle.c:1425",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "未检查的分配大小算术运算先于任何溢出防护求值，并最终到达分配器",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_COMMAND_INJECTION_25e138cb2e",
+   "truth": "RANGE-012",
+   "rule": "clang_cfg_shell_command_concat_env",
+   "cat": "command_injection",
+   "func": "_executor_build_command_args",
+   "loc": "src/executor.c:236",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_TOCTOU_e4d912f50a",
+   "truth": "RANGE-011",
+   "rule": "clang_cfg_path_check_before_open",
+   "cat": "toctou",
+   "func": "_validate_task",
+   "loc": "src/parser.c:361",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_UNINITIALIZED_POINTER_daa28aec63",
+   "truth": "ISSUE41-011",
+   "rule": "clang_cfg_pointer_may_be_uninitialized_before_use",
+   "cat": "uninitialized_pointer",
+   "func": "_peer_prepare_retry_context",
+   "loc": "src/lifecycle.c:1767",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_SIGNAL_DEADLOCK_b563517708",
+   "truth": "ISSUE42-028",
+   "rule": "signal_path_uses_locking_and_formatting",
+   "cat": "signal_deadlock",
+   "func": "_runtime_record_signal_event",
+   "loc": "src/lifecycle.c:2765",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "信号上下文入口到达了异步信号安全子集之外的操作",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_SIGNED_UNSIGNED_1678bef8a5",
+   "truth": "RANGE-029",
+   "rule": "clang_cfg_negative_length_cast_to_size_t",
+   "cat": "signed_unsigned",
+   "func": "_lifecycle_recv_packet",
+   "loc": "src/lifecycle.c:318",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "有符号结果到达无符号长度汇点，且缺少终止性范围检查",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_KEY_TRUNCATION_211f9a51be",
+   "truth": "REAL-030",
+   "rule": "clang_cfg_full_key_lookup_truncated_key_insert",
+   "cat": "key_truncation",
+   "func": "_runtime_route_by_partition_key",
+   "loc": "src/lifecycle.c:1566",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_BOUNDS_d3bc1d6d5d",
+   "truth": "ISSUE42-006",
+   "rule": "clang_cfg_unchecked_param_indexes_fixed_global_array",
+   "cat": "bounds",
+   "func": "_runtime_read_timer_ticks",
+   "loc": "src/lifecycle.c:2361",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_PERMISSION_3327c5e6e4",
+   "truth": "ISSUE42-018",
+   "rule": "clang_cfg_requested_permission_not_applied_to_mode",
+   "cat": "permission",
+   "func": "_runtime_open_named_segment",
+   "loc": "src/lifecycle.c:2554",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_REALLOC_MISUSE_482a73a3a5",
+   "truth": "RANGE-028",
+   "rule": "clang_cfg_realloc_lost_original",
+   "cat": "realloc_misuse",
+   "func": "_lifecycle_resize_metrics",
+   "loc": "src/lifecycle.c:300",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_ALIGNMENT_c33b4dc5ad",
+   "truth": "REAL-010",
+   "rule": "clang_cfg_unaligned_integer_pointer_cast",
+   "cat": "alignment",
+   "func": "_runtime_message_header_probe",
+   "loc": "src/lifecycle.c:1337",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_STALE_FD_e29fc66dcf",
+   "truth": "REAL-029",
+   "rule": "clang_cfg_fd_closed_without_owner_invalidation",
+   "cat": "stale_fd",
+   "func": "_runtime_reopen_cached_descriptor",
+   "loc": "src/lifecycle.c:1552",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_BUFFER_OVERREAD_a44c3bd40b",
+   "truth": "ISSUE43-003",
+   "rule": "clang_cfg_offset_length_copy_without_source_bound",
+   "cat": "buffer_overread",
+   "func": "_runtime_stream_export_digest",
+   "loc": "src/lifecycle.c:3131",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_DYNAMIC_ARRAY_RACE_6e93076261",
+   "truth": "ISSUE41-007",
+   "rule": "clang_cfg_global_dynamic_array_resize_without_lock",
+   "cat": "dynamic_array_race",
+   "func": "_peer_expand_task_table",
+   "loc": "src/lifecycle.c:1785",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_COMMAND_INJECTION_f45fd91fe1",
+   "truth": "RANGE-051",
+   "rule": "clang_cfg_system_with_nonliteral_command",
+   "cat": "command_injection",
+   "func": "platform_execute_task",
+   "loc": "src/platform_linux.c:37",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "扫描入口参数在完整路径上到达 system()，且缺少结构化清洗",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_NULL_POINTER_DEREFERENCE_8476ee20da",
+   "truth": "RANGE-018",
+   "rule": "clang_cfg_unchecked_strchr_result",
+   "cat": "null_pointer_dereference",
+   "func": "_lifecycle_parse_control_message",
+   "loc": "src/lifecycle.c:96",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_BOUNDS_d590f618c6",
+   "truth": "RANGE-001",
+   "rule": "clang_cfg_external_length_field_reaches_copy",
+   "cat": "bounds",
+   "func": "_parse_task_buffer",
+   "loc": "src/parser.c:57",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_UNINITIALIZED_POINTER_212c8f2e40",
+   "truth": "ISSUE43-011",
+   "rule": "clang_cfg_pointer_may_be_uninitialized_before_use",
+   "cat": "uninitialized_pointer",
+   "func": "_runtime_stream_commit_cursor",
+   "loc": "src/lifecycle.c:3246",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INVALID_FREE_368a3590d3",
+   "truth": "ISSUE43-006",
+   "rule": "clang_cfg_free_derived_pointer_alias",
+   "cat": "invalid_free",
+   "func": "_runtime_stream_release_cursor",
+   "loc": "src/lifecycle.c:3178",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_ALIGNMENT_3a35101762",
+   "truth": "RANGE-034",
+   "rule": "clang_cfg_unaligned_integer_pointer_cast",
+   "cat": "alignment",
+   "func": "_lifecycle_decode_packet_id",
+   "loc": "src/lifecycle.c:369",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_BUFFER_UNDERWRITE_fe33846284",
+   "truth": "ISSUE43-005",
+   "rule": "clang_cfg_unchecked_pointer_backtrack",
+   "cat": "buffer_underwrite",
+   "func": "_runtime_stream_compact_prefix",
+   "loc": "src/lifecycle.c:3164",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INTEGER_OVERFLOW_4562ff8ac9",
+   "truth": "RANGE-002",
+   "rule": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+   "cat": "integer_overflow",
+   "func": "_executor_handle_network_request",
+   "loc": "src/executor.c:140",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "未检查的分配大小算术运算先于任何溢出防护求值，并最终到达分配器",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_VERSION_FILTERING_b84bd98184",
+   "truth": "ISSUE41-008",
+   "rule": "clang_cfg_parsed_protocol_version_is_ignored",
+   "cat": "version_filtering",
+   "func": "_peer_select_version_window",
+   "loc": "src/lifecycle.c:1813",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_MEMORY_LEAK_1ca81b01b9",
+   "truth": "REAL-005",
+   "rule": "same_function_helper_alloc_wrapper_member_leak",
+   "cat": "memory_leak",
+   "func": "_runtime_remove_file_record",
+   "loc": "src/lifecycle.c:1263",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "包装器被释放，而其建模的归属成员未被释放",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_BOUNDS_c1bc403a6f",
+   "truth": "ISSUE41-002",
+   "rule": "clang_cfg_header_length_reaches_copy_without_wire_bound",
+   "cat": "bounds",
+   "func": "_peer_decode_header_window",
+   "loc": "src/lifecycle.c:1718",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_d514f8731e",
+   "truth": "ISSUE43-013",
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_runtime_cleanup_tls_reserve",
+   "loc": "src/lifecycle.c:2643",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "外部可控值在完整路径上到达分配点，且缺少上界防护",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_FORMAT_STRING_33996f7efc",
+   "truth": "RANGE-004",
+   "rule": "clang_cfg_nonliteral_format_string",
+   "cat": "format_string",
+   "func": "_executor_log_message",
+   "loc": "src/executor.c:192",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_INFINITE_LOOP_4572fdf014",
+   "truth": "RANGE-042",
+   "rule": "self_referential_list_link",
+   "cat": "infinite_loop",
+   "func": "_lifecycle_close_pipe",
+   "loc": "src/lifecycle.c:732",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "可达容器节点存在自链接，而遍历过程没有环防护",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_BUFFER_UNDERREAD_221171d774",
+   "truth": "ISSUE43-004",
+   "rule": "clang_cfg_unchecked_pointer_backtrack",
+   "cat": "buffer_underread",
+   "func": "_runtime_stream_read_footer_marker",
+   "loc": "src/lifecycle.c:3149",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_STATE_INCONSISTENCY_cbb58729e6",
+   "truth": "REAL-022",
+   "rule": "clang_cfg_global_state_not_restored_on_error",
+   "cat": "state_inconsistency",
+   "func": "_runtime_switch_io_mode",
+   "loc": "src/lifecycle.c:1474",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_5ba32db056",
+   "truth": "RANGE-049",
+   "rule": "clang_cfg_slot_overwrite_without_existing_owner_cleanup",
+   "cat": "memory_leak",
+   "func": "_plugin_register",
+   "loc": "src/plugin.c:51",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "GRAPH_SIGNAL_RACE_25f7a58f2d",
+   "truth": "ISSUE42-019",
+   "rule": "signal_path_mutates_shared_state_or_logs",
+   "cat": "signal_race",
+   "func": "_runtime_capture_signal_stack",
+   "loc": "src/lifecycle.c:2577",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "信号上下文入口到达了异步信号安全子集之外的操作",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_DEADLOCK_d5b43c0ef7",
+   "truth": "RANGE-041",
+   "rule": "clang_cfg_timer_callback_object_lock_without_scheduler_lock",
+   "cat": "deadlock",
+   "func": "_lifecycle_dispatch_pipe_tick",
+   "loc": "src/lifecycle.c:686",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [
+    [
+     "model_uncertain",
+     1
+    ]
+   ],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_UNCHECKED_RETURN_bccbc833a1",
+   "truth": "REAL-020",
+   "rule": "clang_cfg_probe_error_branch_can_return_success_status",
+   "cat": "unchecked_return",
+   "func": "_runtime_read_tls_record",
+   "loc": "src/lifecycle.c:1453",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_a98b9bbaf1",
+   "truth": "REAL-006",
+   "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+   "cat": "memory_leak",
+   "func": "_runtime_activate_service_path",
+   "loc": "src/lifecycle.c:1282",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "被识别为归属成员的字段在其父对象被释放时仍然存活",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_RESOURCE_ALLOCATION_WITHOUT_LIMITS_7a8f435265",
+   "truth": "ISSUE42-009",
+   "rule": "clang_cfg_external_size_allocation_without_limit",
+   "cat": "resource_allocation_without_limits",
+   "func": "_safe_calloc",
+   "loc": "src/utils.c:23",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "外部可控值在完整路径上到达分配点，且缺少上界防护",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_SIZE_LIMIT_MISMATCH_4df63b42d3",
+   "truth": "ISSUE41-001",
+   "rule": "clang_cfg_fixed_byte_limit_before_spec_count_check",
+   "cat": "size_limit_mismatch",
+   "func": "_peer_prepare_label_cache",
+   "loc": "src/lifecycle.c:1688",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  }
+ ],
+ "v1_fp": [
+  {
+   "id": "CLANG_CFG_INVALID_FREE_523fc6217c",
+   "truth": null,
+   "rule": "clang_cfg_free_derived_pointer_alias",
+   "cat": "invalid_free",
+   "func": "_runtime_stream_schedule_expired_flush",
+   "loc": "src/lifecycle.c:3273",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_INTEGER_OVERFLOW_f6313cca5d",
+   "truth": null,
+   "rule": "clang_cfg_size_addition_without_overflow_guard",
+   "cat": "integer_overflow",
+   "func": "_serialize_task",
+   "loc": "src/parser.c:223",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "SVF_VALUE_FLOW_2fb63c353a1e",
+   "truth": null,
+   "rule": null,
+   "cat": "memory_leak",
+   "func": "_net_handle_error",
+   "loc": "src/network.c:191",
+   "confirmed_via": "deterministic_proof",
+   "pass": "initial",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "必需的事实消解已产出完整的确定性证明；最终处置由策略层决定。",
+   "closure": null,
+   "v3_turns": null
+  },
+  {
+   "id": "CLANG_CFG_MEMORY_LEAK_724ef095c6",
+   "truth": null,
+   "rule": "clang_cfg_role_specific_release_argument_mismatch",
+   "cat": "memory_leak",
+   "func": "_runtime_release_reader_channel",
+   "loc": "src/lifecycle.c:1295",
+   "confirmed_via": "deterministic_proof",
+   "pass": "None",
+   "confidence": null,
+   "sub_state_ref": [],
+   "reasoning": "确定性 AST/CFG 事件证实了所报告的安全义务",
+   "closure": null,
+   "v3_turns": null
+  }
+ ]
+}

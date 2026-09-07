@@ -48,9 +48,7 @@ class FakeSelector:
         )
 
     def select(self, *, group_name, candidate_bcs, bc_to_src, entries):
-        self.select_calls.append(
-            {"group": group_name, "bcs": [Path(bc) for bc in candidate_bcs]}
-        )
+        self.select_calls.append({"group": group_name, "bcs": [Path(bc) for bc in candidate_bcs]})
         plan = self._plan(group_name, candidate_bcs)
         return [Path(bc).resolve() for bc in plan.selected_bcs], plan
 
@@ -75,7 +73,9 @@ def make_builder(tmp_path: Path, sources: Sequence[str]) -> BitcodeBuilder:
     src_dir.mkdir(parents=True, exist_ok=True)
     commands = []
     for name in sources:
-        (src_dir / name).write_text(f"int fn_{name.replace('.', '_')}(void) {{ return 0; }}\n", encoding="utf-8")
+        (src_dir / name).write_text(
+            f"int fn_{name.replace('.', '_')}(void) {{ return 0; }}\n", encoding="utf-8"
+        )
         commands.append(
             {
                 "directory": str(src_dir),
@@ -163,7 +163,7 @@ def test_plan_maps_selected_bcs_back_to_sources(tmp_path: Path, monkeypatch) -> 
     passed_bcs = selector.select_calls[0]["bcs"]
     assert len(passed_bcs) == 3
     # prospective bc paths share the real naming scheme
-    assert Path(passed_bcs[0]).name == "tu_0_a.o.bc"
+    assert Path(passed_bcs[0]).name.endswith("_a.o.bc")
 
 
 def test_plan_respects_group_exclusions(tmp_path: Path, monkeypatch) -> None:
@@ -184,7 +184,7 @@ def test_plan_respects_group_exclusions(tmp_path: Path, monkeypatch) -> None:
 
     selector = FakeSelector.instances[0]
     passed = [Path(bc).name for bc in selector.select_calls[0]["bcs"]]
-    assert passed == ["tu_0_a.o.bc"]
+    assert len(passed) == 1 and passed[0].endswith("_a.o.bc")
 
 
 def test_plan_uses_clusters_when_auto(tmp_path: Path, monkeypatch) -> None:

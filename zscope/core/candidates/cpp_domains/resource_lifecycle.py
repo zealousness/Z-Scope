@@ -20,6 +20,10 @@ from .models import (
 
 from .models import DetectorStage
 
+# FILE*-style stdlib openers must not enter the int-fd leak state machine;
+# they were excluded before user-defined io_acquire wrappers were introduced.
+_FD_OPEN_EXCLUDED_NAMES = {"fopen", "fdopen", "freopen", "popen"}
+
 
 STAGES = (
     DetectorStage(
@@ -241,11 +245,15 @@ class RegexResourceLifecycleRules:
                         positive=[f"line {line.number}: munmap without nearby NULL reset"],
                     )
 
-    @staticmethod
-    def _previous_assignment_from_open(lines: List[CodeLine], idx: int, fd: str) -> bool:
+    def _previous_assignment_from_open(self, lines: List[CodeLine], idx: int, fd: str) -> bool:
         previous = "\n".join(item.text for item in lines[max(0, idx - 12) : idx])
+        user_open_names: Set[str] = set(getattr(self, "_user_io_acquire_names", ()))
+        user_open = self._names_pattern(user_open_names - _FD_OPEN_EXCLUDED_NAMES)
         return bool(
-            re.search(rf"\b{re.escape(fd)}\s*=\s*(?:open|socket|accept|accept4)\s*\(", previous)
+            re.search(
+                rf"\b{re.escape(fd)}\s*=\s*(?:open|socket|accept|accept4|{user_open})\s*\(",
+                previous,
+            )
         )
 
 
@@ -2415,9 +2423,14 @@ class ClangResourceLifecycleRules:
                 break
             later_lines.append(item.text)
         later = "\n".join(later_lines)
+        user_io = self._names_pattern(
+            set(getattr(self, "_user_io_release_names", set()) or set())
+            | set(getattr(self, "_user_send_sink_names", set()) or set())
+            | set(getattr(self, "_user_recv_source_names", set()) or set())
+        )
         return bool(
             re.search(
-                rf"\b(?:read|recv|write|send|close|dup|fcntl|ioctl|mmap|munmap|_net_[A-Za-z_0-9]+)\s*"
+                rf"\b(?:read|recv|write|send|close|dup|fcntl|ioctl|mmap|munmap|_net_[A-Za-z_0-9]+|{user_io})\s*"
                 rf"\([^;]*\b{re.escape(fd)}\b",
                 later,
             )
@@ -2501,9 +2514,11 @@ class ClangResourceLifecycleRules:
         lines: Sequence[ClangCfgLine],
         line: ClangCfgLine,
     ) -> Optional[Tuple[ClangCfgLine, str, str]]:
+        fd_open_pattern = self._names_pattern(self._fd_open_names())
+        fd_close_pattern = self._names_pattern(self._fd_close_names())
         for item in reversed(lines[max(0, line.index - 28) : line.index]):
             match = re.search(
-                r"\b(?P<fd>[A-Za-z_]\w*)\s*=\s*(?P<api>open|creat|socket|accept|dup|eventfd|memfd_create)\s*\(",
+                rf"\b(?P<fd>[A-Za-z_]\w*)\s*=\s*(?P<api>{fd_open_pattern})\s*\(",
                 item.text,
             )
             if not match:
@@ -2512,7 +2527,7 @@ class ClangResourceLifecycleRules:
             between = "\n".join(next_line.text for next_line in lines[item.index + 1 : line.index])
             if re.search(rf"\b{re.escape(fd)}\s*(?:<\s*0|==\s*-1)\b[^;]*\breturn\b", line.text):
                 continue
-            if re.search(rf"\b(?:close|closesocket)\s*\(\s*{re.escape(fd)}\s*\)", between):
+            if re.search(rf"\b(?:{fd_close_pattern})\s*\(\s*{re.escape(fd)}\s*\)", between):
                 return None
             if re.search(
                 rf"\b(?:register|store|watch|cache|take|adopt)[A-Za-z_0-9]*\s*\([^;]*\b{re.escape(fd)}\b",

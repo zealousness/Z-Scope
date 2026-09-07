@@ -30,6 +30,25 @@ class Issue:
         "pending"  # pending, validated, needs_review, uncertain, unvalidated, rejected
     )
     validation_reasoning: Optional[str] = None
+    llm_explanation: Optional[str] = None
+    promotion_review_reason: Optional[str] = None
+    review_disposition_reason: Optional[str] = None
+    review_adjudication: Optional[Dict[str, Any]] = None
+    review_fact_store: Optional[Dict[str, Any]] = None
+    review_claim_checks: Optional[List[Dict[str, Any]]] = None
+    review_checked_proof: Optional[Dict[str, Any]] = None
+    review_conditional_risks: Optional[List[Dict[str, Any]]] = None
+    review_macro_branches: Optional[List[Dict[str, Any]]] = None
+    review_guard_coverage: Optional[Dict[str, Any]] = None
+    review_checkpoint_id: Optional[str] = None
+    review_priority_signal: Optional[str] = None
+    review_v3_entry_pool: Optional[str] = None
+    review_v3_objective: Optional[str] = None
+    parent_candidate_uid: Optional[str] = None
+    parent_candidate_uids: Optional[List[str]] = None
+    related_generation: Optional[int] = None
+    analysis_scope: Optional[str] = None
+    trigger_condition: Optional[str] = None
     user_rebuttal: Optional[str] = None
     finding_kind: Optional[str] = None
     validator_verdict: Optional[str] = None
@@ -264,17 +283,22 @@ class ReportGenerator:
         return output_path
 
     @staticmethod
-    def _needs_review_issues(report: FinalReport) -> List[Issue]:
-        """Project final needs_review items from the report view for Markdown."""
+    def _needs_review_issues(report: FinalReport) -> List[tuple]:
+        """Project final needs_review items from the report view for Markdown.
+
+        Returns ``(Issue, raw_dict)`` pairs so the Markdown renderer can also
+        surface the plan Phase 3 review sub-state and presentation bundle,
+        which the compact ``Issue`` projection does not carry.
+        """
         review_statuses = {"needs_review", "uncertain", "unvalidated"}
         views = report.report_views if isinstance(report.report_views, dict) else {}
         view = views.get("with_needs_review")
         raw_items = view.get("issues", []) if isinstance(view, dict) else []
-        projected: List[Issue] = []
+        projected: List[tuple] = []
         for index, raw in enumerate(raw_items, 1):
             if isinstance(raw, Issue):
                 if str(raw.validation_status or "").strip().lower() in review_statuses:
-                    projected.append(raw)
+                    projected.append((raw, {}))
                 continue
             if not isinstance(raw, dict):
                 continue
@@ -291,7 +315,7 @@ class ReportGenerator:
                 continue
             issue = Issue.from_dict(raw, context_function=report.entry_function, issue_index=index)
             issue.validation_status = "needs_review"
-            projected.append(issue)
+            projected.append((issue, raw))
         return projected
 
     def save_markdown_report(self, report: FinalReport) -> Path:
@@ -367,6 +391,18 @@ class ReportGenerator:
                     }.get(issue.validation_status, "⚪ Validator 未完成")
                     md_content += f"\n**{status_label}**:\n{self._normalize_md_text(issue.validation_reasoning)}\n"
 
+                if issue.llm_explanation:
+                    md_content += (
+                        "\n**🤖 决策解释**:\n"
+                        f"{self._normalize_md_text(issue.llm_explanation)}\n"
+                    )
+
+                if issue.promotion_review_reason:
+                    md_content += (
+                        "\n**未晋级为 validated 的原因**:\n"
+                        f"{self._normalize_md_text(issue.promotion_review_reason)}\n"
+                    )
+
                 if issue.user_rebuttal:
                     md_content += (
                         "\n**👤 用户反驳 / 复核说明**:\n"
@@ -377,7 +413,12 @@ class ReportGenerator:
 
         if review_issues:
             md_content += "\n## 待复核问题\n\n"
-            for issue in review_issues:
+            sub_state_labels = {
+                "model_uncertain": "模型未能判定",
+                "model_rejected_unproven": "模型否决但未获确定性证明",
+                "policy_pending_promotion": "证据完整，等待策略提升",
+            }
+            for issue, raw_review in review_issues:
                 icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}.get(
                     issue.impact_level.lower(), "⚪"
                 )
@@ -399,6 +440,40 @@ class ReportGenerator:
                         "\n**🟡 Validator 待复核**:\n"
                         f"{self._normalize_md_text(issue.validation_reasoning)}\n"
                     )
+                if issue.llm_explanation:
+                    md_content += (
+                        "\n**🤖 决策解释**:\n"
+                        f"{self._normalize_md_text(issue.llm_explanation)}\n"
+                    )
+                review_presentation = (
+                    raw_review.get("needs_review_presentation")
+                    if isinstance(raw_review, dict)
+                    else None
+                )
+                sub_state = (
+                    str(raw_review.get("needs_review_sub_state") or "")
+                    if isinstance(raw_review, dict)
+                    else ""
+                )
+                if sub_state:
+                    label = sub_state_labels.get(sub_state, sub_state)
+                    md_content += f"\n**复核子状态**: `{sub_state}`（{label}）\n"
+                if issue.promotion_review_reason:
+                    md_content += (
+                        "\n**未晋级为 validated 的原因**:\n"
+                        f"{self._normalize_md_text(issue.promotion_review_reason)}\n"
+                    )
+                if isinstance(review_presentation, dict):
+                    missing_kinds = review_presentation.get("missing_fact_kinds") or []
+                    if missing_kinds:
+                        md_content += (
+                            "- **缺失事实清单**: "
+                            + ", ".join(f"`{kind}`" for kind in missing_kinds)
+                            + "\n"
+                        )
+                    action = str(review_presentation.get("suggested_action") or "").strip()
+                    if action:
+                        md_content += f"- **建议动作**: {self._normalize_md_text(action)}\n"
                 if issue.user_rebuttal:
                     md_content += (
                         "\n**👤 用户反驳 / 复核说明**:\n"

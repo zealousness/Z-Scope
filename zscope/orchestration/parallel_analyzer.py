@@ -3223,6 +3223,10 @@ class ParallelAnalyzer:
                 md_lines.append(
                     f"- **Validation Reasoning**: {self._normalize_md_text(issue.get('validation_reasoning'))}"
                 )
+            if issue.get("llm_explanation"):
+                md_lines.append(
+                    f"- **决策解释**: {self._normalize_md_text(issue.get('llm_explanation'))}"
+                )
             md_lines.append("")
 
         md.extend(["", "## Detected Issues", ""])
@@ -3460,6 +3464,11 @@ class ParallelAnalyzer:
                                 f"- **Validation Reasoning**: {self._normalize_md_text(val_reasoning)}"
                             )
 
+                    if issue.get("llm_explanation"):
+                        md.append(
+                            f"- **决策解释**: {self._normalize_md_text(issue.get('llm_explanation'))}"
+                        )
+
                     md.append("")
 
         needs_review_by_entry = {}
@@ -3501,6 +3510,10 @@ class ParallelAnalyzer:
                     if val_reasoning:
                         md.append(
                             f"- **Validation Reasoning**: {self._normalize_md_text(val_reasoning)}"
+                        )
+                    if issue.get("llm_explanation"):
+                        md.append(
+                            f"- **决策解释**: {self._normalize_md_text(issue.get('llm_explanation'))}"
                         )
                     md.append("")
 

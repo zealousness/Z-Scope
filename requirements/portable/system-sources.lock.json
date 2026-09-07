@@ -1,0 +1,3379 @@
+{
+  "schema_version": "zscope.portable-system-sources.v1",
+  "apt_snapshot": {
+    "mantic": {
+      "sha256": "d5539f456b74f789f8977eeee5f3c2399225de8a424b4cfff66843b78697a311",
+      "url": "https://old-releases.ubuntu.com/ubuntu/dists/mantic/InRelease"
+    },
+    "mantic-security": {
+      "sha256": "5fca3465e4e80bccdd0eba53c90a6575a908c3b467fd293f2be58da42afd445e",
+      "url": "https://old-releases.ubuntu.com/ubuntu/dists/mantic-security/InRelease"
+    },
+    "mantic-updates": {
+      "sha256": "22d7500cff13df9ee4be385d661d63c964c72ff81487e737adc05b3d6e575520",
+      "url": "https://old-releases.ubuntu.com/ubuntu/dists/mantic-updates/InRelease"
+    }
+  },
+  "packages": {
+    "acl": {
+      "version": "2.3.1-3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "acl_2.3.1-3.dsc",
+          "sha256": "7820eee88cce7244e0b8eb25cc4f51bdf10aff7a6c1a497f3d18c36bdce712cc",
+          "size": 2508,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/acl/acl_2.3.1-3.dsc"
+        },
+        {
+          "filename": "acl_2.3.1.orig.tar.xz",
+          "sha256": "c0234042e17f11306c23c038b08e5e070edb7be44bef6697fb8734dcff1c66b1",
+          "size": 355676,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/acl/acl_2.3.1.orig.tar.xz"
+        },
+        {
+          "filename": "acl_2.3.1.orig.tar.xz.asc",
+          "sha256": "54fb8fcd6ae6901f2257e18d503e5e18ad956babf8d80d2ea29f280fc7264662",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/acl/acl_2.3.1.orig.tar.xz.asc"
+        },
+        {
+          "filename": "acl_2.3.1-3.debian.tar.xz",
+          "sha256": "2eb052bba784a4b873e951b1f91af2abef62e4bf4b83c93f9821eea26f66c8e2",
+          "size": 30968,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/acl/acl_2.3.1-3.debian.tar.xz"
+        }
+      ]
+    },
+    "alsa-lib": {
+      "version": "1.2.9-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "alsa-lib_1.2.9-2.dsc",
+          "sha256": "e7487361c63856bd490fdf604bcafa9d1fe5e3cf4e54ac6cc0753343998a3835",
+          "size": 2875,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/alsa-lib/alsa-lib_1.2.9-2.dsc"
+        },
+        {
+          "filename": "alsa-lib_1.2.9.orig.tar.bz2",
+          "sha256": "dc9c643fdc4ccfd0572cc685858dd41e08afb583f30460b317e4188275f615b2",
+          "size": 1094660,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/alsa-lib/alsa-lib_1.2.9.orig.tar.bz2"
+        },
+        {
+          "filename": "alsa-lib_1.2.9.orig.tar.bz2.asc",
+          "sha256": "bf4c6530b489f55e4ca3b2132b6df9a6d7b4b45a9b024fdbc7886c8936539cf2",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/alsa-lib/alsa-lib_1.2.9.orig.tar.bz2.asc"
+        },
+        {
+          "filename": "alsa-lib_1.2.9-2.debian.tar.xz",
+          "sha256": "435cb0af049bfa80ffd75193a77e41894162fd5031f8e4ae9a161883b8f538f7",
+          "size": 33196,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/alsa-lib/alsa-lib_1.2.9-2.debian.tar.xz"
+        }
+      ]
+    },
+    "attr": {
+      "version": "1:2.5.1-4",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "attr_2.5.1-4.dsc",
+          "sha256": "0e1486bff1649602cb5cbb6224dbb641436dc8cd28d5c336ad85d650e07d23dd",
+          "size": 2477,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/attr/attr_2.5.1-4.dsc"
+        },
+        {
+          "filename": "attr_2.5.1.orig.tar.xz",
+          "sha256": "db448a626f9313a1a970d636767316a8da32aede70518b8050fa0de7947adc32",
+          "size": 318188,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/attr/attr_2.5.1.orig.tar.xz"
+        },
+        {
+          "filename": "attr_2.5.1.orig.tar.xz.asc",
+          "sha256": "67bc632e754efbadba846d0b40138b3fc3e306c3b909a9ba868c6dba1e2689d0",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/attr/attr_2.5.1.orig.tar.xz.asc"
+        },
+        {
+          "filename": "attr_2.5.1-4.debian.tar.xz",
+          "sha256": "aea02a3c980a82804a5a333bf02e9e2737a8c5808671625595511290863d6791",
+          "size": 32152,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/attr/attr_2.5.1-4.debian.tar.xz"
+        }
+      ]
+    },
+    "audit": {
+      "version": "1:3.1.1-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "audit_3.1.1-1.dsc",
+          "sha256": "61ae8d226039ab2c4c241266c699d22a80a5a85db94dd030cff44ca7a8729bd5",
+          "size": 2402,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/audit/audit_3.1.1-1.dsc"
+        },
+        {
+          "filename": "audit_3.1.1.orig.tar.gz",
+          "sha256": "46e46b37623cce09e6ee134e78d668afc34f4e1c870c853ef12e4193078cfe87",
+          "size": 1218111,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/audit/audit_3.1.1.orig.tar.gz"
+        },
+        {
+          "filename": "audit_3.1.1-1.debian.tar.xz",
+          "sha256": "b16ea47b6562a2530ec48e752ef6f31cd72b5dcdeec49b8720911584a54769cb",
+          "size": 18944,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/audit/audit_3.1.1-1.debian.tar.xz"
+        }
+      ]
+    },
+    "autoconf": {
+      "version": "2.71-3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "autoconf_2.71-3.dsc",
+          "sha256": "2230ca8950e9b1abeeba54844c9e8184891fa2474a101c25f5d125bdacb92ef2",
+          "size": 1988,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/autoconf/autoconf_2.71-3.dsc"
+        },
+        {
+          "filename": "autoconf_2.71.orig.tar.gz",
+          "sha256": "431075ad0bf529ef13cb41e9042c542381103e80015686222b8a9d4abef42a1c",
+          "size": 2003781,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/autoconf/autoconf_2.71.orig.tar.gz"
+        },
+        {
+          "filename": "autoconf_2.71-3.debian.tar.xz",
+          "sha256": "3c12ade6e26e8ccacd8e35de3eb93a1fcf360b02364cbe4690b958a749daf4d7",
+          "size": 23896,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/autoconf/autoconf_2.71-3.debian.tar.xz"
+        }
+      ]
+    },
+    "automake-1.16": {
+      "version": "1:1.16.5-1.3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "automake-1.16_1.16.5-1.3.dsc",
+          "sha256": "88bb6aad124dc9c8f8f37910f66bf79f19e1c4a1e5c69860e3e9005d2adc4d8d",
+          "size": 1973,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/automake-1.16/automake-1.16_1.16.5-1.3.dsc"
+        },
+        {
+          "filename": "automake-1.16_1.16.5.orig.tar.xz",
+          "sha256": "f01d58cd6d9d77fbdca9eb4bbd5ead1988228fdb73d6f7a201f5f8d6b118b469",
+          "size": 1601740,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/automake-1.16/automake-1.16_1.16.5.orig.tar.xz"
+        },
+        {
+          "filename": "automake-1.16_1.16.5.orig.tar.xz.asc",
+          "sha256": "3a161ab65921eed55e1a94251d97c8451d4ba3431b55ca560e95a951b5f1d73a",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/automake-1.16/automake-1.16_1.16.5.orig.tar.xz.asc"
+        },
+        {
+          "filename": "automake-1.16_1.16.5-1.3.debian.tar.xz",
+          "sha256": "357d34b964943f5c46f518e3a7ddaa9342de76f1a01bac83039dc338ca84d421",
+          "size": 14164,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/automake-1.16/automake-1.16_1.16.5-1.3.debian.tar.xz"
+        }
+      ]
+    },
+    "autotools-dev": {
+      "version": "20220109.1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "autotools-dev_20220109.1.dsc",
+          "sha256": "f9ccc67437ff52a7882d6b91e7ca8bf0a316c0c1452093992bd5c5fc3b29c090",
+          "size": 1661,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/autotools-dev/autotools-dev_20220109.1.dsc"
+        },
+        {
+          "filename": "autotools-dev_20220109.1.tar.xz",
+          "sha256": "8b05e5ad56cd7d9a15e9b2931eb429b6324bb89f1b46de3baf3651286dead8c1",
+          "size": 87340,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/autotools-dev/autotools-dev_20220109.1.tar.xz"
+        }
+      ]
+    },
+    "base-passwd": {
+      "version": "3.6.1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "base-passwd_3.6.1.dsc",
+          "sha256": "b4e5fcdba73369657b241743033e8e7a65c26da43285503c652fa1436ce75d1f",
+          "size": 1740,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/base-passwd/base-passwd_3.6.1.dsc"
+        },
+        {
+          "filename": "base-passwd_3.6.1.tar.xz",
+          "sha256": "6ff369be59d586ba63c0c5fcb00f75f9953fe49db88bc6c6428f2c92866f79af",
+          "size": 56072,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/base-passwd/base-passwd_3.6.1.tar.xz"
+        }
+      ]
+    },
+    "bash": {
+      "version": "5.2.15-2ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "bash_5.2.15-2ubuntu1.dsc",
+          "sha256": "a3c98f0c6c0f17301a5a9307c0b17f338b01b8d61051557afa021a3580dde323",
+          "size": 2450,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/bash/bash_5.2.15-2ubuntu1.dsc"
+        },
+        {
+          "filename": "bash_5.2.15.orig.tar.gz",
+          "sha256": "7a315bc0e9d90713159e4390ec1096a41e4f33cd8cc3d1a749a8e5ad56600f51",
+          "size": 9997221,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/bash/bash_5.2.15.orig.tar.gz"
+        },
+        {
+          "filename": "bash_5.2.15-2ubuntu1.debian.tar.xz",
+          "sha256": "67ed772264ec7098158e00b11df7073e182a65bfcf63b14aef8755cb04cfcaf3",
+          "size": 103652,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/bash/bash_5.2.15-2ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "binutils": {
+      "version": "2.41-5ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "binutils_2.41-5ubuntu1.dsc",
+          "sha256": "8d2fbca1542cd7a677bbc627af3bcac904b760b136d52736f481d9ba4979f51a",
+          "size": 9687,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/binutils/binutils_2.41-5ubuntu1.dsc"
+        },
+        {
+          "filename": "binutils_2.41.orig.tar.xz",
+          "sha256": "ae9a5789e23459e59606e6714723f2d3ffc31c03174191ef0d015bdf06007450",
+          "size": 26765692,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/binutils/binutils_2.41.orig.tar.xz"
+        },
+        {
+          "filename": "binutils_2.41-5ubuntu1.debian.tar.xz",
+          "sha256": "129a8e0784110e6deca9fc453ef342a4c598240fa5442c2eae0129219dae8317",
+          "size": 197056,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/binutils/binutils_2.41-5ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "bison": {
+      "version": "2:3.8.2+dfsg-1build1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "bison_3.8.2+dfsg-1build1.dsc",
+          "sha256": "1ababbcbed31d005ecaddefa6ec7f1f796d8aaad7f6af691f9815e7e18654e57",
+          "size": 1509,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/bison/bison_3.8.2+dfsg-1build1.dsc"
+        },
+        {
+          "filename": "bison_3.8.2+dfsg.orig.tar.xz",
+          "sha256": "dff8a3c96dd34121828f62a7fa49e1f7765815b89e59f564e8d2a9e71c177be5",
+          "size": 2654920,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/bison/bison_3.8.2+dfsg.orig.tar.xz"
+        },
+        {
+          "filename": "bison_3.8.2+dfsg-1build1.debian.tar.xz",
+          "sha256": "91bd7791d0c3c32450ad94a5b68d2f85d8df1cfc73b6ee85863107e2096d9c9a",
+          "size": 11248,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/bison/bison_3.8.2+dfsg-1build1.debian.tar.xz"
+        }
+      ]
+    },
+    "brotli": {
+      "version": "1.0.9-2build8",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "brotli_1.0.9-2build8.dsc",
+          "sha256": "8056cf55a83655fed3b1ab882ff5b780e52807755c28dd39af8da84c04dbe933",
+          "size": 2285,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/brotli/brotli_1.0.9-2build8.dsc"
+        },
+        {
+          "filename": "brotli_1.0.9.orig.tar.gz",
+          "sha256": "f9e8d81d0405ba66d181529af42a3354f838c939095ff99930da6aa9cdf6fe46",
+          "size": 486984,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/brotli/brotli_1.0.9.orig.tar.gz"
+        },
+        {
+          "filename": "brotli_1.0.9-2build8.debian.tar.xz",
+          "sha256": "3bf3ec0216eae05adff194bd9d915372c1d29a74e89e5fdd473fca148462ab6f",
+          "size": 5884,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/brotli/brotli_1.0.9-2build8.debian.tar.xz"
+        }
+      ]
+    },
+    "build-essential": {
+      "version": "12.10ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "build-essential_12.10ubuntu1.dsc",
+          "sha256": "5638acc18a9ca14e75ca6092d303e0a893b5c0df5a56ca1820ee331ad4fbdb8e",
+          "size": 2367,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/build-essential/build-essential_12.10ubuntu1.dsc"
+        },
+        {
+          "filename": "build-essential_12.10ubuntu1.tar.xz",
+          "sha256": "ed6d20a6f2f66cea4ccbd6711a1e3a720dc1bda02bc7227a4262aaeae4a995fd",
+          "size": 51788,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/build-essential/build-essential_12.10ubuntu1.tar.xz"
+        }
+      ]
+    },
+    "bzip2": {
+      "version": "1.0.8-5build1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "bzip2_1.0.8-5build1.dsc",
+          "sha256": "f12de39052005fc1abdebed9aceef3589b4d25e1579cabdbd77fdc8063493121",
+          "size": 1860,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/bzip2/bzip2_1.0.8-5build1.dsc"
+        },
+        {
+          "filename": "bzip2_1.0.8.orig.tar.gz",
+          "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+          "size": 810029,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/bzip2/bzip2_1.0.8.orig.tar.gz"
+        },
+        {
+          "filename": "bzip2_1.0.8-5build1.debian.tar.bz2",
+          "sha256": "d31878008c269a4338324b3984f1b3177c3de003cf8254559cf898b4ab044e12",
+          "size": 26870,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/bzip2/bzip2_1.0.8-5build1.debian.tar.bz2"
+        }
+      ]
+    },
+    "ca-certificates": {
+      "version": "20230311ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "ca-certificates_20230311ubuntu1.dsc",
+          "sha256": "50cd7143dbfe918c637ed0b1739fddc59d85492241e0e28828a4ebc647a32eb0",
+          "size": 1846,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20230311ubuntu1.dsc"
+        },
+        {
+          "filename": "ca-certificates_20230311ubuntu1.tar.xz",
+          "sha256": "bef49a8885f9454dcedf9a33a3b186d05002f85ab816db54e7d91ec545b0aff8",
+          "size": 258172,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20230311ubuntu1.tar.xz"
+        }
+      ]
+    },
+    "cdebconf": {
+      "version": "0.270ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "cdebconf_0.270ubuntu1.dsc",
+          "sha256": "0ef67fee0d79aedd368353bca3471e8fe5e2f8bcd692ea763720d9d2a559ae93",
+          "size": 2873,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/cdebconf/cdebconf_0.270ubuntu1.dsc"
+        },
+        {
+          "filename": "cdebconf_0.270ubuntu1.tar.xz",
+          "sha256": "c2fea3404b4f5b8220065f2784a65cd68084c993d3e56bdda217c163ae37b384",
+          "size": 285780,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/cdebconf/cdebconf_0.270ubuntu1.tar.xz"
+        }
+      ]
+    },
+    "cmake": {
+      "version": "3.27.4-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "cmake_3.27.4-1.dsc",
+          "sha256": "b93e707bc0a0eb0e1ae3a39b1afafa311024aa20e59aebcbf761b2f624b62e73",
+          "size": 3924,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/cmake/cmake_3.27.4-1.dsc"
+        },
+        {
+          "filename": "cmake_3.27.4.orig.tar.gz",
+          "sha256": "0a905ca8635ca81aa152e123bdde7e54cbe764fdd9a70d62af44cad8b92967af",
+          "size": 10980052,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/cmake/cmake_3.27.4.orig.tar.gz"
+        },
+        {
+          "filename": "cmake_3.27.4-1.debian.tar.xz",
+          "sha256": "8eb2120bbbe8ab021582e0cc05f06e444328eb3a62b2be8d6ed34ff09a3daf41",
+          "size": 33176,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/cmake/cmake_3.27.4-1.debian.tar.xz"
+        }
+      ]
+    },
+    "cyrus-sasl2": {
+      "version": "2.1.28+dfsg1-3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "cyrus-sasl2_2.1.28+dfsg1-3.dsc",
+          "sha256": "a43831934f49088f8a018913e3ed7fc48ffc2e5c48a8eafbba25ccabdaf80341",
+          "size": 3330,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/cyrus-sasl2/cyrus-sasl2_2.1.28+dfsg1-3.dsc"
+        },
+        {
+          "filename": "cyrus-sasl2_2.1.28+dfsg1.orig.tar.xz",
+          "sha256": "e796a5d85d1a85e1b433d43504e467f9075c7ebc0b45730a3996cf11b1deada4",
+          "size": 794540,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/cyrus-sasl2/cyrus-sasl2_2.1.28+dfsg1.orig.tar.xz"
+        },
+        {
+          "filename": "cyrus-sasl2_2.1.28+dfsg1-3.debian.tar.xz",
+          "sha256": "7e2bc5df64d3959cd190cf24b9a0d89be48708ff167b0d7556b2f6818b1de397",
+          "size": 106568,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/cyrus-sasl2/cyrus-sasl2_2.1.28+dfsg1-3.debian.tar.xz"
+        }
+      ]
+    },
+    "dash": {
+      "version": "0.5.12-6ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "dash_0.5.12-6ubuntu1.dsc",
+          "sha256": "082e6c952b9422aff53c7f3d239c916cc8e9fddb295cbb2ba28322c13980b672",
+          "size": 2087,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/dash/dash_0.5.12-6ubuntu1.dsc"
+        },
+        {
+          "filename": "dash_0.5.12.orig.tar.gz",
+          "sha256": "6a474ac46e8b0b32916c4c60df694c82058d3297d8b385b74508030ca4a8f28a",
+          "size": 246054,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/dash/dash_0.5.12.orig.tar.gz"
+        },
+        {
+          "filename": "dash_0.5.12-6ubuntu1.debian.tar.xz",
+          "sha256": "659537432593eed94cf35c9ef0c5e9212d16564781952c56bda7d611fb419a15",
+          "size": 39428,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/dash/dash_0.5.12-6ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "db5.3": {
+      "version": "5.3.28+dfsg2-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "db5.3_5.3.28+dfsg2-2.dsc",
+          "sha256": "763a77002e906ab9c0db8ba81cef1639818b45285c4109d5622ba5d5daf11f44",
+          "size": 2183,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/db5.3/db5.3_5.3.28+dfsg2-2.dsc"
+        },
+        {
+          "filename": "db5.3_5.3.28+dfsg2.orig.tar.xz",
+          "sha256": "ad41b507415dec8316e828b2230242af2251d2c86eefa3c7aa9ef47c5239ef33",
+          "size": 21287688,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/db5.3/db5.3_5.3.28+dfsg2.orig.tar.xz"
+        },
+        {
+          "filename": "db5.3_5.3.28+dfsg2-2.debian.tar.xz",
+          "sha256": "1292292f486d6529815d199291428f3fc770025ab562c4d1d370b8d3df74fa3d",
+          "size": 33560,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/db5.3/db5.3_5.3.28+dfsg2-2.debian.tar.xz"
+        }
+      ]
+    },
+    "debconf": {
+      "version": "1.5.82",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "debconf_1.5.82.dsc",
+          "sha256": "ed6e8cc6e073344a25ab932602b3b814f25cfa1a7bfd69e464f9bad65f250dea",
+          "size": 2035,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/debconf/debconf_1.5.82.dsc"
+        },
+        {
+          "filename": "debconf_1.5.82.tar.xz",
+          "sha256": "2d0550c4e2fb98d12055b245907978b28ee2d2b07b62e46be7523384d2ce985e",
+          "size": 571540,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/debconf/debconf_1.5.82.tar.xz"
+        }
+      ]
+    },
+    "debianutils": {
+      "version": "5.8-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "debianutils_5.8-1.dsc",
+          "sha256": "6492272a6f7db256102b32182f279c1e5e4844b59e001c32111cec0e33f2efa1",
+          "size": 1647,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/debianutils/debianutils_5.8-1.dsc"
+        },
+        {
+          "filename": "debianutils_5.8.orig.tar.gz",
+          "sha256": "5b086d27eb9063de4d746760d0faeb40d9464fb855fc8a8e7fb93b03efcec622",
+          "size": 260865,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/debianutils/debianutils_5.8.orig.tar.gz"
+        },
+        {
+          "filename": "debianutils_5.8-1.debian.tar.xz",
+          "sha256": "7278b28beb14ebe3c5ae4f52b8c748ceebea655e392b3ef701c9473f5f4763cd",
+          "size": 22044,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/debianutils/debianutils_5.8-1.debian.tar.xz"
+        }
+      ]
+    },
+    "diffutils": {
+      "version": "1:3.8-4",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "diffutils_3.8-4.dsc",
+          "sha256": "783af1a151c2a0f42a8a427693cc4bb16037c0d17282d28672d906f2eab424b8",
+          "size": 1705,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/diffutils/diffutils_3.8-4.dsc"
+        },
+        {
+          "filename": "diffutils_3.8.orig.tar.xz",
+          "sha256": "a6bdd7d1b31266d11c4f4de6c1b748d4607ab0231af5188fc2533d0ae2438fec",
+          "size": 1585120,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/diffutils/diffutils_3.8.orig.tar.xz"
+        },
+        {
+          "filename": "diffutils_3.8.orig.tar.xz.asc",
+          "sha256": "500f423d0ffa8d28966d916ed5fc6b79fb160a20ed5cb74eeb1c94a30c340311",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/diffutils/diffutils_3.8.orig.tar.xz.asc"
+        },
+        {
+          "filename": "diffutils_3.8-4.debian.tar.xz",
+          "sha256": "36abe3a3174c32c3646ca6bad212169a322409086c4a98f967bb9ad58f11c8d4",
+          "size": 14428,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/diffutils/diffutils_3.8-4.debian.tar.xz"
+        }
+      ]
+    },
+    "e2fsprogs": {
+      "version": "1.47.0-2ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "e2fsprogs_1.47.0-2ubuntu1.dsc",
+          "sha256": "3ed9f87e94e29cd4572ba9eab60730093c358d30a5bf8c8268069e0d32f8dfdd",
+          "size": 3211,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/e2fsprogs_1.47.0-2ubuntu1.dsc"
+        },
+        {
+          "filename": "e2fsprogs_1.47.0.orig.tar.gz",
+          "sha256": "6667afde56eef0c6af26684974400e4d2288ea49e9441bf5e6229195d51a3578",
+          "size": 9637717,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/e2fsprogs_1.47.0.orig.tar.gz"
+        },
+        {
+          "filename": "e2fsprogs_1.47.0.orig.tar.gz.asc",
+          "sha256": "704928204a52ddaa0ac8ef549c1bfba3c38e66c361d3853c8a4c38e6082b90f1",
+          "size": 488,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/e2fsprogs_1.47.0.orig.tar.gz.asc"
+        },
+        {
+          "filename": "e2fsprogs_1.47.0-2ubuntu1.debian.tar.xz",
+          "sha256": "43914bfabc7048e3dc31f8bfb2afcb4131171b4b213970e7783026088c6d5dd5",
+          "size": 89008,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/e2fsprogs_1.47.0-2ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "file": {
+      "version": "1:5.44-3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "file_5.44-3.dsc",
+          "sha256": "842e0ef356949218966d1521a95652b00aed18c152174ffc7e000cc3d79501e4",
+          "size": 2240,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/f/file/file_5.44-3.dsc"
+        },
+        {
+          "filename": "file_5.44.orig.tar.gz",
+          "sha256": "3751c7fba8dbc831cb8d7cc8aff21035459b8ce5155ef8b0880a27d028475f3b",
+          "size": 1186437,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/f/file/file_5.44.orig.tar.gz"
+        },
+        {
+          "filename": "file_5.44.orig.tar.gz.asc",
+          "sha256": "133e04cb49bc113d45c1bdcb1ffdfaa3528e018ee0276f25dce590ebc476c563",
+          "size": 201,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/f/file/file_5.44.orig.tar.gz.asc"
+        },
+        {
+          "filename": "file_5.44-3.debian.tar.xz",
+          "sha256": "536a0fafaa6ee7db39d902cf821bb4359a6d7bab26ab5b3ceb49900c52b772f6",
+          "size": 38944,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/f/file/file_5.44-3.debian.tar.xz"
+        }
+      ]
+    },
+    "findutils": {
+      "version": "4.9.0-5",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "findutils_4.9.0-5.dsc",
+          "sha256": "7d723c60c50b8b624250ad7d6fbb1ca404756a7b69209753e57c8403e06a07a5",
+          "size": 2272,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/f/findutils/findutils_4.9.0-5.dsc"
+        },
+        {
+          "filename": "findutils_4.9.0.orig.tar.xz",
+          "sha256": "a2bfb8c09d436770edc59f50fa483e785b161a3b7b9d547573cb08065fd462fe",
+          "size": 2046252,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/f/findutils/findutils_4.9.0.orig.tar.xz"
+        },
+        {
+          "filename": "findutils_4.9.0.orig.tar.xz.asc",
+          "sha256": "924c3719d066eda1b3e47175f8b83e90e9a23f0a639ebe7445621917b283c385",
+          "size": 488,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/f/findutils/findutils_4.9.0.orig.tar.xz.asc"
+        },
+        {
+          "filename": "findutils_4.9.0-5.debian.tar.xz",
+          "sha256": "456831869d49d8906a98beb2bcbb61e5911d9c44082c4b716615bc23f26c4f20",
+          "size": 32744,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/f/findutils/findutils_4.9.0-5.debian.tar.xz"
+        }
+      ]
+    },
+    "gcc-13": {
+      "version": "13.2.0-4ubuntu3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "gcc-13_13.2.0-4ubuntu3.dsc",
+          "sha256": "e80dd856b90c279b367b60fdcd318dff3824b626c75f69a042b03304af651f0d",
+          "size": 27652,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-13/gcc-13_13.2.0-4ubuntu3.dsc"
+        },
+        {
+          "filename": "gcc-13_13.2.0.orig.tar.gz",
+          "sha256": "84d4bbded73e549b2af0411691cbd7bea6a86e15796881a92518fb741cdaad2f",
+          "size": 92596024,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-13/gcc-13_13.2.0.orig.tar.gz"
+        },
+        {
+          "filename": "gcc-13_13.2.0-4ubuntu3.debian.tar.xz",
+          "sha256": "573a37a3b10640e5c687269f322308301862f15b8b7705f1cfc39ac1981b6caf",
+          "size": 1581144,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-13/gcc-13_13.2.0-4ubuntu3.debian.tar.xz"
+        }
+      ]
+    },
+    "gcc-defaults": {
+      "version": "1.208ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "gcc-defaults_1.208ubuntu1.dsc",
+          "sha256": "a2d98ce11eebea58e2dad61d05b8a90619c29dad7c740f7b6bc7414e2bf9bf09",
+          "size": 15382,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-defaults/gcc-defaults_1.208ubuntu1.dsc"
+        },
+        {
+          "filename": "gcc-defaults_1.208ubuntu1.tar.xz",
+          "sha256": "92145201f9a4147374f03718de553b7361db93b2d99fff5a506194b49c7d82b1",
+          "size": 48484,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-defaults/gcc-defaults_1.208ubuntu1.tar.xz"
+        }
+      ]
+    },
+    "gdbm": {
+      "version": "1.23-3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "gdbm_1.23-3.dsc",
+          "sha256": "3e4a52655a1b65c51d33e032913edda3423dcae8cc282c16a455a0afd2d2738d",
+          "size": 2583,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gdbm/gdbm_1.23-3.dsc"
+        },
+        {
+          "filename": "gdbm_1.23.orig.tar.gz",
+          "sha256": "74b1081d21fff13ae4bd7c16e5d6e504a4c26f7cde1dca0d963a484174bbcacd",
+          "size": 1115854,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gdbm/gdbm_1.23.orig.tar.gz"
+        },
+        {
+          "filename": "gdbm_1.23.orig.tar.gz.asc",
+          "sha256": "64ebb68cc68e8915d62cb20ea40323c00b56051f844589ee0a52169fff34cecb",
+          "size": 181,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gdbm/gdbm_1.23.orig.tar.gz.asc"
+        },
+        {
+          "filename": "gdbm_1.23-3.debian.tar.xz",
+          "sha256": "a0ff17befcbd7c4b361cfe0d821a7a71334102a9c423537bd57f60f18f6802ea",
+          "size": 18552,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gdbm/gdbm_1.23-3.debian.tar.xz"
+        }
+      ]
+    },
+    "gmp": {
+      "version": "2:6.3.0+dfsg-2ubuntu4",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "gmp_6.3.0+dfsg-2ubuntu4.dsc",
+          "sha256": "3cc93c07e455f82934a6d907a1d23541813cb6e655be14652f5622b3c8468218",
+          "size": 2362,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gmp/gmp_6.3.0+dfsg-2ubuntu4.dsc"
+        },
+        {
+          "filename": "gmp_6.3.0+dfsg.orig.tar.xz",
+          "sha256": "bd2966e6d277f79328e894a5a9f3ba3fbf2ed2be81def5f48623e30c23fb1572",
+          "size": 1870556,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gmp/gmp_6.3.0+dfsg.orig.tar.xz"
+        },
+        {
+          "filename": "gmp_6.3.0+dfsg-2ubuntu4.debian.tar.xz",
+          "sha256": "b3eec4c57781a17427bc9a3ba74b5569cbebc0823641567ea4185904ffe01c38",
+          "size": 38680,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gmp/gmp_6.3.0+dfsg-2ubuntu4.debian.tar.xz"
+        }
+      ]
+    },
+    "gnupg2": {
+      "version": "2.2.40-1.1ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "gnupg2_2.2.40-1.1ubuntu1.dsc",
+          "sha256": "6e023bfa304826ceba67a7be0daed9f624e810c863fd6811595fb953becb04bb",
+          "size": 3920,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gnupg2/gnupg2_2.2.40-1.1ubuntu1.dsc"
+        },
+        {
+          "filename": "gnupg2_2.2.40.orig.tar.bz2",
+          "sha256": "1164b29a75e8ab93ea15033300149e1872a7ef6bdda3d7c78229a735f8204c28",
+          "size": 7301631,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gnupg2/gnupg2_2.2.40.orig.tar.bz2"
+        },
+        {
+          "filename": "gnupg2_2.2.40.orig.tar.bz2.asc",
+          "sha256": "3907dc165299cd53c0b4aec862323c3bce6037c411600ec87dc5eed7a55eba4a",
+          "size": 228,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gnupg2/gnupg2_2.2.40.orig.tar.bz2.asc"
+        },
+        {
+          "filename": "gnupg2_2.2.40-1.1ubuntu1.debian.tar.xz",
+          "sha256": "5029d679a32d6048e72e118643b93314c7087a30a66667eefdd9dec6afcfbd84",
+          "size": 65264,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gnupg2/gnupg2_2.2.40-1.1ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "golang-defaults": {
+      "version": "2:1.21~2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "golang-defaults_1.21~2.dsc",
+          "sha256": "1f0eacd1690537defcd72208cc0688a5aeeea13ea3936d65e34fd28e38cd7340",
+          "size": 1708,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/golang-defaults/golang-defaults_1.21~2.dsc"
+        },
+        {
+          "filename": "golang-defaults_1.21~2.tar.xz",
+          "sha256": "5ec68bf9e46a81580141f72bf65678a20e8224109921bb94297f3af04a429069",
+          "size": 30896,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/golang-defaults/golang-defaults_1.21~2.tar.xz"
+        }
+      ]
+    },
+    "grep": {
+      "version": "3.11-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "grep_3.11-2.dsc",
+          "sha256": "1242a5ba53e6c508aa472ad8de1a20de029b109b345af64c56f949ec40cd5bdb",
+          "size": 1618,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/grep/grep_3.11-2.dsc"
+        },
+        {
+          "filename": "grep_3.11.orig.tar.xz",
+          "sha256": "1db2aedde89d0dea42b16d9528f894c8d15dae4e190b59aecc78f5a951276eab",
+          "size": 1703776,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/grep/grep_3.11.orig.tar.xz"
+        },
+        {
+          "filename": "grep_3.11.orig.tar.xz.asc",
+          "sha256": "89ec23ffd59b68822732dc8204fc89883c3af30a90ae390feb94346d9d09a589",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/grep/grep_3.11.orig.tar.xz.asc"
+        },
+        {
+          "filename": "grep_3.11-2.debian.tar.xz",
+          "sha256": "39b98a7fea70c900a0ece8c317a1fc9ceed21326bddda715a2bb9fea60746a82",
+          "size": 20388,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/grep/grep_3.11-2.debian.tar.xz"
+        }
+      ]
+    },
+    "gzip": {
+      "version": "1.12-1ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "gzip_1.12-1ubuntu1.dsc",
+          "sha256": "ef6201af5e71299eaf0b37eaba9afe23e8d4db6c44aae63801a9fc979af5e312",
+          "size": 2303,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gzip/gzip_1.12-1ubuntu1.dsc"
+        },
+        {
+          "filename": "gzip_1.12.orig.tar.xz",
+          "sha256": "ce5e03e519f637e1f814011ace35c4f87b33c0bbabeec35baf5fbd3479e91956",
+          "size": 825548,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gzip/gzip_1.12.orig.tar.xz"
+        },
+        {
+          "filename": "gzip_1.12.orig.tar.xz.asc",
+          "sha256": "3ed9ab54452576e0be0d477c772c9f47baa36415133fef7dd1fcf7b15480ba32",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gzip/gzip_1.12.orig.tar.xz.asc"
+        },
+        {
+          "filename": "gzip_1.12-1ubuntu1.debian.tar.xz",
+          "sha256": "8b61098b1aa5f37e3f67b30a90f341a3283e7efe3a32efea5a7eae6d75d49b42",
+          "size": 19796,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gzip/gzip_1.12-1ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "hostname": {
+      "version": "3.23+nmu1ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "hostname_3.23+nmu1ubuntu1.dsc",
+          "sha256": "8fe192339eb7103c5b856ebabaf37935abcf30a3c33a63b9f30628e52040a602",
+          "size": 1567,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/h/hostname/hostname_3.23+nmu1ubuntu1.dsc"
+        },
+        {
+          "filename": "hostname_3.23+nmu1ubuntu1.tar.xz",
+          "sha256": "7cf3d7a5064b6f481dffc612cc8559a8e686f4961bab95981f4e66e40079aa7c",
+          "size": 13124,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/h/hostname/hostname_3.23+nmu1ubuntu1.tar.xz"
+        }
+      ]
+    },
+    "icu": {
+      "version": "72.1-3ubuntu3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "icu_72.1-3ubuntu3.dsc",
+          "sha256": "125d9ff17c4fec61bcb317c0529696a66520b8e26ec35446f82455667b512d6d",
+          "size": 2359,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/i/icu/icu_72.1-3ubuntu3.dsc"
+        },
+        {
+          "filename": "icu_72.1.orig.tar.gz",
+          "sha256": "a2d2d38217092a7ed56635e34467f92f976b370e20182ad325edea6681a71d68",
+          "size": 26303933,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/i/icu/icu_72.1.orig.tar.gz"
+        },
+        {
+          "filename": "icu_72.1.orig.tar.gz.asc",
+          "sha256": "87b6ff610d587292cec0444fa8cbbfb12994cb89bade40578f5ba6470de245c7",
+          "size": 659,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/i/icu/icu_72.1.orig.tar.gz.asc"
+        },
+        {
+          "filename": "icu_72.1-3ubuntu3.debian.tar.xz",
+          "sha256": "6f90d0e2a16df587213fd7eac15cd694ab042be75a622a86a9fbd86921f7e2d8",
+          "size": 64708,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/i/icu/icu_72.1-3ubuntu3.debian.tar.xz"
+        }
+      ]
+    },
+    "init-system-helpers": {
+      "version": "1.65.2ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "init-system-helpers_1.65.2ubuntu1.dsc",
+          "sha256": "a873e4f7ad3448628f50a548d5dbd35761ba481a575c305cba42a448a0728404",
+          "size": 2314,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/i/init-system-helpers/init-system-helpers_1.65.2ubuntu1.dsc"
+        },
+        {
+          "filename": "init-system-helpers_1.65.2ubuntu1.tar.xz",
+          "sha256": "ed1aba8ec081c4367492b6f74c398a938e22d67e7942488337580e1e80a8d047",
+          "size": 47788,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/i/init-system-helpers/init-system-helpers_1.65.2ubuntu1.tar.xz"
+        }
+      ]
+    },
+    "isl": {
+      "version": "0.26-3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "isl_0.26-3.dsc",
+          "sha256": "b943ed41e0d04bd86ea1a9a10e49a0ac1996ac534b67b968df4320880ec6e6e7",
+          "size": 1832,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/i/isl/isl_0.26-3.dsc"
+        },
+        {
+          "filename": "isl_0.26.orig.tar.xz",
+          "sha256": "a0b5cb06d24f9fa9e77b55fabbe9a3c94a336190345c2555f9915bb38e976504",
+          "size": 2035560,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/i/isl/isl_0.26.orig.tar.xz"
+        },
+        {
+          "filename": "isl_0.26-3.debian.tar.xz",
+          "sha256": "c4a9367d892a12da46c54cbf6475f447e137ac3eff857baa91af94c99daed0a5",
+          "size": 24700,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/i/isl/isl_0.26-3.debian.tar.xz"
+        }
+      ]
+    },
+    "jansson": {
+      "version": "2.14-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "jansson_2.14-2.dsc",
+          "sha256": "6296ddd9c0a022bd1b70074aefb171cfcdf5694a04ffd32b35fd66097621af87",
+          "size": 1980,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/j/jansson/jansson_2.14-2.dsc"
+        },
+        {
+          "filename": "jansson_2.14.orig.tar.gz",
+          "sha256": "c739578bf6b764aa0752db9a2fdadcfe921c78f1228c7ec0bb47fa804c55d17b",
+          "size": 141500,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/j/jansson/jansson_2.14.orig.tar.gz"
+        },
+        {
+          "filename": "jansson_2.14-2.debian.tar.xz",
+          "sha256": "e89fe4fd8221f6934ddb50f2e7f8404311928d0e23e49a5599f3d3d14ee8cb88",
+          "size": 5428,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/j/jansson/jansson_2.14-2.debian.tar.xz"
+        }
+      ]
+    },
+    "keyutils": {
+      "version": "1.6.3-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "keyutils_1.6.3-2.dsc",
+          "sha256": "77e6f0e5018f0f6cfb5a3689d7f185a014b2437d0a097609ffda32bfd3a64f28",
+          "size": 2079,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/k/keyutils/keyutils_1.6.3-2.dsc"
+        },
+        {
+          "filename": "keyutils_1.6.3.orig.tar.gz",
+          "sha256": "a61d5706136ae4c05bd48f86186bcfdbd88dd8bd5107e3e195c924cfc1b39bb4",
+          "size": 137022,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/k/keyutils/keyutils_1.6.3.orig.tar.gz"
+        },
+        {
+          "filename": "keyutils_1.6.3-2.debian.tar.xz",
+          "sha256": "9b9b40729465d4895860838e82e13d2ee4ffc44a97c9acd1d47a51bd33ade899",
+          "size": 13196,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/k/keyutils/keyutils_1.6.3-2.debian.tar.xz"
+        }
+      ]
+    },
+    "krb5": {
+      "version": "1.20.1-3ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "krb5_1.20.1-3ubuntu1.dsc",
+          "sha256": "1aee77f66ecf98f2d7db244fb14e6087e6a3078c99f47ddf3c52b6b55bde7454",
+          "size": 3920,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/k/krb5/krb5_1.20.1-3ubuntu1.dsc"
+        },
+        {
+          "filename": "krb5_1.20.1.orig.tar.gz",
+          "sha256": "704aed49b19eb5a7178b34b2873620ec299db08752d6a8574f95d41879ab8851",
+          "size": 8661660,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/k/krb5/krb5_1.20.1.orig.tar.gz"
+        },
+        {
+          "filename": "krb5_1.20.1.orig.tar.gz.asc",
+          "sha256": "2afeec5dbc586cc40b7975645e02b4c41c4d719dd02213e828c72d8239d55666",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/k/krb5/krb5_1.20.1.orig.tar.gz.asc"
+        },
+        {
+          "filename": "krb5_1.20.1-3ubuntu1.debian.tar.xz",
+          "sha256": "f4f4ac6c21cfe56da2b55034d0cf4e924b38e24fb56dbac719f632a3c91dd483",
+          "size": 100536,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/k/krb5/krb5_1.20.1-3ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "libbsd": {
+      "version": "0.11.7-4",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libbsd_0.11.7-4.dsc",
+          "sha256": "55e06d162bbcadc897886811e5656835fa58f9149d31d63244bb83187d1fbce5",
+          "size": 2350,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libb/libbsd/libbsd_0.11.7-4.dsc"
+        },
+        {
+          "filename": "libbsd_0.11.7.orig.tar.xz",
+          "sha256": "9baa186059ebbf25c06308e9f991fda31f7183c0f24931826d83aa6abd8a0261",
+          "size": 418508,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libb/libbsd/libbsd_0.11.7.orig.tar.xz"
+        },
+        {
+          "filename": "libbsd_0.11.7.orig.tar.xz.asc",
+          "sha256": "b470d3fa5ad6948de7a85891e652970828f26eb7057028d57b94fa8644af934a",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libb/libbsd/libbsd_0.11.7.orig.tar.xz.asc"
+        },
+        {
+          "filename": "libbsd_0.11.7-4.debian.tar.xz",
+          "sha256": "fe83e1418016393b1f39febbde49311f940b74650d1eceb12a7c5857c47ac716",
+          "size": 21596,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libb/libbsd/libbsd_0.11.7-4.debian.tar.xz"
+        }
+      ]
+    },
+    "libcap-ng": {
+      "version": "0.8.3-1build2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libcap-ng_0.8.3-1build2.dsc",
+          "sha256": "d500c020e49019d5c2df240d4ccef8b88fb929991ccbfaa548c2ac8fcdec4395",
+          "size": 2231,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libc/libcap-ng/libcap-ng_0.8.3-1build2.dsc"
+        },
+        {
+          "filename": "libcap-ng_0.8.3.orig.tar.gz",
+          "sha256": "bed6f6848e22bb2f83b5f764b2aef0ed393054e803a8e3a8711cb2a39e6b492d",
+          "size": 455383,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libc/libcap-ng/libcap-ng_0.8.3.orig.tar.gz"
+        },
+        {
+          "filename": "libcap-ng_0.8.3-1build2.debian.tar.xz",
+          "sha256": "6f56c8ae0384c992c93462865b101e8374050ec48604bdd66d0be63e90fe7b73",
+          "size": 10604,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libc/libcap-ng/libcap-ng_0.8.3-1build2.debian.tar.xz"
+        }
+      ]
+    },
+    "libcap2": {
+      "version": "1:2.66-4ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libcap2_2.66-4ubuntu1.dsc",
+          "sha256": "ac2863c0a5a4b5c8b8ab1bd4cb598de3ef374368fd90c0325357e552a81ca263",
+          "size": 2336,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libc/libcap2/libcap2_2.66-4ubuntu1.dsc"
+        },
+        {
+          "filename": "libcap2_2.66.orig.tar.xz",
+          "sha256": "15c40ededb3003d70a283fe587a36b7d19c8b3b554e33f86129c059a4bb466b2",
+          "size": 181592,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libc/libcap2/libcap2_2.66.orig.tar.xz"
+        },
+        {
+          "filename": "libcap2_2.66-4ubuntu1.debian.tar.xz",
+          "sha256": "90c4bca10dcca57aa8c447ca03d6e9f66762c15b91d767da79454a6cdbe597e2",
+          "size": 22076,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libc/libcap2/libcap2_2.66-4ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "liberror-perl": {
+      "version": "0.17029-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "liberror-perl_0.17029-2.dsc",
+          "sha256": "48c6ca66e03144a8bec4f32b2419f34d70e8a00500b01ea3bb6a5cab0c03e164",
+          "size": 2085,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libe/liberror-perl/liberror-perl_0.17029-2.dsc"
+        },
+        {
+          "filename": "liberror-perl_0.17029.orig.tar.gz",
+          "sha256": "1a23f7913032aed6d4b68321373a3899ca66590f4727391a091ec19c95bf7adc",
+          "size": 33304,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libe/liberror-perl/liberror-perl_0.17029.orig.tar.gz"
+        },
+        {
+          "filename": "liberror-perl_0.17029-2.debian.tar.xz",
+          "sha256": "60deb5d5cbc4b478f8db4cfa0ac6c512e85eea5fcd7fc7285c26a9942d3b8b67",
+          "size": 4608,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libe/liberror-perl/liberror-perl_0.17029-2.debian.tar.xz"
+        }
+      ]
+    },
+    "libffi": {
+      "version": "3.4.4-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libffi_3.4.4-1.dsc",
+          "sha256": "21c9ef156b6766535cb014e0765142c8104ffbcd73f003ecfa80cfb314baa4f0",
+          "size": 1951,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libf/libffi/libffi_3.4.4-1.dsc"
+        },
+        {
+          "filename": "libffi_3.4.4.orig.tar.gz",
+          "sha256": "d66c56ad259a82cf2a9dfc408b32bf5da52371500b84745f7fb8b645712df676",
+          "size": 1362394,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libf/libffi/libffi_3.4.4.orig.tar.gz"
+        },
+        {
+          "filename": "libffi_3.4.4-1.debian.tar.xz",
+          "sha256": "161b210bfd2ada0b15b0d2a2a98ffc779cd4a68661a7fdf46f61732493db0895",
+          "size": 10380,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libf/libffi/libffi_3.4.4-1.debian.tar.xz"
+        }
+      ]
+    },
+    "libgcrypt20": {
+      "version": "1.10.2-3ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libgcrypt20_1.10.2-3ubuntu1.dsc",
+          "sha256": "0b9bfad9ee2099da8774dd9d72ae08f86370995f559810a2b5b7addf315338bc",
+          "size": 2906,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libg/libgcrypt20/libgcrypt20_1.10.2-3ubuntu1.dsc"
+        },
+        {
+          "filename": "libgcrypt20_1.10.2.orig.tar.bz2",
+          "sha256": "3b9c02a004b68c256add99701de00b383accccf37177e0d6c58289664cce0c03",
+          "size": 3795164,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libg/libgcrypt20/libgcrypt20_1.10.2.orig.tar.bz2"
+        },
+        {
+          "filename": "libgcrypt20_1.10.2.orig.tar.bz2.asc",
+          "sha256": "3b5b729d3969b3e828acc483709a686678cecaf20e8559eb525da905c7aa2bcb",
+          "size": 228,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libg/libgcrypt20/libgcrypt20_1.10.2.orig.tar.bz2.asc"
+        },
+        {
+          "filename": "libgcrypt20_1.10.2-3ubuntu1.debian.tar.xz",
+          "sha256": "94bc159f3ee07cde158140c79388bfabc98134d26cf7a4e77a3920a35f261786",
+          "size": 37508,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libg/libgcrypt20/libgcrypt20_1.10.2-3ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "libgpg-error": {
+      "version": "1.47-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libgpg-error_1.47-2.dsc",
+          "sha256": "ea1c7a0f4a74d8c3bbd53d97c5a7ce867ab9f9e4728a38ff6bbc525777141896",
+          "size": 2896,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libg/libgpg-error/libgpg-error_1.47-2.dsc"
+        },
+        {
+          "filename": "libgpg-error_1.47.orig.tar.bz2",
+          "sha256": "9e3c670966b96ecc746c28c2c419541e3bcb787d1a73930f5e5f5e1bcbbb9bdb",
+          "size": 1020862,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libg/libgpg-error/libgpg-error_1.47.orig.tar.bz2"
+        },
+        {
+          "filename": "libgpg-error_1.47.orig.tar.bz2.asc",
+          "sha256": "6ab547bf020761e1df80b08335773a91c345ff2c1344f15b1f7d195293ab21a5",
+          "size": 228,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libg/libgpg-error/libgpg-error_1.47.orig.tar.bz2.asc"
+        },
+        {
+          "filename": "libgpg-error_1.47-2.debian.tar.xz",
+          "sha256": "7aa61ff9ad47b96f557926fb308962a4de0d83b834e7df8575daa71530b82cc1",
+          "size": 18540,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libg/libgpg-error/libgpg-error_1.47-2.debian.tar.xz"
+        }
+      ]
+    },
+    "libidn2": {
+      "version": "2.3.4-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libidn2_2.3.4-1.dsc",
+          "sha256": "b7c1c506ea6691c9481176171490c3fde53ef8e51e1a28fb1d4e19dda61f7d59",
+          "size": 1915,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libi/libidn2/libidn2_2.3.4-1.dsc"
+        },
+        {
+          "filename": "libidn2_2.3.4.orig.tar.gz",
+          "sha256": "93caba72b4e051d1f8d4f5a076ab63c99b77faee019b72b9783b267986dbb45f",
+          "size": 2083823,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libi/libidn2/libidn2_2.3.4.orig.tar.gz"
+        },
+        {
+          "filename": "libidn2_2.3.4.orig.tar.gz.asc",
+          "sha256": "c55c8cd14f398186407808f188ed5325faa01a62d88e79bb700bd8c839f75ceb",
+          "size": 228,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libi/libidn2/libidn2_2.3.4.orig.tar.gz.asc"
+        },
+        {
+          "filename": "libidn2_2.3.4-1.debian.tar.xz",
+          "sha256": "a928219502f43e337aa3476098b96a250776d9be0b92255bd701c7fee572df68",
+          "size": 16024,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libi/libidn2/libidn2_2.3.4-1.debian.tar.xz"
+        }
+      ]
+    },
+    "libjsoncpp": {
+      "version": "1.9.5-6",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libjsoncpp_1.9.5-6.dsc",
+          "sha256": "053ab87edcfe88af3d597687edc8d9a80e5e8b7054c27f052ca8f15ba6db8c49",
+          "size": 1955,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libj/libjsoncpp/libjsoncpp_1.9.5-6.dsc"
+        },
+        {
+          "filename": "libjsoncpp_1.9.5.orig.tar.gz",
+          "sha256": "f409856e5920c18d0c2fb85276e24ee607d2a09b5e7d5f0a371368903c275da2",
+          "size": 216055,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libj/libjsoncpp/libjsoncpp_1.9.5.orig.tar.gz"
+        },
+        {
+          "filename": "libjsoncpp_1.9.5-6.debian.tar.xz",
+          "sha256": "ef1de77d194c2bbe3cc9c6021f8c75ffd71828541a3d1e3f8395e6458d946f3a",
+          "size": 8132,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libj/libjsoncpp/libjsoncpp_1.9.5-6.debian.tar.xz"
+        }
+      ]
+    },
+    "libmd": {
+      "version": "1.1.0-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libmd_1.1.0-1.dsc",
+          "sha256": "abb74aa06e06dbb88f4c1a7764e1d93c753bdcb60e7151a1897fe247750f5ef1",
+          "size": 2283,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libm/libmd/libmd_1.1.0-1.dsc"
+        },
+        {
+          "filename": "libmd_1.1.0.orig.tar.xz",
+          "sha256": "1bd6aa42275313af3141c7cf2e5b964e8b1fd488025caf2f971f43b00776b332",
+          "size": 271228,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libm/libmd/libmd_1.1.0.orig.tar.xz"
+        },
+        {
+          "filename": "libmd_1.1.0.orig.tar.xz.asc",
+          "sha256": "402fd3024e43ab975733d09e661804a58ca58697194e4b15216b1217cfe1dadb",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libm/libmd/libmd_1.1.0.orig.tar.xz.asc"
+        },
+        {
+          "filename": "libmd_1.1.0-1.debian.tar.xz",
+          "sha256": "4e9403dcdd277ae81bb83bc7f4ba9fe5fd6640b74118d8349904f029510596dc",
+          "size": 8156,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libm/libmd/libmd_1.1.0-1.debian.tar.xz"
+        }
+      ]
+    },
+    "libnsl": {
+      "version": "1.3.0-2build2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libnsl_1.3.0-2build2.dsc",
+          "sha256": "537d6e611f0d10a7cac5ac82425827a89f58b34340cab113d827e858432d4437",
+          "size": 2087,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libn/libnsl/libnsl_1.3.0-2build2.dsc"
+        },
+        {
+          "filename": "libnsl_1.3.0.orig.tar.xz",
+          "sha256": "eac3062957fa302c62eff4aed718a07bacbf9ceb0a058289f12a19bfdda3c8e2",
+          "size": 321488,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libn/libnsl/libnsl_1.3.0.orig.tar.xz"
+        },
+        {
+          "filename": "libnsl_1.3.0-2build2.debian.tar.xz",
+          "sha256": "ff64ca839c3f44058e5ba17a15ed32f40cd1e2a197cb2cbd8e788912357c2882",
+          "size": 4868,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libn/libnsl/libnsl_1.3.0-2build2.debian.tar.xz"
+        }
+      ]
+    },
+    "libpsl": {
+      "version": "0.21.2-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libpsl_0.21.2-1.dsc",
+          "sha256": "1ddb578f5865a447b11078993cef2138107c82f8590ec2516af6f9970a2d4e0f",
+          "size": 1622,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libp/libpsl/libpsl_0.21.2-1.dsc"
+        },
+        {
+          "filename": "libpsl_0.21.2.orig.tar.xz",
+          "sha256": "11e34380f2c81d6e72c710464aae3b680df4ddcc1007826c630fb03c7ca6aa54",
+          "size": 1870352,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libp/libpsl/libpsl_0.21.2.orig.tar.xz"
+        },
+        {
+          "filename": "libpsl_0.21.2-1.debian.tar.xz",
+          "sha256": "78327367c83ce2dc6a8404f479a7589eacb0266f1d4a25619d5f6f00f98ab7b6",
+          "size": 11940,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libp/libpsl/libpsl_0.21.2-1.debian.tar.xz"
+        }
+      ]
+    },
+    "libseccomp": {
+      "version": "2.5.4-1ubuntu3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libseccomp_2.5.4-1ubuntu3.dsc",
+          "sha256": "e3b43c03bce3e6c1d64983408dbdff35698d469880c5b6f4eb8bb7f2619f3228",
+          "size": 2799,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libseccomp/libseccomp_2.5.4-1ubuntu3.dsc"
+        },
+        {
+          "filename": "libseccomp_2.5.4.orig.tar.gz",
+          "sha256": "d82902400405cf0068574ef3dc1fe5f5926207543ba1ae6f8e7a1576351dcbdb",
+          "size": 637228,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libseccomp/libseccomp_2.5.4.orig.tar.gz"
+        },
+        {
+          "filename": "libseccomp_2.5.4.orig.tar.gz.asc",
+          "sha256": "af37e70eb422e6f983c1f135a3abb342c3b787716520b71bd774e4906003807f",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libseccomp/libseccomp_2.5.4.orig.tar.gz.asc"
+        },
+        {
+          "filename": "libseccomp_2.5.4-1ubuntu3.debian.tar.xz",
+          "sha256": "8b5954df59e9d43dac67c58ea9e2beef8b1373c1e1f8c56d77bd836493177b9d",
+          "size": 23700,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libseccomp/libseccomp_2.5.4-1ubuntu3.debian.tar.xz"
+        }
+      ]
+    },
+    "libselinux": {
+      "version": "3.5-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libselinux_3.5-1.dsc",
+          "sha256": "b73314f88bb9def34b861fddcd0ead37ee13a7e12c94508f3a6436147c4cdf02",
+          "size": 2662,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libselinux/libselinux_3.5-1.dsc"
+        },
+        {
+          "filename": "libselinux_3.5.orig.tar.gz",
+          "sha256": "9a3a3705ac13a2ccca2de6d652b6356fead10f36fb33115c185c5ccdf29eec19",
+          "size": 211453,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libselinux/libselinux_3.5.orig.tar.gz"
+        },
+        {
+          "filename": "libselinux_3.5.orig.tar.gz.asc",
+          "sha256": "fd37d441e0c08cabe9ac8f7815f52355bab2011549ec5792424fe18be9e1e015",
+          "size": 981,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libselinux/libselinux_3.5.orig.tar.gz.asc"
+        },
+        {
+          "filename": "libselinux_3.5-1.debian.tar.xz",
+          "sha256": "7e78f55b93bdbc8b991b24ec708e312604a6c39784abcf9cc6b83cd9eae3db0e",
+          "size": 35804,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libselinux/libselinux_3.5-1.debian.tar.xz"
+        }
+      ]
+    },
+    "libsemanage": {
+      "version": "3.5-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libsemanage_3.5-1.dsc",
+          "sha256": "7415394f12030387ebca4ab7845830984b1ceb7ec3256d30a1733ba7f59d18c1",
+          "size": 2644,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libsemanage/libsemanage_3.5-1.dsc"
+        },
+        {
+          "filename": "libsemanage_3.5.orig.tar.gz",
+          "sha256": "f53534e50247538280ed0d76c6ce81d8fb3939bd64cadb89da10dba42e40dd9c",
+          "size": 185060,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libsemanage/libsemanage_3.5.orig.tar.gz"
+        },
+        {
+          "filename": "libsemanage_3.5.orig.tar.gz.asc",
+          "sha256": "f9126c861c666f3308b60cea4405c5e686a056113ca3cbd0a5b0e4af7600c8f5",
+          "size": 981,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libsemanage/libsemanage_3.5.orig.tar.gz.asc"
+        },
+        {
+          "filename": "libsemanage_3.5-1.debian.tar.xz",
+          "sha256": "78b11321d014bd52e1fb67c38db5ec6518b0b566b58c6e35a18e894dacc24aee",
+          "size": 29956,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libsemanage/libsemanage_3.5-1.debian.tar.xz"
+        }
+      ]
+    },
+    "libsepol": {
+      "version": "3.5-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libsepol_3.5-1.dsc",
+          "sha256": "6978aceb3966056e816731234c43737b6b3ffc0dba694c015b8edf3adf5ef914",
+          "size": 2005,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libsepol/libsepol_3.5-1.dsc"
+        },
+        {
+          "filename": "libsepol_3.5.orig.tar.gz",
+          "sha256": "78fdaf69924db780bac78546e43d9c44074bad798c2c415d0b9bb96d065ee8a2",
+          "size": 497522,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libsepol/libsepol_3.5.orig.tar.gz"
+        },
+        {
+          "filename": "libsepol_3.5.orig.tar.gz.asc",
+          "sha256": "2309ab5e7cd38e2eb9196f92a60e00d4508cb293f1181d34a5a050128c9b7b24",
+          "size": 981,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libsepol/libsepol_3.5.orig.tar.gz.asc"
+        },
+        {
+          "filename": "libsepol_3.5-1.debian.tar.xz",
+          "sha256": "bb7abe2c205d055dde0495e8a2126529acf91658023278d9d919034794785e33",
+          "size": 27500,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libsepol/libsepol_3.5-1.debian.tar.xz"
+        }
+      ]
+    },
+    "libtasn1-6": {
+      "version": "4.19.0-3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libtasn1-6_4.19.0-3.dsc",
+          "sha256": "7fd9618be5b99035c7387d969b73365a57b1f6f01ec4abe0af332829af718190",
+          "size": 2662,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libt/libtasn1-6/libtasn1-6_4.19.0-3.dsc"
+        },
+        {
+          "filename": "libtasn1-6_4.19.0.orig.tar.gz",
+          "sha256": "1613f0ac1cf484d6ec0ce3b8c06d56263cc7242f1c23b30d82d23de345a63f7a",
+          "size": 1786576,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libt/libtasn1-6/libtasn1-6_4.19.0.orig.tar.gz"
+        },
+        {
+          "filename": "libtasn1-6_4.19.0.orig.tar.gz.asc",
+          "sha256": "8410c0c004f3509c218a98b276b3308b9c46f48068e8b1a6d9ebfd61ea9f357a",
+          "size": 228,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libt/libtasn1-6/libtasn1-6_4.19.0.orig.tar.gz.asc"
+        },
+        {
+          "filename": "libtasn1-6_4.19.0-3.debian.tar.xz",
+          "sha256": "acb32dc03d8c2aeb10e0fb1c2a0247efdab0a6dc5e8f8a4d3cdcfe5ad26bb0df",
+          "size": 22084,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libt/libtasn1-6/libtasn1-6_4.19.0-3.debian.tar.xz"
+        }
+      ]
+    },
+    "libtirpc": {
+      "version": "1.3.3+ds-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libtirpc_1.3.3+ds-1.dsc",
+          "sha256": "c05c5d76027d4162d5a29d73eef90076559bde0fa5133b2e0045d82155e1b2af",
+          "size": 2129,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc_1.3.3+ds-1.dsc"
+        },
+        {
+          "filename": "libtirpc_1.3.3+ds.orig.tar.gz",
+          "sha256": "facd98473c3a16fe6564c6458ef96ebb84d144345d1171f034fa019424bba027",
+          "size": 699030,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc_1.3.3+ds.orig.tar.gz"
+        },
+        {
+          "filename": "libtirpc_1.3.3+ds-1.debian.tar.xz",
+          "sha256": "fd1865c49e905951a641082981c1dab7f018caea1a5e23af1791728a3320800e",
+          "size": 11232,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc_1.3.3+ds-1.debian.tar.xz"
+        }
+      ]
+    },
+    "libunistring": {
+      "version": "1.0-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libunistring_1.0-2.dsc",
+          "sha256": "9b9a9d9d4cd1c2118df8cf5ca0dfb787d89afcd99400d7cd01b4c4e9b0bc1ae5",
+          "size": 2181,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libu/libunistring/libunistring_1.0-2.dsc"
+        },
+        {
+          "filename": "libunistring_1.0.orig.tar.xz",
+          "sha256": "5bab55b49f75d77ed26b257997e919b693f29fd4a1bc22e0e6e024c246c72741",
+          "size": 2367800,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libu/libunistring/libunistring_1.0.orig.tar.xz"
+        },
+        {
+          "filename": "libunistring_1.0.orig.tar.xz.asc",
+          "sha256": "c1c2ae60eb971593da92e65384a5f1b181717e7b9654854f139f350c6cbe235d",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libu/libunistring/libunistring_1.0.orig.tar.xz.asc"
+        },
+        {
+          "filename": "libunistring_1.0-2.debian.tar.xz",
+          "sha256": "e550d94935cd06eafb0defd7b5d7c914c7bb80a8e818a49efcf7675206572450",
+          "size": 14520,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libu/libunistring/libunistring_1.0-2.debian.tar.xz"
+        }
+      ]
+    },
+    "libx11": {
+      "version": "2:1.8.6-1ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libx11_1.8.6-1ubuntu1.dsc",
+          "sha256": "02681f6864170fe697c73806117a8089208ae6795f6866512e6a00d85c272aae",
+          "size": 2587,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11_1.8.6-1ubuntu1.dsc"
+        },
+        {
+          "filename": "libx11_1.8.6.orig.tar.gz",
+          "sha256": "5ff0d26c94d82ebb94a944b9f1f55cd01b9713fd461fe93f62f3527ce14ad94e",
+          "size": 3193457,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11_1.8.6.orig.tar.gz"
+        },
+        {
+          "filename": "libx11_1.8.6.orig.tar.gz.asc",
+          "sha256": "20b9fb0b6d80411dee9b6c3e2b5821ba0f26e59d1ac4c3e715e9d93679895126",
+          "size": 801,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11_1.8.6.orig.tar.gz.asc"
+        },
+        {
+          "filename": "libx11_1.8.6-1ubuntu1.diff.gz",
+          "sha256": "6398e334d73f5135bd5dc51857f8c2b93e9853a5600a370d949ca2e333b21018",
+          "size": 77714,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11_1.8.6-1ubuntu1.diff.gz"
+        }
+      ]
+    },
+    "libxau": {
+      "version": "1:1.0.9-1build5",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libxau_1.0.9-1build5.dsc",
+          "sha256": "1e6f3b420f37e6ed492c009741f784c35ef1c19f11f8c83b4777b2590382b721",
+          "size": 2315,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau_1.0.9-1build5.dsc"
+        },
+        {
+          "filename": "libxau_1.0.9.orig.tar.gz",
+          "sha256": "1f123d8304b082ad63a9e89376400a3b1d4c29e67e3ea07b3f659cccca690eea",
+          "size": 394068,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau_1.0.9.orig.tar.gz"
+        },
+        {
+          "filename": "libxau_1.0.9.orig.tar.gz.asc",
+          "sha256": "af6104aaf3c5ede529e381237dd60f49640ec96593a84502fa493b86582b2f04",
+          "size": 801,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau_1.0.9.orig.tar.gz.asc"
+        },
+        {
+          "filename": "libxau_1.0.9-1build5.diff.gz",
+          "sha256": "ba43fc817c512c7105865233f31d8ab08a95e71ce3b2b8a5c2568fc0129ab6de",
+          "size": 10579,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau_1.0.9-1build5.diff.gz"
+        }
+      ]
+    },
+    "libxcb": {
+      "version": "1.15-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libxcb_1.15-1.dsc",
+          "sha256": "f689569f33e70ca4c95c91b094d0659eb49a958d9ac43186640338f9290e298b",
+          "size": 5344,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb_1.15-1.dsc"
+        },
+        {
+          "filename": "libxcb_1.15.orig.tar.gz",
+          "sha256": "1cb65df8543a69ec0555ac696123ee386321dfac1964a3da39976c9a05ad724d",
+          "size": 650774,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb_1.15.orig.tar.gz"
+        },
+        {
+          "filename": "libxcb_1.15-1.diff.gz",
+          "sha256": "639c719ed06ffc397b200a209abd1a049e21e9e19431fb14c9ca870de01a6eac",
+          "size": 26267,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb_1.15-1.diff.gz"
+        }
+      ]
+    },
+    "libxcrypt": {
+      "version": "1:4.4.36-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libxcrypt_4.4.36-2.dsc",
+          "sha256": "7a1c78fcd9029f5828f22d5697ec02aacaec276c23ab06af82f13e1a77026ea2",
+          "size": 1563,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxcrypt/libxcrypt_4.4.36-2.dsc"
+        },
+        {
+          "filename": "libxcrypt_4.4.36.orig.tar.xz",
+          "sha256": "7b7abbc89f13f5194211aa6861ed954e4fa3a210a4cb64f7e13dc8cf413e7f2a",
+          "size": 392732,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxcrypt/libxcrypt_4.4.36.orig.tar.xz"
+        },
+        {
+          "filename": "libxcrypt_4.4.36-2.debian.tar.xz",
+          "sha256": "c91f86abf83fc71f69fe80d38f92354042436b6eca8a3ef666ffc86e319dd267",
+          "size": 8284,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxcrypt/libxcrypt_4.4.36-2.debian.tar.xz"
+        }
+      ]
+    },
+    "libxdmcp": {
+      "version": "1:1.1.3-0ubuntu5",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libxdmcp_1.1.3-0ubuntu5.dsc",
+          "sha256": "205a1610391cf9e2985e5e2080dab36a5471e585eb91970ec1d8c09008e1e5e5",
+          "size": 2252,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp_1.1.3-0ubuntu5.dsc"
+        },
+        {
+          "filename": "libxdmcp_1.1.3.orig.tar.gz",
+          "sha256": "2ef9653d32e09d1bf1b837d0e0311024979653fe755ad3aaada8db1aa6ea180c",
+          "size": 429668,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp_1.1.3.orig.tar.gz"
+        },
+        {
+          "filename": "libxdmcp_1.1.3-0ubuntu5.diff.gz",
+          "sha256": "5848aea7f2f5abbb50d9841557b07d5fde4500238cf3e316142259656dd1bd7b",
+          "size": 18395,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp_1.1.3-0ubuntu5.diff.gz"
+        }
+      ]
+    },
+    "libxext": {
+      "version": "2:1.3.4-1build1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libxext_1.3.4-1build1.dsc",
+          "sha256": "0b0d4395cbcbbdb5aa60677524b9dea7fbcbb9b32d03a892095a1c666fd65f4a",
+          "size": 2250,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxext/libxext_1.3.4-1build1.dsc"
+        },
+        {
+          "filename": "libxext_1.3.4.orig.tar.gz",
+          "sha256": "8ef0789f282826661ff40a8eef22430378516ac580167da35cc948be9041aac1",
+          "size": 494434,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxext/libxext_1.3.4.orig.tar.gz"
+        },
+        {
+          "filename": "libxext_1.3.4-1build1.diff.gz",
+          "sha256": "0efc1abad5202351c44a469fc91cc0eea3836e302884d9f6b2a29436f94d7498",
+          "size": 12588,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxext/libxext_1.3.4-1build1.diff.gz"
+        }
+      ]
+    },
+    "libxi": {
+      "version": "2:1.8-1build1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libxi_1.8-1build1.dsc",
+          "sha256": "cbb116fd7fda21a2d4db06403676bbf88947d5be309399f7cf088e76621b10b4",
+          "size": 2242,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxi/libxi_1.8-1build1.dsc"
+        },
+        {
+          "filename": "libxi_1.8.orig.tar.gz",
+          "sha256": "c80fd200a1190e4406bb4cc6958839d9651638cb47fa546a595d4bebcd3b9e2d",
+          "size": 616977,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxi/libxi_1.8.orig.tar.gz"
+        },
+        {
+          "filename": "libxi_1.8-1build1.diff.gz",
+          "sha256": "6708c98f19156f763bdd99e73364a12aa414d7b1477272ed7033841b3551e554",
+          "size": 24823,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxi/libxi_1.8-1build1.diff.gz"
+        }
+      ]
+    },
+    "libxrender": {
+      "version": "1:0.9.10-1.1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libxrender_0.9.10-1.1.dsc",
+          "sha256": "348ab15d05f1d802da485e4c6abdb9d5419691fb7c8ce44ca5b17b2b7f889ce8",
+          "size": 2072,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxrender/libxrender_0.9.10-1.1.dsc"
+        },
+        {
+          "filename": "libxrender_0.9.10.orig.tar.gz",
+          "sha256": "770527cce42500790433df84ec3521e8bf095dfe5079454a92236494ab296adf",
+          "size": 373717,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxrender/libxrender_0.9.10.orig.tar.gz"
+        },
+        {
+          "filename": "libxrender_0.9.10-1.1.diff.gz",
+          "sha256": "caf8c84085b3b0d073f738fa12d32d4eca2d8b669cb3c7f1b1cd2ce64b7b10b7",
+          "size": 15201,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxrender/libxrender_0.9.10-1.1.diff.gz"
+        }
+      ]
+    },
+    "libxtst": {
+      "version": "2:1.2.3-1.1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libxtst_1.2.3-1.1.dsc",
+          "sha256": "ca51260a4a4fc34b244819065ab03d7a722678e9dd9dbd1ea8d86f74aaacc00c",
+          "size": 2248,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxtst/libxtst_1.2.3-1.1.dsc"
+        },
+        {
+          "filename": "libxtst_1.2.3.orig.tar.gz",
+          "sha256": "a0c83acce02d4923018c744662cb28eb0dbbc33b4adc027726879ccf68fbc2c2",
+          "size": 400197,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxtst/libxtst_1.2.3.orig.tar.gz"
+        },
+        {
+          "filename": "libxtst_1.2.3-1.1.diff.gz",
+          "sha256": "4f7eef30f2a860bc649e470d844d0b90bcc7cf7c5bf98fb02f29163b692a5948",
+          "size": 9598,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxtst/libxtst_1.2.3-1.1.diff.gz"
+        }
+      ]
+    },
+    "libzstd": {
+      "version": "1.5.5+dfsg2-1ubuntu2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "libzstd_1.5.5+dfsg2-1ubuntu2.dsc",
+          "sha256": "5058621044f697db56e61942ba3cc8913e8d00d90f1f202fe49020953632c380",
+          "size": 2352,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libz/libzstd/libzstd_1.5.5+dfsg2-1ubuntu2.dsc"
+        },
+        {
+          "filename": "libzstd_1.5.5+dfsg2.orig.tar.xz",
+          "sha256": "d7cf3c10d416fd999cb8fcf7685d9268ba7bec8eb78121fc2d0d916fa393d22b",
+          "size": 1784164,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libz/libzstd/libzstd_1.5.5+dfsg2.orig.tar.xz"
+        },
+        {
+          "filename": "libzstd_1.5.5+dfsg2-1ubuntu2.debian.tar.xz",
+          "sha256": "3d0ddfab991e2b8ffa399cfc79bf5300affbd5d114dfd9c814710836bde1b275",
+          "size": 21400,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libz/libzstd/libzstd_1.5.5+dfsg2-1ubuntu2.debian.tar.xz"
+        }
+      ]
+    },
+    "lto-disabled-list": {
+      "version": "43",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "lto-disabled-list_43.dsc",
+          "sha256": "5a5dd941895c8659b3c06b8374cc642542d66f6c66f7ccdc5a90b950f20600ea",
+          "size": 1435,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/l/lto-disabled-list/lto-disabled-list_43.dsc"
+        },
+        {
+          "filename": "lto-disabled-list_43.tar.xz",
+          "sha256": "bba3e1e6070d1c14cffff7d840fa3fdd9fc5f235ef260247e70e832e1fed66b1",
+          "size": 13328,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/l/lto-disabled-list/lto-disabled-list_43.tar.xz"
+        }
+      ]
+    },
+    "lz4": {
+      "version": "1.9.4-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "lz4_1.9.4-1.dsc",
+          "sha256": "e16302bca544d08d106efc216541f4a0403c8f8a5fad5eaac7588223a55af263",
+          "size": 1951,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/l/lz4/lz4_1.9.4-1.dsc"
+        },
+        {
+          "filename": "lz4_1.9.4.orig.tar.gz",
+          "sha256": "0b0e3aa07c8c063ddf40b082bdf7e37a1562bda40a0ff5272957f3e987e0e54b",
+          "size": 354063,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/l/lz4/lz4_1.9.4.orig.tar.gz"
+        },
+        {
+          "filename": "lz4_1.9.4-1.debian.tar.xz",
+          "sha256": "47ceec5b95f42598f7b9280b03df9659f2ee6852720ec181488e83bd643f0e5f",
+          "size": 8128,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/l/lz4/lz4_1.9.4-1.debian.tar.xz"
+        }
+      ]
+    },
+    "m4": {
+      "version": "1.4.19-3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "m4_1.4.19-3.dsc",
+          "sha256": "ef1d34ebe63e0bd58bb8ce503330224ed71f6c8919d7af38c451a9a2a10ce1c3",
+          "size": 1637,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/m4/m4_1.4.19-3.dsc"
+        },
+        {
+          "filename": "m4_1.4.19.orig.tar.xz",
+          "sha256": "63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96",
+          "size": 1654908,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/m4/m4_1.4.19.orig.tar.xz"
+        },
+        {
+          "filename": "m4_1.4.19.orig.tar.xz.asc",
+          "sha256": "9700ba4dca539b06e033b4e3ab37fa5b983becb6c14569a8b8aa02dee6ab666c",
+          "size": 488,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/m4/m4_1.4.19.orig.tar.xz.asc"
+        },
+        {
+          "filename": "m4_1.4.19-3.debian.tar.xz",
+          "sha256": "b25312f36c3577bb4a0d2e8f6c022836d68ff061c56c533632de8557d598a0ea",
+          "size": 17184,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/m4/m4_1.4.19-3.debian.tar.xz"
+        }
+      ]
+    },
+    "make-dfsg": {
+      "version": "4.3-4.1build1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "make-dfsg_4.3-4.1build1.dsc",
+          "sha256": "13e606022b12a1829a8902915f6f0f8dc7e1ccfb777c1e7e26680a0b17e0fdee",
+          "size": 2072,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/make-dfsg/make-dfsg_4.3-4.1build1.dsc"
+        },
+        {
+          "filename": "make-dfsg_4.3.orig.tar.gz",
+          "sha256": "be4c17542578824e745f83bcd2a9ba264206187247cb6a5f5df99b0a9d1f9047",
+          "size": 1845906,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/make-dfsg/make-dfsg_4.3.orig.tar.gz"
+        },
+        {
+          "filename": "make-dfsg_4.3-4.1build1.diff.gz",
+          "sha256": "af8ece89e7ac28744e5823b7ead7e1caccb5172049b0e4fb3012595ebdd7ca49",
+          "size": 50780,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/make-dfsg/make-dfsg_4.3-4.1build1.diff.gz"
+        }
+      ]
+    },
+    "mawk": {
+      "version": "1.3.4.20230730-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "mawk_1.3.4.20230730-1.dsc",
+          "sha256": "b9afdadfc9ad2fed4e1cdf8edd87c0aacbb9b56bda74590e025ea846d1390b1c",
+          "size": 2180,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mawk/mawk_1.3.4.20230730-1.dsc"
+        },
+        {
+          "filename": "mawk_1.3.4.20230730.orig.tar.gz",
+          "sha256": "810b7cc0aa2bff5ff215f237e275b327b21ba49a0d7b36930e3ddc80f4ce5618",
+          "size": 410248,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mawk/mawk_1.3.4.20230730.orig.tar.gz"
+        },
+        {
+          "filename": "mawk_1.3.4.20230730.orig.tar.gz.asc",
+          "sha256": "2beb152af3893b4870448642a932cde20194c0aaf7eaa002e27ffa06975c1af0",
+          "size": 729,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mawk/mawk_1.3.4.20230730.orig.tar.gz.asc"
+        },
+        {
+          "filename": "mawk_1.3.4.20230730-1.debian.tar.xz",
+          "sha256": "e35b496d22c685f0a05c278fcbc90d6f0bc31783f263d2de412d268964bf35f1",
+          "size": 15492,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mawk/mawk_1.3.4.20230730-1.debian.tar.xz"
+        }
+      ]
+    },
+    "media-types": {
+      "version": "10.1.0",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "media-types_10.1.0.dsc",
+          "sha256": "1470ba869117eed57ba24c1e54664116a7ab6b4417e4b911e8c8051ffe19d626",
+          "size": 1624,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/media-types/media-types_10.1.0.dsc"
+        },
+        {
+          "filename": "media-types_10.1.0.tar.xz",
+          "sha256": "c35ec1ae0d0446aa903322f8f91a908a0d4270444326bfbad24b61fbe5600a0d",
+          "size": 59052,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/media-types/media-types_10.1.0.tar.xz"
+        }
+      ]
+    },
+    "mpclib3": {
+      "version": "1.3.1-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "mpclib3_1.3.1-1.dsc",
+          "sha256": "b2252a499fd0f8e92ce2cf7d8e68477ffc9dd06127803a91f0a1115822efec75",
+          "size": 1877,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mpclib3/mpclib3_1.3.1-1.dsc"
+        },
+        {
+          "filename": "mpclib3_1.3.1.orig.tar.gz",
+          "sha256": "ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8",
+          "size": 773573,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mpclib3/mpclib3_1.3.1.orig.tar.gz"
+        },
+        {
+          "filename": "mpclib3_1.3.1-1.debian.tar.xz",
+          "sha256": "25adb496258adacad69c022d712f96fbc465bcef9fd4751829dc351d9ce6a45d",
+          "size": 4656,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mpclib3/mpclib3_1.3.1-1.debian.tar.xz"
+        }
+      ]
+    },
+    "mpfr4": {
+      "version": "4.2.1-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "mpfr4_4.2.1-1.dsc",
+          "sha256": "2fb0ea6c37591f03c7f3445fc6a298a10dbd9d7662ccb441f7da0e514d71986a",
+          "size": 1959,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mpfr4/mpfr4_4.2.1-1.dsc"
+        },
+        {
+          "filename": "mpfr4_4.2.1.orig.tar.xz",
+          "sha256": "277807353a6726978996945af13e52829e3abd7a9a5b7fb2793894e18f1fcbb2",
+          "size": 1493608,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mpfr4/mpfr4_4.2.1.orig.tar.xz"
+        },
+        {
+          "filename": "mpfr4_4.2.1-1.debian.tar.xz",
+          "sha256": "06c6c90efe3653d44527bcd6cfd66563d62409bbb348eb32f33b480e30ad9993",
+          "size": 12556,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/m/mpfr4/mpfr4_4.2.1-1.debian.tar.xz"
+        }
+      ]
+    },
+    "ncurses": {
+      "version": "6.4+20230625-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "ncurses_6.4+20230625-2.dsc",
+          "sha256": "c6cfa5801708eec68672aa9ff449b510810f11c413028c6afec29b2477f4f43d",
+          "size": 3807,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/ncurses/ncurses_6.4+20230625-2.dsc"
+        },
+        {
+          "filename": "ncurses_6.4+20230625.orig.tar.gz",
+          "sha256": "54d25c0215c1b7f6f17d64c7f8f229fb34af007d663c0fcd54d9557a1cacc3ee",
+          "size": 3649551,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/ncurses/ncurses_6.4+20230625.orig.tar.gz"
+        },
+        {
+          "filename": "ncurses_6.4+20230625.orig.tar.gz.asc",
+          "sha256": "d20a0166bdf9f8eccc6df015a49fd60a168f00f8430431810fc49963b44c0965",
+          "size": 729,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/ncurses/ncurses_6.4+20230625.orig.tar.gz.asc"
+        },
+        {
+          "filename": "ncurses_6.4+20230625-2.debian.tar.xz",
+          "sha256": "c062930f677e4a4e0a9777517c3fbf46a41b959fc2609e85bd1a2334c994b95b",
+          "size": 48584,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/ncurses/ncurses_6.4+20230625-2.debian.tar.xz"
+        }
+      ]
+    },
+    "nettle": {
+      "version": "3.9.1-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "nettle_3.9.1-2.dsc",
+          "sha256": "8ba0494afc18b086ef61d61c3b14a27f1c999ee89fbc55288b7a81eff395e521",
+          "size": 2274,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/nettle/nettle_3.9.1-2.dsc"
+        },
+        {
+          "filename": "nettle_3.9.1.orig.tar.gz",
+          "sha256": "ccfeff981b0ca71bbd6fbcb054f407c60ffb644389a5be80d6716d5b550c6ce3",
+          "size": 2396741,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/nettle/nettle_3.9.1.orig.tar.gz"
+        },
+        {
+          "filename": "nettle_3.9.1.orig.tar.gz.asc",
+          "sha256": "9746017a1a7fe60aad4b929ea592bc6ac51e12ea7179f289944eb44828d958af",
+          "size": 573,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/nettle/nettle_3.9.1.orig.tar.gz.asc"
+        },
+        {
+          "filename": "nettle_3.9.1-2.debian.tar.xz",
+          "sha256": "75e4612ae51801a674c1697bd189811606e81e72e7ac25ef6c056b7a2a9b2986",
+          "size": 24440,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/nettle/nettle_3.9.1-2.debian.tar.xz"
+        }
+      ]
+    },
+    "openldap": {
+      "version": "2.6.6+dfsg-1~exp1ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "openldap_2.6.6+dfsg-1~exp1ubuntu1.dsc",
+          "sha256": "bf6b63454cd39c189c06b2d851bb65158850871459c44dc1ec9070ce6c8702c4",
+          "size": 3470,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/o/openldap/openldap_2.6.6+dfsg-1~exp1ubuntu1.dsc"
+        },
+        {
+          "filename": "openldap_2.6.6+dfsg.orig.tar.xz",
+          "sha256": "d05c261371cd66d39dd88dbeec399130b82f41f99ce7b68af3f22cd01f7a4a4c",
+          "size": 3746232,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/o/openldap/openldap_2.6.6+dfsg.orig.tar.xz"
+        },
+        {
+          "filename": "openldap_2.6.6+dfsg-1~exp1ubuntu1.debian.tar.xz",
+          "sha256": "34df73a31a95e23b681810a2f6955ae3c4266f35f01ce6b16f2481ce7b36ebde",
+          "size": 179316,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/o/openldap/openldap_2.6.6+dfsg-1~exp1ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "p11-kit": {
+      "version": "0.25.0-4ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "p11-kit_0.25.0-4ubuntu1.dsc",
+          "sha256": "8fb02338ea826c005b2421209fa4a36f997abe76fdd74b7e9d6ade1d7c28ae3c",
+          "size": 2608,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/p11-kit/p11-kit_0.25.0-4ubuntu1.dsc"
+        },
+        {
+          "filename": "p11-kit_0.25.0.orig.tar.xz",
+          "sha256": "d55583bcdde83d86579cabe3a8f7f2638675fef01d23cace733ff748fc354706",
+          "size": 958940,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/p11-kit/p11-kit_0.25.0.orig.tar.xz"
+        },
+        {
+          "filename": "p11-kit_0.25.0.orig.tar.xz.asc",
+          "sha256": "ee893a62a368fb807abc678a29279b1c04808ab626b68d5d7085b8b4ab4174c9",
+          "size": 228,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/p11-kit/p11-kit_0.25.0.orig.tar.xz.asc"
+        },
+        {
+          "filename": "p11-kit_0.25.0-4ubuntu1.debian.tar.xz",
+          "sha256": "975b6e4e9f823b494e9f5e1f3cac39312d0e5fe2f6151c508f1063d899eb16b2",
+          "size": 25920,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/p11-kit/p11-kit_0.25.0-4ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "patch": {
+      "version": "2.7.6-7build2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "patch_2.7.6-7build2.dsc",
+          "sha256": "59f3c5d58be444e2625ec2d39ba5a43b73a2030c5688027cb570d48931d1326c",
+          "size": 1838,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/patch/patch_2.7.6-7build2.dsc"
+        },
+        {
+          "filename": "patch_2.7.6.orig.tar.xz",
+          "sha256": "ac610bda97abe0d9f6b7c963255a11dcb196c25e337c61f94e4778d632f1d8fd",
+          "size": 783756,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/patch/patch_2.7.6.orig.tar.xz"
+        },
+        {
+          "filename": "patch_2.7.6-7build2.debian.tar.xz",
+          "sha256": "5d2db6a17dbfb6510bda2db732928a5003cb5be029bb840c31dad2fbc091dfec",
+          "size": 15248,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/patch/patch_2.7.6-7build2.debian.tar.xz"
+        }
+      ]
+    },
+    "pcre2": {
+      "version": "10.42-4",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "pcre2_10.42-4.dsc",
+          "sha256": "2796d9332a4b4abe5eeada4aa287e8f9765a497b4363e3c49815a6bca5845cfe",
+          "size": 2302,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/pcre2/pcre2_10.42-4.dsc"
+        },
+        {
+          "filename": "pcre2_10.42.orig.tar.gz",
+          "sha256": "c33b418e3b936ee3153de2c61cc638e7e4fe3156022a5c77d0711bcbb9d64f1f",
+          "size": 2397194,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/pcre2/pcre2_10.42.orig.tar.gz"
+        },
+        {
+          "filename": "pcre2_10.42-4.diff.gz",
+          "sha256": "b583a75e90b029616c6867eccfeb21031e62df98dd4462f9d13ccb95bb2f09e6",
+          "size": 8111,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/pcre2/pcre2_10.42-4.diff.gz"
+        }
+      ]
+    },
+    "pkgconf": {
+      "version": "1.8.1-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "pkgconf_1.8.1-2.dsc",
+          "sha256": "cf3911b0718b17201d0674951b6222aed6757184444c4d9f85754a4f1e79d305",
+          "size": 1638,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/pkgconf/pkgconf_1.8.1-2.dsc"
+        },
+        {
+          "filename": "pkgconf_1.8.1.orig.tar.xz",
+          "sha256": "644361ada2942be05655d4452eb018791647c31bba429b287f1f68deb2dc6840",
+          "size": 302372,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/pkgconf/pkgconf_1.8.1.orig.tar.xz"
+        },
+        {
+          "filename": "pkgconf_1.8.1-2.debian.tar.xz",
+          "sha256": "dce3a4f8b5bf8becca8fbf1129565c64687a30652abf0993bea5d375d4d514d4",
+          "size": 15556,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/pkgconf/pkgconf_1.8.1-2.debian.tar.xz"
+        }
+      ]
+    },
+    "python3-defaults": {
+      "version": "3.11.4-5",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "python3-defaults_3.11.4-5.dsc",
+          "sha256": "b59a38fa9c9c638e47cdbde5e869d879092ebc09decd32065a2c90ded3574fb8",
+          "size": 3001,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/python3-defaults/python3-defaults_3.11.4-5.dsc"
+        },
+        {
+          "filename": "python3-defaults_3.11.4-5.tar.gz",
+          "sha256": "170f676b5fdb0c3562aa14ae594f44c01e26e40ddc42ee407add512693cddb25",
+          "size": 146763,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/python3-defaults/python3-defaults_3.11.4-5.tar.gz"
+        }
+      ]
+    },
+    "python3-stdlib-extensions": {
+      "version": "3.11.5-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "python3-stdlib-extensions_3.11.5-1.dsc",
+          "sha256": "77bcdd358726c6d32e745d0f939ffa2ae72ab04cd585ebfacee0a3ef325b9779",
+          "size": 2563,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/python3-stdlib-extensions/python3-stdlib-extensions_3.11.5-1.dsc"
+        },
+        {
+          "filename": "python3-stdlib-extensions_3.11.5.orig.tar.xz",
+          "sha256": "563161811d9d8752ad45727130801705b74a60c0cd368560de17f085a10c85c4",
+          "size": 1784144,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/python3-stdlib-extensions/python3-stdlib-extensions_3.11.5.orig.tar.xz"
+        },
+        {
+          "filename": "python3-stdlib-extensions_3.11.5-1.debian.tar.xz",
+          "sha256": "ebce9a486ed0c0f100a395b9d7feb3992c1104d0b6877b578c0bdbc7f02ef0fe",
+          "size": 29120,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/python3-stdlib-extensions/python3-stdlib-extensions_3.11.5-1.debian.tar.xz"
+        }
+      ]
+    },
+    "readline": {
+      "version": "8.2-1.3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "readline_8.2-1.3.dsc",
+          "sha256": "05497ea99bef3f14b8d502cbe3f84fe7bbc0bce1c4f139ca32f0fd60dcac977e",
+          "size": 2553,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/readline/readline_8.2-1.3.dsc"
+        },
+        {
+          "filename": "readline_8.2.orig.tar.gz",
+          "sha256": "3feb7171f16a84ee82ca18a36d7b9be109a52c04f492a053331d7d1095007c35",
+          "size": 3043952,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/readline/readline_8.2.orig.tar.gz"
+        },
+        {
+          "filename": "readline_8.2-1.3.debian.tar.xz",
+          "sha256": "8cd3c02d6c07b4cf57da607de168a9e347ee05c31857f0f6236fe3df4fc207d9",
+          "size": 30016,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/readline/readline_8.2-1.3.debian.tar.xz"
+        }
+      ]
+    },
+    "rhash": {
+      "version": "1.4.3-3",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "rhash_1.4.3-3.dsc",
+          "sha256": "655d948d339bb4e19de11a57d0d4aae109c27f949bd04157e4d913ef22c79e0b",
+          "size": 2336,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rhash/rhash_1.4.3-3.dsc"
+        },
+        {
+          "filename": "rhash_1.4.3.orig.tar.gz",
+          "sha256": "1e40fa66966306920f043866cbe8612f4b939b033ba5e2708c3f41be257c8a3e",
+          "size": 429290,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rhash/rhash_1.4.3.orig.tar.gz"
+        },
+        {
+          "filename": "rhash_1.4.3.orig.tar.gz.asc",
+          "sha256": "b6eae72cfb6d984b165a7e6c527fa92b6b7c93663c6e1c208c73a2d9091c5d90",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rhash/rhash_1.4.3.orig.tar.gz.asc"
+        },
+        {
+          "filename": "rhash_1.4.3-3.debian.tar.xz",
+          "sha256": "e67145b0a9c231ff1d85daeb71e7956cca182ac57f90bd0b76a17411b7110ce2",
+          "size": 16420,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rhash/rhash_1.4.3-3.debian.tar.xz"
+        }
+      ]
+    },
+    "rpcsvc-proto": {
+      "version": "1.4.2-0ubuntu6",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "rpcsvc-proto_1.4.2-0ubuntu6.dsc",
+          "sha256": "2df318256d05209a63a37ecb088485eb002c104d5ea312787e432da1f3e2455f",
+          "size": 2113,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rpcsvc-proto/rpcsvc-proto_1.4.2-0ubuntu6.dsc"
+        },
+        {
+          "filename": "rpcsvc-proto_1.4.2.orig.tar.xz",
+          "sha256": "678851b9f7ddf4410d2859c12016b65a6dd1a0728d478f18aeb54d165352f17c",
+          "size": 171620,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rpcsvc-proto/rpcsvc-proto_1.4.2.orig.tar.xz"
+        },
+        {
+          "filename": "rpcsvc-proto_1.4.2-0ubuntu6.debian.tar.xz",
+          "sha256": "f8e56418bb03638228b9158fe1a0ccc3958bda17e0fe487abb40b2e8a005bd2c",
+          "size": 4268,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rpcsvc-proto/rpcsvc-proto_1.4.2-0ubuntu6.debian.tar.xz"
+        }
+      ]
+    },
+    "rtmpdump": {
+      "version": "2.4+20151223.gitfa8646d.1-2build4",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "rtmpdump_2.4+20151223.gitfa8646d.1-2build4.dsc",
+          "sha256": "e9e721e9659ff2450f4c06505a4ea9f77183a3eaa9d08c908d3cc0ecd72c9ad4",
+          "size": 2431,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rtmpdump/rtmpdump_2.4+20151223.gitfa8646d.1-2build4.dsc"
+        },
+        {
+          "filename": "rtmpdump_2.4+20151223.gitfa8646d.1.orig.tar.gz",
+          "sha256": "5c032f5c8cc2937eb55a81a94effdfed3b0a0304b6376147b86f951e225e3ab5",
+          "size": 142213,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rtmpdump/rtmpdump_2.4+20151223.gitfa8646d.1.orig.tar.gz"
+        },
+        {
+          "filename": "rtmpdump_2.4+20151223.gitfa8646d.1-2build4.debian.tar.xz",
+          "sha256": "e6fe0958bdea80d75d643cc2cb95c9c57c2b7855f646e3be476e713770ed6269",
+          "size": 8376,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/r/rtmpdump/rtmpdump_2.4+20151223.gitfa8646d.1-2build4.debian.tar.xz"
+        }
+      ]
+    },
+    "sed": {
+      "version": "4.9-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "sed_4.9-1.dsc",
+          "sha256": "f0670e00c1ad51321e5b741a737e977cdb3b0eef47964b2269535f7820df576a",
+          "size": 2077,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sed/sed_4.9-1.dsc"
+        },
+        {
+          "filename": "sed_4.9.orig.tar.xz",
+          "sha256": "6e226b732e1cd739464ad6862bd1a1aba42d7982922da7a53519631d24975181",
+          "size": 1397092,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sed/sed_4.9.orig.tar.xz"
+        },
+        {
+          "filename": "sed_4.9.orig.tar.xz.asc",
+          "sha256": "9ea64f215b308ae0a80cd958daaac23bb13491d69a472a0195974d107890a8c6",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sed/sed_4.9.orig.tar.xz.asc"
+        },
+        {
+          "filename": "sed_4.9-1.debian.tar.xz",
+          "sha256": "24cdd6a3b40909ec374bd87df62364904bbe18fc12ba66111e9f9f617ff7f679",
+          "size": 62616,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sed/sed_4.9-1.debian.tar.xz"
+        }
+      ]
+    },
+    "sensible-utils": {
+      "version": "0.0.20",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "sensible-utils_0.0.20.dsc",
+          "sha256": "8021b5c0ee69ed3429e0a48a4bfa0fe0e8f3937ec24b29a82eb144e86a3afe7b",
+          "size": 1737,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sensible-utils/sensible-utils_0.0.20.dsc"
+        },
+        {
+          "filename": "sensible-utils_0.0.20.tar.xz",
+          "sha256": "b8cfd2dd268b3d982cc8e94af573b3e72e7917b2fa6f28eaa5e056ad99212edb",
+          "size": 70608,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sensible-utils/sensible-utils_0.0.20.tar.xz"
+        }
+      ]
+    },
+    "setuptools": {
+      "version": "68.1.2-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "setuptools_68.1.2-2.dsc",
+          "sha256": "ca80c8179d0499e8d386245b3f9fc4ae2021e7388bebe4c8d5ce9e8f6c360bad",
+          "size": 2237,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/setuptools/setuptools_68.1.2-2.dsc"
+        },
+        {
+          "filename": "setuptools_68.1.2.orig.tar.gz",
+          "sha256": "3d4dfa6d95f1b101d695a6160a7626e15583af71a5f52176efa5d39a054d475d",
+          "size": 2198001,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/setuptools/setuptools_68.1.2.orig.tar.gz"
+        },
+        {
+          "filename": "setuptools_68.1.2-2.debian.tar.xz",
+          "sha256": "a0ba63b09f24281a4535783fe581b93d58a48144c40c469028deeeaf865bc297",
+          "size": 14160,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/setuptools/setuptools_68.1.2-2.debian.tar.xz"
+        }
+      ]
+    },
+    "sysvinit": {
+      "version": "3.07-1ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "sysvinit_3.07-1ubuntu1.dsc",
+          "sha256": "c0dad7cb7b273fd19cb5c0a0c475d564dadb62eb30f89df4aa94e731ebfe70e4",
+          "size": 2466,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sysvinit/sysvinit_3.07-1ubuntu1.dsc"
+        },
+        {
+          "filename": "sysvinit_3.07.orig.tar.gz",
+          "sha256": "79ac3d1b3b52cee328a59f4f5357104eafde6f146c2ee10a929096d7177c83df",
+          "size": 513168,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sysvinit/sysvinit_3.07.orig.tar.gz"
+        },
+        {
+          "filename": "sysvinit_3.07-1ubuntu1.debian.tar.xz",
+          "sha256": "43a6e946e11715f446744ab1d269c27cc78e35481ceaaa7fec4589ab44d56b51",
+          "size": 135556,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sysvinit/sysvinit_3.07-1ubuntu1.debian.tar.xz"
+        }
+      ]
+    },
+    "ubuntu-keyring": {
+      "version": "2021.03.26",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "ubuntu-keyring_2021.03.26.dsc",
+          "sha256": "e8fef04540623d14827938a7a0d605bea709f076a1aca4989669a2055cf9a9bc",
+          "size": 1855,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/ubuntu-keyring/ubuntu-keyring_2021.03.26.dsc"
+        },
+        {
+          "filename": "ubuntu-keyring_2021.03.26.tar.gz",
+          "sha256": "492eed5c06408c6f632577adb0796130af5d6542013ef418f47187a209e49bb1",
+          "size": 34529,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/ubuntu-keyring/ubuntu-keyring_2021.03.26.tar.gz"
+        }
+      ]
+    },
+    "usrmerge": {
+      "version": "35ubuntu1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "usrmerge_35ubuntu1.dsc",
+          "sha256": "fa7adf1cf14e0c09414f4ca225b3230449720328ac228407eddb4dc5dd852c24",
+          "size": 1717,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/usrmerge/usrmerge_35ubuntu1.dsc"
+        },
+        {
+          "filename": "usrmerge_35ubuntu1.tar.xz",
+          "sha256": "a832b190cc4432484530f12d34880f11db640dee59de2c1b40c0011806b6e102",
+          "size": 15240,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/usrmerge/usrmerge_35ubuntu1.tar.xz"
+        }
+      ]
+    },
+    "xorg": {
+      "version": "1:7.7+23ubuntu2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "xorg_7.7+23ubuntu2.dsc",
+          "sha256": "60fde2e08a27c61f46320a1ccf057ab4fdd983e08c9ab5b603b010259514deb0",
+          "size": 2095,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/x/xorg/xorg_7.7+23ubuntu2.dsc"
+        },
+        {
+          "filename": "xorg_7.7+23ubuntu2.tar.gz",
+          "sha256": "cc30e97fee09a9a8db16931e9eb8b39c37e0699136a8a8d31898ae414a3c4f74",
+          "size": 301762,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/x/xorg/xorg_7.7+23ubuntu2.tar.gz"
+        }
+      ]
+    },
+    "xxhash": {
+      "version": "0.8.1-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "xxhash_0.8.1-1.dsc",
+          "sha256": "4a961627c06efc8fa3bc4b06ee9dba6cfaf092f2550b88d63e9218a2728721b4",
+          "size": 1966,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/x/xxhash/xxhash_0.8.1-1.dsc"
+        },
+        {
+          "filename": "xxhash_0.8.1.orig.tar.gz",
+          "sha256": "3bb6b7d6f30c591dd65aaaff1c8b7a5b94d81687998ca9400082c739a690436c",
+          "size": 171552,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/x/xxhash/xxhash_0.8.1.orig.tar.gz"
+        },
+        {
+          "filename": "xxhash_0.8.1-1.debian.tar.xz",
+          "sha256": "d40aa223e90b85435082857b64573541ba9a995841717496e8975aed97241550",
+          "size": 4572,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/x/xxhash/xxhash_0.8.1-1.debian.tar.xz"
+        }
+      ]
+    },
+    "xz-utils": {
+      "version": "5.4.1-0.2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "xz-utils_5.4.1-0.2.dsc",
+          "sha256": "faaef4551ecc9547f308ca65cdafe6d2fa43b06f11944001490079303c87bf40",
+          "size": 2621,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/x/xz-utils/xz-utils_5.4.1-0.2.dsc"
+        },
+        {
+          "filename": "xz-utils_5.4.1.orig.tar.xz",
+          "sha256": "5d9827aa1875b21c288f78864bb26d2650b436ea8d2cad364e4921eb6266a5a5",
+          "size": 1485272,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/x/xz-utils/xz-utils_5.4.1.orig.tar.xz"
+        },
+        {
+          "filename": "xz-utils_5.4.1.orig.tar.xz.asc",
+          "sha256": "4b0c7707114996092a5f75a98333de2102db83a27218e4903b8fb7c24a8d0233",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/x/xz-utils/xz-utils_5.4.1.orig.tar.xz.asc"
+        },
+        {
+          "filename": "xz-utils_5.4.1-0.2.debian.tar.xz",
+          "sha256": "67eeab55ab3e4b35722d4ec255e0f735b3c61aab0437ab3c8274f5aa77c9c407",
+          "size": 87432,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/x/xz-utils/xz-utils_5.4.1-0.2.debian.tar.xz"
+        }
+      ]
+    },
+    "zip": {
+      "version": "3.0-13",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "zip_3.0-13.dsc",
+          "sha256": "9fad1b5bda0c38a6811494159953a19dc42b9022b29b73ba51f30d2bb48445e6",
+          "size": 1336,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/z/zip/zip_3.0-13.dsc"
+        },
+        {
+          "filename": "zip_3.0.orig.tar.gz",
+          "sha256": "f0e8bb1f9b7eb0b01285495a2699df3a4b766784c1765a8f1aeedf63c0806369",
+          "size": 1118845,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/z/zip/zip_3.0.orig.tar.gz"
+        },
+        {
+          "filename": "zip_3.0-13.debian.tar.xz",
+          "sha256": "4f5aca2d9f6021d2fd73f2fc16e9a392ab98673a940b44cf78fe38b8cdec1ab9",
+          "size": 8688,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/z/zip/zip_3.0-13.debian.tar.xz"
+        }
+      ]
+    },
+    "zlib": {
+      "version": "1:1.2.13.dfsg-1ubuntu5",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "zlib_1.2.13.dfsg-1ubuntu5.dsc",
+          "sha256": "a1bcb5633884bb84b5a0628ec99c3e301a15ebf1834f15c42ccc59bb83a0d91f",
+          "size": 2968,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/z/zlib/zlib_1.2.13.dfsg-1ubuntu5.dsc"
+        },
+        {
+          "filename": "zlib_1.2.13.dfsg.orig.tar.bz2",
+          "sha256": "71feb7947e3c00ef125f83b79a4e529bde31171e5babe48b391f06758d1ab0a1",
+          "size": 1239825,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/z/zlib/zlib_1.2.13.dfsg.orig.tar.bz2"
+        },
+        {
+          "filename": "zlib_1.2.13.dfsg-1ubuntu5.debian.tar.xz",
+          "sha256": "247c3657605129538d8489590cfc4333ff3e40a32da8e302302f1d5588b5b963",
+          "size": 57068,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/z/zlib/zlib_1.2.13.dfsg-1ubuntu5.debian.tar.xz"
+        }
+      ]
+    },
+    "ninja-build": {
+      "version": "1.11.1-2",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "ninja-build_1.11.1-2.dsc",
+          "sha256": "02074db4453a1f3df1a654eff6d036530fcde11afc86bd2a5fa388225a8bf2db",
+          "size": 2025,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/n/ninja-build/ninja-build_1.11.1-2.dsc"
+        },
+        {
+          "filename": "ninja-build_1.11.1.orig.tar.gz",
+          "sha256": "31747ae633213f1eda3842686f83c2aa1412e0f5691d1c14dbbcc67fe7400cea",
+          "size": 229479,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/n/ninja-build/ninja-build_1.11.1.orig.tar.gz"
+        },
+        {
+          "filename": "ninja-build_1.11.1-2.debian.tar.xz",
+          "sha256": "05586d58a41bb8a82f5d5772736d72e908f8c75e8d7788b8e93b1f49f197d721",
+          "size": 6632,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/n/ninja-build/ninja-build_1.11.1-2.debian.tar.xz"
+        }
+      ]
+    },
+    "patchelf": {
+      "version": "0.14.3-1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "patchelf_0.14.3-1.dsc",
+          "sha256": "314376351ebb7d78c40906c9afafc24fe5f31c6a216c4abdde57059ed043798d",
+          "size": 1973,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/p/patchelf/patchelf_0.14.3-1.dsc"
+        },
+        {
+          "filename": "patchelf_0.14.3.orig.tar.gz",
+          "sha256": "827a8ca914c69413f1ca0d967a637980a24edf000a938531a77e663317c853bb",
+          "size": 123722,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/p/patchelf/patchelf_0.14.3.orig.tar.gz"
+        },
+        {
+          "filename": "patchelf_0.14.3-1.debian.tar.xz",
+          "sha256": "f628c85b36c9b364feef3de2b1c23cd2e5a27cc9d1e92109129f8608d59fbf64",
+          "size": 3332,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/p/patchelf/patchelf_0.14.3-1.debian.tar.xz"
+        }
+      ]
+    },
+    "z3": {
+      "version": "4.8.12-3.1",
+      "suite": "mantic",
+      "files": [
+        {
+          "filename": "z3_4.8.12-3.1.dsc",
+          "sha256": "0e5db5248212a72d3dc3fe99873181161649ff03d89de726bbe6f57604488008",
+          "size": 2663,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/z/z3/z3_4.8.12-3.1.dsc"
+        },
+        {
+          "filename": "z3_4.8.12.orig.tar.gz",
+          "sha256": "e3aaefde68b839299cbc988178529535e66048398f7d083b40c69fe0da55f8b7",
+          "size": 4803435,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/z/z3/z3_4.8.12.orig.tar.gz"
+        },
+        {
+          "filename": "z3_4.8.12-3.1.debian.tar.xz",
+          "sha256": "5bb616648de1d82f5563377e1640e59dd653b6beac3b6513358362e5dbd925fb",
+          "size": 10420,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/z/z3/z3_4.8.12-3.1.debian.tar.xz"
+        }
+      ]
+    },
+    "curl": {
+      "version": "8.2.1-1ubuntu3.3",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "curl_8.2.1-1ubuntu3.3.dsc",
+          "sha256": "8a7d98e15d9bfab51fc009604d8a6d92035072e216f99904c8027ed47f1972b6",
+          "size": 3094,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/curl/curl_8.2.1-1ubuntu3.3.dsc"
+        },
+        {
+          "filename": "curl_8.2.1.orig.tar.gz",
+          "sha256": "f98bdb06c0f52bdd19e63c4a77b5eb19b243bcbbd0f5b002b9f3cba7295a3a42",
+          "size": 4394020,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/curl/curl_8.2.1.orig.tar.gz"
+        },
+        {
+          "filename": "curl_8.2.1-1ubuntu3.3.debian.tar.xz",
+          "sha256": "b1e42ac1af2b2d845ddfc57bf11dbd448ef46093d8488799d0dbb2d24a039f0a",
+          "size": 56220,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/curl/curl_8.2.1-1ubuntu3.3.debian.tar.xz"
+        }
+      ]
+    },
+    "expat": {
+      "version": "2.5.0-2ubuntu0.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "expat_2.5.0-2ubuntu0.1.dsc",
+          "sha256": "a43b95a356ee3a5a0e21df3e29ddd1c4f360e58767a61d01e1822e66ef7d9bc4",
+          "size": 2120,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/e/expat/expat_2.5.0-2ubuntu0.1.dsc"
+        },
+        {
+          "filename": "expat_2.5.0.orig.tar.gz",
+          "sha256": "ab00ee05c7067fd10a35c5d2a4922ebba746ddd50ff83b79c828da17bbdf1757",
+          "size": 8320988,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/e/expat/expat_2.5.0.orig.tar.gz"
+        },
+        {
+          "filename": "expat_2.5.0-2ubuntu0.1.debian.tar.xz",
+          "sha256": "3d91a80da302f2141a7f88f47927ad2486fd112d5023f414c88f52233feb2654",
+          "size": 20320,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/e/expat/expat_2.5.0-2ubuntu0.1.debian.tar.xz"
+        }
+      ]
+    },
+    "git": {
+      "version": "1:2.40.1-1ubuntu1.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "git_2.40.1-1ubuntu1.1.dsc",
+          "sha256": "d3aab462f0bb28c4da2e7ae8fc0f07d62c4e58520e57668ca8aacdc99182cee4",
+          "size": 2927,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/git/git_2.40.1-1ubuntu1.1.dsc"
+        },
+        {
+          "filename": "git_2.40.1.orig.tar.xz",
+          "sha256": "4893b8b98eefc9fdc4b0e7ca249e340004faa7804a433d17429e311e1fef21d2",
+          "size": 7185260,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/git/git_2.40.1.orig.tar.xz"
+        },
+        {
+          "filename": "git_2.40.1-1ubuntu1.1.debian.tar.xz",
+          "sha256": "8bf33ccd5c9bd80fc8dc501988f33bf5c5fdaeeece47325e7416b844d97d77b7",
+          "size": 756220,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/git/git_2.40.1-1ubuntu1.1.debian.tar.xz"
+        }
+      ]
+    },
+    "glibc": {
+      "version": "2.38-1ubuntu6.3",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "glibc_2.38-1ubuntu6.3.dsc",
+          "sha256": "354d8d5cd482d6c1d980b532fe391f01e28703dde9003118a31238949a136d52",
+          "size": 9525,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/glibc/glibc_2.38-1ubuntu6.3.dsc"
+        },
+        {
+          "filename": "glibc_2.38.orig.tar.xz",
+          "sha256": "fb82998998b2b29965467bc1b69d152e9c307d2cf301c9eafb4555b770ef3fd2",
+          "size": 18913712,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/glibc/glibc_2.38.orig.tar.xz"
+        },
+        {
+          "filename": "glibc_2.38.orig.tar.xz.asc",
+          "sha256": "1731c024d6c885ce95af66df67df8e00f822d96e165b046beedfe56426f4aaf9",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/glibc/glibc_2.38.orig.tar.xz.asc"
+        },
+        {
+          "filename": "glibc_2.38-1ubuntu6.3.debian.tar.xz",
+          "sha256": "3b86507766f191721b29ba42bff59d4ad224042fe3613abe31dfcc9f43a4b1e7",
+          "size": 466432,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/glibc/glibc_2.38-1ubuntu6.3.debian.tar.xz"
+        }
+      ]
+    },
+    "gnutls28": {
+      "version": "3.8.1-4ubuntu1.3",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "gnutls28_3.8.1-4ubuntu1.3.dsc",
+          "sha256": "f81d14d301fee4bad15c4646c3a3864f7b7b3b53d6704b8529cac23d4bbaae51",
+          "size": 3346,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gnutls28/gnutls28_3.8.1-4ubuntu1.3.dsc"
+        },
+        {
+          "filename": "gnutls28_3.8.1.orig.tar.xz",
+          "sha256": "ba8b9e15ae20aba88f44661978f5b5863494316fe7e722ede9d069fe6294829c",
+          "size": 6447056,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gnutls28/gnutls28_3.8.1.orig.tar.xz"
+        },
+        {
+          "filename": "gnutls28_3.8.1.orig.tar.xz.asc",
+          "sha256": "3b6357c19431736099929e13ff8340e9ed4b36e4e22b34ae7b46e1f85a1d2884",
+          "size": 996,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gnutls28/gnutls28_3.8.1.orig.tar.xz.asc"
+        },
+        {
+          "filename": "gnutls28_3.8.1-4ubuntu1.3.debian.tar.xz",
+          "sha256": "b77e447cc42b603c7be0ab5df9ff43fb36d0ea5dff0cba2c64a3fbdbe7229768",
+          "size": 84868,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/gnutls28/gnutls28_3.8.1-4ubuntu1.3.debian.tar.xz"
+        }
+      ]
+    },
+    "golang-1.21": {
+      "version": "1.21.1-1ubuntu0.23.10.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "golang-1.21_1.21.1-1ubuntu0.23.10.1.dsc",
+          "sha256": "5acc97189cdd94a7ddd1790fe46dd9f294bf6e045f8669d655bc75434170c239",
+          "size": 2907,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/golang-1.21/golang-1.21_1.21.1-1ubuntu0.23.10.1.dsc"
+        },
+        {
+          "filename": "golang-1.21_1.21.1.orig.tar.gz",
+          "sha256": "bfa36bf75e9a1e9cbbdb9abcf9d1707e479bd3a07880a8ae3564caee5711cb99",
+          "size": 26974429,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/golang-1.21/golang-1.21_1.21.1.orig.tar.gz"
+        },
+        {
+          "filename": "golang-1.21_1.21.1.orig.tar.gz.asc",
+          "sha256": "de6c8e0b031f3d3a46a9ecd4419150c83b00f4d45eadab6b3bd08609edcf825a",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/golang-1.21/golang-1.21_1.21.1.orig.tar.gz.asc"
+        },
+        {
+          "filename": "golang-1.21_1.21.1-1ubuntu0.23.10.1.debian.tar.xz",
+          "sha256": "e469b7f019a368d4a9d103decfbed74f74007be0b5cdf8287bd4b0ad280ac934",
+          "size": 42428,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/g/golang-1.21/golang-1.21_1.21.1-1ubuntu0.23.10.1.debian.tar.xz"
+        }
+      ]
+    },
+    "libarchive": {
+      "version": "3.6.2-1ubuntu1.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "libarchive_3.6.2-1ubuntu1.1.dsc",
+          "sha256": "d396b942a9083fa89de39b6cb790ab30d06c944afea778b507a8f11917853b88",
+          "size": 2623,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/liba/libarchive/libarchive_3.6.2-1ubuntu1.1.dsc"
+        },
+        {
+          "filename": "libarchive_3.6.2.orig.tar.xz",
+          "sha256": "9e2c1b80d5fbe59b61308fdfab6c79b5021d7ff4ff2489fb12daf0a96a83551d",
+          "size": 5213196,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/liba/libarchive/libarchive_3.6.2.orig.tar.xz"
+        },
+        {
+          "filename": "libarchive_3.6.2.orig.tar.xz.asc",
+          "sha256": "c6f1cdc29571dd6b09d3776ae98404a81b2dbe970a2bd9dc0bd9ed183ca49b71",
+          "size": 659,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/liba/libarchive/libarchive_3.6.2.orig.tar.xz.asc"
+        },
+        {
+          "filename": "libarchive_3.6.2-1ubuntu1.1.debian.tar.xz",
+          "sha256": "d618165ebd9597302dfad258bf33655283490af6eedbea66bb3fb5f3ec18055c",
+          "size": 25872,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/liba/libarchive/libarchive_3.6.2-1ubuntu1.1.debian.tar.xz"
+        }
+      ]
+    },
+    "libssh": {
+      "version": "0.10.5-3ubuntu1.2",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "libssh_0.10.5-3ubuntu1.2.dsc",
+          "sha256": "dbf21d49b73583816d3a42eff3ff95b036be3cb164a3cc1e89e53354d7f1d1b2",
+          "size": 2857,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libssh/libssh_0.10.5-3ubuntu1.2.dsc"
+        },
+        {
+          "filename": "libssh_0.10.5.orig.tar.xz",
+          "sha256": "b60e2ff7f367b9eee2b5634d3a63303ddfede0e6a18dfca88c44a8770e7e4234",
+          "size": 557776,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libssh/libssh_0.10.5.orig.tar.xz"
+        },
+        {
+          "filename": "libssh_0.10.5.orig.tar.xz.asc",
+          "sha256": "cc5427ac9480b30f87f7c3c2dca1830c1e7fe3c18503da2c07d4110150916c66",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libssh/libssh_0.10.5.orig.tar.xz.asc"
+        },
+        {
+          "filename": "libssh_0.10.5-3ubuntu1.2.debian.tar.xz",
+          "sha256": "fd76cc3c1e349a5edbed8a984c1bcbafe32ff26dce3321102306c325767d4478",
+          "size": 46392,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libs/libssh/libssh_0.10.5-3ubuntu1.2.debian.tar.xz"
+        }
+      ]
+    },
+    "libuv1": {
+      "version": "1.44.2-1ubuntu0.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "libuv1_1.44.2-1ubuntu0.1.dsc",
+          "sha256": "1e1924d82cfdfe873d976ffbd61cf1fcfe207ed43fadcd1bae2d82a662d00def",
+          "size": 2112,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libu/libuv1/libuv1_1.44.2-1ubuntu0.1.dsc"
+        },
+        {
+          "filename": "libuv1_1.44.2.orig.tar.gz",
+          "sha256": "d79b4b06ef04be85fb890bf39d55942cc64c2e15fd14eaa32dae5dce94485484",
+          "size": 1308776,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libu/libuv1/libuv1_1.44.2.orig.tar.gz"
+        },
+        {
+          "filename": "libuv1_1.44.2-1ubuntu0.1.debian.tar.xz",
+          "sha256": "494a41df669a6a8e1139b210740e71df799e0187d6d0dcda9b2ba995a3c08f8a",
+          "size": 21852,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libu/libuv1/libuv1_1.44.2-1ubuntu0.1.debian.tar.xz"
+        }
+      ]
+    },
+    "libxml2": {
+      "version": "2.9.14+dfsg-1.3ubuntu0.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "libxml2_2.9.14+dfsg-1.3ubuntu0.1.dsc",
+          "sha256": "f1ff7e1d673f33e9e3ca0fe60d365539afe8493e1791f94f459731afdf3060f2",
+          "size": 3038,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxml2/libxml2_2.9.14+dfsg-1.3ubuntu0.1.dsc"
+        },
+        {
+          "filename": "libxml2_2.9.14+dfsg.orig.tar.xz",
+          "sha256": "4fe913dec8b1ab89d13b489b419a8203176ea39e931eaa0d25b17eafb9c279e9",
+          "size": 2351200,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxml2/libxml2_2.9.14+dfsg.orig.tar.xz"
+        },
+        {
+          "filename": "libxml2_2.9.14+dfsg-1.3ubuntu0.1.debian.tar.xz",
+          "sha256": "68a5d30f8f05f3937a613ce8c68999d2830e499d7da1fa97e09f7042586bbba8",
+          "size": 35524,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/libx/libxml2/libxml2_2.9.14+dfsg-1.3ubuntu0.1.debian.tar.xz"
+        }
+      ]
+    },
+    "linux": {
+      "version": "6.5.0-44.44",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "linux_6.5.0-44.44.dsc",
+          "sha256": "ece523400994165034af8c9888ede8be21a0b42d6fd61fb7ea9d4114a803f3d7",
+          "size": 9196,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/l/linux/linux_6.5.0-44.44.dsc"
+        },
+        {
+          "filename": "linux_6.5.0.orig.tar.gz",
+          "sha256": "2a2e58f77ba57f0660d3cb51fcbf25058dce092aaf2cd09e662d730301b96064",
+          "size": 223513863,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/l/linux/linux_6.5.0.orig.tar.gz"
+        },
+        {
+          "filename": "linux_6.5.0-44.44.diff.gz",
+          "sha256": "a0cf8f64575108624a5638dbe1c4c4eae2b3551c83b3176e0491b18e02487cee",
+          "size": 3713679,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/l/linux/linux_6.5.0-44.44.diff.gz"
+        }
+      ]
+    },
+    "nghttp2": {
+      "version": "1.55.1-1ubuntu0.2",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "nghttp2_1.55.1-1ubuntu0.2.dsc",
+          "sha256": "e2b3aa919d851887125eb291e13da04a4fe25dceae00ea0ff69ad61f1553962c",
+          "size": 2665,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/nghttp2/nghttp2_1.55.1-1ubuntu0.2.dsc"
+        },
+        {
+          "filename": "nghttp2_1.55.1.orig.tar.gz",
+          "sha256": "b89dece5bc3382b82c22db8dc8d1e062258cb7af8e4ad55278fa7149645a588d",
+          "size": 1071258,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/nghttp2/nghttp2_1.55.1.orig.tar.gz"
+        },
+        {
+          "filename": "nghttp2_1.55.1-1ubuntu0.2.debian.tar.xz",
+          "sha256": "7bd6ea45f5f1e6e0025df7fbe9276d88295865a322c08beb825ff19331a4a481",
+          "size": 19328,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/n/nghttp2/nghttp2_1.55.1-1ubuntu0.2.debian.tar.xz"
+        }
+      ]
+    },
+    "openssl": {
+      "version": "3.0.10-1ubuntu2.3",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "openssl_3.0.10-1ubuntu2.3.dsc",
+          "sha256": "e2c85a6422bb3e2042ab5af457f2e793633038cd8c9b39d6e20a02ec564a2b82",
+          "size": 2781,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_3.0.10-1ubuntu2.3.dsc"
+        },
+        {
+          "filename": "openssl_3.0.10.orig.tar.gz",
+          "sha256": "1761d4f5b13a1028b9b6f3d4b8e17feb0cedc9370f6afe61d7193d2cdce83323",
+          "size": 15194904,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_3.0.10.orig.tar.gz"
+        },
+        {
+          "filename": "openssl_3.0.10.orig.tar.gz.asc",
+          "sha256": "f6f2e5f62e74a7f87d37e0d1de70b3612b01a9afcfdc00bc05fde82611f26e3d",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_3.0.10.orig.tar.gz.asc"
+        },
+        {
+          "filename": "openssl_3.0.10-1ubuntu2.3.debian.tar.xz",
+          "sha256": "3cd3df2a58bae98036d059bb9be1433338393083103bdd00aee8e38fc18a923b",
+          "size": 180344,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_3.0.10-1ubuntu2.3.debian.tar.xz"
+        }
+      ]
+    },
+    "pam": {
+      "version": "1.5.2-6ubuntu1.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "pam_1.5.2-6ubuntu1.1.dsc",
+          "sha256": "4ea2adce8774797ff685600859c73d5df0668a978dfeec6219fd435dd604d682",
+          "size": 2704,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/pam/pam_1.5.2-6ubuntu1.1.dsc"
+        },
+        {
+          "filename": "pam_1.5.2.orig.tar.xz",
+          "sha256": "e4ec7131a91da44512574268f493c6d8ca105c87091691b8e9b56ca685d4f94d",
+          "size": 988784,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/pam/pam_1.5.2.orig.tar.xz"
+        },
+        {
+          "filename": "pam_1.5.2-6ubuntu1.1.debian.tar.xz",
+          "sha256": "df29b435b66fb00564742f461f1b8084f14d09ab68db41d24fada04b0e9a54b8",
+          "size": 169216,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/pam/pam_1.5.2-6ubuntu1.1.debian.tar.xz"
+        }
+      ]
+    },
+    "perl": {
+      "version": "5.36.0-9ubuntu1.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "perl_5.36.0-9ubuntu1.1.dsc",
+          "sha256": "284bc838939bcd7d2452d081c4d0c455423cca1f8dd795c7a0f7e68469909409",
+          "size": 3009,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/perl/perl_5.36.0-9ubuntu1.1.dsc"
+        },
+        {
+          "filename": "perl_5.36.0.orig-regen-configure.tar.xz",
+          "sha256": "10ac353bc5a933403afe60ed1817e7a456f99bdbcaf80c1cdb0eb3a08ea56d4e",
+          "size": 417784,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/perl/perl_5.36.0.orig-regen-configure.tar.xz"
+        },
+        {
+          "filename": "perl_5.36.0.orig.tar.xz",
+          "sha256": "0f386dccbee8e26286404b2cca144e1005be65477979beb9b1ba272d4819bcf0",
+          "size": 13051500,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/perl/perl_5.36.0.orig.tar.xz"
+        },
+        {
+          "filename": "perl_5.36.0-9ubuntu1.1.debian.tar.xz",
+          "sha256": "3ffd2ba49e1991b6aec8ae6be82bac0dc403d389c6440c4a646cc0c28309b9c8",
+          "size": 172720,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/perl/perl_5.36.0-9ubuntu1.1.debian.tar.xz"
+        }
+      ]
+    },
+    "procps": {
+      "version": "2:4.0.3-1ubuntu1.23.10.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "procps_4.0.3-1ubuntu1.23.10.1.dsc",
+          "sha256": "14090b92940e636a317cd2d92599a14f9fd6a1158ccf6f12ae5f7a32eb111896",
+          "size": 2113,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/procps/procps_4.0.3-1ubuntu1.23.10.1.dsc"
+        },
+        {
+          "filename": "procps_4.0.3.orig.tar.xz",
+          "sha256": "303c8ec4f96ae18d8eaef86c2bd0986938764a45dc505fe0a0af868c674dba92",
+          "size": 1294992,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/procps/procps_4.0.3.orig.tar.xz"
+        },
+        {
+          "filename": "procps_4.0.3-1ubuntu1.23.10.1.debian.tar.xz",
+          "sha256": "83ba74f16a5bdaa7a92f8a819f1b44ca75fb34769af76ec990a73f0586ba7a20",
+          "size": 34400,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/procps/procps_4.0.3-1ubuntu1.23.10.1.debian.tar.xz"
+        }
+      ]
+    },
+    "python3.11": {
+      "version": "3.11.6-3ubuntu0.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "python3.11_3.11.6-3ubuntu0.1.dsc",
+          "sha256": "901b54bd84dac2d1b599f20273b6d8ca0f6a3691b20fc4f89454c97ccb9aba28",
+          "size": 3787,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/python3.11/python3.11_3.11.6-3ubuntu0.1.dsc"
+        },
+        {
+          "filename": "python3.11_3.11.6.orig.tar.xz",
+          "sha256": "0fab78fa7f133f4f38210c6260d90d7c0d5c7198446419ce057ec7ac2e6f5f38",
+          "size": 20067204,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/python3.11/python3.11_3.11.6.orig.tar.xz"
+        },
+        {
+          "filename": "python3.11_3.11.6-3ubuntu0.1.debian.tar.xz",
+          "sha256": "89de721dd03fa2fbfad3a8c0da51a934afeeaebfe7ecc4cf5ec72bf76c16af49",
+          "size": 217108,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/p/python3.11/python3.11_3.11.6-3ubuntu0.1.debian.tar.xz"
+        }
+      ]
+    },
+    "shadow": {
+      "version": "1:4.13+dfsg1-1ubuntu1.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "shadow_4.13+dfsg1-1ubuntu1.1.dsc",
+          "sha256": "249ad9b38849ec65da041ddbcb0ef9e3809c3412b6e448f8f3ba75e62c659c28",
+          "size": 2221,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/shadow/shadow_4.13+dfsg1-1ubuntu1.1.dsc"
+        },
+        {
+          "filename": "shadow_4.13+dfsg1.orig.tar.xz",
+          "sha256": "a8bb3a2aceff1cbe39d0f50687dcc1d7e7be0516a9d954d8e2eedb93f5906207",
+          "size": 1811752,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/shadow/shadow_4.13+dfsg1.orig.tar.xz"
+        },
+        {
+          "filename": "shadow_4.13+dfsg1-1ubuntu1.1.debian.tar.xz",
+          "sha256": "a46aeae8fefd34e672fc26f28b36d8cad0962bd1f27cc6ab73c065cce649c320",
+          "size": 93460,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/shadow/shadow_4.13+dfsg1-1ubuntu1.1.debian.tar.xz"
+        }
+      ]
+    },
+    "sqlite3": {
+      "version": "3.42.0-1ubuntu0.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "sqlite3_3.42.0-1ubuntu0.1.dsc",
+          "sha256": "ff410c6ec6202aab0e35c3143ebc9aeddd95d057c18c035bdddcc846cb7e151a",
+          "size": 2601,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sqlite3/sqlite3_3.42.0-1ubuntu0.1.dsc"
+        },
+        {
+          "filename": "sqlite3_3.42.0.orig-www.tar.xz",
+          "sha256": "a3f1f24fcf1e33a6a24b5e02dbcc8e547b3386632ff202dd404ec417603c2e71",
+          "size": 5708628,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sqlite3/sqlite3_3.42.0.orig-www.tar.xz"
+        },
+        {
+          "filename": "sqlite3_3.42.0.orig.tar.xz",
+          "sha256": "92d296f6ae47e468e39390f32dba820662c295563285a33c5aae1dc555363043",
+          "size": 8129004,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sqlite3/sqlite3_3.42.0.orig.tar.xz"
+        },
+        {
+          "filename": "sqlite3_3.42.0-1ubuntu0.1.debian.tar.xz",
+          "sha256": "2be233219351344c0d9ad9e81d16fe5c1bd966f9bb0a14d01865606ba339d1a2",
+          "size": 30500,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/sqlite3/sqlite3_3.42.0-1ubuntu0.1.debian.tar.xz"
+        }
+      ]
+    },
+    "tar": {
+      "version": "1.34+dfsg-1.2ubuntu1.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "tar_1.34+dfsg-1.2ubuntu1.1.dsc",
+          "sha256": "69e093303360942accb61f73321c529456ed8e0168473f0cac9ce7e37a751208",
+          "size": 1805,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/t/tar/tar_1.34+dfsg-1.2ubuntu1.1.dsc"
+        },
+        {
+          "filename": "tar_1.34+dfsg.orig.tar.xz",
+          "sha256": "7d57029540cb928394defb3b377b3531237c947e795b51aa8acac0c5ba0e4844",
+          "size": 1981736,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/t/tar/tar_1.34+dfsg.orig.tar.xz"
+        },
+        {
+          "filename": "tar_1.34+dfsg-1.2ubuntu1.1.debian.tar.xz",
+          "sha256": "bfd15161fdc150fac71852569c53f00e335d5612c5fe11d0dcf0c27f3d0bd07e",
+          "size": 21572,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/t/tar/tar_1.34+dfsg-1.2ubuntu1.1.debian.tar.xz"
+        }
+      ]
+    },
+    "util-linux": {
+      "version": "2.39.1-4ubuntu2.2",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "util-linux_2.39.1-4ubuntu2.2.dsc",
+          "sha256": "6b6cedc91e329f619a063973e32d6ecfb8c9c8a36b24bd50e95cdcda3803b80a",
+          "size": 4651,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/util-linux/util-linux_2.39.1-4ubuntu2.2.dsc"
+        },
+        {
+          "filename": "util-linux_2.39.1.orig.tar.xz",
+          "sha256": "890ae8ff810247bd19e274df76e8371d202cda01ad277681b0ea88eeaa00286b",
+          "size": 8351164,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/util-linux/util-linux_2.39.1.orig.tar.xz"
+        },
+        {
+          "filename": "util-linux_2.39.1-4ubuntu2.2.debian.tar.xz",
+          "sha256": "2130cb8c9388f1cd22f8b32e326a931e500bb10a9841ab41b35b6344d7186bc8",
+          "size": 103512,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/util-linux/util-linux_2.39.1-4ubuntu2.2.debian.tar.xz"
+        }
+      ]
+    },
+    "python-pip": {
+      "version": "23.2+dfsg-1ubuntu0.1",
+      "suite": "mantic-security",
+      "files": [
+        {
+          "filename": "python-pip_23.2+dfsg-1ubuntu0.1.dsc",
+          "sha256": "2bb081f19150cf632d9766600dd5f833e412b8115f136b0d8ea8185a9fb6fae9",
+          "size": 2420,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/p/python-pip/python-pip_23.2+dfsg-1ubuntu0.1.dsc"
+        },
+        {
+          "filename": "python-pip_23.2+dfsg.orig.tar.xz",
+          "sha256": "770f5cf91f80dbef51c3d2fed57277d0587c2651bd5fcb3b2f24f598eff6be31",
+          "size": 1284000,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/p/python-pip/python-pip_23.2+dfsg.orig.tar.xz"
+        },
+        {
+          "filename": "python-pip_23.2+dfsg-1ubuntu0.1.debian.tar.xz",
+          "sha256": "cd8ad9476e9b4b02cdc74f9f0722d95a8ee4a632841f54205d7c5afab08a31b7",
+          "size": 23832,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/universe/p/python-pip/python-pip_23.2+dfsg-1ubuntu0.1.debian.tar.xz"
+        }
+      ]
+    },
+    "apt": {
+      "version": "2.7.3ubuntu0.1",
+      "suite": "mantic-updates",
+      "files": [
+        {
+          "filename": "apt_2.7.3ubuntu0.1.dsc",
+          "sha256": "add82e24942992177d9cf83866a6fbe1e48eb8b89876394d83bbb4f956337c9d",
+          "size": 3060,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/apt/apt_2.7.3ubuntu0.1.dsc"
+        },
+        {
+          "filename": "apt_2.7.3ubuntu0.1.tar.xz",
+          "sha256": "57f3ff1223a11b5b52dd12a319ca051f126148b6cb804daf29ed77908bdacc92",
+          "size": 2343160,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/a/apt/apt_2.7.3ubuntu0.1.tar.xz"
+        }
+      ]
+    },
+    "base-files": {
+      "version": "13ubuntu2.1",
+      "suite": "mantic-updates",
+      "files": [
+        {
+          "filename": "base-files_13ubuntu2.1.dsc",
+          "sha256": "f37a457137616359d7506785d36a7b87c4001d507d676487d5c641ff0b23eda3",
+          "size": 1662,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/base-files/base-files_13ubuntu2.1.dsc"
+        },
+        {
+          "filename": "base-files_13ubuntu2.1.tar.xz",
+          "sha256": "d240e41d860e6c27e43fad21b3ceea9e11be845326a2aa830d3e0f9bb599f5dc",
+          "size": 93084,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/b/base-files/base-files_13ubuntu2.1.tar.xz"
+        }
+      ]
+    },
+    "coreutils": {
+      "version": "9.1-1ubuntu2.23.10.1",
+      "suite": "mantic-updates",
+      "files": [
+        {
+          "filename": "coreutils_9.1-1ubuntu2.23.10.1.dsc",
+          "sha256": "eb8a7f3601885a46435070bfbb9a25ecab4053724fd4f8f7bf25be379cfc57d5",
+          "size": 2067,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/coreutils/coreutils_9.1-1ubuntu2.23.10.1.dsc"
+        },
+        {
+          "filename": "coreutils_9.1.orig.tar.xz",
+          "sha256": "61a1f410d78ba7e7f37a5a4f50e6d1320aca33375484a3255eddf17a38580423",
+          "size": 5712104,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/coreutils/coreutils_9.1.orig.tar.xz"
+        },
+        {
+          "filename": "coreutils_9.1-1ubuntu2.23.10.1.debian.tar.xz",
+          "sha256": "e7a39b12ed3b6cef303c02df54f989192aff4563448ba1fa2a6051740c116192",
+          "size": 40548,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/c/coreutils/coreutils_9.1-1ubuntu2.23.10.1.debian.tar.xz"
+        }
+      ]
+    },
+    "dpkg": {
+      "version": "1.22.0ubuntu1.1",
+      "suite": "mantic-updates",
+      "files": [
+        {
+          "filename": "dpkg_1.22.0ubuntu1.1.dsc",
+          "sha256": "e26af731603c465775eae4aa9679d114b03373ff991cbab5df74b45c5d8d8213",
+          "size": 3077,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/dpkg/dpkg_1.22.0ubuntu1.1.dsc"
+        },
+        {
+          "filename": "dpkg_1.22.0ubuntu1.1.tar.xz",
+          "sha256": "82cab752e9e7a7a34ac36a0a58e4a1be7959e0cf01bc8cd4935c73d71f18da61",
+          "size": 5358400,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/d/dpkg/dpkg_1.22.0ubuntu1.1.tar.xz"
+        }
+      ]
+    },
+    "systemd": {
+      "version": "253.5-1ubuntu6.1",
+      "suite": "mantic-updates",
+      "files": [
+        {
+          "filename": "systemd_253.5-1ubuntu6.1.dsc",
+          "sha256": "65329ca28f6b8b9883140c7d89f3c786dc946ba9fcfd53be52c48188d292ef0f",
+          "size": 6910,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/systemd/systemd_253.5-1ubuntu6.1.dsc"
+        },
+        {
+          "filename": "systemd_253.5.orig.tar.gz",
+          "sha256": "544220ae46d96919dbb1d67a4bbbf7b4c054f0099d8bbc8b0c0ae3af492ee493",
+          "size": 12015672,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/systemd/systemd_253.5.orig.tar.gz"
+        },
+        {
+          "filename": "systemd_253.5-1ubuntu6.1.debian.tar.xz",
+          "sha256": "c82034cff005725b076fdcce6639f7c9c39a7148d686ee75c886823595c31f75",
+          "size": 220212,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/s/systemd/systemd_253.5-1ubuntu6.1.debian.tar.xz"
+        }
+      ]
+    },
+    "tzdata": {
+      "version": "2024a-0ubuntu0.23.10.1",
+      "suite": "mantic-updates",
+      "files": [
+        {
+          "filename": "tzdata_2024a-0ubuntu0.23.10.1.dsc",
+          "sha256": "aa71d3dc245584ed514d9e0fc0669c7750e16f0e972f83271a11a565b4cca726",
+          "size": 2707,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/t/tzdata/tzdata_2024a-0ubuntu0.23.10.1.dsc"
+        },
+        {
+          "filename": "tzdata_2024a.orig.tar.gz",
+          "sha256": "0d0434459acbd2059a7a8da1f3304a84a86591f6ed69c6248fffa502b6edffe3",
+          "size": 451270,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/t/tzdata/tzdata_2024a.orig.tar.gz"
+        },
+        {
+          "filename": "tzdata_2024a.orig.tar.gz.asc",
+          "sha256": "f64725f9f65419e7b009e3b95b75ea9516382d0be64aef63d78654d9c569ed0d",
+          "size": 833,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/t/tzdata/tzdata_2024a.orig.tar.gz.asc"
+        },
+        {
+          "filename": "tzdata_2024a-0ubuntu0.23.10.1.debian.tar.xz",
+          "sha256": "a648695bf8a91275a630ba534e07c84fbf712ddb2a7a1d4d9f4b3daf11b35a55",
+          "size": 185036,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/t/tzdata/tzdata_2024a-0ubuntu0.23.10.1.debian.tar.xz"
+        }
+      ]
+    },
+    "unzip": {
+      "version": "6.0-28ubuntu1.1",
+      "suite": "mantic-updates",
+      "files": [
+        {
+          "filename": "unzip_6.0-28ubuntu1.1.dsc",
+          "sha256": "ace871e14e57d21825b98902f0996778245dbce1c734035d827f74b5c2d322e2",
+          "size": 1819,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/unzip/unzip_6.0-28ubuntu1.1.dsc"
+        },
+        {
+          "filename": "unzip_6.0.orig.tar.gz",
+          "sha256": "036d96991646d0449ed0aa952e4fbe21b476ce994abc276e49d30e686708bd37",
+          "size": 1376845,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/unzip/unzip_6.0.orig.tar.gz"
+        },
+        {
+          "filename": "unzip_6.0-28ubuntu1.1.debian.tar.xz",
+          "sha256": "f019a1ec234bbdaeb13a4fcf1d7a538ae82ff918d113532ac29c8f3d8b55b151",
+          "size": 28832,
+          "url": "https://old-releases.ubuntu.com/ubuntu/pool/main/u/unzip/unzip_6.0-28ubuntu1.1.debian.tar.xz"
+        }
+      ]
+    }
+  }
+}

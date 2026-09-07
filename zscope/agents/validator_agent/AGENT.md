@@ -117,6 +117,12 @@ candidate/cluster UIDs, pass, tri-state verdict, concise reasoning, positive and
 negative evidence, resolvable evidence refs, one nullable missing-fact request,
 and a stop reason. Additional fields are forbidden.
 
+Language requirement: the end user reads reports in Chinese. In the v3 result,
+`reasoning`, every string in `positive_evidence` and `negative_evidence`, the
+`missing_fact_request.reason`, and every investigation fact `summary` must be
+written in Simplified Chinese. Keep identifiers (file paths, function names,
+symbols, evidence ref UIDs, enum values) exactly as they appear in the input.
+
 The following object is retained only for legacy non-v3 replay. Output exactly
 one JSON block and no extra prose:
 

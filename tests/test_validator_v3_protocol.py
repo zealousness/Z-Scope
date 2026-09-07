@@ -100,6 +100,28 @@ class _ReasoningOnlyLLM(_DirectLLM):
         }
 
 
+class _LengthThenFailingLLM(_DirectLLM):
+    """First call truncates at the provider limit; the retry call errors."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+
+    def chat_completion(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        if len(self.calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"role": "assistant", "content": "{"},
+                    }
+                ],
+                "model": "unit-model",
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            }
+        raise RuntimeError("provider dropped the retry connection")
+
+
 class _ReadOnlyEvidenceTool(BaseTool):
     def __init__(self) -> None:
         super().__init__("read_validation_fact", "Read one immutable validation fact")
@@ -291,8 +313,41 @@ def test_validator_v3_malformed_output_stays_single_call_for_v3_escalation() -> 
     assert response.metadata["validator_repair_attempted"] == 0
 
 
-def test_validator_v3_length_stays_single_call_for_v3_escalation() -> None:
-    llm = _DirectLLM([{"content": "{", "finish_reason": "length"}])
+def test_validator_v3_length_retries_once_with_doubled_output_ceiling() -> None:
+    llm = _DirectLLM(
+        [
+            {"content": "{", "finish_reason": "length"},
+            {"content": json.dumps(_result())},
+        ]
+    )
+    response = ValidatorAgent(llm, []).run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "evidence_slice": _slice(),
+        }
+    )
+
+    assert response.success
+    assert response.data["verdict"] == "verified"
+    assert len(llm.calls) == 2
+    # The first call keeps pure config semantics (no explicit max_tokens);
+    # only the length retry carries the doubled output ceiling.
+    assert "max_tokens" not in llm.calls[0][1]
+    assert llm.calls[1][1]["max_tokens"] >= 8192
+    assert "length_retry=1" in llm.calls[1][1]["trace_label"]
+    assert response.metadata["validator_length_retry_count"] == 1
+    assert response.metadata["validator_api_call_count"] == 2
+    assert response.metadata["finish_reason"] == "stop"
+
+
+def test_validator_v3_length_retry_failure_still_degrades_to_uncertain() -> None:
+    llm = _DirectLLM(
+        [
+            {"content": "{", "finish_reason": "length"},
+            {"content": "{", "finish_reason": "length"},
+        ]
+    )
     response = ValidatorAgent(llm, []).run(
         {
             "finding_uid": "CAND_1",
@@ -304,9 +359,28 @@ def test_validator_v3_length_stays_single_call_for_v3_escalation() -> None:
     assert response.success
     assert response.data["verdict"] == "uncertain"
     assert response.data["stop_reason"] == "output_truncated"
-    assert len(llm.calls) == 1
+    assert len(llm.calls) == 2
     assert "max_tokens" not in llm.calls[0][1]
-    assert response.metadata["validator_length_retry_count"] == 0
+    assert response.metadata["validator_length_retry_count"] == 1
+
+
+def test_validator_v3_length_retry_exception_keeps_first_response() -> None:
+    # A retry that fails at the provider level must not lose the original
+    # truncated response; the run still degrades to uncertain/output_truncated.
+    llm = _LengthThenFailingLLM()
+    response = ValidatorAgent(llm, []).run(
+        {
+            "finding_uid": "CAND_1",
+            "validation_cluster_uid": "VAL_1",
+            "evidence_slice": _slice(),
+        }
+    )
+
+    assert response.success
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["stop_reason"] == "output_truncated"
+    assert len(llm.calls) == 2
+    assert response.metadata["validator_length_retry_count"] == 1
 
 
 def test_validator_v3_rejects_extra_fields_and_unknown_evidence_refs() -> None:
@@ -329,6 +403,7 @@ def test_validator_v3_rejects_extra_fields_and_unknown_evidence_refs() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        # Scalar type coercion must be rejected...
         ("candidate_uid", 7),
         ("validation_cluster_uid", True),
         ("pass", ["initial"]),
@@ -336,22 +411,14 @@ def test_validator_v3_rejects_extra_fields_and_unknown_evidence_refs() -> None:
         ("reasoning", 123),
         ("stop_reason", False),
         ("blocking_negative_evidence", 1),
-    ],
-)
-def test_validator_v3_rejects_scalar_type_coercion(field, value) -> None:
-    assert parse_validator_result_v3(_result(**{field: value})) is None
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
+        # ...and schema string lengths must be enforced.
         ("reasoning", "r" * 4001),
         ("positive_evidence", ["p" * 1001]),
         ("negative_evidence", ["n" * 1001]),
         ("evidence_refs", ["E" * 513]),
     ],
 )
-def test_validator_v3_enforces_schema_string_lengths(field, value) -> None:
+def test_validator_v3_rejects_invalid_field_values(field, value) -> None:
     assert parse_validator_result_v3(_result(**{field: value})) is None
 
 

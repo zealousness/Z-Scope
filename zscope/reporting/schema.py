@@ -8,7 +8,6 @@ from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from ..orchestration.candidate_envelope import CANDIDATE_SCHEMA_VERSION
 
-
 REPORT_SCHEMA_VERSION = 2
 FINDING_STATUSES = {"clean", "needs_review", "confirmed"}
 COMPLETENESS_STATUSES = {"complete", "partial", "degraded", "failed", "interrupted"}
@@ -559,7 +558,8 @@ def build_run_manifest(
         "valid": completeness == "complete",
         "resume_lineage": metadata.get("resume_lineage") or [],
         "engine_capabilities": metadata.get("engine_capabilities") or {},
-        "wiki_telemetry": metadata.get("wiki_telemetry") or {
+        "wiki_telemetry": metadata.get("wiki_telemetry")
+        or {
             "effective_mode": "off",
             "active_effective_mode": False,
             "wiki_context_injected": False,
@@ -572,6 +572,19 @@ def build_run_manifest(
             "selected_constraint_ids": {},
             "selected_source_ref_ids": {},
             "fallback_reasons": {},
+        },
+        "interface_probe": metadata.get("interface_probe")
+        or {
+            "probed": 0,
+            "classified": 0,
+            "declined": 0,
+            "skipped_budget": 0,
+            "skipped_known_role": 0,
+            "skipped_external": 0,
+            "skipped_no_client": 0,
+            "errors": 0,
+            "roles": {},
+            "classified_functions": [],
         },
         "timestamp": metadata.get("timestamp") or "",
     }

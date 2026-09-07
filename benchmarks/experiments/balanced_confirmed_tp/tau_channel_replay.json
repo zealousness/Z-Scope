@@ -1,0 +1,256 @@
+{
+  "schema_version": "zscope.tau-channel-replay.v1",
+  "trial": "benchmark-artifacts\\c_cpp\\trial\\20260904T094432Z\\run-01",
+  "predicate": "ValidationPipeline._high_confidence_uncertain_confirms (offline mirror)",
+  "baseline": {
+    "true_positives": 63,
+    "false_positives_effective": 0,
+    "actionable_false_discovery_rate": 0.0,
+    "needs_review_issues": 225,
+    "uncertain_issues": 150
+  },
+  "fdr_gate_delta": 0.01,
+  "sweep": [
+    {
+      "tau": 0.8,
+      "promoted": 15,
+      "tp_delta": 1,
+      "fp_delta": 14,
+      "confirmed_tp": 64,
+      "confirmed_fp": 14,
+      "fdr": 0.1794871794871795,
+      "fdr_delta": 0.1794871794871795,
+      "passes_fdr_gate": false,
+      "items": [
+        {
+          "validation_cluster_uid": "VAL_37a1745bc126c8d46e0ad704fd8f2a99",
+          "candidate_uid": "CAND_029c106d34c20f7b7d7ed90b",
+          "rule": "cleanup_contract_type_mismatch",
+          "function": "td_cleanup",
+          "confidence": 0.82,
+          "final_score": 0.7665,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_a5ea4b22a1f3caf587ed71091a6807eb",
+          "candidate_uid": "CAND_87592ea4744d27a223805b7e",
+          "rule": "clang_cfg_recv_retry_loop_without_timeout_or_budget",
+          "function": "_peer_receive_session_frame",
+          "confidence": 0.86,
+          "final_score": 0.847,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_bb8ebb274cd04107cce3156e8db4789b",
+          "candidate_uid": "CAND_7925d2fd431e21cdc41327a9",
+          "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+          "function": "_runtime_capture_signal_stack",
+          "confidence": 0.82,
+          "final_score": 0.779,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_4f3e1b5d45db1a95844933031c14b5c1",
+          "candidate_uid": "CAND_b8535e0cc839ec03554dfbbf",
+          "rule": "clang_cfg_unbounded_count_indexes_fixed_array",
+          "function": "_parse_task_buffer",
+          "confidence": 0.82,
+          "final_score": 0.779,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_228499425b51e37021d5ace3b11b9ac9",
+          "candidate_uid": "CAND_15b9205dd13fbdd77e43a659",
+          "rule": "clang_cfg_wire_integer_cast_to_pointer_deref",
+          "function": "_runtime_stream_commit_cursor",
+          "confidence": 0.88,
+          "final_score": 0.856,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_123c650e98502f626864e38cf69b3546",
+          "candidate_uid": "CAND_a25d31a18acddbc179975cbd",
+          "rule": "composed_string_copied_to_member_buffer_without_bound",
+          "function": "_runtime_prepare_worker_label",
+          "confidence": 0.82,
+          "final_score": 0.7665,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_53c2e3d8d71388db04310b8fa7a4351f",
+          "candidate_uid": "CAND_397391ce7a5314e27e60808b",
+          "rule": "caller_limit_indexes_fixed_local_array",
+          "function": "_runtime_rebuild_available_list",
+          "confidence": 0.84,
+          "final_score": 0.7755,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_35cdad5c3130babc63da353d67b4f4d5",
+          "candidate_uid": "CAND_8b0536f7c5f2cd267505f165",
+          "rule": "clang_cfg_object_published_before_initialization",
+          "function": "_runtime_read_service_flag",
+          "confidence": 0.84,
+          "final_score": 0.838,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_a0be57f638d2c49bb525bbed2ca0a1ba",
+          "candidate_uid": "CAND_f64022bd064d7ab55c99416c",
+          "rule": "log_inside_poisoned_traversal",
+          "function": "_lifecycle_dispatch_pipe_tick",
+          "confidence": 0.8,
+          "final_score": 0.7575,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_524029da072c3cf5df4694f65101274d",
+          "candidate_uid": "CAND_3a7afba93d9ce59b56170eab",
+          "rule": "unchecked_param_indexes_fixed_global_array",
+          "function": "_runtime_read_timer_ticks",
+          "confidence": 0.86,
+          "final_score": 0.7845,
+          "matched_truth_id": "ISSUE42-006",
+          "is_true_positive": true
+        },
+        {
+          "validation_cluster_uid": "VAL_3fd1ac964b3498522d8c35d09265295c",
+          "candidate_uid": "CAND_06a4d5cbbc48c1c8c266e69d",
+          "rule": "clang_cfg_sizeof_index_write",
+          "function": "_lifecycle_format_topic",
+          "confidence": 0.9,
+          "final_score": 0.865,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_ea7d41baef2378640b575ae4f5a5da9e",
+          "candidate_uid": "CAND_d9dc488556c4ae045113dadd",
+          "rule": "peer_write_without_sigpipe_handling",
+          "function": "_net_send_data",
+          "confidence": 0.84,
+          "final_score": 0.7755,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_ca880612fcab07922875913d69893e4d",
+          "candidate_uid": "CAND_38abd4bff3621cf7aa589e19",
+          "rule": "clang_cfg_protocol_units_length_reaches_copy_without_packet_bound",
+          "function": "_runtime_protocol_frame_length",
+          "confidence": 0.84,
+          "final_score": 0.838,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_69d62463da1053ea811637a175294019",
+          "candidate_uid": "CAND_67a02be83baa968df43214ce",
+          "rule": "clang_cfg_object_published_before_initialization",
+          "function": "_lifecycle_add_entry",
+          "confidence": 0.84,
+          "final_score": 0.838,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_19bbd8d030dd31dba913c6dccf99cf3f",
+          "candidate_uid": "CAND_2ecfb71a0b9d9171e4c60c54",
+          "rule": "caller_limit_indexes_fixed_member_array",
+          "function": "_parse_task_buffer",
+          "confidence": 0.8,
+          "final_score": 0.7575,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        }
+      ]
+    },
+    {
+      "tau": 0.85,
+      "promoted": 4,
+      "tp_delta": 1,
+      "fp_delta": 3,
+      "confirmed_tp": 64,
+      "confirmed_fp": 3,
+      "fdr": 0.04477611940298507,
+      "fdr_delta": 0.04477611940298507,
+      "passes_fdr_gate": false,
+      "items": [
+        {
+          "validation_cluster_uid": "VAL_a5ea4b22a1f3caf587ed71091a6807eb",
+          "candidate_uid": "CAND_87592ea4744d27a223805b7e",
+          "rule": "clang_cfg_recv_retry_loop_without_timeout_or_budget",
+          "function": "_peer_receive_session_frame",
+          "confidence": 0.86,
+          "final_score": 0.847,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_228499425b51e37021d5ace3b11b9ac9",
+          "candidate_uid": "CAND_15b9205dd13fbdd77e43a659",
+          "rule": "clang_cfg_wire_integer_cast_to_pointer_deref",
+          "function": "_runtime_stream_commit_cursor",
+          "confidence": 0.88,
+          "final_score": 0.856,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        },
+        {
+          "validation_cluster_uid": "VAL_524029da072c3cf5df4694f65101274d",
+          "candidate_uid": "CAND_3a7afba93d9ce59b56170eab",
+          "rule": "unchecked_param_indexes_fixed_global_array",
+          "function": "_runtime_read_timer_ticks",
+          "confidence": 0.86,
+          "final_score": 0.7845,
+          "matched_truth_id": "ISSUE42-006",
+          "is_true_positive": true
+        },
+        {
+          "validation_cluster_uid": "VAL_3fd1ac964b3498522d8c35d09265295c",
+          "candidate_uid": "CAND_06a4d5cbbc48c1c8c266e69d",
+          "rule": "clang_cfg_sizeof_index_write",
+          "function": "_lifecycle_format_topic",
+          "confidence": 0.9,
+          "final_score": 0.865,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        }
+      ]
+    },
+    {
+      "tau": 0.9,
+      "promoted": 1,
+      "tp_delta": 0,
+      "fp_delta": 1,
+      "confirmed_tp": 63,
+      "confirmed_fp": 1,
+      "fdr": 0.015625,
+      "fdr_delta": 0.015625,
+      "passes_fdr_gate": false,
+      "items": [
+        {
+          "validation_cluster_uid": "VAL_3fd1ac964b3498522d8c35d09265295c",
+          "candidate_uid": "CAND_06a4d5cbbc48c1c8c266e69d",
+          "rule": "clang_cfg_sizeof_index_write",
+          "function": "_lifecycle_format_topic",
+          "confidence": 0.9,
+          "final_score": 0.865,
+          "matched_truth_id": null,
+          "is_true_positive": false
+        }
+      ]
+    }
+  ],
+  "recommended_tau": null,
+  "gate_conclusion": "no threshold passes the FDR gate; channel stays disabled"
+}

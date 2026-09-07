@@ -22,13 +22,15 @@ def _write_compile_commands(tmp_path: Path) -> tuple[Path, Path]:
     (source_root / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
     compile_commands = tmp_path / "compile_commands.json"
     compile_commands.write_text(
-        json.dumps([
-            {
-                "directory": str(source_root),
-                "command": "cc -c main.c",
-                "file": "main.c",
-            }
-        ]),
+        json.dumps(
+            [
+                {
+                    "directory": str(source_root),
+                    "command": "cc -c main.c",
+                    "file": "main.c",
+                }
+            ]
+        ),
         encoding="utf-8",
     )
     return source_root, compile_commands
@@ -63,27 +65,60 @@ def _write_exclusive_pool_compile_commands(tmp_path: Path) -> tuple[Path, Path]:
     (compat_dir / "A.c").write_text("int A(void) { return 2; }\n", encoding="utf-8")
     compile_commands = tmp_path / "compile_commands.json"
     compile_commands.write_text(
-        json.dumps([
-            {
-                "directory": str(source_root),
-                "command": "cc -c src/pool/normal/A.c",
-                "file": "src/pool/normal/A.c",
-            },
-            {
-                "directory": str(source_root),
-                "command": "cc -c src/pool/compat/A.c",
-                "file": "src/pool/compat/A.c",
-            },
-        ]),
+        json.dumps(
+            [
+                {
+                    "directory": str(source_root),
+                    "command": "cc -c src/pool/normal/A.c",
+                    "file": "src/pool/normal/A.c",
+                },
+                {
+                    "directory": str(source_root),
+                    "command": "cc -c src/pool/compat/A.c",
+                    "file": "src/pool/compat/A.c",
+                },
+            ]
+        ),
         encoding="utf-8",
     )
     return source_root, compile_commands
 
 
+def _install_measured_tools(monkeypatch, fake_run):
+    from zscope.retrieval.indexing_runtime import MeasuredProcess
+
+    def measured(command, **kwargs):
+        try:
+            result = fake_run(command, **kwargs)
+        except subprocess.CalledProcessError as error:
+            return MeasuredProcess(error.returncode, "", error.stderr or "", {})
+        if "-MF" in command:
+            cwd = Path(kwargs["cwd"])
+            source = next(Path(arg) for arg in command if str(arg).endswith(".c"))
+            source = source if source.is_absolute() else cwd / source
+            escaped = source.as_posix().replace(":", r"\:").replace(" ", r"\ ")
+            Path(command[command.index("-MF") + 1]).write_text(
+                "object: " + escaped + "\n", encoding="utf-8"
+            )
+            result.stderr += (
+                "\n#include <...> search starts here:\n " + str(cwd) + "\nEnd of search list.\n"
+            )
+        return MeasuredProcess(result.returncode, result.stdout, result.stderr, {})
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("zscope.retrieval.build_llvm.matching_clang", lambda *args, **kw: "clang")
+    monkeypatch.setattr("zscope.retrieval.build_llvm.run_process", measured)
+    monkeypatch.setattr("zscope.retrieval.bitcode_compile.run_process", measured)
+    monkeypatch.setenv("Z_SCOPE_BITCODE_MEMORY_MB", "256")
+
+
 def _fake_bitcode_tools(monkeypatch, calls: list[str]) -> None:
     def fake_run(cmd, *args, **kwargs):
-        calls.append(Path(cmd[0]).name)
-        if Path(cmd[0]).name == "gclang":
+        # Linux validates loader provenance even when compilation is cached.
+        # These assertions count build actions, not read-only identity probes.
+        if Path(cmd[0]).name != "ldd":
+            calls.append(Path(cmd[0]).name)
+        if Path(cmd[0]).name == "clang":
             out_path = Path(cmd[cmd.index("-o") + 1])
             cwd = Path(kwargs.get("cwd") or ".")
             source_text = ""
@@ -105,7 +140,7 @@ def _fake_bitcode_tools(monkeypatch, calls: list[str]) -> None:
             out_path.write_text("merged\n", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _install_measured_tools(monkeypatch, fake_run)
 
 
 def _fake_exclusive_pool_tools(monkeypatch, calls: list[str]) -> None:
@@ -113,9 +148,9 @@ def _fake_exclusive_pool_tools(monkeypatch, calls: list[str]) -> None:
 
     def fake_run(cmd, *args, **kwargs):
         tool = Path(cmd[0]).name
-        if tool in {"gclang", "get-bc", "llvm-link"}:
+        if tool in {"clang", "get-bc", "llvm-link"}:
             calls.append(tool)
-        if tool == "gclang":
+        if tool == "clang":
             out_path = Path(cmd[cmd.index("-o") + 1])
             cwd = Path(kwargs.get("cwd") or ".")
             source_path = next(
@@ -142,7 +177,7 @@ def _fake_exclusive_pool_tools(monkeypatch, calls: list[str]) -> None:
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
         elif tool == "llvm-link":
             out_path = Path(cmd[cmd.index("-o") + 1])
-            inputs = [Path(arg) for arg in cmd[cmd.index("-o") + 2:]]
+            inputs = [Path(arg) for arg in cmd[cmd.index("-o") + 2 :]]
             input_text = "\n".join(path.read_text(encoding="utf-8") for path in inputs)
             if "normal" in input_text and "compat" in input_text:
                 raise subprocess.CalledProcessError(
@@ -153,11 +188,13 @@ def _fake_exclusive_pool_tools(monkeypatch, calls: list[str]) -> None:
             out_path.write_text("merged\n", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _install_measured_tools(monkeypatch, fake_run)
     monkeypatch.setattr(
         shutil,
         "which",
-        lambda name: name if Path(str(name)).name == "llvm-nm" else original_which(name),
+        lambda name, **kwargs: (
+            name if Path(str(name)).name == "llvm-nm" else original_which(name, **kwargs)
+        ),
     )
 
 
@@ -199,7 +236,7 @@ def test_bitcode_build_reuses_unchanged_tu_and_merged_bitcode(
 
     first = _build_once(source_root, compile_commands, output_dir)
     assert first["default"].exists()
-    assert calls == ["gclang", "get-bc", "llvm-link"]
+    assert calls == ["clang", "llvm-link"]
 
     calls.clear()
     second = _build_once(source_root, compile_commands, output_dir)
@@ -208,7 +245,9 @@ def test_bitcode_build_reuses_unchanged_tu_and_merged_bitcode(
     assert calls == []
 
 
-def test_bitcode_build_reuses_outputs_when_only_timeout_changes(tmp_path: Path, monkeypatch) -> None:
+def test_bitcode_build_reuses_outputs_when_only_timeout_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
     source_root, compile_commands = _write_compile_commands(tmp_path)
     output_dir = tmp_path / ".zscope_bc"
     calls: list[str] = []
@@ -232,10 +271,10 @@ def test_bitcode_build_rebuilds_when_source_changes(tmp_path: Path, monkeypatch)
     (source_root / "main.c").write_text("int main(void) { return 1; }\n", encoding="utf-8")
     _build_once(source_root, compile_commands, output_dir)
 
-    assert calls == ["gclang", "get-bc", "llvm-link"]
+    assert calls == ["clang", "llvm-link"]
 
 
-def test_link_reuses_existing_merged_bitcode_from_previous_scope_plan(
+def test_link_rebuilds_without_content_manifest_despite_previous_scope_plan(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -264,12 +303,14 @@ def test_link_reuses_existing_merged_bitcode_from_previous_scope_plan(
         previous_selected_bcs={str(bc_path.resolve())},
     )
 
-    assert result == merged_path
-    assert calls == []
-    assert builder.reused_linked_groups == {"default"}
+    assert result is not None and result.exists() and result != merged_path
+    assert calls == ["llvm-link"]
+    assert builder.reused_linked_groups == set()
 
 
-def test_bitcode_build_compiles_multiple_tus_before_single_link(tmp_path: Path, monkeypatch) -> None:
+def test_bitcode_build_compiles_multiple_tus_before_single_link(
+    tmp_path: Path, monkeypatch
+) -> None:
     source_root, compile_commands = _write_multi_compile_commands(tmp_path, 6)
     output_dir = tmp_path / ".zscope_bc"
     calls: list[str] = []
@@ -278,7 +319,7 @@ def test_bitcode_build_compiles_multiple_tus_before_single_link(tmp_path: Path, 
     result = _build_once(source_root, compile_commands, output_dir)
 
     assert result["default"].exists()
-    assert Counter(calls) == Counter({"gclang": 6, "get-bc": 6, "llvm-link": 1})
+    assert Counter(calls) == Counter({"clang": 6, "llvm-link": 1})
     assert BitcodeBuilder._build_worker_count(100) <= 8
 
 
@@ -355,7 +396,7 @@ def test_saber_group_uses_old_style_entry_scope_variants(
     assert sorted(result) == ["entry_cluster_1", "saber:default"]
     assert variant_groups == ["default"]
     assert Counter(calls)["llvm-link"] == 2
-    assert (output_dir / "merged_default.bc").exists()
+    assert list(output_dir.glob("merged_default_*.bc"))
 
 
 def test_explicit_svf_group_can_be_entry_clustered(
@@ -417,7 +458,7 @@ def test_explicit_svf_group_can_be_entry_clustered(
 
     assert cluster_prefixes == ["alpha__entry_cluster"]
     assert sorted(result) == ["alpha__entry_cluster_1"]
-    assert (output_dir / "merged_alpha__entry_cluster_1.bc").exists()
+    assert list(output_dir.glob("merged_alpha__entry_cluster_1_*.bc"))
 
 
 def test_entry_cluster_links_directly_without_exclusive_pool_variants(
@@ -481,7 +522,7 @@ def test_entry_cluster_links_directly_without_exclusive_pool_variants(
     )
 
     assert sorted(result) == ["entry_cluster_1"]
-    assert (output_dir / "merged_entry_cluster_1.bc").exists()
+    assert list(output_dir.glob("merged_entry_cluster_1_*.bc"))
 
 
 def test_entry_cluster_layout_reused_when_fingerprint_unchanged(
@@ -650,8 +691,8 @@ def test_exclusive_pool_duplicate_symbols_split_link_variants(
 
     assert sorted(result) == ["default__compat", "default__normal"]
     assert Counter(calls)["llvm-link"] == 2
-    assert (output_dir / "merged_default__normal.bc").exists()
-    assert (output_dir / "merged_default__compat.bc").exists()
+    assert list(output_dir.glob("merged_default__normal_*.bc"))
+    assert list(output_dir.glob("merged_default__compat_*.bc"))
 
     plan = json.loads((output_dir / "bitcode_scope_default.json").read_text(encoding="utf-8"))
     assert [item["symbol"] for item in plan["duplicate_symbols"]] == ["A"]

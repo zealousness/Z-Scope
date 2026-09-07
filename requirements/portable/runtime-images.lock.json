@@ -1,0 +1,25 @@
+{
+  "schema_version": "zscope.portable-runtime-images.v1",
+  "images": {
+    "2.38": {
+      "aarch64": "docker.io/library/ubuntu@sha256:72c9c923b9807a752ba9c8ba41432e62bb88312de9d15b536caeaf3ea5965ad5",
+      "x86_64": "docker.io/library/ubuntu@sha256:c57e8a329cd805f341ed7ee7fcc010761b29b9b8771b02a4f74fc794f1d7eac5"
+    },
+    "2.34": {
+      "x86_64": "docker.io/library/rockylinux@sha256:d644d203142cd5b54ad2a83a203e1dee68af2229f8fe32f52a30c6e1d3c3a9e0",
+      "aarch64": "docker.io/library/rockylinux@sha256:370b6bd1851d5023c5c673535c85cdc5c1d8a59416ad83380a8db7ce3691bd45"
+    },
+    "2.35": {
+      "x86_64": "docker.io/library/ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d",
+      "aarch64": "docker.io/library/ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866"
+    },
+    "2.36": {
+      "x86_64": "docker.io/library/debian@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867",
+      "aarch64": "docker.io/library/debian@sha256:6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f"
+    },
+    "2.39": {
+      "x86_64": "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316",
+      "aarch64": "docker.io/library/ubuntu@sha256:95fa486768020359141f1318720f43e7982ef926c792891d984aef9aaf05e7ea"
+    }
+  }
+}

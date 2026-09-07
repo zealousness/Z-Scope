@@ -36,6 +36,12 @@ _RESOURCE_KINDS = {
     "resource",
     "resource_acquire",
     "resource_release",
+    "io_acquire",
+    "io_release",
+    "send_sink",
+    "recv_source",
+    "format_sink",
+    "callback_register",
 }
 _LOCK_KINDS = {"lock", "unlock"}
 _IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
@@ -475,7 +481,7 @@ def _as_list(value: Any) -> List[Dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _names(rows: List[Dict[str, Any]], limit: int = 32) -> List[str]:
+def _names(rows: List[Dict[str, Any]], limit: int = 96) -> List[str]:
     names = []
     for row in rows:
         name = str(row.get("name") or row.get("func_name") or row.get("symbol_name") or "").strip()

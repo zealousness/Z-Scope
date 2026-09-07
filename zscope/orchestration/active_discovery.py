@@ -29,7 +29,6 @@ from ..orchestration.candidates import (
     CandidateRegistrationResult,
 )
 from ..semantics.security_map import (
-    AUDIT_UNIT_JSON_SCHEMA,
     DISCOVERY_REPORT_JSON_SCHEMA,
     SEMANTIC_CLAIM_DELTA_JSON_SCHEMA,
     AuditUnit,

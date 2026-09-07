@@ -62,7 +62,7 @@ def _index(tmp_path, backend):
     )
 
 
-def test_get_callers_schema_exposes_identity_and_file_only() -> None:
+def test_get_callers_schema_exposes_identity_file_and_limit() -> None:
     tool = GetCallersTool(RecordingCallerIndex({"match_count": 1, "callers": []}))
 
     parameters = tool.get_schema()["function"]["parameters"]
@@ -81,12 +81,18 @@ def test_get_callers_schema_exposes_identity_and_file_only() -> None:
                 "type": "string",
                 "description": "Optional source file path used to disambiguate same-name targets.",
             },
+            "limit": {
+                "type": "integer",
+                "description": (
+                    "Optional maximum number of callers to return (default 20, max 200)."
+                ),
+            },
         },
         "required": ["func_name"],
     }
 
 
-def test_get_callers_uses_fixed_limit_and_returns_only_callers() -> None:
+def test_get_callers_default_window_reports_count_and_truncation() -> None:
     callers = [
         {
             "caller_index_name": "Caller@src/caller.c:1-3",
@@ -101,12 +107,42 @@ def test_get_callers_uses_fixed_limit_and_returns_only_callers() -> None:
         {
             "func_name": "Target@src/target.c:1-3",
             "file_path": "src/target.c",
-            "limit": 1,
         }
     )
 
-    assert result == {"success": True, "data": {"callers": callers}}
-    assert index.calls == [("Target@src/target.c:1-3", "src/target.c", 20)]
+    assert result == {
+        "success": True,
+        "data": {"callers": callers, "caller_count": 1, "truncated": False},
+    }
+    # One extra row is fetched so overflow beyond the window is detectable.
+    assert index.calls == [("Target@src/target.c:1-3", "src/target.c", 21)]
+
+
+def test_get_callers_reports_truncation_and_honors_limit_parameter() -> None:
+    callers = [
+        {"caller_index_name": f"Caller{i}@src/caller{i}.c:1-3", "callsite_lines": [i]}
+        for i in range(5)
+    ]
+    index = RecordingCallerIndex({"match_count": 1, "callers": callers})
+    tool = GetCallersTool(index)
+
+    result = tool.execute({"func_name": "Target", "limit": 2})
+
+    data = result["data"]
+    assert data["callers"] == callers[:2]
+    assert data["caller_count"] == 2
+    assert data["truncated"] is True
+    assert "larger limit" in data["note"]
+    assert index.calls == [("Target", "", 3)]
+
+
+def test_get_callers_clamps_limit_to_configured_maximum() -> None:
+    index = RecordingCallerIndex({"match_count": 1, "callers": []})
+    tool = GetCallersTool(index)
+
+    tool.execute({"func_name": "Target", "limit": 100000})
+
+    assert index.calls == [("Target", "", 201)]
 
 
 def test_get_callers_reports_missing_and_ambiguous_targets() -> None:

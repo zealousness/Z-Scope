@@ -270,7 +270,11 @@ class WikiConfig:
         if self.mode not in {"off", "build_only", "shadow", "active"}:
             raise ValueError("project.wiki.mode must be off, build_only, shadow, or active")
         self.state_dir = str(self.state_dir or ".zscope_knowledge/wiki").strip()
-        if not self.state_dir or Path(self.state_dir).is_absolute() or ".." in Path(self.state_dir).parts:
+        if (
+            not self.state_dir
+            or Path(self.state_dir).is_absolute()
+            or ".." in Path(self.state_dir).parts
+        ):
             raise ValueError("project.wiki.state_dir must be project-root relative")
         self.max_file_bytes = int(self.max_file_bytes)
         self.max_files = int(self.max_files)
@@ -397,6 +401,8 @@ class IndexingConfig:
     joern_heap_size: str = "8g"
     # Clang 配置（Phase 1+）
     clangd_path: str = "clangd"
+    clang_frontend: str = "auto"
+    clang_indexer_path: str = "zscope-clang-indexer"
     knowledge_db_path: str = ".zscope_knowledge/code_knowledge.db"
     batch_size: int = 50
     max_clangd_threads: int = 8
@@ -426,6 +432,8 @@ class IndexingConfig:
 
     def __post_init__(self) -> None:
         self.backend = str(self.backend or "regex").strip().lower().replace("-", "_")
+        if self.clang_frontend not in {"auto", "batch", "lsp"}:
+            raise ValueError("indexing.clang.frontend must be auto, batch, or lsp")
         self.java_structure_frontend = (
             str(self.java_structure_frontend or "auto").strip().lower().replace("-", "_")
         )
@@ -471,6 +479,17 @@ class AnalysisConfig:
     max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
     max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
+    # Scan-time LLM classification of unknown lightweight wrapper callees
+    # (user-defined risk interfaces without name hints).  Enabled by default in
+    # every scan depth because the resulting roles feed rule-facing semantics.
+    llm_interface_inference: bool = True
+    llm_interface_inference_budget: int = 50  # Max LLM interface classifications per scan.
+    # Optional LLM supplement that adds a user-facing Chinese explanation on
+    # top of LLM-free deterministic validation decisions (confirmed by proof,
+    # audit observations, evidence conflicts).  The deterministic verdict and
+    # reasoning stay authoritative; the model only rewrites the explanation.
+    llm_decision_explanation: bool = True
+    llm_decision_explanation_budget: int = 50  # Max explanation calls per scan.
     workflow_name: str = "default"
     enable_subagent_workers: bool = False
     # Internal rollout control.  ``shadow`` records evidence-backed semantic
@@ -480,7 +499,7 @@ class AnalysisConfig:
     max_subagent_tickets: int = 4
     subagent_max_turns: int = 20  # Per-ticket tool/LLM turn budget for focused workers.
     request_deadline_seconds: Optional[float] = 120.0
-    validation_deadline_seconds: Optional[float] = 240.0
+    validation_deadline_seconds: Optional[float] = 600.0
     subagent_ticket_timeout: Optional[float] = 300.0
     entry_deadline_seconds: Optional[float] = 1800.0
     scan_deadline_seconds: Optional[float] = None
@@ -489,6 +508,41 @@ class AnalysisConfig:
     subagent_skill_llm_refs: Dict[str, str] = field(default_factory=dict)
     subagent_skill_efforts: Dict[str, str] = field(default_factory=dict)
     tool_audit_log: str = ""  # Optional JSONL audit sink for tool/MCP policy events.
+    # Escalation-ladder rungs (new_docs/balanced_confirmed_tp_plan.md Phase 4).
+    # All default to off so the shipped pipeline behavior is unchanged; pilots
+    # enable them individually so each rung's TP contribution stays measurable.
+    validation_uncertain_confirm_threshold: Optional[float] = None
+    # Defaults to True: the balanced pipeline has always run the V3 reattempt;
+    # set False only for R1-only reference runs (plan M5 differential rows).
+    validation_v3_reattempt: bool = True
+    validation_v2b_adjudication: bool = False
+    validation_review_protocol: bool = False
+    # M4': compiler-checked review claims (deterministic reject proofs minted
+    # from the fact store).  Tri-state like the guards above: ``None`` enables
+    # it for ``balanced`` scans only.  Even when depth-enabled, the feature
+    # auto-disables when the compile_commands driver is not bound to the fact
+    # compiler (see CompleteFactStore.driver_bound).
+    validation_checked_proofs: Optional[bool] = None
+    validation_positive_case: bool = False
+    validation_related_findings: bool = False
+    validation_review_checkpoint: bool = False
+    # FP-suppression guards (M1/M2/M3').  Tri-state: ``None`` resolves by
+    # scan depth — enabled for ``balanced`` scans (where the balanced
+    # confirmed-TP pilot verified their effect), disabled elsewhere.  An
+    # explicit True/False always wins.
+    # M1: an R3 replay escalation that starts from ``uncertain`` and ends
+    # ``verified`` no longer auto-confirms; it is held in needs_review with
+    # review_disposition_reason=uncertain_confirm_hold.
+    validation_uncertain_replay_review: Optional[bool] = None
+    # M2: the source_lifecycle_acquire_without_release proof loses its
+    # confirm authority (measured 0TP/1FP on the frozen balanced run); it
+    # becomes diagnostic-only and the item routes through the normal ladder.
+    validation_demote_source_lifecycle_confirm: Optional[bool] = None
+    # M3': a cfg-obligation confirm whose function body itself releases the
+    # obligation object (free/SAFE_FREE of a sink-argument token) is
+    # self-contradictory and is not produced; the item routes through the
+    # normal ladder (measured on the frozen run: 1 FP removed, 0 TP touched).
+    validation_obligation_infunction_release_guard: Optional[bool] = None
 
     def __post_init__(self) -> None:
         self.validation_cache_entries = _bounded_cache_entries(
@@ -499,7 +553,7 @@ class AnalysisConfig:
             self.request_deadline_seconds, 120.0
         )
         self.validation_deadline_seconds = _optional_positive_seconds(
-            self.validation_deadline_seconds, 240.0
+            self.validation_deadline_seconds, 600.0
         )
         self.subagent_ticket_timeout = _optional_positive_seconds(
             self.subagent_ticket_timeout, 300.0
@@ -516,6 +570,25 @@ class AnalysisConfig:
         )
         if self.security_semantic_enrichment_mode not in {"shadow", "active"}:
             raise ValueError("security_semantic_enrichment_mode must be 'shadow' or 'active'")
+        self.llm_decision_explanation = bool(self.llm_decision_explanation)
+        try:
+            self.llm_decision_explanation_budget = max(0, int(self.llm_decision_explanation_budget))
+        except (TypeError, ValueError):
+            self.llm_decision_explanation_budget = 50
+        if self.validation_uncertain_confirm_threshold is not None:
+            threshold = float(self.validation_uncertain_confirm_threshold)
+            if not 0.5 < threshold <= 1.0:
+                raise ValueError(
+                    "validation_uncertain_confirm_threshold must be None or in (0.5, 1.0]"
+                )
+            self.validation_uncertain_confirm_threshold = threshold
+        self.validation_v3_reattempt = bool(self.validation_v3_reattempt)
+        self.validation_v2b_adjudication = bool(self.validation_v2b_adjudication)
+        self.validation_review_protocol = bool(self.validation_review_protocol)
+        self.validation_checked_proofs = bool(self.validation_checked_proofs)
+        self.validation_positive_case = bool(self.validation_positive_case)
+        self.validation_related_findings = bool(self.validation_related_findings)
+        self.validation_review_checkpoint = bool(self.validation_review_checkpoint)
 
 
 @dataclass
@@ -638,9 +711,10 @@ class ProjectConfig:
             self.user_config_file = user_config_file.resolve()
 
         if self.entry_discovery.search_root:
+            # 相对 search_root 固定基于 source_root 解析（CLI / Web / MCP 共用同一条规则）。
             search_root = Path(self.entry_discovery.search_root)
             if not search_root.is_absolute():
-                search_root = self.project_root / search_root
+                search_root = self.source_root / search_root
             search_root = search_root.resolve()
             if not search_root.is_dir():
                 raise ValueError(

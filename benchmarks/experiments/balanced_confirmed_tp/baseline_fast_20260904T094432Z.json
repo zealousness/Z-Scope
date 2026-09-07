@@ -1,0 +1,1755 @@
+{
+  "schema_version": "zscope.balanced-tp-baseline.v1",
+  "created_at_utc": "20260905T055850Z",
+  "source_run_dir": "benchmark-artifacts/c_cpp/trial/20260904T094432Z/run-01",
+  "git_branch": "v1.3.1_feat/llm-wiki",
+  "git_sha": "977226ca683b23a1062f01bf67b4c19c6feaf9d",
+  "scan_depth": "fast",
+  "model": "deepseek-v4-flash",
+  "confirmed_tp_truth_ids": [
+    "ISSUE41-001",
+    "ISSUE41-002",
+    "ISSUE41-006",
+    "ISSUE41-007",
+    "ISSUE41-008",
+    "ISSUE41-009",
+    "ISSUE41-011",
+    "ISSUE42-002",
+    "ISSUE42-005",
+    "ISSUE42-006",
+    "ISSUE42-018",
+    "ISSUE42-019",
+    "ISSUE42-022",
+    "ISSUE42-026",
+    "ISSUE42-028",
+    "ISSUE43-001",
+    "ISSUE43-003",
+    "ISSUE43-004",
+    "ISSUE43-005",
+    "ISSUE43-006",
+    "ISSUE43-011",
+    "ISSUE43-012",
+    "ISSUE43-013",
+    "ISSUE43-018",
+    "RANGE-001",
+    "RANGE-002",
+    "RANGE-004",
+    "RANGE-011",
+    "RANGE-012",
+    "RANGE-013",
+    "RANGE-017",
+    "RANGE-018",
+    "RANGE-019",
+    "RANGE-027",
+    "RANGE-028",
+    "RANGE-029",
+    "RANGE-031",
+    "RANGE-033",
+    "RANGE-034",
+    "RANGE-041",
+    "RANGE-042",
+    "RANGE-044",
+    "RANGE-049",
+    "RANGE-051",
+    "REAL-002",
+    "REAL-005",
+    "REAL-006",
+    "REAL-007",
+    "REAL-009",
+    "REAL-010",
+    "REAL-011",
+    "REAL-014",
+    "REAL-015",
+    "REAL-017",
+    "REAL-020",
+    "REAL-022",
+    "REAL-025",
+    "REAL-026",
+    "REAL-027",
+    "REAL-028",
+    "REAL-029",
+    "REAL-030",
+    "REAL-032"
+  ],
+  "confirmed_tp_count": 63,
+  "confirmed_recall": 0.4632,
+  "confirmed_precision": 1.0,
+  "with_review_tp_truth_count": 134,
+  "needs_review_tp": [
+    {
+      "truth_id": "ISSUE41-003",
+      "rule_id": "clang_cfg_recv_retry_loop_without_timeout_or_budget",
+      "location": "src/lifecycle.c:1724",
+      "cwe": "CWE-835",
+      "model_verdict": "uncertain",
+      "confidence": 0.86,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE41-004",
+      "rule_id": "encoded_or_reliable_fd_passed_to_raw_fd_contract",
+      "location": "src/lifecycle.c:1739",
+      "cwe": "CWE-628",
+      "model_verdict": "uncertain",
+      "confidence": 0.86,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE41-005",
+      "rule_id": "protocol_mismatch_accepted_under_non_strict_auth",
+      "location": "src/lifecycle.c:1750",
+      "cwe": "CWE-346",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE41-010",
+      "rule_id": "peer_write_without_sigpipe_handling",
+      "location": "src/lifecycle.c:1854",
+      "cwe": "CWE-404",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-001",
+      "rule_id": "cross_domain_counter_passed_to_callback_contract",
+      "location": "src/lifecycle.c:2275",
+      "cwe": "CWE-628",
+      "model_verdict": "rejected",
+      "confidence": 0.72,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-002",
+      "rule_id": null,
+      "location": "src/lifecycle.c:2286",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.76,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "ISSUE42-003",
+      "rule_id": "wire_bitmap_ctz_without_endian_normalization",
+      "location": "src/lifecycle.c:2307",
+      "cwe": "CWE-682",
+      "model_verdict": "rejected",
+      "confidence": 0.82,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-004",
+      "rule_id": "single_reader_field_under_shared_reader_count",
+      "location": "src/lifecycle.c:2329",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "ISSUE42-005",
+      "rule_id": "destroy_shared_pool_while_active_tasks_remain",
+      "location": "src/lifecycle.c:2348",
+      "cwe": "CWE-416",
+      "model_verdict": "uncertain",
+      "confidence": 0.86,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-007",
+      "rule_id": "composed_string_copied_to_member_buffer_without_bound",
+      "location": "src/lifecycle.c:2377",
+      "cwe": "CWE-121",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-008",
+      "rule_id": "partial_stack_struct_copied_to_output",
+      "location": "src/lifecycle.c:2391",
+      "cwe": "CWE-457",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-010",
+      "rule_id": "caller_limit_indexes_fixed_local_array",
+      "location": "src/lifecycle.c:2417",
+      "cwe": "CWE-125",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-011",
+      "rule_id": "clang_cfg_file_type_validation_after_mapping_size_check",
+      "location": "src/lifecycle.c:2433",
+      "cwe": "CWE-20",
+      "model_verdict": "uncertain",
+      "confidence": 0.72,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-013",
+      "rule_id": "global_registration_slot_checked_before_lock",
+      "location": "src/lifecycle.c:2462",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.86,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "ISSUE42-014",
+      "rule_id": "caller_limit_indexes_fixed_member_array",
+      "location": "src/lifecycle.c:2486",
+      "cwe": "CWE-125",
+      "model_verdict": "uncertain",
+      "confidence": 0.8,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-015",
+      "rule_id": "cached_group_pointer_reused_across_partition_index",
+      "location": "src/lifecycle.c:2503",
+      "cwe": "CWE-682",
+      "model_verdict": "uncertain",
+      "confidence": 0.78,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-016",
+      "rule_id": "mutable_global_mode_drives_callback_without_lock",
+      "location": "src/lifecycle.c:2509",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "ISSUE42-017",
+      "rule_id": "cas_result_ignored_before_slot_publication",
+      "location": "src/lifecycle.c:2536",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.86,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "ISSUE42-020",
+      "rule_id": "queued_local_event_without_scheduler_wakeup",
+      "location": "src/lifecycle.c:2601",
+      "cwe": "CWE-366",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-021",
+      "rule_id": "lookup_before_insert_lock",
+      "location": "src/lifecycle.c:2619",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "ISSUE42-023",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit",
+      "location": "src/lifecycle.c:2674",
+      "cwe": "CWE-770",
+      "model_verdict": "uncertain",
+      "confidence": 0.7,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-024",
+      "rule_id": "callback_allocator_pair_not_enforced",
+      "location": "src/lifecycle.c:2695",
+      "cwe": "CWE-762",
+      "model_verdict": "rejected",
+      "confidence": 0.84,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "ISSUE42-025",
+      "rule_id": "partial_state_machine_publication",
+      "location": "src/lifecycle.c:2717",
+      "cwe": "CWE-672",
+      "model_verdict": "uncertain",
+      "confidence": 0.76,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE42-027",
+      "rule_id": "cross_function_recursive_lock",
+      "location": "src/lifecycle.c:2754",
+      "cwe": "CWE-833",
+      "model_verdict": "uncertain",
+      "confidence": 0.86,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "ISSUE42-029",
+      "rule_id": "callback_can_free_current_event_before_reacquire",
+      "location": "src/lifecycle.c:2806",
+      "cwe": "CWE-416",
+      "model_verdict": "uncertain",
+      "confidence": 0.88,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "ISSUE43-001",
+      "rule_id": "clang_cfg_unbounded_count_indexes_fixed_array",
+      "location": "src/lifecycle.c:3088",
+      "cwe": "CWE-787",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE43-002",
+      "rule_id": "clang_cfg_narrowed_allocation_original_length_copy",
+      "location": "src/lifecycle.c:3108",
+      "cwe": "CWE-122",
+      "model_verdict": "uncertain",
+      "confidence": 0.88,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE43-007",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit",
+      "location": "src/lifecycle.c:3185",
+      "cwe": "CWE-770",
+      "model_verdict": "uncertain",
+      "confidence": 0.7,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE43-008",
+      "rule_id": "clang_cfg_allocation_result_used_without_null_check",
+      "location": "src/lifecycle.c:3204",
+      "cwe": "CWE-690",
+      "model_verdict": "uncertain",
+      "confidence": 0.76,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE43-009",
+      "rule_id": "clang_cfg_wire_integer_cast_to_pointer_deref",
+      "location": "src/lifecycle.c:3246",
+      "cwe": "CWE-822",
+      "model_verdict": "uncertain",
+      "confidence": 0.88,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE43-010",
+      "rule_id": "clang_cfg_unchecked_object_offset_deref",
+      "location": "src/lifecycle.c:3229",
+      "cwe": "CWE-823",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE43-013",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit",
+      "location": "src/lifecycle.c:3287",
+      "cwe": "CWE-770",
+      "model_verdict": "uncertain",
+      "confidence": 0.7,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE43-014",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit",
+      "location": "src/lifecycle.c:3300",
+      "cwe": "CWE-770",
+      "model_verdict": "uncertain",
+      "confidence": 0.7,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "ISSUE43-015",
+      "rule_id": "clang_cfg_fd_open_return_without_close",
+      "location": "src/lifecycle.c:3325",
+      "cwe": "CWE-775",
+      "model_verdict": "verified",
+      "confidence": 0.78,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "ISSUE43-016",
+      "rule_id": "clang_cfg_global_state_written_with_and_without_lock",
+      "location": "src/lifecycle.c:3344",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.74,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "ISSUE43-017",
+      "rule_id": "clang_cfg_unlock_without_matching_lock",
+      "location": "src/lifecycle.c:2767",
+      "cwe": "CWE-832",
+      "model_verdict": "rejected",
+      "confidence": 0.72,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-005",
+      "rule_id": "cross_function_recursive_lock",
+      "location": "src/plugin.c:99",
+      "cwe": "CWE-833",
+      "model_verdict": "uncertain",
+      "confidence": 0.86,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-006",
+      "rule_id": "clang_cfg_same_object_released_twice",
+      "location": "src/executor.c:162",
+      "cwe": "CWE-415",
+      "model_verdict": "uncertain",
+      "confidence": 0.88,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "RANGE-007",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit",
+      "location": "src/network.c:206",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.76,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "RANGE-009",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "location": "src/main.c:87",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.72,
+      "missing_fact_kinds": [
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-012",
+      "rule_id": "clang_cfg_system_with_nonliteral_command",
+      "location": "src/executor.c:87",
+      "cwe": "CWE-78",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "RANGE-014",
+      "rule_id": "cleanup_contract_type_mismatch",
+      "location": "src/main.c:647",
+      "cwe": "CWE-843",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "RANGE-015",
+      "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard",
+      "location": "src/network.c:175",
+      "cwe": "CWE-190",
+      "model_verdict": "uncertain",
+      "confidence": 0.8,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "RANGE-016",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "location": "src/main.c:60",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.72,
+      "missing_fact_kinds": [
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-020",
+      "rule_id": "clang_cfg_borrowed_pointer_returned_after_unlock",
+      "location": "src/lifecycle.c:144",
+      "cwe": "CWE-416",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-021",
+      "rule_id": "clang_cfg_refcount_update_after_unlock",
+      "location": "src/lifecycle.c:181",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.88,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-022",
+      "rule_id": "clang_cfg_global_callback_stores_borrowed_object",
+      "location": "src/lifecycle.c:210",
+      "cwe": "CWE-416",
+      "model_verdict": "uncertain",
+      "confidence": 0.78,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "RANGE-025",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "location": "src/lifecycle.c:270",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.72,
+      "missing_fact_kinds": [
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-026",
+      "rule_id": "clang_cfg_double_checked_global_without_atomic",
+      "location": "src/lifecycle.c:278",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.78,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-030",
+      "rule_id": "clang_cfg_sizeof_index_write",
+      "location": "src/lifecycle.c:333",
+      "cwe": "CWE-193",
+      "model_verdict": "uncertain",
+      "confidence": 0.9,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "RANGE-032",
+      "rule_id": "clang_cfg_free_non_owner_pointer_expression",
+      "location": "src/lifecycle.c:354",
+      "cwe": "CWE-590",
+      "model_verdict": "uncertain",
+      "confidence": 0.9,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "RANGE-035",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "location": "src/main.c:626",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.72,
+      "missing_fact_kinds": [
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-036",
+      "rule_id": "clang_cfg_global_mapping_unmapped_without_invalidation",
+      "location": "src/lifecycle.c:417",
+      "cwe": "CWE-416",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "RANGE-038",
+      "rule_id": "paired_global_registration_cleanup_omitted",
+      "location": "src/lifecycle.c:593",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "RANGE-040",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "location": "src/lifecycle.c:641",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.78,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "RANGE-043",
+      "rule_id": "paired_self_referential_traversal_log_amplification",
+      "location": "src/lifecycle.c:691",
+      "cwe": "CWE-400",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "RANGE-045",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "location": "src/lifecycle.c:837",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.78,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "RANGE-046",
+      "rule_id": "full_key_lookup_truncated_insert",
+      "location": "src/lifecycle.c:894",
+      "cwe": "CWE-187",
+      "model_verdict": "uncertain",
+      "confidence": 0.76,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "RANGE-047",
+      "rule_id": "insert_failure_leaves_stale_tree_node",
+      "location": "src/lifecycle.c:939",
+      "cwe": "CWE-416",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "RANGE-048",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "location": "src/lifecycle.c:969",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.72,
+      "missing_fact_kinds": [
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-050",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "location": "src/main.c:101",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.72,
+      "missing_fact_kinds": [
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-052",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter",
+      "location": "src/main.c:217",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.72,
+      "missing_fact_kinds": [
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "RANGE-053",
+      "rule_id": "clang_cfg_global_pointer_length_pair_published_without_lock",
+      "location": "src/lifecycle.c:411",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.74,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "REAL-001",
+      "rule_id": "container_unlink_free_after_unlock",
+      "location": "src/lifecycle.c:1192",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.82,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "REAL-003",
+      "rule_id": "clang_cfg_same_object_released_twice",
+      "location": "src/lifecycle.c:1226",
+      "cwe": "CWE-415",
+      "model_verdict": "uncertain",
+      "confidence": 0.88,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "REAL-004",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup",
+      "location": "src/lifecycle.c:1253",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.78,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "REAL-008",
+      "rule_id": "clang_cfg_log_error_path_allocation_not_released",
+      "location": "src/lifecycle.c:1305",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "REAL-013",
+      "rule_id": "clang_cfg_protocol_units_length_reaches_copy_without_packet_bound",
+      "location": "src/lifecycle.c:1368",
+      "cwe": "CWE-125",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "REAL-016",
+      "rule_id": "clang_cfg_object_published_before_initialization",
+      "location": "src/lifecycle.c:1405",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": []
+    },
+    {
+      "truth_id": "REAL-018",
+      "rule_id": null,
+      "location": "src/lifecycle.c:1425",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.76,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "REAL-019",
+      "rule_id": "clang_cfg_unchecked_insert_after_ownership_handoff",
+      "location": "src/lifecycle.c:1568",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.8,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "REAL-021",
+      "rule_id": "role_specific_release_uses_hardcoded_role",
+      "location": "src/lifecycle.c:1467",
+      "cwe": "CWE-401",
+      "model_verdict": "uncertain",
+      "confidence": 0.84,
+      "missing_fact_kinds": [
+        "event:acquire",
+        "event:exit"
+      ]
+    },
+    {
+      "truth_id": "REAL-024",
+      "rule_id": "clang_cfg_refcount_update_after_unlock",
+      "location": "src/lifecycle.c:1502",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.88,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    },
+    {
+      "truth_id": "REAL-031",
+      "rule_id": "clang_cfg_macro_guarded_lock_may_compile_to_noop",
+      "location": "src/lifecycle.c:1999",
+      "cwe": "CWE-362",
+      "model_verdict": "uncertain",
+      "confidence": 0.74,
+      "missing_fact_kinds": [
+        "event:shared_state_access",
+        "lockset"
+      ]
+    }
+  ],
+  "needs_review_tp_count": 74,
+  "needs_review_new_truth_ids": [
+    "ISSUE41-003",
+    "ISSUE41-004",
+    "ISSUE41-005",
+    "ISSUE41-010",
+    "ISSUE42-001",
+    "ISSUE42-003",
+    "ISSUE42-004",
+    "ISSUE42-007",
+    "ISSUE42-008",
+    "ISSUE42-010",
+    "ISSUE42-011",
+    "ISSUE42-013",
+    "ISSUE42-014",
+    "ISSUE42-015",
+    "ISSUE42-016",
+    "ISSUE42-017",
+    "ISSUE42-020",
+    "ISSUE42-021",
+    "ISSUE42-023",
+    "ISSUE42-024",
+    "ISSUE42-025",
+    "ISSUE42-027",
+    "ISSUE42-029",
+    "ISSUE43-002",
+    "ISSUE43-007",
+    "ISSUE43-008",
+    "ISSUE43-009",
+    "ISSUE43-010",
+    "ISSUE43-014",
+    "ISSUE43-015",
+    "ISSUE43-016",
+    "ISSUE43-017",
+    "RANGE-005",
+    "RANGE-006",
+    "RANGE-007",
+    "RANGE-009",
+    "RANGE-014",
+    "RANGE-015",
+    "RANGE-016",
+    "RANGE-020",
+    "RANGE-021",
+    "RANGE-022",
+    "RANGE-025",
+    "RANGE-026",
+    "RANGE-030",
+    "RANGE-032",
+    "RANGE-035",
+    "RANGE-036",
+    "RANGE-038",
+    "RANGE-040",
+    "RANGE-043",
+    "RANGE-045",
+    "RANGE-046",
+    "RANGE-047",
+    "RANGE-048",
+    "RANGE-050",
+    "RANGE-052",
+    "RANGE-053",
+    "REAL-001",
+    "REAL-003",
+    "REAL-004",
+    "REAL-008",
+    "REAL-013",
+    "REAL-016",
+    "REAL-018",
+    "REAL-019",
+    "REAL-021",
+    "REAL-024",
+    "REAL-031"
+  ],
+  "needs_review_new_truth_count": 69,
+  "needs_review_issue_count": 162,
+  "needs_review_verdict_counts": {
+    "uncertain": 150,
+    "rejected": 8,
+    "verified": 3,
+    "None": 1
+  },
+  "no_evidence_gain_clusters": [
+    {
+      "validation_cluster_uid": "VAL_015d6ef51100f520072d1aada48923a9",
+      "candidate_uid": "CAND_15cbd1589dbe221f7215ec08",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_37a1745bc126c8d46e0ad704fd8f2a99",
+      "candidate_uid": "CAND_029c106d34c20f7b7d7ed90b",
+      "rule_id": "cleanup_contract_type_mismatch"
+    },
+    {
+      "validation_cluster_uid": "VAL_b1476fa8aca2828290db9ffe6fb94268",
+      "candidate_uid": "CAND_d0a37ecd2de7825a750d0580",
+      "rule_id": "clang_cfg_unlock_without_matching_lock"
+    },
+    {
+      "validation_cluster_uid": "VAL_3eb9f291a883852d6496fa90d1f8728c",
+      "candidate_uid": "CAND_f2d5e94d533535df5d2d33fb",
+      "rule_id": "container_unlink_free_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_ea8a31ac6aa51b5963f4577c9452cd05",
+      "candidate_uid": "CAND_2cdfbe47feb9433447ba7590",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_49685aecd0f31d4b8af8194202a5245f",
+      "candidate_uid": "CAND_b86ad0d344d060f726f7cd13",
+      "rule_id": "clang_cfg_file_type_validation_after_mapping_size_check"
+    },
+    {
+      "validation_cluster_uid": "VAL_d28aa83ed704c3dea876d6a45bf0ac84",
+      "candidate_uid": "CAND_853ef6022b7cba809016ce4a",
+      "rule_id": "clang_cfg_global_mapping_unmapped_without_invalidation"
+    },
+    {
+      "validation_cluster_uid": "VAL_bca001bff5679b9a5a9ff5aa89d185e6",
+      "candidate_uid": "CAND_a78e5f1ea842834681e9fda8",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup"
+    },
+    {
+      "validation_cluster_uid": "VAL_1c87e32b995ade83c2105062b6f05092",
+      "candidate_uid": "CAND_2a8dbd893c2afbd61aba452f",
+      "rule_id": "clang_cfg_borrowed_pointer_returned_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_5ce98d1e1ef3ba0f2ae58285d4cf5aa5",
+      "candidate_uid": "CAND_b28d38c99490231740f30a8f",
+      "rule_id": "clang_cfg_refcount_update_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_7375b250bd667eae3243d3824f387dbf",
+      "candidate_uid": "CAND_1c9ac181aa714f239a368456",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup"
+    },
+    {
+      "validation_cluster_uid": "VAL_65df6ea395866a54b553031f381ff5a3",
+      "candidate_uid": "CAND_3658be6dae366c7ef7f87643",
+      "rule_id": "clang_cfg_system_with_nonliteral_command"
+    },
+    {
+      "validation_cluster_uid": "VAL_8f6867cd7982d6a52244fd6dd5ea5b00",
+      "candidate_uid": "CAND_1869e39c7742e2c5448451cd",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_2d0fab844de4b5d12ae2bfdf3452d05e",
+      "candidate_uid": "CAND_835d951c9c910e06ca85730f",
+      "rule_id": "clang_cfg_allocation_result_used_without_null_check"
+    },
+    {
+      "validation_cluster_uid": "VAL_c462defd4928404379128f34bdea69f2",
+      "candidate_uid": "CAND_81221709d08f16963b88a73c",
+      "rule_id": "regular_file_size_check_applied_to_device_mapping"
+    },
+    {
+      "validation_cluster_uid": "VAL_4bd552eff6456591e3ecaaeb2ac3d67f",
+      "candidate_uid": "CAND_057a8e886b5b98e6d4554a55",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    },
+    {
+      "validation_cluster_uid": "VAL_a5ea4b22a1f3caf587ed71091a6807eb",
+      "candidate_uid": "CAND_87592ea4744d27a223805b7e",
+      "rule_id": "clang_cfg_recv_retry_loop_without_timeout_or_budget"
+    },
+    {
+      "validation_cluster_uid": "VAL_537e2712f73114a18ed1a10691c83585",
+      "candidate_uid": "CAND_084ca38c21b04365cb8fbaf2",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup"
+    },
+    {
+      "validation_cluster_uid": "VAL_bb8ebb274cd04107cce3156e8db4789b",
+      "candidate_uid": "CAND_7925d2fd431e21cdc41327a9",
+      "rule_id": "clang_cfg_unbounded_count_indexes_fixed_array"
+    },
+    {
+      "validation_cluster_uid": "VAL_4f3e1b5d45db1a95844933031c14b5c1",
+      "candidate_uid": "CAND_b8535e0cc839ec03554dfbbf",
+      "rule_id": "clang_cfg_unbounded_count_indexes_fixed_array"
+    },
+    {
+      "validation_cluster_uid": "VAL_7a123dbedff35aed63ab219507048964",
+      "candidate_uid": "CAND_7a44307201906718086cabf8",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_cb253da32e5f7da5796df20caafe3717",
+      "candidate_uid": "CAND_05796bbe3194bf7b01c117cc",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup"
+    },
+    {
+      "validation_cluster_uid": "VAL_e1966c9a9d8ff15e60c59127391bc609",
+      "candidate_uid": "CAND_9193206f79b0597a2eb83f90",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_63438577986d46403dd130b8f826b3ff",
+      "candidate_uid": "CAND_12c8d81479b50b5ee12e96e1",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_b42d294330783eafa6100e496a851eaa",
+      "candidate_uid": "CAND_055b2b73e3e01dffe60943a7",
+      "rule_id": "clang_cfg_global_callback_stores_borrowed_object"
+    },
+    {
+      "validation_cluster_uid": "VAL_9e64fbe39a2a6744f3d77fa6608bd549",
+      "candidate_uid": "CAND_e2096027a51f9867710cef75",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_ddc51652d7910ea394efd219c256a6e8",
+      "candidate_uid": "CAND_0698ff07913ff1fcc85f4313",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup"
+    },
+    {
+      "validation_cluster_uid": "VAL_d05a7c5c3ce1ee5c8cc9bf067091bd09",
+      "candidate_uid": "CAND_93588577d6a8c4c81677dd2b",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_b07b63cf02c206160186609cf49ed953",
+      "candidate_uid": "CAND_f9b5f242cb9ca0066a0729f3",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_be1dac7957ef048ffb5f749badd1af6b",
+      "candidate_uid": "CAND_26f4491c43ce87efbf9098cf",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_82ad9eda9fc8146454f872df874043b2",
+      "candidate_uid": "CAND_47fc9cc6652427f3fdf036dc",
+      "rule_id": "clang_cfg_unchecked_insert_after_ownership_handoff"
+    },
+    {
+      "validation_cluster_uid": "VAL_16ec6d4051d5448d75f9546cc6ae0582",
+      "candidate_uid": "CAND_2a2d3bab4758b3521c71a3c7",
+      "rule_id": "paired_self_referential_traversal_log_amplification"
+    },
+    {
+      "validation_cluster_uid": "VAL_9f5543fe1ea3e3727fea326690c5e212",
+      "candidate_uid": "CAND_af553f2aae2ae01fb982b54f",
+      "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard"
+    },
+    {
+      "validation_cluster_uid": "VAL_3386adeba02d634c81671cacb9fd5710",
+      "candidate_uid": "CAND_08625570b965a0f8e05ba24b",
+      "rule_id": "clang_cfg_callback_while_lock_held"
+    },
+    {
+      "validation_cluster_uid": "VAL_228499425b51e37021d5ace3b11b9ac9",
+      "candidate_uid": "CAND_15b9205dd13fbdd77e43a659",
+      "rule_id": "clang_cfg_wire_integer_cast_to_pointer_deref"
+    },
+    {
+      "validation_cluster_uid": "VAL_48bb33f540049f6554737a6b1963eab4",
+      "candidate_uid": "CAND_ec47567ba076f0f7daf10764",
+      "rule_id": "clang_cfg_unchecked_insert_after_ownership_handoff"
+    },
+    {
+      "validation_cluster_uid": "VAL_fa5e7b48d1249c9d6ccefdb430e6f34e",
+      "candidate_uid": "CAND_447c1ddafa7f57811aba82b7",
+      "rule_id": "partial_stack_struct_copied_to_output"
+    },
+    {
+      "validation_cluster_uid": "VAL_ac501bc38dd2925bf0fcf4bea087f037",
+      "candidate_uid": "CAND_0f3d7a19cdeeab94f463ddb8",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_4ac6ce43393a5f30817402cfb003ffa1",
+      "candidate_uid": "CAND_d05ce9a25ca45e1e2cbf9e2b",
+      "rule_id": "clang_cfg_narrowed_allocation_original_length_copy"
+    },
+    {
+      "validation_cluster_uid": "VAL_5be13df62bf665e78743f9dc176e99ab",
+      "candidate_uid": "CAND_187fe34be18fa8005c913408",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_cfbcedf0287e88c5609947a7f3e7b7aa",
+      "candidate_uid": "CAND_bd3645db9c98531c673fa55a",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_da3190b84ab9a22385cbea747e23b251",
+      "candidate_uid": "CAND_7af0d48c26a7978b33a71d3d",
+      "rule_id": "clang_cfg_same_object_released_twice"
+    },
+    {
+      "validation_cluster_uid": "VAL_123c650e98502f626864e38cf69b3546",
+      "candidate_uid": "CAND_a25d31a18acddbc179975cbd",
+      "rule_id": "composed_string_copied_to_member_buffer_without_bound"
+    },
+    {
+      "validation_cluster_uid": "VAL_a96aee279dad6276f5ca9a8436734d00",
+      "candidate_uid": "CAND_9e5f7c2ff90f056c345635ec",
+      "rule_id": "role_specific_release_uses_hardcoded_role"
+    },
+    {
+      "validation_cluster_uid": "VAL_fea333e128f1d4f669b4269b02dd0184",
+      "candidate_uid": "CAND_c2c36a7b1f622d8d19334136",
+      "rule_id": "paired_self_referential_traversal_log_amplification"
+    },
+    {
+      "validation_cluster_uid": "VAL_f206e57f8fa810b571d68f59ce82ed2f",
+      "candidate_uid": "CAND_99b0b8d2f0af273bd98d68ab",
+      "rule_id": "clang_cfg_macro_guarded_lock_may_compile_to_noop"
+    },
+    {
+      "validation_cluster_uid": "VAL_3c56d87447d2f24cbc02d157e5f8ebbc",
+      "candidate_uid": "CAND_352cf23b62153b1a481bb236",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    },
+    {
+      "validation_cluster_uid": "VAL_4ab1afaa21e142b5af4ec82356ee437e",
+      "candidate_uid": "CAND_4f4e42a1001e22d28b536d43",
+      "rule_id": "paired_global_registration_cleanup_omitted"
+    },
+    {
+      "validation_cluster_uid": "VAL_982ac47b92b84f7ba1166e3e8e8aec11",
+      "candidate_uid": "CAND_bc4176f94924b51fa551a5b6",
+      "rule_id": "path_state_checked_separately_from_key_generation"
+    },
+    {
+      "validation_cluster_uid": "VAL_89259234640c8b9bfafc630e9cc428ac",
+      "candidate_uid": "CAND_d8f0945140e9d605e8e8f441",
+      "rule_id": "peer_write_without_sigpipe_handling"
+    },
+    {
+      "validation_cluster_uid": "VAL_d217d640732209dd4dbae763b9c2a6bc",
+      "candidate_uid": "CAND_e1fbed1290af8496f5ce12d0",
+      "rule_id": "cross_domain_counter_passed_to_callback_contract"
+    },
+    {
+      "validation_cluster_uid": "VAL_53c2e3d8d71388db04310b8fa7a4351f",
+      "candidate_uid": "CAND_397391ce7a5314e27e60808b",
+      "rule_id": "caller_limit_indexes_fixed_local_array"
+    },
+    {
+      "validation_cluster_uid": "VAL_6d1bb31f23d3028d226607fc23cc2057",
+      "candidate_uid": "CAND_849ddcfadf77f52f6c6f5a6f",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_0f412b2c4eaf890f3b986f5b56f973cb",
+      "candidate_uid": "CAND_52dadc5c7ad0ef9536df17fb",
+      "rule_id": "clang_cfg_use_after_release"
+    },
+    {
+      "validation_cluster_uid": "VAL_e954267cb6c21cb61e1f736dddbd02c5",
+      "candidate_uid": "CAND_177b020fce2532cef77c409c",
+      "rule_id": "encoded_or_reliable_fd_passed_to_raw_fd_contract"
+    },
+    {
+      "validation_cluster_uid": "VAL_29d7a0872d5b984d08c20ddeb964b968",
+      "candidate_uid": "CAND_f3873c8751616e0fb18d0418",
+      "rule_id": "container_unlink_free_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_177056e1b79c459855d66291ed41c5df",
+      "candidate_uid": "CAND_7055e94d149ce7959d76b55d",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_88e3978e6a767284f5e6505ab1b7dcba",
+      "candidate_uid": "CAND_54d8c602a4527eabf9af8d93",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup"
+    },
+    {
+      "validation_cluster_uid": "VAL_27e9cc32ae64db01227eda4afdbb8116",
+      "candidate_uid": "CAND_bdd6946157e4deb1c74c04b6",
+      "rule_id": "partial_state_machine_publication"
+    },
+    {
+      "validation_cluster_uid": "VAL_935966d2f7598ecf07821999bbe8a73f",
+      "candidate_uid": "CAND_08dbb7259974bbca9902d5bb",
+      "rule_id": "clang_cfg_registry_unlink_free_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_d4fe3bc837daf83d674026c3e2cdd88c",
+      "candidate_uid": "CAND_b779266a41e46caa770ee277",
+      "rule_id": "clang_cfg_registry_unlink_free_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_3ec118636acb20b30cf0f0c963d82fb0",
+      "candidate_uid": "CAND_3667411de723acfed5cc052b",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_35cdad5c3130babc63da353d67b4f4d5",
+      "candidate_uid": "CAND_8b0536f7c5f2cd267505f165",
+      "rule_id": "clang_cfg_object_published_before_initialization"
+    },
+    {
+      "validation_cluster_uid": "VAL_c9a6bf29f2a593e3118cc8f27b5d01d7",
+      "candidate_uid": "CAND_67e7b6e6c098846bd2fb4cea",
+      "rule_id": "clang_cfg_same_object_released_twice"
+    },
+    {
+      "validation_cluster_uid": "VAL_39deeed72a8dbe6c3d3a409bbbdb9d13",
+      "candidate_uid": "CAND_46867c69ccd791a5fb2c4ff1",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_fec97f04edb53b7a7a0f2496c404fd45",
+      "candidate_uid": "CAND_e36ff8fcc75c48df7da4a5b1",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    },
+    {
+      "validation_cluster_uid": "VAL_325f01d31231e1a044a83d8d93aaa77c",
+      "candidate_uid": "CAND_08cc30e81b67a29ef685b995",
+      "rule_id": "container_unlink_free_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_213af8afdff5edb2046e1c547d1f97b8",
+      "candidate_uid": "CAND_ad13ac45e521a0e657335068",
+      "rule_id": "destroy_shared_pool_while_active_tasks_remain"
+    },
+    {
+      "validation_cluster_uid": "VAL_cadaa773ebd44122065fb6d6786afcff",
+      "candidate_uid": "CAND_3fc2046f0c413615ed428b62",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_6f576a6c58109070373b6d3b4bd7d592",
+      "candidate_uid": "CAND_507a585948ff54824d083e36",
+      "rule_id": "clang_cfg_narrowing_size_cast_without_range_guard"
+    },
+    {
+      "validation_cluster_uid": "VAL_85de1276a76a79042ee4755569b75ae1",
+      "candidate_uid": "CAND_502efd19b8f2dfee859eb86b",
+      "rule_id": "callback_can_free_current_event_before_reacquire"
+    },
+    {
+      "validation_cluster_uid": "VAL_48e9502ad70e0efed25889e826cdcd9f",
+      "candidate_uid": "CAND_c0060f050d40a1b52094ef33",
+      "rule_id": "clang_cfg_refcount_update_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_a0be57f638d2c49bb525bbed2ca0a1ba",
+      "candidate_uid": "CAND_f64022bd064d7ab55c99416c",
+      "rule_id": "log_inside_poisoned_traversal"
+    },
+    {
+      "validation_cluster_uid": "VAL_51cbaace72e69ee3c928b91454bdc712",
+      "candidate_uid": "CAND_c06cfb8bd6169af21ad465ec",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup"
+    },
+    {
+      "validation_cluster_uid": "VAL_3824069e24e219ef8ba332f4f0f77428",
+      "candidate_uid": "CAND_c9f7a01c17f79207fe3d051f",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup"
+    },
+    {
+      "validation_cluster_uid": "VAL_9c1c5eefd91d4adc63035f2047cd9cba",
+      "candidate_uid": "CAND_df4f23308b7ec00dde30b1d0",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_4d43691b6e9ba4d878da46ded62eae8c",
+      "candidate_uid": "CAND_198b99d8740ba81e89008ae0",
+      "rule_id": "cross_function_lock_order_inversion"
+    },
+    {
+      "validation_cluster_uid": "VAL_32c9e260a10f2db3fffd2d66a3f584c2",
+      "candidate_uid": "CAND_847cce9aebe85d463d70e796",
+      "rule_id": "lookup_before_insert_lock"
+    },
+    {
+      "validation_cluster_uid": "VAL_22ddc13e681213f5b2c944226ddcc399",
+      "candidate_uid": "CAND_8163460550337b3252ee313f",
+      "rule_id": "clang_cfg_unchecked_insert_after_ownership_handoff"
+    },
+    {
+      "validation_cluster_uid": "VAL_524029da072c3cf5df4694f65101274d",
+      "candidate_uid": "CAND_3a7afba93d9ce59b56170eab",
+      "rule_id": "unchecked_param_indexes_fixed_global_array"
+    },
+    {
+      "validation_cluster_uid": "VAL_696cc3c6cb49204bc8c804322d6fea50",
+      "candidate_uid": "CAND_4ff50e61b5e7c2bcf3a3d9f6",
+      "rule_id": "role_specific_release_uses_hardcoded_role"
+    },
+    {
+      "validation_cluster_uid": "VAL_3be93f1778b965ffa17876fdd9f2201c",
+      "candidate_uid": "CAND_8b6ec2c6137acf692e1b6fd1",
+      "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard"
+    },
+    {
+      "validation_cluster_uid": "VAL_8c32850b4f43760a9385bac16abaddd0",
+      "candidate_uid": "CAND_52c0024fba6ff873ba96fe2e",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_569faaf0922b506e6261638aca60bff2",
+      "candidate_uid": "CAND_3e6f64110ef8023f1c043293",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_3c660eed9eed0c1d7791537557500d0a",
+      "candidate_uid": "CAND_c29cafd4aa67745f17b8e78a",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_ffd0071eee74c854d86280bedb8b94a3",
+      "candidate_uid": "CAND_5bf2243a2787111f8653b686",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_53d7717a5eaa67b8266b15cf5d0f4c3f",
+      "candidate_uid": "CAND_c71bc48792e1d665ea286aad",
+      "rule_id": "clang_cfg_double_checked_global_without_atomic"
+    },
+    {
+      "validation_cluster_uid": "VAL_a84a1fd6ca129ee076e8ab5ecaa45f0a",
+      "candidate_uid": "CAND_5fc4df27d28e633af4576cad",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    },
+    {
+      "validation_cluster_uid": "VAL_98beef3928e207e3d282be76e1bbe5c6",
+      "candidate_uid": "CAND_6111e5606536beeff52db384",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_796519bee2908e3969806bc78a5a2fd2",
+      "candidate_uid": "CAND_6a51e2f93dc2584d40b31709",
+      "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard"
+    },
+    {
+      "validation_cluster_uid": "VAL_9c71a06e8c90343678f9a15ba05f930a",
+      "candidate_uid": "CAND_d04188b07af9e07d29d3d9e9",
+      "rule_id": "signal_path_mutates_shared_state_or_logs"
+    },
+    {
+      "validation_cluster_uid": "VAL_ba655c803e7b67d4e670a07918e81e55",
+      "candidate_uid": "CAND_5e96936ece293ea5584d008a",
+      "rule_id": "full_key_lookup_truncated_insert"
+    },
+    {
+      "validation_cluster_uid": "VAL_5f8c20f7583ed096869736bd5573666a",
+      "candidate_uid": "CAND_b541de2002f42bcf5d76f5da",
+      "rule_id": "clang_cfg_refcount_update_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_3fd1ac964b3498522d8c35d09265295c",
+      "candidate_uid": "CAND_06a4d5cbbc48c1c8c266e69d",
+      "rule_id": "clang_cfg_sizeof_index_write"
+    },
+    {
+      "validation_cluster_uid": "VAL_b2baeb9b4f6cad73287ed7ae7c524e97",
+      "candidate_uid": "CAND_2d19c05544b1feb5e7d99d83",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    },
+    {
+      "validation_cluster_uid": "VAL_cfde40689852d1eb8180dee3d4b687f3",
+      "candidate_uid": "CAND_ee6077c7807c3f4e710bd981",
+      "rule_id": "timer_callback_cascade_wait"
+    },
+    {
+      "validation_cluster_uid": "VAL_4c7caecb7b2f1bf1b509488864cd44d9",
+      "candidate_uid": "CAND_0af80036cd2ee8aa9a5eb62a",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    },
+    {
+      "validation_cluster_uid": "VAL_e27f29b03a595af25b7a6ee93e866a6a",
+      "candidate_uid": "CAND_057ea7f7f79345557967f498",
+      "rule_id": "timer_callback_cascade_wait"
+    },
+    {
+      "validation_cluster_uid": "VAL_01c4eace1a4cc179d14931af78490f68",
+      "candidate_uid": "CAND_f9a65d4d437ce557c8256c40",
+      "rule_id": "cached_group_pointer_reused_across_partition_index"
+    },
+    {
+      "validation_cluster_uid": "VAL_2534ccbbd2caa76c2c2c073f4449cfa5",
+      "candidate_uid": "CAND_6de16efa9688e7a1fe9ff8f4",
+      "rule_id": "clang_cfg_narrowed_allocation_original_length_copy"
+    },
+    {
+      "validation_cluster_uid": "VAL_c4f67f590f65c0e2574f4ed40284a402",
+      "candidate_uid": "CAND_7740d0dddec48189f8ff5294",
+      "rule_id": "clang_cfg_global_state_written_with_and_without_lock"
+    },
+    {
+      "validation_cluster_uid": "VAL_4c1f224f031a0faef3f991ed9126411e",
+      "candidate_uid": "CAND_a62ff8360518f808f629749c",
+      "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard"
+    },
+    {
+      "validation_cluster_uid": "VAL_c96d323545b4352dba67b7d9c312bc3c",
+      "candidate_uid": "CAND_95705c7a9d9098f0fc6722c2",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    },
+    {
+      "validation_cluster_uid": "VAL_e1c0d15bcb612814f270d7d4f7dcbca8",
+      "candidate_uid": "CAND_141f7fdc97e54065333a72db",
+      "rule_id": "clang_cfg_unchecked_object_offset_deref"
+    },
+    {
+      "validation_cluster_uid": "VAL_73d29427fc43fc2b2e216964648f1dd3",
+      "candidate_uid": "CAND_286153308808fa988df49701",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_5c3bbc61663ed251a28bd939dce22b62",
+      "candidate_uid": "CAND_b219caad266577ff86c881b1",
+      "rule_id": "clang_cfg_log_error_path_allocation_not_released"
+    },
+    {
+      "validation_cluster_uid": "VAL_d724eac107bba2ed6639fcc2f78d12c6",
+      "candidate_uid": "CAND_1ffbb3bb1adee9b141fb3489",
+      "rule_id": "callback_allocator_pair_not_enforced"
+    },
+    {
+      "validation_cluster_uid": "VAL_8d7c5ce871937f111ffe2507d614150a",
+      "candidate_uid": "CAND_f9d08ebcf7504bd8121ad994",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_df79e00da8a93d3dca172191731ed7eb",
+      "candidate_uid": "CAND_27043c048eff2cf062e5c233",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_b838cbf6847f325cc95f104c7a2f384c",
+      "candidate_uid": "CAND_e41122f5bd006fa8a64eefd6",
+      "rule_id": "unchecked_param_indexes_fixed_global_array"
+    },
+    {
+      "validation_cluster_uid": "VAL_ea7d41baef2378640b575ae4f5a5da9e",
+      "candidate_uid": "CAND_d9dc488556c4ae045113dadd",
+      "rule_id": "peer_write_without_sigpipe_handling"
+    },
+    {
+      "validation_cluster_uid": "VAL_6fe279d2ff387756aac64c3a89fa6796",
+      "candidate_uid": "CAND_7094ef39d2065723ba5695f5",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_bd344dad718e60525435f73e72573e73",
+      "candidate_uid": "CAND_ab6794942e119c3f712123a9",
+      "rule_id": "clang_cfg_narrowed_allocation_original_length_copy"
+    },
+    {
+      "validation_cluster_uid": "VAL_ca880612fcab07922875913d69893e4d",
+      "candidate_uid": "CAND_38abd4bff3621cf7aa589e19",
+      "rule_id": "clang_cfg_protocol_units_length_reaches_copy_without_packet_bound"
+    },
+    {
+      "validation_cluster_uid": "VAL_91b79fb49488411c64b7f888346c048d",
+      "candidate_uid": "CAND_a218cc966ea5ac9b94ea4480",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_35ce4c3fc8002559484effc953cc9cfb",
+      "candidate_uid": "CAND_e399e76e190f4d0e1a4efb1e",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_96481bb1dcb933020de0f598f3c01a24",
+      "candidate_uid": "CAND_7c1428ba4d6d404d2d53b692",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    },
+    {
+      "validation_cluster_uid": "VAL_69d62463da1053ea811637a175294019",
+      "candidate_uid": "CAND_67a02be83baa968df43214ce",
+      "rule_id": "clang_cfg_object_published_before_initialization"
+    },
+    {
+      "validation_cluster_uid": "VAL_c9a3325f904831381da4cd51efbddc09",
+      "candidate_uid": "CAND_841ea713e141ed18bc9b6a6d",
+      "rule_id": "cross_function_recursive_lock"
+    },
+    {
+      "validation_cluster_uid": "VAL_82d42d85c48e25d516f6813075b936ee",
+      "candidate_uid": "CAND_c62a4c85b43899f27385de5e",
+      "rule_id": "insert_failure_leaves_stale_tree_node"
+    },
+    {
+      "validation_cluster_uid": "VAL_101aff8aeb9c21b1d18adf10d4f83d1a",
+      "candidate_uid": "CAND_9b061177b9eb0e5b713fa7c4",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_1341fc0203415bf58c849ef9d7babc85",
+      "candidate_uid": "CAND_a4f7582ed84b177c88ac0669",
+      "rule_id": "wire_bitmap_ctz_without_endian_normalization"
+    },
+    {
+      "validation_cluster_uid": "VAL_9b49b31eed0358bcb9b47e9e04e7dbbf",
+      "candidate_uid": "CAND_50d75e4b94a4b6996a008734",
+      "rule_id": "clang_cfg_unsynchronized_shared_flag_or_counter"
+    },
+    {
+      "validation_cluster_uid": "VAL_5ea67564a0b8ac96265b14010bb9a127",
+      "candidate_uid": "CAND_1b71b0f86eb3eed2b1e04cf0",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    },
+    {
+      "validation_cluster_uid": "VAL_00f0f9334193a3c72c67b738e74250d6",
+      "candidate_uid": "CAND_12d21af7b968f9dcf0d86729",
+      "rule_id": "clang_cfg_parent_release_without_owned_member_cleanup"
+    },
+    {
+      "validation_cluster_uid": "VAL_f1f5904ed8b928705e8f4d3678285286",
+      "candidate_uid": "CAND_375928ca2350c365306f5b30",
+      "rule_id": "encoded_or_reliable_fd_passed_to_raw_fd_contract"
+    },
+    {
+      "validation_cluster_uid": "VAL_131ff20e188c9fc5cf94a85d9661c2c9",
+      "candidate_uid": "CAND_cab6e424702c14a6c62b550f",
+      "rule_id": "clang_cfg_active_owner_destroy_without_quiescence"
+    },
+    {
+      "validation_cluster_uid": "VAL_848b169ce0d6a7994b340f1357ecd939",
+      "candidate_uid": "CAND_720e370fecf9fc27c4c97298",
+      "rule_id": "cas_result_ignored_before_slot_publication"
+    },
+    {
+      "validation_cluster_uid": "VAL_b0263859f71269680f00fea2620f9a47",
+      "candidate_uid": "CAND_745a446c1fb4995915003201",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_815f0df6238fe546febea87b230cb93d",
+      "candidate_uid": "CAND_386bf83b759f7f118a81d3f7",
+      "rule_id": "clang_cfg_global_state_written_with_and_without_lock"
+    },
+    {
+      "validation_cluster_uid": "VAL_508c94489b621540b51946abcb0f35b4",
+      "candidate_uid": "CAND_925e34b29650f0178fc77053",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_d3dc619cd42818f29102fc7bfd974e4d",
+      "candidate_uid": "CAND_27690ef8938b20481adef7cd",
+      "rule_id": "caller_limit_indexes_fixed_member_array"
+    },
+    {
+      "validation_cluster_uid": "VAL_04e98b7bdb113fdea876e975055b0864",
+      "candidate_uid": "CAND_831d7abc55203bf7f4d2c38f",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_03f0745930da0187a9f05208b11fc379",
+      "candidate_uid": "CAND_0ff946ef502ae64973a4ea87",
+      "rule_id": "global_container_registration_without_cleanup_path"
+    },
+    {
+      "validation_cluster_uid": "VAL_2f07d59541b55c00d4db9eb93d898354",
+      "candidate_uid": "CAND_a817006e08986c4b0391e214",
+      "rule_id": "clang_cfg_unbounded_count_indexes_fixed_array"
+    },
+    {
+      "validation_cluster_uid": "VAL_64d9467e3da693239b3f95b662cf8955",
+      "candidate_uid": "CAND_93424ae960ed3417e3e8a34b",
+      "rule_id": "clang_cfg_borrowed_pointer_returned_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_2f5ce4c8935795e412c4864ccc333f4a",
+      "candidate_uid": "CAND_c779c60150a87b0aaaf327b9",
+      "rule_id": "mutable_global_mode_drives_callback_without_lock"
+    },
+    {
+      "validation_cluster_uid": "VAL_2a0cd02ae6fa769d412d51010d41dc86",
+      "candidate_uid": "CAND_d3ebf8e468919254d2008ca5",
+      "rule_id": "queued_local_event_without_scheduler_wakeup"
+    },
+    {
+      "validation_cluster_uid": "VAL_250a4e14919352cf3448786aaf37c1e6",
+      "candidate_uid": "CAND_69d5dddffd2e7221f5d662e4",
+      "rule_id": "single_reader_field_under_shared_reader_count"
+    },
+    {
+      "validation_cluster_uid": "VAL_d72ae942627e1d66c7042aa13cd314cc",
+      "candidate_uid": "CAND_53cee485fd92bf04d2669c5b",
+      "rule_id": "cross_function_recursive_lock"
+    },
+    {
+      "validation_cluster_uid": "VAL_ee6813369dc8c24023527c1ab87424d1",
+      "candidate_uid": "CAND_204576af42a48b6826890bb5",
+      "rule_id": "global_registration_slot_checked_before_lock"
+    },
+    {
+      "validation_cluster_uid": "VAL_e66124525178d95027ce8836b79e13a2",
+      "candidate_uid": "CAND_01ae08a9de0e5960f0d73573",
+      "rule_id": "partial_state_machine_publication"
+    },
+    {
+      "validation_cluster_uid": "VAL_27877618764154e44da9a937df3a4e3e",
+      "candidate_uid": "CAND_e16ade6cbb4467d19eb1fbd6",
+      "rule_id": "clang_cfg_unbounded_count_indexes_fixed_array"
+    },
+    {
+      "validation_cluster_uid": "VAL_90613b8ee21815db4e91823f4d8936c6",
+      "candidate_uid": "CAND_3eb8acefa3051d63bb182b19",
+      "rule_id": "clang_cfg_free_non_owner_pointer_expression"
+    },
+    {
+      "validation_cluster_uid": "VAL_b83b72bc5b7ef329b7ef7c515697098a",
+      "candidate_uid": "CAND_e2db27ea1480f257060a0000",
+      "rule_id": "clang_cfg_fd_open_return_without_close"
+    },
+    {
+      "validation_cluster_uid": "VAL_2d9b3da7b38ecc94b851a020194c8acb",
+      "candidate_uid": "CAND_02b9ee82e4f2cdc78f5975e0",
+      "rule_id": null
+    },
+    {
+      "validation_cluster_uid": "VAL_3e8f6667d472269ac82e41bf8f0762e5",
+      "candidate_uid": "CAND_db034d4ee8dd44523c14c6b2",
+      "rule_id": "heap_thread_argument_not_released"
+    },
+    {
+      "validation_cluster_uid": "VAL_e4f6a740935c1cf6667b5454df8fc044",
+      "candidate_uid": "CAND_45b82a7f694bdd7f2e9539b5",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_d820896941ed1225668ec0f2747421bc",
+      "candidate_uid": "CAND_fcb64539805164ce71d6d6d8",
+      "rule_id": "clang_cfg_allocation_size_arithmetic_without_overflow_guard"
+    },
+    {
+      "validation_cluster_uid": "VAL_00c418f731443a75282ca3a044facfd0",
+      "candidate_uid": "CAND_db786fbca8f6afd7614d1aca",
+      "rule_id": "clang_cfg_global_pointer_length_pair_published_without_lock"
+    },
+    {
+      "validation_cluster_uid": "VAL_aec401771adaf73aa12eedaa8f458e17",
+      "candidate_uid": "CAND_d520a6664c9541e580c937f7",
+      "rule_id": "registered_global_object_missing_release_hook"
+    },
+    {
+      "validation_cluster_uid": "VAL_2b7873dc44544f3f7ea6d936b7a1666c",
+      "candidate_uid": "CAND_fb61201b539e85abbe4921a5",
+      "rule_id": "container_unlink_free_after_unlock"
+    },
+    {
+      "validation_cluster_uid": "VAL_9558198d2cf851574a6188a2e6048c68",
+      "candidate_uid": "CAND_ed6299e17cce92551243a71e",
+      "rule_id": "unchecked_ownership_transfer_return_loses_node"
+    },
+    {
+      "validation_cluster_uid": "VAL_4f709c29dd3db97df714efeb287e9820",
+      "candidate_uid": "CAND_85fef0adb7fd6c747097115d",
+      "rule_id": "clang_cfg_macro_guarded_lock_may_compile_to_noop"
+    },
+    {
+      "validation_cluster_uid": "VAL_19bbd8d030dd31dba913c6dccf99cf3f",
+      "candidate_uid": "CAND_2ecfb71a0b9d9171e4c60c54",
+      "rule_id": "caller_limit_indexes_fixed_member_array"
+    },
+    {
+      "validation_cluster_uid": "VAL_9bd68e5cf436c1c9ff09308253321460",
+      "candidate_uid": "CAND_9618e37da25dc4ca37e7d53e",
+      "rule_id": "clang_cfg_unchecked_insert_after_ownership_handoff"
+    },
+    {
+      "validation_cluster_uid": "VAL_d34eab1c9a4605dbf53594ac57a60bab",
+      "candidate_uid": "CAND_7eb409b6e9bb73e20a9afa62",
+      "rule_id": "clang_cfg_external_size_allocation_without_limit"
+    },
+    {
+      "validation_cluster_uid": "VAL_6ac3035a4f587ad9c07e94c9e07732f6",
+      "candidate_uid": "CAND_6f54c5ca1e6b24f144e2e7bd",
+      "rule_id": "protocol_mismatch_accepted_under_non_strict_auth"
+    },
+    {
+      "validation_cluster_uid": "VAL_ae71ea41c898270d772a859044b8de5e",
+      "candidate_uid": "CAND_4d599c9b343e140cf058a4e3",
+      "rule_id": "clang_cfg_global_callback_stores_borrowed_object"
+    },
+    {
+      "validation_cluster_uid": "VAL_bccc5b1174dbe781d637043e5867520d",
+      "candidate_uid": "CAND_437b7199cf2ba08aee9cfd61",
+      "rule_id": "clang_cfg_unchecked_insert_after_ownership_handoff"
+    },
+    {
+      "validation_cluster_uid": "VAL_07ef775bb0953d9fbe3db866a2a5e1eb",
+      "candidate_uid": "CAND_d1c44f4d01271a8a0f4bd9a0",
+      "rule_id": "clang_cfg_acquire_without_release_on_exit"
+    }
+  ],
+  "no_evidence_gain_count": 161,
+  "tokens_total": 1653405,
+  "tokens_by_rung": {
+    "R1_validator_v1": 1653405
+  },
+  "usage_event_count": 176
+}

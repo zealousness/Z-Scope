@@ -52,13 +52,18 @@ def _score_parser() -> argparse.ArgumentParser:
 
 def _wsl_argv(argv: List[str]) -> List[str]:
     root = repository_root()
-    converted = subprocess.check_output(["wsl", "wslpath", "-a", str(root)], text=True).strip()
+    # wsl.exe strips backslashes from bare argv ("C:\Users" arrives as
+    # "C:Users"), so hand wslpath forward-slash Windows paths instead.
+    converted = subprocess.check_output(
+        ["wsl", "wslpath", "-a", root.as_posix()], text=True
+    ).strip()
     converted_arguments = list(argv)
     if "--output" in converted_arguments:
         index = converted_arguments.index("--output") + 1
         if index < len(converted_arguments):
             converted_arguments[index] = subprocess.check_output(
-                ["wsl", "wslpath", "-a", converted_arguments[index]], text=True
+                ["wsl", "wslpath", "-a", Path(converted_arguments[index]).as_posix()],
+                text=True,
             ).strip()
     forwarded = ["python3", "-m", "zscope.cli.benchmark", *converted_arguments]
     command = (

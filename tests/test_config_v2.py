@@ -349,20 +349,55 @@ def test_runtime_paths_are_anchored_to_project_root(tmp_path: Path) -> None:
     )
 
 
-def test_search_root_is_relative_to_project_root_and_cannot_escape(tmp_path: Path) -> None:
-    module = tmp_path / "modules" / "api"
+def test_search_root_is_relative_to_source_root_and_cannot_escape(tmp_path: Path) -> None:
+    module = tmp_path / "src" / "modules" / "api"
     module.mkdir(parents=True)
     data = _config(tmp_path)
     data["project"]["source_root"] = "src"
-    (tmp_path / "src").mkdir()
     data["project"]["entry_discovery"]["search_root"] = "modules/api"
     config = ConfigLoader.load(str(_write(tmp_path, data)))
     assert config.project.entry_discovery.search_root == module.resolve()
 
     data["project"]["entry_discovery"]["search_root"] = "../outside"
-    (tmp_path.parent / "outside").mkdir(exist_ok=True)
-    with pytest.raises(ValueError, match="inside project.root"):
+    (tmp_path / "outside").mkdir(exist_ok=True)
+    with pytest.raises(ValueError, match="inside project.source_root"):
         ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+def test_search_root_inside_project_root_but_outside_source_root_is_rejected(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "modules").mkdir()
+    data = _config(tmp_path)
+    data["project"]["source_root"] = "src"
+    data["project"]["entry_discovery"]["search_root"] = "../modules"
+    with pytest.raises(ValueError, match="inside project.source_root"):
+        ConfigLoader.load(str(_write(tmp_path, data)))
+
+
+def test_relative_project_root_resolves_against_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """相对 project.root 基于加载进程的 CWD 解析（仓库内 demo 配置的既有约定）。
+
+    子进程继承同一 CWD，因此 CLI / Web 仪表盘 / MCP 的解析结果保持一致；
+    search_root 相对路径则固定基于 source_root，与 CWD 无关。
+    """
+
+    project_dir = tmp_path / "demo"
+    (project_dir / "src" / "api").mkdir(parents=True)
+    data = _config(project_dir)
+    data["project"]["root"] = "demo"
+    data["project"]["source_root"] = "src"
+    data["project"]["entry_discovery"]["search_root"] = "api"
+    _write(project_dir, data)
+
+    monkeypatch.chdir(tmp_path)
+    config = ConfigLoader.load(str(project_dir / "zscope.yaml"))
+    assert config.project.project_root == project_dir.resolve()
+    assert config.project.source_root == (project_dir / "src").resolve()
+    assert config.project.entry_discovery.search_root == (project_dir / "src" / "api").resolve()
 
 
 def test_cross_language_fields_are_rejected(tmp_path: Path) -> None:

@@ -313,6 +313,7 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
                 "dropped": 0,
                 "revised": 0,
                 "unreviewed": 0,
+                "recheck": 0,
                 "errors": 0,
             },
         )
@@ -321,6 +322,20 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
         inference_module,
         "filter_user_config_rows_with_llm",
         fake_filter_user_config_rows_with_llm,
+    )
+
+    def fake_classify_ambiguous_interfaces_with_llm(code_index, llm_client, **kwargs):
+        return {"resource": [], "lock": []}, {
+            "collected": 0,
+            "classified": 0,
+            "dropped": 0,
+            "errors": 0,
+        }
+
+    monkeypatch.setattr(
+        inference_module,
+        "classify_ambiguous_interfaces_with_llm",
+        fake_classify_ambiguous_interfaces_with_llm,
     )
 
     result = CliRunner().invoke(
@@ -360,7 +375,7 @@ class FakeCodeIndex:
             "ZipFinit": "void ZipFinit(void) { VOS_MemFree(g_nodes); }",
         }
 
-    def list_functions(self, pattern=None, limit=50):
+    def list_functions(self, pattern=None, limit=50, offset=0):
         return list(self.functions)[:limit]
 
     def get_function_impl(self, name, max_lines=240, warn_missing=False):

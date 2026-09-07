@@ -323,9 +323,11 @@ class ExternalJavaSignalProvider(JavaSignalProvider):
         return {"signals": [], "call_edges": []}
 
     def _default_command(self) -> List[str]:
+        from ..common.portable import default_tool, java_jar
+
         repo_root = Path(__file__).resolve().parents[2]
         if self.name in {"sootup", "wala"}:
-            jar = (
+            jar = java_jar(f"signal-{self.name}") or (
                 repo_root
                 / "tools"
                 / f"java-signal-{self.name}"
@@ -335,7 +337,7 @@ class ExternalJavaSignalProvider(JavaSignalProvider):
             if not jar.exists():
                 return []
             return [
-                "java",
+                default_tool("java"),
                 "-jar",
                 str(jar),
                 "--project-root",
