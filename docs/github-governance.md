@@ -1,34 +1,32 @@
-# GitHub 合并与发布治理
+# GitHub 仓库与本地验证
 
-## main 保护
+## 自动化状态
 
-仓库管理员应启用 GitHub ruleset：禁止直接 push 和 force-push，要求线性历史、至少一名 CODEOWNER 审批、对话解决并通过所有必需检查。功能分支应短生命周期并使用 squash merge；不重写现有 main 历史。
+本仓库已移除 GitHub Actions 工作流、复合 Action 和自托管 runner。GitHub 仓库设置关闭 Actions，不再通过 push、pull request 或手工 dispatch 执行 CI、AI Review、benchmark、attestation 或 Release。
 
-必需检查对应 `.github/workflows/ci.yml`：Python 3.9–3.14 全量测试与 wheel/pip check、mypy、Black、compileall、文档与规则 schema、Java build/test、benchmark 泄漏回归、secret scan、依赖/许可证 review 和离线安装 smoke。
+`.github/CODEOWNERS` 继续声明代码所有权。分支保护若配置了旧工作流的 required checks，应移除这些检查要求，避免合并等待不会再运行的检查。代码审查、线性历史和禁止 force-push 等独立策略仍可保留。
+
+历史 run、artifact、workflow path 和来源 SHA 继续用于验证既有证据；保留这些身份字段不表示对应工作流仍可执行。依赖 GitHub workflow run 的发布或 attestation 校验仍严格检查既有来源，不将本地结果伪装成受保护工作流产物。
+
+## 本地验证
+
+开发验证按变更范围手工执行，入口与环境要求见 `AGENTS.md`：
+
+```bash
+python -m pytest -q tests/test_agent_docs.py tests/test_release_contract.py
+python -m compileall -f -q zscope scripts tests tools test/range/benchmark test/java_range/benchmark
+python scripts/check_mypy_baseline.py
+python scripts/check_black_baseline.py
+```
 
 当前 mypy 与 Black 存在显式、可审计的存量债务基线：mypy 按归一化错误及次数校验，不允许新增错误；Black 按未格式化文件的内容哈希锁定，新增文件或再次修改存量未格式化文件时必须完成格式化。基线只允许在人工审查确认后用 `scripts/check_mypy_baseline.py --update` 或 `scripts/check_black_baseline.py --update` 收敛，不得为绕过失败而扩张。新代码仍以 Python 3.9 为类型和格式目标。
 
 `compileall` 覆盖产品代码、维护脚本、自动化测试、工具和一方 C/Java benchmark runner，不递归编译 `test/range/codeql_runs` 等归档的第三方 benchmark 数据集；这些数据可能故意包含不能作为独立 Python 模块执行的测试片段，不能据此判断 Z-SCOPE 的 Python 兼容性。
 
-push/PR 的 `secret-scan` 对 `HEAD` 的完整可达历史和当前工作树分别扫描，因此某个短分支只能被其自身历史阻断，不会因无关远端分支而误判。仓库级全引用审计仍使用不带 `--ref` 的 `scripts/scan_git_history_secrets.py`；管理员应在分支清理或历史迁移窗口执行它，并单独处置仍引用已吊销凭据历史的遗留分支。
+需要检查凭据时，手工运行 `scripts/scan_git_history_secrets.py --ref HEAD` 和 `scripts/scan_git_history_secrets.py --current-only`。仓库级全引用审计使用不带 `--ref` 的命令。
 
-建议在仓库设置中把以下 job 设为 required：六个 `Python x.y`、`quality`、`java`、`offline-smoke`、`secret-scan`，PR 上再要求 `dependency-review`。
+## Benchmark 与发布资产
 
-## CODEOWNERS 与 AI Review
+Benchmark 通过 `zscope-benchmark` 在满足要求的 Linux/WSL 环境手工执行，遵循 [`range-benchmark.md`](range-benchmark.md) 和 [`java-benchmark.md`](java-benchmark.md) 的工具链、truth 隔离与评分协议。
 
-`.github/CODEOWNERS` 将产品、发布、规则/Agent、benchmark truth 分配给对应团队；部署前用实际组织团队替换示例 owner。
-
-AI Review 使用普通 `pull_request` 事件，不使用 `pull_request_target`，fork 不获得密钥。只有同仓 PR 且 `AI_REVIEW_ENABLED=true` 才调用组织批准的 OpenAI-compatible endpoint；仅发送限长 PR diff，diff 视作不可信数据，不执行模型命令。结论是 advisory，不能代替 CODEOWNER 和硬门禁。
-
-## Release
-
-1. 从受保护 main 创建与包版本相等的 tag：`v{package_version}`。
-2. 手工触发 Draft Release workflow；受保护 `release` environment 人工批准后才可读取签名密钥。
-3. 自托管 runner 从带哈希 Python 3.13 约束、审批工具目录和许可证目录构建分拆资产。
-4. 手工正式 benchmark 成功后记录 workflow run ID；Draft Release 只下载名为 `formal-cpp-{release_sha}` 的不可变 artifact，并同时验证 run 的 workflow、事件、结论和 `head_sha`。仓库内 `docs/releases/benchmark-provenance.json` 仅索引历史基线，不承载待发布 SHA 的运行结果，避免“提交结果会再次改变发布 SHA”的自引用。
-5. Release job 校验 artifact 内的五轮聚合、逐轮报告/评分/health/队列、truth 隔离、数值门禁和 sealed-set，再运行 `verify_release_assets.py`，并提交绑定同一 asset manifest 的断网普通用户 C/Java smoke 证据。
-6. `evaluate_release_candidate.py` 汇总 benchmark、sealed-set、资产和离线 smoke：存在硬阻断时禁止创建 Release，仅缺 sealed-set 时最多为 RC；全部通过后才保持 draft 等待人工发布。
-
-正式 benchmark workflow 只允许手工触发，在自托管 Linux runner 上通过源码内的 `zscope-benchmark` 把 truth 与严格 allowlist 扫描副本隔离。仓库环境只提供模型 endpoint/name、凭据和工具位置，不再注入 health/scan/score 命令。runner v2 记录分阶段耗时、canonical argv hash、Git tree、逐轮输入 manifest、完整性和显著异常轮次。C 评分 JSON 必须包含 `sealed_confirmed_recall_delta_pp` 与 `sealed_precision_delta_pp`；缺失或任一低于 `-2.0` 时 artifact 只能用于 RC。即使某轮失败，workflow 也会归档已经产生的日志和单轮产物。
-
-所有 JavaScript Action 使用 Node 24 主版本；自托管 `zscope-release` 与 `zscope-benchmark` runner 必须至少为 Actions Runner `v2.327.1`。升级 Action 或 runner 后先在非发布任务验证 checkout、artifact 上传和环境审批，再冻结正式 Release SHA。
+发布资产可按 [`offline-installation.md`](offline-installation.md) 手工构建和验证。`verify_release_assets.py`、`evaluate_release_candidate.py` 与离线 smoke 保留原有证据门禁；停止 GitHub 自动化不改变发布资格，也不会自动创建或发布 Release。

@@ -534,16 +534,3 @@ def test_online_check_does_not_requery_historical_artifacts_without_evidence_cha
 
     projector._online_check(args)
     assert checked == [True]
-
-
-def test_ci_has_pr_only_actions_read_authoritative_provenance_job() -> None:
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    section = workflow.split("  successor-review-authoritative-provenance:", 1)[1].split(
-        "\n  python:", 1
-    )[0]
-    assert "github.event_name == 'pull_request'" in section
-    assert "actions: read" in section
-    assert "contents: read" in section
-    assert "online-check" in section
-    assert '--change-base "$SUCCESSOR_CHANGE_BASE"' in section
-    assert '--head "$SUCCESSOR_CHANGE_HEAD"' in section

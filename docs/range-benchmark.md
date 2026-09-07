@@ -1,5 +1,7 @@
 # Range C/C++ benchmark protocol
 
+GitHub Actions 工作流、复合 Action 和自托管 runner 已移除；当前执行入口为本地 CLI。下文有关 GitHub dispatch、sealed runner、跨 run 恢复与 workflow attestation 的描述保留为历史证据协议，不再是可调用的自动化入口。历史来源绑定与发布资格校验继续有效，不能用本地运行替代缺失的受保护工作流证明，详见 [`github-governance.md`](github-governance.md)。
+
 ## 唯一入口
 
 所有本地与发布执行都通过 `zscope-benchmark`：

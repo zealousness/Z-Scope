@@ -111,7 +111,7 @@ def test_package_version_is_semver_and_shared_by_user_surfaces() -> None:
     assert result.stdout.strip() == __version__
 
 
-def test_python_39_314_constraints_and_ci_are_declared() -> None:
+def test_python_39_314_constraints_are_declared() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'requires-python = ">=3.9"' in pyproject
     assert "[tool.zscope.runtime-requirements]" in pyproject
@@ -121,38 +121,9 @@ def test_python_39_314_constraints_and_ci_are_declared() -> None:
     assert '"orchestration/successor-runtime-review-evidence/*"' in pyproject
     assert '"orchestration/successor-runtime-review-evidence/**/*"' in pyproject
     assert '"orchestration/successor-runtime-review-integration-receipt.v1.json"' in pyproject
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    for suffix, version in (
-        ("39", "3.9"),
-        ("310", "3.10"),
-        ("311", "3.11"),
-        ("312", "3.12"),
-        ("313", "3.13"),
-        ("314", "3.14"),
-    ):
+    for suffix in ("39", "310", "311", "312", "313", "314"):
         constraint = ROOT / "requirements" / "constraints" / f"py{suffix}.txt"
         assert constraint.stat().st_size > 1000
-        assert f'python: "{version}"' in workflow
-        assert f'lock: "py{suffix}"' in workflow
-    assert "scripts/check_mypy_baseline.py" in workflow
-    assert "scripts/check_black_baseline.py" in workflow
-    assert "scripts/qualify_p6_proof_promotion.py --check" in workflow
-    assert "scripts/check_p4_hypothesis_package.py dist/zscope-*.whl" in workflow
-    assert "scripts/check_p5_runtime_authority_package.py" in workflow
-    assert "scripts/project_successor_review_evidence.py check" in workflow
-    assert "--expect-successor-status in_progress" not in workflow
-    assert "current_successor_reviewed" in workflow
-    assert "dist/zscope-*.whl" in workflow
-    assert "tests/test_p6_proof_promotion_qualification.py" in workflow
-    assert "tests/test_audit_eligibility.py" in workflow
-    assert "test/range/benchmark test/java_range/benchmark" in workflow
-    assert "zscope scripts test tests tools" not in workflow
-    assert "scan_git_history_secrets.py --ref HEAD" in workflow
-    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in workflow
-    assert "actions/dependency-review-action" not in workflow
-    assert "dependency-policy:" in workflow
-    assert "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266" in workflow
-    assert "scripts/check_dependency_licenses.py" in workflow
 
 
 def test_sqlite_queries_stay_compatible_with_declared_3_8_10_2_floor() -> None:
@@ -204,13 +175,11 @@ def test_sqlite_queries_stay_compatible_with_declared_3_8_10_2_floor() -> None:
 
 def test_release_lock_contains_runtime_and_java_extra_but_not_dev_tools() -> None:
     lock = (ROOT / "requirements/release/py313.txt").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     assert "cpgqls-client==" in lock
     assert "openai==" in lock
     assert "black==" not in lock
     assert "mypy==" not in lock
     assert "pytest==" not in lock
-    assert "requirements/release/py313.txt" in workflow
 
 
 def test_joern_client_is_java_optional_not_base_dependency() -> None:
@@ -220,55 +189,13 @@ def test_joern_client_is_java_optional_not_base_dependency() -> None:
     assert "cpgqls-client" in optional.split("[project.scripts]", 1)[0]
 
 
-def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
-    ai = (ROOT / ".github/workflows/ai-review.yml").read_text(encoding="utf-8")
-    release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    benchmark = (ROOT / ".github/workflows/formal-benchmark.yml").read_text(encoding="utf-8")
+def test_installer_enforces_security_boundaries() -> None:
     installer = (ROOT / "install.sh").read_text(encoding="utf-8")
-    assert "pull_request_target" not in ai
-    assert "head.repo.full_name == github.repository" in ai
-    assert "continue-on-error: true" in ai
-    assert "environment: release" in release
-    assert "--verify-tag" in release
-    assert "benchmark_run_id:" in release
-    assert "balanced_attestation_run_id:" in release
-    assert "actions/download-artifact@v8" in release
-    assert "--formal-artifact" in release
-    assert "--balanced-default-attestation" in release
-    assert "--balanced-attestation-workflow-run-id" in release
-    assert ".github/workflows/formal-benchmark.yml" in release
-    assert ".github/workflows/balanced-default-attestation.yml" in release
-    assert "digest-mismatch: error" in release
-    assert "org.opencontainers.image.revision" in benchmark
-    assert "scanner image must be digest-pinned" in benchmark
     assert "Missing SHA256SUMS.sig" in installer
     assert "Refusing system-wide prefix" in installer
     assert 'install_requirement="zscope[java]"' in installer
     assert "command -v zstd" in installer
     assert ">>/etc/profile" not in installer.replace(" ", "")
-    workflows = "\n".join((ai, release, ci, benchmark))
-    for action in (
-        "actions/checkout@v7",
-        "actions/setup-python@v7",
-        "actions/setup-java@v5",
-        "actions/github-script@v9",
-        "actions/upload-artifact@v7",
-        "actions/download-artifact@v8",
-        "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266",
-        "gitleaks/gitleaks-action@v3",
-    ):
-        assert action in workflows
-    for deprecated in (
-        "actions/checkout@v4",
-        "actions/setup-python@v5",
-        "actions/setup-java@v4",
-        "actions/github-script@v7",
-        "actions/upload-artifact@v4",
-        "actions/dependency-review-action@v4",
-        "gitleaks/gitleaks-action@v2",
-    ):
-        assert deprecated not in workflows
 
 
 def test_spdx_generation_is_reproducible_and_uses_unique_package_name(tmp_path: Path) -> None:

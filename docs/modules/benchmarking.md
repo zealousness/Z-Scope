@@ -62,6 +62,7 @@ tests:
 
 ## 主入口和数据流
 
+- GitHub Actions 与自托管 runner 已退役，benchmark 由本地 CLI 调度。下文的工作流恢复、上传和 attestation 约束仅描述保留的历史证据协议；当前 P6 review material allowlist 只收集仍存在的源码、脚本与测试，不再要求已删除的 GitHub YAML。历史 workflow path 和 run lineage 仍严格校验，不为本地执行放宽来源证明。
 - `zscope/benchmarking/protocol.py` 提供 `zscope.benchmark.v4` 单次评分、候选生命周期漏斗、发现/决策二维归因和成本指标；旧 schema 仅作只读兼容。
 - `zscope-benchmark` 是内置 fixture 的唯一公开入口；`smoke`、`trial`、`formal` 分别承担离线结构门禁、单轮预览和至少五轮的发布门禁。
 - `scripts/external_benchmark.py` 是外部 suite 和 Range JSON 报告的标准评测入口。public external formal 当前只接受 `full_zscope_pipeline`，通过 `RootlessOciExecutor` 实际执行 scanner、采集 inspect evidence 并在容器退出后由 host scorer 读 truth；静态 `oci_capability` 不能形成 formal 结果。

@@ -425,9 +425,6 @@ _COMMON_REVIEW_EVIDENCE_FIELDS = frozenset(
 
 ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
     "product_architecture": (
-        ".github/actions/validate-p6-artifact/action.yml",
-        ".github/workflows/p6-pilot-finalize-recovery.yml",
-        ".github/workflows/p6-pilot-validation.yml",
         "containers/p6/Containerfile",
         "containers/p6/runtime-lock.json",
         "containers/p6/verify_toolchain.py",
@@ -495,7 +492,6 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "zscope/rules/qualification_registry.yaml",
     ),
     "proof_security": (
-        ".github/workflows/p6-pilot-validation.yml",
         "scripts/project_successor_review_evidence.py",
         "scripts/qualify_p6_proof_promotion.py",
         "scripts/prepare_v3_action_canary.py",
@@ -571,9 +567,6 @@ ROLE_REVIEW_MATERIAL_PATHS: Dict[str, Tuple[str, ...]] = {
         "zscope/rules/qualification_registry.yaml",
     ),
     "independent_benchmark": (
-        ".github/actions/validate-p6-artifact/action.yml",
-        ".github/workflows/p6-pilot-finalize-recovery.yml",
-        ".github/workflows/p6-pilot-validation.yml",
         "containers/p6/Containerfile",
         "containers/p6/runtime-lock.json",
         "containers/p6/verify_toolchain.py",

@@ -210,7 +210,6 @@ def check_hygiene() -> List[str]:
     active = [
         ROOT / "zscope/benchmarking/runner.py",
         ROOT / "zscope/cli/benchmark.py",
-        ROOT / ".github/workflows/formal-benchmark.yml",
         *tracked,
     ]
     errors.extend(_active_text_errors(active))
