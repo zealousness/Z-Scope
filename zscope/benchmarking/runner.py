@@ -863,6 +863,19 @@ def _locate_report(scan_root: Path) -> Path:
 
 
 _USAGE_EVENTS_ARCHIVE_NAME = "llm_usage_events.jsonl"
+_SCAN_EXTRAS_DIR_NAME = "scan-extras"
+_SCAN_EXTRAS_MANIFEST_NAME = "scan-extras-manifest.json"
+_SCAN_EXTRAS_SCHEMA_VERSION = "zscope.scan-extras-artifact.v1"
+_SCAN_EXTRA_EXCLUDED_ROOTS = frozenset(
+    {
+        "build",
+        "target",
+        ".zscope_svf",
+        ".zscope_svf_cache",
+        ".zscope_bc",
+        ".zscope_joern",
+    }
+)
 _USAGE_EVENT_FORBIDDEN_KEYS = frozenset(
     {
         "assistant_response",
@@ -1222,6 +1235,94 @@ def _archive_usage_events(
     return artifact
 
 
+def _relative_posix_within(path: Path, root: Path) -> str:
+    resolved = path.resolve()
+    base = root.resolve()
+    try:
+        return resolved.relative_to(base).as_posix()
+    except ValueError as exc:
+        raise BenchmarkError(
+            "scan extra path escapes the scan workspace: " + str(path)
+        ) from exc
+
+
+def _archive_scan_extras(
+    *,
+    execution_root: Path,
+    run_dir: Path,
+    input_manifest: Mapping[str, Any],
+    extra_roots: Optional[Mapping[str, Optional[Path]]] = None,
+) -> Dict[str, Any]:
+    """Copy generated scan-side files, including conversation traces, into the run artifact.
+
+    Sealed fixture files stay in ``scan-input``. Rebuildable toolchain trees are
+    excluded so extras remain inspectable without copying SVF/bitcode/build
+    caches. The extras sidecar is not part of the formal artifact-hash set.
+    """
+
+    sealed = {
+        str(row["path"])
+        for row in input_manifest.get("files", [])
+        if isinstance(row, dict) and isinstance(row.get("path"), str)
+    }
+    destination = run_dir / _SCAN_EXTRAS_DIR_NAME
+    if destination.exists():
+        raise BenchmarkError(
+            "scan extras archive already exists: " + str(destination)
+        )
+    sources: List[Tuple[str, Path, Path]] = [("execution_root", execution_root, Path())]
+    for name, root in (extra_roots or {}).items():
+        if root is None:
+            continue
+        sources.append((name, Path(root), Path(name)))
+    files: List[Dict[str, Any]] = []
+    for origin, root, prefix in sources:
+        if not root.exists():
+            continue
+        resolved_root = root.resolve()
+        for path in sorted(resolved_root.rglob("*"), key=lambda item: item.as_posix()):
+            if path.is_symlink():
+                raise BenchmarkError(
+                    "scan extra must not be a symbolic link: " + str(path)
+                )
+            if not path.is_file():
+                continue
+            relative = Path(_relative_posix_within(path, resolved_root))
+            if origin == "execution_root" and relative.as_posix() in sealed:
+                continue
+            if relative.parts and relative.parts[0] in _SCAN_EXTRA_EXCLUDED_ROOTS:
+                continue
+            archived_relative = relative if prefix == Path() else prefix / relative
+            target = destination / archived_relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            files.append(
+                {
+                    "path": archived_relative.as_posix(),
+                    "origin": origin,
+                    "size": target.stat().st_size,
+                    "sha256": _sha256_file(target),
+                }
+            )
+    files.sort(key=lambda row: str(row["path"]))
+    payload = {
+        "schema_version": _SCAN_EXTRAS_SCHEMA_VERSION,
+        "path": _SCAN_EXTRAS_DIR_NAME,
+        "manifest": _SCAN_EXTRAS_MANIFEST_NAME,
+        "file_count": len(files),
+        "conversation_present": any(
+            str(row["path"]) == ".zscope_conversations"
+            or str(row["path"]).startswith(".zscope_conversations/")
+            or "/.zscope_conversations/" in str(row["path"])
+            for row in files
+        ),
+        "excluded_roots": sorted(_SCAN_EXTRA_EXCLUDED_ROOTS),
+        "files": files,
+    }
+    _json_dump(run_dir / _SCAN_EXTRAS_MANIFEST_NAME, payload)
+    return payload
+
+
 def _source_line_metrics(scan_root: Path, language: str) -> Dict[str, Any]:
     extensions = (
         {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
@@ -1475,6 +1576,12 @@ def _run_trial_in_workspace(
         scan_root=execution_root,
         run_dir=run_dir,
     )
+    extras = _archive_scan_extras(
+        execution_root=execution_root,
+        run_dir=run_dir,
+        input_manifest=input_manifest,
+        extra_roots={"oci-output": oci_output} if oci_output is not None else None,
+    )
     _json_dump(report_path, archived_report)
     replay_bundle_path = run_dir / "validator-replay-bundle.json"
     replay_bundle = write_validator_replay_bundle(
@@ -1589,6 +1696,14 @@ def _run_trial_in_workspace(
         "artifact_hashes": {
             "schema_version": "zscope.formal-run-artifact-hashes.v1",
             "files": artifact_hashes,
+        },
+        "scan_extras": {
+            "schema_version": extras["schema_version"],
+            "path": extras["path"],
+            "manifest": extras["manifest"],
+            "file_count": extras["file_count"],
+            "conversation_present": extras["conversation_present"],
+            "manifest_sha256": _sha256_file(run_dir / _SCAN_EXTRAS_MANIFEST_NAME),
         },
         "execution": {
             "health_argv": health_argv,

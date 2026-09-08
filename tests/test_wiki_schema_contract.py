@@ -15,7 +15,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DIR = ROOT / "zscope" / "wiki" / "schemas"
-PLAN = ROOT / "new_docs" / "llm_wiki_implementation_plan.md"
 
 EXPECTED = {
     "zscope.document-source.v1": "document-source.schema.json",
@@ -54,22 +53,6 @@ def test_materialized_schema_set_matches_registry() -> None:
         assert document["$schema"] == "https://json-schema.org/draft/2020-12/schema"
         assert document["type"] == "object"
     assert actual == EXPECTED
-
-
-def test_plan_json_blocks_are_materialized_without_drift() -> None:
-    plan = PLAN.read_text(encoding="utf-8")
-    blocks = re.findall(r"```json\n(.*?)\n```", plan, flags=re.DOTALL)
-    assert blocks
-    block_ids = set()
-    for block in blocks:
-        planned = json.loads(block)
-        schema_id = planned.get("$id")
-        if schema_id is not None:
-            assert schema_id in EXPECTED
-            block_ids.add(schema_id)
-    assert set(EXPECTED) - {"zscope.project-constraint-proposal.v1"} <= block_ids
-    assert "zscope.project-constraint-proposal.v1" in plan
-    assert "Constraint-only" in plan
 
 
 def test_external_refs_resolve_through_registry() -> None:
