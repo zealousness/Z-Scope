@@ -20,6 +20,7 @@ from zscope.benchmarking.runner import (
     restore_scan_input,
     run_benchmark,
     score_artifact,
+    scan_input_manifest,
 )
 from zscope.framework.llm_usage import LLMUsageAttribution, LLMUsageEvent
 
@@ -305,6 +306,86 @@ def test_restore_scan_input_removes_generated_state_and_preserves_manifest(tmp_p
     assert not (destination / ".zscope_knowledge").exists()
     assert not (destination / "report.json").exists()
     assert (destination / "src/main.c").is_file()
+
+
+def test_archive_scan_extras_copies_conversations_and_skips_sealed_build(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    run_dir = tmp_path / "run"
+    (scan_root / "src").mkdir(parents=True)
+    (scan_root / "src/main.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
+    (scan_root / "CMakeLists.txt").write_text("project(test C)\n", encoding="utf-8")
+    (scan_root / "README.md").write_text("neutral\n", encoding="utf-8")
+    manifest = scan_input_manifest(scan_root)
+    conversation = scan_root / ".zscope_conversations" / "run-abc" / "session.jsonl"
+    conversation.parent.mkdir(parents=True)
+    conversation.write_text('{"event":"session_start"}\n', encoding="utf-8")
+    snapshot = scan_root / ".zscope_snapshots" / "state.json"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("{}", encoding="utf-8")
+    (scan_root / "build").mkdir()
+    (scan_root / "build/object.o").write_bytes(b"obj")
+    (scan_root / "zscope_batch_report.json").write_text("{}", encoding="utf-8")
+    oci_output = tmp_path / "oci-output"
+    oci_output.mkdir()
+    (oci_output / "container.log").write_text("ok\n", encoding="utf-8")
+    run_dir.mkdir()
+
+    extras = benchmark_runner._archive_scan_extras(
+        execution_root=scan_root,
+        run_dir=run_dir,
+        input_manifest=manifest,
+        extra_roots={"oci-output": oci_output},
+    )
+
+    archived = {row["path"] for row in extras["files"]}
+    assert extras["conversation_present"] is True
+    assert extras["file_count"] == 4
+    assert ".zscope_conversations/run-abc/session.jsonl" in archived
+    assert ".zscope_snapshots/state.json" in archived
+    assert "zscope_batch_report.json" in archived
+    assert "oci-output/container.log" in archived
+    assert "src/main.c" not in archived
+    assert "build/object.o" not in archived
+    copied = run_dir / "scan-extras/.zscope_conversations/run-abc/session.jsonl"
+    assert copied.read_text(encoding="utf-8") == '{"event":"session_start"}\n'
+    assert (run_dir / "scan-extras-manifest.json").is_file()
+
+
+def test_archive_scan_extras_allows_missing_conversations(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    run_dir = tmp_path / "run"
+    scan_root.mkdir()
+    (scan_root / "README.md").write_text("neutral\n", encoding="utf-8")
+    run_dir.mkdir()
+
+    extras = benchmark_runner._archive_scan_extras(
+        execution_root=scan_root,
+        run_dir=run_dir,
+        input_manifest=scan_input_manifest(scan_root),
+    )
+
+    assert extras["file_count"] == 0
+    assert extras["conversation_present"] is False
+    assert extras["files"] == []
+
+
+def test_archive_scan_extras_rejects_symlink(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    run_dir = tmp_path / "run"
+    scan_root.mkdir()
+    run_dir.mkdir()
+    target = tmp_path / "outside.jsonl"
+    target.write_text("secret\n", encoding="utf-8")
+    conversations = scan_root / ".zscope_conversations"
+    conversations.mkdir()
+    (conversations / "session.jsonl").symlink_to(target)
+
+    with pytest.raises(BenchmarkError, match="symbolic link"):
+        benchmark_runner._archive_scan_extras(
+            execution_root=scan_root,
+            run_dir=run_dir,
+            input_manifest={"files": []},
+        )
 
 
 def test_usage_event_sidecar_is_archived_from_scan_workspace(tmp_path: Path) -> None:
