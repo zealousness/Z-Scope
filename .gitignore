@@ -78,6 +78,8 @@ zscope.local.yaml
 .zscope_snapshots*/
 .zscope_conversations*/
 .zscope_knowledge*/
+!tests/fixtures/wiki_project/.zscope_knowledge/
+!tests/fixtures/wiki_project/.zscope_knowledge/**
 .zscope_svf*/
 .zscope_bc/
 .zscope_joern/
