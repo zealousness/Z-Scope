@@ -71,7 +71,7 @@ zscope-benchmark run --language c_cpp --mode smoke
 
 从 Windows PowerShell 启动时，前端只会通过 `WSLENV` 转发当前 Windows 进程中已经存在的三个 LLM 变量；它不会读取 WSL 的 `~/.bashrc` 或私有 env 文件。最稳妥的方式是在已经完成上述 bootstrap 的 WSL shell 中直接运行 `zscope-benchmark`。若必须从 PowerShell 启动，则应先在同一 PowerShell 进程中设置 `$env:Z_SCOPE_LLM_BASE_URL`、`$env:Z_SCOPE_LLM_MODEL`、`$env:Z_SCOPE_API_KEY`，并保证 WSL 的非交互 shell 也能找到完整工具链和共享库。
 
-在 WSL 中，trial 会把 scan-input、构建目录、索引和 Z-SCOPE 状态放到 WSL 原生文件系统的临时工作区，结束后只把密封输入、日志、报告和评分结果导出到 `benchmark-artifacts/`。可用绝对路径环境变量 `Z_SCOPE_BENCHMARK_WORK_ROOT` 覆盖临时根；C/C++ 会拒绝 `/mnt/<drive>`，避免 DrvFS I/O 进入正式性能结果。
+在 WSL 中，trial 会把 scan-input、构建目录、索引和 Z-SCOPE 状态放到 WSL 原生文件系统的临时工作区。每轮结束前，runner 会把密封输入、日志、报告和评分结果导出到 `benchmark-artifacts/`，并将 `.zscope_conversations/`、`.zscope_snapshots/`、`.zscope_knowledge/`、扫描报告等额外扫描产物按原相对路径归档到 `run-XX/scan-extras/`；`scan-extras-manifest.json` 记录逐文件大小和 SHA-256。可重建的 `build/`、bitcode、SVF 与 Joern 缓存不进入该目录。可用绝对路径环境变量 `Z_SCOPE_BENCHMARK_WORK_ROOT` 覆盖临时根；C/C++ 会拒绝 `/mnt/<drive>`，避免 DrvFS I/O 进入正式性能结果。
 
 formal 与 sealed 还必须在 rootless Podman/Docker 容器中执行 scanner。只读挂载 answer-free scan-input、配置和工具链，只写挂载输出；不得挂载 Z-SCOPE 源码 checkout、`test/`、truth 或 scorer，容器工作目录也不能位于源码树中。网络仅允许配置的模型 endpoint。runner 必须保存 runtime、cwd、mount 和 network-policy evidence，并在隔离能力缺失或越界挂载时 fail closed；评分在 scanner 容器退出后由独立进程完成。
 
