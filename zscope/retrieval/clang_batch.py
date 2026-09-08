@@ -41,7 +41,7 @@ from .clang_derived_cache import DerivedCache, cache_key
 from .clang_source_snapshot import DerivedSourceSnapshots
 
 logger = logging.getLogger(__name__)
-PROTOCOL = "zscope.clang-facts.v1"
+PROTOCOL = "zscope.clang-facts.v2"
 PRODUCER = "zscope.batch.v1"
 FAILURE_LOG_SAMPLES = 3
 FACT_TABLES = (
@@ -53,6 +53,7 @@ FACT_TABLES = (
     "macro_definitions",
     "global_variables",
     "function_symbol_refs",
+    "function_program_facts",
     "function_macro_refs",
     "function_type_refs",
     "function_type_ref_state",
@@ -679,6 +680,7 @@ class BatchIndexer:
                 stage._conn.commit()
                 self._publish_base(stage, hashes, fallback)
                 self._publish_references(stage, fallback)
+                self._publish_program_facts(stage)
                 from .clang_type_state import initialize_states, counts
 
                 contexts = {
@@ -952,12 +954,29 @@ class BatchIndexer:
         if fallback:
             if not self.backend._ensure_extractor():
                 raise RuntimeError("clangd fallback could not start")
+            seed = getattr(self.backend._extractor, "seed_project_file_index", None)
+            if callable(seed):
+                seed([Path(p) for p in hashes])
             stats = self.backend._extractor.run_batch_extraction(
                 [Path(p) for p in sorted(fallback)], stage, batch_size=self.backend._batch_size
             )
             self.stats["fallback_base_stats"] = stats
             if stats.get("failed"):
                 raise RuntimeError("clangd fallback base facts incomplete")
+
+    def _publish_program_facts(self, stage: KnowledgeDB) -> None:
+        for row in self._rows(stage, kinds=("program_function", "program_access")):
+            owner = row.get("owner") or {}
+            location = row.get("location") or {}
+            if not owner.get("name"):
+                continue
+            # Exact compiler owner and location, never a bare symbol name.
+            owner_file = owner.get("file") or location.get("file")
+            stage._conn.execute(
+                "INSERT OR REPLACE INTO function_program_facts VALUES(?,?,?,?,?,?)",
+                (owner["name"], self._relative(str(owner_file)),
+                 int(owner.get("line") or 0), row["kind"], digest_json(row), json.dumps(row)),
+            )
 
     def _publish_references(self, stage: KnowledgeDB, fallback: Set[str]) -> None:
         symbol_index, type_index = (

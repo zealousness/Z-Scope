@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from .._version import __version__
 from .dashboard_server import DashboardHttpServer
 from . import services as web_services
+from .review_reports import MAX_IMPORT_BYTES, ReportReviewService
 from ..orchestration.scan_request import ScanRequestError, ScanRequestService
 
 PORT = 8000
@@ -55,6 +56,30 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/findings":
             self._send_json(_report_feedback_service.selected_view_payload(self.path))
+        elif parsed.path in {"/api/issue_report", "/api/offline_report"}:
+            service = ReportReviewService(_report_feedback_service, _source_snippet_service)
+            try:
+                if parsed.path == "/api/issue_report":
+                    key = (parse_qs(parsed.query).get("issue_id") or [""])[0]
+                    self._send_json(service.issue_report(key))
+                else:
+                    body = service.offline_report()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header(
+                        "Content-Disposition", 'attachment; filename="zscope-report.zip"'
+                    )
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+            except KeyError as exc:
+                self._send_json({"error": str(exc)}, status=404)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except OSError as exc:
+                self._send_json({"error": f"报告读取或导出失败：{exc}"}, status=500)
         elif parsed.path == "/api/version":
             self._send_json({"version": __version__, "display": f"v{__version__}"})
         elif parsed.path == "/api/config/structured":
@@ -130,6 +155,10 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
+        if self.path.startswith("/api/import_reviews") and content_length > MAX_IMPORT_BYTES * 2:
+            self._send_json({"error": "导入请求过大"}, status=413)
+            self.close_connection = True
+            return
         post_data = self.rfile.read(content_length)
         if self.path == "/api/user_config/workbook/import":
             self._handle_user_config_workbook_import(post_data)
@@ -140,6 +169,17 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"success": False, "error": "Invalid JSON"}, status=400)
             return
 
+        if self.path in {"/api/import_reviews", "/api/import_reviews/resolve"}:
+            try:
+                result = ReportReviewService(_report_feedback_service).import_reviews(
+                    payload, resolve=self.path.endswith("/resolve")
+                )
+                self._send_json(result)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            except Exception as exc:
+                self._send_json({"success": False, "error": f"复核保存失败：{exc}"}, status=500)
+            return
         if self.path == "/api/config":
             content = payload.get("content", "")
             try:
@@ -352,7 +392,9 @@ def run_server(
         scan_depth=scan_depth,
     )
     _rule_service = web_services.RuleService(config_file_path, default_name=CONFIG_FILENAME)
-    _wiki_control_service = web_services.WikiControlService(config_file_path, default_name=CONFIG_FILENAME)
+    _wiki_control_service = web_services.WikiControlService(
+        config_file_path, default_name=CONFIG_FILENAME
+    )
     _workbook_service = web_services.WorkbookService(user_config_store)
     _user_config_service = web_services.UserConfigService(user_config_store)
     _cpg_service = web_services.CpgService(code_index, project_config)

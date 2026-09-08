@@ -25,6 +25,7 @@ rules:
     engine: cpp_clang_cfg
     defect_class: use_after_free
     cwe: CWE-416
+    additional_cwes: [CWE-825]
     skill: temporal_memory
     default_severity: high
     revision: 1
@@ -42,7 +43,8 @@ rules:
 - `language` 只能是 `c_cpp` 或 `java`。
 - 内置 `engine` 只能是 `cpp_regex`、`cpp_clang_cfg`、`cpp_clang_matcher`、`cpp_graph` 或 `java_local`。YAML pack 与 provider 的 engine/source 由注册器赋值，扩展不得冒充内置引擎。
 - `status` 只能是 `stable`、`experimental` 或 `deprecated`；`default_enabled` 是独立的执行开关。新内置规则默认 `experimental + default_enabled: false`，取得当前 revision 的 qualified 记录后才能晋升为 stable/default-enabled。
-- `revision` 必须是正整数。规则语义、CWE、Skill、required capability 或验证要求变化时必须递增。
+- `revision` 必须是正整数。规则语义、CWE（含 `additional_cwes`）、Skill、required capability 或验证要求变化时必须递增。
+- `cwe` 是唯一的治理主 CWE；可选 `additional_cwes` 声明该规则根因额外覆盖的 CWE 列表（每项必须匹配 `CWE-<数字>`、不得与主值或彼此重复）。候选经 `enrich_issue` 后获得 `issue["cwes"]` = 主 CWE + 规则附加 CWE + 候选既有 CWE + 类别级映射（`zscope/common/defect_cwe_map.py`）的有序并集；`cwe` 主值仍必须与目录一致。
 - `required_capabilities` 从代码定义的固定能力集选取；不要自由造字符串。
 - 已有 ID 始终作为 canonical ID，并保留 `legacy_id: true`。新内置 ID 使用 `zscope.<language>.<engine>.<slug>`；外部规则不得占用 `zscope.` 命名空间。
 - `aliases` 仅用于查询/迁移，不用新 alias 替代历史 canonical ID。
@@ -65,7 +67,7 @@ rules:
 | 数据竞态、发布顺序、共享状态 | `shared_state_race` |
 | 所有权、协议、状态机和逻辑契约 | `ownership_contract` |
 
-CWE、defect class 与 Skill 以规则目录为唯一真源，生成器不应再维护另一份通用类别映射；资源类型、API role 等纯运行时映射可继续留在引擎中。
+CWE、defect class 与 Skill 以规则目录为唯一真源，生成器不应再维护另一份通用类别映射；资源类型、API role 等纯运行时映射可继续留在引擎中。类别级的兜底 CWE 覆盖（无规则声明时由 defect class 反推 CWE 集合）集中在 `zscope/common/defect_cwe_map.py`，新增类别时必须同步该映射并保持其不变量测试。
 
 ### 修改内置检测器
 

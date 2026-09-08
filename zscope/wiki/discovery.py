@@ -11,7 +11,7 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from .models import DiscoveredFile, DiscoveryIssue
 
@@ -69,6 +69,8 @@ class DiscoveryResult:
 
 def _root_from(value: Union[Path, str, object]) -> Path:
     root = getattr(value, "project_root", value)
+    if not isinstance(root, (Path, str)):
+        root = str(root)
     return Path(root).expanduser().resolve()
 
 
@@ -277,9 +279,9 @@ def discover_markdown(
 class MarkdownDiscovery:
     """State-free facade useful to callers that prefer an object API."""
 
-    def __init__(self, project_root: Union[Path, str, object], **limits: int):
+    def __init__(self, project_root: Union[Path, str, object], **limits: Any):
         self.project_root = project_root
-        self.limits = limits
+        self.limits: Dict[str, Any] = limits
 
     def run(self) -> DiscoveryResult:
         return discover_markdown(self.project_root, **self.limits)

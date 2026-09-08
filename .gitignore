@@ -146,3 +146,6 @@ entry_functions_diff*.json
 
 # ZCode local workspace
 .zcode/
+
+# local acceptance-run artifacts
+artifacts/

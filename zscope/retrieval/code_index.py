@@ -1720,6 +1720,16 @@ class CodeIndex:
 
     # ── Core retrieval methods ──
 
+    def get_function_program_facts(self, func_name: str, file_path: str = "") -> Dict[str, Any]:
+        getter = getattr(self._backend, "get_function_program_facts", None)
+        if not callable(getter):
+            getter = getattr(getattr(self._backend, "_clang", None), "get_function_program_facts", None)
+        if not callable(getter):
+            return {"complete": False, "events": [], "accesses": []}
+        name = str(func_name).split("@", 1)[0]
+        value = getter(name, self._normalize_path(self._resolve_file_path(file_path)) if file_path else "")
+        return value if isinstance(value, dict) else {"complete": False, "events": [], "accesses": []}
+
     def get_function_impl(
         self,
         func_name: str,

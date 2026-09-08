@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, cast
 
+from ...common.defect_cwe_map import ensure_issue_cwes
 from ...common.issue_identity import canonical_issue_key, parse_issue_location
 from ...memory import ReviewMemory
 from .proofs import deterministic_decision_proof
@@ -168,7 +169,9 @@ def _uncertain_promotion_gap_texts(
 
     gaps: List[str] = []
     if threshold is None:
-        gaps.append("高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）")
+        gaps.append(
+            "高置信度自动确认通道未启用（runtime.analysis.validation_uncertain_confirm_threshold）"
+        )
     else:
         confidence = val_data.get("confidence_score", issue.get("confidence", 0.5))
         try:
@@ -176,9 +179,7 @@ def _uncertain_promotion_gap_texts(
         except (TypeError, ValueError):
             confidence = -1.0
         if confidence < threshold:
-            gaps.append(
-                f"模型置信度 {confidence:.2f} 低于自动确认阈值 {threshold:.2f}"
-            )
+            gaps.append(f"模型置信度 {confidence:.2f} 低于自动确认阈值 {threshold:.2f}")
     if final_score < 0.6:
         gaps.append(f"综合评分 {final_score:.2f} 低于 0.60")
     missing = issue.get("missing_fact_kinds")
@@ -187,7 +188,9 @@ def _uncertain_promotion_gap_texts(
     if issue.get("blocking_negative_evidence") is True:
         gaps.append("存在阻断性负面证据")
     elif issue.get("negative_evidence"):
-        count = len(issue["negative_evidence"]) if isinstance(issue["negative_evidence"], list) else 1
+        count = (
+            len(issue["negative_evidence"]) if isinstance(issue["negative_evidence"], list) else 1
+        )
         gaps.append(f"存在 {count} 条未关闭的负面证据")
     if not gaps:
         gaps.append("未满足自动确认条件")
@@ -608,9 +611,7 @@ class ValidationPipeline:
             issue["score_components"] = score_data
             final_score = self._final_score(score_data)
             issue["final_score"] = final_score
-            issue["validation_reasoning"] = (
-                "Validator 已被禁用，影子发现候选仅保留记录而未晋级。"
-            )
+            issue["validation_reasoning"] = "Validator 已被禁用，影子发现候选仅保留记录而未晋级。"
             return ValidationOutcome(
                 report_bucket=None,
                 verdict="shadow_observation",
@@ -727,7 +728,9 @@ class ValidationPipeline:
             "uncertain_confirm_hold",
         }
         conditional = issue.get("analysis_scope") == "conditional_source_branch"
-        model_proof_conflict = bool(rejection_proof and verdict == "verified" and issue.get("review_adjudication"))
+        model_proof_conflict = bool(
+            rejection_proof and verdict == "verified" and issue.get("review_adjudication")
+        )
         if conditional or review_forced or model_proof_conflict:
             issue["validation_status"] = "needs_review"
             issue["candidate_disposition"] = "needs_review"
@@ -735,12 +738,19 @@ class ValidationPipeline:
             issue["evidence_conflict"] = model_proof_conflict
             issue["needs_review_sub_state"] = needs_review_sub_state(issue)
             issue["review_disposition_reason"] = (
-                "conditional_build_facts_required" if conditional else
-                "positive_negative_evidence_conflict" if model_proof_conflict else review_reason
+                "conditional_build_facts_required"
+                if conditional
+                else (
+                    "positive_negative_evidence_conflict" if model_proof_conflict else review_reason
+                )
             )
             issue["validation_reasoning"] = val_data.get("reasoning")
-            return ValidationOutcome(report_bucket="observations", memory_status="needs_review",
-                                     verdict="needs_review", final_score=final_score)
+            return ValidationOutcome(
+                report_bucket="observations",
+                memory_status="needs_review",
+                verdict="needs_review",
+                final_score=final_score,
+            )
         if confirmation_proof is not None and rejection_proof is not None:
             issue["validation_status"] = "needs_review"
             issue["candidate_disposition"] = "needs_review"
@@ -911,6 +921,10 @@ class ValidationPipeline:
             issue["defect_class"] = corrected_category
             if corrected_category in _CWE_BY_CORRECTED_CATEGORY:
                 issue["cwe"] = _CWE_BY_CORRECTED_CATEGORY[corrected_category]
+            # The corrected CWE becomes the primary, but every previously
+            # assigned CWE stays in the union so multi-CWE matching and the
+            # report still see the original classification.
+            ensure_issue_cwes(issue)
             issue["validator_verdict"] = "corrected"
             issue["validation_reasoning"] = (
                 f"模型否决了原类别，但在同一代码证据上识别出具体的 `{corrected_category}` 问题。"
@@ -995,9 +1009,7 @@ class ValidationPipeline:
         issue["finding_kind"] = "needs_review"
         issue["needs_review_sub_state"] = needs_review_sub_state(issue)
         issue["rejection_source"] = "validator_without_deterministic_proof"
-        issue["promotion_review_reason"] = promotion_review_reason(
-            issue, kind="rejected_unproven"
-        )
+        issue["promotion_review_reason"] = promotion_review_reason(issue, kind="rejected_unproven")
         issue["validation_reasoning"] = (
             "模型否决该候选但未给出确定性反驳证明，候选保留待人工复核。"
             + str(val_data.get("reasoning") or "")

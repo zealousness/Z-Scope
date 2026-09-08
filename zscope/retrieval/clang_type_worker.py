@@ -49,7 +49,7 @@ class FunctionTypeCollector:
         self.type_names: set[str] = set()
         self.types_by_identity: dict[str, dict[str, Any]] = {}
         self.closures: dict[str, list[str]] = {}
-        self.stamps: dict[Path, tuple[int, ...] | None] = {}
+        self.stamps: dict[Path, tuple[int, int, int, int] | None] = {}
         self.dependencies: dict[str, set[Path]] = {}
         self.attested: dict[str, set[Path]] = {}
         self.scopes: dict[str, set[Path]] = {}
@@ -203,11 +203,11 @@ class FunctionTypeCollector:
         scope = self._build_gate_scope(source)
         if scope is None:
             return None
-        scope = frozenset(scope | self.common)
-        self._scope_cache[str(source)] = scope
+        combined = frozenset(scope | self.common)
+        self._scope_cache[str(source)] = combined
         if len(self._scope_cache) > 512:
             self._scope_cache.popitem(last=False)
-        return scope
+        return combined
 
     def _build_gate_scope(self, source: Path) -> Optional[set[Path]]:
         key = str(source)

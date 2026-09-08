@@ -104,7 +104,7 @@ def build(source, work, arch, jobs):
         env=dict(os.environ, LD_LIBRARY_PATH=f"{prefix / 'lib'}:{work / 'prefix/llvm18/lib'}"),
     )
     capability = json.loads(response)
-    if capability.get("protocol") != "zscope.clang-facts.v1" or not re.match(
+    if capability.get("protocol") != "zscope.clang-facts.v2" or not re.match(
         r"18\.1\.0(?:\s|$)", capability.get("clang_version", "")
     ):
         raise RuntimeError("Batch indexer is incompatible with the locked LLVM 18 SDK: " + response)

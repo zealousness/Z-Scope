@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 import re
-from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 _FACT_KIND_TERMS = {
@@ -43,7 +43,7 @@ def _clean_items(values: Any) -> Tuple[str, ...]:
         values = [values]
     if not isinstance(values, (list, tuple, set)):
         return ()
-    result = []
+    result: List[str] = []
     for value in values:
         text = str(value).strip()
         if text and text not in result:
@@ -88,7 +88,8 @@ class ConstraintObligation:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ConstraintObligation":
-        target = value.get("target") if isinstance(value.get("target"), Mapping) else value
+        raw_target = value.get("target")
+        target: Mapping[str, Any] = raw_target if isinstance(raw_target, Mapping) else value
         project_id = str(value.get("project_id") or target.get("project_id") or "").strip()
         candidate_file = _candidate_file(value, target)
         raw_kind = str(
@@ -139,7 +140,7 @@ class ConstraintObligation:
         values.extend(self.lock_ids)
         values.extend(self.extra_terms)
         values.extend(_FACT_KIND_TERMS.get(canonical_obligation_kind(self.obligation_kind), ()))
-        result = []
+        result: List[str] = []
         for value in values:
             text = str(value).strip()
             if text and text.lower() not in {item.lower() for item in result}:

@@ -10,9 +10,10 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, cast
 from ...common.issue_identity import canonical_issue_key, flatten_issue_text, parse_issue_location
 from ..candidates.evidence_models import build_evidence_models
 from ...snapshots.modeling_input import SemanticModelInputError, resolve_function_info
+from .context_budget import record_projection
 
 VALIDATOR_EVIDENCE_SLICE_VERSION = "zscope.validator-evidence-slice.v2"
-VALIDATOR_EVIDENCE_SLICE_V3 = "zscope.validator-evidence-slice.v3"
+VALIDATOR_EVIDENCE_SLICE_V3 = "zscope.validator-evidence-slice.v3.1"
 VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v2"
 VALIDATOR_PROTOCOL_V3 = "zscope.validator-protocol.v3"
 
@@ -174,7 +175,7 @@ def _caller_lock_states(
         if not caller or not call_pattern or len(states) >= limit:
             continue
         try:
-            impl = code_index.get_function_impl(caller, warn_missing=False)
+            impl = code_index.get_function_impl(caller, max_lines=None, warn_missing=False)
         except Exception:
             impl = None
         code = str((impl or {}).get("code") or "")
@@ -362,7 +363,7 @@ def build_validation_evidence_pack(
         or [],
         "primary_location_snippet": snippet,
         "function_context": {
-            "code": trim_code(issue_code, max_lines=140),
+            "code": issue_code,
             "snapshot_summary": compact_snapshot(snapshot),
             "callers": callers,
             "callees": callees,
@@ -402,7 +403,7 @@ def build_validator_evidence_slice_v2(
                 continue
             candidate = raw[0] if isinstance(raw[0], list) else raw
             if isinstance(candidate, list):
-                return [str(item) for item in candidate[:16] if str(item)]
+                return [str(item) for item in candidate if str(item)]
         return []
 
     occurrence_uids = issue.get("occurrence_uids")
@@ -440,10 +441,7 @@ def build_validator_evidence_slice_v2(
         issue.get("call_path"),
         entry_context.get("call_path"),
     )
-    code = trim_code(
-        str(function_context.get("code") or issue_code or ""),
-        max_lines=110,
-    )
+    code = str(issue_code or function_context.get("code") or "")
     location_snippet = pack.get("primary_location_snippet")
     if isinstance(location_snippet, Mapping):
         location_snippet = {
@@ -454,7 +452,7 @@ def build_validator_evidence_slice_v2(
     elif location_snippet not in (None, ""):
         location_snippet = _trim_text(str(location_snippet), 1800)
 
-    return {
+    result: Dict[str, Any] = {
         "schema_version": VALIDATOR_EVIDENCE_SLICE_VERSION,
         "protocol_version": VALIDATOR_PROTOCOL_VERSION,
         "obligation": {
@@ -527,12 +525,24 @@ def build_validator_evidence_slice_v2(
                 "\n".join(sorted(str(value) for value in aliases if str(value))).encode("utf-8")
             ).hexdigest(),
         },
-        "validation_requirements": _compact_validation_value(
-            pack.get("validation_requirements") or [],
-            max_list_items=10,
-            max_string_chars=1000,
-        ),
+        "validation_requirements": list(pack.get("validation_requirements") or []),
     }
+    for key, original in (
+        ("fact_uids", list(fact_slice.get("fact_uids") or [])),
+        ("edge_uids", list(fact_slice.get("edge_uids") or [])),
+        ("dependency_code_hashes", list(fact_slice.get("dependency_code_hashes") or [])),
+        ("deterministic_proofs", deterministic_proofs),
+    ):
+        record_projection(result, "decision_facts." + key, original, result["decision_facts"][key])
+    for key, original in (
+        ("positive", issue.get("positive_evidence") or pack.get("positive_evidence") or []),
+        ("negative", issue.get("negative_evidence") or pack.get("negative_evidence") or []),
+        ("path_constraints", issue.get("path_constraints") or []),
+    ):
+        record_projection(result, "evidence." + key, original, result["evidence"][key])
+    record_projection(result, "code.location_snippet", pack.get("primary_location_snippet"), location_snippet)
+    record_projection(result, "validation_requirements", pack.get("validation_requirements") or [], result["validation_requirements"])
+    return result
 
 
 def build_validator_project_knowledge_projection(
@@ -540,7 +550,10 @@ def build_validator_project_knowledge_projection(
 ) -> Dict[str, Any]:
     """Project Wiki context into the compact shape shown to Validator LLMs."""
 
-    target = knowledge.get("target") if isinstance(knowledge.get("target"), Mapping) else {}
+    target_value = knowledge.get("target")
+    target: Mapping[str, Any] = (
+        target_value if isinstance(target_value, Mapping) else {}
+    )
     issue_file = (
         str(
             issue.get("candidate_file")
@@ -613,8 +626,9 @@ def build_validator_project_knowledge_projection(
                 "conflicts_with": list(item.get("conflicts_with") or []),
             }
         )
-    selection = (
-        knowledge.get("selection") if isinstance(knowledge.get("selection"), Mapping) else {}
+    selection_value = knowledge.get("selection")
+    selection: Mapping[str, Any] = (
+        selection_value if isinstance(selection_value, Mapping) else {}
     )
     return {
         "resolution_mode": knowledge.get("resolution_mode"),
@@ -686,7 +700,7 @@ def build_validator_evidence_slice_v3(
     if isinstance(fact_payloads, Mapping):
         fact_payloads = [
             {"fact_uid": str(key), "payload": value}
-            for key, value in list(fact_payloads.items())[:32]
+            for key, value in fact_payloads.items()
         ]
     elif not isinstance(fact_payloads, list):
         fact_payloads = []
@@ -735,6 +749,12 @@ def build_validator_evidence_slice_v3(
         max_list_items=24,
         max_string_chars=1800,
     )
+    record_projection(result, "decision_facts.facts", fact_payloads, result["decision_facts"]["facts"])
+    for key in ("snapshot_summary", "callers", "callees"):
+        original: Any = function_context.get(key) or ({} if key == "snapshot_summary" else [])
+        record_projection(result, "code." + key, original, result["code"][key])
+    record_projection(result, "semantic_claims", semantic_claims, result["semantic_claims"])
+    record_projection(result, "evidence_delta", dict(evidence_delta or {}), result["evidence_delta"])
 
     # Project knowledge keeps its full audit envelope in the evidence pack and
     # exposes only the decision-relevant projection to the Validator model.

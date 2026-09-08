@@ -137,12 +137,19 @@ class ParallelAnalysisResult:
 
 
 class ParallelAnalyzer:
-    """
-    Parallel analyzer that can analyze multiple functions concurrently.
+    """Analyze multiple entries with shared scheduling and owned resources."""
 
-    Uses a thread pool to run up to max_workers LLM analysis sessions
-    simultaneously, significantly reducing total analysis time.
-    """
+    _lifecycle_init_lock = threading.Lock()
+
+    def _lifecycle_condition(self) -> threading.Condition:
+        # Also initialize safely for lightweight embedded facades.
+        with self._lifecycle_init_lock:
+            if not hasattr(self, "_lifecycle_cv"):
+                self._lifecycle_cv = threading.Condition(threading.RLock())
+                self._active_batch_thread: Optional[int] = None
+                self._closing = False
+                self._close_complete = False
+        return self._lifecycle_cv
 
     def __init__(
         self,
@@ -255,6 +262,28 @@ class ParallelAnalyzer:
         return text.replace("\\n", "\n")
 
     def analyze_function_entries(
+        self,
+        entries: List[FunctionEntry],
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ) -> Dict[str, ParallelAnalysisResult]:
+        condition = self._lifecycle_condition()
+        with condition:
+            if getattr(self, "_closed", False):
+                raise RuntimeError("ParallelAnalyzer is closed")
+            if self._active_batch_thread is not None:
+                raise RuntimeError("ParallelAnalyzer already has an active batch")
+            self._active_batch_thread = threading.get_ident()
+        try:
+            return self._analyze_function_entries(entries, progress_callback)
+        finally:
+            with condition:
+                self._active_batch_thread = None
+                condition.notify_all()
+                close_requested = getattr(self, "_closed", False)
+            if close_requested:
+                self.close()
+
+    def _analyze_function_entries(
         self,
         entries: List[FunctionEntry],
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
@@ -837,7 +866,8 @@ class ParallelAnalyzer:
             "failures": [],
         }
         generator = ClangAstCfgCandidateGenerator(
-            self._get_shared_local_pattern_semantics(),
+            program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
+            semantics=self._get_shared_local_pattern_semantics(),
             semantic_overlay=self._get_shared_semantic_overlay(),
             tooling_evidence_provider=None,
             rule_policy=self.base_config.effective_rules.policy,
@@ -908,6 +938,12 @@ class ParallelAnalyzer:
                 # Calls into a system library or unresolved indirect callback
                 # are retained as coverage telemetry, not fabricated failures.
                 state["unresolved_internal_functions"] += 1
+                continue
+            if impl.get("truncated") or not str(impl.get("code") or "").strip():
+                state["failures"].append({
+                    "function": function, "entry_identity": entry_identity,
+                    "reason": "source_truncated" if impl.get("truncated") else "source_unavailable",
+                })
                 continue
             index_name = str(
                 impl.get("index_name")
@@ -1367,7 +1403,7 @@ class ParallelAnalyzer:
         try:
             impl = self.code_index.get_function_impl(
                 entry.function_name,
-                max_lines=self.base_config.analysis.max_function_lines,
+                max_lines=None,
                 include_context=False,
                 warn_missing=False,
                 file_path=str(entry.file_path or ""),
@@ -1773,6 +1809,27 @@ class ParallelAnalyzer:
                 close_thread_session()
 
     def close(self) -> None:
+        condition = self._lifecycle_condition()
+        with condition:
+            self._closed = True
+            # A progress callback may request closure from the batch thread.
+            # Its finally block will perform cleanup after scheduling drains.
+            if self._active_batch_thread == threading.get_ident():
+                return
+            while self._active_batch_thread is not None or self._closing:
+                condition.wait()
+            if self._close_complete:
+                return
+            self._closing = True
+        try:
+            self._close_owned_resources()
+        finally:
+            with condition:
+                self._closing = False
+                self._close_complete = True
+                condition.notify_all()
+
+    def _close_owned_resources(self) -> None:
         scheduler = getattr(self, "_scheduler", None)
         if scheduler is not None:
             scheduler.shutdown(wait=True, cancel_futures=True)
@@ -1780,6 +1837,8 @@ class ParallelAnalyzer:
             Analyzer.close_project_knowledge_service(
                 getattr(self, "project_knowledge_service", None)
             )
+        if not getattr(self, "_owns_llm_clients", False):
+            return
         seen: Set[int] = set()
         for client in getattr(self, "_shared_llm_clients", {}).values():
             client_id = id(client)
@@ -2004,6 +2063,7 @@ class ParallelAnalyzer:
         canonical_projection_state: Dict[str, Any] = {
             "candidate_lifecycle_snapshot": ledger_snapshot,
             "finding_root_v1_enabled": True,
+            "same_site_aggregation_enabled": True,
         }
         canonical_outcomes = (
             ReportAssembler._canonical_outcome_items(canonical_projection_state) or []
@@ -2454,11 +2514,18 @@ class ParallelAnalyzer:
                 "candidate_ledger_summary": ledger_snapshot.get("summary", {}),
                 "llm_usage": scan_token_usage,
                 "finding_root_v1_enabled": True,
+                "same_site_aggregation_enabled": True,
                 "finding_root_count": int(
                     canonical_projection_state.get("finding_root_count", 0) or 0
                 ),
                 "finding_root_alias_count": int(
                     canonical_projection_state.get("finding_root_alias_count", 0) or 0
+                ),
+                "aggregation_count": int(
+                    canonical_projection_state.get("aggregation_count", 0) or 0
+                ),
+                "aggregation_alias_count": int(
+                    canonical_projection_state.get("aggregation_alias_count", 0) or 0
                 ),
                 "budget_exhaustion_policy": str(
                     global_validation_state.get("budget_exhaustion_policy") or "observe"
@@ -3019,8 +3086,10 @@ class ParallelAnalyzer:
         closes, so they are not authoritative for final dispositions.  This
         renderer intentionally consumes only the post-schema combined report.
         """
-        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
-        metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
+        summary_value = report.get("summary")
+        summary = summary_value if isinstance(summary_value, dict) else {}
+        metadata_value = report.get("metadata")
+        metadata = metadata_value if isinstance(metadata_value, dict) else {}
         raw_issues = report.get("issues")
         issues = (
             [item for item in raw_issues if isinstance(item, dict)]
@@ -3029,9 +3098,11 @@ class ParallelAnalyzer:
         )
 
         raw_review_items = metadata.get("audit_observations")
-        review_items = [item for item in raw_review_items if isinstance(item, dict)]
-        if not isinstance(raw_review_items, list):
-            review_items = []
+        review_items = (
+            [item for item in raw_review_items if isinstance(item, dict)]
+            if isinstance(raw_review_items, list)
+            else []
+        )
         if not review_items:
             review_view = (
                 report.get("report_views", {}).get("with_needs_review", {})

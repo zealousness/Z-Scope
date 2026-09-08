@@ -1,53 +1,58 @@
 # Z-SCOPE C/C++ 配置 v2。复制为目标项目的 zscope.yaml 后修改。
+# 本文件是精简参考，仅列出常用字段；全部可配置字段、默认值与约束
+# 见 README.md 的“配置字段参考”一节。所有字符串值支持 ${VAR} 环境变量展开。
 config_version: 2
 
 llms:
+  # LLM profile 表：default 必需；可再定义命名 profile（如 wiki_compiler），
+  # 并在 scan.llm_profiles 中把 Agent 角色指到不同 profile。
   default:
-    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
-    models: ["${Z_SCOPE_LLM_MODEL}"]
-    api_key: "${Z_SCOPE_API_KEY}"
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"] # OpenAI 兼容 endpoint；多个时最闲优先分流，故障端点自动冷却
+    models: ["${Z_SCOPE_LLM_MODEL}"] # 候选模型，按序回退
+    api_key: "${Z_SCOPE_API_KEY}" # 环境变量缺失时加载即报错
     max_tokens: 8192 # 单次响应长度上限；不是 scan-wide token 预算。
-    base_url_max_concurrent_requests: 4
+    base_url_max_concurrent_requests: 4 # 单个 endpoint 并发在途请求上限，与 concurrency.llm_max_inflight 共同生效
 
 project:
-  language: c_cpp
-  root: .
-  source_root: .
-  compile_commands_path: build/compile_commands.json
-  include_paths: []
-  exclude_paths: [build, third_party]
+  language: c_cpp # 只能是 c_cpp 或 java
+  root: . # 项目根目录；相对路径按加载进程的工作目录解析
+  source_root: . # 源码根；entry_discovery.search_root、include_paths 相对它解析
+  compile_commands_path: build/compile_commands.json # 相对 project.root；clang 批量索引与 SVF bitcode 构建依赖它
+  include_paths: [] # 源码扫描根（相对 source_root），留空扫描整个 source_root；不是编译器 -I 参数
+  exclude_paths: [build, third_party] # 命中的路径不参与扫描
   # 也可改用 entry_function 或 entry_functions_list；自动发现时请明确目标模块和接口头文件。
   entry_discovery:
-    enabled: true
-    search_root: .
-    interface_files: ["include/**/*.h", "include/**/*.hpp"]
-    max_entries: 200
+    enabled: true # 自动发现入口；显式 entry_functions_list 优先于发现结果
+    search_root: . # 待扫模块根，必须位于 source_root 之内
+    interface_files: ["include/**/*.h", "include/**/*.hpp"] # 相对 search_root 的 POSIX glob，声明公共接口的文件
+    max_entries: 200 # 最多选出的入口数，其余候选标记 deferred
 
 scan:
   depth: fast # fast|balanced|deep；通过正式门禁前省略也解析为 fast。
   task: "" # 空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。
-  llm_profiles: {modeling: default, analysis: default, validation: default}
+  llm_profiles: {modeling: default, analysis: default, validation: default} # 三类 Agent 角色到 llms profile 的映射
 
 indexing:
-  backend: unified
+  backend: unified # unified=clang 事实+SVF 值流；clang=仅 clang 事实；regex=纯正则索引
   svf:
-    scope: auto
-    entry_depth: 4
-    max_selected_tus: 200
-    fallback: full
-    groups_file: "" # 可填写相对 project.root 的分组规划文件。
-    always_include: []
+    scope: auto # full=全量链接；auto/entry=按入口可达性裁剪 TU（无入口时仍全量）
+    entry_depth: 4 # 入口可达性裁剪的调用展开深度
+    max_selected_tus: 200 # 单个分析组选中 TU 上限，超限触发 fallback
+    fallback: full # 裁剪失败时：full 回退全量，skip 放弃该组 SVF
+    groups_file: "" # 可填写相对 project.root 的分组规划文件。JSON：组名到排除子串列表
+    always_include: [] # 路径/子串模式，匹配的源文件无条件纳入 SVF 选择集
+    # 互斥变体分组：多个池定义同名符号时按池拆分链接变体，避免 llvm-link 重复符号。
     exclusive_pools: [] # 元素格式：{name: variant, paths: ["src/variant/**"]}
     shared_pools: [] # 元素可增加 conflicts_with，引用 exclusive_pools 中的名称。
-    heap_limit_mb: 32768
-    timeout_seconds: 1800
+    heap_limit_mb: 32768 # 每个 WPA/Saber 子进程的堆上限；并发 worker 按此逐进程预留内存
+    timeout_seconds: 1800 # 单个 bitcode/SVF 子进程的超时秒数；null 表示不限
 
 concurrency:
-  entry_workers: 4
-  validator_workers: 2
-  investigator_workers: 1
-  evidence_completion_workers: 2
-  index_workers: 4
-  wiki_compiler_workers: 4
-  svf_workers: 2
-  llm_max_inflight: 4
+  entry_workers: 4 # 并行分析的入口数，每个入口一套建模+分析会话
+  validator_workers: 2 # Validator 并发验证线程数
+  investigator_workers: 1 # deep_worker 子代理调查并发（默认由 RuntimeSpec 关闭）
+  evidence_completion_workers: 2 # 确定性事实补全 worker 数（不调用 LLM）
+  index_workers: 4 # clang 索引并行度，同时决定 clangd 线程数
+  wiki_compiler_workers: 4 # Wiki 编译并行度，仅 project.wiki 启用时使用
+  svf_workers: 2 # SVF 分析组并发数，实际会按内存预算收缩
+  llm_max_inflight: 4 # 进程级 LLM 并发上限，与 profile 的 endpoint 限流共同生效

@@ -67,11 +67,14 @@ class RegexCandidateGenerator(
         self,
         semantics: Optional[LocalPatternSemantics] = None,
         rule_policy: Optional[Any] = None,
+        program_facts_provider: Optional[Any] = None,
     ):
         self.semantics = default_local_semantics()
         if semantics is not None:
             self.semantics.merge(semantics)
         self.rule_policy = rule_policy
+        self.program_facts_provider = program_facts_provider
+        self.program_facts: Dict[str, Any] = {}
         self._compile_patterns()
 
     def _compile_patterns(self) -> None:
@@ -179,6 +182,7 @@ class RegexCandidateGenerator(
         *,
         allowed_skills: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
+        self.program_facts = self.program_facts_provider(func_name, file_path) if self.program_facts_provider else {}
         self._augment_name_heuristics_from_code(str(code or ""))
         lines = self._parse_lines(code)
         if not lines:

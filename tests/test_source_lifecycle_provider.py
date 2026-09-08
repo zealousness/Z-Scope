@@ -426,7 +426,7 @@ def test_lockset_reject_proof_is_authoritative_and_reaches_v0() -> None:
 
 
 class _StubIndex:
-    def get_function_impl(self, func_name: str, warn_missing: bool = True):
+    def get_function_impl(self, func_name: str, warn_missing: bool = True, max_lines=None):
         bodies = {
             "td_process_control_message": (
                 "void td_process_control_message(void) {\n"
@@ -482,7 +482,7 @@ def test_call_site_without_match_is_unresolved() -> None:
     from zscope.core.validation.evidence import _caller_lock_states
 
     class _DivergentIndex(_StubIndex):
-        def get_function_impl(self, func_name: str, warn_missing: bool = True):
+        def get_function_impl(self, func_name: str, warn_missing: bool = True, max_lines=None):
             if func_name == "td_process_control_message":
                 return {"code": "void other_func(void) { _unrelated(); }\n"}
             return None

@@ -55,6 +55,54 @@
       "sha256": "9e05cf21207bff46afbf80cb8f43bb58bc4a4a87b68f28bc0470342f69345209",
       "license": "MIT"
     },
+    "prism-cpp.js": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-cpp.min.js",
+      "sha256": "12077d9ea67882c149066e94843a6ede9036994b3724bfc45b31d97619328e14",
+      "license": "MIT"
+    },
+    "prism-java.js": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-java.min.js",
+      "sha256": "4c2dc81dfc9efa51e38a7573938065288c63c64850f01a32f8a7b20a3e24c5a7",
+      "license": "MIT"
+    },
+    "markdown-it.js": {
+      "version": "14.1.1",
+      "url": "https://cdn.jsdelivr.net/npm/markdown-it@14.1.1/dist/markdown-it.min.js",
+      "sha256": "c833317a56b17b17cc1910f3b7004447573487cd1fed4c1bcef90afbcbf5c234",
+      "license": "MIT"
+    },
+    "markdown-it.LICENSE": {
+      "version": "14.1.1",
+      "url": "https://cdn.jsdelivr.net/npm/markdown-it@14.1.1/LICENSE",
+      "sha256": "792c48c5a849a15fdf9e37e8bcf9e6d1dd13b32b46c642a748a0a46a9919d473",
+      "license": "MIT"
+    },
+    "js-yaml.js": {
+      "version": "4.1.1",
+      "url": "https://cdn.jsdelivr.net/npm/js-yaml@4.1.1/dist/js-yaml.min.js",
+      "sha256": "0de3dec92d20eab9e0b46a5d928cd45ec025d73e348ddf458dbfb01da00cb473",
+      "license": "MIT"
+    },
+    "js-yaml.LICENSE": {
+      "version": "4.1.1",
+      "url": "https://cdn.jsdelivr.net/npm/js-yaml@4.1.1/LICENSE",
+      "sha256": "a07bc24468b9654ce76a547d47a2db282d07733b715db4c73a98bd63961f9550",
+      "license": "MIT"
+    },
+    "fflate.js": {
+      "version": "0.8.2",
+      "url": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js",
+      "sha256": "c3b34f2e9f5e74d4d7d64e01cac7a0c01954c6c406414d42185c7b53d6875ddf",
+      "license": "MIT"
+    },
+    "fflate.LICENSE": {
+      "version": "0.8.2",
+      "url": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/LICENSE",
+      "sha256": "805f6cb28bb8b6d3a0badd83c93bccd9671fa01a3b4b92b7042b0743325ac243",
+      "license": "MIT"
+    },
     "prism.LICENSE": {
       "version": "1.29.0",
       "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/LICENSE",
@@ -111,6 +159,54 @@
       "sha256": "9e05cf21207bff46afbf80cb8f43bb58bc4a4a87b68f28bc0470342f69345209",
       "license": "MIT"
     },
+    "prism-cpp.js": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-cpp.min.js",
+      "sha256": "12077d9ea67882c149066e94843a6ede9036994b3724bfc45b31d97619328e14",
+      "license": "MIT"
+    },
+    "prism-java.js": {
+      "version": "1.29.0",
+      "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-java.min.js",
+      "sha256": "4c2dc81dfc9efa51e38a7573938065288c63c64850f01a32f8a7b20a3e24c5a7",
+      "license": "MIT"
+    },
+    "markdown-it.js": {
+      "version": "14.1.1",
+      "url": "https://cdn.jsdelivr.net/npm/markdown-it@14.1.1/dist/markdown-it.min.js",
+      "sha256": "c833317a56b17b17cc1910f3b7004447573487cd1fed4c1bcef90afbcbf5c234",
+      "license": "MIT"
+    },
+    "markdown-it.LICENSE": {
+      "version": "14.1.1",
+      "url": "https://cdn.jsdelivr.net/npm/markdown-it@14.1.1/LICENSE",
+      "sha256": "792c48c5a849a15fdf9e37e8bcf9e6d1dd13b32b46c642a748a0a46a9919d473",
+      "license": "MIT"
+    },
+    "js-yaml.js": {
+      "version": "4.1.1",
+      "url": "https://cdn.jsdelivr.net/npm/js-yaml@4.1.1/dist/js-yaml.min.js",
+      "sha256": "0de3dec92d20eab9e0b46a5d928cd45ec025d73e348ddf458dbfb01da00cb473",
+      "license": "MIT"
+    },
+    "js-yaml.LICENSE": {
+      "version": "4.1.1",
+      "url": "https://cdn.jsdelivr.net/npm/js-yaml@4.1.1/LICENSE",
+      "sha256": "a07bc24468b9654ce76a547d47a2db282d07733b715db4c73a98bd63961f9550",
+      "license": "MIT"
+    },
+    "fflate.js": {
+      "version": "0.8.2",
+      "url": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js",
+      "sha256": "c3b34f2e9f5e74d4d7d64e01cac7a0c01954c6c406414d42185c7b53d6875ddf",
+      "license": "MIT"
+    },
+    "fflate.LICENSE": {
+      "version": "0.8.2",
+      "url": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/LICENSE",
+      "sha256": "805f6cb28bb8b6d3a0badd83c93bccd9671fa01a3b4b92b7042b0743325ac243",
+      "license": "MIT"
+    },
     "prism.LICENSE": {
       "version": "1.29.0",
       "url": "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/LICENSE",
@@ -121,7 +217,25 @@
       "version": "3.4.17",
       "generated_from": "tailwind-cli",
       "license": "MIT",
-      "sha256": "ef25aaa28b00d1bbb1a4cccc467a138e7624cf1a71721b817c30e50ed06a0cce"
+      "sha256": "8b8474230d38092dc2fd77e019aba4e857b34189c3db52a532a2eb7f994f2f80"
+    }
+  },
+  "first_party": {
+    "report_view.js": {
+      "sha256": "576c354c4b02c1131efef255360c5b61ce0b344daaf42ee2899df8218f3602bf",
+      "license": "MIT"
+    },
+    "report_view.css": {
+      "sha256": "4739d2703fa9100a37b84562857e77db48534466e21c06b8d37be193a2410506",
+      "license": "MIT"
+    },
+    "offline_review.js": {
+      "sha256": "9ca5d645541b30d820eb707d8c7c02311ff2c0565fd9d649262e0b2862508042",
+      "license": "MIT"
+    },
+    "dashboard_reports.js": {
+      "sha256": "8c0cbb3b2f2f105d160bf31009474db1817844aee2ca62e0d7451894a2a6eb0e",
+      "license": "MIT"
     }
   }
 }

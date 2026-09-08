@@ -6,9 +6,11 @@ from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional, cast
 
 from ..core.validation.pipeline import preserve_issue_location
+from ..common.defect_cwe_map import ensure_issue_cwes
 from ..orchestration.candidate_envelope import annotate_issue_collection
 from ..reporting.report import FinalReport, Issue, ReportGenerator
 from ..reporting.finding_roots import project_finding_roots
+from ..reporting.issue_aggregation import project_issue_aggregation
 from ..reporting.schema import (
     REPORT_SCHEMA_VERSION,
     build_run_manifest,
@@ -154,6 +156,17 @@ class ReportAssembler:
                 "as audit observations; they are excluded from the default vulnerability report."
             )
 
+        # Final CWE backstop: every report-visible issue and observation must
+        # carry the CWE range of its root-cause classification, whatever its
+        # source (rule governance, validator correction, LLM discovery, or the
+        # observation fallback path).
+        for issue in all_issues:
+            if isinstance(issue, dict):
+                ensure_issue_cwes(issue)
+        for observation in state.get("observations", []):
+            if isinstance(observation, dict):
+                ensure_issue_cwes(observation)
+
         verdict = self._overall_verdict(state, all_issues)
         finding = finding_status(all_issues, state.get("observations", []))
         terminal_states = self._candidate_terminal_states(
@@ -259,6 +272,10 @@ class ReportAssembler:
         final_report.run_manifest["finding_root_alias_count"] = int(
             state.get("finding_root_alias_count", 0) or 0
         )
+        final_report.run_manifest["aggregation_count"] = int(state.get("aggregation_count", 0) or 0)
+        final_report.run_manifest["aggregation_alias_count"] = int(
+            state.get("aggregation_alias_count", 0) or 0
+        )
         final_report.run_manifest.update(self._release_observability(state))
         self.refresh(final_report, state)
         state["final_report"] = final_report
@@ -329,16 +346,20 @@ class ReportAssembler:
     def persist(self, state: Dict[str, Any], *, write_root_reports: bool = True) -> Dict[str, Any]:
         final_report = state["final_report"]
         self.refresh(final_report, state)
+        report_dict = cast(Dict[str, Any], final_report.to_dict())
+        if self.snapshot_store:
+            published = self.snapshot_store.save_final_report(
+                state["entry_index_name"],
+                report_dict,
+                expected_generation=state.get("snapshot_generation"),
+            )
+            if published is False:
+                report_dict.setdefault("metadata", {})["snapshot_report_published"] = False
+                report_dict["metadata"]["snapshot_report_reason"] = "snapshot_version_conflict_or_missing"
+                final_report.metadata.update(report_dict["metadata"])
         if write_root_reports:
             self.report_generator.save_json_report(final_report)
             self.report_generator.save_markdown_report(final_report)
-
-        report_dict = cast(Dict[str, Any], final_report.to_dict())
-        if self.snapshot_store:
-            self.snapshot_store.save_final_report(
-                state["entry_index_name"],
-                report_dict,
-            )
         return report_dict
 
     def finalize_returned_report(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -607,6 +628,11 @@ class ReportAssembler:
             state["finding_root_count"] = projection.finding_root_count
             state["finding_root_alias_count"] = projection.finding_root_alias_count
             result = list(projection.outcomes)
+        if bool(state.get("same_site_aggregation_enabled", False)):
+            aggregation = project_issue_aggregation(result)
+            state["aggregation_count"] = aggregation.aggregation_count
+            state["aggregation_alias_count"] = aggregation.aggregation_alias_count
+            result = list(aggregation.items)
         return result
 
     @staticmethod

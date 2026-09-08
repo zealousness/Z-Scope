@@ -22,7 +22,7 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
 
 
-def input_stamp(path: Path) -> tuple[int, ...] | None:
+def input_stamp(path: Path) -> tuple[int, int, int, int] | None:
     try:
         stat = path.stat()
         return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
@@ -114,6 +114,7 @@ def derived_session(method: _F) -> _F:
         epoch, reusable, reason = build_identity(ex, db)
         identity_seconds = time.monotonic() - identity_started
         original_epoch = epoch
+        original_components = getattr(ex, "_derived_identity_components", {})
         if getattr(ex, "_semantic_epoch", None) != epoch:
             with ex._derived_cache_lock:
                 ex._semantic_context_cache = OrderedDict()
@@ -146,7 +147,16 @@ def derived_session(method: _F) -> _F:
                 resolver.set_phase("source-validation")
                 resolver.sources.validate_all(resolver.phase_progress)
                 resolver.set_phase("identity-validation")
-                return build_identity(ex, db)[0] == original_epoch
+                current_epoch = build_identity(ex, db)[0]
+                if current_epoch == original_epoch:
+                    return True
+                count, examples = _identity_changes(
+                    original_components, getattr(ex, "_derived_identity_components", {})
+                )
+                resolver.identity_change_reason = f"{count} changed inputs; " + "; ".join(examples)
+                cache.stats["identity_changes"] = {"count": count, "examples": examples}
+                logger.error("[derived-inputs-changed] %s", resolver.identity_change_reason)
+                return False
             finally:
                 cache.stats["identity_seconds"] += time.monotonic() - started
 
@@ -157,7 +167,8 @@ def derived_session(method: _F) -> _F:
                 result = method(ex, db, *args, **kwargs)
                 if not resolver.validate():
                     raise RuntimeError(
-                        "Source, dependencies or base facts changed during derived rebuild"
+                        "Source, dependencies or base facts changed during derived rebuild: "
+                        + resolver.identity_change_reason
                     )
                 return result
             finally:
@@ -181,27 +192,42 @@ def derived_session(method: _F) -> _F:
     return cast(_F, wrapped)
 
 
+def _identity_changes(before: dict[str, str], after: dict[str, str]) -> tuple[int, list[str]]:
+    """Bound log output; expose paths/table names, never source or command contents."""
+    count = 0
+    examples: list[str] = []
+    for key in sorted(before.keys() | after.keys()):
+        if before.get(key) == after.get(key):
+            continue
+        count += 1
+        if len(examples) < 8:
+            action = "added" if key not in before else "removed" if key not in after else "changed"
+            examples.append(f"{action} {key}")
+    return count, examples
+
+
 def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
     """Conservatively attest dependencies using full (-MD, not -MMD) depfiles.
 
     Missing/stale depfiles retain disk spill within the run but invalidate durable
     checkpoints on the next run. Never assume the lexical include graph is complete.
     """
-    digest = hashlib.sha256()
+    components: dict[str, str] = {}
     inventory: set[Path] = set()
     dependencies_by_source: dict[str, set[Path]] = {}
     # Per-TU attestation: only TUs whose full depfile is fresh and self-consistent
     # may scope completeness-critical decisions (candidate pre-pruning).
     attested_by_source: dict[str, set[Path]] = {}
     command_sources: list[str] = []
-    observed: dict[Path, tuple[int, ...] | None] = {}
+    observed: dict[Path, tuple[int, int, int, int] | None] = {}
     complete = bool(ex._server_info)
     reason = "complete_dependency_manifest"
     compilation = Path(ex.compile_commands_dir or ex.project_root) / "compile_commands.json"
     observed[compilation] = input_stamp(compilation)
+    components["compilation:" + str(compilation)] = "unreadable"
     try:
         raw = compilation.read_bytes()
-        digest.update(raw)
+        components["compilation:" + str(compilation)] = hashlib.sha256(raw).hexdigest()
         commands = json.loads(raw)
         if not isinstance(commands, list) or not commands:
             raise ValueError("empty compilation database")
@@ -211,6 +237,7 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
             args = command.get("arguments")
             source = Path(command["file"])
             source = source if source.is_absolute() else directory / source
+            inventory.add(source)
             command_sources.append(str(source.resolve()))
             # Shell strings need platform-specific parsing: do not guess.
             if not isinstance(args, list) or "-MD" not in args or "-MMD" in args:
@@ -248,6 +275,7 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
                 clean = re.sub(r"\\([ #\\])", r"\1", token)
                 path = Path(clean)
                 path = path if path.is_absolute() else directory / path
+                inventory.add(path)  # Retain aliases to detect symlink retargeting.
                 path = path.resolve()
                 if path.stat().st_mtime_ns > depfile.stat().st_mtime_ns:
                     complete = False
@@ -264,9 +292,7 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
     except (OSError, ValueError, KeyError, IndexError, TypeError):
         complete = False
     attested_files = set(inventory)
-    project_index = ex._project_file_index or {}
-    for paths in project_index.values():
-        inventory.update(paths)
+    inventory.update(getattr(ex, "_derived_source_files", ()))
     # Include source content and row IDs: persisted final rows must never refer
     # to recycled IDs after a base rebuild, even if declarations look identical.
     connection = getattr(db, "_conn", None)
@@ -279,28 +305,36 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
             "include_edges",
             "translation_units",
         ):
-            for ordinal, row in enumerate(connection.execute(f"SELECT * FROM {table} ORDER BY rowid")):
+            table_digest = hashlib.sha256()
+            for ordinal, row in enumerate(
+                connection.execute(f"SELECT * FROM {table} ORDER BY rowid")
+            ):
                 if ordinal % 64 == 0:
                     _prepare_checkpoint(ex)
-                digest.update(repr(tuple(row)).encode("utf-8"))
+                table_digest.update(repr(tuple(row)).encode("utf-8"))
                 if "file_path" in row.keys():
                     path = Path(str(row["file_path"]))
                     path = (path if path.is_absolute() else ex.project_root / path).resolve()
                     inventory.add(path)
                     if table == "functions" and path not in attested_files:
                         complete = False
-    config_parents = {ex.project_root, *ex.project_root.parents}
-    for source_path in inventory:
-        config_parents.update(source_path.parents)
-    for parent in sorted(config_parents):
-        config = parent / ".clangd"
-        observed[config] = input_stamp(config)
-        digest.update(str(config).encode())
-        if config.is_file():
-            inventory.add(config)
+                if table == "include_edges":
+                    for field in ("source_file", "included_file"):
+                        if row[field]:
+                            value = Path(str(row[field]))
+                            # LSP include facts may retain <header.h> as a name,
+                            # not a resolved path. Full depfiles attest those.
+                            if (
+                                field == "included_file"
+                                and row["is_system"]
+                                and not value.is_absolute()
+                            ):
+                                continue
+                            inventory.add(value if value.is_absolute() else ex.project_root / value)
+            components["base:" + table] = table_digest.hexdigest()
     # Conservative invalidation scopes for TUs without a trusted full depfile:
-    # the lexical include closure is a superset of the true dependencies, so
-    # scoping the in-session staleness gate with it can only over-invalidate.
+    # the lexical include graph supplies additional known dependencies, but
+    # cannot attest completeness (forced/macro-generated includes may be absent).
     # Durable restart reuse still requires `complete`; consumers validate the
     # files a cached row actually read via receipts, which stays the exact
     # backstop. Best-effort: on failure consumers fall back to the full
@@ -310,9 +344,7 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
         scope_targets = [
             source for source in dict.fromkeys(command_sources) if source not in attested_by_source
         ]
-        closures = (
-            ex._load_include_closures(db, scope_targets) if scope_targets else {}
-        )
+        closures = ex._load_include_closures(db, scope_targets) if scope_targets else {}
         for source_name in scope_targets:
             scope = {Path(source_name)}
             for included in closures.get(source_name) or ():
@@ -321,28 +353,43 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
             inventory.update(scope)
     except Exception:
         invalidation_scope_by_source = {}
+    config_parents = {ex.project_root, *ex.project_root.parents}
+    for source_path in inventory:
+        config_parents.update(source_path.parents)
+    for parent in sorted(config_parents):
+        config = parent / ".clangd"
+        observed[config] = input_stamp(config)
+        present = config.is_file()
+        components["config:" + str(config)] = "present" if present else "absent"
+        if present:
+            inventory.add(config)
     user_config = (
         Path(os.environ.get("LOCALAPPDATA", "")) / "clangd/config.yaml"
         if os.name == "nt"
         else Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
         / "clangd/config.yaml"
     )
-    if user_config.is_file():
+    present = user_config.is_file()
+    if present:
         inventory.add(user_config)
     observed[user_config] = input_stamp(user_config)
+    components["config:" + str(user_config)] = "present" if present else "absent"
     tool = Path(ex.clangd_path)
     observed[tool] = input_stamp(tool)
     if tool.is_file():
         inventory.add(tool)
     for path in sorted(inventory):
         _prepare_checkpoint(ex)
+        key = "file:" + str(path)
         try:
             observed[path] = input_stamp(path)
-            digest.update(str(path.resolve()).encode("utf-8"))
+            file_digest = hashlib.sha256()
             with path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1 << 20), b""):
-                    digest.update(chunk)
-        except OSError:
+                    file_digest.update(chunk)
+            components[key] = cache_key([str(path.resolve()), file_digest.hexdigest()])
+        except OSError as exc:
+            components[key] = f"unreadable:{exc.errno}"
             complete = False
     # Captured once per session; consumers validate just their TU's dependencies.
     # Missing manifests use the entire known inventory and never permit restart reuse.
@@ -350,32 +397,30 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
     ex._derived_dependencies_by_source = dependencies_by_source
     ex._derived_attested_by_source = attested_by_source
     ex._derived_invalidation_scope_by_source = invalidation_scope_by_source
-    digest.update(
-        json.dumps(
-            [
-                "derived-v6",
-                str(ex.project_root),
-                ex.clangd_path,
-                ex._server_info,
-                ex._position_encoding,
-                {
-                    k: os.environ.get(k)
-                    for k in (
-                        "PATH",
-                        "CPATH",
-                        "C_INCLUDE_PATH",
-                        "CPLUS_INCLUDE_PATH",
-                        "SDKROOT",
-                        "INCLUDE",
-                    )
-                },
-            ],
-            sort_keys=True,
-        ).encode()
+    components["context:tool-and-environment"] = cache_key(
+        [
+            "derived-v7",
+            str(ex.project_root),
+            ex.clangd_path,
+            ex._server_info,
+            ex._position_encoding,
+            {
+                k: os.environ.get(k)
+                for k in (
+                    "PATH",
+                    "CPATH",
+                    "C_INCLUDE_PATH",
+                    "CPLUS_INCLUDE_PATH",
+                    "SDKROOT",
+                    "INCLUDE",
+                )
+            },
+        ]
     )
+    ex._derived_identity_components = components
     if not complete:
         reason = "missing_or_stale_full_dependency_manifest"
-    return digest.hexdigest(), complete, reason
+    return cache_key(components), complete, reason
 
 
 class DerivedResolver:
@@ -388,6 +433,7 @@ class DerivedResolver:
         from .clang_source_snapshot import DerivedSourceSnapshots
         self.sources = DerivedSourceSnapshots(extractor, cache, self.local)
         self.scope = ""
+        self.identity_change_reason = ""
         self.reusable = False
         self.identity_reason = ""
         self.validate: Any = lambda: True

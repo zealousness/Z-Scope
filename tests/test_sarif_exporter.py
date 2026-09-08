@@ -82,6 +82,7 @@ def test_sarif_prefers_canonical_rule_id_and_exports_rule_metadata(tmp_path: Pat
         "tags": ["security", "use-after-free", "CWE-416"],
         "legacyRuleId": "CWE-416:legacy_use_after_release",
         "cwe": "CWE-416",
+        "cwes": ["CWE-416"],
         "rule_engine": "cpp_clang_cfg",
         "rule_revision": 3,
         "skill": "temporal_memory",

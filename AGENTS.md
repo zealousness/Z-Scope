@@ -54,7 +54,7 @@ Z-SCOPE 是面向 Java 与 C/C++ 项目的 AI 静态分析平台。典型数据�
 适用于新增、修改或禁用 Java/C/C++ 确定性规则，以及 YAML rule pack 或 Python provider 开发。
 
 1. 先读 [`docs/rule-development.md`](docs/rule-development.md) 和 [`docs/modules/analysis-pipeline.md`](docs/modules/analysis-pipeline.md)，区分确定性规则、backend signal、Skill trigger 与 finding suppression；不要用一类机制替代另一类。
-2. 修改内置检测逻辑时，同一变更必须同步 `zscope/rules/builtin_catalog.yaml`：保持 canonical ID，并在规则语义、CWE、Skill 或验证要求变化时递增 `revision`。
+2. 修改内置检测逻辑时，同一变更必须同步 `zscope/rules/builtin_catalog.yaml`：保持 canonical ID，并在规则语义、CWE（含 `additional_cwes` 附加 CWE）、Skill 或验证要求变化时递增 `revision`；`cwe` 仍是唯一治理主值，类别级兜底 CWE 集合集中在 `zscope/common/defect_cwe_map.py`，新增类别时同步该映射及其不变量测试。
 3. 每条规则至少增加一个正例和一个反例，并运行目录一致性、候选快照和相关引擎测试；不得让实现产生未登记 ID。
 4. 验证 `rules.disabled_ids` 只停止指定确定性检测器，不得意外抑制 SVF/Saber、Joern 等 backend signal、LLM 独立发现或已持久化的 finding suppression。
 5. 规则治理变更不要改写 `zscope/agents/*/AGENT.md`。`SKILL.md` 只在 Skill 语言归属或证据契约本身变化时同步。
@@ -84,6 +84,19 @@ Z-SCOPE 是面向 Java 与 C/C++ 项目的 AI 静态分析平台。典型数据�
 - 仓库根目录的 `zscope.c_cpp.yaml` 与 `zscope.java.yaml` 只是按语言划分的参考配置，不是其他目标项目的全局配置入口；复制到目标项目后通常命名为 `zscope.yaml`。
 - 操作配置前必须确认：当前工作目录、命令中的 `-c/--config`、配置内的 `project.root`。
 - `project.root` 的相对路径按进程工作目录解析；`source_root`、`compile_commands_path`、`entry_functions_list` 等项目相对路径再依据 `project.root` 解析。跨目录运行时优先使用明确路径，避免把缓存和报告写到错误项目。
+
+### public config v2 字段清单
+
+顶层只允许 `config_version`、`llms`、`project`、`scan`、`indexing`、`concurrency` 和可选 `rules`，未知键严格报错。两份语言模板只展示常用子集，下列字段均合法；默认值、取值约束与相对路径基准以 `README.md` 的“配置字段参考”为准，本节只列字段与作用。
+
+- `llms`：profile 表，`default` 必需，可新增命名 profile。字段：`base_urls`（多 endpoint 最闲优先分流）、`models`（按序回退）、`api_key`、`max_tokens`、`timeout`、`max_retries`、`retry_until_available`（瞬态错误无限重试）、`base_url_rate_limit_per_minute`、`base_url_max_concurrent_requests`、`supports_structured_output`（JSON 输出走 response_format）。`scan.llm_profiles` 把 modeling/analysis/validation 三角色绑定到命名 profile；Wiki 编译器读取 `wiki_compiler` profile。
+- `project`：`language`、`root`、`source_root`、`id`（持久化标识）、单入口 `entry_function`（配 `entry_file_path`/`entry_signature` 消歧）、批量 `entry_functions_list`、`entry_discovery`（`enabled`/`search_root`/`interface_files`/`max_entries`/`max_functions`）、`include_paths`（源码扫描根，非空即替换）、`exclude_paths`、`compile_commands_path`（仅 C/C++）、`user_config_file`（语义工作簿）、`wiki`（`mode`/`auto_maintain`/`state_dir`/`compiler_enabled`/`documents.exclude`/`documents.classify.explanatory`/`documents.classify.generated`/`max_file_bytes`/`max_files`/`max_total_bytes`/`compiler_max_tokens`/`max_wall_seconds`/`max_constraints`）。
+- `scan`：`depth`（fast/balanced/deep，Java 仅 fast）、`task`（空串启用全部 Skill）、`llm_profiles`。
+- `indexing`：`backend`（C/C++：unified/clang/regex；Java：java_unified/java_source/joern）；`clang.frontend`（auto/batch/lsp，仅 C/C++）；`svf`（仅 C/C++：`scope`/`entry_depth`/`max_selected_tus`/`fallback`/`groups_file`/`always_include`/`exclusive_pools`/`shared_pools`/`heap_limit_mb`/`timeout_seconds`）；`java`（仅 Java：`structure_frontend`/`signals`/`extractor_command`/`provider_commands`）；`tools`（C/C++：`clangd`/`clang_indexer`/`gclang`/`get_bc`/`llvm_link`/`svf_bin_dir`；Java：`joern.command`/`joern.host`/`joern.port`/`joern.heap`）。
+- `concurrency`：`entry_workers`、`validator_workers`、`investigator_workers`、`evidence_completion_workers`、`index_workers`、`wiki_compiler_workers`（可省略）、`svf_workers`（仅 C/C++）、`llm_max_inflight`，全部正整数。
+- `rules`：`packs`（YAML 规则包）、`providers`（Python provider 入口）、`enabled_ids`、`disabled_ids`（优先于 enabled_ids，不抑制 backend signal）。
+
+Agent 启停、分析预算、deadline、缓存与报告策略属于 RuntimeSpec（`zscope/config/runtime_defaults.yaml`），不进入用户 YAML；仅在 `Z_SCOPE_DEVELOPER_MODE=1` 时可用 `Z_SCOPE_RUNTIME_SPEC` 覆盖。
 
 ## 模块导航
 

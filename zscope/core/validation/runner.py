@@ -1017,6 +1017,8 @@ class ValidationRunner:
         cache_key = ""
         cache_owner = False
         try:
+            # Projection establishes completeness even on a cached verdict.
+            val_input = self._validator_input(item.raw_issue, item.issue_code, item.evidence_pack)
             cache_key = self._validator_cache_key(item)
             cached = self._validator_cache_get(cache_key)
             if cached is not None:
@@ -1052,9 +1054,7 @@ class ValidationRunner:
                     cache_owner = self._validator_result_cache.reserve(cache_key)
             validator_agent = validator_agent or self._build_validator_agent()
             token_metadata = self._empty_token_metadata()
-            val_resp = validator_agent.run(
-                self._validator_input(item.raw_issue, item.issue_code, item.evidence_pack)
-            )
+            val_resp = validator_agent.run(val_input)
             self._merge_response_metadata(token_metadata, getattr(val_resp, "metadata", {}) or {})
 
             if not val_resp.success:
@@ -1111,6 +1111,7 @@ class ValidationRunner:
                 val_data,
                 token_metadata,
             )
+            val_data = self._context_checked_result(item.raw_issue, val_data)
             if self._validator_cache_put(cache_key, val_data):
                 cache_owner = False
             return _ValidationWorkerResult(
@@ -1290,6 +1291,7 @@ class ValidationRunner:
                 return ""
         payload = {
             "protocol": self._VALIDATION_CACHE_PROTOCOL,
+            "evidence_slice_version": VALIDATOR_EVIDENCE_SLICE_V3,
             "decision_context_version": DECISION_CONTEXT_VERSION,
             "environment": self._validation_environment_fingerprint,
             "validation_cluster_uid": validation_cluster_uid,
@@ -1492,7 +1494,7 @@ class ValidationRunner:
             self._update_candidate_ledger(state, raw_issue)
             return
 
-        val_data = result.val_data
+        val_data = self._context_checked_result(raw_issue, result.val_data)
         if self._review_enabled():
             raw_issue["review_latest_result"] = deepcopy(val_data)
         self._attach_validator_missing_fact_request(raw_issue, val_data)
@@ -1548,6 +1550,19 @@ class ValidationRunner:
         self._log_validation_outcome(raw_issue, val_data, verdict, outcome.final_score)
 
     @staticmethod
+    def _context_checked_result(issue: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+        if (
+            issue.get("validator_context_requires_retrieval")
+            and issue.get("decision_fact_coverage") != "complete"
+            and not _as_dict(issue.get("v3_evidence_closure")).get("complete")
+        ):
+            issue.setdefault("model_verdict_before_context_check", validation_verdict(result))
+            issue["validation_context_incomplete"] = True
+            return {**result, "verdict": "uncertain"}
+        issue.pop("validation_context_incomplete", None)
+        return result
+
+    @staticmethod
     def _evidence_completeness_from_issue(issue: Dict[str, Any]) -> str:
         """Derive the report-level ``evidence_completeness`` signal.
 
@@ -1557,6 +1572,8 @@ class ValidationRunner:
         reading a constant (plan Phase 2.2 production-chain fix).
         """
 
+        if issue.get("validation_context_incomplete"):
+            return "partial"
         coverage = str(issue.get("decision_fact_coverage") or "").strip().lower()
         if coverage in {"complete", "partial"}:
             return coverage
@@ -2725,7 +2742,6 @@ class ValidationRunner:
             obligation = _as_dict(evidence_slice.get("obligation"))
             obligation["candidate_uid"] = finding_uid
             obligation["validation_cluster_uid"] = validation_cluster_uid
-            evidence_slice = self._fit_validator_slice(evidence_slice, max_tokens=12_000)
             if self._review_facts_enabled():
                 evidence_slice["review_facts"] = {
                     key: raw_issue.get(key) for key in (
@@ -2733,6 +2749,10 @@ class ValidationRunner:
                     )
                 }
                 evidence_slice["review_fact_query"] = "query_validation_facts: ast_nodes/cfg/types/macros with symbol, offset, limit"
+            evidence_slice = self._fit_validator_slice(evidence_slice, max_tokens=12_000)
+            raw_issue["validator_context_requires_retrieval"] = bool(
+                evidence_slice.get("context_requires_retrieval")
+            )
             serialized = json.dumps(
                 evidence_slice,
                 ensure_ascii=False,
@@ -2762,14 +2782,26 @@ class ValidationRunner:
                 )
             return val_input
 
+        legacy_projection = self._fit_validator_slice(
+            {"code": {"function_context": issue_code},
+             "evidence_pack": compact_validation_evidence_pack(evidence_pack)},
+            max_tokens=12_000,
+        )
+        raw_issue["validator_context_requires_retrieval"] = bool(
+            legacy_projection.get("context_requires_retrieval")
+        )
         val_input = {
             "finding": json.dumps(
                 compact_validation_finding(raw_issue),
                 indent=2,
                 ensure_ascii=False,
             ),
-            "context_code": trim_code(issue_code, max_lines=180),
-            "evidence_pack": compact_validation_evidence_pack(evidence_pack),
+            "context_code": legacy_projection["code"]["function_context"],
+            "evidence_pack": legacy_projection["evidence_pack"],
+            "context_projection": {
+                key: value for key, value in legacy_projection.items()
+                if key not in {"code", "evidence_pack"}
+            },
         }
         self.attach_agent_contract(val_input, "validator_agent")
         return val_input
@@ -2902,77 +2934,9 @@ class ValidationRunner:
         *,
         max_tokens: int,
     ) -> Dict[str, Any]:
-        """Bound user evidence while preserving IDs and decision commitments."""
+        from .context_budget import fit_evidence
 
-        def estimate() -> int:
-            payload = json.dumps(
-                evidence_slice,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            return LLMClient.estimate_tokens([{"role": "user", "content": payload}])
-
-        if estimate() <= max_tokens:
-            return evidence_slice
-        evidence_slice["slice_truncated"] = True
-        evidence_slice["slice_truncated_sections"] = []
-        code = _as_dict(evidence_slice.get("code"))
-        function_context = str(code.get("function_context") or "")
-        lines = function_context.splitlines()
-        while len(lines) > 32 and estimate() > max_tokens:
-            lines = lines[: max(32, len(lines) // 2)]
-            code["function_context"] = "\n".join(lines)
-        if len(lines) < len(function_context.splitlines()):
-            evidence_slice["slice_truncated_sections"].append("function_context")
-        for key, floor in (("semantic_claims", 4),):
-            values = evidence_slice.get(key)
-            if isinstance(values, list) and len(values) > floor and estimate() > max_tokens:
-                evidence_slice[key] = values[:floor]
-                evidence_slice["slice_truncated_sections"].append(key)
-        decision = _as_dict(evidence_slice.get("decision_facts"))
-        facts = decision.get("facts")
-        if isinstance(facts, list) and len(facts) > 12 and estimate() > max_tokens:
-            decision["facts"] = facts[:12]
-            evidence_slice["slice_truncated_sections"].append("decision_facts.facts")
-        if estimate() > max_tokens:
-            for key in ("callers", "callees", "snapshot_summary"):
-                if code.get(key) and estimate() > max_tokens:
-                    code[key] = [] if key != "snapshot_summary" else {}
-                    evidence_slice["slice_truncated_sections"].append(f"code.{key}")
-        if estimate() > max_tokens:
-            code["location_snippet"] = None
-            evidence_slice["semantic_claims"] = []
-            requirements = evidence_slice.get("validation_requirements")
-            if isinstance(requirements, list):
-                evidence_slice["validation_requirements"] = requirements[:4]
-            catalog = evidence_slice.get("evidence_ref_catalog")
-            if isinstance(catalog, dict):
-                for value in catalog.values():
-                    if isinstance(value, dict):
-                        value["summary"] = ""
-            evidence_slice["slice_truncated_sections"].extend(
-                ["code.location_snippet", "semantic_claims", "evidence_ref_catalog.summary"]
-            )
-        if estimate() > max_tokens:
-            code["function_context"] = "\n".join(
-                str(code.get("function_context") or "").splitlines()[:16]
-            )
-            facts = decision.get("facts")
-            if isinstance(facts, list):
-                decision["facts"] = facts[:4]
-            evidence = _as_dict(evidence_slice.get("evidence"))
-            for key in ("positive", "negative", "path_constraints"):
-                values = evidence.get(key)
-                if isinstance(values, list):
-                    evidence[key] = [str(value)[:400] for value in values[:4]]
-            evidence_slice["slice_truncated_sections"].append("minimal_decision_projection")
-        evidence_slice["slice_estimated_tokens"] = estimate()
-        if int(evidence_slice["slice_estimated_tokens"]) > max_tokens:
-            raise ValueError(
-                "Validator evidence identifiers exceed the 12K-token v3 input allowance."
-            )
-        return evidence_slice
+        return fit_evidence(evidence_slice, max_tokens=max_tokens)
 
     @staticmethod
     def _log_validation_outcome(

@@ -295,7 +295,7 @@ def test_clang_ast_cfg_detects_parent_release_without_owned_member_cleanup() -> 
 
     assert explicit["defect_class"] == "memory_leak"
     assert "node->children" in explicit["description"]
-    assert "child/list" in implicit["description"]
+    assert "子节点/链表" in implicit["description"]
 
 
 def test_clang_ast_cfg_preserves_member_allocation_identity() -> None:
@@ -313,7 +313,8 @@ def test_clang_ast_cfg_preserves_member_allocation_identity() -> None:
     issues = _rules(code, semantics=semantics)
     leak = next(issue for issue in issues if issue["rule"] == "clang_cfg_acquire_without_release_on_exit")
 
-    assert "`node->children` is acquired" in leak["description"]
+    assert "`node->children`" in leak["description"]
+    assert "获取" in leak["description"]
 
 
 def test_clang_ast_cfg_detects_acquire_without_release_on_return() -> None:
@@ -1148,7 +1149,7 @@ def test_clang_ast_cfg_callback_under_lock_is_contract_risk_not_exploit_claim() 
 
     assert issue["confidence"] == 0.68
     assert issue["impact_level"] == "medium"
-    assert "if callers can register" in issue["root_cause"]
+    assert "调用方能够注册" in issue["root_cause"]
     assert "externally controllable" in " ".join(issue["negative_evidence"])
 
 
@@ -1470,7 +1471,7 @@ def test_analyzer_runs_clang_ast_cfg_checker_only_for_clang_like_backends() -> N
         backend_name = "unified"
         backend = UnifiedBackend()
 
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             return None
 
     analyzer = object.__new__(Analyzer)
@@ -1516,7 +1517,7 @@ def test_analyzer_lifts_internal_clang_sink_to_entry_call_path() -> None:
         backend_name = "unified"
         backend = UnifiedBackend()
 
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             if name == "parse_inner":
                 return {
                     "file": "src/demo.c",
@@ -1762,7 +1763,7 @@ def test_clang_ast_cfg_emits_global_pointer_length_publication_without_lock() ->
     )
 
     assert issue["defect_class"] == "unsynchronized_shared_state"
-    assert "pointer/length" in issue["description"]
+    assert "指针/长度" in issue["description"]
 
 
 def test_clang_ast_cfg_emits_permission_mode_mismatch() -> None:
@@ -1787,7 +1788,7 @@ def test_clang_ast_cfg_emits_permission_mode_mismatch() -> None:
     )
 
     assert issue["defect_class"] == "permission"
-    assert "Requested" in issue["description"]
+    assert "权限" in issue["description"]
 
 
 def test_clang_ast_cfg_emits_timer_callback_lock_order_candidate() -> None:
@@ -1813,7 +1814,7 @@ def test_clang_ast_cfg_emits_timer_callback_lock_order_candidate() -> None:
     )
 
     assert issue["defect_class"] == "deadlock"
-    assert "Timer/callback" in issue["description"]
+    assert "定时器/回调" in issue["description"]
 
 
 def test_clang_ast_cfg_emits_pointer_backtrack_underread_and_underwrite() -> None:

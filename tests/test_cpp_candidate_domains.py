@@ -173,6 +173,7 @@ def test_clang_facade_preserves_resource_lock_common_pass_order(monkeypatch) -> 
 
     assert called == [
         "_run_resource_state_machines",
+        "_run_typed_resource_lifetimes",
         "_run_lock_state_machine",
         "_run_common_sast_rules",
     ]

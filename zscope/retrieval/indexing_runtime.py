@@ -94,7 +94,8 @@ def resource_limits() -> Dict[str, Any]:
 
         state = MemoryStatus()
         state.length = ctypes.sizeof(state)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(state)):
+        kernel32 = getattr(ctypes, "windll").kernel32  # only on Windows
+        if kernel32.GlobalMemoryStatusEx(ctypes.byref(state)):
             available = int(state.available)
     else:
         try:

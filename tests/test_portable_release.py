@@ -36,10 +36,12 @@ def test_webui_assets_are_local_pinned_and_tampering_fails(tmp_path):
     assert assets.urls and "@import" not in page
     for url in assets.urls:
         assert not urlsplit(url).scheme and not urlsplit(url).netloc
-        assert Path(url).name in lock["files"]
+        assert Path(url).name in lock["files"] or Path(url).name in lock["first_party"]
     (tmp_path / LOCK).parent.mkdir(parents=True)
     shutil.copy2(root / LOCK, tmp_path / LOCK)
     shutil.copytree(root / VENDOR, tmp_path / VENDOR)
+    for name in lock["first_party"]:
+        shutil.copy2(root / VENDOR.parent / name, tmp_path / VENDOR.parent / name)
     (tmp_path / VENDOR / "alpine.js").write_text("tampered")
     with pytest.raises(ValueError, match="differs from its lock"):
         verify(tmp_path)

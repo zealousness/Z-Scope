@@ -62,7 +62,7 @@ def _candidate_report(
         if not func:
             continue
         entry_names.append(func)
-        if not index.get_function_impl(func):
+        if not index.get_function_impl(func, max_lines=None):
             missing.append(func)
 
     # Cheap deterministic facts are collected once per reachable function.
@@ -77,7 +77,7 @@ def _candidate_report(
         func = queued.pop(0)
         if func in reachable_impls:
             continue
-        impl = index.get_function_impl(func, warn_missing=False)
+        impl = index.get_function_impl(func, max_lines=None, warn_missing=False)
         if not impl:
             continue
         reachable_impls[func] = impl
@@ -122,6 +122,8 @@ def _candidate_report(
         "issues": issues,
         "metadata": {
             "mode": f"{backend}_candidate_coverage",
+            "rule_mode": "standalone_all_detectors_including_experimental",
+            "release_eligible": False,
             "candidate_backend": backend,
             "missing_entry_impls": missing,
             "local_issue_count": len(issues) - len(graph_issues),
@@ -152,7 +154,7 @@ def _legacy_regex_candidate_report(project_root: Path, entries_path: Path) -> Di
         if not func:
             continue
         entry_names.append(func)
-        impl = index.get_function_impl(func)
+        impl = index.get_function_impl(func, max_lines=None)
         if not impl:
             missing.append(func)
             continue
@@ -298,6 +300,8 @@ def evaluate_range_regression(
     if candidate_backend:
         result["candidate_coverage_mode"] = True
         result["candidate_backend"] = candidate_backend
+        result["rule_mode"] = "standalone_all_detectors_including_experimental"
+        result["release_eligible"] = False
         result["missing_entry_impls"] = report.get("metadata", {}).get("missing_entry_impls", [])
         result["local_issue_count"] = report.get("metadata", {}).get("local_issue_count", 0)
         result["regex_issue_count"] = report.get("metadata", {}).get("regex_issue_count", 0)

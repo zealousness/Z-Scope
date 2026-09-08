@@ -21,7 +21,7 @@ def _settings(ctx: click.Context) -> Dict[str, Any]:
     """Resolve one project/config closure for every subcommand."""
 
     cached = ctx.ensure_object(dict).get("wiki_settings")
-    if cached is not None:
+    if isinstance(cached, dict):
         return cached
     explicit_root: Optional[Path] = ctx.obj.get("root")
     config_path: Optional[Path] = ctx.obj.get("config_path")
@@ -41,7 +41,7 @@ def _settings(ctx: click.Context) -> Dict[str, Any]:
     if not root.is_dir():
         raise click.UsageError(f"project root is not a directory: {root}")
     wiki = getattr(getattr(config, "project", None), "wiki", None)
-    values = {
+    values: Dict[str, Any] = {
         "root": root,
         "project_id": str(getattr(getattr(config, "project", None), "project_id", "") or root.name),
         "state_dir": str(getattr(wiki, "state_dir", ".zscope_knowledge/wiki")),

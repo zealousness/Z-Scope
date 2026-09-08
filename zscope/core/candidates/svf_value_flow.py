@@ -164,7 +164,7 @@ class SvfValueFlowCandidateGenerator:
             "evidence_checker": "svf_value_flow_checker",
             "rule": rule,
             "cwe": self._CWE_BY_CLASS.get(defect_class, ""),
-            "description": f"SVF/Saber reported `{bug_type}` in `{func}`.",
+            "description": f"SVF/Saber 报告在 `{func}` 中存在 `{bug_type}`。",
             "root_cause": "SVF/Saber value-flow analysis produced a memory lifetime signal requiring source-level validation.",
             "suggested_fix": "Validate the reported flow, then fix the ownership, lifetime, or failure-path contract.",
             "confidence": confidence,

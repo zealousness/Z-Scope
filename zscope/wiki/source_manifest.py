@@ -10,7 +10,7 @@ import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterable, Mapping, Optional, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
 from .classification import classify_document, override_digest, validate_overrides
 from .discovery import DiscoveryResult, discover_markdown
@@ -29,7 +29,10 @@ def _sha(value: bytes) -> str:
 
 
 def _root(value: Union[Path, str, object]) -> Path:
-    return Path(getattr(value, "project_root", value)).expanduser().resolve()
+    root = getattr(value, "project_root", value)
+    if not isinstance(root, (Path, str)):
+        root = str(root)
+    return Path(root).expanduser().resolve()
 
 
 def _source_id(project_id: str, relative_path: str) -> str:
@@ -145,7 +148,7 @@ def build_source_manifest(
         )
     accepted.sort(key=lambda item: item.relative_path)
     excluded.sort(key=lambda item: item.relative_path)
-    root_facts = [
+    root_facts: List[Tuple[str, Union[int, str], str]] = [
         (item.relative_path, item.size_bytes, item.content_digest)
         for item in discovered.files
         if item.relative_path not in digest_excluded_paths

@@ -37,6 +37,7 @@ tests:
   - tests/test_clang_batch_arguments.py
   - tests/test_compiler_compat.py
   - tests/test_clang_source_snapshot.py
+  - tests/test_clang_identity_validation.py
   - tests/test_clang_cache_pressure.py
   - tests/test_indexing_pipeline.py
   - tests/test_indexing_performance_audit.py
@@ -106,6 +107,7 @@ tests:
 - 派生会话每 30 秒独立输出 `derived-heartbeat`：已完成/总文件数、活跃文件及阶段、候选补证进度、当前 RPC/文档及耗时、请求增量、缓存队列和 RSS。心跳覆盖收集后的源码校验、构建身份校验及缓存关闭；文件全部完成不代表已完成发布校验。SQLite 执行时间与 worker 排队时间分别累计，排队时间不能直接加作墙钟耗时。心跳不能依赖文件完成或 SQLite 调度线程，也不得自行发送 RPC；单 worker 和所有 worker 等待请求时同样有效。
 - `clang_derived_cache.sqlite3` 位于实际 KnowledgeDB 同目录，拥有独立 schema，不改变主库版本。坐标、USR 身份映射、references 和分索引的文件检查点按完整构建身份隔离。检查点保存事实和完成状态；旧已发布事实保持可读，恢复结果仍经 TEMP staging 原子发布。
 - 持久恢复必须证明输入一致：构建身份覆盖源码/依赖内容、编译数据库、clangd 身份、位置编码、基础事实和分析范围。首版仅对带 `arguments`、完整 `-MD` 依赖文件且依赖未过期的编译数据库启用跨进程恢复；`command` 字符串、`-MMD`、缺少/过期依赖或覆盖不全时保守禁用跨进程复用，仍保留本轮磁盘缓存。错误结果只存在会话 TEMP 表。发布前重新核对输入摘要，变化时停止发布。
+- 构建输入清单与惰性的头文件查找目录分离：只由分析选定文件、编译命令、依赖清单、基础事实及已知 include 路径构成，不把查找目录中的日志、数据库或其他扫描生成物自动当作输入。batch 回退在基础抽取前复用既有源码清单，分片同步预置，避免再次全目录遍历。真实依赖不按后缀或缓存目录名排除；保留符号链接目标校验。身份校验按文件、编译数据库、基础表和运行上下文记录摘要；失败日志报告变化总数及至多八个具体项目，不输出源文件或编译参数内容。身份算法升级仅使派生缓存失效，不重抽未变化的基础 TU。
 - LSP transport 的读写、排队和等待都受同一 monotonic deadline 约束；死进程 generation、document lease、UTF position encoding 和 source-lines 缓存必须保持线程安全。
 - KnowledgeDB 写入新事实后必须使相关查询缓存失效。
 - Unified 的 Clang 与 SVF 结果必须通过稳定的文件、函数和位置坐标缝合。
@@ -164,3 +166,9 @@ C/C++ Portable 包内的 `zscope-clang-indexer` 使用锁定的 LLVM 18 SDK 构�
 Portable 的 clangd 22.1.7 索引环境与 LLVM 18.1.0 / SVF 3.2 bitcode 环境分开，启动器为 gllvm 明确指定 LLVM 18 工具。Java 结构与信号后端优先加载包内预编译 JAR；portable 中外部结构提取失败不回退 builtin，显式自定义命令失败也不回退。Spoon 仍遵守 Maven 项目前提。Java Maven 缓存位于用户可写目录，工程依赖导入与离线分析共用该缓存。
 
 工具调用保留启动器的命令名（包括 `clang++`）；ELF 依赖、工具摘要和缓存身份检查通过 bundle manifest 定位其实际二进制，同时记录启动器摘要。不能把共享启动器解析后的文件名用作编译命令，也不能对 shell 启动器执行 `ldd` 来推断 SVF 的 LLVM 版本。
+
+## 程序事件与共享分析缓存
+
+批量 Clang 协议 `zscope.clang-facts.v2` 在原有 TU 解析中提取函数 CFG、语句/表达式位置、new/delete 家族及带 USR 的全局/字段访问，不为每个候选另启编译器。`function_program_facts` 随同其他事实表事务发布；CFG 构建失败或函数身份不唯一时显式返回不完整。旧工具按既有 auto/batch 策略降级或报错，旧协议产物不能冒充新版事件事实。
+
+KnowledgeDB 的 IR 语句身份包含列号和事件序号，升级保留既有语句 ID 及边引用。同一扫描的 Graph 函数事实和锁边通过有容量上限的共享缓存复用，同一键的并发请求只运行一个生产者。缓存身份包含源码/索引版本和语义上下文；入口可达性单独计算，锁顺序反转使用反向锁对索引，模糊别名仍需核验。

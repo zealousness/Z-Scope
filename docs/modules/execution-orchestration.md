@@ -85,3 +85,7 @@ python -m pytest -q tests/test_balanced_rollout.py tests/test_balanced_rollout_o
 - 稳定入口见本文 frontmatter 的 `sources`。
 - 完整运行流程见 `docs/architecture.md` 的“运行时主流程”和“控制平面”。
 - 用户可见命令和模式见 `README.md` 的端到端使用指南。
+
+## 关闭与共享资源
+
+ParallelAnalyzer 关闭后拒绝接收新批次，先停止并等待调度器，再清理拥有的项目知识服务和 LLM 客户端。外部传入的客户端由调用方关闭，多重引用不会造成重复关闭。共享额度注销与已在途请求排空由 LLMClient 自身协调。

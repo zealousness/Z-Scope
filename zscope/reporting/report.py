@@ -9,6 +9,8 @@ from dataclasses import dataclass, asdict, field, fields
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from ..common.defect_cwe_map import cwe_tokens
+
 
 @dataclass
 class Issue:
@@ -53,6 +55,8 @@ class Issue:
     finding_kind: Optional[str] = None
     validator_verdict: Optional[str] = None
     cwe: Optional[str] = None
+    cwes: Optional[List[str]] = None
+    categories: Optional[List[str]] = None
     source: Optional[str] = None
     sink: Optional[str] = None
     guard_analysis: Optional[str] = None
@@ -179,6 +183,15 @@ class Issue:
                 # If we have a mapping and the target field isn't already filled
                 filtered_data[mapping[k]] = v
 
+        # Multi-CWE and multi-category labels tolerate scalar inputs from
+        # older reports and LLM payloads.
+        for field_name in ("cwes", "categories"):
+            value = filtered_data.get(field_name)
+            if isinstance(value, str):
+                filtered_data[field_name] = [value] if value else []
+            elif isinstance(value, (list, tuple)):
+                filtered_data[field_name] = [str(item) for item in value if str(item)]
+
         # Ensure required fields have SOMETHING to avoid __init__ errors
         # These are the 9 fields mentioned in the error message + 'id'
         defaults = {
@@ -267,6 +280,17 @@ class ReportGenerator:
 
     def __init__(self, project_root: Path):
         self.project_root = Path(project_root)
+
+    @staticmethod
+    def _issue_cwe_labels(issue: Issue) -> List[str]:
+        """Ordered CWE labels: the primary CWE first, then the full set."""
+
+        ordered: List[str] = []
+        for value in (issue.cwe, issue.cwes):
+            for token in cwe_tokens(value):
+                if token not in ordered:
+                    ordered.append(token)
+        return ordered
 
     @staticmethod
     def _normalize_md_text(value: Optional[str]) -> str:
@@ -370,6 +394,9 @@ class ReportGenerator:
                 md_content += f"- **置信度**: {issue.confidence:.0%}\n"
                 if issue.final_score is not None:
                     md_content += f"- **综合评分**: {issue.final_score:.0%}\n"
+                cwe_labels = self._issue_cwe_labels(issue)
+                if cwe_labels:
+                    md_content += f"- **CWE**: {', '.join(cwe_labels)}\n"
                 if issue.finding_kind:
                     md_content += f"- **Finding 类型**: `{issue.finding_kind}`\n"
                 if issue.code_snippet:
@@ -393,8 +420,7 @@ class ReportGenerator:
 
                 if issue.llm_explanation:
                     md_content += (
-                        "\n**🤖 决策解释**:\n"
-                        f"{self._normalize_md_text(issue.llm_explanation)}\n"
+                        "\n**🤖 决策解释**:\n" f"{self._normalize_md_text(issue.llm_explanation)}\n"
                     )
 
                 if issue.promotion_review_reason:
@@ -426,6 +452,9 @@ class ReportGenerator:
                 md_content += f"- **所在函数**: `{issue.function}`\n"
                 md_content += f"- **代码位置**: `{issue.location}`\n"
                 md_content += f"- **置信度**: {issue.confidence:.0%}\n"
+                cwe_labels = self._issue_cwe_labels(issue)
+                if cwe_labels:
+                    md_content += f"- **CWE**: {', '.join(cwe_labels)}\n"
                 if issue.finding_kind:
                     md_content += f"- **Finding 类型**: `{issue.finding_kind}`\n"
                 if issue.code_snippet:
@@ -442,8 +471,7 @@ class ReportGenerator:
                     )
                 if issue.llm_explanation:
                     md_content += (
-                        "\n**🤖 决策解释**:\n"
-                        f"{self._normalize_md_text(issue.llm_explanation)}\n"
+                        "\n**🤖 决策解释**:\n" f"{self._normalize_md_text(issue.llm_explanation)}\n"
                     )
                 review_presentation = (
                     raw_review.get("needs_review_presentation")

@@ -164,12 +164,12 @@ def parse_markdown(
     if max_excerpt_chars <= 0:
         raise ValueError("max_excerpt_chars must be positive")
     if isinstance(document, str):
-        raw = document.encode("utf-8")
+        raw_bytes = document.encode("utf-8")
         document = DiscoveredFile(
             relative_path=relative_path,
             absolute_path=Path(relative_path),
-            size_bytes=len(raw),
-            content_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
+            size_bytes=len(raw_bytes),
+            content_digest="sha256:" + hashlib.sha256(raw_bytes).hexdigest(),
             text=document,
         )
     sid = _source_id(document.relative_path, source_id)
@@ -194,13 +194,14 @@ def parse_markdown(
     all_text = "\n".join(lines)
     number = 0
     for start, end, title, level in boundaries:
+        heading_path: Tuple[str, ...]
         if title == "Document" and level == 1 and start == 1 and headings:
-            path = ("Document",)
+            heading_path = ("Document",)
         else:
             while stack and stack[-1][0] >= level:
                 stack.pop()
             stack.append((level, title))
-            path = tuple(item[1] for item in stack)[-8:]
+            heading_path = tuple(item[1] for item in stack)[-8:]
         chunks = _bounded_chunks(lines, start, end, max_excerpt_chars)
         for fragment_index, (chunk_start, chunk_end, raw, char_start, char_end) in enumerate(chunks):
             number += 1
@@ -209,7 +210,7 @@ def parse_markdown(
                 DocumentSection(
                     section_id=f"docsec_{hashlib.sha256(f'{sid}:{number}:{chunk_start}:{chunk_end}:{_digest(raw)}'.encode()).hexdigest()[:32]}",
                     source_id=sid,
-                    heading_path=path,
+                    heading_path=heading_path,
                     heading_level=level,
                     start_line=chunk_start,
                     end_line=max(chunk_start, chunk_end),

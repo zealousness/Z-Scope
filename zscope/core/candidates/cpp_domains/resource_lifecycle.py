@@ -19,6 +19,7 @@ from .models import (
 )
 
 from .models import DetectorStage
+from .source_events import ordered_lines
 
 # FILE*-style stdlib openers must not enter the int-fd leak state machine;
 # they were excluded before user-defined io_acquire wrappers were introduced.
@@ -60,6 +61,11 @@ STAGES = (
         "resource_lifecycle",
         "resource_state_machines",
         "_run_resource_state_machines",
+        ("issues", "func_name", "file_path", "lines", "allowed_skills"),
+    ),
+    DetectorStage(
+        "clang_ast_cfg", "function", 11, "resource_lifecycle", "typed_resources",
+        "_run_typed_resource_lifetimes",
         ("issues", "func_name", "file_path", "lines", "allowed_skills"),
     ),
     DetectorStage(
@@ -138,11 +144,10 @@ class RegexResourceLifecycleRules:
                 rule="direct_realloc_assignment",
                 line=line,
                 description=(
-                    f"`{match.group('lhs')}` is overwritten by realloc; on failure the "
-                    "original allocation is lost."
+                    f"`{match.group('lhs')}` 被 realloc 覆盖；失败时原有的分配会丢失。"
                 ),
-                root_cause="realloc result is assigned directly to the only owner pointer.",
-                suggested_fix="Assign realloc to a temporary pointer and update the owner only after success.",
+                root_cause="realloc 的结果被直接赋值给唯一的持有指针。",
+                suggested_fix="将 realloc 赋值给临时指针，仅在成功后再更新持有者。",
                 source=match.group("lhs"),
                 sink=line.text.strip(),
                 confidence=0.86,
@@ -192,9 +197,9 @@ class RegexResourceLifecycleRules:
             defect_class="memory_leak",
             rule="same_function_allocation_not_released",
             line=first_line,
-            description=f"{leaked_names} allocated but no local release, return, or ownership transfer is visible.",
-            root_cause="The function exits with an owned allocation still live.",
-            suggested_fix="Release the allocation on every exit path or transfer ownership explicitly.",
+            description=f"{leaked_names} 已分配，但未见局部的释放、返回或所有权转移。",
+            root_cause="函数返回时仍有已持有的分配处于存活状态。",
+            suggested_fix="在每个退出路径上释放该分配，或显式转移所有权。",
             source=", ".join(var for var, _ in leaked),
             sink=f"return at line {sink_line.number}",
             confidence=0.72,
@@ -219,9 +224,9 @@ class RegexResourceLifecycleRules:
                         defect_class="stale_fd",
                         rule="fd_closed_without_invalidation",
                         line=line,
-                        description="File descriptor is closed without an adjacent owner invalidation.",
-                        root_cause="Other paths may reuse the stale descriptor value after close.",
-                        suggested_fix="Set the owning descriptor to -1 under the same synchronization after close.",
+                        description="文件描述符被关闭，但缺少相邻的持有者失效处理。",
+                        root_cause="其他路径可能在 close 之后重用陈旧的描述符值。",
+                        suggested_fix="在 close 之后于同一同步下将持有描述符置为 -1。",
                         source=close.group("fd"),
                         sink=line.text.strip(),
                         confidence=0.62,
@@ -235,9 +240,9 @@ class RegexResourceLifecycleRules:
                         defect_class="use_after_free",
                         rule="mapping_unmapped_without_pointer_clear",
                         line=line,
-                        description="Memory mapping is unmapped without clearing the shared pointer/length nearby.",
-                        root_cause="A later reader can observe a stale mapping pointer after munmap.",
-                        suggested_fix="Clear the shared pointer and length while holding the protecting lock.",
+                        description="内存映射被解除，但未在附近清除共享的指针/长度。",
+                        root_cause="稍后的读取者可能在 munmap 之后观察到陈旧的映射指针。",
+                        suggested_fix="在持有保护锁的同时清除共享指针和长度。",
                         source=line.text.strip(),
                         sink=line.text.strip(),
                         confidence=0.7,
@@ -293,11 +298,11 @@ class GraphResourceLifecycleRules:
                         view=view,
                         line=line,
                         description=(
-                            f"`{call_name}` expects `{param_type}` but receives `{first_arg}`, "
-                            "which appears to be a different struct field address."
+                            f"`{call_name}` 期望 `{param_type}`，却接收到 `{first_arg}`，"
+                            "后者看起来是另一个不同的结构体字段地址。"
                         ),
-                        root_cause="A cleanup/destroy routine is invoked with an object whose static contract does not match the callee parameter.",
-                        suggested_fix="Pass the object matching the cleanup contract or split cleanup functions by concrete type.",
+                        root_cause="用一个静态契约与被调用参数不匹配的对象调用了清理/销毁例程。",
+                        suggested_fix="传入与清理契约匹配的对象，或按具体类型拆分清理函数。",
                         source=first_arg,
                         sink=f"{call_name}({param_type})",
                         confidence=0.82,
@@ -342,11 +347,11 @@ class GraphResourceLifecycleRules:
                     view=view,
                     line=alloc_line,
                     description=(
-                        f"`{var}` is heap allocated and its element address is passed to `pthread_create`, "
-                        "but the owner allocation is never released in the function."
+                        f"`{var}` 被堆分配，且其元素地址被传给 `pthread_create`，"
+                        "但持有者的分配在该函数中从未被释放。"
                     ),
-                    root_cause="Thread argument storage remains owned by the initializer but no cleanup path frees it.",
-                    suggested_fix="Store the allocation in a dispatcher-owned field and free it during shutdown, or free after all workers join.",
+                    root_cause="线程参数存储仍由初始化者持有，但没有任何清理路径释放它。",
+                    suggested_fix="将分配存入分发者占有的字段并在关闭期间释放，或在所有工作线程加入后再释放。",
                     source=var,
                     sink=f"pthread_create at line {thread_args[var].number}",
                     confidence=0.78,
@@ -386,9 +391,9 @@ class GraphResourceLifecycleRules:
                     rule="registered_global_object_missing_release_hook",
                     view=view,
                     line=line,
-                    description="A global/container-owned session is handled only through an optional drop hook, with no fallback release path.",
-                    root_cause="The cleanup protocol depends on a hook that may remain NULL or unregistered.",
-                    suggested_fix="Register the release hook during initialization or add an unconditional fallback release path.",
+                    description="一个全局/容器占有的会话仅通过可选的 drop 钩子处理，缺少回退的释放路径。",
+                    root_cause="清理协议依赖的钩子可能保持为 NULL 或未注册。",
+                    suggested_fix="在初始化期间注册释放钩子，或增加一条无条件的回退释放路径。",
                     source="global container add/register path",
                     sink=line.text.strip(),
                     confidence=0.76,
@@ -413,9 +418,9 @@ class GraphResourceLifecycleRules:
                         rule="global_container_registration_without_cleanup_path",
                         view=view,
                         line=line,
-                        description="A message/action path registers an object into global ownership without a visible cleanup path.",
-                        root_cause="Global-container ownership is acquired but no unregister/drop release protocol is paired with it.",
-                        suggested_fix="Pair every global add/register action with a reachable remove/release path for the same object.",
+                        description="消息/动作路径将对象注册进全局所有权，却缺少可见的清理路径。",
+                        root_cause="全局容器所有权已被获取，但没有与之配套的取消注册/移除(drop)释放协议。",
+                        suggested_fix="为每个全局 add/register 动作配一条可到达的、针对同一对象的移除/释放路径。",
                         source="global registration action",
                         sink=line.text.strip(),
                         confidence=0.74,
@@ -437,9 +442,9 @@ class GraphResourceLifecycleRules:
                     rule="container_unlink_without_release",
                     view=view,
                     line=line,
-                    description="A container detach/unlink operation removes ownership reachability without releasing the detached object.",
-                    root_cause="The object is unlinked from the owner container but its allocation and nested resources remain live.",
-                    suggested_fix="Release the detached object and nested resources after unlinking, or transfer ownership explicitly.",
+                    description="容器的 detach/unlink 操作移除了所有权可达性，却未释放被分离的对象。",
+                    root_cause="对象已与其持有容器解除链接，但其分配及嵌套资源仍保持存活。",
+                    suggested_fix="在解除链接后释放被分离对象及其嵌套资源，或显式转移所有权。",
                     source=line.text.strip(),
                     sink="container unlink/detach",
                     confidence=0.82,
@@ -463,9 +468,9 @@ class GraphResourceLifecycleRules:
                     rule="nested_mutex_cleanup_omitted",
                     view=view,
                     line=line,
-                    description="A node with an initialized nested mutex is freed without destroying that mutex resource.",
-                    root_cause="The node cleanup releases the allocation but omits the embedded synchronization primitive.",
-                    suggested_fix="Destroy embedded mutex/condition resources before freeing the owning node.",
+                    description="一个初始化了嵌套互斥锁的节点被释放，却未销毁该互斥锁资源。",
+                    root_cause="节点清理释放了分配，却遗漏了内嵌的同步原语。",
+                    suggested_fix="在释放持有节点之前先销毁内嵌的 mutex/condition 资源。",
                     source="pthread_mutex_init in paired creation path",
                     sink=line.text.strip(),
                     confidence=0.8,
@@ -492,9 +497,9 @@ class GraphResourceLifecycleRules:
                     rule="child_list_cleanup_omitted",
                     view=view,
                     line=line,
-                    description="A parent node is freed while a child/list ownership field is not walked and released.",
-                    root_cause="Composite container cleanup releases only the primary node and skips nested owned children.",
-                    suggested_fix="Walk and release each child node before freeing the parent object.",
+                    description="父节点被释放，而其子节点/链表占有的字段未被遍历和释放。",
+                    root_cause="复合容器的清理只释放了主节点，却跳过了嵌套的已持有子节点。",
+                    suggested_fix="在释放父对象之前先遍历并释放每个子节点。",
                     source="nested child/list field",
                     sink=line.text.strip(),
                     confidence=0.78,
@@ -534,9 +539,9 @@ class GraphResourceLifecycleRules:
                 rule="role_specific_release_uses_hardcoded_role",
                 view=view,
                 line=release_line,
-                description="A role-specific release helper is called with a hardcoded role instead of the object's stored role.",
-                root_cause="Cleanup only releases resources for one role and can leak role-specific members owned by other roles.",
-                suggested_fix="Pass the stored role/member role to the release helper or dispatch cleanup by the object's actual role.",
+                description="针对具体角色的释放辅助函数使用硬编码角色调用，而非对象所存储的角色。",
+                root_cause="清理仅释放某一角色的资源，可能泄漏其他角色所占有的、角色特定的成员。",
+                suggested_fix="将存储的角色/成员角色传给释放辅助函数，或按对象实际角色分派清理。",
                 source=role_assign.text.strip(),
                 sink=release_line.text.strip(),
                 confidence=0.84,
@@ -569,9 +574,9 @@ class GraphResourceLifecycleRules:
                 rule="peer_write_without_sigpipe_handling",
                 view=view,
                 line=line,
-                description="Peer write is issued without visible SIGPIPE suppression or handling.",
-                root_cause="Writing to a closed peer can raise SIGPIPE before normal error handling returns.",
-                suggested_fix="Use send(..., MSG_NOSIGNAL), ignore/handle SIGPIPE, or use platform-specific no-signal flags.",
+                description="对端写入已发出，却缺少可见的 SIGPIPE 抑制或处理。",
+                root_cause="向已关闭的对端写入可能在正常错误处理返回之前触发 SIGPIPE。",
+                suggested_fix="使用 send(..., MSG_NOSIGNAL)、忽略/处理 SIGPIPE，或使用平台特定的无信号标志。",
                 source=line.text.strip(),
                 sink="closed peer write",
                 confidence=0.84,
@@ -613,9 +618,9 @@ class GraphResourceLifecycleRules:
                 rule="callback_allocator_pair_not_enforced",
                 view=view,
                 line=alloc_assign,
-                description="Allocation and free callbacks are selected independently without enforcing allocator pairing.",
-                root_cause="A node allocated by one callback family can be released through an incompatible callback/no-op/free path.",
-                suggested_fix="Store allocator identity with the allocation or register allocator/free callbacks as an atomic validated pair.",
+                description="分配与释放回调被独立选择，而未强制保证分配器的配对。",
+                root_cause="由某一回调族分配的节点可能经由不兼容的回调/no-op/free 路径被释放。",
+                suggested_fix="将分配器身份与分配一起存储，或将 allocator/free 回调注册为经校验的原子配对。",
                 source=f"{alloc_assign.text.strip()} / {free_assign.text.strip()}",
                 sink=free_call.text.strip(),
                 confidence=0.84,
@@ -700,14 +705,14 @@ class GraphResourceLifecycleRules:
                         view=view,
                         line=free_line,
                         description=(
-                            f"`{view.name}` releases `{free_arg}` but omits dynamically owned "
-                            f"member `{field}` allocated by `{creator.name}`."
+                            f"`{view.name}` 释放了 `{free_arg}`，却遗漏了由 `{creator.name}` 分配的、"
+                            f"被动态持有的成员 `{field}`。"
                         ),
                         root_cause=(
-                            "The free wrapper releases the enclosing object without releasing an "
-                            "owned dynamic payload initialized by the paired constructor."
+                            "free 包装函数在未释放由配对构造函数初始化的已持有动态负载的情况下，"
+                            "就释放了外围对象。"
                         ),
-                        suggested_fix=f"Release `{free_arg}->{field}` before releasing `{free_arg}`, or call the member's cleanup helper.",
+                        suggested_fix=f"在释放 `{free_arg}` 之前先释放 `{free_arg}->{field}`，或调用该成员的清理辅助函数。",
                         source=f"{creator.name}:{alloc_line.number}:{alloc_line.text.strip()}",
                         sink=free_line.text.strip(),
                         confidence=0.82,
@@ -806,15 +811,15 @@ class GraphResourceLifecycleRules:
                 view=view,
                 line=free_line,
                 description=(
-                    f"`{view.name}` unregisters a file node wrapper allocated by `{alloc_match.group('api')}` "
-                    f"and frees `{var_name}`, but omits the owned `{missing_member}` payload/path member, "
-                    "causing a payload leak."
+                    f"`{view.name}` 注销了由 `{alloc_match.group('api')}` 分配的文件节点包装，"
+                    f"并释放了 `{var_name}`，却遗漏了所占有的 `{missing_member}` payload/path 成员，"
+                    "导致负载泄漏。"
                 ),
                 root_cause=(
-                    "The unregister cleanup frees the wrapper node while a dynamically allocated "
-                    "file-node payload/path member remains owned by that wrapper and leaks."
+                    "注销清理释放了包装节点，而动态分配的文件节点 payload/path 成员仍由"
+                    "该包装节点所有并发生泄漏。"
                 ),
-                suggested_fix=f"Release `{var_name}->{missing_member}` before freeing `{var_name}` or delegate to the full node destructor.",
+                suggested_fix=f"在释放 `{var_name}` 之前先释放 `{var_name}->{missing_member}`，或委托给完整的节点析构函数。",
                 source=alloc_line.text.strip() if alloc_line else alloc_match.group(0),
                 sink=free_line.text.strip(),
                 confidence=0.83,
@@ -878,11 +883,11 @@ class GraphResourceLifecycleRules:
                             view=view,
                             line=free_line,
                             description=(
-                                f"`{view.name}` frees a protocol object while paired creator "
-                                f"`{paired_init.name}` initializes an embedded mutex."
+                                f"`{view.name}` 释放了一个协议对象，而配对的创建者 "
+                                f"`{paired_init.name}` 初始化了一个内嵌互斥锁。"
                             ),
-                            root_cause="The destroy/unregister path releases the allocation but omits nested synchronization cleanup established by the paired create/register path.",
-                            suggested_fix="Destroy embedded mutex/condition resources before freeing the registered object.",
+                            root_cause="destroy/注销路径释放了分配，却遗漏了由配对的创建/注册路径建立的嵌套同步清理。",
+                            suggested_fix="在释放已注册对象之前先销毁内嵌的 mutex/condition 资源。",
                             source=f"{paired_init.name}:pthread_mutex_init",
                             sink=free_line.text.strip(),
                             confidence=0.82,
@@ -917,11 +922,11 @@ class GraphResourceLifecycleRules:
                         view=view,
                         line=free_line,
                         description=(
-                            f"`{view.name}` frees a parent object while paired mutator "
-                            f"`{child_owner.name}` attaches child/list nodes."
+                            f"`{view.name}` 释放了一个父对象，而配对的变更者 "
+                            f"`{child_owner.name}` 附加了子节点/链表节点。"
                         ),
-                        root_cause="The delete/remove path drops the parent allocation without walking nested owned children.",
-                        suggested_fix="Walk and release each child/list node before freeing the parent object.",
+                        root_cause="delete/移除路径丢弃了父节点的分配，却未遍历嵌套的已持有子节点。",
+                        suggested_fix="在释放父对象之前先遍历并释放每个子节点/链表节点。",
                         source=f"{child_owner.name}:child attachment",
                         sink=free_line.text.strip(),
                         confidence=0.82,
@@ -1058,11 +1063,11 @@ class GraphResourceLifecycleRules:
                     view=view,
                     line=line,
                     description=(
-                        f"`{view.name}` registers a session/object into global ownership, while paired "
-                        f"cleanup `{paired_cleanup.name}` returns without removing or releasing that object."
+                        f"`{view.name}` 将会话/对象注册进全局所有权，而配对的清理 "
+                        f"`{paired_cleanup.name}` 在返回时未移除或释放该对象。"
                     ),
-                    root_cause="The protocol OPEN/add path transfers ownership to a global container, but the protocol cleanup endpoint does not unregister or release the registered object.",
-                    suggested_fix="Pair the OPEN/add path with a cleanup path that removes the exact key/object from the global container and releases its allocation.",
+                    root_cause="协议的 OPEN/add 路径将所有权转移进全局容器，但协议清理端点未注销或释放已注册的对象。",
+                    suggested_fix="为 OPEN/add 路径配一条清理路径，将准确的 key/对象从全局容器中移除并释放其分配。",
                     source=f"{view.name}:{line.number}:global registration",
                     sink=f"{paired_cleanup.name}:{cleanup_line.number}:missing remove/release",
                     confidence=0.82,
@@ -1135,7 +1140,9 @@ class ClangResourceLifecycleRules:
         lines: Sequence[ClangCfgLine],
         allowed_skills: Optional[Set[str]],
     ) -> None:
+        lines = ordered_lines(lines, ClangCfgLine, self.program_facts)
         live: Dict[str, ResourceState] = {}
+        null_values: Set[str] = set()
         freed: Dict[str, Tuple[ClangCfgLine, str]] = {}
         terminal_branch_freed: Dict[Tuple[int, str], Tuple[ClangCfgLine, str]] = {}
         emitted_null_deref: Set[str] = set()
@@ -1148,10 +1155,12 @@ class ClangResourceLifecycleRules:
             reset_var = self._match_null_reset(line.text)
             if reset_var:
                 freed.pop(reset_var, None)
+                null_values.add(reset_var)
 
             reassigned = self._match_assignment_call(line.text, self._alloc_call_re)
             if reassigned:
                 var, api, args = reassigned
+                null_values.discard(var)
                 if api in self._reallocator_names:
                     first_arg = self._first_arg(args)
                     if first_arg == var and (var, line.number) not in emitted_realloc:
@@ -1165,16 +1174,14 @@ class ClangResourceLifecycleRules:
                             rule="clang_cfg_realloc_lost_original",
                             line=line,
                             description=(
-                                f"`{var}` is overwritten by `{api}` before the original "
-                                "pointer is known to be preserved."
+                                f"`{var}` 在原始指针被确认保留之前就被 `{api}` 覆盖。"
                             ),
                             root_cause=(
-                                "On realloc failure the original allocation remains live, "
-                                "but the code loses the only local owner."
+                                "在 realloc 失败时原有分配仍保持存活，"
+                                "但代码丢失了唯一的局部持有者。"
                             ),
                             suggested_fix=(
-                                "Assign realloc to a temporary pointer and update the owner "
-                                "only after the call succeeds."
+                                "将 realloc 赋值给临时指针，仅在调用成功后再更新持有者。"
                             ),
                             source=f"{api}({args})",
                             sink=f"{var} = {api}(...)",
@@ -1248,7 +1255,7 @@ class ClangResourceLifecycleRules:
                     or not state.status_var
                     or state.status_guarded
                     or state.var in emitted_status_misuse
-                    or line.number <= state.line.number
+                    or line.index <= state.line.index
                     or self._is_status_guard_line(line.text, state.status_var)
                 ):
                     continue
@@ -1263,16 +1270,16 @@ class ClangResourceLifecycleRules:
                         rule="clang_cfg_out_param_used_before_success_check",
                         line=line,
                         description=(
-                            f"`{state.var}` is produced by output-parameter API `{state.api}` "
-                            f"but is used before `{state.status_var}` is checked for success."
+                            f"`{state.var}` 由输出参数 API `{state.api}` 产生，"
+                            f"却在检查 `{state.status_var}` 是否成功之前就被使用了。"
                         ),
                         root_cause=(
-                            "The synthesized CFG path observes an output resource use before "
-                            "the status return from the producing API constrains the success path."
+                            "合成的 CFG 路径在产生该资源的 API 的状态返回约束成功路径之前，"
+                            "就观察到了对输出资源的使用。"
                         ),
                         suggested_fix=(
-                            "Check the status return before using or releasing the output resource, "
-                            "and keep failure paths from consuming an undefined output value."
+                            "在使用或释放输出资源之前先检查状态返回，"
+                            "并避免失败路径读取未定义的输出值。"
                         ),
                         source=f"{state.api}(..., &{state.var}) at line {state.line.number}",
                         sink=line.text,
@@ -1306,6 +1313,8 @@ class ClangResourceLifecycleRules:
             release = self._match_release(line.text)
             if release:
                 api, arg = release
+                if arg.strip() in {"NULL", "nullptr", "0"} | null_values:
+                    continue
                 var = self._resource_expr(arg) or self._resource_var(arg)
                 terminal_branch_release = bool(var and terminal_branch_line)
                 terminal_key = (line.block_id, var) if terminal_branch_release and var else None
@@ -1366,7 +1375,7 @@ class ClangResourceLifecycleRules:
             for var, (free_line, free_api) in list(freed.items()):
                 if var in emitted_uaf:
                     continue
-                if line.number <= free_line.number:
+                if line.index <= free_line.index:
                     continue
                 if (
                     self._is_var_redefined(line.text, var)
@@ -1391,7 +1400,7 @@ class ClangResourceLifecycleRules:
             for var, state in list(live.items()):
                 if var in emitted_null_deref:
                     continue
-                if line.number <= state.line.number:
+                if line.index <= state.line.index:
                     continue
                 if self._is_transfer(line.text, var):
                     live[var] = ResourceState(
@@ -1417,14 +1426,14 @@ class ClangResourceLifecycleRules:
                         defect_class="null_pointer_dereference",
                         rule="clang_cfg_alloc_result_deref_without_null_guard",
                         line=line,
-                        description=f"`{var}` is dereferenced before a visible null check.",
+                        description=f"`{var}` 在可见的空指针检查之前就被解引用了。",
                         root_cause=(
-                            "The allocation/acquire result is consumed on the local CFG path "
-                            "without a guard proving it is non-null."
+                            "分配/获取的结果在尚无守护证明其为非空的情况下，"
+                            "就在局部 CFG 路径上被使用。"
                         ),
                         suggested_fix=(
-                            "Check the allocation result before dereference and route failure "
-                            "through cleanup/error handling."
+                            "在解引用之前先检查分配结果，并将失败路径"
+                            "导向清理/错误处理。"
                         ),
                         source=f"{state.api}(...) at line {state.line.number}",
                         sink=line.text,
@@ -1517,14 +1526,14 @@ class ClangResourceLifecycleRules:
             defect_class="double_free",
             rule="clang_cfg_same_object_released_twice",
             line=line,
-            description=f"`{var}` is released twice on the same local CFG path.",
+            description=f"`{var}` 在同一条局部 CFG 路径上被释放了两次。",
             root_cause=(
-                "The resource state reaches a second release without an "
-                "intervening reallocation, ownership transfer, or null reset."
+                "资源状态在没有中间重分配、所有权转移或 NULL 重置的情况下"
+                "达到了第二次释放。"
             ),
             suggested_fix=(
-                "Release the resource once, clear the owner after release, or "
-                "merge cleanup paths through a single exit block."
+                "仅释放资源一次，释放后清除持有者，或"
+                "通过单一出口块合并清理路径。"
             ),
             source=f"{previous_api}({var}) at line {previous_line.number}",
             sink=f"{api}({arg})",
@@ -1592,13 +1601,13 @@ class ClangResourceLifecycleRules:
                 rule="clang_cfg_container_unlink_without_release",
                 line=line,
                 description=(
-                    f"Container member `{obj}` is unlinked without a visible release or ownership transfer."
+                    f"容器成员 `{obj}` 被解除链接，却缺少可见的释放或所有权转移。"
                 ),
                 root_cause=(
-                    "The object becomes unreachable from its container and no subsequent local operation "
-                    "establishes a new owner or releases it."
+                    "该对象已无法从其容器到达，且后续没有任何局部操作"
+                    "为其建立新的持有者或将其释放。"
                 ),
-                suggested_fix="Release the detached object or transfer it to an explicit owner before returning.",
+                suggested_fix="在返回之前释放被分离的对象，或将其转移给显式的持有者。",
                 source=f"{obj} ownership before line {line.number}",
                 sink=line.text,
                 confidence=0.86,
@@ -1675,11 +1684,11 @@ class ClangResourceLifecycleRules:
                 rule="clang_cfg_incomplete_owned_member_cleanup",
                 line=cleanup_line,
                 description=(
-                    f"Owner `{owner}` initializes multiple resource fields but its visible cleanup omits "
-                    f"`{', '.join(missing)}`."
+                    f"持有者 `{owner}` 初始化了多个资源字段，但其可见清理遗漏了 "
+                    f"`{', '.join(missing)}`。"
                 ),
-                root_cause="A composite owner resets only part of the resources it explicitly acquires.",
-                suggested_fix="Release or transfer every initialized owned field on the destroy/reset path.",
+                root_cause="复合持有者只重置了其显式获取的资源中的一部分。",
+                suggested_fix="在 destroy/reset 路径上释放或转移每个已初始化的持有字段。",
                 source=f"{owner} owned fields at line {first_init.number}",
                 sink=cleanup_line.text,
                 confidence=0.88,
@@ -1762,11 +1771,11 @@ class ClangResourceLifecycleRules:
                 rule="clang_cfg_heap_thread_argument_owner_not_released",
                 line=alloc_line,
                 description=(
-                    f"`{var}` is heap allocated and its element address is passed to `pthread_create`, "
-                    "but the owner allocation is never released in this ownership scope."
+                    f"`{var}` 被堆分配，且其元素地址被传给 `pthread_create`，"
+                    "但持有者的分配在此所有权作用域中从未被释放。"
                 ),
-                root_cause="Thread argument storage remains owned by the initializer while worker threads only receive element addresses.",
-                suggested_fix="Store the owner array in dispatcher state and free it during shutdown, or allocate per-thread arguments with a clear worker-side release contract.",
+                root_cause="线程参数存储仍由初始化者持有，而工作线程只接收到元素地址。",
+                suggested_fix="将持有者数组存入分发者状态并在关闭期间释放，或以明确的工作线程侧释放契约为每线程分配参数。",
                 source=f"{var} allocation at line {alloc_line.number}",
                 sink=sink_line.text,
                 confidence=0.82,
@@ -1830,9 +1839,9 @@ class ClangResourceLifecycleRules:
             defect_class="memory_leak",
             rule="clang_cfg_role_specific_release_argument_mismatch",
             line=line,
-            description="Role-specific cleanup ignores the stored role and invokes a mismatched release path.",
-            root_cause="The cleanup helper releases only the resource class selected by its literal role argument, leaving resources for the actual stored role behind.",
-            suggested_fix="Pass the stored role to the release helper or release every role-owned member explicitly.",
+            description="角色特定清理忽略了存储的角色，并调用了不匹配的释放路径。",
+            root_cause="清理辅助函数仅释放由其字面角色参数选定的资源类，却把实际存储角色对应的资源遗留了下来。",
+            suggested_fix="将存储的角色传给释放辅助函数，或显式释放每个角色占有的成员。",
             source=role_line.text,
             sink=line.text,
             confidence=0.84,
@@ -1879,7 +1888,7 @@ class ClangResourceLifecycleRules:
             ):
                 return
             resource = f"{parent}->{member}"
-            description = f"Parent object `{parent}` is released while owned member `{resource}` remains live."
+            description = f"父对象 `{parent}` 被释放，而所占有的成员 `{resource}` 仍保持存活。"
             source = f"{resource} = {rhs} at line {member_line.number}"
             positive = [
                 f"line {member_line.number}: `{resource}` receives an owned child/list resource",
@@ -1890,7 +1899,7 @@ class ClangResourceLifecycleRules:
             if missing_common is not None:
                 member_line, member = missing_common
                 resource = f"{parent}->{member}"
-                description = f"Parent object `{parent}` is released while common owned member `{resource}` is not cleaned up."
+                description = f"父对象 `{parent}` 被释放，而共同的持有成员 `{resource}` 未被清理。"
                 source = member_line.text
                 positive = [
                     f"line {member_line.number}: `{parent}` is created by an allocator/helper that initializes owned members",
@@ -1902,7 +1911,7 @@ class ClangResourceLifecycleRules:
                 ):
                     return
                 resource = f"{parent}->child_list"
-                description = f"Parent object `{parent}` is released without visible cleanup of owned child/list members."
+                description = f"父对象 `{parent}` 被释放，却缺少对所占有的子节点/链表成员的可见清理。"
                 source = self._parent_declaration_text(lines, line, parent) or parent
                 positive = [
                     f"line {line.number}: parent `{parent}` is released in a delete/remove/destroy-style function",
@@ -1919,8 +1928,8 @@ class ClangResourceLifecycleRules:
             rule="clang_cfg_parent_release_without_owned_member_cleanup",
             line=line,
             description=description,
-            root_cause="Freeing a container object does not release owned child/list members unless the cleanup walks and releases those members first.",
-            suggested_fix="Release or transfer every owned child/list member before freeing the parent object.",
+            root_cause="释放容器对象并不会释放所占有的子节点/链表成员，除非清理先遍历并释放这些成员。",
+            suggested_fix="在释放父对象之前先释放或转移每个持有子节点/链表成员。",
             source=source,
             sink=line.text,
             confidence=0.78,
@@ -1973,9 +1982,9 @@ class ClangResourceLifecycleRules:
                     defect_class="memory_leak",
                     rule="clang_cfg_log_error_path_allocation_not_released",
                     line=line,
-                    description=f"`{var}` is allocated for logging and an error branch returns without releasing it.",
-                    root_cause="The error logging path consumes the allocated message but does not transfer or release ownership before returning.",
-                    suggested_fix="Release the allocated log buffer before the error return or use a stack/static logging buffer.",
+                    description=f"`{var}` 为日志记录而被分配，而某个错误分支在未释放它的情况下就返回了。",
+                    root_cause="错误日志路径消费了已分配的消息，却在返回前既未转移也未释放所有权。",
+                    suggested_fix="在错误返回之前释放已分配的日志缓冲区，或改用栈上/静态日志缓冲区。",
                     source=line.text,
                     sink=item.text,
                     confidence=0.84,
@@ -2040,9 +2049,9 @@ class ClangResourceLifecycleRules:
             defect_class="missing_refcount",
             rule="clang_cfg_shared_resource_freed_without_refcount_protocol",
             line=line,
-            description=f"Shared resource `{var}` is freed without checking or updating its reference-count protocol.",
-            root_cause="The close path bypasses outstanding-reference accounting before releasing a shared/listed object.",
-            suggested_fix="Decrement/check the reference count and unlink the resource before freeing it.",
+            description=f"共享资源 `{var}` 在未检查或更新其引用计数协议的情况下就被释放了。",
+            root_cause="关闭路径在释放共享/入表对象之前绕过了对未决引用的核算。",
+            suggested_fix="在释放资源之前先递减/检查引用计数并将其取消链接。",
             source=f"ref_count evidence at line {ref_line.number}",
             sink=line.text,
             confidence=0.82,
@@ -2088,9 +2097,9 @@ class ClangResourceLifecycleRules:
             defect_class="fd_leak",
             rule="clang_cfg_fd_open_return_without_close",
             line=line,
-            description=f"File descriptor `{fd}` opened by `{api}` can return from the function without a matching close.",
-            root_cause="The error/early-return path exits while the descriptor owner remains live.",
-            suggested_fix="Close the descriptor on every return path or route exits through shared cleanup.",
+            description=f"由 `{api}` 打开的文件描述符 `{fd}` 可能在缺少对应 close 的情况下从函数返回。",
+            root_cause="错误/提前返回路径在描述符持有者仍存活的情况下退出了。",
+            suggested_fix="在每个返回路径上关闭描述符，或让退出都经过共享清理。",
             source=open_line.text,
             sink=line.text,
             confidence=0.78,
@@ -2159,9 +2168,9 @@ class ClangResourceLifecycleRules:
             defect_class="memory_leak",
             rule="clang_cfg_slot_overwrite_without_existing_owner_cleanup",
             line=line,
-            description=f"Registry slot `{slot}` is overwritten without cleaning its existing owned fields.",
-            root_cause="A hash/registry slot update can orphan the previous plugin or context state when collisions or duplicate names reuse the slot.",
-            suggested_fix="Check whether the slot is occupied and run the old cleanup/release path before overwriting owned fields.",
+            description=f"注册表槽位 `{slot}` 在未清理其现有持有字段的情况下被覆盖。",
+            root_cause="当冲突或重名复用槽位时，哈希/注册表槽位更新可能使其先前的插件或上下文状态失去所有引用。",
+            suggested_fix="检查该槽位是否已被占用，并在覆盖持有字段之前先运行旧的清理/释放路径。",
             source=self._slot_pointer_source(lines, line, slot) or slot,
             sink=line.text,
             confidence=0.76,
@@ -2209,9 +2218,9 @@ class ClangResourceLifecycleRules:
             defect_class="stale_fd",
             rule="clang_cfg_fd_closed_without_owner_invalidation",
             line=line,
-            description="File descriptor is closed without invalidating the owning/watched descriptor nearby.",
-            root_cause="Later event dispatch can reuse a stale fd value after close.",
-            suggested_fix="Set the owning descriptor to -1 under the same synchronization immediately after close.",
+            description="文件描述符被关闭，却未在附近使持有/被监视的描述符失效。",
+            root_cause="后续的事件分发可能在 close 之后重用陈旧的 fd 值。",
+            suggested_fix="在 close 之后的同一同步下立即将持有描述符置为 -1。",
             source=fd,
             sink=line.text,
             confidence=0.7,
@@ -2245,14 +2254,14 @@ class ClangResourceLifecycleRules:
             defect_class="memory_leak",
             rule="clang_cfg_acquire_without_release_on_exit",
             line=line,
-            description=f"`{state.var}` is acquired from `{state.api}` and reaches {exit_text} unreleased.",
+            description=f"`{state.var}` 从 `{state.api}` 获取，却未释放地到达了 {exit_text}。",
             root_cause=(
-                "The local CFG state has an acquire event but no matching release or "
-                "ownership transfer before the exit edge."
+                "局部 CFG 状态存在获取事件，但在到达退出边之前"
+                "没有匹配的释放或所有权转移。"
             ),
             suggested_fix=(
-                "Release the resource on all exit paths or explicitly transfer ownership "
-                "to the caller/container."
+                "在所有退出路径上释放该资源，或显式将所有权"
+                "转移给调用者/容器。"
             ),
             source=f"{state.api}(...) at line {state.line.number}",
             sink=line.text or exit_text,
@@ -2458,14 +2467,14 @@ class ClangResourceLifecycleRules:
             defect_class="use_after_free",
             rule="clang_cfg_use_after_release",
             line=use_line,
-            description=f"`{var}` is used after it has been released.",
+            description=f"`{var}` 在其已被释放之后仍被使用。",
             root_cause=(
-                "The local CFG state marks the resource as released and no "
-                "reset, reallocation, or ownership reacquire appears before use."
+                "局部 CFG 状态将该资源标记为已释放，且在使用之前"
+                "没有出现重置、重分配或所有权重新获取。"
             ),
             suggested_fix=(
-                "Move the use before release, keep a valid owned reference, or "
-                "clear and guard the pointer after release."
+                "将使用移到释放之前，保留一个有效的持有引用，或"
+                "在释放之后清除并守护该指针。"
             ),
             source=f"{free_api}({var}) at line {free_line.number}",
             sink=use_line.text,

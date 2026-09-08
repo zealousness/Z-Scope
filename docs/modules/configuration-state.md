@@ -115,3 +115,11 @@ python -m pytest -q tests/test_review_memory.py tests/test_issue_dedup.py
 ## Portable 工具定位
 
 `zscope.common.portable` 读取启动器提供的 bundle 根目录及资源清单，只为未显式填写的工具字段提供默认值。显式 public config v2 覆盖仍可用于实验，无需模式开关；解析不回写用户文件，错误覆盖不得改用其他工具。语言模板和 `zscope-init` 隐藏工具定位配置。源码安装不设置 bundle 根目录，保留原有 PATH 行为。
+
+## 快照版本提交
+
+快照正文使用唯一临时文件写入不可变版本，SQLite 事务同时发布版本指针和指纹。读取先查询已提交版本，再访问按版本缓存的正文，避免独立 SnapshotStore 实例之间的旧缓存污染。保存返回版本标识，版本化读取同时返回正文与标识；最终报告只能绑定分析时观察到的版本，冲突报告保存在快照目录的 `conflicts/`，不会覆盖新快照的报告。
+
+旧固定文件名继续可读。保存、重协调和删除回收无引用旧版本，普通失败路径清理本次临时文件；读者遇到并发回收时重新查询指针。`get_fingerprints` 附带 `snapshot_generation`，快照与指纹版本不一致时要求刷新。
+
+内置资源家族定义位于 `semantics/defaults.yaml` 的 `resource_families`，不把 FILE/DIR 句柄混入整数 fd 集合。该内部语义表不增加 public config v2 必填项。

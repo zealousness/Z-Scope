@@ -36,6 +36,7 @@ def test_parallel_analyzer_close_closes_shared_clients_once() -> None:
     client = CloseTrackingClient()
     analyzer = ParallelAnalyzer.__new__(ParallelAnalyzer)
     analyzer._shared_llm_clients = {"default": client, "alias": client}
+    analyzer._owns_llm_clients = True
 
     analyzer.close()
 

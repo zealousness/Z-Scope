@@ -39,7 +39,7 @@ INTEGRITY_SCHEMA_VERSION = "zscope.benchmark.integrity.v1"
 ATTRIBUTION_SCHEMA_VERSION = FINDING_ATTRIBUTION_SCHEMA_VERSION
 USAGE_LEDGER_SCHEMA_VERSION = "zscope.llm-usage-ledger.v1"
 CANDIDATE_FUNNEL_SCHEMA_VERSION = "zscope.candidate-funnel.v1"
-MATCHER_VERSION = "zscope.truth-matcher.v2"
+MATCHER_VERSION = "zscope.truth-matcher.v3"
 SOURCE_FILE_SUFFIXES = {
     ".c",
     ".cc",
@@ -1010,12 +1010,14 @@ def score_report(
     )
     matched_truth_indices: Set[int] = set()
     matched_issue_by_truth_index: Dict[int, int] = {}
-    selected_pairs = _select_max_weight_pairs(potential_pairs, len(vulns), len(issues))
+    selected_pairs = _select_multi_tp_pairs(potential_pairs, len(vulns), len(issues))
     for pair in selected_pairs:
         truth_index = int(pair.get("truth_index") or 0)
         issue_index = int(pair.get("issue_index") or 0)
         truth_id = str(pair.get("truth_id") or truth_index)
-        if truth_index in matched_truth_indices or issue_index in matched_issues:
+        # Multi-TP pairing: one issue may satisfy several truths, so only the
+        # truth side stays unique here.
+        if truth_index in matched_truth_indices:
             continue
         matched_truth_indices.add(truth_index)
         matched_truth[truth_id] = issue_index
@@ -1274,10 +1276,6 @@ def score_report(
         "match_diagnostics": _match_diagnostics(
             potential_pairs,
             matched_truth_indices,
-            matched_issues,
-            matched_issue_by_truth_index,
-            vulns,
-            issues,
             weak_pairs=weak_pairs,
         ),
         "scoring_contract": {
@@ -1290,8 +1288,14 @@ def score_report(
             "function_anchors": ["primary", "structured_source_sink", "fact_location"],
             "line_placeholder_policy": "truth line <= 1 is treated as unknown",
             "category_policy": (
-                "explicit category/defect_family/CWE plus a versioned generic alias family; "
-                "truth keywords never establish an official match"
+                "explicit category/categories/defect_family/CWE or CWEs plus a versioned "
+                "generic alias family; any single issue label that hits the truth category or "
+                "CWE passes the gate; truth keywords never establish an official match"
+            ),
+            "pairing_policy": (
+                "each truth independently claims its best strong pair; one issue may satisfy "
+                "multiple truths (multi-TP) while each truth counts at most once regardless of "
+                "how many issues match it"
             ),
             "anchor_policy": (
                 "file, function, and line range must come from one coherent issue/truth anchor"
@@ -1342,149 +1346,43 @@ def score_report(
     return result
 
 
-def _select_max_weight_pairs(
+def _select_multi_tp_pairs(
     potential_pairs: List[Dict[str, Any]],
     truth_count: int,
     issue_count: int,
 ) -> List[Dict[str, Any]]:
-    """Return a deterministic maximum-cardinality, maximum-score bipartite match."""
-    if not potential_pairs or not truth_count or not issue_count:
-        return []
-    source = truth_count + issue_count
-    sink = source + 1
-    graph: List[List[Dict[str, Any]]] = [[] for _ in range(sink + 1)]
+    """Select each truth's best strong pair; one issue may satisfy many truths.
 
-    def add_edge(
-        u: int, v: int, cap: int, cost: int, payload: Optional[Dict[str, Any]] = None
-    ) -> None:
-        graph[u].append(
-            {"to": v, "rev": len(graph[v]), "cap": cap, "cost": cost, "payload": payload}
-        )
-        graph[v].append(
-            {"to": u, "rev": len(graph[u]) - 1, "cap": 0, "cost": -cost, "payload": None}
-        )
-
-    for truth_index in range(truth_count):
-        add_edge(source, truth_index, 1, 0)
-    for issue_index in range(issue_count):
-        add_edge(truth_count + issue_index, sink, 1, 0)
-
-    # Encode the objectives lexicographically:
-    #   1. maximum cardinality,
-    #   2. maximum total match score,
-    #   3. deterministic minimum stable tie value.
-    #
-    # A fixed cardinality bonus is incorrect because ``stable_tie`` grows with
-    # the report size.  Once a report contains enough findings, a valid edge can
-    # otherwise become non-negative and the min-cost flow stops before reaching
-    # maximum cardinality.
-    matching_bound = max(1, min(truth_count, issue_count))
-    max_stable_tie = max(
-        (
-            int(pair.get("truth_index") or 0) * (issue_count + 1)
-            + int(pair.get("issue_index") or 0)
-            for pair in potential_pairs
-        ),
-        default=0,
-    )
-    max_score = max((max(0, int(pair.get("score") or 0)) for pair in potential_pairs), default=0)
-    tie_total_bound = matching_bound * max_stable_tie
-    score_scale = tie_total_bound + 1
-    secondary_total_bound = matching_bound * (max_score * score_scale + max_stable_tie)
-    cardinality_bonus = secondary_total_bound + 1
+    Pairing policy (matcher v3): every truth independently claims its
+    highest-scoring strong structured pair, so a single report issue — for
+    example one aggregated multi-CWE repair site — can contribute multiple
+    true positives.  Each truth still counts at most once regardless of how
+    many issues match it; ties break deterministically on the lower issue
+    index.
+    """
+    best_by_truth: Dict[int, Dict[str, Any]] = {}
     for pair in potential_pairs:
         truth_index = int(pair.get("truth_index") or 0)
         issue_index = int(pair.get("issue_index") or 0)
         if not (0 <= truth_index < truth_count and 0 <= issue_index < issue_count):
             continue
-        score = int(pair.get("score") or 0)
-        stable_tie = truth_index * (issue_count + 1) + issue_index
-        add_edge(
-            truth_index,
-            truth_count + issue_index,
-            1,
-            -cardinality_bonus - score * score_scale + stable_tie,
-            pair,
+        incumbent = best_by_truth.get(truth_index)
+        if incumbent is None:
+            best_by_truth[truth_index] = pair
+            continue
+        challenger_key = (-int(pair.get("score") or 0), issue_index)
+        incumbent_key = (
+            -int(incumbent.get("score") or 0),
+            int(incumbent.get("issue_index") or 0),
         )
-
-    # Initial Johnson potentials are the shortest distances in the initial
-    # acyclic residual graph.  They make every reduced edge cost non-negative,
-    # allowing Dijkstra for each augmentation instead of SPFA.  SPFA degrades
-    # badly on large needs-review reports because residual rerouting introduces
-    # many alternating paths.
-    infinity = 10**100
-    potential = [0] * len(graph)
-    issue_distances = [infinity] * issue_count
-    for truth_index in range(truth_count):
-        for edge in graph[truth_index]:
-            if edge.get("payload") is None or int(edge.get("cap") or 0) <= 0:
-                continue
-            issue_index = int(edge["to"]) - truth_count
-            if 0 <= issue_index < issue_count:
-                issue_distances[issue_index] = min(
-                    issue_distances[issue_index],
-                    int(edge["cost"]),
-                )
-    reachable_issue_distances = [distance for distance in issue_distances if distance < infinity]
-    for issue_index, distance in enumerate(issue_distances):
-        if distance < infinity:
-            potential[truth_count + issue_index] = distance
-    potential[sink] = min(reachable_issue_distances, default=0)
-
-    while True:
-        dist = [infinity] * len(graph)
-        prev_node = [-1] * len(graph)
-        prev_edge = [-1] * len(graph)
-        dist[source] = 0
-        queue: List[tuple[int, int]] = [(0, source)]
-        while queue:
-            current_dist, node = heapq.heappop(queue)
-            if current_dist != dist[node]:
-                continue
-            for edge_index, edge in enumerate(graph[node]):
-                if int(edge["cap"]) <= 0:
-                    continue
-                nxt = int(edge["to"])
-                reduced_cost = int(edge["cost"]) + potential[node] - potential[nxt]
-                if reduced_cost < 0:
-                    raise RuntimeError("negative reduced cost in benchmark matching graph")
-                new_dist = current_dist + reduced_cost
-                if new_dist < dist[nxt]:
-                    dist[nxt] = new_dist
-                    prev_node[nxt] = node
-                    prev_edge[nxt] = edge_index
-                    heapq.heappush(queue, (new_dist, nxt))
-        if prev_node[sink] < 0:
-            break
-        for node, distance in enumerate(dist):
-            if distance < infinity:
-                potential[node] += distance
-        node = sink
-        while node != source:
-            parent = prev_node[node]
-            edge_index = prev_edge[node]
-            edge = graph[parent][edge_index]
-            edge["cap"] = int(edge["cap"]) - 1
-            graph[node][int(edge["rev"])]["cap"] = int(graph[node][int(edge["rev"])]["cap"]) + 1
-            node = parent
-
-    selected: List[Dict[str, Any]] = []
-    for truth_index in range(truth_count):
-        for edge in graph[truth_index]:
-            payload = edge.get("payload")
-            if payload is not None and int(edge.get("cap") or 0) == 0:
-                selected.append(payload)
-    selected.sort(key=lambda pair: int(pair.get("truth_index") or 0))
-    return selected
+        if challenger_key < incumbent_key:
+            best_by_truth[truth_index] = pair
+    return [best_by_truth[truth_index] for truth_index in sorted(best_by_truth)]
 
 
 def _match_diagnostics(
     potential_pairs: List[Dict[str, Any]],
     matched_truth_indices: Set[int],
-    matched_issues: Set[int],
-    matched_issue_by_truth_index: Dict[int, int],
-    vulns: List[Dict[str, Any]],
-    issues: List[Dict[str, Any]],
     *,
     weak_pairs: Sequence[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
@@ -1493,42 +1391,11 @@ def _match_diagnostics(
     for pair in potential_pairs:
         potentials_by_truth.setdefault(int(pair.get("truth_index") or 0), []).append(pair)
 
-    issue_to_truth = {
-        issue_index: truth_index
-        for truth_index, issue_index in matched_issue_by_truth_index.items()
-    }
-    matched_elsewhere: List[Dict[str, Any]] = []
-    for truth_index, vuln in enumerate(vulns):
-        if truth_index in matched_truth_indices:
-            continue
-        pairs = potentials_by_truth.get(truth_index, [])
-        diverted = [pair for pair in pairs if int(pair.get("issue_index") or 0) in matched_issues]
-        if not diverted:
-            continue
-        best = max(diverted, key=lambda pair: int(pair.get("score") or 0))
-        issue_index = int(best.get("issue_index") or 0)
-        matched_truth_index = issue_to_truth.get(issue_index)
-        matched_truth = (
-            vulns[matched_truth_index]
-            if matched_truth_index is not None and matched_truth_index < len(vulns)
-            else {}
-        )
-        matched_elsewhere.append(
-            {
-                "truth_id": str(vuln.get("id") or truth_index),
-                "issue_index": issue_index,
-                "issue_identity": (
-                    issue_identity(issues[issue_index]) if issue_index < len(issues) else ""
-                ),
-                "matched_truth_id": str(matched_truth.get("id") or matched_truth_index or ""),
-                "score": best.get("score") or 0,
-                "match": best.get("match") or {},
-            }
-        )
-
+    # Matcher v3 removed the one-issue-per-truth competition, so a truth can no
+    # longer lose its only strong pair to another truth; the former
+    # ``candidate_still_present_but_matched_another_truth`` diagnostic is gone.
     return {
         "matcher_version": MATCHER_VERSION,
-        "candidate_still_present_but_matched_another_truth": matched_elsewhere,
         "unmatched_truth_with_potential_pair_count": sum(
             1 for truth_index in potentials_by_truth if truth_index not in matched_truth_indices
         ),
@@ -1572,17 +1439,29 @@ def _classify_unmatched_issues(
     for truth_index, issue_index in matched_issue_by_truth_index.items():
         if not (0 <= issue_index < len(issues)):
             continue
-        root_uid = str(issues[issue_index].get("finding_root_uid") or "")
-        if root_uid:
-            matched_by_root.setdefault(root_uid, (truth_index, issue_index))
+        for field_name in ("finding_root_uid", "aggregation_uid"):
+            root_uid = str(issues[issue_index].get(field_name) or "")
+            if root_uid:
+                matched_by_root.setdefault(root_uid, (truth_index, issue_index))
 
     result: Dict[int, Dict[str, Any]] = {}
 
     for issue_index, issue in enumerate(issues):
         if issue_index in matched_issues:
             continue
-        root_uid = str(issue.get("finding_root_uid") or "")
-        root_match = matched_by_root.get(root_uid) if root_uid else None
+        root_match: tuple[int, int] | None = None
+        root_uid = ""
+        root_field = ""
+        for field_name in ("finding_root_uid", "aggregation_uid"):
+            candidate_uid = str(issue.get(field_name) or "")
+            if not candidate_uid:
+                continue
+            candidate_match = matched_by_root.get(candidate_uid)
+            if candidate_match is not None:
+                root_match = candidate_match
+                root_uid = candidate_uid
+                root_field = field_name
+                break
         if root_match is not None:
             truth_index, primary_issue_index = root_match
             result[issue_index] = {
@@ -1593,9 +1472,10 @@ def _classify_unmatched_issues(
                     truth_index,
                 ),
                 "matched_primary_issue_index": primary_issue_index,
-                "finding_root_uid": root_uid,
+                "finding_root_uid": str(issue.get("finding_root_uid") or ""),
+                "aggregation_uid": str(issue.get("aggregation_uid") or ""),
                 "pair_strength": "explicit_product_root",
-                "reason": "explicit finding_root_uid equals the matched primary root",
+                "reason": f"explicit {root_field} equals the matched primary root",
             }
             continue
 
@@ -1888,10 +1768,13 @@ def _structured_category_match_reason(issue: Mapping[str, Any], truth: Mapping[s
     truth_category = _normalize_category(truth.get("category"))
     if truth_category and truth_category in issue_categories:
         return f"category_exact:{truth_category}"
+    evidence_pack = _as_dict(issue.get("evidence_pack"))
     issue_cwes = _cwe_values(
         [
             issue.get("cwe"),
-            _as_dict(issue.get("evidence_pack")).get("cwe"),
+            issue.get("cwes"),
+            evidence_pack.get("cwe"),
+            evidence_pack.get("cwes"),
         ]
     )
     truth_cwes = _cwe_values([truth.get("cwe")])
@@ -1905,18 +1788,28 @@ def _structured_category_match_reason(issue: Mapping[str, Any], truth: Mapping[s
     return ""
 
 
+def _label_list(value: Any) -> List[Any]:
+    """Expand a scalar-or-list label field into its string items."""
+
+    if isinstance(value, (list, tuple)):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
 def _issue_explicit_categories(issue: Mapping[str, Any]) -> Set[str]:
     values: List[Any] = [
         issue.get("category"),
         issue.get("defect_family"),
         issue.get("defect_class"),
     ]
+    values.extend(_label_list(issue.get("categories")))
     obligation = issue.get("security_obligation")
     if isinstance(obligation, Mapping):
         values.append(obligation.get("defect_family"))
     pack = issue.get("evidence_pack")
     if isinstance(pack, Mapping):
         values.extend((pack.get("defect_family"), pack.get("defect_class")))
+        values.extend(_label_list(pack.get("categories")))
         nested = pack.get("security_obligation")
         if isinstance(nested, Mapping):
             values.append(nested.get("defect_family"))
@@ -1930,11 +1823,13 @@ def _normalize_category(value: Any) -> str:
 def _cwe_values(values: Iterable[Any]) -> Set[str]:
     result: Set[str] = set()
     for value in values:
-        normalized = _normalize_cwe(value)
-        if re.fullmatch(r"CWE-\d+", normalized):
-            result.add(normalized)
-        for number in re.findall(r"CWE[-_ ]?(\d+)", str(value or ""), flags=re.IGNORECASE):
-            result.add(f"CWE-{number}")
+        items: Iterable[Any] = list(value) if isinstance(value, (list, tuple, set)) else (value,)
+        for item in items:
+            normalized = _normalize_cwe(item)
+            if re.fullmatch(r"CWE-\d+", normalized):
+                result.add(normalized)
+            for number in re.findall(r"CWE[-_ ]?(\d+)", str(item or ""), flags=re.IGNORECASE):
+                result.add(f"CWE-{number}")
     return result
 
 

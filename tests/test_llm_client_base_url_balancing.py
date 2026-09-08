@@ -324,7 +324,7 @@ def test_llm_client_recovers_from_too_many_open_files(monkeypatch) -> None:
         models=["unit-model"],
         max_retries=1,
     )
-    client.close()
+    client.close_thread_session()
     client.LOCAL_FD_EXHAUSTION_COOLDOWN_SECONDS = 0.0
     monkeypatch.setattr("zscope.framework.llm_client.random.uniform", lambda _a, _b: -1.0)
     sessions = []

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "15"
+    SCHEMA_VERSION = "16"
     SUPPORTS_DEFERRED_TU_COMMITS = True
     DERIVED_INDEX_SYMBOL_CONTEXT = "function_symbol_context"
     DERIVED_INDEX_TYPE_REFS = "function_type_refs"
@@ -519,6 +519,11 @@ class KnowledgeDB:
             CREATE INDEX IF NOT EXISTS idx_taint_type ON taint_signatures(bug_type);
             CREATE INDEX IF NOT EXISTS idx_taint_file ON taint_signatures(file_path);
 
+            CREATE TABLE IF NOT EXISTS function_program_facts (
+                function TEXT NOT NULL, file_path TEXT NOT NULL, start_line INTEGER NOT NULL,
+                fact_kind TEXT NOT NULL, identity TEXT NOT NULL, data TEXT NOT NULL,
+                PRIMARY KEY(file_path, function, start_line, fact_kind, identity)
+            );
             CREATE TABLE IF NOT EXISTS ir_statements (
                 id          INTEGER PRIMARY KEY,
                 file_path   TEXT NOT NULL,
@@ -529,7 +534,9 @@ class KnowledgeDB:
                 ast_kind    TEXT DEFAULT '',
                 defs        TEXT DEFAULT '[]',
                 uses        TEXT DEFAULT '[]',
-                UNIQUE(file_path, line, function, normalized_code)
+                column_number INTEGER NOT NULL DEFAULT 1,
+                event_ordinal INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(file_path, line, function, normalized_code, column_number, event_ordinal)
             );
             CREATE INDEX IF NOT EXISTS idx_ir_stmt_func ON ir_statements(function);
             CREATE INDEX IF NOT EXISTS idx_ir_stmt_file_line ON ir_statements(file_path, line);
@@ -842,6 +849,25 @@ class KnowledgeDB:
             CREATE INDEX IF NOT EXISTS idx_ir_path_sink_stmt ON ir_path_slices(sink_stmt);
             """
         )
+        if "event_ordinal" not in {row[1] for row in c.execute("PRAGMA table_info(ir_statements)")}:
+            # Rebuild the derived table without the old line/text uniqueness;
+            # retain IDs so existing IR edges still refer to the same nodes.
+            c.executescript("""
+                CREATE TABLE ir_statements_v16 (
+                    id INTEGER PRIMARY KEY, file_path TEXT NOT NULL, line INTEGER NOT NULL,
+                    function TEXT NOT NULL, kind TEXT DEFAULT '', normalized_code TEXT DEFAULT '',
+                    ast_kind TEXT DEFAULT '', defs TEXT DEFAULT '[]', uses TEXT DEFAULT '[]',
+                    column_number INTEGER NOT NULL DEFAULT 1, event_ordinal INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(file_path,line,function,normalized_code,column_number,event_ordinal)
+                );
+                INSERT INTO ir_statements_v16
+                    SELECT id,file_path,line,function,kind,normalized_code,ast_kind,defs,uses,1,0
+                    FROM ir_statements;
+                DROP TABLE ir_statements;
+                ALTER TABLE ir_statements_v16 RENAME TO ir_statements;
+                CREATE INDEX idx_ir_stmt_func ON ir_statements(function);
+                CREATE INDEX idx_ir_stmt_file_line ON ir_statements(file_path,line);
+            """)
         c.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             ("schema_version", self.SCHEMA_VERSION),
@@ -1131,6 +1157,7 @@ class KnowledgeDB:
             )
             for table in (
                 "ir_statements",
+                "function_program_facts",
                 "ir_resource_events",
                 "ir_lock_events",
                 "ir_shared_accesses",
@@ -1284,17 +1311,19 @@ class KnowledgeDB:
         ast_kind: str = "",
         defs: str = "[]",
         uses: str = "[]",
+        column_number: int = 1,
+        event_ordinal: int = 0,
     ) -> int:
         self._conn.execute(
             "INSERT OR IGNORE INTO ir_statements "
-            "(file_path, line, function, kind, normalized_code, ast_kind, defs, uses) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (file_path, line, function, kind, normalized_code, ast_kind, defs, uses),
+            "(file_path, line, function, kind, normalized_code, ast_kind, defs, uses, column_number, event_ordinal) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (file_path, line, function, kind, normalized_code, ast_kind, defs, uses, column_number, event_ordinal),
         )
         row = self._conn.execute(
             "SELECT id FROM ir_statements WHERE file_path = ? AND line = ? "
-            "AND function = ? AND normalized_code = ?",
-            (file_path, line, function, normalized_code),
+            "AND function = ? AND normalized_code = ? AND column_number = ? AND event_ordinal = ?",
+            (file_path, line, function, normalized_code, column_number, event_ordinal),
         ).fetchone()
         return int(row["id"]) if row else 0
 

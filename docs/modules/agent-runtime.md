@@ -79,3 +79,7 @@ python -m pytest -q tests/test_validator_v3_protocol.py
 - 稳定入口见本文 frontmatter 的 `sources`。
 - Agent、Skill 和 Tool 的架构关系见 `docs/architecture.md` 的“智能体平面”。
 - 用户可见工具矩阵见 `README.md` 的“分析工具清单”。
+
+## LLM 客户端生命周期
+
+进程共享额度按存活客户端所有者计算最严格的正上限，关闭客户端注销其约束并唤醒等待者。配置上限与 AIMD 过载降速分开维护，注销不会清空其他请求的在途计数和有效 RPM 历史。客户端关闭后停止接收新请求，已取得额度的请求保留 HTTP session，最后一个请求释放后完成清理。借入客户端的所有权留在调用方，Facade 只能关闭自身创建的客户端。

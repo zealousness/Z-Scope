@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 VENDOR = Path("zscope/web/static/vendor")
 LOCK = Path("requirements/portable/web-assets.lock.json")
+FIRST_PARTY = ("report_view.js", "report_view.css", "offline_review.js", "dashboard_reports.js")
 SOURCES = {
     "tailwind-cli": (
         "3.4.17",
@@ -44,6 +45,23 @@ SOURCES = {
         "1.29.0",
         "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-c.min.js",
     ),
+    "prism-cpp.js": (
+        "1.29.0",
+        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-cpp.min.js",
+    ),
+    "prism-java.js": (
+        "1.29.0",
+        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-java.min.js",
+    ),
+    "markdown-it.js": (
+        "14.1.1",
+        "https://cdn.jsdelivr.net/npm/markdown-it@14.1.1/dist/markdown-it.min.js",
+    ),
+    "markdown-it.LICENSE": ("14.1.1", "https://cdn.jsdelivr.net/npm/markdown-it@14.1.1/LICENSE"),
+    "js-yaml.js": ("4.1.1", "https://cdn.jsdelivr.net/npm/js-yaml@4.1.1/dist/js-yaml.min.js"),
+    "js-yaml.LICENSE": ("4.1.1", "https://cdn.jsdelivr.net/npm/js-yaml@4.1.1/LICENSE"),
+    "fflate.js": ("0.8.2", "https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"),
+    "fflate.LICENSE": ("0.8.2", "https://cdn.jsdelivr.net/npm/fflate@0.8.2/LICENSE"),
     "prism.LICENSE": ("1.29.0", "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/LICENSE"),
 }
 
@@ -57,6 +75,10 @@ def verify(root=ROOT):
     for name, entry in lock["files"].items():
         if Path(name).name != name or digest(root / VENDOR / name) != entry["sha256"]:
             raise ValueError(f"WebUI asset differs from its lock: {name}")
+    for name in FIRST_PARTY:
+        expected = lock.get("first_party", {}).get(name, {}).get("sha256")
+        if digest(root / VENDOR.parent / name) != expected:
+            raise ValueError(f"WebUI application asset differs from its lock: {name}")
     return lock
 
 
@@ -110,6 +132,10 @@ def update(root=ROOT):
             "license": "MIT",
             "sha256": digest(destination / "tailwind.css"),
         }
+    lock["first_party"] = {
+        name: {"sha256": digest(root / VENDOR.parent / name), "license": "MIT"}
+        for name in FIRST_PARTY
+    }
     (root / LOCK).write_text(json.dumps(lock, indent=2) + "\n")
     verify(root)
 

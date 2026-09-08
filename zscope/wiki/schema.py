@@ -164,10 +164,10 @@ def _validate_subset(instance: Any, schema: Mapping[str, Any], schemas: Mapping[
             errors.append(f"{path}: exceeds maxLength")
         if "pattern" in schema:
             try:
-                matched = re.search(str(schema["pattern"]), instance)
+                matched = re.search(str(schema["pattern"]), instance) is not None
             except re.error:
                 matched = True
-            if matched is None:
+            if not matched:
                 errors.append(f"{path}: does not match pattern")
     if isinstance(instance, (int, float)) and not isinstance(instance, bool):
         if "minimum" in schema and instance < schema["minimum"]:

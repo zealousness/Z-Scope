@@ -833,7 +833,7 @@ def test_knowledge_db_v14_adds_purge_and_include_indexes(tmp_path: Path) -> None
             }
             assert required_indexes <= actual
         assert db.get_metadata("schema_version") == KnowledgeDB.SCHEMA_VERSION
-        assert KnowledgeDB.SCHEMA_VERSION == "15"
+        assert KnowledgeDB.SCHEMA_VERSION == "16"
         assert KnowledgeDB.SUPPORTS_DEFERRED_TU_COMMITS is True
     finally:
         db.close()

@@ -241,7 +241,7 @@ def test_graph_candidates_use_custom_resource_semantics() -> None:
 
 def test_graph_candidates_expand_configured_pointer_targets_under_lock() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "api_dispatch": {
                     "file": "src/demo.c",
@@ -296,7 +296,7 @@ def test_graph_candidates_expand_configured_pointer_targets_under_lock() -> None
 
 def test_graph_candidates_expand_backend_indirect_call_line_evidence() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "api_dispatch": {
                     "file": "src/demo.c",
@@ -343,7 +343,7 @@ def test_graph_candidates_expand_backend_indirect_call_line_evidence() -> None:
 
 def test_graph_candidates_expand_configured_dispatcher_handlers() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "dispatch_msg": {
                     "file": "src/demo.c",
@@ -399,7 +399,7 @@ def test_graph_candidates_expand_configured_dispatcher_handlers() -> None:
 
 def test_graph_candidates_expand_dispatcher_sibling_branches_at_depth_cap() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "api_entry": {
                     "file": "src/demo.c",
@@ -463,4 +463,3 @@ def test_graph_candidates_expand_dispatcher_sibling_branches_at_depth_cap() -> N
     recursive = next(issue for issue in issues if issue["rule"] == "cross_function_recursive_lock")
     assert recursive["function"] == "dispatch_msg"
     assert recursive["sink"] == "handle_b:31:g_lock"
-

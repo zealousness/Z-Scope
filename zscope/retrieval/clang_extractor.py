@@ -263,6 +263,9 @@ class ClangExtractor:
         self._base_publish_lock = threading.Lock()
         self._project_file_index_lock = threading.Lock()
         self._project_file_index: Optional[Dict[str, List[Path]]] = None
+        # Analysis selection is authoritative; the lazy include lookup can also
+        # contain scanner outputs and must never become the input manifest.
+        self._derived_source_files: Tuple[Path, ...] = ()
         self._derived_resolver: Optional[DerivedResolver] = None
 
     # ── 生命周期 ──
@@ -2072,6 +2075,7 @@ class ClangExtractor:
             paths.sort()
         with self._project_file_index_lock:
             self._project_file_index = path_index
+            self._derived_source_files = tuple(sorted(set(Path(p).absolute() for p in file_paths)))
 
     def _canonical_included_file(self, source_file: Path, included: str) -> str:
         clean = str(included or "").replace("\\", "/").strip()
@@ -2692,7 +2696,10 @@ class ClangExtractor:
             result_count = staged_count
         else:
             if self._derived_resolver is not None and not self._derived_resolver.validate():
-                raise RuntimeError("Inputs changed before derived symbol publication")
+                raise RuntimeError(
+                    "Inputs changed before derived symbol publication: "
+                    + self._derived_resolver.identity_change_reason
+                )
             rows = [(*key, access) for key, access in sorted(aggregated.items())]
             replace_context = getattr(db, "replace_function_symbol_context", None)
             if callable(replace_context):
@@ -2857,7 +2864,10 @@ class ClangExtractor:
             result_count = staged_count
         else:
             if self._derived_resolver is not None and not self._derived_resolver.validate():
-                raise RuntimeError("Inputs changed before derived type publication")
+                raise RuntimeError(
+                    "Inputs changed before derived type publication: "
+                    + self._derived_resolver.identity_change_reason
+                )
             assert callable(replace_refs)
             deduplicated = sorted(set(rows), key=lambda row: tuple(str(value) for value in row))
             replace_refs(deduplicated)

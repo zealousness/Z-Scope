@@ -69,6 +69,59 @@ def build(project):
     return backend.initialize(str(root), compile_commands_path=str(cdb))
 
 
+def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
+    executable = os.environ.get("Z_SCOPE_TEST_CLANG_INDEXER")
+    if not executable:
+        pytest.skip("native indexer integration requires Z_SCOPE_TEST_CLANG_INDEXER")
+    source = tmp_path / "events.cpp"
+    source.write_text(
+        "int shared_value; thread_local int private_value;\n"
+        "struct State { int total; };\n"
+        "void demo(State *s) { shared_value++; s->total++; private_value++; "
+        "int *p = new int[4]; delete[] p; }\n"
+        "extern void free(void*);\n"
+        "#define TWICE(p) do { free(p); free(p); } while (0)\n"
+        "void macro_release(int *p) { TWICE(p); }\n"
+        "void comma_release(int *p) { free(p), free(p); }\n"
+        "void private_fields() { State local; local.total++; thread_local State tls; tls.total++; }\n"
+        "struct Guard { ~Guard(); };\nvoid cleanup() { Guard guard; }\n",
+        encoding="utf-8",
+    )
+    cdb = tmp_path / "compile_commands.json"
+    cdb.write_text(json.dumps([{"file": str(source), "directory": str(tmp_path),
+                                "arguments": ["clang++", "-std=c++17", "-c", str(source)]}]), encoding="utf-8")
+    backend = ClangBackend(frontend="batch", clang_indexer_path=executable)
+    try:
+        assert backend.initialize(str(tmp_path), compile_commands_path=str(cdb))
+        facts = backend.get_function_program_facts("demo", "events.cpp")
+        assert facts["complete"]
+        assert facts["functions"][0]["cfg_edges"]
+        assert {row["resource_family"] for row in facts["events"]} >= {"new_array"}
+        releases = [row for row in facts["events"] if row["event_kind"] == "release"]
+        assert releases and releases[0]["location"]["column"] > 1
+        assert releases[0]["object"]["usr"]
+        acquisitions = [row for row in facts["events"] if row["event_kind"] == "acquire"]
+        assert acquisitions[0]["object"]["usr"] == releases[0]["object"]["usr"]
+        accesses = {row["target"]["name"]: row for row in facts["accesses"]}
+        assert {"shared_value", "total"} <= set(accesses)
+        assert "private_value" not in accesses
+        assert accesses["total"]["target"]["usr"]
+        assert accesses["shared_value"]["access_kind"] == "read_write"
+        assert not backend.get_function_program_facts("private_fields", "events.cpp")["accesses"]
+        cleanup = backend.get_function_program_facts("cleanup", "events.cpp")
+        assert any(event["event_kind"] == "implicit_release" and event["object"]["usr"] for event in cleanup["events"])
+        from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
+        generator = ClangAstCfgCandidateGenerator(program_facts_provider=backend.get_function_program_facts)
+        for name, line in (("macro_release", 6), ("comma_release", 7)):
+            code = f"{line} | {source.read_text().splitlines()[line - 1]}"
+            issues = generator.generate_issues(name, code, "events.cpp")
+            double = [issue for issue in issues if issue["defect_class"] == "double_free"]
+            assert double and double[0]["validation_required"]
+            assert not double[0]["evidence_pack"]["path"]["complete_in_function"]
+    finally:
+        backend.close()
+
+
 def test_native_facts_warm_cache_and_header_invalidation(project, caplog):
     caplog.set_level("INFO")
     assert build(project)
@@ -135,6 +188,9 @@ def test_auto_falls_back_only_for_failed_tu(project, monkeypatch, caplog):
         def stop(self):
             pass
 
+        def seed_project_file_index(self, paths):
+            calls.append(("seed", sorted(path.name for path in paths)))
+
         def run_batch_extraction(self, paths, db, **kwargs):
             calls.append(("base", [path.name for path in paths]))
             return {"failed": 0}
@@ -156,7 +212,11 @@ def test_auto_falls_back_only_for_failed_tu(project, monkeypatch, caplog):
     monkeypatch.setattr(BatchIndexer, "_extract", extract)
     monkeypatch.setattr(ClangBackend, "_ensure_extractor", ensure)
     assert build(project)
-    assert calls == [("base", ["b.c"]), ("derived", ["b.c"])]
+    assert calls == [
+        ("seed", ["a.c", "b.c", "shared.h"]),
+        ("base", ["b.c"]),
+        ("derived", ["b.c"]),
+    ]
     stats = json.loads(backend.db.get_metadata("clang_batch_stats"))
     assert stats["ready_for_queries"] and stats["rpc_requests_native"] == 0
     assert not stats["type_refs_complete"]

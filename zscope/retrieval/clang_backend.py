@@ -749,7 +749,7 @@ class ClangBackend(CodeBackend):
             or explicit_base_version_mismatch
             or deleted_tus
             or not existing_tus
-            or self._metadata_value(db, "schema_version") not in {"14", "15"}
+            or self._metadata_value(db, "schema_version") not in {"14", "15", KnowledgeDB.SCHEMA_VERSION}
         ):
             return False
         if any(str(tu.get("status") or "") != "indexed" for tu in existing_tus):
@@ -1018,6 +1018,22 @@ class ClangBackend(CodeBackend):
         if not self._db:
             return []
         return self._db.get_macro_definitions_batch(names)
+
+    def get_function_program_facts(self, func_name: str, file_path: str = "") -> Dict[str, Any]:
+        if not self._db:
+            return {"complete": False, "events": [], "accesses": []}
+        import json
+        query = "SELECT data FROM function_program_facts WHERE function=?"
+        args: list[Any] = [func_name]
+        if file_path:
+            query += " AND file_path=?"
+            args.append(file_path)
+        values = [json.loads(row[0]) for row in self._db._conn.execute(query, args)]
+        bodies = [row for row in values if row["kind"] == "program_function"]
+        accesses = [row for row in values if row["kind"] == "program_access"]
+        return {"complete": len(bodies) == 1 and bool(bodies[0].get("complete")),
+                "functions": bodies, "accesses": accesses,
+                "events": [event for row in bodies for event in row.get("events", [])]}
 
     def get_function_symbol_context(
         self,

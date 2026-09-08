@@ -694,7 +694,7 @@ class WikiStore:
         # generated Markdown pages are no longer part of the runtime Wiki.
         # Keep the pages directory and index projection for old readers, but
         # publish no newly generated page rows.
-        pages = []
+        pages: List[Tuple[Dict[str, Any], str, str]] = []
 
         revision_dir = self.staging_root / f"{rid}.tmp"
         if revision_dir.exists():
@@ -729,7 +729,7 @@ class WikiStore:
             index_pages,
         )
         _write_state_text(revision_dir / "index.md", index_text)
-        revision = {
+        revision: Dict[str, Any] = {
             "schema_version": "zscope.wiki-revision.v1",
             "revision_id": rid,
             "parent_revision_id": parent,
@@ -1176,7 +1176,7 @@ class WikiStore:
             }
             for item in pages_list
         ]
-        revision = {
+        revision: Dict[str, Any] = {
             "schema_version": "zscope.wiki-revision.v1",
             "revision_id": rid,
             "parent_revision_id": parent_id,

@@ -218,7 +218,7 @@ class WikiWriterLock:
         try:
             import ctypes
 
-            kernel32 = ctypes.windll.kernel32
+            kernel32 = getattr(ctypes, "windll").kernel32  # only on Windows
         except (ImportError, OSError, AttributeError):
             return True
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
@@ -297,8 +297,8 @@ class WikiWriterLock:
                 self._write_owner(self._fd, owner)
                 return self
             except FileExistsError:
-                owner = self._read_owner(self.path)
-                if not self._pid_alive(int(owner["pid"])):
+                current_owner = self._read_owner(self.path)
+                if not self._pid_alive(int(current_owner["pid"])):
                     try:
                         self.path.unlink()
                     except FileNotFoundError:

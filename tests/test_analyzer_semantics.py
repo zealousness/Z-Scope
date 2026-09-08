@@ -44,7 +44,7 @@ def _graph_view(
 
 
 class NullCodeIndex:
-    def get_function_impl(self, name: str, warn_missing: bool = False):
+    def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
         return None
 
 
@@ -235,7 +235,7 @@ def test_snapshot_contract_text_prefers_new_fields_and_keeps_legacy_fallback() -
 
 def test_facade_callee_candidates_recurse_into_internal_helpers() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "_outer": {
                     "file": "src/demo.c",
@@ -267,7 +267,7 @@ def test_facade_callee_candidates_recurse_into_internal_helpers() -> None:
 
 def test_facade_callee_candidates_expand_dispatcher_siblings_at_depth_cap() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "dispatch_msg": {
                     "file": "src/demo.c",
@@ -318,7 +318,7 @@ def test_facade_callee_candidates_expand_dispatcher_siblings_at_depth_cap() -> N
 
 def test_direct_callee_fact_limit_is_reported_as_deferred_work() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             return {
                 "first": {
                     "file": "src/demo.c",
@@ -382,7 +382,7 @@ def test_direct_callee_scan_budget_expands_to_complete_indexed_project() -> None
 
 def test_graph_impl_query_failure_is_exposed() -> None:
     class FailingIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             raise RuntimeError("index offline")
 
     generator = GraphCandidateGenerator(FailingIndex(), LocalPatternSemantics())
@@ -583,7 +583,7 @@ def test_graph_candidates_detect_self_referential_pipe_log_amplification() -> No
 
 def test_graph_candidates_expand_thin_runtime_fanout_at_depth_cap() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             impls = {
                 "api_schedule": {
                     "file": "src/lifecycle.c",
@@ -840,6 +840,7 @@ def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None
             name: str,
             warn_missing: bool = False,
             include_context: bool = True,
+            max_lines=None,
         ):
             del warn_missing
             self.impl_context_flags.append(include_context)
@@ -1527,7 +1528,7 @@ def test_validation_pack_marks_current_entry_as_reachable() -> None:
 
 def test_resolve_issue_locations_fills_observation_line_only_locations() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             assert name == "_lifecycle_recv_packet"
             return {
                 "file": "src/lifecycle.c",
@@ -1559,7 +1560,7 @@ def test_resolve_issue_locations_fills_observation_line_only_locations() -> None
 
 def test_resolve_issue_locations_recovers_observation_location_from_evidence_refs() -> None:
     class FakeIndex:
-        def get_function_impl(self, name: str, warn_missing: bool = False):
+        def get_function_impl(self, name: str, warn_missing: bool = False, max_lines=None):
             raise AssertionError("location should be recovered before function fallback")
 
     analyzer = object.__new__(Analyzer)

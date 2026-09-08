@@ -14,9 +14,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 
 from ...retrieval.code_index import CodeIndex
+from ...retrieval.analysis_facts import scan_fact_cache, index_context_key
 from .cpp_domains.models import GraphLine, FunctionView, LockOrderEdge
 from .cpp_domains.resource_lifecycle import GraphResourceLifecycleRules
 from .cpp_domains.memory_bounds_integer import GraphMemoryBoundsIntegerRules
@@ -67,6 +68,18 @@ class GraphCandidateGenerator(
         self.last_deferred_functions: List[Dict[str, Any]] = []
         self.last_query_errors: List[Dict[str, str]] = []
         self._compile_semantic_patterns()
+        self.fact_cache = scan_fact_cache(code_index)
+        self.fact_context = (
+            "graph-facts.v2",
+            index_context_key(code_index),
+            hashlib.sha256(
+                json.dumps(
+                    [vars(self.semantics), self.semantic_overlay],
+                    sort_keys=True,
+                    default=str,
+                ).encode()
+            ).hexdigest(),
+        )
 
     def generate_for_entry(
         self,
@@ -280,21 +293,54 @@ class GraphCandidateGenerator(
         if impl is None and func_name in self._view_cache:
             return self._view_cache[func_name]
         impl = impl or self._impl_for(func_name)
+        if impl and impl.get("truncated"):
+            impl = self._impl_for(func_name)
         if not impl:
             self._view_cache[func_name] = None
             return None
-        lines = tuple(self._parse_lines(str(impl.get("code") or "")))
-        file_path = str(impl.get("file") or "")
-        direct_callees = [str(item) for item in impl.get("callees") or [] if item]
-        view = FunctionView(
-            name=func_name,
-            file_path=file_path,
-            signature=self._signature_from_impl(func_name, impl),
-            lines=lines,
-            callees=tuple(self._merged_callee_names(func_name, file_path, lines, direct_callees)),
+        source_hash = hashlib.sha256(
+            json.dumps(impl, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+        def build() -> Any:
+            lines = tuple(self._parse_lines(str(impl.get("code") or "")))
+            file_path = str(impl.get("file") or "")
+            direct_callees = [str(item) for item in impl.get("callees") or [] if item]
+            view = FunctionView(
+                name=func_name,
+                file_path=file_path,
+                signature=self._signature_from_impl(func_name, impl),
+                lines=lines,
+                callees=tuple(
+                    self._merged_callee_names(func_name, file_path, lines, direct_callees)
+                ),
+            )
+            return view, {
+                key: value for key, value in self._callee_evidence.items() if key[0] == func_name
+            }
+
+        view, evidence = self.fact_cache.compute(
+            (self.fact_context, "view", func_name, source_hash), build
         )
+        self._callee_evidence.update(evidence)
         self._view_cache[func_name] = view
-        return view
+        return cast(Optional[FunctionView], view)
+
+    def _function_fact_key(self, func_name: str) -> Any:
+        index = getattr(self.code_index, "_function_index", {})
+        info = index.get(func_name) or {}
+        if not info:
+            aliases = getattr(self.code_index, "_function_alias_index", {}).get(func_name, [])
+            if len(aliases) == 1:
+                info = index.get(next(iter(aliases))) or {}
+        source_file = info.get("file") or info.get("file_path")
+        fingerprint = getattr(self.code_index, "_source_fingerprint", None)
+        token = (
+            fingerprint(source_file)
+            if source_file and callable(fingerprint)
+            else getattr(self.code_index, "_index_epoch", 0)
+        )
+        return self.fact_context, "impl", func_name, token
 
     def _impl_for(self, func_name: str) -> Optional[Dict[str, Any]]:
         if func_name not in self._impl_cache:
@@ -303,10 +349,12 @@ class GraphCandidateGenerator(
                 self._impl_cache[func_name] = None
             else:
                 try:
-                    self._impl_cache[func_name] = getter(
-                        func_name,
-                        warn_missing=False,
+                    self._impl_cache[func_name] = self.fact_cache.compute(
+                        self._function_fact_key(func_name),
+                        lambda: getter(func_name, max_lines=None, warn_missing=False),
                     )
+                    if (self._impl_cache[func_name] or {}).get("truncated"):
+                        raise ValueError("source_truncated")
                 except Exception as exc:
                     self.last_query_errors.append(
                         {

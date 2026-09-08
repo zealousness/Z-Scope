@@ -42,11 +42,15 @@ if TYPE_CHECKING:
     from ...orchestration.subagents import SubAgentTicket
 
 
+from .cpp_domains.typed_resources import ClangTypedResourceRules
+
+
 class ClangAstCfgCandidateGenerator(
     ClangResourceLifecycleRules,
     ClangMemoryBoundsIntegerRules,
     ClangConcurrencySharedStateRules,
     ClangProtocolOwnershipLogicRules,
+    ClangTypedResourceRules,
 ):
     """Generate evidence-backed candidates from a Clang-style local CFG view."""
 
@@ -139,6 +143,7 @@ class ClangAstCfgCandidateGenerator(
         semantic_overlay: Optional[Dict[str, Any]] = None,
         tooling_evidence_provider: Optional[Callable[..., Dict[str, Any]]] = None,
         rule_policy: Optional[Any] = None,
+        program_facts_provider: Optional[Callable[..., Dict[str, Any]]] = None,
     ):
         self.semantics = self._default_semantics()
         if semantics is not None:
@@ -146,6 +151,8 @@ class ClangAstCfgCandidateGenerator(
         self.semantic_overlay = semantic_overlay or {}
         self.tooling_evidence_provider = tooling_evidence_provider
         self.rule_policy = rule_policy
+        self.program_facts_provider = program_facts_provider
+        self.program_facts: Dict[str, Any] = {}
         self._compile_api_models()
 
     def generate_issues(
@@ -157,6 +164,10 @@ class ClangAstCfgCandidateGenerator(
         allowed_skills: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
         lines = self._parse_lines(code)
+        self.program_facts = (
+            self.program_facts_provider(func_name, file_path)
+            if self.program_facts_provider is not None else {}
+        )
         if not lines:
             return []
         allowed = set(allowed_skills) if allowed_skills is not None else None
@@ -487,10 +498,12 @@ class ClangAstCfgCandidateGenerator(
                 "operation": sink,
                 "file": file_path,
                 "line": line.number,
+                "column": line.column,
+                "event_ordinal": line.ordinal,
             },
             "path": {
                 "function": func_name,
-                "complete_in_function": True,
+                "complete_in_function": bool(ast_cfg.get("ordering_known", True)),
                 "backend": "Clang function body plus synthesized local CFG",
                 "path_constraints": ast_cfg.get("path_constraints", []),
                 "cfg_path": ast_cfg.get("cfg_path", []),
@@ -881,6 +894,21 @@ class ClangAstCfgCandidateGenerator(
     ) -> Dict[str, Any]:
         return {
             "checker_basis": "clangd-indexed function body with synthesized statement/CFG facts",
+            "program_fact_version": "zscope.program-events.v1",
+            "compiler_cfg_complete": bool(self.program_facts.get("complete")),
+            "compiler_cfg_edges": [
+                edge for function in self.program_facts.get("functions", [])
+                for edge in function.get("cfg_edges", [])
+            ],
+            "compiler_events": [
+                event for event in self.program_facts.get("events", [])
+                if (event.get("location") or {}).get("line") in cfg_path
+            ],
+            "ordering_known": all(line.ordered for line in lines),
+            "shared_accesses": [
+                access for access in self.program_facts.get("accesses", [])
+                if (access.get("location") or {}).get("line") in cfg_path
+            ],
             "statement_count": len(lines),
             "approx_basic_block_count": len({line.block_id for line in lines}) or 1,
             "declarations": self._declarations(lines),
@@ -984,6 +1012,11 @@ class ClangAstCfgCandidateGenerator(
         return {
             "kind": kind,
             "line": line.number,
+            "column": line.column,
+            "event_ordinal": line.ordinal,
+            "source_offset": line.offset,
+            "offset_basis": line.offset_basis,
+            "ordering_known": line.ordered,
             "block": line.block_id,
             "variable": variable,
             "api": api,
@@ -1058,16 +1091,16 @@ class ClangAstCfgCandidateGenerator(
         negative: List[str],
     ) -> str:
         parts = [
-            f"Clang AST/CFG checker `{rule}` produced an evidence candidate for `{defect_class}`.",
-            f"Location: `{func_name}` at `{file_path}:{line}`.",
-            f"Observation: {description}",
-            f"Source: {source or 'local CFG source'}",
-            f"Sink: {sink or 'local CFG sink'}",
+            f"Clang AST/CFG 检查器 `{rule}` 针对 `{defect_class}` 生成了一个证据候选。",
+            f"位置: `{func_name}`，位于 `{file_path}:{line}`。",
+            f"观察: {description}",
+            f"来源: {source or '本地 CFG 来源'}",
+            f"汇点: {sink or '本地 CFG 汇点'}",
         ]
         if positive:
-            parts.append("Positive evidence: " + " | ".join(positive[:4]))
+            parts.append("正向证据: " + " | ".join(positive[:4]))
         if negative:
-            parts.append("Validation notes: " + " | ".join(negative[:3]))
+            parts.append("验证说明: " + " | ".join(negative[:3]))
         return "\n".join(parts)
 
     @staticmethod
