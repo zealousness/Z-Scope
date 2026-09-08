@@ -20,6 +20,7 @@ from ..reporting.views import (
     group_by_severity,
     report_view_summary,
 )
+from ..reporting.issue_markdown import issue_identity
 from ..rules.query import query_effective_rules, validate_rule_filters
 from ..wiki.control import wiki_query, wiki_status
 
@@ -305,7 +306,8 @@ class WikiControlService:
 
         config = self._config()
         wiki = config.project.wiki
-        raw_limit = (params.get("max_tokens") or [None])[0]
+        raw_values = params.get("max_tokens")
+        raw_limit: Optional[str] = raw_values[0] if raw_values else None
         try:
             max_tokens = None if raw_limit is None else int(raw_limit)
         except (TypeError, ValueError) as exc:
@@ -754,6 +756,7 @@ class ReportFeedbackService:
 
     def selected_view_payload(self, path: str) -> Dict[str, Any]:
         from urllib.parse import urlparse
+        from .review_reports import report_identity
 
         report = self.load_report()
         view = selected_report_view(path)
@@ -764,9 +767,16 @@ class ReportFeedbackService:
             "yes",
         }
         findings = findings_for_view(report, view)
+        projected = findings if full_report else self._compact_findings(findings)
+        report_id = report_identity(report, self.report_filename)
+        projected = [
+            dict(item, issue_id=issue_identity(original), report_id=report_id)
+            for original, item in zip(findings, projected)
+        ]
         return {
             "report": report if full_report else self._lightweight_report(report),
-            "findings": findings if full_report else self._compact_findings(findings),
+            "findings": projected,
+            "report_id": report_id,
             "view": view,
             "views": report_view_summary(report),
         }
@@ -906,9 +916,13 @@ class ReportFeedbackService:
                 result["suppression_upserts"] += 1
         return result
 
-    def apply_validation_updates(self, report: Dict[str, Any], updates: list[Any]) -> None:
+    def apply_validation_updates(
+        self, report: Dict[str, Any], updates: list[Any], *, strict_identity: bool = False
+    ) -> None:
         update_map = {
-            issue_key(issue): normalize_validation(issue)
+            (issue_identity(issue) if strict_identity else issue_key(issue)): normalize_validation(
+                issue
+            )
             for issue in updates
             if isinstance(issue, dict)
         }
@@ -916,11 +930,12 @@ class ReportFeedbackService:
         def update_issue(issue: Dict[str, Any]) -> None:
             if not isinstance(issue, dict):
                 return
-            key = issue_key(issue)
+            key = issue_identity(issue) if strict_identity else issue_key(issue)
             if key in update_map:
                 status, reasoning, rebuttal = update_map[key]
                 issue["validation_status"] = status
-                issue["validation_reasoning"] = reasoning
+                if not strict_identity:
+                    issue["validation_reasoning"] = reasoning
                 issue["user_rebuttal"] = rebuttal
 
         for issue in report.get("issues", []):
@@ -930,6 +945,10 @@ class ReportFeedbackService:
                 update_issue(issue)
         for issue in report.get("findings", []):
             update_issue(issue)
+        for nested in [*report.get("results", {}).values(), *report.get("function_results", [])]:
+            if isinstance(nested, dict):
+                for issue in nested.get("issues", []):
+                    update_issue(issue)
         metadata = report.get("metadata")
         if isinstance(metadata, dict):
             for issue in metadata.get("audit_observations", []):
@@ -963,7 +982,9 @@ class ReportFeedbackService:
                 )
             report.setdefault("metadata", {})["report_view_summary"] = report_view_summary(report)
 
-    def apply_validation_to_snapshots(self, updates: list[Any]) -> Dict[str, Any]:
+    def apply_validation_to_snapshots(
+        self, updates: list[Any], *, strict_identity: bool = False
+    ) -> Dict[str, Any]:
         snapshot_store = self.snapshot_store
         if not snapshot_store:
             return {
@@ -974,7 +995,9 @@ class ReportFeedbackService:
             }
 
         key_updates = {
-            issue_key(issue): normalize_validation(issue)
+            (issue_identity(issue) if strict_identity else issue_key(issue)): normalize_validation(
+                issue
+            )
             for issue in updates
             if isinstance(issue, dict)
         }
@@ -988,10 +1011,10 @@ class ReportFeedbackService:
             if not isinstance(target, dict):
                 return False
             update = None
-            key = issue_key(target)
+            key = issue_identity(target) if strict_identity else issue_key(target)
             if key in key_updates:
                 update = key_updates[key]
-            else:
+            elif not strict_identity:
                 dedup_key = target.get("dedup_key")
                 if dedup_key and str(dedup_key) in dedup_updates:
                     update = dedup_updates[str(dedup_key)]
@@ -999,7 +1022,8 @@ class ReportFeedbackService:
                 return False
             status, reasoning, rebuttal = update
             target["validation_status"] = status
-            target["validation_reasoning"] = reasoning
+            if not strict_identity:
+                target["validation_reasoning"] = reasoning
             target["user_rebuttal"] = rebuttal
             if status == "rejected":
                 target["rejection_source"] = "user"
@@ -1015,6 +1039,13 @@ class ReportFeedbackService:
 
         def apply_to_report(report: Dict[str, Any]) -> int:
             changed = apply_to_issue_list(report.get("issues"))
+            changed += apply_to_issue_list(report.get("findings"))
+            for nested in [
+                *report.get("results", {}).values(),
+                *report.get("function_results", []),
+            ]:
+                if isinstance(nested, dict):
+                    changed += apply_to_issue_list(nested.get("issues"))
             for bucket in report.get("issues_by_severity", {}).values():
                 changed += apply_to_issue_list(bucket)
             report_views = report.get("report_views")
@@ -1061,9 +1092,35 @@ class ReportFeedbackService:
         save_scope: str = "full",
     ) -> Dict[str, Any]:
         report = self.load_report()
-        self.apply_validation_updates(report, updates)
+        # New dashboard clients send a server-issued identity. Never persist compacted
+        # display fields (especially Validator text) back over the complete finding.
+        identified = any(isinstance(item, dict) and item.get("issue_id") for item in updates)
+        strict_identity = identified or save_scope == "offline_import"
+        if identified:
+            authoritative = {
+                issue_identity(item): item
+                for view in (DEFAULT_REPORT_VIEW, WITH_NEEDS_REVIEW_REPORT_VIEW)
+                for item in findings_for_view(report, view)
+            }
+            resolved = []
+            for item in updates:
+                if not isinstance(item, dict) or not item.get("issue_id"):
+                    resolved.append(item)
+                    continue
+                current = authoritative.get(item["issue_id"])
+                if current is None:
+                    raise ValueError("issue 不存在，请刷新报告")
+                merged = dict(current)
+                for field in ("validation_status", "user_rebuttal"):
+                    if field in item:
+                        merged[field] = item[field]
+                resolved.append(merged)
+            updates = resolved
+        self.apply_validation_updates(report, updates, strict_identity=strict_identity)
         if persist_snapshots:
-            snapshot_result = self.apply_validation_to_snapshots(updates)
+            snapshot_result = self.apply_validation_to_snapshots(
+                updates, strict_identity=strict_identity
+            )
         else:
             snapshot_result = {
                 "snapshot_available": bool(self.snapshot_store),

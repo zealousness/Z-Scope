@@ -70,7 +70,7 @@ def test_evidence_slice_keeps_one_representative_path_and_compact_code() -> None
         "sink",
     ]
     assert "other" not in json.dumps(result, ensure_ascii=False)
-    assert len(result["code"]["function_context"].splitlines()) <= 111
+    assert result["code"]["function_context"] == evidence["function_context"]["code"]
 
 
 def test_validator_v2_protocol_accepts_one_response_without_tools(monkeypatch) -> None:

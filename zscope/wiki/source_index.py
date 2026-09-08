@@ -302,6 +302,7 @@ class SourceIndex:
             if manifest is None:
                 manifest = project_root
             project_root = None
+        materialized_prune_paths: Tuple[Union[Path, str], ...]
         if prune_paths is None:
             materialized_prune_paths = ()
         elif isinstance(prune_paths, (str, Path)):

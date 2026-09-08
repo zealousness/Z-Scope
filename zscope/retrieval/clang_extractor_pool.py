@@ -500,7 +500,7 @@ class ClangExtractorPool:
         *,
         use_staging: bool = False,
         only_files: Optional[Set[str]] = None,
-    ) -> int:
+    ) -> Dict[str, Any]:
         kwargs: Dict[str, Any] = {"use_staging": use_staging}
         if only_files is not None:
             kwargs["only_files"] = only_files

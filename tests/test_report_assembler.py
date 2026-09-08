@@ -10,11 +10,13 @@ class FakeSnapshotStore:
     def __init__(self):
         self.saved = None
 
-    def save_final_report(self, index_name, report):
+    def save_final_report(self, index_name, report, *, expected_generation=None):
         self.saved = {
             "index_name": index_name,
             "report": report,
+            "expected_generation": expected_generation,
         }
+        return True
 
 
 def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
@@ -38,6 +40,7 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
         "run_id": "RUN1",
         "entry_func": "entry",
         "entry_index_name": "entry@src/demo.c:1-20",
+        "snapshot_generation": "analysis-version",
         "agent_context": {"location": "src/demo.c:1"},
         "issues": [
             {
@@ -79,6 +82,7 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     assert (tmp_path / "report.json").exists()
     assert (tmp_path / "report.md").exists()
     assert snapshot_store.saved["index_name"] == "entry@src/demo.c:1-20"
+    assert snapshot_store.saved["expected_generation"] == "analysis-version"
     assert resolved == [1, 2]
 
 

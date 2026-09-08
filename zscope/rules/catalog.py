@@ -12,6 +12,8 @@ from typing import Any, Dict, Iterable, Iterator, Literal, Mapping, Optional, Se
 
 import yaml
 
+from ..common.defect_cwe_map import cwes_for_category, merge_cwes
+
 RULE_CATALOG_VERSION = 2
 RULE_CATALOG_SCHEMA = "zscope.rule-catalog.v2"
 SUPPORTED_LANGUAGES = frozenset({"c_cpp", "java"})
@@ -33,6 +35,7 @@ DESCRIPTOR_FIELDS = frozenset(
         "engine",
         "defect_class",
         "cwe",
+        "additional_cwes",
         "skill",
         "default_severity",
         "revision",
@@ -109,11 +112,27 @@ class RuleDescriptor:
     summary: str
     required_capabilities: Tuple[str, ...]
     aliases: Tuple[str, ...] = ()
+    additional_cwes: Tuple[str, ...] = ()
     legacy_id: bool = False
     source: str = "builtin"
     default_enabled: bool = True
 
+    @property
+    def cwes(self) -> Tuple[str, ...]:
+        """Primary CWE first, then additional CWEs, without duplicates."""
+
+        ordered = [self.cwe]
+        for extra in self.additional_cwes:
+            if extra not in ordered:
+                ordered.append(extra)
+        return tuple(ordered)
+
     def as_dict(self) -> Dict[str, Any]:
+        # NOTE: this mapping is the qualification-evidence descriptor
+        # commitment hash input; adding derived keys here invalidates every
+        # persisted evidence manifest.  ``cwes`` (primary + additional) stays
+        # a property and the catalog YAML stays the serialization source of
+        # truth for ``additional_cwes``.
         return {
             "id": self.id,
             "language": self.language,
@@ -387,6 +406,17 @@ class RuleCatalog:
                 )
         if not _CWE_RE.fullmatch(descriptor.cwe):
             raise RuleCatalogError(f"rule {descriptor.id!r} has invalid CWE {descriptor.cwe!r}")
+        for extra in descriptor.additional_cwes:
+            if not _CWE_RE.fullmatch(extra):
+                raise RuleCatalogError(
+                    f"rule {descriptor.id!r} has invalid additional CWE {extra!r}"
+                )
+            if extra == descriptor.cwe:
+                raise RuleCatalogError(
+                    f"rule {descriptor.id!r} additional CWE {extra!r} duplicates the primary CWE"
+                )
+        if len(set(descriptor.additional_cwes)) != len(descriptor.additional_cwes):
+            raise RuleCatalogError(f"rule {descriptor.id!r} has duplicate additional CWEs")
         if descriptor.default_severity not in SUPPORTED_SEVERITIES:
             raise RuleCatalogError(
                 f"rule {descriptor.id!r} has invalid severity {descriptor.default_severity!r}"
@@ -687,11 +717,12 @@ class RulePolicy:
         variants = _LEGACY_RULE_VARIANTS.get(descriptor.id)
         candidate_defect = str(enriched.get("defect_class") or "")
         candidate_cwe = variants.get(candidate_defect, "") if variants else ""
+        effective_defect = candidate_defect or descriptor.defect_class
         enriched.update(
             {
                 "rule": descriptor.id,
                 "rule_id": descriptor.id,
-                "defect_class": candidate_defect or descriptor.defect_class,
+                "defect_class": effective_defect,
                 "cwe": candidate_cwe or descriptor.cwe,
                 "skill": descriptor.skill,
                 "rule_engine": descriptor.engine,
@@ -702,7 +733,17 @@ class RulePolicy:
                 "rule_catalog_sha256": self.effective.provenance.catalog_sha256,
             }
         )
+        # The CWE set is enrichment, not governance: the primary ``cwe`` above
+        # stays authoritative while ``cwes`` unions the descriptor set, any
+        # candidate-declared CWEs, and the class-level coverage map.
+        enriched["cwes"] = merge_cwes(
+            [enriched["cwe"]],
+            descriptor.cwes,
+            enriched.get("cwes"),
+            cwes_for_category(effective_defect),
+        )
         evidence = dict(enriched.get("evidence_pack") or {})
+        evidence["cwes"] = list(enriched["cwes"])
         descriptor_ref = {
             "rule_id": descriptor.id,
             "rule_engine": descriptor.engine,
@@ -846,12 +887,22 @@ def _parse_descriptor(
     unknown = sorted(set(raw) - DESCRIPTOR_FIELDS)
     # ``default_enabled`` is the only catalog-v2 migration field.  It may be
     # omitted by packaged legacy rows and is materialized as ``True`` below;
-    # new rules must always state it explicitly.
-    missing = sorted((DESCRIPTOR_FIELDS - {"default_enabled"}) - set(raw))
+    # new rules must always state it explicitly.  ``additional_cwes`` is
+    # optional everywhere: a rule without it declares exactly its primary CWE.
+    missing = sorted((DESCRIPTOR_FIELDS - {"default_enabled", "additional_cwes"}) - set(raw))
     if unknown:
         raise RuleCatalogError(f"{path}: unknown fields: {', '.join(unknown)}")
     if missing:
         raise RuleCatalogError(f"{path}: missing fields: {', '.join(missing)}")
+    raw_additional_cwes = raw.get("additional_cwes")
+    if raw_additional_cwes is None:
+        additional_cwes: Tuple[str, ...] = ()
+    elif isinstance(raw_additional_cwes, list) and all(
+        isinstance(item, str) for item in raw_additional_cwes
+    ):
+        additional_cwes = tuple(raw_additional_cwes)
+    else:
+        raise RuleCatalogError(f"{path}.additional_cwes: must be a string list")
     list_fields: Dict[str, Tuple[str, ...]] = {}
     for key in ("required_capabilities", "aliases"):
         value = raw[key]
@@ -897,6 +948,7 @@ def _parse_descriptor(
         engine=raw["engine"],
         defect_class=raw["defect_class"],
         cwe=raw["cwe"],
+        additional_cwes=additional_cwes,
         skill=raw["skill"],
         default_severity=raw["default_severity"],
         revision=revision,
@@ -941,6 +993,7 @@ def external_descriptor(
     status: str = "stable",
     required_capabilities: Sequence[str] = ("source_text",),
     aliases: Sequence[str] = (),
+    additional_cwes: Sequence[str] = (),
     default_enabled: bool = True,
 ) -> RuleDescriptor:
     descriptor = RuleDescriptor(
@@ -949,6 +1002,7 @@ def external_descriptor(
         engine=engine,
         defect_class=defect_class,
         cwe=cwe,
+        additional_cwes=tuple(additional_cwes),
         skill=skill,
         default_severity=severity,
         revision=revision,

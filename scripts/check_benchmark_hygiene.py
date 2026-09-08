@@ -188,8 +188,8 @@ def check_hygiene() -> List[str]:
             )
         errors.extend(_truth_errors(spec.truth_path))
     range_truth = json.loads(SPECS["c_cpp"].truth_path.read_text(encoding="utf-8"))
-    if range_truth.get("version") != 14 or range_truth.get("total_vulnerabilities") != 136:
-        errors.append("Range canonical truth must remain version 14 with 136 records")
+    if range_truth.get("version") != 15 or range_truth.get("total_vulnerabilities") != 136:
+        errors.append("Range canonical truth must remain version 15 with 136 records")
     errors.extend(_java_entry_errors())
     demo_truth = ROOT / "test" / "llm_wiki_demo" / "benchmark" / "ground_truth.json"
     if demo_truth.is_file():

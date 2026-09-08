@@ -689,6 +689,10 @@ def apply_report_schema_v2(
     report["run_manifest"]["finding_root_alias_count"] = int(
         state.get("finding_root_alias_count", 0) or 0
     )
+    report["run_manifest"]["aggregation_count"] = int(state.get("aggregation_count", 0) or 0)
+    report["run_manifest"]["aggregation_alias_count"] = int(
+        state.get("aggregation_alias_count", 0) or 0
+    )
     for key in (
         "validator_session_count",
         "validator_api_call_count",

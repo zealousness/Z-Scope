@@ -20,6 +20,7 @@ import time
 import shutil
 import subprocess
 import tempfile
+from weakref import WeakKeyDictionary
 from typing import (
     Any,
     Callable,
@@ -66,10 +67,13 @@ class _EndpointCapacityState:
     requests_started: Deque[float] = field(default_factory=deque)
     success_streak: int = 0
     overload_events: int = 0
+    adaptive_limit: int = 0
+    owners: Any = field(default_factory=WeakKeyDictionary)
 
 
 @dataclass
 class _GlobalCapacityState:
+    owners: Any = field(default_factory=WeakKeyDictionary)
     hard_max_concurrent_requests: int = 0
     in_flight: int = 0
 
@@ -179,6 +183,9 @@ class LLMClient:
                 failures after ``max_retries`` until the request succeeds or
                 the scan is cancelled.
         """
+        self._closed = False
+        self._owned_in_flight = 0
+        self._request_threads: Dict[int, int] = {}
         self.api_key = api_key
         self.base_urls = self._normalize_base_urls(base_url)
         self.base_url = self.base_urls[0]
@@ -238,48 +245,35 @@ class LLMClient:
         positive = [int(limit) for limit in limits if int(limit or 0) > 0]
         return min(positive) if positive else 0
 
-    @staticmethod
-    def _shared_global_capacity_state(
-        max_concurrent_requests: int,
-    ) -> _GlobalCapacityState:
+    def _shared_global_capacity_state(self, max_concurrent_requests: int) -> _GlobalCapacityState:
         with _ENDPOINT_CAPACITY_CONDITION:
-            if max_concurrent_requests > 0:
-                _GLOBAL_CAPACITY_STATE.hard_max_concurrent_requests = (
-                    LLMClient._strictest_positive_limit(
-                        _GLOBAL_CAPACITY_STATE.hard_max_concurrent_requests,
-                        max_concurrent_requests,
-                    )
-                )
-            return _GLOBAL_CAPACITY_STATE
+            state = _GLOBAL_CAPACITY_STATE
+            state.owners[self] = max_concurrent_requests
+            state.hard_max_concurrent_requests = self._strictest_positive_limit(*state.owners.values())
+            return state
 
-    @staticmethod
+    @classmethod
+    def _recompute_endpoint_capacity(cls, state: _EndpointCapacityState) -> None:
+        values = list(state.owners.values())
+        state.hard_max_concurrent_requests = cls._strictest_positive_limit(*(v[0] for v in values))
+        state.rate_limit_per_minute = cls._strictest_positive_limit(*(v[1] for v in values))
+        state.max_concurrent_requests = cls._strictest_positive_limit(
+            state.hard_max_concurrent_requests, state.adaptive_limit
+        )
+
     def _shared_endpoint_capacity_state(
-        url: str,
-        max_concurrent_requests: int,
-        rate_limit_per_minute: int = 0,
+        self, url: str, max_concurrent_requests: int, rate_limit_per_minute: int = 0,
     ) -> _EndpointCapacityState:
         with _ENDPOINT_CAPACITY_CONDITION:
-            state = _ENDPOINT_CAPACITY_STATES.get(url)
-            if state is None:
-                state = _EndpointCapacityState(url=url)
-                _ENDPOINT_CAPACITY_STATES[url] = state
-            if max_concurrent_requests > 0:
-                state.hard_max_concurrent_requests = LLMClient._strictest_positive_limit(
-                    state.hard_max_concurrent_requests,
-                    max_concurrent_requests,
-                )
-                if state.max_concurrent_requests <= 0:
-                    state.max_concurrent_requests = state.hard_max_concurrent_requests
-                else:
-                    state.max_concurrent_requests = min(
-                        state.max_concurrent_requests,
-                        state.hard_max_concurrent_requests,
-                    )
-            if rate_limit_per_minute > 0:
-                state.rate_limit_per_minute = LLMClient._strictest_positive_limit(
-                    state.rate_limit_per_minute,
-                    rate_limit_per_minute,
-                )
+            now = time.monotonic()
+            for key, old in list(_ENDPOINT_CAPACITY_STATES.items()):
+                self._prune_endpoint_requests(old, now)
+                if not old.owners and not old.in_flight and not old.requests_started:
+                    del _ENDPOINT_CAPACITY_STATES[key]
+            state = _ENDPOINT_CAPACITY_STATES.setdefault(url, _EndpointCapacityState(url=url))
+            state.owners[self] = (max_concurrent_requests, rate_limit_per_minute)
+            self._recompute_endpoint_capacity(state)
+            _ENDPOINT_CAPACITY_CONDITION.notify_all()
             return state
 
     def endpoint_capacity_snapshot(self) -> Dict[str, Dict[str, int]]:
@@ -573,11 +567,14 @@ class LLMClient:
         return session
 
     def _session_for_thread(self) -> requests.Session:
-        session = getattr(self._thread_local, "session", None)
-        if session is None:
-            session = self._new_session()
-            self._thread_local.session = session
-        return cast(requests.Session, session)
+        with self._base_url_condition:
+            if self._closed and not self._request_threads.get(threading.get_ident()):
+                raise RuntimeError("LLM client is closed")
+            session = getattr(self._thread_local, "session", None)
+            if session is None:
+                session = self._new_session()
+                self._thread_local.session = session
+            return cast(requests.Session, session)
 
     def close_thread_session(self) -> None:
         """Close this client's HTTP session for the current thread."""
@@ -595,7 +592,25 @@ class LLMClient:
                 pass
 
     def close(self) -> None:
-        """Close all HTTP sessions known to this client."""
+        """Stop admission; active requests retain sessions until they release."""
+        with self._base_url_condition:
+            if self._closed:
+                return
+            self._closed = True
+            self._global_capacity_state.owners.pop(self, None)
+            self._global_capacity_state.hard_max_concurrent_requests = self._strictest_positive_limit(
+                *self._global_capacity_state.owners.values()
+            )
+            for endpoint in self._endpoint_capacity_states.values():
+                endpoint.owners.pop(self, None)
+                self._recompute_endpoint_capacity(endpoint)
+            self._base_url_condition.notify_all()
+            if self._owned_in_flight:
+                return
+        self._close_sessions()
+
+    def _close_sessions(self) -> None:
+        """Called only after admission stopped and this owner's requests drained."""
         with self._sessions_lock:
             sessions = list(self._sessions)
             self._sessions.clear()
@@ -638,6 +653,8 @@ class LLMClient:
                 token.raise_if_cancelled()
             now = time.monotonic()
             with self._base_url_condition:
+                if self._closed:
+                    raise RuntimeError("LLM client is closed")
                 for state in self._base_url_states:
                     self._prune_recent_requests(state, now)
                     self._prune_endpoint_requests(
@@ -670,6 +687,9 @@ class LLMClient:
                     endpoint.requests_started.append(now)
                     endpoint.in_flight += 1
                     self._global_capacity_state.in_flight += 1
+                    self._owned_in_flight += 1
+                    thread = threading.get_ident()
+                    self._request_threads[thread] = self._request_threads.get(thread, 0) + 1
                     return selected
 
                 blocked_by_concurrency_only = (
@@ -706,7 +726,16 @@ class LLMClient:
                 0,
                 self._global_capacity_state.in_flight - 1,
             )
+            self._owned_in_flight = max(0, self._owned_in_flight - 1)
+            thread = threading.get_ident()
+            if self._request_threads.get(thread, 0) <= 1:
+                self._request_threads.pop(thread, None)
+            else:
+                self._request_threads[thread] -= 1
+            drained = self._closed and not self._owned_in_flight
             self._base_url_condition.notify_all()
+        if drained:
+            self._close_sessions()
 
     def _mark_base_url_cooldown(self, state: _BaseUrlState, seconds: float) -> None:
         if seconds <= 0:
@@ -806,6 +835,9 @@ class LLMClient:
                 hard_limit,
                 endpoint.max_concurrent_requests + 1,
             )
+            endpoint.adaptive_limit = (
+                endpoint.max_concurrent_requests if endpoint.max_concurrent_requests < hard_limit else 0
+            )
             endpoint.success_streak = 0
             self._base_url_condition.notify_all()
             logger.info(
@@ -827,6 +859,8 @@ class LLMClient:
                 endpoint.max_concurrent_requests or endpoint.hard_max_concurrent_requests
             )
             if current_limit <= 1:
+                endpoint.adaptive_limit = 1
+                endpoint.max_concurrent_requests = 1
                 endpoint.success_streak = 0
                 endpoint.overload_events += 1
                 return
@@ -835,6 +869,7 @@ class LLMClient:
                 int(current_limit * self.AIMD_DECREASE_FACTOR),
             )
             endpoint.max_concurrent_requests = min(current_limit, reduced_limit)
+            endpoint.adaptive_limit = endpoint.max_concurrent_requests
             endpoint.success_streak = 0
             endpoint.overload_events += 1
             self._base_url_condition.notify_all()
@@ -3030,13 +3065,14 @@ class LLMClient:
                         )
                     elif covered_snippet_call is not None:
                         repeated_call_count = 0
-                        result = self._slice_covering_file_snippet_result(
+                        sliced_result = self._slice_covering_file_snippet_result(
                             covered_snippet_call,
                             func_args,
                         )
-                        if result is None:
+                        if sliced_result is None:
                             result = tool_executor(func_name, func_args)
                         else:
+                            result = dict(sliced_result)
                             result["cached_tool_result"] = True
                             result["covered_file_snippet_replay"] = True
                             result["repeat_call_warning"] = self._build_covered_file_snippet_notice(

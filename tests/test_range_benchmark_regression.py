@@ -18,7 +18,7 @@ def test_range_regex_candidate_coverage_when_available() -> None:
         pytest.skip("test/range benchmark fixtures are not available in this checkout")
 
     truth = json.loads((benchmark_dir / "ground_truth.json").read_text(encoding="utf-8"))
-    assert truth.get("version") == 14
+    assert truth.get("version") == 15
 
     result = evaluate_range_regression(
         project_root=project_root,
@@ -71,7 +71,10 @@ def test_range_unified_candidate_recall_gate_when_available() -> None:
     assert "miss_reason_summary" in result
 
 
-def test_range_scorer_counts_discoverable_same_location_even_with_category_drift() -> None:
+def test_range_scorer_same_location_category_drift_is_diagnostic_only() -> None:
+    # The category gate is not loosened: without any category, family, or CWE
+    # hit, a same-location finding with a drifted class stays a weak-legacy
+    # diagnostic and never becomes an official true positive.
     truth = {
         "benchmark": "unit",
         "vulnerabilities": [
@@ -101,5 +104,6 @@ def test_range_scorer_counts_discoverable_same_location_even_with_category_drift
 
     result = score_report(report, truth, line_tolerance=5)
 
-    assert result["true_positives"] == 1
-    assert result["false_negatives"] == 0
+    assert result["true_positives"] == 0
+    assert result["false_negatives"] == 1
+    assert result["match_diagnostics"]["weak_pair_count"] >= 1

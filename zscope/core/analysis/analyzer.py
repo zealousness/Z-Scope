@@ -614,9 +614,9 @@ class Analyzer:
                     # program-owned manifest pin deterministically and reuse
                     # the existing constraints; never turn an empty delta
                     # into a full Compiler invocation.
-                    added_source_ids = ()
-                    changed_source_ids = ()
-                    removed_source_ids = ()
+                    added_source_ids: Tuple[str, ...] = ()
+                    changed_source_ids: Tuple[str, ...] = ()
+                    removed_source_ids: Tuple[str, ...] = ()
                 elif not has_constraints:
                     added_source_ids = tuple(
                         sorted(str(item.source_id) for item in manifest.accepted)
@@ -755,7 +755,7 @@ class Analyzer:
             )
             impl_result = self.code_index.get_function_impl(
                 semantic_model_input["index_name"],
-                max_lines=self.config.analysis.max_function_lines,
+                max_lines=None,
                 file_path=semantic_model_input["file_path"],
             )
         except SemanticModelInputError as exc:
@@ -781,7 +781,11 @@ class Analyzer:
 
         agent_context = {
             "func_name": semantic_model_input["func_name"],
-            "code": impl_result["code"],
+            "code": "\n".join(
+                impl_result["code"].splitlines()[: self.config.analysis.max_function_lines]
+            ),
+            "code_truncated": len(impl_result["code"].splitlines())
+            > self.config.analysis.max_function_lines,
             "location": f"{impl_result['file']}:{impl_result['start_line']}",
         }
 
@@ -841,6 +845,7 @@ class Analyzer:
             "candidate_lifecycle_v3": True,
             "canonical_outcome_projection_enabled": True,
             "finding_root_v1_enabled": True,
+            "same_site_aggregation_enabled": True,
             "budget_exhaustion_policy": str(
                 getattr(self.config.analysis, "budget_exhaustion_policy", "observe") or "observe"
             ),
@@ -1209,6 +1214,7 @@ class Analyzer:
             entry_func = str(state.get("entry_func") or "")
             entry_index_name = str(state.get("entry_index_name") or "")
             snapshot = self.snapshot_store.load_snapshot(entry_index_name)
+            state["snapshot_generation"] = self.snapshot_store.observed_generation(entry_index_name)
             if snapshot:
                 try:
                     needs_refresh, reason = self.snapshot_store.needs_refresh(
@@ -1274,7 +1280,7 @@ class Analyzer:
         )
 
         if response.success:
-            self.snapshot_store.save_snapshot(
+            state["snapshot_generation"] = self.snapshot_store.save_snapshot(
                 state["entry_index_name"],
                 response.data,
                 semantic_context["code"],
@@ -1859,6 +1865,12 @@ class Analyzer:
         """Seed backend-appropriate local candidates before LLM validation."""
         entry_func = state["entry_func"]
         impl = state.get("impl_result") or {}
+        if impl.get("truncated") or not str(impl.get("code") or "").strip():
+            self._record_engine_failed_work(
+                state, engine="deterministic_local_rules", function_name=entry_func,
+                reason="source_truncated" if impl.get("truncated") else "source_unavailable", call_path=[entry_func],
+            )
+            return []
         code = str(impl.get("code") or "")
         file_path = str(impl.get("file") or "")
         profile = self._candidate_backend_profile()
@@ -1897,7 +1909,8 @@ class Analyzer:
             issues.extend(self._detect_java_project_file_rule_candidates(java_generator))
         elif profile == "regex":
             regex_generator = RegexCandidateGenerator(
-                self._get_local_pattern_semantics(),
+                program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
+                semantics=self._get_local_pattern_semantics(),
                 rule_policy=getattr(self, "rule_policy", None),
             )
             issues.extend(regex_generator.generate_issues(entry_func, code, file_path))
@@ -1914,7 +1927,8 @@ class Analyzer:
             )
         if self._project_language() != "java" and profile in {"clang", "unified"}:
             clang_generator = ClangAstCfgCandidateGenerator(
-                self._get_local_pattern_semantics(),
+                program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
+                semantics=self._get_local_pattern_semantics(),
                 semantic_overlay=self._get_semantic_overlay(),
                 tooling_evidence_provider=self._clang_tooling_evidence_for,
                 rule_policy=getattr(self, "rule_policy", None),
@@ -1993,6 +2007,13 @@ class Analyzer:
             self._extension_rule_registry = registry
 
         impl = _as_dict(state.get("impl_result"))
+        if impl.get("truncated") or not str(impl.get("code") or "").strip():
+            function_name = str(state.get("entry_func") or impl.get("function") or "")
+            self._record_engine_failed_work(
+                state, engine="extension_rules", function_name=function_name,
+                reason="source_truncated" if impl.get("truncated") else "source_unavailable", call_path=[function_name],
+            )
+            return []
         context = RuleContext(
             language=self._project_language(),
             project_root=Path(self.config.project.project_root),
@@ -2143,12 +2164,14 @@ class Analyzer:
             )
         elif profile == "regex":
             generator = RegexCandidateGenerator(
-                self._get_local_pattern_semantics(),
+                program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
+                semantics=self._get_local_pattern_semantics(),
                 rule_policy=getattr(self, "rule_policy", None),
             )
         if self._project_language() != "java" and profile in {"clang", "unified"}:
             clang_generator = ClangAstCfgCandidateGenerator(
-                self._get_local_pattern_semantics(),
+                program_facts_provider=getattr(self.code_index, "get_function_program_facts", None),
+                semantics=self._get_local_pattern_semantics(),
                 semantic_overlay=self._get_semantic_overlay(),
                 tooling_evidence_provider=self._clang_tooling_evidence_for,
                 rule_policy=getattr(self, "rule_policy", None),
@@ -2370,7 +2393,9 @@ class Analyzer:
                 continue
             visited.add(callee)
             try:
-                callee_impl = self.code_index.get_function_impl(callee, warn_missing=False)
+                callee_impl = self.code_index.get_function_impl(
+                    callee, max_lines=None, warn_missing=False
+                )
             except Exception as exc:
                 logger.warning(
                     "Skipping direct callee candidate scan for '%s': %s",
@@ -2386,7 +2411,12 @@ class Analyzer:
                     call_path=call_path,
                 )
                 continue
-            if not callee_impl:
+            if not callee_impl or callee_impl.get("truncated"):
+                self._record_engine_failed_work(
+                    state, engine=engine_name, function_name=callee,
+                    reason="source_truncated" if callee_impl else "source_unavailable",
+                    call_path=call_path,
+                )
                 continue
             impl_cache[callee] = callee_impl
             analyzed += 1
@@ -4608,6 +4638,10 @@ class Analyzer:
                     file_path,
                     line,
                     issue_func,
+                    column_number=int(((issue.get("evidence_pack") or {}).get("sink") or {}).get("column") or 1)
+                    if isinstance((issue.get("evidence_pack") or {}).get("sink"), dict) else 1,
+                    event_ordinal=int(((issue.get("evidence_pack") or {}).get("sink") or {}).get("event_ordinal") or 0)
+                    if isinstance((issue.get("evidence_pack") or {}).get("sink"), dict) else 0,
                     kind="candidate_sink",
                     normalized_code=sink_text or str(issue.get("description") or ""),
                     ast_kind=defect_class,
@@ -5768,6 +5802,10 @@ class Analyzer:
         parent: str = "",
         call_path: Optional[Sequence[str]] = None,
     ) -> None:
+        self._record_engine_capability(
+            engine, status="degraded", active=True, reason=reason,
+            failed_function=function_name,
+        )
         self._record_deterministic_work_terminal(
             state,
             engine=engine,
@@ -6748,6 +6786,7 @@ class Analyzer:
                 try:
                     impl = self.code_index.get_function_impl(
                         c,
+                        max_lines=None,
                         warn_missing=False,
                         include_context=False,
                     )
@@ -6848,6 +6887,7 @@ class Analyzer:
             try:
                 impl = impl_cache.get(func) or self.code_index.get_function_impl(
                     func,
+                    max_lines=None,
                     warn_missing=False,
                     include_context=False,
                 )

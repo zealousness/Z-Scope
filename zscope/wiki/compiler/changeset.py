@@ -71,8 +71,9 @@ def validate_changeset(value: Mapping[str, Any], workset: Mapping[str, Any]) -> 
         _ensure(bool(str(compiler.get("identity", "")).strip()), "compiler identity is required")
     outcome = value["outcome"]
     _ensure(outcome in _OUTCOMES, f"invalid ChangeSet outcome: {outcome}")
+    raw_source_results = value["source_results"]
     _ensure(
-        isinstance(value["source_results"], list) and value["source_results"],
+        isinstance(raw_source_results, list) and bool(raw_source_results),
         "source_results must be non-empty",
     )
     allowed_refs = _ids(workset.get("allowed_source_refs"))
@@ -112,7 +113,8 @@ def validate_changeset(value: Mapping[str, Any], workset: Mapping[str, Any]) -> 
                 not str(result["source_ref"]).startswith("docdesc_"),
                 "docdesc source_ref is only valid for source_rejected",
             )
-    limits = workset.get("limits") if isinstance(workset.get("limits"), Mapping) else {}
+    limits_value = workset.get("limits")
+    limits: Mapping[str, Any] = limits_value if isinstance(limits_value, Mapping) else {}
     proposals = value["constraint_proposals"]
     _ensure(all(isinstance(item, Mapping) for item in proposals), "invalid constraint proposal")
     max_constraints = limits.get("max_constraints")

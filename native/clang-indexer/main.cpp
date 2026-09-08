@@ -1,6 +1,9 @@
 // Z-SCOPE bulk facts protocol v1. One compile context per process.
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/ExprCXX.h"
+#include "clang/AST/ParentMapContext.h"
+#include "clang/Analysis/CFG.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/Version.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -379,6 +382,8 @@ public:
   }
 };
 
+#include "ProgramEvents.h"
+
 class Consumer : public ASTConsumer {
   State &state;
   CompilerInstance &compiler;
@@ -389,6 +394,8 @@ public:
     Declarations declarations(state);
     declarations.TraverseDecl(context.getTranslationUnitDecl());
     state.functionOwners.build(state.functions);
+    ProgramEvents events(state);
+    events.TraverseDecl(context.getTranslationUnitDecl());
     TypeContexts typeContexts(state);
     typeContexts.TraverseDecl(context.getTranslationUnitDecl());
     Occurrences occurrences(state);
@@ -448,7 +455,7 @@ public:
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::string(argv[1]) == "--version") {
-    llvm::outs() << Value(Object{{"protocol", "zscope.clang-facts.v1"}, {"version", 1},
+    llvm::outs() << Value(Object{{"protocol", "zscope.clang-facts.v2"}, {"version", 2},
       {"clang_version", CLANG_VERSION_STRING}, {"position_encoding", "utf-8"},
       {"argument_policy_version", argumentPolicyVersion()},
       {"argument_policy_digest", ArgumentPolicySHA}}) << '\n';
@@ -497,7 +504,7 @@ int main(int argc, char **argv) {
     BatchDiagnostics diagnostics;
     tool.setDiagnosticConsumer(&diagnostics);
     Factory factory(state);
-    state.emit(Object{{"kind", "header"}, {"protocol", "zscope.clang-facts.v1"},
+    state.emit(Object{{"kind", "header"}, {"protocol", "zscope.clang-facts.v2"},
                 {"clang_version", CLANG_VERSION_STRING}, {"source", source}, {"position_encoding", "utf-8"}});
     auto attemptStarted = std::chrono::steady_clock::now();
     int result = tool.run(&factory);

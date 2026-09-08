@@ -1,3 +1,19 @@
+resource_families:
+  file:
+    acquire: [fopen, fdopen, freopen]
+    release: [fclose]
+  directory:
+    acquire: [opendir]
+    release: [closedir]
+  malloc:
+    acquire: [malloc, calloc, realloc]
+    release: [free]
+  new_scalar:
+    acquire: [new]
+    release: [delete]
+  new_array:
+    acquire: [new_array]
+    release: [delete_array]
 api_roles:
   allocators:
     - malloc

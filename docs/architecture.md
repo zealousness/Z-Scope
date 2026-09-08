@@ -372,7 +372,7 @@ Issue identity 由 `zscope/common/issue_identity.py` 统一提供。`canonical_i
 
 与 prompt 相关的用户配置上下文已经迁入 `zscope/semantics/user_config_context.py`。运行时会按当前函数源码标识符和文件 scope 过滤用户配置，只注入与当前入口相关的 resource、lock、pointer target、dispatcher、module lifecycle 和 function intent 片段。
 
-报告层默认生成两类视图：`report_views.default` 只包含可报告的确认问题；`report_views.with_needs_review` 会把 `needs_review` 审计观察项也并入列表，供人工复核或 WebUI 切换查看。`ReportAssembler` 负责最终 report、views、metadata、JSON/Markdown 和 snapshot 持久化，并支持 `deduplicate_report_issues` 钩子，让最终报告在构建视图前应用语义去重。`semantic_dedup_summary` 会记录程序化合并、LLM 小簇判重、cache hit、合并数和拒绝合并数；issue 本身保留 `duplicate_sources`、`alternate_evidence`、`dedup_decisions`、`category_family` 与 `resource_signature`。报告 metadata 另外记录规则目录 schema/hash、enabled/disabled/unavailable IDs、扩展来源和按 engine/rule 聚合的已产生候选数。CLI 的 `--export-sarif` 输出 SARIF v2.1.0：`ruleId` 直接使用 canonical `rule_id`，CWE 进入 tags/properties，历史 `CWE:rule` 写入 `properties.legacyRuleId`，engine/revision/Skill/catalog hash 进入 rule descriptor；`partialFingerprints.zscopeStableIssueFingerprint` 与 finding 身份算法保持不变。读取旧报告时仍会回退到历史 `rule` 字段，不就地改写归档。
+报告层默认生成两类视图：`report_views.default` 只包含可报告的确认问题；`report_views.with_needs_review` 会把 `needs_review` 审计观察项也并入列表，供人工复核或 WebUI 切换查看。在视图构建前，`zscope/reporting/issue_aggregation.py` 会把同缺陷家族、同函数、同结构化 sink 锚点（行距链式聚类）的 confirmed/needs_review 结果折叠为一个 primary，CWE 与类别标签取成员并集（issue 级 `cwes`/`categories`，可归属多个 CWE），成员转 `deduplicated_alias` 终态保留审计；报告侧的 `zscope/common/defect_cwe_map.py` 集中维护类别→CWE 集合的兜底映射，保证可分类 finding 的 `cwes` 非空。`ReportAssembler` 负责最终 report、views、metadata、JSON/Markdown 和 snapshot 持久化，并支持 `deduplicate_report_issues` 钩子，让最终报告在构建视图前应用语义去重。`semantic_dedup_summary` 会记录程序化合并、LLM 小簇判重、cache hit、合并数和拒绝合并数；issue 本身保留 `duplicate_sources`、`alternate_evidence`、`dedup_decisions`、`category_family` 与 `resource_signature`。报告 metadata 另外记录规则目录 schema/hash、enabled/disabled/unavailable IDs、扩展来源和按 engine/rule 聚合的已产生候选数。CLI 的 `--export-sarif` 输出 SARIF v2.1.0：`ruleId` 直接使用 canonical `rule_id`，CWE 进入 tags/properties，历史 `CWE:rule` 写入 `properties.legacyRuleId`，engine/revision/Skill/catalog hash 进入 rule descriptor；`partialFingerprints.zscopeStableIssueFingerprint` 与 finding 身份算法保持不变。读取旧报告时仍会回退到历史 `rule` 字段，不就地改写归档。
 
 ## 6. 架构优势
 
@@ -597,6 +597,10 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | `GET /api/findings` | 读取当前报告中的 findings |
 | `GET /api/version` | 返回当前 Z-SCOPE 版本和展示字符串 |
 | `POST /api/save_findings` | 保存验证状态并持久化 feedback |
+| `GET /api/issue_report?issue_id=...` | 从完整 finding 生成 Markdown 详情与复核基线 |
+| `GET /api/offline_report` | 导出 HTML 阅读器与逐 issue Markdown 的 ZIP |
+| `POST /api/import_reviews` | 跳过空说明、检查基线并增量回写人工复核 |
+| `POST /api/import_reviews/resolve` | 冲突人工确认后再次比较当前版本再回写 |
 | `GET/POST /api/config` | 读取和保存 `zscope.yaml` |
 | `GET/POST /api/config/structured` | 读取和保存结构化配置 |
 | `GET /api/rules?language=&engine=&skill=&status=&q=` | 查询规则目录、汇总与 effective status（只读） |

@@ -72,8 +72,10 @@ def wiki_status(project_root: Union[Path, str], *, state_dir: str = ".zscope_kno
         return _status_error(payload, "invalid_revision")
     if revision.get("source_manifest_digest") != active.get("source_manifest_digest"):
         return _status_error(payload, "stale_revision")
-    compiler = revision.get("compiler") if isinstance(revision.get("compiler"), Mapping) else {}
-    lint = revision.get("lint") if isinstance(revision.get("lint"), Mapping) else {}
+    compiler_value = revision.get("compiler")
+    compiler: Mapping[str, Any] = compiler_value if isinstance(compiler_value, Mapping) else {}
+    lint_value = revision.get("lint")
+    lint: Mapping[str, Any] = lint_value if isinstance(lint_value, Mapping) else {}
     if lint.get("status") != "passed":
         return _status_error(payload, "invalid_revision")
     payload.update(
@@ -200,7 +202,10 @@ def wiki_query(
             elif revision.get("source_manifest_digest") != manifest.source_manifest_digest:
                 fallback_reason = "stale_revision"
             else:
-                compiler = revision.get("compiler") if isinstance(revision.get("compiler"), Mapping) else {}
+                compiler_value = revision.get("compiler")
+                compiler: Mapping[str, Any] = (
+                    compiler_value if isinstance(compiler_value, Mapping) else {}
+                )
                 fallback_reason = (
                     "no_wiki_match"
                     if compiler.get("kind") in {"llm", "mixed"}

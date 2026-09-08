@@ -26,7 +26,7 @@ def _same_defect_site(
 
     Site-aware dedup guard: a destructive merge must not swallow a distinct
     finding merely because both items share a root-cause token or call path.
-    Primary lines within ``tolerance`` lines (the benchmark scorer's own
+    Primary lines within ``tolerance`` lines (the official matcher's own
     tolerance) count as the same site; unknown lines fall back to the
     equivalence decision.
     """

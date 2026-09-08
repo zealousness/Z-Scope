@@ -303,7 +303,9 @@ class WikiCompiler:
                     failed = True
                 child_results = result.get("source_results", ())
                 if isinstance(child_results, list):
-                    source_results.extend(item for item in child_results if isinstance(item, Mapping))
+                    source_results.extend(
+                        dict(item) for item in child_results if isinstance(item, Mapping)
+                    )
                 child_proposals = result.get("constraint_proposals", ())
                 if isinstance(child_proposals, list):
                     proposals.extend(item for item in child_proposals if isinstance(item, Mapping))
@@ -363,6 +365,7 @@ class WikiCompiler:
             })
         source_results = aggregated_results
 
+        outcome: str
         if failed:
             outcome = "extraction_failed"
             proposals = []
@@ -373,7 +376,7 @@ class WikiCompiler:
         proposals = self._dedupe_proposals(proposals)
         summary = program_summary(outcome, len(proposals), source_results)
 
-        result: Dict[str, Any] = {
+        result = {
             "schema_version": "zscope.wiki-changeset.v1",
             "workset_id": workset["workset_id"],
             "base_revision_id": workset.get("base_revision_id"),

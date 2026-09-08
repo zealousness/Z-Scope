@@ -200,7 +200,9 @@ def test_packaged_registry_authority_is_yaml_and_migrates_legacy_stable() -> Non
 
     assert registry.source_path.endswith("qualification_registry.yaml")
     assert registry.summary()["inherited_legacy_pending"] > 0
-    assert registry.summary()["total"] == len(catalog)
+    assert registry.summary()["total"] == sum(
+        rule.status == "stable" for rule in catalog
+    )
 
 
 def test_legacy_stable_rules_are_explicitly_synthesized_as_pending(tmp_path: Path) -> None:

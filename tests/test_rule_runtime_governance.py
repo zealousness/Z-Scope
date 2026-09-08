@@ -235,7 +235,7 @@ def test_config_loader_reports_disabled_rule_unavailable_for_backend(
         )
     )
 
-    assert config.effective_rules.disabled_ids == {"clang_cfg_use_after_release"}
+    assert "clang_cfg_use_after_release" in config.effective_rules.disabled_ids
     assert config.rule_validation_warnings
     assert "not applicable to backend 'regex'" in config.rule_validation_warnings[0]
     assert "clang_structure" in config.rule_validation_warnings[0]

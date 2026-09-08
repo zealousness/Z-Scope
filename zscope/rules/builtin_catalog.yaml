@@ -851,8 +851,9 @@ rules:
   cwe: CWE-366
   skill: shared_state_race
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Cond Wait Guarded By If
   summary: Built-in cpp_regex detector for lost wakeup.
   required_capabilities:
@@ -986,8 +987,9 @@ rules:
   cwe: CWE-590
   skill: temporal_memory
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Free Non Owner Pointer
   summary: Built-in cpp_regex detector for invalid free.
   required_capabilities:
@@ -1256,8 +1258,9 @@ rules:
   cwe: CWE-415
   skill: temporal_memory
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Same Expression Freed Twice
   summary: Built-in cpp_regex detector for double free.
   required_capabilities:
@@ -1286,8 +1289,9 @@ rules:
   cwe: CWE-415
   skill: temporal_memory
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Same Pointer Freed Twice
   summary: Built-in cpp_regex detector for double free.
   required_capabilities:
@@ -1436,8 +1440,9 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Unsynchronized Shared Flag Or Counter
   summary: Built-in cpp_regex detector for race.
   required_capabilities:
@@ -1466,8 +1471,9 @@ rules:
   cwe: CWE-401
   skill: resource_lifecycle
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Acquire Without Release On Exit
   summary: Built-in cpp_clang_cfg detector for memory leak.
   required_capabilities:
@@ -1498,8 +1504,9 @@ rules:
   cwe: CWE-476
   skill: null_and_failure
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Alloc Result Deref Without Null Guard
   summary: Built-in cpp_clang_cfg detector for null pointer dereference.
   required_capabilities:
@@ -1578,8 +1585,9 @@ rules:
   cwe: CWE-366
   skill: shared_state_race
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Cond Wait Guarded By If
   summary: Built-in cpp_clang_cfg detector for lost wakeup.
   required_capabilities:
@@ -2042,8 +2050,9 @@ rules:
   cwe: CWE-252
   skill: null_and_failure
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Out Param Used Before Success Check
   summary: Built-in cpp_clang_cfg detector for bad parameter or api misuse.
   required_capabilities:
@@ -2202,8 +2211,9 @@ rules:
   cwe: CWE-401
   skill: resource_lifecycle
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Realloc Lost Original
   summary: Built-in cpp_clang_cfg detector for realloc misuse.
   required_capabilities:
@@ -2314,8 +2324,9 @@ rules:
   cwe: CWE-415
   skill: temporal_memory
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Same Object Released Twice
   summary: Built-in cpp_clang_cfg detector for double free.
   required_capabilities:
@@ -2586,8 +2597,9 @@ rules:
   cwe: CWE-362
   skill: shared_state_race
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Unsynchronized Shared Flag Or Counter
   summary: Built-in cpp_clang_cfg detector for race.
   required_capabilities:
@@ -2602,8 +2614,9 @@ rules:
   cwe: CWE-416
   skill: temporal_memory
   default_severity: high
-  revision: 1
-  status: stable
+  revision: 2
+  status: experimental
+  default_enabled: false
   title: Use After Release
   summary: Built-in cpp_clang_cfg detector for use after free.
   required_capabilities:
@@ -3580,3 +3593,37 @@ rules:
   - call_graph
   aliases: []
   legacy_id: true
+- id: zscope.c_cpp.cpp_clang_cfg.resource_family_release_mismatch
+  legacy_id: false
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: invalid_free
+  cwe: CWE-762
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: experimental
+  default_enabled: false
+  title: Resource Family Release Mismatch
+  summary: Typed resource ownership and matching release candidate; path and ownership validation required.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+- id: zscope.c_cpp.cpp_clang_cfg.typed_resource_leak
+  legacy_id: false
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: resource_leak
+  cwe: CWE-772
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: experimental
+  default_enabled: false
+  title: Typed Resource Leak
+  summary: Typed resource ownership and matching release candidate; path and ownership validation required.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []

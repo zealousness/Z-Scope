@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from ..identity import stable_id
 from .workset import _allowed_subject_ids
@@ -90,7 +90,7 @@ def plan_compiler_chunks(
         tool_schema=tool_schema,
     )
     planned = []
-    current = []
+    current: List[Mapping[str, Any]] = []
     used = 0
     for section in sections:
         cost = _tokens(str(section.get("excerpt", "")))

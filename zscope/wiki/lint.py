@@ -232,9 +232,9 @@ def lint_revision(store: WikiStore, revision_id: Optional[str] = None) -> LintRe
         body_digest = "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
         if frontmatter.get("content_digest") != body_digest or row["content_digest"] != body_digest:
             errors.append(f"page_content_digest:{row['page_id']}")
-        for target in wikilink_targets(markdown):
-            if target not in page_ids:
-                errors.append(f"unresolved_wikilink:{target}")
+        for link_target in wikilink_targets(markdown):
+            if link_target not in page_ids:
+                errors.append(f"unresolved_wikilink:{link_target}")
         canonical_slug = str(row["canonical_slug"])
         if frontmatter.get("canonical_slug") != canonical_slug:
             errors.append(f"page_slug_mismatch:{row['page_id']}")

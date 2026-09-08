@@ -128,3 +128,11 @@ python -m pytest -q tests/test_alert_verifier_parallel.py tests/test_needs_revie
 - 稳定入口见本文 frontmatter 的 `sources`。
 - 分层关系见 `docs/architecture.md` 的“证据平面”“智能体平面”和“验证平面”。
 - Range 上的行为变更还必须遵循 `docs/range-benchmark.md`。
+
+## 完整源码、事件与验证上下文
+
+确定性入口、callee、Graph 和扩展 provider 读取完整函数正文；`max_function_lines` 仅限制模型展示，不能作为检测覆盖边界。源码缺失或截断必须进入未完成记录。Validator 在 token 预算以内保留完整函数，超预算时按防护、source/sink 和生命周期操作选择片段，并记录省略区间、源码摘要和续取引用；补充证据合并后重新拟合预算。上下文缺失且尚未补齐的模型判断保留待验证状态，证据版本参与缓存身份。
+
+资源状态机使用带行、列和事件序号的操作序列。同一行的多个语句分别处理，文本后备屏蔽字符串、注释和宏定义中的伪操作，并保留循环头。编译器 CFG/读写事实可作为可追溯证据；文本顺序不能替代路径可行性证明。内存、FILE、DIR 的获取与释放按资源家族匹配，共享访问依据对象事实生成候选，命名不作为唯一门槛；跨线程可达性、共同锁、原子操作和所有权转移仍须验证。
+
+规则语义变更保留 canonical ID、递增 revision 并重新验收。未取得可核验资格的新增/改动规则保持 experimental 且默认关闭；未改动的历史规则沿用 legacy pending 治理，不能因此通过正式发布资格门禁。独立生成器不带运行时 policy 时用于规则实验；产品扫描必须注入 preflight 的有效规则策略。

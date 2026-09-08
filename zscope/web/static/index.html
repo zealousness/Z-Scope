@@ -10,6 +10,14 @@
     <link rel="stylesheet" href="vendor/prism.css">
     <script src="vendor/prism.js"></script>
     <script src="vendor/prism-c.js"></script>
+    <script src="vendor/markdown-it.js"></script>
+    <script src="vendor/js-yaml.js"></script>
+    <script src="vendor/fflate.js"></script>
+    <script src="vendor/prism-cpp.js"></script>
+    <script src="vendor/prism-java.js"></script>
+    <script src="report_view.js"></script>
+    <script src="dashboard_reports.js"></script>
+    <link rel="stylesheet" href="report_view.css">
     <style>
         body { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
         .code-font { font-family: 'Fira Code', monospace; }
@@ -688,10 +696,12 @@
                 <span x-text="statusText">正在加载...</span>
             </div>
             <button @click="refreshData()" class="btn btn-outline btn-sm">刷新</button>
-            <button @click="exportOfflinePage()" class="btn btn-ghost btn-sm">离线导出</button>
-            <button @click="triggerOfflineImport()" class="btn btn-ghost btn-sm">导入</button>
+            <button @click="exportOfflinePage()" class="btn btn-ghost btn-sm" :disabled="exportingReport" x-text="exportingReport ? '导出中…' : '离线导出'"></button>
+            <button @click="triggerOfflineImport()" class="btn btn-ghost btn-sm" :disabled="importingReviews">导入</button>
+            <button @click="triggerDirectoryImport()" class="btn btn-ghost btn-sm" :disabled="importingReviews">导入目录</button>
+            <input type="file" x-ref="reviewDirectoryInput" @change="importOfflinePage($event)" class="hidden" webkitdirectory multiple>
             <button @click="saveFindings()" class="btn btn-primary btn-sm" :disabled="savingFindings || savingSingleFinding" x-text="savingFindings ? '保存中...' : '回写验证结果'">回写验证结果</button>
-            <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".html,text/html">
+            <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".md,.zip" multiple>
         </div>
     </nav>
 
@@ -854,7 +864,7 @@
 
         <div class="finding-detail-pane" :class="mobileFindingView === 'queue' ? 'mobile-hidden' : ''">
             <template x-if="selectedFinding">
-                <div class="finding-workspace glass rounded-lg">
+                <div class="finding-workspace markdown-workspace glass rounded-lg">
                     <section class="finding-summary-bar">
                         <div class="flex flex-wrap gap-3 justify-between items-start">
                             <div class="min-w-0">
@@ -876,167 +886,29 @@
                         </div>
                     </section>
 
-                    <section class="code-evidence-panel">
-                        <div class="px-4 py-3 border-b border-slate-200 flex justify-between items-center gap-3">
-                            <h3 class="text-sm font-semibold text-slate-950">代码证据</h3>
-                            <span class="text-xs subtle-text code-font truncate" x-text="activeCodeLabel(selectedFinding)"></span>
+                    <nav class="report-toc" aria-label="报告章节">
+                        <template x-for="item in reportToc" :key="item.id"><button type="button" @click="jumpReport(item.id)" x-text="item.label"></button></template>
+                    </nav>
+                    <div class="report-scroll" x-ref="reportScroll" :aria-busy="reportLoading">
+                        <p class="report-notice" x-show="reportLoading">正在加载完整 Markdown 报告…</p>
+                        <p class="report-notice" x-show="reportError" x-text="reportError" role="alert"></p>
+                        <article class="markdown-report" x-ref="markdownReport" x-show="!reportLoading && !reportError"></article>
+                    </div>
+                    <section class="report-review-editor">
+                        <div class="report-review-controls">
+                            <strong>人工反驳 / 复核说明</strong>
+                            <select aria-label="验证状态" x-model="selectedFinding.validation_status" @change="setFindingValidationStatus(selectedFinding, $event.target.value)" :disabled="savingFindings || savingSingleFinding || reportLoading || !!reportError">
+                                <option value="pending">pending</option><option value="needs_review">needs_review</option>
+                                <option value="validated">validated</option><option value="rejected">rejected</option>
+                                <option value="uncertain">uncertain</option><option value="unvalidated">unvalidated</option>
+                            </select>
+                            <button class="btn btn-ghost btn-xs" @click="reviewPreview=!reviewPreview">预览说明</button>
+                            <button class="btn btn-primary btn-xs" @click="saveSelectedFinding()" :disabled="savingFindings || savingSingleFinding || reportLoading || !!reportError" x-text="savingSingleFinding ? '保存中…' : '保存当前条'"></button>
+                            <span x-show="selectedFinding._validation_dirty">未保存</span>
                         </div>
-                        <div class="code-and-evidence" :style="codeEvidenceSplitStyle()">
-                            <div class="code-evidence-body code-panel">
-                                <table class="code-table">
-                                    <tbody>
-                                        <template x-for="line in findingCodeLines(selectedFinding)" :key="line.key">
-                                            <tr :class="isActiveCodeLine(line.no) ? 'code-line-active' : ''">
-                                                <td class="code-line-no" x-text="line.no"></td>
-                                                <td class="code-line-text" x-text="line.text || ' '"></td>
-                                            </tr>
-                                        </template>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div
-                                class="evidence-splitter"
-                                role="separator"
-                                tabindex="0"
-                                aria-label="调整代码证据和 Evidence Timeline 的占用比例"
-                                :aria-orientation="evidenceSplitOrientation()"
-                                :aria-valuenow="Math.round(activeEvidenceSplitPercent())"
-                                aria-valuemin="20"
-                                aria-valuemax="65"
-                                @pointerdown="startEvidenceSplitResize($event)"
-                                @keydown="handleEvidenceSplitKeydown($event)"
-                                title="拖动调整代码证据和 Evidence Timeline 的占用比例">
-                            </div>
-                            <aside class="evidence-panel">
-                                <div class="evidence-panel-head">
-                                    <h3 class="text-sm font-semibold text-slate-950">Evidence Timeline</h3>
-                                    <p class="text-xs subtle-text mt-1">source、sink、正反向证据按可点击事件组织。</p>
-                                </div>
-                                <div class="evidence-list" @click="selectEvidenceById($event.target.closest('.evidence-item')?.dataset.evidenceId)">
-                                    <template x-for="item in findingEvidenceItems(selectedFinding)" :key="item.id">
-                                        <article class="evidence-item" :data-evidence-id="item.id" :class="activeEvidenceId === item.id ? 'active' : ''">
-                                            <div class="flex items-center justify-between gap-2">
-                                                <span class="line-ref" x-text="item.refLabel"></span>
-                                                <button type="button" class="copy-chip" @click.stop="copyText(item.copyText)">复制</button>
-                                            </div>
-                                            <strong x-text="item.title"></strong>
-                                            <small x-text="item.detail"></small>
-                                        </article>
-                                    </template>
-                                </div>
-                            </aside>
-                        </div>
-                    </section>
-
-                    <section class="audit-review-dock">
-                        <div class="detail-tabbar">
-                            <button type="button" class="btn btn-xs" :class="activeDetailTab === 'evidence' ? 'btn-primary' : 'btn-outline'" @click="activeDetailTab='evidence'">证据摘要</button>
-                            <button type="button" class="btn btn-xs" :class="activeDetailTab === 'reasoning' ? 'btn-primary' : 'btn-outline'" @click="activeDetailTab='reasoning'">AI 推理</button>
-                            <button type="button" class="btn btn-xs" :class="activeDetailTab === 'fix' ? 'btn-primary' : 'btn-outline'" @click="activeDetailTab='fix'">根因 / 修复</button>
-                            <button type="button" class="btn btn-xs context-tab-only" :class="activeDetailTab === 'context' ? 'btn-primary' : 'btn-outline'" @click="activeDetailTab='context'">上下文</button>
-                        </div>
-                        <div class="detail-tab-content">
-                            <div x-show="activeDetailTab === 'evidence'" class="audit-claim-card">
-                                <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">规则 / 证据摘要</div>
-                                <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="formatFindingEvidence(selectedFinding) || '暂无规则证据'"></p>
-                            </div>
-                            <div x-show="activeDetailTab === 'reasoning'" class="audit-claim-card">
-                                <div class="text-[11px] font-semibold uppercase tracking-wider text-blue-700">AI 推理链</div>
-                                <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="selectedFinding.reasoning || selectedFinding.reasoning_process || '暂无推理过程'"></p>
-                            </div>
-                            <div x-show="activeDetailTab === 'fix'" class="detail-info-grid">
-                                <article class="audit-claim-card border-l-4" :class="getBorderClass(selectedFinding.impact_level)">
-                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">根本原因</div>
-                                    <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="selectedFinding.root_cause || '暂无根因说明'"></p>
-                                </article>
-                                <article class="audit-claim-card border-l-4 border-emerald-500">
-                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">修复建议</div>
-                                    <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="selectedFinding.suggested_fix || '暂无修复建议'"></p>
-                                </article>
-                            </div>
-                            <div x-show="activeDetailTab === 'context'" class="detail-info-grid">
-                                <section class="audit-claim-card">
-                                    <h3 class="text-sm font-semibold text-slate-950">Evidence Map</h3>
-                                    <div class="metric-grid">
-                                        <template x-for="item in evidenceMetrics(selectedFinding)" :key="item.label">
-                                            <div class="metric">
-                                                <b x-text="item.value"></b>
-                                                <span x-text="item.label"></span>
-                                            </div>
-                                        </template>
-                                    </div>
-                                </section>
-                                <section class="audit-claim-card">
-                                    <h3 class="text-sm font-semibold text-slate-950">Confidence</h3>
-                                    <template x-for="item in confidenceBreakdown(selectedFinding).slice(0, 3)" :key="item.label">
-                                        <div class="confidence-row">
-                                            <div class="confidence-row-head">
-                                                <span x-text="item.label"></span>
-                                                <div class="confidence-bar"><i :style="`width:${item.percent}%`"></i></div>
-                                                <b x-text="item.value"></b>
-                                            </div>
-                                        </div>
-                                    </template>
-                                </section>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section class="audit-decision-panel">
-                        <div class="audit-decision-title">
-                            <h3 class="text-sm font-semibold text-slate-950">验证决策</h3>
-                            <p class="text-xs subtle-text">Validator 说明保留原始结论；反驳 / 复核说明可直接引用 evidence ref、文件路径和行号。</p>
-                        </div>
-                        <div class="audit-decision-fields">
-                            <div class="audit-decision-field" x-show="selectedFinding.llm_explanation">
-                                <label class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">决策解释（LLM 补充，只读）</label>
-                                <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap"
-                                    x-text="selectedFinding.llm_explanation || ''"></p>
-                            </div>
-                            <div class="audit-decision-field" x-show="selectedFinding.promotion_review_reason">
-                                <label class="text-[11px] font-semibold uppercase tracking-wider text-amber-700">未晋级为 validated 的原因（只读）</label>
-                                <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap"
-                                    x-text="selectedFinding.promotion_review_reason || ''"></p>
-                            </div>
-                            <div class="audit-decision-field">
-                                <label class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Validator 验证说明（只读）</label>
-                                <textarea
-                                    class="textarea textarea-bordered audit-validator-textarea"
-                                    readonly
-                                    :placeholder="selectedFinding.validation_reasoning ? '' : 'Validator 未提供验证说明'"
-                                    :value="selectedFinding.validation_reasoning"></textarea>
-                            </div>
-                            <div class="audit-decision-field">
-                                <label class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">人工反驳 / 复核说明</label>
-                                <textarea
-                                    class="textarea textarea-bordered audit-rebuttal-textarea"
-                                    x-ref="rebuttalInput"
-                                    placeholder="填写人工验证依据，例如：为什么确认为真阳性 / 为什么拒绝 / 还需要检查哪些路径。"
-                                    :value="selectedFinding.user_rebuttal"
-                                    @input="setFindingUserRebuttal(selectedFinding, $event.target.value)"></textarea>
-                            </div>
-                        </div>
-                        <div class="audit-decision-controls">
-                            <div class="audit-status-stack">
-                                <template x-for="status in validationStatusOptions" :key="status">
-                                    <button
-                                        type="button"
-                                        class="btn btn-xs"
-                                        :class="selectedFinding.validation_status === status ? 'btn-primary' : 'btn-outline'"
-                                        @click="setFindingValidationStatus(selectedFinding, status)"
-                                        x-text="status"></button>
-                                </template>
-                            </div>
-                            <div></div>
-                            <div class="audit-decision-footer">
-                                <div class="text-[11px] subtle-text leading-relaxed">
-                                    当前引用：
-                                    <span x-text="findingEvidenceRefs(selectedFinding).slice(0, 5).join(', ') || '暂无 evidence refs'"></span>
-                                </div>
-                                <p class="text-[11px] leading-snug" x-show="saveFeedbackStatus" :class="saveFeedbackType === 'success' ? 'text-emerald-700' : (saveFeedbackType === 'warning' ? 'text-amber-700' : 'text-error')" x-text="saveFeedbackStatus"></p>
-                                <button type="button" class="btn btn-outline btn-xs" @click="saveSelectedFinding()" :disabled="savingFindings || savingSingleFinding" x-text="savingSingleFinding ? '保存中...' : '保存当前条'">保存当前条</button>
-                            </div>
-                        </div>
+                        <textarea x-ref="rebuttalInput" aria-label="人工反驳 / 复核说明" placeholder="填写人工复核依据，支持 Markdown。" :value="selectedFinding.user_rebuttal" @input="setFindingUserRebuttal(selectedFinding, $event.target.value)" :disabled="savingFindings || savingSingleFinding || reportLoading || !!reportError"></textarea>
+                        <div class="markdown-report report-review-preview" x-show="reviewPreview" x-html="renderReviewPreview()"></div>
+                        <p class="text-xs subtle-text" x-show="saveFeedbackStatus" x-text="saveFeedbackStatus"></p>
                     </section>
                 </div>
             </template>
@@ -1569,6 +1441,7 @@
     <script>
         function zscopeApp() {
             return {
+                ...ZScopeDashboardReports,
                 findings: [],
                 selectedFinding: null,
                 activeEvidenceId: '',
@@ -1642,7 +1515,6 @@
                         llm_max_inflight: 4,
                     },
                 },
-                offlineTemplateCache: null,
                 activeTab: 'findings',
                 rulePayload: { rules: [], summary: {}, facets: {} },
                 rules: [],
@@ -1783,7 +1655,7 @@
                     if (!issue) {
                         return '';
                     }
-                    return String(issue.dedup_key || issue.stable_fingerprint || [
+                    return String(issue.issue_id || issue.dedup_key || issue.stable_fingerprint || [
                         issue.id || '',
                         issue.function || '',
                         issue.location || '',
@@ -2309,264 +2181,6 @@
                 },
 
 
-                decodeBase64Utf8(base64Text) {
-                    const binary = atob(base64Text);
-                    const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
-                    return new TextDecoder('utf-8').decode(bytes);
-                },
-
-                encodeBase64Utf8(plainText) {
-                    const bytes = new TextEncoder().encode(plainText);
-                    let binary = '';
-                    bytes.forEach(b => {
-                        binary += String.fromCharCode(b);
-                    });
-                    return btoa(binary);
-                },
-
-                bytesToBase64(bytes) {
-                    let binary = '';
-                    const chunkSize = 0x8000;
-                    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-                        const chunk = bytes.subarray(offset, offset + chunkSize);
-                        binary += String.fromCharCode(...chunk);
-                    }
-                    return btoa(binary);
-                },
-
-                base64ToBytes(base64Text) {
-                    const binary = atob(base64Text);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i += 1) {
-                        bytes[i] = binary.charCodeAt(i);
-                    }
-                    return bytes;
-                },
-
-                async compressOfflineText(plainText) {
-                    if (typeof CompressionStream !== 'undefined') {
-                        const stream = new Blob([plainText]).stream().pipeThrough(new CompressionStream('gzip'));
-                        const buffer = await new Response(stream).arrayBuffer();
-                        return `gzip-base64:${this.bytesToBase64(new Uint8Array(buffer))}`;
-                    }
-                    return `base64:${this.encodeBase64Utf8(plainText)}`;
-                },
-
-                async decompressOfflineText(encodedText) {
-                    const text = String(encodedText || '');
-                    if (text.startsWith('gzip-base64:')) {
-                        const bytes = this.base64ToBytes(text.slice('gzip-base64:'.length));
-                        if (typeof DecompressionStream === 'undefined') {
-                            throw new Error('当前浏览器不支持 gzip 离线数据解压');
-                        }
-                        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-                        return new Response(stream).text();
-                    }
-                    if (text.startsWith('base64:')) {
-                        return this.decodeBase64Utf8(text.slice('base64:'.length));
-                    }
-                    return text;
-                },
-
-                parseOfflineState(rawText) {
-                    const trimmed = String(rawText || '').trim();
-                    if (!trimmed) {
-                        return {};
-                    }
-                    if (trimmed.startsWith('base64:')) {
-                        const decoded = this.decodeBase64Utf8(trimmed.slice('base64:'.length));
-                        return JSON.parse(decoded);
-                    }
-                    return JSON.parse(trimmed);
-                },
-
-                limitOfflineText(value, limit = 4000) {
-                    if (value === undefined || value === null) {
-                        return value;
-                    }
-                    const text = String(value);
-                    if (text.length <= limit) {
-                        return text;
-                    }
-                    return `${text.slice(0, limit)}\n... [truncated ${text.length - limit} chars]`;
-                },
-
-                compactOfflineValue(value, depth = 0) {
-                    if (value === undefined || value === null) {
-                        return value;
-                    }
-                    if (typeof value === 'string') {
-                        return this.limitOfflineText(value, depth > 0 ? 1200 : 4000);
-                    }
-                    if (typeof value === 'number' || typeof value === 'boolean') {
-                        return value;
-                    }
-                    if (Array.isArray(value)) {
-                        const maxItems = depth > 0 ? 8 : 16;
-                        const result = value.slice(0, maxItems).map(item => this.compactOfflineValue(item, depth + 1));
-                        if (value.length > maxItems) {
-                            result.push(`... [truncated ${value.length - maxItems} items]`);
-                        }
-                        return result;
-                    }
-                    if (typeof value === 'object') {
-                        if (depth >= 3) {
-                            return this.limitOfflineText(JSON.stringify(value), 1200);
-                        }
-                        const result = {};
-                        const entries = Object.entries(value).slice(0, 40);
-                        entries.forEach(([key, item]) => {
-                            result[key] = this.compactOfflineValue(item, depth + 1);
-                        });
-                        const omitted = Object.keys(value).length - entries.length;
-                        if (omitted > 0) {
-                            result._truncated_keys = omitted;
-                        }
-                        return result;
-                    }
-                    return String(value);
-                },
-
-                offlineIssueKey(issue, fallback = '') {
-                    if (!issue || typeof issue !== 'object') {
-                        return `issue:${fallback}`;
-                    }
-                    const stable = issue.dedup_key || issue.stable_fingerprint || issue.fingerprint;
-                    if (stable) {
-                        return String(stable);
-                    }
-                    const identity = [
-                        issue.id || '',
-                        issue.function || issue.func_name || '',
-                        issue.location || issue.file || issue.file_path || '',
-                        issue.subcategory || issue.defect_class || issue.category || '',
-                    ].map(part => String(part).replace(/\s+/g, ' ').trim());
-                    const key = identity.join('|');
-                    return identity.some(Boolean) ? key : `issue:${fallback}`;
-                },
-
-                compactOfflineEvidencePack(pack) {
-                    if (!pack || typeof pack !== 'object') {
-                        return undefined;
-                    }
-                    const keep = [
-                        'checker', 'candidate_source', 'candidate_is_conclusion', 'validation_required',
-                        'final_score', 'score', 'entry_function', 'sink_function', 'target_function',
-                        'resource', 'resource_kind', 'path', 'source_path', 'value_flow',
-                        'lifecycle_pair', 'ast_cfg', 'clang_matcher_fact', 'semantic_overlay_evidence',
-                    ];
-                    const compact = {};
-                    keep.forEach(key => {
-                        if (pack[key] !== undefined) {
-                            compact[key] = this.compactOfflineValue(pack[key], 1);
-                        }
-                    });
-                    return Object.keys(compact).length ? compact : undefined;
-                },
-
-                compactOfflineIssue(issue, fallback = '') {
-                    const compact = {};
-                    if (!issue || typeof issue !== 'object') {
-                        return compact;
-                    }
-                    const textLimits = {
-                        code_snippet: 12000,
-                        reasoning: 10000,
-                        reasoning_process: 10000,
-                        validation_reasoning: 10000,
-                        llm_explanation: 4000,
-                        promotion_review_reason: 2000,
-                        user_rebuttal: 10000,
-                        description: 5000,
-                        root_cause: 5000,
-                        suggested_fix: 5000,
-                        guard_analysis: 4000,
-                        exploit_scenario: 4000,
-                    };
-                    const keep = [
-                        'id', 'candidate_id', 'candidate_source', 'finding_kind', 'function', 'location',
-                        'category', 'subcategory', 'description', 'root_cause', 'suggested_fix',
-                        'reasoning', 'reasoning_process', 'code_snippet', 'validation_status',
-                        'validation_reasoning', 'llm_explanation', 'promotion_review_reason', 'user_rebuttal', 'confidence', 'impact_level', 'dedup_key',
-                        'stable_fingerprint', 'defect_class', 'rule', 'rule_id', 'cwe', 'source', 'sink',
-                        'guard_analysis', 'exploit_scenario', 'final_score', 'file', 'line',
-                        'start_line', 'end_line', 'entry_function', 'sink_function', 'target_function',
-                        'analyzed_from', 'reachable_from_entry', 'internal_sink_lifted',
-                        'normalized_category', 'source_loc', 'sink_loc',
-                    ];
-                    keep.forEach(key => {
-                        if (issue[key] === undefined) {
-                            return;
-                        }
-                        compact[key] = typeof issue[key] === 'string'
-                            ? this.limitOfflineText(issue[key], textLimits[key] || 2000)
-                            : issue[key];
-                    });
-                    ['positive_evidence', 'negative_evidence', 'evidence_refs', 'call_path', 'path_constraints'].forEach(key => {
-                        if (Array.isArray(issue[key])) {
-                            compact[key] = this.compactOfflineValue(issue[key]);
-                        }
-                    });
-                    const evidencePack = this.compactOfflineEvidencePack(issue.evidence_pack);
-                    if (evidencePack) {
-                        compact.evidence_pack = evidencePack;
-                    }
-                    if (Array.isArray(issue.call_paths)) {
-                        compact.call_paths = this.compactOfflineValue(issue.call_paths);
-                    }
-                    if (Array.isArray(issue.related_needs_review_observations)) {
-                        compact.related_needs_review_observations = issue.related_needs_review_observations
-                            .slice(0, 6)
-                            .map((item, index) => this.compactOfflineIssue(item, `${fallback}:related:${index}`));
-                    }
-                    compact._offline_id = this.offlineIssueKey(issue, fallback);
-                    return compact;
-                },
-
-                compactOfflineIssueSummary(issue, fallback = '') {
-                    if (!issue || typeof issue !== 'object') {
-                        return {};
-                    }
-                    const summary = {};
-                    [
-                        'id', 'candidate_id', 'candidate_source', 'finding_kind', 'function', 'location',
-                        'category', 'subcategory', 'validation_status', 'validation_reasoning',
-                        'user_rebuttal', 'confidence', 'impact_level', 'dedup_key', 'stable_fingerprint',
-                        'defect_class', 'rule', 'rule_id', 'cwe', 'final_score',
-                        'file', 'line', 'start_line', 'end_line', 'entry_function', 'sink_function',
-                        'target_function', 'analyzed_from', 'reachable_from_entry',
-                        'internal_sink_lifted', 'normalized_category', 'source_loc', 'sink_loc',
-                    ].forEach(key => {
-                        if (issue[key] !== undefined) {
-                            summary[key] = issue[key];
-                        }
-                    });
-                    ['description', 'root_cause', 'suggested_fix', 'source', 'sink'].forEach(key => {
-                        if (issue[key] !== undefined) {
-                            summary[key] = this.limitOfflineText(issue[key], 600);
-                        }
-                    });
-                    summary._offline_id = this.offlineIssueKey(issue, fallback);
-                    summary._detail_lazy = true;
-                    return summary;
-                },
-
-                compactOfflineReportView(view) {
-                    const compact = {};
-                    if (!view || typeof view !== 'object') {
-                        return compact;
-                    }
-                    [
-                        'label', 'description', 'issue_count', 'included_needs_review_count',
-                        'independent_needs_review_count', 'attached_needs_review_count',
-                    ].forEach(key => {
-                        if (view[key] !== undefined) {
-                            compact[key] = this.compactOfflineValue(view[key]);
-                        }
-                    });
-                    return compact;
-                },
-
                 stripOfflineRuntimeFields(issue) {
                     if (!issue || typeof issue !== 'object') {
                         return issue;
@@ -2584,228 +2198,6 @@
                     return { ...rest };
                 },
 
-                hydrateOfflineState(rawState) {
-                    const state = rawState && typeof rawState === 'object' ? rawState : {};
-                    state.reportViews = state.reportViews || {};
-                    state.reportView = state.reportView || 'default';
-                    const summaries = state.issueSummaries && typeof state.issueSummaries === 'object'
-                        ? state.issueSummaries
-                        : null;
-                    if (summaries) {
-                        Object.entries(state.reportViews).forEach(([, view]) => {
-                            if (!view || typeof view !== 'object' || !Array.isArray(view.issueRefs)) {
-                                return;
-                            }
-                            view.issues = view.issueRefs
-                                .map(ref => summaries[ref])
-                                .filter(issue => issue && typeof issue === 'object');
-                        });
-                        if (!Array.isArray(state.findings) || !state.findings.length) {
-                            const selectedView = state.reportViews[state.reportView] || {};
-                            const refs = Array.isArray(state.currentIssueRefs)
-                                ? state.currentIssueRefs
-                                : (Array.isArray(selectedView.issueRefs) ? selectedView.issueRefs : []);
-                            state.findings = refs
-                                .map(ref => summaries[ref])
-                                .filter(issue => issue && typeof issue === 'object');
-                        }
-                    }
-                    const store = state.issueStore && typeof state.issueStore === 'object' ? state.issueStore : null;
-                    if (store) {
-                        Object.entries(state.reportViews).forEach(([, view]) => {
-                            if (!view || typeof view !== 'object' || !Array.isArray(view.issueRefs)) {
-                                return;
-                            }
-                            view.issues = view.issueRefs
-                                .map(ref => store[ref])
-                                .filter(issue => issue && typeof issue === 'object');
-                        });
-                        if (!Array.isArray(state.findings) || !state.findings.length) {
-                            const selectedView = state.reportViews[state.reportView] || {};
-                            const refs = Array.isArray(state.currentIssueRefs)
-                                ? state.currentIssueRefs
-                                : (Array.isArray(selectedView.issueRefs) ? selectedView.issueRefs : []);
-                            state.findings = refs
-                                .map(ref => store[ref])
-                                .filter(issue => issue && typeof issue === 'object');
-                        }
-                    }
-                    if (!Array.isArray(state.findings) || !state.findings.length) {
-                        const selectedView = state.reportViews[state.reportView] || {};
-                        if (Array.isArray(selectedView.issues)) {
-                            state.findings = selectedView.issues;
-                        }
-                    }
-                    state.findings = Array.isArray(state.findings) ? state.findings : [];
-                    return state;
-                },
-
-                allOfflineIssues(state) {
-                    const items = [];
-                    const add = (issue) => {
-                        if (issue && typeof issue === 'object') {
-                            items.push(issue);
-                        }
-                    };
-                    if (state.issueStore && typeof state.issueStore === 'object') {
-                        Object.values(state.issueStore).forEach(add);
-                    }
-                    if (state.issueSummaries && typeof state.issueSummaries === 'object') {
-                        Object.values(state.issueSummaries).forEach(add);
-                    }
-                    Object.values(state.reportViews || {}).forEach(view => {
-                        if (view && Array.isArray(view.issues)) {
-                            view.issues.forEach(add);
-                        }
-                    });
-                    if (Array.isArray(state.findings)) {
-                        state.findings.forEach(add);
-                    }
-                    const unique = new Map();
-                    items.forEach((issue, index) => {
-                        unique.set(this.offlineIssueKey(issue, index), this.stripOfflineRuntimeFields(issue));
-                    });
-                    return Array.from(unique.values());
-                },
-
-                async buildOfflinePayload() {
-                    const issueSummaries = {};
-                    const issueChunks = {};
-                    const addIssue = async (issue, fallback) => {
-                        const key = this.offlineIssueKey(issue, fallback);
-                        const summary = this.compactOfflineIssueSummary(issue, fallback);
-                        summary._offline_id = key;
-                        issueSummaries[key] = { ...(issueSummaries[key] || {}), ...summary };
-                        if (!issueChunks[key]) {
-                            const compact = this.compactOfflineIssue(issue, fallback);
-                            compact._offline_id = key;
-                            issueChunks[key] = await this.compressOfflineText(JSON.stringify(compact));
-                        }
-                        return key;
-                    };
-
-                    const reportViews = {};
-                    for (const [name, view] of Object.entries(this.reportViews || {})) {
-                        if (!view || typeof view !== 'object') {
-                            continue;
-                        }
-                        const compactView = this.compactOfflineReportView(view);
-                        const issues = Array.isArray(view.issues) ? view.issues : [];
-                        compactView.issueRefs = [];
-                        for (let index = 0; index < issues.length; index += 1) {
-                            compactView.issueRefs.push(await addIssue(issues[index], `${name}:${index}`));
-                        }
-                        compactView.issue_count = compactView.issue_count ?? compactView.issueRefs.length;
-                        reportViews[name] = compactView;
-                    }
-
-                    const currentIssueRefs = [];
-                    for (let index = 0; index < (this.findings || []).length; index += 1) {
-                        currentIssueRefs.push(await addIssue(this.findings[index], `${this.reportView || 'current'}:${index}`));
-                    }
-                    if (!reportViews[this.reportView]) {
-                        reportViews[this.reportView] = {
-                            label: this.reportView || 'Current',
-                            description: 'Current dashboard view.',
-                            issue_count: currentIssueRefs.length,
-                            included_needs_review_count: 0,
-                            issueRefs: currentIssueRefs,
-                        };
-                    } else if (!Array.isArray(reportViews[this.reportView].issueRefs) || !reportViews[this.reportView].issueRefs.length) {
-                        reportViews[this.reportView].issueRefs = currentIssueRefs;
-                        reportViews[this.reportView].issue_count = currentIssueRefs.length;
-                    }
-
-                    return {
-                        schemaVersion: 3,
-                        reportSummary: this.compactOfflineValue(this.reportSummary || {}),
-                        reportViews,
-                        reportView: this.reportView,
-                        viewSummary: this.compactOfflineValue(this.viewSummary || {}),
-                        currentIssueRefs,
-                        issueSummaries,
-                        issueChunks,
-                        exportedAt: new Date().toISOString(),
-                    };
-                },
-
-
-                triggerOfflineImport() {
-                    this.$refs.offlineImportInput.value = '';
-                    this.$refs.offlineImportInput.click();
-                },
-
-                importOfflinePage(event) {
-                    const file = event.target.files && event.target.files[0];
-                    if (!file) {
-                        return;
-                    }
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                        try {
-                            const html = String(reader.result || '');
-                            const match = html.match(/<script id="zscope-offline-state" type="application\/json">([\s\S]*?)<\/script>/i);
-                            if (!match) {
-                                throw new Error('未检测到离线状态数据');
-                            }
-                            const offlineState = this.hydrateOfflineState(this.parseOfflineState(match[1]));
-                            const importedFindings = Array.isArray(offlineState.findings) ? offlineState.findings : [];
-                            if (!importedFindings.length) {
-                                throw new Error('离线页面中没有可导入的问题数据');
-                            }
-                            this.findings = importedFindings.map((issue, index) =>
-                                this.prepareFinding(this.stripOfflineRuntimeFields(issue), 'offline', index)
-                            );
-                            this.reportSummary = offlineState.reportSummary || this.reportSummary;
-                            this.reportViews = offlineState.reportViews || this.reportViews;
-                            this.reportView = offlineState.reportView || this.reportView;
-                            this.viewSummary = offlineState.viewSummary || this.viewSummary;
-                            this.selectFinding(this.findings[0]);
-                            this.saveFindings(this.allOfflineIssues(offlineState));
-                        } catch (error) {
-                            alert(`导入失败：${error.message || error}`);
-                        }
-                    };
-                    reader.readAsText(file, 'utf-8');
-                },
-
-                async loadOfflineTemplate() {
-                    if (this.offlineTemplateCache) {
-                        return this.offlineTemplateCache;
-                    }
-                    const response = await fetch('/offline_template.html', { cache: 'no-store' });
-                    if (!response.ok) {
-                        throw new Error(`离线模板加载失败（HTTP ${response.status}）`);
-                    }
-                    const template = await response.text();
-                    if (!template.includes('__ZCOPE_OFFLINE_STATE__')) {
-                        throw new Error('离线模板缺少状态占位符');
-                    }
-                    this.offlineTemplateCache = template;
-                    return template;
-                },
-
-                async createOfflineHtml(payload) {
-                    const safeJson = JSON.stringify(payload).replace(/<\/script>/gi, '<\\/script>');
-                    const template = await this.loadOfflineTemplate();
-                    return template.replace('__ZCOPE_OFFLINE_STATE__', safeJson);
-                },
-
-                async exportOfflinePage() {
-                    try {
-                        await this.ensureReportViewsCached();
-                        const payload = await this.buildOfflinePayload();
-                        const offlineHtml = await this.createOfflineHtml(payload);
-                        const blob = new Blob([offlineHtml], { type: 'text/html;charset=utf-8' });
-                        const link = document.createElement('a');
-                        link.href = URL.createObjectURL(blob);
-                        link.download = 'zscope-offline-dashboard.html';
-                        link.click();
-                        URL.revokeObjectURL(link.href);
-                    } catch (error) {
-                        alert(`导出离线页面失败：${error.message || error}`);
-                    }
-                },
                 saveConfig() {
                     this.configStatus = '保存中...';
                     fetch('/api/config', {
@@ -2883,6 +2275,9 @@
                                 this.markSavedFindingsClean(issuesToSave, {
                                     snapshotPending: Boolean(snapshotPersistence.skipped),
                                 });
+                                if (issuesToSave.includes(this.selectedFinding)) {
+                                    this.loadMarkdownReport(this.selectedFinding);
+                                }
                                 if (isSingleFindingSave && snapshotPersistence.skipped) {
                                     const count = persistence.baseline_upserts ?? 0;
                                     const suppressions = persistence.suppression_upserts ?? 0;
@@ -3272,14 +2667,7 @@
                     if (!options.keepMobileView) {
                         this.mobileFindingView = 'detail';
                     }
-                    const firstEvidence = this.findingEvidenceItems(finding)[0];
-                    this.activeEvidenceId = firstEvidence ? firstEvidence.id : '';
-                    if (firstEvidence) {
-                        this.loadEvidenceSnippet(firstEvidence);
-                    }
-                    this.$nextTick(() => {
-                        Prism.highlightAll();
-                    });
+                    this.loadMarkdownReport(finding);
                 },
 
                 currentFindingIndex() {
@@ -3502,6 +2890,7 @@
 
                 extractLineNumber(value) {
                     const text = String(value || '');
+                    if (/^ir_[a-z_]+:\d+$/.test(text.trim())) return null;
                     const locationMatch = text.match(/:(\d+)(?:-\d+)?(?::\d+)?/);
                     if (locationMatch) {
                         return Number(locationMatch[1]);
@@ -3728,7 +3117,6 @@
                         const explicitLine =
                             this.extractLineNumber(cleanTitle) ||
                             this.extractLineNumber(detail) ||
-                            this.extractLineNumber(ref) ||
                             this.extractLineNumber(endpointText);
                         const endpointLocation = (type === 'source' || type === 'sink')
                             ? this.findingEndpointLocation(finding, type)

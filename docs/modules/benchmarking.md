@@ -95,7 +95,7 @@ tests:
 - Windows 主机使用 WSL；原生 Linux 直接运行等价命令；原生 Windows 不形成正式结果。
 - `test/` 不包含执行 runner、历史报告或后台 launcher；fixture 根每种语言只保留一份正式配置。
 - C/C++ formal 不读取 deterministic entry manifest，入口必须由隔离副本中的自动发现产生。
-- scorer 以结构化 file/function/category/location/evidence 匹配，并保留 `matched_pairs` 供人工审计。
+- scorer 以结构化 file/function/category/location/evidence 匹配，并保留 `matched_pairs` 供人工审计。类别门是单向任一命中：truth 单一 `category` 命中 issue 的类别集合（`category`/`categories`/`defect_class`/`defect_family` 等）即 `category_exact`；两侧 CWE 集合（含 `cwes` 列表与斜杠复合标签）有交集即 `cwe_exact`；同预定义族为 `category_family`。配对策略为多 TP：每个 truth 独立认领其分数最高的强配对，同一 issue（例如聚合后的多 CWE 位点）可命中多个 truth，而每个 truth 无论被多少 issue 命中都只计一个 TP；额外的同位 issue 走 `truth_covered_additional`/`same_product_root` 豁免。
 - raw FP、duplicate-of-matched 和 effective FP 必须分开保留，不能通过静默删除重复报告美化指标。
 - 没有 safe units/true negatives 的数据集不得把 `FP/(TP+FP)` 称为经典 FPR；应报告 actionable FDR、raw FP 和 precision。经典 FPR 仅在 truth 明确给出 safe units 时计算。
 - 每次正式评分必须输出 `discovered_by × decided_by` 交叉表、LLM 独占 TP、tokens/TP、marginal tokens/新增 TP、tokens/KLOC、p50/p95、五轮 Jaccard/极差和 Range→sealed generalization gap。

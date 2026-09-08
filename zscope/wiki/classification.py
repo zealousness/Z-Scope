@@ -11,10 +11,13 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .models import ClassificationResult, DiscoveredFile
 
+_yaml: Any
 try:
-    import yaml
+    import yaml as _yaml
 except ImportError:  # pragma: no cover
-    yaml = None
+    _yaml = None
+
+yaml: Any = _yaml
 
 
 RUNTIME_NAMES = frozenset({"agents.md", "claude.md", "gemini.md", "skill.md"})
@@ -148,8 +151,8 @@ def classify_document(
     for marker in ("generated_by", "artifact_kind", "source_manifest_digest", "producer", "do_not_edit"):
         if marker in metadata:
             return ClassificationResult(relative, "generated_artifact", f"generated_frontmatter_{marker}", (f"frontmatter:{marker}",), document.content_digest)
-    for pattern in _SECRET_PATTERNS:
-        if pattern.search(document.text):
+    for secret_pattern in _SECRET_PATTERNS:
+        if secret_pattern.search(document.text):
             return ClassificationResult(relative, "sensitive_rejected", "sensitive_content_marker", ("sensitive:content_marker",), document.content_digest)
 
     # Public exclusions are fail-closed corpus filters.  They cannot weaken a

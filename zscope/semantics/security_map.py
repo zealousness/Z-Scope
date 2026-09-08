@@ -576,6 +576,7 @@ class DiscoveryHypothesis:
     description: str
     reasoning: str
     root_cause: str
+    cwes: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -596,6 +597,9 @@ class DiscoveryHypothesis:
         resource = str(self.resource or "").strip()
         if not resource and not (source and sink):
             raise ValueError("DiscoveryHypothesis requires source and sink or a resource")
+        for label in self.cwes:
+            if not re.fullmatch(r"CWE-[1-9][0-9]*", str(label)):
+                raise ValueError(f"unsupported DiscoveryHypothesis cwe label: {label!r}")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -616,6 +620,7 @@ class DiscoveryHypothesis:
             "description": self.description,
             "reasoning": self.reasoning,
             "root_cause": self.root_cause,
+            "cwes": list(self.cwes),
         }
 
     @classmethod
@@ -639,7 +644,9 @@ class DiscoveryHypothesis:
             "reasoning",
             "root_cause",
         )
-        data = _strict_mapping(raw, required=fields, allowed=fields, label="DiscoveryHypothesis")
+        data = _strict_mapping(
+            raw, required=fields, allowed=fields + ("cwes",), label="DiscoveryHypothesis"
+        )
         if not isinstance(data["entry_paths"], list) or any(
             not isinstance(path, list) for path in data["entry_paths"]
         ):
@@ -675,6 +682,7 @@ class DiscoveryHypothesis:
             description=str(data["description"]),
             reasoning=str(data["reasoning"]),
             root_cause=str(data["root_cause"]),
+            cwes=tuple(_string_list(data.get("cwes") or [], "DiscoveryHypothesis.cwes")),
         )
 
 
@@ -1068,6 +1076,10 @@ DISCOVERY_HYPOTHESIS_JSON_SCHEMA: Dict[str, Any] = {
         "description": {"type": "string"},
         "reasoning": {"type": "string"},
         "root_cause": {"type": "string"},
+        "cwes": {
+            "type": "array",
+            "items": {"type": "string", "pattern": r"^CWE-[1-9][0-9]*$"},
+        },
     },
 }
 
@@ -1429,9 +1441,7 @@ class ZeroLLMSecurityMapBuilder:
                 names.add(name)
         if not names:
             return None
-        alternation = "|".join(
-            sorted((re.escape(name) for name in names), key=len, reverse=True)
-        )
+        alternation = "|".join(sorted((re.escape(name) for name in names), key=len, reverse=True))
         return re.compile(rf"\b(?:{alternation})\s*\(")
 
     def build(self, entries: Sequence[FunctionEntry]) -> SecuritySemanticMap:
@@ -1852,9 +1862,7 @@ class ZeroLLMSecurityMapBuilder:
                 )
             if self._overlay_api_re is not None and self._overlay_api_re.search(expression):
                 evidence_ref = f"source:{file_path}:{line}"
-                event_id = (
-                    f"EVT_{_digest((function_uid, 'resource_lifecycle', 'resource_transition', line, expression.strip()))}"
-                )
+                event_id = f"EVT_{_digest((function_uid, 'resource_lifecycle', 'resource_transition', line, expression.strip()))}"
                 result.setdefault(
                     event_id,
                     SecurityEvent(

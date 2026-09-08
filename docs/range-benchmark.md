@@ -15,7 +15,7 @@ zscope-benchmark run --language c_cpp --mode formal --runs 5
 
 ## 真源与输入隔离
 
-`test/range/benchmark/ground_truth.json` 是唯一评分真源。当前机器校验要求其版本为 v14，`total_vulnerabilities` 与 136 条记录及唯一 ID 一致；文档不维护另一份漏洞表。
+`test/range/benchmark/ground_truth.json` 是唯一评分真源。当前机器校验要求其版本为 v15，`total_vulnerabilities` 与 136 条记录及唯一 ID 一致；文档不维护另一份漏洞表。
 
 每轮从 fixture 复制严格 allowlist：`src/**`、`include/**`、`internal/**`、`CMakeLists.txt` 和中性 README。整个 `benchmark/`、报告、缓存、构建目录和本地运行历史都不能进入 scan-input。health/index/scan 环境不含 truth 路径，报告落盘后才由独立 score 子进程读取 truth。Range 仅是分布内开发回归集；它没有 safe control，也不能代替跨项目 public external、sealed 与 shadow 结果。
 

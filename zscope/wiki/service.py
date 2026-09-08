@@ -8,7 +8,7 @@ import fnmatch
 import threading
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .context.direct_documents import DirectDocumentResolver
 from .context.obligation import ConstraintObligation
@@ -43,7 +43,10 @@ def validate_project_knowledge(value: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError("source_fallback cannot carry Wiki revision or constraints")
     if mode == "none" and (value.get("wiki_revision_id") is not None or constraints or sources or value.get("conflicts") or value.get("unknowns")):
         raise ValueError("none project knowledge must be empty")
-    selection = value.get("selection") if isinstance(value.get("selection"), Mapping) else {}
+    selection_value = value.get("selection")
+    selection: Mapping[str, Any] = (
+        selection_value if isinstance(selection_value, Mapping) else {}
+    )
     max_tokens = selection.get("max_tokens")
     if max_tokens is not None and int(selection.get("estimated_tokens", 0) or 0) > int(max_tokens):
         raise ValueError("project knowledge exceeds max_tokens")
@@ -88,7 +91,7 @@ class ProjectKnowledgeService:
         self._pinned_refs: Dict[str, Dict[str, Any]] = {}
         self._pinned_compiler_kind: Optional[str] = None
         self._pin_active_revision()
-        self._telemetry = {
+        self._telemetry: Dict[str, Any] = {
             "resolution_count": 0,
             "wiki_resolution_count": 0,
             "source_fallback_count": 0,
@@ -119,8 +122,10 @@ class ProjectKnowledgeService:
                 "Wiki revision failed runtime lint: " + ", ".join(linted.errors[:8])
             )
 
+        store_connection = self.wiki_store.connection
+
         def rows(query: str):
-            values = self.wiki_store.connection.execute(
+            values = store_connection.execute(
                 query + f" LIMIT {RUNTIME_PROJECTION_MAX_ROWS + 1}",
                 (revision_id,),
             ).fetchall()
@@ -180,7 +185,10 @@ class ProjectKnowledgeService:
                 self._telemetry["source_fallback_count"] += 1
             else:
                 self._telemetry["none_count"] += 1
-            selection = context.get("selection") if isinstance(context.get("selection"), Mapping) else {}
+            selection_value = context.get("selection")
+            selection: Mapping[str, Any] = (
+                selection_value if isinstance(selection_value, Mapping) else {}
+            )
             self._telemetry["knowledge_context_tokens"] += int(selection.get("estimated_tokens", 0) or 0)
             facts = len(context.get("constraints") or ())
             self._telemetry["incremental_fact_count"] += facts
@@ -230,12 +238,16 @@ class ProjectKnowledgeService:
         kind = str(item.get("kind", ""))
         if obligation.obligation_kind not in {"", "unknown"} and kind != obligation.obligation_kind:
             return False
-        subject = item.get("subject") if isinstance(item.get("subject"), Mapping) else {}
+        subject_value = item.get("subject")
+        subject: Mapping[str, Any] = (
+            subject_value if isinstance(subject_value, Mapping) else {}
+        )
         canonical = str(subject.get("canonical_id", "")).casefold()
         targets = {str(value).casefold() for value in (obligation.subject_ids + ((obligation.function_id,) if obligation.function_id else ()))}
         if targets and canonical and not any(target == canonical or target.rsplit(":", 1)[-1] == canonical.rsplit(":", 1)[-1] for target in targets):
             return False
-        scope = item.get("scope") if isinstance(item.get("scope"), Mapping) else {}
+        scope_value = item.get("scope")
+        scope: Mapping[str, Any] = scope_value if isinstance(scope_value, Mapping) else {}
         scoped_modules = {str(value) for value in scope.get("module_ids", ())}
         if obligation.module_ids and scoped_modules and not scoped_modules.intersection(obligation.module_ids):
             return False
@@ -288,7 +300,7 @@ class ProjectKnowledgeService:
         if obligation.entry_function:
             target["entry_function"] = obligation.entry_function
         matched_constraints = self._wiki_constraints(obligation)
-        constraints = []
+        constraints: List[Dict[str, Any]] = []
         used_tokens = 0
         for item in matched_constraints:
             if len(constraints) >= MAX_WIKI_CONSTRAINTS:
@@ -315,7 +327,9 @@ class ProjectKnowledgeService:
             # Keep conflict semantics explicit in the Validator context.  A
             # conflict is a connected group of selected competing constraints;
             # it is context for adjudication, never proof by itself.
-            conflict_graph = {constraint_id: set() for constraint_id in selected_ids}
+            conflict_graph: Dict[str, Set[str]] = {
+                constraint_id: set() for constraint_id in selected_ids
+            }
             for item in constraints:
                 constraint_id = str(item.get("constraint_id") or "")
                 if item.get("status") != "conflicted" or constraint_id not in selected_ids:
@@ -360,9 +374,12 @@ class ProjectKnowledgeService:
                 })
                 if len(conflicts) >= 8:
                     break
-            constraint_items = []
+            constraint_items: List[Dict[str, Any]] = []
             for item in constraints:
-                subject = item.get("subject") if isinstance(item.get("subject"), Mapping) else {}
+                subject_value = item.get("subject")
+                subject: Mapping[str, Any] = (
+                    subject_value if isinstance(subject_value, Mapping) else {}
+                )
                 constraint_items.append(
                     {
                         key: item.get(key)
@@ -413,7 +430,7 @@ class ProjectKnowledgeService:
             fallback_reason=fallback_reason,
         )
         matched_excerpts = [item.to_dict() for item in resolution.source_excerpts]
-        excerpts = []
+        excerpts: List[Dict[str, Any]] = []
         used_tokens = 0
         for item in matched_excerpts:
             if len(excerpts) >= MAX_SOURCE_EXCERPTS:

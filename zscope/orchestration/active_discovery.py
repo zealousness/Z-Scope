@@ -1664,6 +1664,7 @@ class ActiveDiscoveryCoordinator:
                     "description": hypothesis.description,
                     "reasoning": hypothesis.reasoning,
                     "root_cause": hypothesis.root_cause,
+                    "cwes": list(hypothesis.cwes),
                     "path_conditions": list(hypothesis.path_conditions),
                     "positive_evidence": list(hypothesis.positive_evidence_refs),
                     "negative_evidence": list(hypothesis.negative_evidence_refs),

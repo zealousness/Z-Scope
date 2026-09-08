@@ -182,7 +182,7 @@ def build_ingest_workset(
     source_sections = _sections_for_sources(source_index, active_source_ids)
     ref_catalog = _ref_catalog_for_sources(source_index, active_source_ids)
     allowed_subject_ids = _allowed_subject_ids(source_manifest.project_id, source_sections)
-    result = {
+    result: Dict[str, Any] = {
         "schema_version": "zscope.wiki-ingest-workset.v1",
         "workset_id": stable_id(
             "workset",

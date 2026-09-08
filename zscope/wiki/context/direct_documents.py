@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..models import DirectResolution, SourceExcerpt
 from .obligation import ConstraintObligation
+
+if TYPE_CHECKING:
+    from ..source_index import SourceIndex
 
 
 @dataclass
 class DirectDocumentResolver:
     """Resolve bounded source excerpts from the deterministic SQLite index."""
 
-    source_index: object
+    source_index: "SourceIndex"
 
     def resolve(
         self,

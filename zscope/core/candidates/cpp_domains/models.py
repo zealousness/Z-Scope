@@ -19,6 +19,11 @@ class CodeLine:
     raw: str
     text: str
     index: int
+    column: int = 1
+    offset: int = 0
+    ordinal: int = 0
+    ordered: bool = True
+    offset_basis: str = "function_utf8"
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,11 @@ class ClangCfgLine:
     text: str
     index: int
     block_id: int
+    column: int = 1
+    offset: int = 0
+    ordinal: int = 0
+    ordered: bool = True
+    offset_basis: str = "function_utf8"
 
 
 @dataclass(frozen=True)
@@ -55,6 +65,11 @@ class GraphLine:
     text: str
     raw: str
     index: int
+    column: int = 1
+    offset: int = 0
+    ordinal: int = 0
+    ordered: bool = True
+    offset_basis: str = "function_utf8"
 
 
 @dataclass(frozen=True)
