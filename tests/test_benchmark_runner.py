@@ -177,6 +177,7 @@ def test_trial_workspace_is_temporary_and_removed(monkeypatch, tmp_path: Path) -
     artifact.mkdir()
     monkeypatch.setenv("Z_SCOPE_BENCHMARK_WORK_ROOT", str(work_parent))
     observed = {}
+    rendered = {}
 
     def fake_run(spec, run_dir, run_number, *, mode, workspace, scan_depth):
         observed["workspace"] = workspace
@@ -186,10 +187,16 @@ def test_trial_workspace_is_temporary_and_removed(monkeypatch, tmp_path: Path) -
         return {"run": run_number, "mode": mode}
 
     monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", fake_run)
+    monkeypatch.setattr(
+        benchmark_runner,
+        "_render_trial_metrics",
+        lambda run_dir, *, language: rendered.update(run_dir=run_dir, language=language),
+    )
 
     result = benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="trial")
 
     assert result == {"run": 1, "mode": "trial"}
+    assert rendered == {"run_dir": artifact, "language": "c_cpp"}
     assert not observed["workspace"].exists()
 
 

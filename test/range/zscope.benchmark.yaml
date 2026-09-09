@@ -7,7 +7,7 @@ llms:
     base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
     models: ["${Z_SCOPE_LLM_MODEL}"]
     api_key: ${Z_SCOPE_API_KEY}
-    base_url_max_concurrent_requests: 8
+    base_url_max_concurrent_requests: 16
     max_tokens: 8192
     max_retries: 4
     retry_until_available: true
@@ -51,10 +51,10 @@ indexing:
     llvm_link: llvm-link
 
 concurrency:
-  entry_workers: 4
-  validator_workers: 6
-  investigator_workers: 4
-  evidence_completion_workers: 2
+  entry_workers: 8
+  validator_workers: 8
+  investigator_workers: 8
+  evidence_completion_workers: 4
   index_workers: 4
-  svf_workers: 2
-  llm_max_inflight: 8
+  svf_workers: 4
+  llm_max_inflight: 16

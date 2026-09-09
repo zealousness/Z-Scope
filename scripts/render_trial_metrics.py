@@ -645,9 +645,9 @@ def _render_report(
     metadata_rows: List[List[Any]] = [
         ["试运行标识", paths.trial_dir.name],
         ["运行轮次", paths.run_dir.name],
-        ["语言", aggregate.get("language")],
-        ["模式", aggregate.get("mode")],
-        ["扫描深度", aggregate.get("scan_depth")],
+        ["语言", aggregate.get("language") or summary.get("language")],
+        ["模式", aggregate.get("mode") or summary.get("mode")],
+        ["扫描深度", aggregate.get("scan_depth") or summary.get("scan_depth")],
         ["模型", models],
         ["Git 提交 SHA", aggregate.get("git_sha")],
         ["运行完成", summary.get("completed")],
@@ -1164,7 +1164,14 @@ def render_trial_metrics(
     aggregate = _read_json(paths.trial_dir / "aggregate.json", required=False)
     tool_health = _read_json(paths.run_dir / "tool-health.json", required=False)
     usage_events = analyze_usage_events(paths.run_dir / "llm_usage_events.jsonl")
-    conversations = analyze_conversations(paths.run_dir / "conversations")
+    conversation_paths = (
+        paths.run_dir / "conversations",
+        paths.run_dir / "scan-extras" / ".zscope_conversations",
+    )
+    conversations = next(
+        (analyze_conversations(path) for path in conversation_paths if path.is_dir()),
+        analyze_conversations(paths.run_dir / "conversations"),
+    )
     markdown = _render_report(
         paths=paths,
         summary=summary,
