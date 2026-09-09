@@ -439,6 +439,30 @@ def _require_llm_environment() -> None:
         raise BenchmarkError("missing required benchmark environment: " + ", ".join(missing))
 
 
+def _render_trial_metrics(run_dir: Path, *, language: str) -> float:
+    """Render the human-readable metrics report into one run artifact directory."""
+
+    script = repository_root() / "scripts" / "render_trial_metrics.py"
+    output = run_dir / "metrics.md"
+    environment = _benchmark_environment()
+    for key in ("Z_SCOPE_API_KEY", "Z_SCOPE_LLM_BASE_URL", "Z_SCOPE_LLM_MODEL"):
+        environment.pop(key, None)
+    return _run_command(
+        [
+            sys.executable,
+            str(script),
+            str(run_dir),
+            "--language",
+            language,
+            "--output",
+            str(output),
+        ],
+        cwd=repository_root(),
+        environment=environment,
+        log_path=run_dir / "render_trial_metrics.log",
+    )
+
+
 def _fixture_c_compiler() -> Optional[str]:
     """Pin the fixture build to the fact compiler when Clang is available.
 
@@ -1721,6 +1745,9 @@ def _run_trial_in_workspace(
     }
     summary_payload = {
         "run": run_number,
+        "language": spec.language,
+        "mode": mode,
+        "scan_depth": scan_depth,
         "completed": True,
         "release_eligible": _run_release_eligible(mode, score, gate_failures),
         "queue_empty": bool(score.get("queue_empty")),
@@ -1807,7 +1834,7 @@ def _run_trial(
         tempfile.mkdtemp(prefix=f"zscope-benchmark-{spec.language}-{run_number:02d}-", dir=parent)
     )
     try:
-        return _run_trial_in_workspace(
+        summary = _run_trial_in_workspace(
             spec,
             run_dir,
             run_number,
@@ -1815,6 +1842,8 @@ def _run_trial(
             workspace=workspace,
             scan_depth=scan_depth,
         )
+        _render_trial_metrics(run_dir, language=spec.language)
+        return summary
     finally:
         if not (workspace / ".review-checkpoints-retained.json").is_file():
             shutil.rmtree(workspace, ignore_errors=True)
