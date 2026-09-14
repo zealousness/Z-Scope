@@ -7,23 +7,40 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from zscope.config.config import IndexingConfig
+from zscope.config.config import AnalysisConfig, IndexingConfig
 from zscope.benchmarking.protocol import (
     issue_match_detail,
     report_issues as benchmark_report_issues,
     score_report,
     score_report_views,
 )
-from zscope.benchmarking.postscore_trace import (
-    build_postscore_decision_trace,
-    write_postscore_decision_trace,
-)
 from zscope.common.issue_identity import deduplicate_issues
-from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
+from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.graph import GraphCandidateGenerator
 from zscope.core.candidates.regex import RegexCandidateGenerator
+from zscope.orchestration.budget import RiskBudgetPlanner
 from zscope.retrieval.code_index import CodeIndex
 from zscope.semantics.models import LocalPatternSemantics
+
+
+class _EmptyUserConfig:
+    def list_external_functions(self) -> List[Dict[str, Any]]:
+        return []
+
+    def list_paired_functions(self) -> List[Dict[str, Any]]:
+        return []
+
+    def list_dispatchers(self) -> List[Dict[str, Any]]:
+        return []
+
+    def list_module_lifecycle(self) -> List[Dict[str, Any]]:
+        return []
+
+    def get_pointer_targets(self) -> List[Dict[str, Any]]:
+        return []
+
+    def list_function_intents(self) -> List[Dict[str, Any]]:
+        return []
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -43,9 +60,7 @@ def _empty_semantic_overlay() -> Dict[str, Any]:
     }
 
 
-def _candidate_report(
-    project_root: Path, entries_path: Path, *, backend: str = "regex"
-) -> Dict[str, Any]:
+def _candidate_report(project_root: Path, entries_path: Path, *, backend: str = "regex") -> Dict[str, Any]:
     entries = _load_json(entries_path).get("functions", [])
     compile_commands = project_root / "build" / "compile_commands.json"
     index = CodeIndex(
@@ -56,6 +71,15 @@ def _candidate_report(
     )
     semantics = LocalPatternSemantics()
     overlay = _empty_semantic_overlay()
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = index
+    analyzer.user_config = _EmptyUserConfig()
+    analyzer._local_pattern_semantics = semantics
+    analyzer._semantic_overlay = overlay
+    analyzer._clang_tooling_provider = None
+    analyzer._clang_tooling_evidence_cache = {}
+    analyzer.budget_planner = RiskBudgetPlanner(AnalysisConfig())
+    analyzer._candidate_backend_profile = lambda: backend  # type: ignore[method-assign]
     graph_generator = GraphCandidateGenerator(index, semantics, semantic_overlay=overlay)
     issues: List[Dict[str, Any]] = []
     graph_issues: List[Dict[str, Any]] = []
@@ -66,51 +90,13 @@ def _candidate_report(
         if not func:
             continue
         entry_names.append(func)
-        if not index.get_function_impl(func):
-            missing.append(func)
-
-    # Cheap deterministic facts are collected once per reachable function.
-    # The old benchmark path rescanned up to 80 callees independently for each
-    # of 174 entries, which both distorted candidate multiplicity and made the
-    # regression gate take minutes.  A single reachability closure preserves
-    # entry scope while making the cost proportional to unique code.
-    queued = list(dict.fromkeys(entry_names))
-    scheduled = set(queued)
-    reachable_impls: Dict[str, Dict[str, Any]] = {}
-    while queued:
-        func = queued.pop(0)
-        if func in reachable_impls:
-            continue
-        impl = index.get_function_impl(func, warn_missing=False)
+        impl = index.get_function_impl(func)
         if not impl:
+            missing.append(func)
             continue
-        reachable_impls[func] = impl
-        for callee in impl.get("callees", []):
-            if isinstance(callee, dict):
-                callee_name = str(
-                    callee.get("name") or callee.get("function") or callee.get("callee") or ""
-                ).strip()
-            else:
-                callee_name = str(callee or "").strip()
-            if callee_name and callee_name not in scheduled:
-                scheduled.add(callee_name)
-                queued.append(callee_name)
-
-    if backend == "regex":
-        local_generator: Any = RegexCandidateGenerator(semantics)
-    elif backend in {"clang", "unified"}:
-        local_generator = ClangAstCfgCandidateGenerator(
-            semantics,
-            semantic_overlay=overlay,
-        )
-    else:
-        raise ValueError(f"Unsupported candidate backend: {backend}")
-    for func, impl in reachable_impls.items():
         issues.extend(
-            local_generator.generate_issues(
-                func,
-                str(impl.get("code") or ""),
-                str(impl.get("file") or ""),
+            analyzer._detect_local_rule_candidates(
+                {"entry_func": func, "impl_result": impl}
             )
         )
     graph_issues.extend(graph_generator.generate_for_functions(entry_names))
@@ -207,10 +193,7 @@ def _candidate_miss_analysis(
             truth_function = str(vuln.get("function") or "").lower()
             secondary_function = str(vuln.get("secondary_function") or "").lower()
             category = str(vuln.get("category") or "").lower().replace("_", " ").replace("-", " ")
-            keywords = [
-                str(k or "").lower().replace("_", " ").replace("-", " ")
-                for k in vuln.get("keywords", [])
-            ]
+            keywords = [str(k or "").lower().replace("_", " ").replace("-", " ") for k in vuln.get("keywords", [])]
             same_function = bool(truth_function and truth_function in text) or bool(
                 secondary_function and secondary_function in text
             )
@@ -284,7 +267,7 @@ def evaluate_range_regression(
 ) -> Dict[str, Any]:
     benchmark_dir = benchmark_dir or project_root / "benchmark"
     truth_path = truth_path or benchmark_dir / "ground_truth.json"
-    entries_path = entries_path or benchmark_dir / "deterministic_entries.json"
+    entries_path = entries_path or benchmark_dir / "entries.json"
 
     if regex_candidates:
         report = _legacy_regex_candidate_report(project_root, entries_path)
@@ -325,27 +308,12 @@ def evaluate_range_regression(
     }
     active_thresholds = {k: v for k, v in thresholds.items() if v is not None}
     if active_thresholds:
-        threshold_metric_fields = {
-            "precision": "actionable_precision",
-            "recall": "recall",
-            "f1": "actionable_f1",
-        }
         failures = {
-            metric: {
-                "actual": float(
-                    result.get(threshold_metric_fields[metric], result.get(metric, 0.0))
-                ),
-                "required": float(required),
-                "field": threshold_metric_fields[metric],
-            }
+            metric: {"actual": float(result.get(metric, 0.0)), "required": float(required)}
             for metric, required in active_thresholds.items()
-            if float(result.get(threshold_metric_fields[metric], result.get(metric, 0.0)))
-            < float(required)
+            if float(result.get(metric, 0.0)) < float(required)
         }
         result["thresholds"] = active_thresholds
-        result["threshold_metric_fields"] = {
-            metric: threshold_metric_fields[metric] for metric in active_thresholds
-        }
         result["threshold_status"] = "failed" if failures else "passed"
         result["threshold_failures"] = failures
     return result
@@ -365,18 +333,6 @@ def main() -> None:
     parser.add_argument("--min-recall", type=float, default=None)
     parser.add_argument("--min-f1", type=float, default=None)
     parser.add_argument("--output", type=Path, default=None)
-    parser.add_argument(
-        "--postscore-trace-output",
-        type=Path,
-        default=None,
-        help="write a truth-bearing post-score diagnostic after report scoring",
-    )
-    parser.add_argument(
-        "--snapshot-dir",
-        type=Path,
-        default=None,
-        help="frozen answer-free decision-trace directory for post-score diagnostics",
-    )
     args = parser.parse_args()
 
     result = evaluate_range_regression(
@@ -396,20 +352,6 @@ def main() -> None:
     output = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:
         args.output.write_text(output + "\n", encoding="utf-8")
-    if args.postscore_trace_output:
-        if args.report is None or args.snapshot_dir is None:
-            parser.error("--postscore-trace-output requires --report and --snapshot-dir")
-        truth_path = (
-            args.truth
-            or (args.benchmark_dir or args.project_root / "benchmark") / "ground_truth.json"
-        )
-        postscore = build_postscore_decision_trace(
-            report=_load_json(args.report),
-            truth=_load_json(truth_path),
-            score_views=result["report_views"],
-            snapshot_dir=args.snapshot_dir,
-        )
-        write_postscore_decision_trace(args.postscore_trace_output, postscore)
     print(output)
     if result.get("threshold_status") == "failed":
         raise SystemExit(1)

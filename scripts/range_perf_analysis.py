@@ -21,7 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNS_ROOT = REPO_ROOT / "test" / "range" / "benchmark_runs"
-AUTO_CONFIG = REPO_ROOT / "test" / "range" / "zscope.benchmark.yaml"
+AUTO_CONFIG = REPO_ROOT / "test" / "range" / "zscope.auto_unified.yaml"
 GROUND_TRUTH = REPO_ROOT / "test" / "range" / "benchmark" / "ground_truth.json"
 HARNESS_DIR = REPO_ROOT / "scripts" / "perf_harness"
 TIMESTAMP_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
@@ -97,14 +97,7 @@ def _parse_time_v(path: Path) -> Dict[str, Any]:
                 data[key] = float(val)
             except ValueError:
                 data[key] = val
-        elif key in {
-            "max_rss_kb",
-            "major_page_faults",
-            "minor_page_faults",
-            "fs_inputs",
-            "fs_outputs",
-            "exit_status",
-        }:
+        elif key in {"max_rss_kb", "major_page_faults", "minor_page_faults", "fs_inputs", "fs_outputs", "exit_status"}:
             try:
                 data[key] = int(val)
             except ValueError:
@@ -129,16 +122,12 @@ def _slow_entries(report: Dict[str, Any], limit: int = 15) -> List[Dict[str, Any
                 "duration_seconds": row.get("duration_seconds"),
                 "issue_count": row.get("issue_count"),
                 "context_tokens": row.get("context_tokens"),
-                "tool_call_count": (
-                    (row.get("validation_performance") or {}).get("tool_call_count")
-                ),
+                "tool_call_count": ((row.get("validation_performance") or {}).get("tool_call_count")),
                 "iterations": ((row.get("validation_performance") or {}).get("iterations")),
                 "error": row.get("error"),
             }
         )
-    return sorted(compact, key=lambda item: float(item.get("duration_seconds") or 0), reverse=True)[
-        :limit
-    ]
+    return sorted(compact, key=lambda item: float(item.get("duration_seconds") or 0), reverse=True)[:limit]
 
 
 def _extract_log_markers(path: Path) -> Dict[str, Any]:
@@ -175,9 +164,7 @@ def _extract_log_markers(path: Path) -> Dict[str, Any]:
         elif "Entry discovery:" in line:
             markers["entry_discovery_done"] = ts.isoformat(sep=" ") if ts else None
         elif "SVF incremental:" in line:
-            markers["svf_started"] = markers["svf_started"] or (
-                ts.isoformat(sep=" ") if ts else None
-            )
+            markers["svf_started"] = markers["svf_started"] or (ts.isoformat(sep=" ") if ts else None)
         elif "SVF analysis completed" in line:
             markers["svf_done"] = ts.isoformat(sep=" ") if ts else None
         elif "[entry-worker] shared-semantics start" in line:
@@ -233,46 +220,32 @@ def _summarize_run_dir(run_dir: Path) -> Dict[str, Any]:
         "entries_discovered": entries_discovered,
         "report_summary": summary,
         "benchmark_metrics": {
-            "default": {
-                key: evaluation.get(key)
-                for key in (
-                    "report_issue_count",
-                    "true_positives",
-                    "false_positives",
-                    "false_positives_raw",
-                    "false_positives_effective",
-                    "duplicate_of_matched_count",
-                    "same_product_root_count",
-                    "truth_covered_additional_count",
-                    "cross_anchor_overlap_count",
-                    "weak_legacy_overlap_count",
-                    "false_negatives",
-                    "precision",
-                    "false_discovery_rate",
-                    "recall",
-                    "f1",
-                )
-            },
-            "with_needs_review": {
-                key: review_eval.get(key)
-                for key in (
-                    "report_issue_count",
-                    "true_positives",
-                    "false_positives",
-                    "false_positives_raw",
-                    "false_positives_effective",
-                    "duplicate_of_matched_count",
-                    "same_product_root_count",
-                    "truth_covered_additional_count",
-                    "cross_anchor_overlap_count",
-                    "weak_legacy_overlap_count",
-                    "false_negatives",
-                    "precision",
-                    "false_discovery_rate",
-                    "recall",
-                    "f1",
-                )
-            },
+            "default": {key: evaluation.get(key) for key in (
+                "report_issue_count",
+                "true_positives",
+                "false_positives",
+                "false_positives_raw",
+                "false_positives_effective",
+                "duplicate_of_matched_count",
+                "false_negatives",
+                "precision",
+                "false_positive_rate",
+                "recall",
+                "f1",
+            )},
+            "with_needs_review": {key: review_eval.get(key) for key in (
+                "report_issue_count",
+                "true_positives",
+                "false_positives",
+                "false_positives_raw",
+                "false_positives_effective",
+                "duplicate_of_matched_count",
+                "false_negatives",
+                "precision",
+                "false_positive_rate",
+                "recall",
+                "f1",
+            )},
         },
         "log_markers": {
             "build_cpg": _extract_log_markers(run_dir / "build_cpg.log"),
@@ -292,11 +265,7 @@ def _percentile(values: Sequence[float], pct: float) -> Optional[float]:
 
 def _aggregate_historical(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     completed = [run for run in runs if run.get("scan_completed")]
-    wall = [
-        float(run["scan_wall_seconds"])
-        for run in completed
-        if run.get("scan_wall_seconds") is not None
-    ]
+    wall = [float(run["scan_wall_seconds"]) for run in completed if run.get("scan_wall_seconds") is not None]
     latest = completed[-1] if completed else (runs[-1] if runs else {})
     return {
         "run_count": len(runs),
@@ -313,9 +282,7 @@ def _aggregate_historical(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def command_history(args: argparse.Namespace) -> int:
-    output_dir = (
-        Path(args.output_dir) if args.output_dir else RUNS_ROOT / _now_run_id("perf_history")
-    )
+    output_dir = Path(args.output_dir) if args.output_dir else RUNS_ROOT / _now_run_id("perf_history")
     candidates = sorted(
         path
         for path in RUNS_ROOT.iterdir()
@@ -340,9 +307,7 @@ def command_history(args: argparse.Namespace) -> int:
 
 def _require_wsl() -> None:
     proc_version = Path("/proc/version")
-    text = (
-        proc_version.read_text(encoding="utf-8", errors="replace") if proc_version.exists() else ""
-    )
+    text = proc_version.read_text(encoding="utf-8", errors="replace") if proc_version.exists() else ""
     if "microsoft" not in text.lower() and "wsl" not in text.lower():
         raise SystemExit("profile must run inside WSL/Linux for the range unified workload")
 
@@ -352,9 +317,7 @@ def _run_bash(script: str, *, env: Dict[str, str]) -> int:
     return int(proc.returncode)
 
 
-def _profile_command(
-    command: str, log_path: Path, time_path: Path, speedscope_path: Path, use_py_spy: bool
-) -> str:
+def _profile_command(command: str, log_path: Path, time_path: Path, speedscope_path: Path, use_py_spy: bool) -> str:
     log = _shell_quote(log_path.as_posix())
     time_file = _shell_quote(time_path.as_posix())
     if use_py_spy:
@@ -382,14 +345,12 @@ def command_profile(args: argparse.Namespace) -> int:
     use_py_spy = bool(py_spy_available and not args.no_py_spy)
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{HARNESS_DIR}:{REPO_ROOT}" + (
-        f":{existing_pythonpath}" if existing_pythonpath else ""
-    )
+    env["PYTHONPATH"] = f"{HARNESS_DIR}:{REPO_ROOT}" + (f":{existing_pythonpath}" if existing_pythonpath else "")
     env["Z_SCOPE_PERF_TIMELINE"] = str(timeline)
     env["Z_SCOPE_PERF_RUN_ID"] = run_id
 
-    config_path = "test/range/zscope.benchmark.yaml"
-    build_cmd = f"python3 -m zscope.cli.cli -c {config_path} --build-index"
+    config_path = "test/range/zscope.auto_unified.yaml"
+    build_cmd = f"python3 -m zscope.cli.cli -c {config_path} --build-cpg"
     scan_cmd = f"python3 -m zscope.cli.cli -c {config_path} --discover-entries --verbose"
     script = f"""
 set -euo pipefail
@@ -405,7 +366,8 @@ export LD_LIBRARY_PATH="$HOME/.local/svf/SVF-linux-x86_64/lib:$HOME/.local/svf/l
 export LLVM_COMPILER=clang
 export LLVM_CC_NAME=clang-18
 python3 scripts/range_perf_analysis.py preflight
-rm -rf test/range/.zscope_snapshots test/range/.zscope_knowledge
+rm -rf test/range/.zscope_snapshots_auto_unified_wsl test/range/.zscope_knowledge_auto_unified_wsl
+rm -rf test/range/test/range/.zscope_knowledge_auto_unified_wsl
 rm -f test/range/zscope_batch_report.json test/range/zscope_batch_report.md test/range/entry_functions_list.json
 {_profile_command("cmake -S test/range -B test/range/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON", run_dir / "cmake.log", run_dir / "cmake.time", run_dir / "cmake.speedscope.json", False)}
 {_profile_command(build_cmd, run_dir / "build_cpg.log", run_dir / "build_cpg.time", run_dir / "build_cpg.speedscope.json", use_py_spy)}
@@ -417,7 +379,7 @@ printf '%s\\n' "$scan_rc" > {_shell_quote((run_dir / "scan.returncode").as_posix
 if [[ -f test/range/entry_functions_list.json ]]; then cp test/range/entry_functions_list.json {_shell_quote((run_dir / "entry_functions_list.json").as_posix())}; fi
 if [[ -f test/range/zscope_batch_report.json ]]; then cp test/range/zscope_batch_report.json {_shell_quote((run_dir / "zscope_batch_report.json").as_posix())}; fi
 if [[ -f test/range/zscope_batch_report.md ]]; then cp test/range/zscope_batch_report.md {_shell_quote((run_dir / "zscope_batch_report.md").as_posix())}; fi
-cp {config_path} {_shell_quote((run_dir / "zscope.benchmark.yaml").as_posix())}
+cp {config_path} {_shell_quote((run_dir / "zscope.auto_unified.yaml").as_posix())}
 if [[ -f {_shell_quote((run_dir / "zscope_batch_report.json").as_posix())} ]]; then
   python3 scripts/external_benchmark.py evaluate --report {_shell_quote((run_dir / "zscope_batch_report.json").as_posix())} --truth test/range/benchmark/ground_truth.json --output {_shell_quote((run_dir / "evaluation.json").as_posix())}
   python3 scripts/external_benchmark.py evaluate --report {_shell_quote((run_dir / "zscope_batch_report.json").as_posix())} --truth test/range/benchmark/ground_truth.json --output {_shell_quote((run_dir / "evaluation.with_needs_review.json").as_posix())} --view with_needs_review
@@ -430,9 +392,7 @@ fi
     rc = _run_bash(script, env=env)
     print(f"[perf] profile artifacts: {run_dir}")
     if not use_py_spy:
-        print(
-            "[perf] py-spy was not used; install py-spy or omit --no-py-spy for speedscope profiles."
-        )
+        print("[perf] py-spy was not used; install py-spy or omit --no-py-spy for speedscope profiles.")
     return rc
 
 
@@ -445,23 +405,26 @@ def _preflight_config() -> Dict[str, Any]:
     indexing = cfg.get("indexing") or {}
     project = cfg.get("project") or {}
     discovery = project.get("entry_discovery") or {}
+    reporting = cfg.get("reporting") or {}
+    semantic = reporting.get("semantic_dedup") or {}
     checks = {
-        "config_version": cfg.get("config_version"),
         "backend": indexing.get("backend"),
         "entry_discovery_enabled": bool(discovery.get("enabled")),
-        "interface_files": discovery.get("interface_files") or [],
+        "header_files": discovery.get("header_files") or [],
+        "semantic_dedup_enabled": semantic.get("enabled", True),
+        "semantic_dedup_llm_enabled": semantic.get("llm_enabled", True),
     }
     failures = []
-    if checks["config_version"] != 2:
-        failures.append(f"expected config_version=2, got {checks['config_version']!r}")
     if checks["backend"] != "unified":
         failures.append(f"expected indexing.backend=unified, got {checks['backend']!r}")
     if checks["entry_discovery_enabled"] is not True:
         failures.append("expected project.entry_discovery.enabled=true")
-    if checks["interface_files"] != ["**/*.h"]:
-        failures.append(
-            "expected interface_files=['**/*.h'], " f"got {checks['interface_files']!r}"
-        )
+    if checks["header_files"] != ["*.h"]:
+        failures.append(f"expected header_files=['*.h'], got {checks['header_files']!r}")
+    if checks["semantic_dedup_enabled"] is not True:
+        failures.append("expected semantic dedup enabled by default")
+    if checks["semantic_dedup_llm_enabled"] is not True:
+        failures.append("expected semantic LLM dedup enabled by default")
     if failures:
         raise SystemExit("; ".join(failures))
     return checks
@@ -488,17 +451,9 @@ def _load_timeline(path: Path) -> List[Dict[str, Any]]:
 
 
 def _aggregate_timeline(events: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    by_phase: Dict[str, Dict[str, Any]] = defaultdict(
-        lambda: {"count": 0, "duration_ms": 0.0, "errors": 0}
-    )
+    by_phase: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"count": 0, "duration_ms": 0.0, "errors": 0})
     slow_events: List[Dict[str, Any]] = []
-    llm = {
-        "count": 0,
-        "duration_ms": 0.0,
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-    }
+    llm = {"count": 0, "duration_ms": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     tools = Counter()
     tool_durations: Dict[str, float] = defaultdict(float)
     for event in events:
@@ -578,16 +533,8 @@ def command_summarize(args: argparse.Namespace) -> int:
             "scan": _parse_time_v(run_dir / "scan.time"),
         },
         "profiles": {
-            "build_cpg_speedscope": (
-                _rel(run_dir / "build_cpg.speedscope.json")
-                if (run_dir / "build_cpg.speedscope.json").exists()
-                else ""
-            ),
-            "scan_speedscope": (
-                _rel(run_dir / "scan.speedscope.json")
-                if (run_dir / "scan.speedscope.json").exists()
-                else ""
-            ),
+            "build_cpg_speedscope": _rel(run_dir / "build_cpg.speedscope.json") if (run_dir / "build_cpg.speedscope.json").exists() else "",
+            "scan_speedscope": _rel(run_dir / "scan.speedscope.json") if (run_dir / "scan.speedscope.json").exists() else "",
         },
         "timeline": _aggregate_timeline(_load_timeline(run_dir / "timeline.jsonl")),
     }
@@ -638,15 +585,13 @@ def _write_report(output_dir: Path, data: Dict[str, Any]) -> None:
                 f"| {stage} | {stats.get('elapsed', '')} | {stats.get('user_seconds', '')} | {stats.get('system_seconds', '')} | {stats.get('max_rss_kb', '')} |"
             )
         lines.extend(["", "## Timeline Hotspots", ""])
-        lines.extend(
-            ["| Phase | Count | Total s | Avg ms | Errors |", "| --- | ---: | ---: | ---: | ---: |"]
-        )
+        lines.extend(["| Phase | Count | Total s | Avg ms | Errors |", "| --- | ---: | ---: | ---: | ---: |"])
         for row in ((data.get("timeline") or {}).get("phases") or [])[:20]:
             lines.append(
                 f"| {row.get('phase')} | {row.get('count')} | {row.get('total_seconds')} | {row.get('avg_ms')} | {row.get('errors')} |"
             )
         llm = (data.get("timeline") or {}).get("llm") or {}
-        scan_markers = (run.get("log_markers") or {}).get("scan") or {}
+        scan_markers = ((run.get("log_markers") or {}).get("scan") or {})
         lines.extend(
             [
                 "",
@@ -663,7 +608,7 @@ def _write_report(output_dir: Path, data: Dict[str, Any]) -> None:
                 "",
             ]
         )
-        timeline_tools = (data.get("timeline") or {}).get("tools") or []
+        timeline_tools = ((data.get("timeline") or {}).get("tools") or [])
         if timeline_tools:
             lines.extend(["| Tool | Count | Total s | Avg ms |", "| --- | ---: | ---: | ---: |"])
             for row in timeline_tools[:20]:
@@ -673,9 +618,7 @@ def _write_report(output_dir: Path, data: Dict[str, Any]) -> None:
             lines.append("")
         else:
             log_tools = scan_markers.get("tool_calls_by_name") or {}
-            lines.append(
-                "_No tool execution timing was captured in this run; below is a log-derived call count fallback._"
-            )
+            lines.append("_No tool execution timing was captured in this run; below is a log-derived call count fallback._")
             lines.extend(["", "| Tool | Log count |", "| --- | ---: |"])
             for name, count in list(log_tools.items())[:20]:
                 lines.append(f"| {name} | {count} |")
@@ -710,9 +653,9 @@ def _run_report_lines(run: Dict[str, Any]) -> List[str]:
         f"- Validation iterations / tool calls: {(summary.get('validation_performance') or {}).get('iterations')} / {(summary.get('validation_performance') or {}).get('tool_call_count')}",
         f"- Tokens total: {summary.get('total_cumulative_total_tokens')}",
         f"- Default precision/recall/F1: {default_metrics.get('precision')} / {default_metrics.get('recall')} / {default_metrics.get('f1')}",
-        f"- Default FP split raw/same-root/truth-covered/cross-anchor/weak/effective: {default_metrics.get('false_positives_raw')} / {default_metrics.get('same_product_root_count')} / {default_metrics.get('truth_covered_additional_count')} / {default_metrics.get('cross_anchor_overlap_count')} / {default_metrics.get('weak_legacy_overlap_count')} / {default_metrics.get('false_positives_effective')}",
+        f"- Default FP split raw/duplicate/effective: {default_metrics.get('false_positives_raw')} / {default_metrics.get('duplicate_of_matched_count')} / {default_metrics.get('false_positives_effective')}",
         f"- With-review precision/recall/F1: {review_metrics.get('precision')} / {review_metrics.get('recall')} / {review_metrics.get('f1')}",
-        f"- With-review FP split raw/same-root/truth-covered/cross-anchor/weak/effective: {review_metrics.get('false_positives_raw')} / {review_metrics.get('same_product_root_count')} / {review_metrics.get('truth_covered_additional_count')} / {review_metrics.get('cross_anchor_overlap_count')} / {review_metrics.get('weak_legacy_overlap_count')} / {review_metrics.get('false_positives_effective')}",
+        f"- With-review FP split raw/duplicate/effective: {review_metrics.get('false_positives_raw')} / {review_metrics.get('duplicate_of_matched_count')} / {review_metrics.get('false_positives_effective')}",
         "",
         "## Slow Entries",
         "",

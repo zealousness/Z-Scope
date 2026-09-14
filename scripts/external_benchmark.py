@@ -24,11 +24,10 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -45,11 +44,8 @@ from zscope.benchmarking.protocol import (
     CONDITION_FULL_ZSCOPE,
     CONDITION_PURE_LLM_ENTRY,
     CONDITION_PURE_LLM_REPO,
-    DEFAULT_BOOTSTRAP_SAMPLES,
-    MIN_RELEASE_TRIALS,
     RUN_KINDS,
     aggregate_trial_summaries,
-    build_benchmark_artifact_manifest,
     build_trial_summary,
     collect_environment_metadata,
     copy_conversation_trajectory,
@@ -57,25 +53,6 @@ from zscope.benchmarking.protocol import (
     load_summaries,
     score_report,
     score_report_views,
-    sha256_file,
-    sha256_payload,
-)
-from zscope.benchmarking.isolation import (
-    BenchmarkIsolationError,
-    RootlessOciExecutor,
-    oci_capability,
-    require_release_isolation,
-)
-from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
-from zscope.benchmarking.provider_runtime import (
-    ProviderRuntimeContract,
-    ProviderRuntimeError,
-    reject_conflicting_provider_identity_environment,
-)
-from zscope.benchmarking.replay_bundle import (
-    REPLAY_BUNDLE_SCHEMA_VERSION,
-    ReplayBundleError,
-    write_validator_replay_bundle,
 )
 
 
@@ -130,40 +107,7 @@ CWE_CATEGORY = {
 
 FalsePositiveClassifier = Callable[[dict[str, Any]], dict[str, Any]]
 RANGE_BENCHMARK_NAMES = {"zscope-range-service-runtime"}
-_OCI_EXECUTOR_FACTORY = RootlessOciExecutor
-_FORMAL_ANSWER_FREE_EXCLUDED_PARTS = frozenset(
-    {
-        ".git",
-        ".pytest_cache",
-        ".zscope_knowledge",
-        ".zscope_snapshots",
-        "__pycache__",
-        "benchmark",
-        "benchmark-artifacts",
-        "build",
-        "runs",
-    }
-)
-_FORMAL_ANSWER_KEYS = frozenset(
-    {
-        "cwe",
-        "cwes",
-        "category",
-        "expected_label",
-        "expected_verdict",
-        "ground_truth",
-        "is_vulnerable",
-        "keywords",
-        "label",
-        "oracle",
-        "property",
-        "safe",
-        "truth_id",
-        "truth_ids",
-        "verdict",
-        "vulnerable",
-    }
-)
+JAVASECLAB_BENCHMARK_NAMES = {"zscope-javaseclab-core", "zscope-javaseclab-extended"}
 
 CATEGORY_ALIASES = {
     "memory_safety": [
@@ -179,15 +123,16 @@ CATEGORY_ALIASES = {
         "uninitialized",
     ],
     "integer_overflow": ["integer overflow", "overflow", "wrap", "cwe-190", "cwe-191", "cwe-680"],
-    "bounds": [
-        "bounds",
-        "out of bounds",
-        "buffer overflow",
-        "overread",
-        "overread",
-        "cwe-125",
-        "cwe-787",
-    ],
+    "bounds": ["bounds", "out of bounds", "buffer overflow", "overread", "overread", "cwe-125", "cwe-787"],
+    "sql_injection": ["sql injection", "sqli", "statement", "executequery", "mybatis", "cwe-89"],
+    "command_injection": ["command injection", "shell injection", "runtime.exec", "processbuilder", "cwe-78"],
+    "path_traversal": ["path traversal", "directory traversal", "paths.get", "canonical", "cwe-22"],
+    "ssrf": ["ssrf", "server side request forgery", "uri.create", "url.openstream", "cwe-918"],
+    "unsafe_deserialization": ["unsafe deserialization", "objectinputstream", "readobject", "cwe-502"],
+    "xxe": ["xxe", "external entity", "documentbuilderfactory", "xml parser", "cwe-611"],
+    "weak_crypto": ["weak crypto", "weak cryptography", "aes/ecb", "md5", "sha-1", "cwe-327"],
+    "authz_bypass": ["authz", "authorization", "access control", "permission", "idor", "cwe-862"],
+    "resource_leak": ["resource leak", "closeable", "fileinputstream", "missing close", "cwe-772"],
     "memory_leak": ["memory leak", "resource leak", "leak", "cwe-401"],
     "double_free": ["double free", "cwe-415"],
     "use_after_free": ["use after free", "use-after-free", "uaf", "dangling", "cwe-416"],
@@ -210,6 +155,14 @@ CATEGORY_ALIASES = {
     "stack_overflow": ["stack overflow", "stack buffer", "vla", "cwe-121"],
     "uninitialized_read": ["uninitialized", "padding", "cwe-457"],
     "data_race": ["data race", "race", "cwe-362"],
+    "xss": ["xss", "cross site scripting", "cross-site scripting", "th:utext", "cwe-79"],
+    "csrf": ["csrf", "cross site request forgery", "cross-site request forgery", "cwe-352"],
+    "jsonp_hijacking": ["jsonp", "jsonp hijacking", "callback parameter", "cwe-942"],
+    "xpath_injection": ["xpath injection", "xpath.evaluate", "xpathfactory", "cwe-643"],
+    "sensitive_info_exposure": ["sensitive information", "information disclosure", "info leak", "druid", "cwe-200"],
+    "idor": ["idor", "insecure direct object reference", "horizontal privilege", "cwe-639"],
+    "business_logic": ["business logic", "payment replay", "price tampering", "workflow bypass", "cwe-840", "cwe-841"],
+    "component_deserialization": ["component deserialization", "fastjson", "jackson", "xstream", "snakeyaml", "shiro", "cwe-502"],
 }
 
 
@@ -269,9 +222,7 @@ def _copy_file(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
-def _scan_source_destination(
-    project_dir: Path, suite_subdir: str, source_root: Path, src: Path
-) -> Path:
+def _scan_source_destination(project_dir: Path, suite_subdir: str, source_root: Path, src: Path) -> Path:
     dst = project_dir / "src" / suite_subdir / src.relative_to(source_root)
     if dst.suffix == ".i":
         dst = dst.with_suffix(".c")
@@ -440,34 +391,26 @@ def _write_compile_commands(project_dir: Path, source_files: Iterable[Path]) -> 
 
 def _write_zscope_config(suite_root: Path, *, title: str, backend: str = "regex") -> None:
     project = (suite_root / "project").resolve()
-    svf_block = ""
-    if backend == "unified":
-        svf_block = """  svf:
-    scope: auto
-    entry_depth: 4
-    max_selected_tus: 200
-    fallback: full
-    always_include: []
-    exclusive_pools: []
-    shared_pools: []
-    heap_limit_mb: 32768
-    timeout_seconds: 1800
-"""
     config = f"""# Generated by scripts/external_benchmark.py for {title}.
-config_version: 2
-
 llms:
   default:
-    base_urls: ["${{Z_SCOPE_BASE_URL}}"]
-    models: ["${{Z_SCOPE_MODEL}}"]
+    provider: openai
+    base_url: "${{Z_SCOPE_BASE_URL}}"
+    models:
+      - "${{Z_SCOPE_MODEL}}"
     api_key: "${{Z_SCOPE_API_KEY}}"
+    temperature: 0.1
     max_tokens: 8192
     max_retries: 2
     timeout: 120
+
   smart_model:
-    base_urls: ["${{Z_SCOPE_BASE_URL}}"]
-    models: ["${{Z_SCOPE_MODEL}}"]
+    provider: openai
+    base_url: "${{Z_SCOPE_BASE_URL}}"
+    models:
+      - "${{Z_SCOPE_MODEL}}"
     api_key: "${{Z_SCOPE_API_KEY}}"
+    temperature: 0.1
     max_tokens: 8192
     max_retries: 2
     timeout: 120
@@ -475,7 +418,6 @@ llms:
 project:
   root: "{project.as_posix()}"
   source_root: "."
-  language: c_cpp
   entry_functions_list: "../benchmark/entries.json"
   compile_commands_path: "compile_commands.json"
   include_paths:
@@ -485,37 +427,50 @@ project:
     - .zscope_knowledge
     - .zscope_snapshots
     - benchmark
+  prompt_autofill:
+    enabled: false
+    overwrite_existing: false
+    write_back: false
+    min_custom_prompt_chars: 20
   entry_discovery:
     enabled: false
-    search_root: .
-    interface_files: ["include/**/*.h"]
-    max_entries: 200
-    max_functions: 10000
-
-scan:
-  task: >-
-    Audit this external benchmark subset for C/C++ memory safety,
-    resource lifecycle, integer/bounds, null/failure, and concurrency
-    defects. Use only source evidence, call paths, and local project
-    semantics. Do not rely on benchmark answer-key files.
-  llm_profiles:
-    modeling: default
-    analysis: smart_model
-    validation: smart_model
+  agents:
+    - name: semantic_modeler
+      enabled: true
+      llm_ref: default
+    - name: vulnerability_analyzer
+      enabled: true
+      llm_ref: smart_model
+      can_spawn_subagents: true
+      task: >
+        Audit this external benchmark subset for C/C++ memory safety,
+        resource lifecycle, integer/bounds, null/failure, and concurrency
+        defects. Use only source evidence, call paths, and local project
+        semantics. Do not rely on benchmark answer-key files.
+    - name: validator_agent
+      enabled: true
+      llm_ref: smart_model
 
 indexing:
   backend: {backend}
-{svf_block}  tools:
-    clangd: clangd
+  clangd_path: clangd
+  knowledge_db_path: .zscope_knowledge/code_knowledge.db
+  batch_size: 50
+  max_clangd_threads: 4
 
-concurrency:
-  entry_workers: 8
-  validator_workers: 4
-  investigator_workers: 2
-  evidence_completion_workers: 2
-  index_workers: 4
-  svf_workers: 4
-  llm_max_inflight: 8
+analysis:
+  max_recursion_depth: 3
+  max_function_lines: 600
+  max_tool_iterations: 50
+  snapshot_dir: "{(project / ".zscope_snapshots").as_posix()}"
+  enable_snapshot_cache: true
+  user_config_db: ""
+  parallel_workers: 4
+  max_premodel_depth: 3
+  max_premodel_callees: 12
+  trivial_function_max_lines: 8
+  enable_subagent_workers: true
+  max_subagent_tickets: 4
 """
     (suite_root / "zscope.benchmark.yaml").write_text(config, encoding="utf-8")
 
@@ -535,19 +490,13 @@ def prepare_juliet(args: argparse.Namespace) -> dict[str, Any]:
     source_files = []
     for ext in ("*.c", "*.cpp", "*.cc", "*.i"):
         source_files.extend(source.rglob(ext))
-    buckets: dict[str, list[Path]] = (
-        {"ALL": []} if all_cwes else {prefix: [] for prefix in cwe_prefixes}
-    )
+    buckets: dict[str, list[Path]] = {"ALL": []} if all_cwes else {prefix: [] for prefix in cwe_prefixes}
     for path in sorted(source_files):
         rel = path.relative_to(source).as_posix()
         rel_key = rel.upper().replace("-", "")
-        matched_prefix = (
-            "ALL"
-            if all_cwes and "CWE" in rel_key
-            else next(
-                (prefix for prefix in cwe_prefixes if prefix in rel_key),
-                "",
-            )
+        matched_prefix = "ALL" if all_cwes and "CWE" in rel_key else next(
+            (prefix for prefix in cwe_prefixes if prefix in rel_key),
+            "",
         )
         if not matched_prefix:
             continue
@@ -910,15 +859,7 @@ def _patch_changed_file_lines(patch: Path) -> dict[str, int | None]:
 
 def _source_suffix_supported(path: Path) -> bool:
     suffixes = "".join(path.suffixes).lower()
-    return path.suffix.lower() in {
-        ".c",
-        ".cc",
-        ".cpp",
-        ".cxx",
-        ".h",
-        ".hpp",
-        ".hh",
-    } or suffixes.endswith(".c.in")
+    return path.suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh"} or suffixes.endswith(".c.in")
 
 
 def _copy_full_target_source(src_root: Path, dst_root: Path) -> list[Path]:
@@ -1086,9 +1027,7 @@ def _suite_config_metadata(suite_root: Path, env: dict[str, str] | None = None) 
     indexing = config.get("indexing") if isinstance(config.get("indexing"), dict) else {}
     project = config.get("project") if isinstance(config.get("project"), dict) else {}
     metadata["backend"] = str(indexing.get("backend") or "")
-    prompt_autofill = (
-        project.get("prompt_autofill") if isinstance(project.get("prompt_autofill"), dict) else {}
-    )
+    prompt_autofill = project.get("prompt_autofill") if isinstance(project.get("prompt_autofill"), dict) else {}
     metadata["prompt_autofill"] = prompt_autofill
     llms = config.get("llms") if isinstance(config.get("llms"), dict) else {}
     default_llm = llms.get("default") if isinstance(llms.get("default"), dict) else {}
@@ -1096,533 +1035,6 @@ def _suite_config_metadata(suite_root: Path, env: dict[str, str] | None = None) 
     if models and not metadata["model"]:
         metadata["model"] = str(models[0]).replace("${Z_SCOPE_MODEL}", env.get("Z_SCOPE_MODEL", ""))
     return metadata
-
-
-def _prepare_trial_config(
-    suite_root: Path,
-    run_dir: Path,
-    *,
-    warm_cache: bool,
-) -> Path:
-    """Create a strict v2 trial config plus an isolated RuntimeSpec override."""
-
-    config_path = suite_root / "zscope.benchmark.yaml"
-    if warm_cache:
-        return config_path
-    if yaml is None:
-        raise RuntimeError("PyYAML is required to create an isolated benchmark trial config")
-    loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    if not isinstance(loaded, dict):
-        raise RuntimeError(f"Benchmark config is not a mapping: {config_path}")
-    if loaded.get("config_version") != 2:
-        raise RuntimeError(f"Benchmark config must declare config_version: 2: {config_path}")
-    isolated_snapshot_dir = (run_dir / ".cold_snapshot_cache").resolve()
-    if isolated_snapshot_dir.exists():
-        if not isolated_snapshot_dir.is_dir() or any(isolated_snapshot_dir.iterdir()):
-            raise RuntimeError(
-                "Cold benchmark cache is not empty; use a fresh run directory "
-                f"or pass --warm-cache: {isolated_snapshot_dir}"
-            )
-    runtime_override = run_dir / "runtime.cold.override.yaml"
-    runtime_override.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_spec_version": 1,
-                "analysis": {"enable_snapshot_cache": True},
-                "paths": {"snapshots": isolated_snapshot_dir.as_posix()},
-            },
-            allow_unicode=True,
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-    trial_config = run_dir / "zscope.benchmark.cold.yaml"
-    trial_config.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
-    return trial_config
-
-
-def _contains_answer_key(value: Any) -> bool:
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            normalized = str(key).strip().lower().replace("-", "_")
-            if normalized in _FORMAL_ANSWER_KEYS:
-                return True
-            if _contains_answer_key(item):
-                return True
-    elif isinstance(value, list):
-        return any(_contains_answer_key(item) for item in value)
-    return False
-
-
-def _copy_answer_free_project(source: Path, destination: Path) -> None:
-    """Copy a project into a sealed tree without runtime or answer material."""
-
-    source = Path(source).resolve()
-    destination = Path(destination).resolve()
-    if not source.is_dir():
-        raise BenchmarkIsolationError(f"external benchmark project does not exist: {source}")
-    if destination.exists():
-        raise BenchmarkIsolationError(f"formal scan input already exists: {destination}")
-    destination.mkdir(parents=True)
-    for path in sorted(source.rglob("*"), key=lambda item: item.as_posix()):
-        relative = path.relative_to(source)
-        if path.is_symlink():
-            raise BenchmarkIsolationError(
-                f"formal answer-free project cannot contain symlinks: {relative.as_posix()}"
-            )
-        if any(part.lower() in _FORMAL_ANSWER_FREE_EXCLUDED_PARTS for part in relative.parts):
-            continue
-        if path.is_dir():
-            continue
-        lowered_name = path.name.lower()
-        if lowered_name in {"ground_truth.json", "ground_truth.md"}:
-            raise BenchmarkIsolationError(
-                f"truth material is present in the external project: {relative.as_posix()}"
-            )
-        if lowered_name in {
-            "zscope_batch_report.json",
-            "zscope.benchmark.yaml",
-            "zscope.benchmark.cold.yaml",
-        }:
-            continue
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
-
-
-def _copy_answer_free_entries(source: Path, destination: Path) -> None:
-    try:
-        payload = json.loads(Path(source).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise BenchmarkIsolationError("cannot load external benchmark entries") from exc
-    if not isinstance(payload, dict) or not isinstance(payload.get("functions"), list):
-        raise BenchmarkIsolationError("external benchmark entries must contain functions[]")
-    if _contains_answer_key(payload):
-        raise BenchmarkIsolationError("external benchmark entries contain answer metadata")
-    _json_dump(destination, payload)
-
-
-def _answer_free_tree_manifest(root: Path) -> dict[str, Any]:
-    files = [path for path in root.rglob("*") if path.is_file()]
-    rows = [
-        {
-            "path": path.relative_to(root).as_posix(),
-            "size": path.stat().st_size,
-            "sha256": sha256_file(path),
-        }
-        for path in sorted(files, key=lambda item: item.relative_to(root).as_posix())
-    ]
-    return {
-        "schema_version": "zscope.external-formal-scan-input.v1",
-        "file_count": len(rows),
-        "files": rows,
-        "manifest_sha256": sha256_payload(rows),
-        "answer_material_present": False,
-    }
-
-
-def _container_project_path(value: Any, *, source_project: Path) -> str:
-    raw = str(value or "")
-    if not raw:
-        return raw
-    normalized = raw.replace("\\", "/")
-    source_text = source_project.resolve().as_posix().rstrip("/")
-    if normalized == source_text:
-        return "/zscope-cache/project"
-    if normalized.startswith(source_text + "/"):
-        return "/zscope-cache/project/" + normalized[len(source_text) + 1 :]
-    path = Path(raw)
-    if not path.is_absolute():
-        return "/zscope-cache/project/" + normalized.lstrip("./")
-    return normalized
-
-
-def _rewrite_compile_commands_for_container(path: Path, *, source_project: Path) -> None:
-    if not path.is_file():
-        return
-    try:
-        rows = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise BenchmarkIsolationError("compile_commands.json is invalid") from exc
-    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-        raise BenchmarkIsolationError("compile_commands.json must be an array of objects")
-    source_variants = {
-        str(source_project.resolve()),
-        source_project.resolve().as_posix(),
-    }
-    rewritten: list[dict[str, Any]] = []
-    for raw_row in rows:
-        row = dict(raw_row)
-        row["directory"] = "/zscope-cache/project"
-        if row.get("file"):
-            container_file = _container_project_path(row["file"], source_project=source_project)
-            if not container_file.startswith("/zscope-cache/project/"):
-                raise BenchmarkIsolationError(
-                    "compile_commands.json references a source outside the sealed project"
-                )
-            row["file"] = container_file
-        if isinstance(row.get("command"), str):
-            command = str(row["command"])
-            for source_variant in sorted(source_variants, key=len, reverse=True):
-                command = command.replace(source_variant, "/zscope-cache/project")
-            row["command"] = command
-        if isinstance(row.get("arguments"), list):
-            rewritten_arguments = []
-            for item in row["arguments"]:
-                argument = str(item)
-                for source_variant in sorted(source_variants, key=len, reverse=True):
-                    argument = argument.replace(source_variant, "/zscope-cache/project")
-                rewritten_arguments.append(argument)
-            row["arguments"] = rewritten_arguments
-        rewritten.append(row)
-    serialized = json.dumps(rewritten, ensure_ascii=False, indent=2) + "\n"
-    if any(source_variant in serialized for source_variant in source_variants):
-        raise BenchmarkIsolationError(
-            "compile_commands.json still references the host project after rewriting"
-        )
-    path.write_text(serialized, encoding="utf-8")
-
-
-def _write_formal_container_config(
-    source: Path,
-    destination: Path,
-    *,
-    compile_commands_present: Optional[bool] = None,
-) -> None:
-    if yaml is None:
-        raise RuntimeError("PyYAML is required for formal external benchmark execution")
-    loaded = yaml.safe_load(Path(source).read_text(encoding="utf-8")) or {}
-    if not isinstance(loaded, dict) or loaded.get("config_version") != 2:
-        raise BenchmarkIsolationError("formal external config must declare config_version: 2")
-    project = loaded.get("project")
-    if not isinstance(project, dict):
-        raise BenchmarkIsolationError("formal external config project must be an object")
-    project["root"] = "/zscope-cache/project"
-    project["source_root"] = "."
-    project["entry_functions_list"] = "/zscope-input/entries.json"
-    has_compile_commands = (
-        (destination.parent / "project" / "compile_commands.json").is_file()
-        if compile_commands_present is None
-        else bool(compile_commands_present)
-    )
-    if has_compile_commands:
-        project["compile_commands_path"] = "compile_commands.json"
-    scan = loaded.setdefault("scan", {})
-    if not isinstance(scan, dict):
-        raise BenchmarkIsolationError("formal external config scan must be an object")
-    scan["task"] = (
-        "Audit this C/C++ project for memory safety, resource lifecycle, "
-        "integer and bounds, null and failure, and concurrency defects. "
-        "Use only source evidence, call paths, and local project semantics."
-    )
-    llms = loaded.get("llms")
-    if not isinstance(llms, dict) or not llms:
-        raise BenchmarkIsolationError("formal external config must define an LLM profile")
-    for raw_profile in llms.values():
-        if not isinstance(raw_profile, dict):
-            raise BenchmarkIsolationError("formal external LLM profile must be an object")
-        raw_profile["api_key"] = "${Z_SCOPE_API_KEY}"
-    destination.write_text(
-        yaml.safe_dump(loaded, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-
-
-def _write_formal_runtime_override(destination: Path) -> None:
-    assert yaml is not None
-    destination.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_spec_version": 1,
-                "analysis": {"enable_snapshot_cache": True},
-                "paths": {
-                    "knowledge_db": "/zscope-cache/project/.zscope_knowledge/code_knowledge.db",
-                    "snapshots": "/zscope-cache/project/.zscope_snapshots",
-                    "user_config_file": (
-                        "/zscope-cache/project/.zscope_snapshots/user_config.xlsx"
-                    ),
-                },
-            },
-            allow_unicode=True,
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-
-def _formal_oci_environment(run_env: Mapping[str, str]) -> dict[str, str]:
-    return {
-        str(key): str(value)
-        for key, value in run_env.items()
-        if "GROUND_TRUTH" not in str(key).upper() and "BENCHMARK_TRUTH" not in str(key).upper()
-    }
-
-
-def _run_formal_full_zscope_oci(
-    *,
-    suite_root: Path,
-    run_dir: Path,
-    config_path: Path,
-    run_env: Mapping[str, str],
-) -> dict[str, Any]:
-    """Execute the scanner in rootless OCI and return only answer-free artifacts."""
-
-    source_project = _suite_project_dir(suite_root).resolve()
-    truth_path = (suite_root / "benchmark" / "ground_truth.json").resolve()
-    scorer_path = Path(__file__).resolve()
-    environment = _formal_oci_environment(run_env)
-    with tempfile.TemporaryDirectory(prefix="zscope-external-formal-") as raw_workspace:
-        workspace = Path(raw_workspace).resolve()
-        for protected in (REPO_ROOT.resolve(), suite_root.resolve()):
-            if (
-                workspace == protected
-                or workspace.is_relative_to(protected)
-                or protected.is_relative_to(workspace)
-            ):
-                raise BenchmarkIsolationError(
-                    "formal OCI workspace must be disjoint from the repository and suite"
-                )
-        scan_input = workspace / "scan-input"
-        sealed_project = scan_input / "project"
-        artifact_output = workspace / "artifact-output"
-        cache_output = workspace / "cache"
-        writable_project = cache_output / "project"
-        scan_input.mkdir()
-        artifact_output.mkdir()
-        cache_output.mkdir()
-        _copy_answer_free_project(source_project, sealed_project)
-        _copy_answer_free_entries(
-            suite_root / "benchmark" / "entries.json", scan_input / "entries.json"
-        )
-        _rewrite_compile_commands_for_container(
-            sealed_project / "compile_commands.json", source_project=source_project
-        )
-        container_config = scan_input / "zscope.execution.yaml"
-        _write_formal_container_config(
-            config_path,
-            container_config,
-            compile_commands_present=(sealed_project / "compile_commands.json").is_file(),
-        )
-        try:
-            provider_contract = ProviderRuntimeContract.from_config_file(container_config)
-            reject_conflicting_provider_identity_environment(
-                provider_contract,
-                environment,
-            )
-        except ProviderRuntimeError:
-            raise BenchmarkIsolationError(
-                "formal OCI provider runtime contract is invalid"
-            ) from None
-        if provider_contract.required_environment_keys != ("Z_SCOPE_API_KEY",):
-            raise BenchmarkIsolationError(
-                "formal OCI provider runtime contract must require only Z_SCOPE_API_KEY"
-            )
-        container_config_text = container_config.read_text(encoding="utf-8")
-        forbidden_config_values = {
-            suite_root.resolve().as_posix(),
-            str(suite_root.resolve()),
-            REPO_ROOT.resolve().as_posix(),
-            str(REPO_ROOT.resolve()),
-        }
-        if "ground_truth.json" in container_config_text.lower() or any(
-            value and value in container_config_text for value in forbidden_config_values
-        ):
-            raise BenchmarkIsolationError(
-                "formal container config references host checkout or truth material"
-            )
-        _write_formal_runtime_override(scan_input / "runtime.override.yaml")
-        scan_input_manifest = _answer_free_tree_manifest(scan_input)
-        benchmark_json_dump(run_dir / "formal-scan-input-manifest.json", scan_input_manifest)
-        shutil.copytree(sealed_project, writable_project)
-
-        container_python = environment.get("Z_SCOPE_BENCHMARK_OCI_PYTHON", "python3").strip()
-        scan_command = [
-            "env",
-            "Z_SCOPE_DEVELOPER_MODE=1",
-            "Z_SCOPE_RUNTIME_SPEC=/zscope-input/runtime.override.yaml",
-            container_python,
-            "-m",
-            "zscope.cli.cli",
-            "-c",
-            "/zscope-input/zscope.execution.yaml",
-            "--verbose",
-        ]
-        executor = _OCI_EXECUTOR_FACTORY(
-            runtime=environment.get("Z_SCOPE_BENCHMARK_OCI_RUNTIME", ""),
-            image=environment.get("Z_SCOPE_BENCHMARK_OCI_IMAGE", ""),
-            scan_input=scan_input,
-            artifact_output=artifact_output,
-            cache_output=cache_output,
-            environment=environment,
-            provider_contract=provider_contract,
-        )
-        executor.preflight()
-        phase = executor.execute_phase(
-            "scan",
-            scan_command,
-            log_path=run_dir / "zscope.oci.log",
-            accepted_returncodes=(0, 1, 2),
-        )
-        evidence = executor.execution_evidence(required_phases=("scan",))
-        evidence["scan_input_manifest_sha256"] = scan_input_manifest["manifest_sha256"]
-        evidence["scan_input_file_count"] = scan_input_manifest["file_count"]
-        require_release_isolation(
-            required=True,
-            capability=evidence,
-            repository_checkout=REPO_ROOT,
-            truth_paths=(truth_path, scorer_path),
-        )
-        source_report = writable_project / "zscope_batch_report.json"
-        if source_report.is_file():
-            shutil.copy2(source_report, artifact_output / source_report.name)
-        final_report = run_dir / "zscope_batch_report.json"
-        if (artifact_output / source_report.name).is_file():
-            shutil.copy2(artifact_output / source_report.name, final_report)
-        conversation_files = copy_conversation_trajectory(writable_project, run_dir)
-        return {
-            "return_code": int(phase.return_code),
-            "duration_seconds": round(float(phase.seconds), 4),
-            "report": final_report.as_posix(),
-            "conversation_files": conversation_files,
-            "command": scan_command,
-            "isolation": evidence,
-        }
-
-
-def _file_integrity_state(path: Path) -> dict[str, Any]:
-    path = Path(path)
-    if not path.is_file():
-        return {
-            "exists": False,
-            "sha256": "",
-            "size": 0,
-            "mtime_ns": 0,
-        }
-    stat = path.stat()
-    return {
-        "exists": True,
-        "sha256": sha256_file(path),
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-    }
-
-
-def _integrity_manifest_changes(
-    before: dict[str, Any],
-    after: dict[str, Any],
-) -> list[str]:
-    protected_keys = (
-        "truth_sha256",
-        "scorer_sha256",
-        "config_sha256",
-        "execution_config_sha256",
-        "benchmark_manifest_sha256",
-        "entries_sha256",
-        "source_manifest_sha256",
-        "source_file_count",
-        "benchmark_policy_sha256",
-    )
-    return [key for key in protected_keys if before.get(key) != after.get(key)]
-
-
-def _validate_trial_integrity(
-    *,
-    condition: str,
-    return_code: int | None,
-    started_at: float,
-    report_before: dict[str, Any],
-    report_after: dict[str, Any],
-    report_payload: dict[str, Any],
-    artifact_manifest_before: dict[str, Any],
-    artifact_manifest_after: dict[str, Any],
-    expected_entry_count: int,
-    cold_snapshot_cache: bool,
-) -> dict[str, Any]:
-    errors: list[str] = []
-    changed_inputs = _integrity_manifest_changes(
-        artifact_manifest_before,
-        artifact_manifest_after,
-    )
-    if changed_inputs:
-        errors.append(f"benchmark inputs changed during trial: {', '.join(changed_inputs)}")
-    required_hashes = (
-        "truth_sha256",
-        "scorer_sha256",
-        "config_sha256",
-        "execution_config_sha256",
-        "entries_sha256",
-        "source_manifest_sha256",
-        "benchmark_policy_sha256",
-    )
-    missing_hashes = [key for key in required_hashes if not artifact_manifest_after.get(key)]
-    if missing_hashes:
-        errors.append(f"required integrity hashes are missing: {', '.join(missing_hashes)}")
-    if return_code not in {0, 1}:
-        errors.append(f"unexpected process return code: {return_code}")
-    if not report_after.get("exists"):
-        errors.append("report was not produced")
-    else:
-        if int(report_after.get("mtime_ns") or 0) < int((started_at - 2.0) * 1_000_000_000):
-            errors.append("report predates this trial")
-        if (
-            report_before.get("exists")
-            and report_before.get("mtime_ns") == report_after.get("mtime_ns")
-            and report_before.get("sha256") == report_after.get("sha256")
-        ):
-            errors.append("report was not refreshed and may be stale")
-    if str(report_payload.get("overall_verdict") or "").lower() == "error":
-        errors.append("report contains an error verdict")
-
-    summary = report_payload.get("summary")
-    metadata = report_payload.get("metadata")
-    reported_completeness = (
-        str(
-            report_payload.get("completeness")
-            or (metadata.get("completeness") if isinstance(metadata, dict) else "")
-            or ""
-        )
-        .strip()
-        .lower()
-    )
-    if reported_completeness and reported_completeness != "complete":
-        errors.append(f"report completeness is {reported_completeness}, expected complete")
-    if str(report_payload.get("scan_outcome") or "").strip().lower() == "incomplete":
-        errors.append("report scan outcome is incomplete")
-    if isinstance(summary, dict) and summary.get("interrupted") is True:
-        errors.append("report summary is marked interrupted")
-    if isinstance(metadata, dict) and metadata.get("interrupted") is True:
-        errors.append("report metadata is marked interrupted")
-    if condition == CONDITION_FULL_ZSCOPE:
-        if not isinstance(summary, dict):
-            errors.append("full-pipeline report is missing its completion summary")
-        else:
-            analyzed = summary.get("functions_analyzed")
-            if not isinstance(analyzed, int):
-                errors.append("full-pipeline report is missing functions_analyzed")
-            elif expected_entry_count and analyzed < expected_entry_count:
-                errors.append(
-                    "full-pipeline report analyzed fewer functions than requested "
-                    f"({analyzed} < {expected_entry_count})"
-                )
-
-    chain_payload = {
-        "condition": condition,
-        "return_code": return_code,
-        "artifact_manifest_before": artifact_manifest_before,
-        "artifact_manifest_after": artifact_manifest_after,
-        "report_after": report_after,
-        "errors": errors,
-    }
-    return {
-        "schema_version": "zscope.benchmark.integrity.v1",
-        "status": "failed" if errors else "passed",
-        "errors": errors,
-        "cold_snapshot_cache": cold_snapshot_cache,
-        "report_before": report_before,
-        "report_after": report_after,
-        "input_changes": changed_inputs,
-        "chain_sha256": sha256_payload(chain_payload),
-    }
 
 
 def _condition_from_args(args: argparse.Namespace) -> str:
@@ -1653,29 +1065,7 @@ def _load_report(path: Path) -> dict[str, Any]:
             "issues": [],
             "metadata": {"missing_report": path.as_posix()},
         }
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return {
-            "entry_function": "external_benchmark_invalid_report",
-            "overall_verdict": "error",
-            "issues": [],
-            "metadata": {
-                "invalid_report": path.as_posix(),
-                "parse_error": f"{type(exc).__name__}: {exc}",
-            },
-        }
-    if not isinstance(payload, dict):
-        return {
-            "entry_function": "external_benchmark_invalid_report",
-            "overall_verdict": "error",
-            "issues": [],
-            "metadata": {
-                "invalid_report": path.as_posix(),
-                "parse_error": "top-level report must be a JSON object",
-            },
-        }
-    return payload
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _extract_llm_issues(content: str) -> list[dict[str, Any]]:
@@ -1728,10 +1118,8 @@ def run_pure_llm(args: argparse.Namespace, *, repo_context: bool) -> dict[str, A
     report_path = run_dir / (
         "pure_llm_repo_report.json" if repo_context else "pure_llm_entry_report.json"
     )
-    transcript_path = (
-        run_dir
-        / "trajectory"
-        / ("pure_llm_repo_transcript.jsonl" if repo_context else "pure_llm_entry_transcript.jsonl")
+    transcript_path = run_dir / "trajectory" / (
+        "pure_llm_repo_transcript.jsonl" if repo_context else "pure_llm_entry_transcript.jsonl"
     )
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1849,11 +1237,7 @@ def run_candidates(args: argparse.Namespace) -> dict[str, Any]:
                 continue
             entry_file = str(entry.get("file_path") or "")
             fallback_path = (project / entry_file).resolve() if entry_file else None
-            direct = (
-                extract_function_code(fallback_path, name)
-                if fallback_path and fallback_path.exists()
-                else None
-            )
+            direct = extract_function_code(fallback_path, name) if fallback_path and fallback_path.exists() else None
             impl = None if direct else index.get_function_impl(name)
             if direct:
                 code, info = direct
@@ -1865,9 +1249,7 @@ def run_candidates(args: argparse.Namespace) -> dict[str, Any]:
                 missing.append(name)
                 continue
             issues.extend(generator.generate_issues(name, code, file_path))
-        entry_names = [
-            str(entry.get("function_name") or "") for entry in entries if entry.get("function_name")
-        ]
+        entry_names = [str(entry.get("function_name") or "") for entry in entries if entry.get("function_name")]
         issues.extend(graph_generator.generate_for_functions(entry_names))
     finally:
         index.close()
@@ -1927,6 +1309,19 @@ def _load_range_fp_audit_classifier() -> Optional[FalsePositiveClassifier]:
     return classifier if callable(classifier) else None
 
 
+def _load_javaseclab_fp_audit_classifier() -> Optional[FalsePositiveClassifier]:
+    module_path = REPO_ROOT / "test" / "java_projects" / "JavaSecLab" / "benchmark" / "fp_audit_rules.py"
+    if not module_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("zscope_javaseclab_fp_audit_rules", module_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    classifier = getattr(module, "classify_javaseclab_false_positive_record", None)
+    return classifier if callable(classifier) else None
+
+
 def _fp_audit_classifier_for_truth(
     truth: dict[str, Any],
     *,
@@ -1941,7 +1336,16 @@ def _fp_audit_classifier_for_truth(
         or "test/range/benchmark/ground_truth.json" in truth_path_text
         or suite_root_text.endswith("test/range")
     )
-    return _load_range_fp_audit_classifier() if is_range else None
+    if is_range:
+        return _load_range_fp_audit_classifier()
+    is_javaseclab = (
+        benchmark in JAVASECLAB_BENCHMARK_NAMES
+        or "test/java_projects/javaseclab/benchmark/ground_truth" in truth_path_text
+        or suite_root_text.endswith("test/java_projects/javaseclab")
+    )
+    if is_javaseclab:
+        return _load_javaseclab_fp_audit_classifier()
+    return None
 
 
 def _text_has_category(text: str, truth: dict[str, Any]) -> bool:
@@ -1954,20 +1358,90 @@ def _text_has_category(text: str, truth: dict[str, Any]) -> bool:
     return any(alias and alias in lowered for alias in aliases)
 
 
+def _parse_gt_tiers(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        raw_items = re.split(r"[,\s]+", value.strip())
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = [str(item) for item in value]
+    else:
+        raw_items = [str(value)]
+    tiers: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        tier = str(raw).strip()
+        if not tier or tier in seen:
+            continue
+        seen.add(tier)
+        tiers.append(tier)
+    return tiers
+
+
+def _default_gt_tiers_for_truth(truth: dict[str, Any]) -> list[str]:
+    scoring = truth.get("scoring") if isinstance(truth.get("scoring"), dict) else {}
+    return _parse_gt_tiers(scoring.get("default_include_tiers"))
+
+
+def _truth_with_gt_tiers(truth: dict[str, Any], tiers: list[str]) -> dict[str, Any]:
+    if not tiers:
+        return truth
+    allowed = set(tiers)
+    filtered = dict(truth)
+    vulns = [
+        item
+        for item in truth.get("vulnerabilities", [])
+        if isinstance(item, dict) and str(item.get("gt_tier") or "core_static") in allowed
+    ]
+    filtered["vulnerabilities"] = vulns
+    filtered["total_vulnerabilities"] = len(vulns)
+    filtered["included_gt_tiers"] = sorted(allowed)
+    return filtered
+
+
+def _truth_tiers(truth: dict[str, Any]) -> list[str]:
+    tiers = {
+        str(item.get("gt_tier") or "core_static")
+        for item in truth.get("vulnerabilities", [])
+        if isinstance(item, dict)
+    }
+    return sorted(tier for tier in tiers if tier)
+
+
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     report = json.loads(Path(args.report).read_text(encoding="utf-8"))
     truth_path = Path(args.truth)
     truth = json.loads(truth_path.read_text(encoding="utf-8"))
+    cli_tiers = _parse_gt_tiers(getattr(args, "include_gt_tiers", ""))
+    included_tiers = cli_tiers or _default_gt_tiers_for_truth(truth)
+    scoring_truth = _truth_with_gt_tiers(truth, included_tiers)
     fp_audit_classifier = _fp_audit_classifier_for_truth(truth, truth_path=truth_path)
-    evaluation_views = score_report_views(
+    result = score_report(
         report,
-        truth,
+        scoring_truth,
+        view=args.view,
         line_tolerance=args.line_tolerance,
         fp_audit_classifier=fp_audit_classifier,
     )
-    selected_view = args.view if args.view in evaluation_views else "default"
-    result = dict(evaluation_views[selected_view])
-    result["evaluation_views"] = evaluation_views
+    result["evaluation_views"] = score_report_views(
+        report,
+        scoring_truth,
+        line_tolerance=args.line_tolerance,
+        fp_audit_classifier=fp_audit_classifier,
+    )
+    if included_tiers:
+        result["included_gt_tiers"] = included_tiers
+    by_tier: dict[str, Any] = {}
+    for tier in _truth_tiers(truth):
+        tier_truth = _truth_with_gt_tiers(truth, [tier])
+        by_tier[tier] = score_report_views(
+            report,
+            tier_truth,
+            line_tolerance=args.line_tolerance,
+            fp_audit_classifier=fp_audit_classifier,
+        )
+    if by_tier:
+        result["evaluation_views"]["by_tier"] = by_tier
     if args.output:
         _json_dump(Path(args.output), result)
     return result
@@ -1977,10 +1451,6 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
     suite_root = Path(args.suite_root).resolve()
     condition = _condition_from_args(args)
     run_kind = str(getattr(args, "run_kind", "sample") or "sample")
-    if run_kind == "formal" and condition != CONDITION_FULL_ZSCOPE:
-        raise ValueError("Formal external benchmarks currently permit full_zscope_pipeline only")
-    if run_kind == "formal" and bool(getattr(args, "warm_cache", False)):
-        raise ValueError("Formal external benchmarks require an isolated cold cache")
     trial_index = int(getattr(args, "trial_index", 1) or 1)
     run_suffix = f"{condition}_trial_{trial_index:02d}"
     run_dir = (
@@ -1989,90 +1459,19 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
         else suite_root / "runs" / time.strftime("%Y%m%d_%H%M%S") / run_suffix
     )
     run_dir.mkdir(parents=True, exist_ok=True)
-    config_path = suite_root / "zscope.benchmark.yaml"
-    warm_cache = bool(getattr(args, "warm_cache", False))
-    cold_snapshot_cache = condition == CONDITION_FULL_ZSCOPE and not warm_cache
-    if run_kind == "formal":
-        execution_config = run_dir / "zscope.execution.yaml"
-        _write_formal_container_config(
-            config_path,
-            execution_config,
-            compile_commands_present=(
-                _suite_project_dir(suite_root) / "compile_commands.json"
-            ).is_file(),
-        )
-    else:
-        execution_config = (
-            _prepare_trial_config(suite_root, run_dir, warm_cache=warm_cache)
-            if condition == CONDITION_FULL_ZSCOPE
-            else config_path
-        )
-    truth: Optional[dict[str, Any]] = None if run_kind == "formal" else _load_truth(suite_root)
-    entries = _load_entries(suite_root / "benchmark" / "entries.json")
-    expected_entry_count = len(
-        {
-            (
-                str(entry.get("function_name") or ""),
-                str(entry.get("file_path") or ""),
-            )
-            for entry in entries
-            if entry.get("function_name")
-        }
-    )
-    artifact_manifest_before = build_benchmark_artifact_manifest(
-        suite_root,
-        truth=truth,
-        config_path=config_path,
-        execution_config_path=execution_config,
-    )
+    started = time.time()
     report = run_dir / "missing_report.json"
-    report_before = _file_integrity_state(report)
     command = [sys.executable, "scripts/external_benchmark.py", "run-prepared"]
     return_code: int | None = 0
     conversation_files: list[str] = []
-    run_result: dict[str, Any]
     run_env = os.environ.copy()
     env_file = Path(args.env_file) if args.env_file else Path("test/range/zscope.local.env")
     run_env.update(_load_env_file(env_file))
     run_env.setdefault("Z_SCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
     run_env.setdefault("Z_SCOPE_MODEL", "glm-5")
-    if cold_snapshot_cache and run_kind != "formal":
-        run_env["Z_SCOPE_DEVELOPER_MODE"] = "1"
-        run_env["Z_SCOPE_RUNTIME_SPEC"] = str((run_dir / "runtime.cold.override.yaml").resolve())
-    started = time.time()
 
-    isolation_capability: dict[str, Any] = (
-        {}
-        if run_kind == "formal"
-        else oci_capability(
-            runtime=run_env.get("Z_SCOPE_BENCHMARK_OCI_RUNTIME", ""),
-            image=run_env.get("Z_SCOPE_BENCHMARK_OCI_IMAGE", ""),
-        )
-    )
-    if run_kind == "formal":
-        report = run_dir / "zscope_batch_report.json"
-        report_before = _file_integrity_state(report)
-        formal_result = _run_formal_full_zscope_oci(
-            suite_root=suite_root,
-            run_dir=run_dir,
-            config_path=config_path,
-            run_env=run_env,
-        )
-        report = Path(formal_result["report"])
-        return_code = int(formal_result["return_code"])
-        conversation_files = list(formal_result["conversation_files"])
-        command = list(formal_result["command"])
-        isolation_capability = dict(formal_result["isolation"])
-        benchmark_json_dump(run_dir / "isolation.json", isolation_capability)
-        run_result = {
-            "return_code": return_code,
-            "duration_seconds": round(time.time() - started, 4),
-            "report": report.as_posix(),
-            "execution": "rootless_oci",
-        }
-    elif condition == CONDITION_CANDIDATES:
+    if condition == CONDITION_CANDIDATES:
         report = run_dir / "candidate_report.json"
-        report_before = _file_integrity_state(report)
         run_result = run_candidates(
             argparse.Namespace(
                 project=_suite_project_dir(suite_root),
@@ -2080,14 +1479,7 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
                 output=report,
             )
         )
-        return_code = int(run_result.get("return_code", 0) or 0)
     elif condition in {CONDITION_PURE_LLM_ENTRY, CONDITION_PURE_LLM_REPO}:
-        report = run_dir / (
-            "pure_llm_repo_report.json"
-            if condition == CONDITION_PURE_LLM_REPO
-            else "pure_llm_entry_report.json"
-        )
-        report_before = _file_integrity_state(report)
         pure_args = argparse.Namespace(**vars(args))
         pure_args.run_dir = run_dir.as_posix()
         run_result = run_pure_llm(
@@ -2095,45 +1487,28 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
             repo_context=condition == CONDITION_PURE_LLM_REPO,
         )
         report = Path(run_result["report"])
-        return_code = int(run_result.get("return_code", 0) or 0)
         transcript = run_result.get("transcript")
         if transcript:
             conversation_files = [Path(transcript).relative_to(run_dir).as_posix()]
     else:
         project_dir = _suite_project_dir(suite_root)
         report = project_dir / "zscope_batch_report.json"
-        report_before = _file_integrity_state(report)
         cmd = [
             sys.executable,
             "-m",
             "zscope.cli.cli",
             "-c",
-            str(execution_config),
+            str(suite_root / "zscope.benchmark.yaml"),
             "--verbose",
         ]
         command = cmd
-        try:
-            completed = subprocess.run(
-                cmd,
-                cwd=Path.cwd(),
-                text=True,
-                capture_output=True,
-                env=run_env,
-                timeout=3660,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout or ""
-            stderr = exc.stderr or ""
-            if isinstance(stdout, bytes):
-                stdout = stdout.decode("utf-8", errors="replace")
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode("utf-8", errors="replace")
-            completed = subprocess.CompletedProcess(
-                cmd,
-                returncode=2,
-                stdout=stdout,
-                stderr=f"{stderr}\nbenchmark_total_deadline_exceeded",
-            )
+        completed = subprocess.run(
+            cmd,
+            cwd=Path.cwd(),
+            text=True,
+            capture_output=True,
+            env=run_env,
+        )
         (run_dir / "zscope.stdout.log").write_text(completed.stdout, encoding="utf-8")
         (run_dir / "zscope.stderr.log").write_text(completed.stderr, encoding="utf-8")
         return_code = completed.returncode
@@ -2142,90 +1517,12 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
             "duration_seconds": round(time.time() - started, 4),
             "report": report.as_posix(),
         }
-
-    finished = time.time()
-    if truth is None:
-        # Formal scoring starts only after the scanner container has exited and
-        # its inspected answer-free report has been copied back to the host.
-        truth = _load_truth(suite_root)
-    report_after = _file_integrity_state(report)
-    report_payload = _load_report(Path(report))
-    artifact_manifest_after = build_benchmark_artifact_manifest(
-        suite_root,
-        truth=truth,
-        config_path=config_path,
-        execution_config_path=execution_config,
-    )
-    integrity = _validate_trial_integrity(
-        condition=condition,
-        return_code=return_code,
-        started_at=started,
-        report_before=report_before,
-        report_after=report_after,
-        report_payload=report_payload,
-        artifact_manifest_before=artifact_manifest_before,
-        artifact_manifest_after=artifact_manifest_after,
-        expected_entry_count=expected_entry_count,
-        cold_snapshot_cache=cold_snapshot_cache,
-    )
-    integrity["cache_mode"] = (
-        ("warm" if warm_cache else "isolated_cold")
-        if condition == CONDITION_FULL_ZSCOPE
-        else "not_applicable"
-    )
-    integrity["artifact_manifest_before"] = artifact_manifest_before
-    integrity["artifact_manifest_after"] = artifact_manifest_after
-    benchmark_json_dump(run_dir / "integrity.json", integrity)
-    if integrity["status"] != "passed":
-        raise RuntimeError(
-            "Benchmark integrity validation failed: "
-            + "; ".join(str(item) for item in integrity["errors"])
-        )
-
-    if condition == CONDITION_FULL_ZSCOPE and run_kind != "formal":
-        copied_report = run_dir / "zscope_batch_report.json"
-        shutil.copy2(report, copied_report)
-        report = copied_report
+        if report.exists():
+            shutil.copy2(report, run_dir / "zscope_batch_report.json")
+            report = run_dir / "zscope_batch_report.json"
         conversation_files = copy_conversation_trajectory(project_dir, run_dir)
 
-    replay_bundle_path = run_dir / "validator-replay-bundle.json"
-    replay_report = dict(report_payload)
-    replay_manifest = dict(
-        replay_report.get("run_manifest")
-        if isinstance(replay_report.get("run_manifest"), dict)
-        else {}
-    )
-    # Candidate-only and pure-LLM comparison reports predate the product run
-    # manifest.  Bind their answer-free source/config inputs explicitly instead
-    # of weakening the replay bundle's strict identity contract.
-    replay_manifest.setdefault(
-        "source_tree_hash", artifact_manifest_after["source_manifest_sha256"]
-    )
-    replay_manifest.setdefault("config_hash", artifact_manifest_after["execution_config_sha256"])
-    replay_report["run_manifest"] = replay_manifest
-    try:
-        replay_bundle = write_validator_replay_bundle(replay_bundle_path, replay_report)
-        replay_bundle_metadata = {
-            "schema_version": replay_bundle["schema_version"],
-            "group_count": replay_bundle["group_count"],
-            "bundle_sha256": replay_bundle["bundle_sha256"],
-            "path": replay_bundle_path.name,
-            "answer_material_present": False,
-            "available": True,
-        }
-    except ReplayBundleError as exc:
-        if run_kind == "formal":
-            raise
-        replay_bundle_metadata = {
-            "schema_version": REPLAY_BUNDLE_SCHEMA_VERSION,
-            "group_count": 0,
-            "bundle_sha256": "",
-            "path": "",
-            "answer_material_present": False,
-            "available": False,
-            "reason": f"nonformal_report_not_replayable:{exc}",
-        }
-
+    finished = time.time()
     env_metadata = collect_environment_metadata(
         suite_root=suite_root,
         condition=condition,
@@ -2236,8 +1533,8 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
         return_code=return_code,
         config=_suite_config_metadata(suite_root, run_env),
     )
-    env_metadata["execution_config"] = execution_config.as_posix()
-    env_metadata["cache_mode"] = integrity["cache_mode"]
+    report_payload = _load_report(Path(report))
+    truth = _load_truth(suite_root)
     fp_audit_classifier = _fp_audit_classifier_for_truth(truth, suite_root=suite_root)
     summary = build_trial_summary(
         suite_root=suite_root,
@@ -2251,22 +1548,9 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
         line_tolerance=args.line_tolerance,
         conversation_files=conversation_files,
         fp_audit_classifier=fp_audit_classifier,
-        integrity=integrity,
-        artifact_manifest=artifact_manifest_after,
     )
     summary["mode"] = _mode_from_condition(condition)
     summary["run"] = run_result
-    summary["validator_replay_bundle"] = replay_bundle_metadata
-    summary["isolation"] = {
-        **isolation_capability,
-        "required_for_release": bool(
-            run_kind == "formal"
-            and DEFAULT_BENCHMARK_POLICY.requirements.get(
-                "require_oci_isolation_for_release", False
-            )
-        ),
-        "scoring_execution": "host_after_scanner_exit",
-    }
     benchmark_json_dump(run_dir / "evaluation.json", summary["evaluation"])
     benchmark_json_dump(run_dir / "evaluation_views.json", summary["evaluation_views"])
     benchmark_json_dump(run_dir / "summary.json", summary)
@@ -2275,19 +1559,6 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
 
 def run_matrix(args: argparse.Namespace) -> dict[str, Any]:
     suite_root = Path(args.suite_root).resolve()
-    trial_count = int(args.trials or 1)
-    run_kind = str(getattr(args, "run_kind", "sample") or "sample")
-    if run_kind == "formal" and trial_count < MIN_RELEASE_TRIALS:
-        raise ValueError(
-            f"Formal benchmark matrices require at least {MIN_RELEASE_TRIALS} paired trials"
-        )
-    if run_kind == "formal" and bool(getattr(args, "warm_cache", False)):
-        raise ValueError("Formal benchmark matrices require isolated cold caches")
-    conditions = list(getattr(args, "conditions", []))
-    if run_kind == "formal" and conditions != [CONDITION_FULL_ZSCOPE]:
-        raise ValueError(
-            "Formal external benchmark matrices currently require exactly " "full_zscope_pipeline"
-        )
     matrix_root = (
         Path(args.run_dir).resolve()
         if args.run_dir
@@ -2295,97 +1566,30 @@ def run_matrix(args: argparse.Namespace) -> dict[str, Any]:
     )
     matrix_root.mkdir(parents=True, exist_ok=True)
     summaries: list[dict[str, Any]] = []
-    for condition in conditions:
-        for trial_index in range(1, trial_count + 1):
+    for condition in args.conditions:
+        for trial_index in range(1, int(args.trials or 1) + 1):
             trial_args = argparse.Namespace(**vars(args))
             trial_args.condition = condition
             trial_args.mode = _mode_from_condition(condition)
             trial_args.trial_index = trial_index
             trial_args.run_dir = (matrix_root / condition / f"trial_{trial_index:02d}").as_posix()
             summaries.append(run_prepared(trial_args))
-    baseline_summaries = load_summaries(
-        [Path(path) for path in getattr(args, "baseline_summaries", [])]
-    )
-    aggregate = aggregate_trial_summaries(
-        summaries,
-        baseline_summaries=baseline_summaries,
-        baseline_tokens_per_tp=getattr(args, "baseline_tokens_per_tp", None),
-        bootstrap_samples=int(
-            getattr(args, "bootstrap_samples", DEFAULT_BOOTSTRAP_SAMPLES)
-            or DEFAULT_BOOTSTRAP_SAMPLES
-        ),
-        require_improvement_claim=bool(getattr(args, "require_improvement_claim", False)),
-        balanced_attestation=_load_balanced_attestation_input(args),
-        balanced_attestation_workflow_run_id=str(
-            getattr(args, "balanced_attestation_workflow_run_id", "") or ""
-        ),
-        release_sha=_aggregate_release_sha(args, summaries),
-    )
+    aggregate = aggregate_trial_summaries(summaries)
     aggregate["run_dir"] = matrix_root.as_posix()
     aggregate["summary_files"] = [
-        (Path(summary["run_dir"]) / "summary.json").as_posix() for summary in summaries
+        (Path(summary["run_dir"]) / "summary.json").as_posix()
+        for summary in summaries
     ]
     benchmark_json_dump(matrix_root / "matrix_summary.json", aggregate)
-    if run_kind == "formal" and not aggregate["release_readiness"]["passed"]:
-        raise RuntimeError(
-            "Formal benchmark matrix failed release gates; inspect "
-            f"{matrix_root / 'matrix_summary.json'}"
-        )
     return aggregate
 
 
 def aggregate_trials(args: argparse.Namespace) -> dict[str, Any]:
     summaries = load_summaries([Path(path) for path in args.summaries])
-    baseline_summaries = load_summaries(
-        [Path(path) for path in getattr(args, "baseline_summaries", [])]
-    )
-    aggregate = aggregate_trial_summaries(
-        summaries,
-        baseline_summaries=baseline_summaries,
-        baseline_tokens_per_tp=getattr(args, "baseline_tokens_per_tp", None),
-        bootstrap_samples=int(
-            getattr(args, "bootstrap_samples", DEFAULT_BOOTSTRAP_SAMPLES)
-            or DEFAULT_BOOTSTRAP_SAMPLES
-        ),
-        require_improvement_claim=bool(getattr(args, "require_improvement_claim", False)),
-        balanced_attestation=_load_balanced_attestation_input(args),
-        balanced_attestation_workflow_run_id=str(
-            getattr(args, "balanced_attestation_workflow_run_id", "") or ""
-        ),
-        release_sha=_aggregate_release_sha(args, summaries),
-    )
+    aggregate = aggregate_trial_summaries(summaries)
     if args.output:
         benchmark_json_dump(Path(args.output), aggregate)
-    if (
-        bool(getattr(args, "require_release_pass", False))
-        and not aggregate["release_readiness"]["passed"]
-    ):
-        raise RuntimeError("Aggregated benchmark summaries failed release gates")
     return aggregate
-
-
-def _load_balanced_attestation_input(args: argparse.Namespace) -> dict[str, Any] | None:
-    raw = str(getattr(args, "balanced_default_attestation", "") or "").strip()
-    if not raw:
-        return None
-    value = json.loads(Path(raw).read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError("balanced default attestation must be a JSON object")
-    return value
-
-
-def _aggregate_release_sha(
-    args: argparse.Namespace,
-    summaries: list[dict[str, Any]],
-) -> str:
-    explicit = str(getattr(args, "release_sha", "") or "").strip()
-    if explicit:
-        return explicit
-    for summary in summaries:
-        environment = summary.get("environment")
-        if isinstance(environment, dict) and environment.get("commit_sha"):
-            return str(environment["commit_sha"])
-    return ""
 
 
 def _print_result(result: dict[str, Any]) -> None:
@@ -2400,59 +1604,35 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source", required=True, help="Extracted Juliet root or a subset directory")
     p.add_argument("--workspace", default="benchmarks/external/workspace")
     p.add_argument("--name", default="juliet_memory_sample")
-    p.add_argument(
-        "--max-cases",
-        type=int,
-        default=20,
-        help="Maximum source files to select; 0 means all matched files",
-    )
-    p.add_argument(
-        "--cwes", nargs="+", default=DEFAULT_MEMORY_CWES, help="CWE filters such as CWE401, or ALL"
-    )
+    p.add_argument("--max-cases", type=int, default=20, help="Maximum source files to select; 0 means all matched files")
+    p.add_argument("--cwes", nargs="+", default=DEFAULT_MEMORY_CWES, help="CWE filters such as CWE401, or ALL")
     p.add_argument("--flow-variants", nargs="*", default=["01", "02", "03", "04", "05"])
-    p.add_argument("--backend", default="regex", choices=["regex", "clang", "unified"])
+    p.add_argument("--backend", default="regex", choices=["regex", "clang", "unified", "joern"])
     p.set_defaults(func=prepare_juliet)
 
     p = sub.add_parser("prepare-svcomp", help="Prepare an SV-COMP memory/concurrency subset")
     p.add_argument("--source", required=True, help="sv-benchmarks/c directory or a subset")
     p.add_argument("--workspace", default="benchmarks/external/workspace")
     p.add_argument("--name", default="svcomp_memsafety_sample")
-    p.add_argument(
-        "--max-cases",
-        type=int,
-        default=20,
-        help="Maximum tasks to select; 0 means all matched tasks",
-    )
-    p.add_argument(
-        "--set-files", nargs="*", default=[], help="SV-COMP .set files relative to --source"
-    )
+    p.add_argument("--max-cases", type=int, default=20, help="Maximum tasks to select; 0 means all matched tasks")
+    p.add_argument("--set-files", nargs="*", default=[], help="SV-COMP .set files relative to --source")
     p.add_argument(
         "--properties",
         nargs="*",
         default=["valid-memtrack", "valid-free", "valid-deref", "valid-memsafety", "data-race"],
     )
-    p.add_argument("--backend", default="regex", choices=["regex", "clang", "unified"])
+    p.add_argument("--backend", default="regex", choices=["regex", "clang", "unified", "joern"])
     p.set_defaults(func=prepare_svcomp)
 
-    p = sub.add_parser(
-        "prepare-magma", help="Prepare Magma bug metadata and optional materialized target source"
-    )
+    p = sub.add_parser("prepare-magma", help="Prepare Magma bug metadata and optional materialized target source")
     p.add_argument("--magma-root", required=True, help="Magma repository checkout")
     p.add_argument("--target", default="libpng")
-    p.add_argument(
-        "--target-source", default="", help="Fetched/patched Magma target source root, if available"
-    )
+    p.add_argument("--target-source", default="", help="Fetched/patched Magma target source root, if available")
     p.add_argument("--workspace", default="benchmarks/external/workspace")
     p.add_argument("--name", default="magma_libpng_sample")
-    p.add_argument(
-        "--max-bugs", type=int, default=5, help="Maximum Magma bug patches to select; 0 means all"
-    )
-    p.add_argument(
-        "--copy-full-source",
-        action="store_true",
-        help="Copy the full target source tree into the suite project",
-    )
-    p.add_argument("--backend", default="regex", choices=["regex", "clang", "unified"])
+    p.add_argument("--max-bugs", type=int, default=5, help="Maximum Magma bug patches to select; 0 means all")
+    p.add_argument("--copy-full-source", action="store_true", help="Copy the full target source tree into the suite project")
+    p.add_argument("--backend", default="regex", choices=["regex", "clang", "unified", "joern"])
     p.set_defaults(func=prepare_magma)
 
     p = sub.add_parser("run-candidates", help="Run regex/graph candidate coverage")
@@ -2467,6 +1647,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default="")
     p.add_argument("--line-tolerance", type=int, default=8)
     p.add_argument("--view", default="default")
+    p.add_argument(
+        "--include-gt-tiers",
+        default="",
+        help="Comma/space-separated GT tiers to include in the formal score, e.g. core_static,extended_static.",
+    )
     p.set_defaults(func=evaluate)
 
     p = sub.add_parser("run-prepared", help="Run and evaluate a prepared suite")
@@ -2479,16 +1664,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--line-tolerance", type=int, default=8)
     p.add_argument("--view", default="default")
     p.add_argument("--env-file", default="test/range/zscope.local.env")
-    p.add_argument(
-        "--warm-cache",
-        action="store_true",
-        help="Reuse the suite snapshot cache; default trials use an isolated cold cache",
-    )
     p.set_defaults(func=run_prepared)
 
-    p = sub.add_parser(
-        "run-matrix", help="Run one or more benchmark conditions for multiple trials"
-    )
+    p = sub.add_parser("run-matrix", help="Run one or more benchmark conditions for multiple trials")
     p.add_argument("--suite-root", required=True)
     p.add_argument("--run-dir", default="")
     p.add_argument(
@@ -2503,58 +1681,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--line-tolerance", type=int, default=8)
     p.add_argument("--view", default="default")
     p.add_argument("--env-file", default="test/range/zscope.local.env")
-    p.add_argument(
-        "--warm-cache",
-        action="store_true",
-        help="Reuse the suite snapshot cache; default trials use isolated per-trial caches",
-    )
-    p.add_argument(
-        "--baseline-summaries",
-        nargs="*",
-        default=[],
-        help="Five frozen Validator Arm-A summary.json files",
-    )
-    p.add_argument("--balanced-default-attestation", default="")
-    p.add_argument(
-        "--balanced-attestation-workflow-run-id",
-        default="",
-        help="Trusted protected-workflow run identity bound to the attestation artifact",
-    )
-    p.add_argument("--release-sha", default="")
-    p.add_argument(
-        "--baseline-tokens-per-tp",
-        type=float,
-        default=None,
-        help="Historical compatibility input; policy v1 uses paired summaries",
-    )
-    p.add_argument(
-        "--bootstrap-samples",
-        type=int,
-        default=DEFAULT_BOOTSTRAP_SAMPLES,
-        help="Bootstrap resamples used for 95%% confidence intervals",
-    )
-    p.add_argument(
-        "--require-improvement-claim",
-        action="store_true",
-        help="Require the paired improvement-claim rule in addition to release gates",
-    )
     p.set_defaults(func=run_matrix)
 
     p = sub.add_parser("aggregate-trials", help="Aggregate existing benchmark summary.json files")
     p.add_argument("summaries", nargs="+")
     p.add_argument("--output", default="")
-    p.add_argument("--baseline-summaries", nargs="*", default=[])
-    p.add_argument("--balanced-default-attestation", default="")
-    p.add_argument(
-        "--balanced-attestation-workflow-run-id",
-        default="",
-        help="Trusted protected-workflow run identity bound to the attestation artifact",
-    )
-    p.add_argument("--release-sha", default="")
-    p.add_argument("--baseline-tokens-per-tp", type=float, default=None)
-    p.add_argument("--bootstrap-samples", type=int, default=DEFAULT_BOOTSTRAP_SAMPLES)
-    p.add_argument("--require-improvement-claim", action="store_true")
-    p.add_argument("--require-release-pass", action="store_true")
     p.set_defaults(func=aggregate_trials)
     return parser
 
