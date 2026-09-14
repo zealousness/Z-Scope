@@ -462,6 +462,34 @@ Wiki 编译器固定读取名为 `wiki_compiler` 的 profile（未定义时用 `
 | `max_wall_seconds` | 不限 | Wiki 构建的墙钟预算 |
 | `max_constraints` | 不限 | 约束数量上限 |
 
+`project.review_memory`（Validator 人工误报模式记忆；默认关闭，与 Wiki 语义隔离）：
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `mode` | `off` | `off`、`archive`、`extract` 或 `advisory` |
+| `state_dir` | `.zscope/review-memory` | 项目根相对的 Review Memory 状态目录 |
+| `project_scope` | `project` | 仅允许项目级隔离 |
+| `extraction` | `async_cli` | 使用 `zscope-review-memory extract` 异步抽取 |
+| `llm_enabled` | true | 是否允许抽取命令调用 LLM；反馈归档不受影响 |
+| `max_patterns_per_finding` | 3 | 单个 finding 最大 advisory hint 数 |
+| `max_context_tokens` | 1200 | Review Memory hint 的独立预算 |
+| `stale_on_source_drift` | true | 源码上下文变化后停止复用模式 |
+| `allow_direct_suppression` | false | 固定禁止 Review Memory 直接抑制 finding |
+
+常用管理命令：
+
+```bash
+zscope-review-memory -c zscope.yaml list
+zscope-review-memory -c zscope.yaml extract --enqueue
+zscope-review-memory -c zscope.yaml jobs
+zscope-review-memory -c zscope.yaml extract --job-id <job-id>
+zscope-review-memory -c zscope.yaml replay <pattern-id> --input report.json --output replay.json
+zscope-review-memory -c zscope.yaml export --output review-memory.json
+```
+
+抽取任务和 replay 结果写入项目级 Review Memory 状态目录；`replay` 是离线
+advisory projection，不会启动 benchmark 扫描，也不会改变 finding verdict。
+
 **`scan`**
 
 | 字段 | 默认 | 作用 |
@@ -669,6 +697,7 @@ zscope --build-index -c zscope.yaml
 | `.zscope_snapshots/user_config.state.db` | 配置告警、finding suppression 与 baseline 的旁路状态库（若 `project.user_config_file` 指向其他 workbook，则与该 workbook 同名） |
 | `.zscope_knowledge/code_knowledge.db` | 代码索引、SVF/Saber 信号和候选证据 IR |
 | `.zscope_knowledge/wiki/` | `project.wiki` 启用后的 Wiki revision 状态库与审计事件链（默认关闭；目录由 `project.wiki.state_dir` 决定） |
+| `.zscope/review-memory/` | 人工 rejected finding、模式 proposal、审计和 replay 状态；不属于 Wiki constraint |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划，记录选中的源码、bitcode、可达函数、link variants、重复符号和回退原因；WSL/NTFS 场景可能重定向到 Linux 原生临时目录 |
 | `.zscope_bc/entry_cluster_layout_<group>.json` / `bitcode_manifest.json` | SVF 入口聚类布局与 bitcode/link 缓存 manifest，用于复用未变化的聚类和构建产物 |
 

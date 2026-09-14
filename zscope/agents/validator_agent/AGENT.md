@@ -70,6 +70,11 @@ an explicit ambiguity and compare each statement with source/code evidence,
 never as a resolved contract. If code evidence conflicts with a
 documented contract, code facts take priority and requests one allowed deterministic fact.
 
+Review Memory, when present, is historical advisory context only. Never decide
+solely because a review pattern matches; re-check the current source and
+evidence. Review Memory is not deterministic proof, and current code evidence
+takes priority.
+
 The model-facing `project_knowledge` is a compact projection. Its top-level
 fields are `resolution_mode`, `wiki_revision_id`, `target`, `constraints`,
 `source_excerpts`, `conflicts`, `omitted_constraint_count`,

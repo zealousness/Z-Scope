@@ -23,6 +23,8 @@ from ..reporting.views import (
 from ..reporting.issue_markdown import issue_identity
 from ..rules.query import query_effective_rules, validate_rule_filters
 from ..wiki.control import wiki_query, wiki_status
+from ..review_memory.identity import project_id, stable_id, utc_now
+from ..review_memory.store import ReviewMemoryStore
 
 
 ALLOWED_VALIDATION_STATUSES = {
@@ -688,9 +690,18 @@ class ReportFeedbackService:
         snapshot_store: Any = None,
         *,
         report_filename: str = "zscope_batch_report.json",
+        project_config: Any = None,
     ):
         self.user_config_store = user_config_store
         self.snapshot_store = snapshot_store
+        self.project_config = project_config
+        self.review_memory_store = None
+        review_config = getattr(project_config, "review_memory", None)
+        if review_config is not None and getattr(review_config, "mode", "off") != "off":
+            try:
+                self.review_memory_store = ReviewMemoryStore(project_config.project_root, review_config.state_dir)
+            except Exception:
+                self.review_memory_store = None
         self.report_filename = report_filename
         self._report_cache_key: Optional[tuple[str, int, int]] = None
         self._report_cache: Optional[Dict[str, Any]] = None
@@ -887,6 +898,9 @@ class ReportFeedbackService:
             "db_path": str(getattr(store, "db_path", "")),
             "baseline_upserts": 0,
             "suppression_upserts": 0,
+            "review_memory_records": 0,
+            "review_memory_errors": [],
+            "review_memory_items": [],
         }
         for issue in updates:
             if not isinstance(issue, dict):
@@ -914,6 +928,40 @@ class ReportFeedbackService:
                     note=str(issue.get("description") or ""),
                 )
                 result["suppression_upserts"] += 1
+                if self.review_memory_store is not None:
+                    try:
+                        finding = dict(issue)
+                        review_id = stable_id("review", {
+                            "project_id": project_id(self.project_config),
+                            "issue_id": finding.get("issue_id") or finding.get("id"),
+                            "dedup_key": dedup_key,
+                            "rebuttal": rebuttal or "",
+                        })
+                        record = {
+                            "schema_version": "zscope.review-record.v1",
+                            "review_id": review_id,
+                            "project_id": project_id(self.project_config),
+                            "repository_identity": {},
+                            "finding": finding,
+                            "user_rebuttal": str(rebuttal or ""),
+                            "source_context": {
+                                "source_context_fingerprint": finding.get("source_context_fingerprint", ""),
+                                "file": finding.get("file", finding.get("source", "")),
+                                "function": finding.get("function", ""),
+                                "snippet": finding.get("code_snippet", ""),
+                            },
+                            "evidence_refs": list(finding.get("evidence_refs") or []),
+                            "status": "pending_extraction" if rebuttal else "insufficient",
+                            "created_at": utc_now(),
+                        }
+                        self.review_memory_store.save_record(record)
+                        result["review_memory_records"] += 1
+                        result["review_memory_items"].append({
+                            "review_id": review_id,
+                            "extraction_status": record["status"],
+                        })
+                    except Exception as exc:
+                        result["review_memory_errors"].append(str(exc))
         return result
 
     def apply_validation_updates(
@@ -1133,6 +1181,15 @@ class ReportFeedbackService:
             }
         feedback_result = self.persist_validation_feedback(updates)
         self.save_report(report)
+        review_items = feedback_result.get("review_memory_items", [])
+        review_memory_result = {
+            "recorded": bool(feedback_result.get("review_memory_records")),
+            "records": feedback_result.get("review_memory_records", 0),
+            "items": review_items,
+            "errors": feedback_result.get("review_memory_errors", []),
+        }
+        if len(review_items) == 1:
+            review_memory_result.update(review_items[0])
         return {
             "success": True,
             "save_scope": save_scope,
@@ -1141,6 +1198,7 @@ class ReportFeedbackService:
             "state_db_persisted": bool(feedback_result.get("db_available")),
             "feedback_persistence": feedback_result,
             "snapshot_persistence": snapshot_result,
+            "review_memory": review_memory_result,
         }
 
 

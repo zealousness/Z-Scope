@@ -90,7 +90,7 @@ Z-SCOPE 是面向 Java 与 C/C++ 项目的 AI 静态分析平台。典型数据�
 顶层只允许 `config_version`、`llms`、`project`、`scan`、`indexing`、`concurrency` 和可选 `rules`，未知键严格报错。两份语言模板只展示常用子集，下列字段均合法；默认值、取值约束与相对路径基准以 `README.md` 的“配置字段参考”为准，本节只列字段与作用。
 
 - `llms`：profile 表，`default` 必需，可新增命名 profile。字段：`base_urls`（多 endpoint 最闲优先分流）、`models`（按序回退）、`api_key`、`max_tokens`、`timeout`、`max_retries`、`retry_until_available`（瞬态错误无限重试）、`base_url_rate_limit_per_minute`、`base_url_max_concurrent_requests`、`supports_structured_output`（JSON 输出走 response_format）。`scan.llm_profiles` 把 modeling/analysis/validation 三角色绑定到命名 profile；Wiki 编译器读取 `wiki_compiler` profile。
-- `project`：`language`、`root`、`source_root`、`id`（持久化标识）、单入口 `entry_function`（配 `entry_file_path`/`entry_signature` 消歧）、批量 `entry_functions_list`、`entry_discovery`（`enabled`/`search_root`/`interface_files`/`max_entries`/`max_functions`）、`include_paths`（源码扫描根，非空即替换）、`exclude_paths`、`compile_commands_path`（仅 C/C++）、`user_config_file`（语义工作簿）、`wiki`（`mode`/`auto_maintain`/`state_dir`/`compiler_enabled`/`documents.exclude`/`documents.classify.explanatory`/`documents.classify.generated`/`max_file_bytes`/`max_files`/`max_total_bytes`/`compiler_max_tokens`/`max_wall_seconds`/`max_constraints`）。
+- `project`：`language`、`root`、`source_root`、`id`（持久化标识）、单入口 `entry_function`（配 `entry_file_path`/`entry_signature` 消歧）、批量 `entry_functions_list`、`entry_discovery`（`enabled`/`search_root`/`interface_files`/`max_entries`/`max_functions`）、`include_paths`（源码扫描根，非空即替换）、`exclude_paths`、`compile_commands_path`（仅 C/C++）、`user_config_file`（语义工作簿）、`wiki`（`mode`/`auto_maintain`/`state_dir`/`compiler_enabled`/`documents.exclude`/`documents.classify.explanatory`/`documents.classify.generated`/`max_file_bytes`/`max_files`/`max_total_bytes`/`compiler_max_tokens`/`max_wall_seconds`/`max_constraints`）、`review_memory`（项目级人工误报模式归档和 advisory hint 配置）。
 - `scan`：`depth`（fast/balanced/deep，Java 仅 fast）、`task`（空串启用全部 Skill）、`llm_profiles`。
 - `indexing`：`backend`（C/C++：unified/clang/regex；Java：java_unified/java_source/joern）；`clang.frontend`（auto/batch/lsp，仅 C/C++）；`svf`（仅 C/C++：`scope`/`entry_depth`/`max_selected_tus`/`fallback`/`groups_file`/`always_include`/`exclusive_pools`/`shared_pools`/`heap_limit_mb`/`timeout_seconds`）；`java`（仅 Java：`structure_frontend`/`signals`/`extractor_command`/`provider_commands`）；`tools`（C/C++：`clangd`/`clang_indexer`/`gclang`/`get_bc`/`llvm_link`/`svf_bin_dir`；Java：`joern.command`/`joern.host`/`joern.port`/`joern.heap`）。
 - `concurrency`：`entry_workers`、`validator_workers`、`investigator_workers`、`evidence_completion_workers`、`index_workers`、`wiki_compiler_workers`（可省略）、`svf_workers`（仅 C/C++）、`llm_max_inflight`，全部正整数。
@@ -105,6 +105,7 @@ Agent 启停、分析预算、deadline、缓存与报告策略属于 RuntimeSpec
 - [代码检索与后端](docs/modules/retrieval-backends.md)
 - [Agent 运行时](docs/modules/agent-runtime.md)
 - [配置、语义与状态](docs/modules/configuration-state.md)
+- [Validator Review Memory](docs/modules/review-memory.md)
 - [LLM Wiki](docs/modules/wiki.md)
 - [接口与报告](docs/modules/interfaces-reporting.md)
 - [Benchmark](docs/modules/benchmarking.md)

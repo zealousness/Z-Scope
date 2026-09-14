@@ -403,6 +403,7 @@ def run_server(
         user_config_store,
         snapshot_store,
         report_filename=REPORT_FILENAME,
+        project_config=project_config,
     )
     _scan_request_service = ScanRequestService(
         config_file_path,

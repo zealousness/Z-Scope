@@ -44,6 +44,7 @@ zscope-config = "zscope.cli.config_cli:main"
 zscope-rules = "zscope.cli.rules:main"
 zscope-maven-cache = "zscope.cli.maven_cache:main"
 zscope-wiki = "zscope.cli.wiki:main"
+zscope-review-memory = "zscope.cli.review_memory:main"
 zscope-benchmark = "zscope.cli.benchmark:main"
 
 # sqlite3 is part of Python's standard library and therefore is not a pip
@@ -69,6 +70,7 @@ zscope = [
     "semantics/*.yaml",
     "workflows/*.yaml",
     "wiki/schemas/*.json",
+    "review_memory/schemas/*.json",
     "web/static/*.html",
     "web/static/*.js",
     "web/static/*.css",

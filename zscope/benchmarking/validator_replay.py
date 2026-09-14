@@ -485,6 +485,9 @@ def _group_to_validator_input(
         validation_pass=validation_pass,
         evidence_delta=evidence_delta,
     )
+    review_memory = group.get("review_memory")
+    if isinstance(review_memory, Mapping):
+        evidence_slice["review_memory"] = copy.deepcopy(dict(review_memory))
     return {
         "finding_uid": group["candidate_uid"],
         "candidate_uid": group["candidate_uid"],

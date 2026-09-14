@@ -1252,6 +1252,7 @@ class ValidationRunner:
             "validation_cluster_uid"
         )
         project_knowledge_identity = self._project_knowledge_cache_identity(pack)
+        review_memory_identity = self._review_memory_cache_identity()
         # v3's cluster identity already includes the project revision, root
         # cause, decision-changing code/evidence, and validator contract.
         # Adding occurrence-local function/location/source fields here defeats
@@ -1265,6 +1266,8 @@ class ValidationRunner:
             }
             if project_knowledge_identity is not None:
                 payload["project_knowledge"] = project_knowledge_identity
+            if review_memory_identity is not None:
+                payload["review_memory"] = review_memory_identity
             stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
             return hashlib.sha256(stable.encode("utf-8")).hexdigest()
         source_value = issue.get("source") or pack.get("source")
@@ -1316,8 +1319,30 @@ class ValidationRunner:
         }
         if project_knowledge_identity is not None:
             payload["project_knowledge"] = project_knowledge_identity
+        if review_memory_identity is not None:
+            payload["review_memory"] = review_memory_identity
         stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+    def _review_memory_cache_identity(self) -> Optional[Dict[str, Any]]:
+        project = getattr(self.config, "project", None)
+        settings = getattr(project, "review_memory", None)
+        if getattr(settings, "mode", "off") != "advisory":
+            return None
+        try:
+            from ...review_memory.store import ReviewMemoryStore
+            project_key = str(getattr(project, "project_id", "") or project.project_root)
+            store = ReviewMemoryStore(project.project_root, settings.state_dir)
+            active = store.active_pointer()
+            return {
+                "schema_version": "zscope.validator-review-memory.v1",
+                "project_id": project_key,
+                "revision": active.get("revision"),
+                "digest": active.get("digest"),
+                "pattern_ids": active.get("pattern_ids", []),
+            }
+        except Exception:
+            return {"schema_version": "zscope.validator-review-memory.v1", "unavailable": True}
 
     def _configured_entry_identity(self) -> str:
         project_cfg = getattr(self.config, "project", None)
@@ -2749,6 +2774,7 @@ class ValidationRunner:
                     )
                 }
                 evidence_slice["review_fact_query"] = "query_validation_facts: ast_nodes/cfg/types/macros with symbol, offset, limit"
+            self._attach_review_memory_hint(evidence_slice, raw_issue)
             evidence_slice = self._fit_validator_slice(evidence_slice, max_tokens=12_000)
             raw_issue["validator_context_requires_retrieval"] = bool(
                 evidence_slice.get("context_requires_retrieval")
@@ -2805,6 +2831,30 @@ class ValidationRunner:
         }
         self.attach_agent_contract(val_input, "validator_agent")
         return val_input
+
+    def _attach_review_memory_hint(self, evidence_slice: Dict[str, Any], issue: Dict[str, Any]) -> None:
+        """Attach bounded historical review hints without changing verdict authority."""
+        project = getattr(self.config, "project", None)
+        settings = getattr(project, "review_memory", None)
+        if getattr(settings, "mode", "off") != "advisory":
+            return
+        try:
+            from ...review_memory.matcher import match_patterns
+            from ...review_memory.projector import project_hints
+            from ...review_memory.store import ReviewMemoryStore
+            project_key = str(getattr(project, "project_id", "") or project.project_root)
+            store = ReviewMemoryStore(project.project_root, settings.state_dir)
+            hints = match_patterns(
+                issue, store.list_proposals(project_id=project_key),
+                project_id=project_key,
+                limit=max(0, int(getattr(settings, "max_patterns_per_finding", 3))),
+            )
+            if hints:
+                evidence_slice["review_memory"] = project_hints(
+                    hints, token_budget=int(getattr(settings, "max_context_tokens", 1200))
+                )
+        except Exception as exc:
+            logger.debug("Review Memory hint lookup failed: %s", exc)
 
     def _review_flag(self, name: str) -> bool:
         return getattr(getattr(self.config, "analysis", None), name, False) is True

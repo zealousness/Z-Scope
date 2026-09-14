@@ -1,0 +1,20 @@
+{
+  "$id": "zscope.false-positive-pattern-proposal.v1",
+  "type": "object",
+  "required": ["schema_version", "pattern_id", "project_id", "scope", "trigger_features", "status"],
+  "properties": {
+    "schema_version": {"const": "zscope.false-positive-pattern-proposal.v1"},
+    "pattern_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "scope": {"type": "object"},
+    "trigger_features": {"type": "array", "items": {"type": "object"}},
+    "false_positive_reason": {"type": "string"},
+    "required_checks": {"type": "array", "items": {"type": "string"}},
+    "counter_conditions": {"type": "array", "items": {"type": "string"}},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "source_fingerprints": {"type": "array", "items": {"type": "string"}},
+    "origin_review_ids": {"type": "array", "items": {"type": "string"}},
+    "status": {"type": "string"}
+  },
+  "additionalProperties": true
+}
