@@ -287,6 +287,33 @@ class WikiConfig:
 
 
 @dataclass
+class ReviewMemoryConfig:
+    mode: str = "off"
+    state_dir: str = ".zscope/review-memory"
+    project_scope: str = "project"
+    extraction: str = "async_cli"
+    llm_enabled: bool = True
+    max_patterns_per_finding: int = 3
+    max_context_tokens: int = 1200
+    stale_on_source_drift: bool = True
+    allow_direct_suppression: bool = False
+
+    def __post_init__(self) -> None:
+        self.mode = str(self.mode or "off").strip().lower()
+        if self.mode not in {"off", "archive", "extract", "advisory"}:
+            raise ValueError("project.review_memory.mode must be off, archive, extract, or advisory")
+        path = Path(str(self.state_dir or ".zscope/review-memory"))
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("project.review_memory.state_dir must be project-root relative")
+        if self.project_scope != "project" or self.extraction != "async_cli":
+            raise ValueError("review memory requires project scope and async_cli extraction")
+        if self.max_patterns_per_finding < 0 or self.max_context_tokens < 0:
+            raise ValueError("review memory limits must be non-negative")
+        if self.allow_direct_suppression:
+            raise ValueError("review memory cannot enable direct suppression")
+
+
+@dataclass
 class ScanLLMProfiles:
     """User-selected LLM profiles for stable runtime roles."""
 
@@ -639,6 +666,7 @@ class ProjectConfig:
     entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
     diff_impact: DiffImpactConfig = field(default_factory=DiffImpactConfig)
     wiki: WikiConfig = field(default_factory=WikiConfig)
+    review_memory: ReviewMemoryConfig = field(default_factory=ReviewMemoryConfig)
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()

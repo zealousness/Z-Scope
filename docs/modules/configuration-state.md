@@ -40,6 +40,8 @@ tests:
   - tests/test_security_semantic_map.py
   - tests/test_snapshot_store.py
   - tests/test_review_memory.py
+  - tests/test_review_memory_acceptance_gaps.py
+  - tests/test_review_memory_replay.py
   - tests/test_issue_dedup.py
 ---
 
@@ -66,6 +68,10 @@ tests:
 - `security_map.db` 是独立于历史函数 snapshot 的只读安全语义 sidecar：零 LLM 骨架记录入口、调用、危险事件和 backend coverage；有证据引用的选择性 LLM delta 才能成为 claim，无可解析引用的内容仅是 observation。
 - snapshot policy 决定完整、轻量或语法快照，store 负责持久化与复用。
 - `ReviewMemory` 是验证反馈门面；`issue_identity.py` 为报告、baseline、SARIF 和 benchmark 提供统一身份。
+
+独立的 `zscope/review_memory/` 归属 [Validator Review Memory](review-memory.md)，
+保存项目级误报模式与 advisory context。其状态、抽取、匹配、回放及当前限制见该文档；
+本模块继续负责 `zscope/memory/` 的既有 baseline/suppression 门面与公共配置。
 
 ## 必须保持的不变量
 

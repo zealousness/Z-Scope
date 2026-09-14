@@ -28,6 +28,14 @@ tests:
   - tests/test_web_wiki_api.py
 ---
 
+人工 rejected feedback may additionally create a project-local ReviewRecord
+under `.zscope/review-memory`. The API reports this as `review_memory`; failure
+to archive it does not roll back saved report feedback. Records retain the
+original rebuttal and evidence references and are not Wiki constraints. Review
+Memory exports retain the review id, extraction status, PatternMatch audit and
+active digest; audit events use a forward hash chain. LLM output cannot add
+evidence references or source identity.
+
 # 接口与报告
 
 ## 职责与非职责

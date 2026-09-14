@@ -26,6 +26,7 @@ tests:
   - tests/test_candidate_ledger.py
   - tests/test_validation_pipeline.py
   - tests/test_validation_runner.py
+  - tests/test_validator_review_memory.py
   - tests/test_review_fact_checks.py
   - tests/test_review_experiment_protocol.py
   - tests/test_review_runtime.py
@@ -40,6 +41,17 @@ tests:
   - tests/test_evidence_completeness_chain.py
   - tests/test_interface_probe_visibility.py
 ---
+
+## Validator Review Memory
+
+Project-scoped Review Memory stores human rejected finding records separately
+from Wiki constraints. Matching patterns are bounded advisory hints only; they
+never create proof, suppress a finding, or replace current source evidence.
+Matcher 只消费同一 project、rule、category 且 source context 兼容的程序化
+fingerprint；可用特征包括 AST、CFG、调用图、类型和宏 fingerprint。命中会
+形成 PatternMatch receipt，Validator cache identity 包含 active proposal
+digest。离线 replay 只投影 baseline/advisory 两侧并报告潜在影响，不调用
+Validator，也不会改变 verdict。
 
 # 分析流水线
 

@@ -76,7 +76,7 @@ flowchart TB
         V2["V2 fact delta recheck"]
         V3["V3 bounded investigation"]
     end
-    ReviewMemory["ReviewMemory<br/>baseline + suppression + validator memory"]
+ReviewMemory["ReviewMemory<br/>baseline + suppression + advisory review patterns"]
     Tools["ToolsRuntime<br/>ToolPolicy + agent tools"]
     Snapshot["SnapshotStore<br/>snapshots + reports"]
     UserCfg["UserConfigStore<br/>user_config.xlsx + feedback state"]
@@ -116,6 +116,12 @@ flowchart TB
     Report --> UserCfg
 ```
 
+人工 false-positive review patterns 属于独立的 Validator Review Memory
+语义域。它可以保存人工 rebuttal、源码上下文和 advisory hints，但不属于
+Wiki constraint，也不能生成 deterministic proof、直接 suppression 或当前
+finding 的 verdict。Review Memory 按项目、规则和类别隔离，并在源码上下文
+发生漂移时失效。
+
 总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面保留确定性快车道，并在 balanced/deep 中用独立安全语义地图和 candidate-blind coverage gap 扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof 或分层 Validator 改变终态，模型 hypothesis 不能直接确认漏洞。反馈平面通过 SnapshotStore、Security Map sidecar、UserConfigStore 与 ReviewMemory 保留中间产物、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 仅向 V3 调查和受控发现开放白名单内的只读查询。
 
 跨语言规则治理在既有候选生命周期上增加严格预检：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；包内目录、YAML pack、指定 provider、Skill 契约和 disabled IDs 组合为不可变 `EffectiveRuleSet`。重复 ID/alias、未知字段、语言错配、缺失 Skill 或能力错配在任何外部工具/LLM 启动前失败。`zscope.candidate.v3.3` 仍是内部候选协议，规则 provenance 以兼容字段追加，不改变稳定候选身份算法。
@@ -130,7 +136,7 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 | Validation | `zscope/core/validation/` | Validator evidence pack、验证运行、suppression、baseline、score、`needs_review` 分流 |
 | Reporting | `zscope/reporting/` | `FinalReport`、JSON/Markdown、report views、semantic dedup metadata、SARIF v2.1.0 |
 | Identity | `zscope/common/issue_identity.py` | `canonical_issue_key`、`stable_issue_fingerprint`、source context fingerprint、根因级去重 |
-| Review Memory | `zscope/memory/review_memory.py` | 人工 false-positive、finding baseline、Validator memory 的统一门面 |
+| Review Memory | `zscope/memory/review_memory.py`、`zscope/review_memory/` | 人工 false-positive 原始记录、模式 proposal、advisory hint；与 Wiki constraint 隔离 |
 | Semantics | `zscope/semantics/` | 内置默认 API 语义、项目 overlay、用户配置上下文、语义推断 |
 | Orchestration | `zscope/orchestration/` | workflow、entry discovery、diff impact、risk budget、subagent、history reconciler、parallel analyzer |
 | Tools | `zscope/tools/` | LLM 工具运行时、参数校验、ToolPolicy、敏感路径 hook 和审计 |

@@ -1,0 +1,21 @@
+{
+  "$id": "zscope.review-pattern-match.v1",
+  "type": "object",
+  "required": ["schema_version", "pattern_id", "scan_id", "issue_identity"],
+  "properties": {
+    "schema_version": {"const": "zscope.review-pattern-match.v1"},
+    "pattern_id": {"type": "string"},
+    "scan_id": {"type": "string"},
+    "issue_identity": {"type": "object"},
+    "project_id": {"type": "string"},
+    "match_basis": {"type": "array", "items": {"type": "string"}},
+    "source_compatible": {"type": "boolean"},
+    "injected": {"type": "boolean"},
+    "validator_status": {"type": "string"},
+    "token_cost": {"type": "integer", "minimum": 0},
+    "tool_cost": {"type": "integer", "minimum": 0},
+    "overturned": {"type": "boolean"},
+    "created_at": {"type": "string"}
+  },
+  "additionalProperties": true
+}

@@ -29,6 +29,7 @@ from .config import (
     IndexingConfig,
     LLMConfig,
     ProjectConfig,
+    ReviewMemoryConfig,
     ReportingConfig,
     RulesConfig,
     RuntimeAgentConfig,
@@ -626,6 +627,7 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
             "compile_commands_path",
             "user_config_file",
             "wiki",
+            "review_memory",
         },
         "project",
     )
@@ -730,6 +732,24 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         max_constraints=_optional_positive_int(wiki_data.get("max_constraints"), None),
     )
 
+    review_data = _mapping(data.get("review_memory"), "project.review_memory")
+    _check_keys(review_data, {
+        "mode", "state_dir", "project_scope", "extraction", "llm_enabled",
+        "max_patterns_per_finding", "max_context_tokens", "stale_on_source_drift",
+        "allow_direct_suppression",
+    }, "project.review_memory")
+    review_memory = ReviewMemoryConfig(
+        mode=_string(review_data.get("mode", "off"), "project.review_memory.mode"),
+        state_dir=_string(review_data.get("state_dir", ".zscope/review-memory"), "project.review_memory.state_dir"),
+        project_scope=_string(review_data.get("project_scope", "project"), "project.review_memory.project_scope"),
+        extraction=_string(review_data.get("extraction", "async_cli"), "project.review_memory.extraction"),
+        llm_enabled=_boolean(review_data.get("llm_enabled", True), "project.review_memory.llm_enabled"),
+        max_patterns_per_finding=_non_negative_int(review_data.get("max_patterns_per_finding", 3), "project.review_memory.max_patterns_per_finding"),
+        max_context_tokens=_non_negative_int(review_data.get("max_context_tokens", 1200), "project.review_memory.max_context_tokens"),
+        stale_on_source_drift=_boolean(review_data.get("stale_on_source_drift", True), "project.review_memory.stale_on_source_drift"),
+        allow_direct_suppression=_boolean(review_data.get("allow_direct_suppression", False), "project.review_memory.allow_direct_suppression"),
+    )
+
     project = ProjectConfig(
         project_root=root_path,
         source_root=Path(source_root),
@@ -765,6 +785,7 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         exclude_paths=_string_list(data.get("exclude_paths", []), "project.exclude_paths"),
         entry_discovery=discovery,
         wiki=wiki,
+        review_memory=review_memory,
     )
     if project.entry_discovery.search_root:
         try:
