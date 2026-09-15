@@ -23,7 +23,7 @@ from ..reporting.views import (
 from ..reporting.issue_markdown import issue_identity
 from ..rules.query import query_effective_rules, validate_rule_filters
 from ..wiki.control import wiki_query, wiki_status
-from ..review_memory.identity import project_id, stable_id, utc_now
+from ..review_memory.identity import project_id, review_subject_id, stable_id, utc_now
 from ..review_memory.store import ReviewMemoryStore
 
 
@@ -940,6 +940,7 @@ class ReportFeedbackService:
                         record = {
                             "schema_version": "zscope.review-record.v1",
                             "review_id": review_id,
+                            "review_subject_id": review_subject_id({"project_id": project_id(self.project_config), "finding": finding}),
                             "project_id": project_id(self.project_config),
                             "repository_identity": {},
                             "finding": finding,
@@ -962,6 +963,13 @@ class ReportFeedbackService:
                         })
                     except Exception as exc:
                         result["review_memory_errors"].append(str(exc))
+            elif status == "validated" and self.review_memory_store is not None:
+                try:
+                    self.review_memory_store.supersede_for_finding(issue, reason="validated")
+                except Exception as exc:
+                    # Validation feedback is already persisted above; memory
+                    # reconciliation must not roll back the user action.
+                    result["review_memory_errors"].append(str(exc))
         return result
 
     def apply_validation_updates(

@@ -16,6 +16,16 @@ class FakeLLM:
         return {"choices": [{"message": {"content": json.dumps(self.payload)}}]}
 
 
+class CapturingLLM(FakeLLM):
+    def __init__(self, payload):
+        super().__init__(payload)
+        self.messages = []
+
+    def chat_completion(self, messages, **kwargs):
+        self.messages.append(messages)
+        return super().chat_completion(messages, **kwargs)
+
+
 def _record():
     return {
         "schema_version": "zscope.review-record.v1",
@@ -26,6 +36,22 @@ def _record():
         "evidence_refs": ["e1"],
         "status": "pending_extraction",
     }
+
+
+def test_review_memory_user_content_is_final_tool_only():
+    llm = CapturingLLM({
+        "false_positive_reason": "调用点缺少当前证据",
+        "required_checks": ["重新检查当前源码"],
+        "counter_conditions": ["存在已证明的外部可控输入"],
+        "trigger_features": [],
+    })
+    extract_with_llm(_record(), llm)
+    user_content = llm.messages[0][1]["content"]
+    assert "FINAL TOOL ONLY" in user_content
+    assert "emit_review_pattern" in user_content
+    assert "Do not emit" in user_content
+    assert "Do not put any final JSON outside the tool call" in user_content
+    assert '"review_id"' in user_content
 
 
 def test_llm_cannot_create_new_matchable_feature():
@@ -42,3 +68,9 @@ def test_source_drift_does_not_match_advisory_pattern():
     pattern = proposal_from_record(_record())
     pattern.update({"status": "advisory", "required_checks": ["recheck"]})
     assert match_patterns({"rule": "R", "category": "C", "stable_fingerprint": "changed"}, [pattern], project_id="p1") == []
+
+
+def test_same_finding_revisions_share_one_proposal_identity():
+    first = _record()
+    second = dict(first, review_id="r2", user_rebuttal="later explanation")
+    assert proposal_from_record(first)["pattern_id"] == proposal_from_record(second)["pattern_id"]

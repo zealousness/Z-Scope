@@ -11,10 +11,11 @@ import click
 from ..config.config import ConfigLoader
 from ..review_memory.extractor import extract_with_llm, proposal_from_record
 from ..review_memory.lifecycle import qualify_and_activate
-from ..review_memory.identity import utc_now
+from ..review_memory.identity import review_subject_id, utc_now
 from ..review_memory.store import ReviewMemoryStore
 from ..framework.llm_client import LLMClient
 from ..framework.llm_usage import ensure_scan_token_usage_ledger
+from ..framework.conversation_recorder import enable_conversation_recording
 
 
 def _store(config_path: Path) -> ReviewMemoryStore:
@@ -26,6 +27,15 @@ def _store(config_path: Path) -> ReviewMemoryStore:
 def _config_and_store(config_path: Path):
     config = ConfigLoader.load(str(config_path))
     return config, ReviewMemoryStore(config.project.project_root, config.project.review_memory.state_dir)
+
+
+def _filter_extraction_records(records: list[Dict[str, Any]], *, retry_failed: bool, retry_all: bool) -> list[Dict[str, Any]]:
+    records = [record for record in records if record.get("status") != "superseded"]
+    if retry_failed:
+        return [record for record in records if record.get("status") == "proposal_failed"]
+    if retry_all:
+        return records
+    return [record for record in records if record.get("status") not in {"proposal_failed", "extracted"}]
 
 
 def _llm_client(config: Any) -> LLMClient:
@@ -52,6 +62,14 @@ def _llm_client(config: Any) -> LLMClient:
 @click.pass_context
 def main(ctx: click.Context, config_path: Path) -> None:
     config, store = _config_and_store(config_path)
+    enable_conversation_recording(
+        config.project.project_root / ".zscope_conversations",
+        metadata={
+            "config_path": str(config_path),
+            "zscope_version": "review_memory",
+            "mode": "review_memory_extract",
+        },
+    )
     ctx.ensure_object(dict).update({"store": store, "config": config})
 
 
@@ -65,15 +83,25 @@ def list_records(ctx: click.Context) -> None:
 @main.command("extract")
 @click.option("--review-id", default=None)
 @click.option("--retry-failed", is_flag=True, default=False)
+@click.option("--retry-all", is_flag=True, default=False)
 @click.option("--job-id", default=None)
 @click.option("--enqueue", is_flag=True, default=False)
 @click.pass_context
-def extract(ctx: click.Context, review_id: Optional[str], retry_failed: bool, job_id: Optional[str], enqueue: bool) -> None:
+def extract(ctx: click.Context, review_id: Optional[str], retry_failed: bool, retry_all: bool, job_id: Optional[str], enqueue: bool) -> None:
+    if retry_failed and retry_all:
+        raise click.UsageError("--retry-failed and --retry-all are mutually exclusive")
     store = ctx.obj["store"]
     config = ctx.obj["config"]
     records = [record for record in store.list_records() if not review_id or record.get("review_id") == review_id]
-    if not retry_failed:
-        records = [record for record in records if record.get("status") not in {"proposal_failed", "extracted"}]
+    # ReviewRecord is an immutable event log; proposal extraction is subject-level.
+    latest_by_subject = {}
+    for record in records:
+        subject = str(record.get("review_subject_id") or review_subject_id(record))
+        previous = latest_by_subject.get(subject)
+        if previous is None or str(record.get("created_at", "")) > str(previous.get("created_at", "")):
+            latest_by_subject[subject] = record
+    records = list(latest_by_subject.values())
+    records = _filter_extraction_records(records, retry_failed=retry_failed, retry_all=retry_all)
     if enqueue:
         job = store.create_extraction_job([str(record["review_id"]) for record in records])
         click.echo(json.dumps({"job": job}, ensure_ascii=False, indent=2))
@@ -99,6 +127,7 @@ def extract(ctx: click.Context, review_id: Optional[str], retry_failed: bool, jo
                         proposal = qualify_and_activate(proposal)
                     except ValueError:
                         pass
+                proposal["review_subject_id"] = str(record.get("review_subject_id") or review_subject_id(record))
                 proposals.append(store.save_proposal(proposal))
                 store.update_record(dict(record, status="extracted", extraction_error=""))
             except Exception as exc:
@@ -240,3 +269,7 @@ def replay(ctx: click.Context, pattern_id: str, input_path: Path, output_path: O
         temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(output_path)
     click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

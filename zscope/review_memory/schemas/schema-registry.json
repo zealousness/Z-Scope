@@ -7,5 +7,6 @@
     "zscope.false-positive-pattern-proposal.v1": "false-positive-pattern-proposal.schema.json",
     "zscope.review-pattern-match.v1": "review-pattern-match.schema.json",
     "zscope.review-memory-operation.v1": "review-memory-operation.schema.json"
+    ,"zscope.review-memory-extraction-input.v1": "review-memory-extraction-input.schema.json"
   }
 }
