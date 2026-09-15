@@ -14,6 +14,7 @@ from zscope.review_memory.matcher import match_patterns
 from zscope.review_memory.projector import project_hints
 from zscope.review_memory.schema import validate_pattern, validate_registered, validate_review_record
 from zscope.review_memory.store import ReviewMemoryStore
+from zscope.review_memory.identity import review_subject_id
 from zscope.config.user_config_store import UserConfigStore
 from zscope.web.services import ReportFeedbackService
 from types import SimpleNamespace
@@ -102,6 +103,41 @@ def test_original_rebuttal_cannot_be_overwritten_under_same_review_id(tmp_path):
     assert store.get_record(original["review_id"])["user_rebuttal"] == original["user_rebuttal"]
 
 
+def test_missing_record_file_is_recreated_even_when_stale_sqlite_row_exists(tmp_path):
+    store = ReviewMemoryStore(tmp_path)
+    original = _record()
+    store.save_record(original)
+    record_path = tmp_path / ".zscope/review-memory/records" / f"{original['review_id']}.json"
+    record_path.unlink()
+
+    recreated = deepcopy(original)
+    recreated["status"] = "pending_extraction"
+    recreated["created_at"] = "2026-09-14T00:00:01Z"
+    store.save_record(recreated)
+
+    assert record_path.is_file()
+    assert store.get_record(original["review_id"])["status"] == "pending_extraction"
+    assert any(
+        json.loads(line).get("event") == "review_record_created"
+        and json.loads(line).get("recreated_missing_file") is True
+        for line in (tmp_path / ".zscope/review-memory/audits/events.jsonl").read_text().splitlines()
+    )
+
+
+def test_same_finding_uses_one_subject_but_retains_distinct_rebuttal_events(tmp_path):
+    store = ReviewMemoryStore(tmp_path)
+    first = _record()
+    second = deepcopy(first)
+    second["review_id"] = "review_acceptance_second"
+    second["user_rebuttal"] = "A later, more precise explanation."
+    first["review_subject_id"] = review_subject_id(first)
+    second["review_subject_id"] = review_subject_id(second)
+    store.save_record(first)
+    store.save_record(second)
+    assert first["review_subject_id"] == second["review_subject_id"]
+    assert len(store.list_records()) == 2
+
+
 def test_rejected_feedback_archives_review_record_without_llm(tmp_path):
     report_path = tmp_path / "report.json"
     report_path.write_text(json.dumps({"issues": [{"id": "I1", "function": "f", "location": "a.c:1", "category": "C"}]}), encoding="utf-8")
@@ -126,6 +162,27 @@ def test_rejected_feedback_archives_review_record_without_llm(tmp_path):
     assert result["review_memory"]["extraction_status"] == "pending_extraction"
     records = ReviewMemoryStore(tmp_path).list_records()
     assert records[0]["user_rebuttal"] == "guard is unreachable"
+
+
+def test_validated_feedback_supersedes_record_and_proposal_without_deleting_history(tmp_path):
+    store = ReviewMemoryStore(tmp_path)
+    record = _record()
+    record["finding"]["candidate_id"] = "CAND-1"
+    record["status"] = "extracted"
+    record["review_subject_id"] = review_subject_id(record)
+    store.save_record(record)
+    pattern = _pattern()
+    pattern["origin_review_ids"] = [record["review_id"]]
+    pattern["review_subject_id"] = record["review_subject_id"]
+    store.save_proposal(pattern)
+
+    result = store.supersede_for_finding({"candidate_id": "CAND-1"})
+
+    assert result["review_ids"] == [record["review_id"]]
+    assert result["pattern_ids"] == [pattern["pattern_id"]]
+    assert len(store.list_records()) == 1
+    assert store.get_record(record["review_id"])["status"] == "superseded"
+    assert store.get_proposal(pattern["pattern_id"])["status"] == "deprecated"
 
 
 def test_store_publishes_active_digest_and_hash_chained_audit(tmp_path):

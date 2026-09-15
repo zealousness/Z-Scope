@@ -625,3 +625,208 @@
 
 遗留问题：
 - 无产品实现遗留；全仓历史非本功能测试失败仍按前序记录，不在本次范围内修改。
+
+## [2026-09-14] 阶段 22：同一 Finding 的 Review Subject 去重
+
+状态：completed
+
+完成内容：
+- 增加不包含 rebuttal 文本的稳定 `review_subject_id`，同一 finding 的多个人工反馈事件共享 subject。
+- 保留 ReviewRecord 的不可变事件语义：不同 rebuttal 不覆盖历史记录；完全相同的重复提交保持幂等。
+- proposal identity 改为基于 `review_subject_id`，避免同一 finding 产生多个 proposal。
+- `extract` 按 subject 分组并仅选择最新 ReviewRecord；旧记录仍可审计保留。
+- 对历史缺少 `review_subject_id` 的记录使用程序化 fallback 计算，兼容已有 artifact。
+- 增加同一 finding 多事件和 proposal identity 去重测试。
+
+修改文件：
+- `zscope/review_memory/identity.py`
+- `zscope/review_memory/models.py`
+- `zscope/review_memory/extractor.py`
+- `zscope/review_memory/schemas/review-record.schema.json`
+- `zscope/review_memory/schemas/false-positive-pattern-proposal.schema.json`
+- `zscope/review_memory/store.py`
+- `zscope/web/services.py`
+- `zscope/cli/review_memory.py`
+- `tests/test_review_memory_acceptance_gaps.py`
+- `tests/test_review_memory_lifecycle.py`
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m pytest -q tests/test_review_memory_*.py tests/test_validator_review_memory.py tests/test_validator_evidence_slice.py tests/test_validation_runner.py tests/test_config_v2.py tests/test_web_user_config_workbook_api.py tests/test_wiki_schema_contract.py tests/test_agent_docs.py`
+- `python -m compileall -f -q zscope scripts test tests`
+- `git diff --check`
+
+验证结果：
+- `156 passed`。
+- compileall 和 diff check 通过。
+- 未启动 benchmark 扫描。
+
+遗留问题：
+- 已有旧 proposal 文件若由旧版本生成，其旧 pattern ID 不会被自动删除；重新执行 extract 会生成新的 subject-scoped proposal。历史文件仍保留，需另行执行显式清理/迁移。
+
+## [2026-09-14] 阶段 23：抽取 Agent 会话归档
+
+状态：completed
+
+完成内容：
+- `review_memory` 独立 CLI 启动时启用共享 conversation recorder。
+- 抽取 Agent 的完整 LLM 会话写入项目根目录 `.zscope_conversations/`。
+- 使用与其他 Agent 相同的 JSONL/Markdown 会话格式；records/proposals 仍保存结构化事实和抽取结果。
+- 更新 Review Memory 模块文档，记录会话归档边界。
+
+修改文件：
+- `zscope/cli/review_memory.py`
+- `docs/modules/review-memory.md`
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m py_compile zscope/cli/review_memory.py`
+- `python -m pytest -q tests/test_review_memory_*.py tests/test_validator_review_memory.py`
+
+验证结果：
+- `32 passed`。
+- Python 编译检查通过。
+- 未启动实际 LLM 抽取；待下一次 `extract` 验证 `.zscope_conversations/` 实际会话文件。
+
+遗留问题：
+- 无。
+
+## [2026-09-15] 阶段 27：排除 Superseded Record
+
+状态：completed
+
+完成内容：
+- 抽取筛选在所有模式下先排除 `superseded` record。
+- `--retry-failed` 仍只处理 `proposal_failed`。
+- `--retry-all` 不再包含 `superseded`，但仍处理其他状态。
+- 增加失败重试和强制重抽取的排除回归测试。
+
+修改文件：
+- `zscope/cli/review_memory.py`
+- `tests/test_review_memory_cli.py`
+- `docs/modules/review-memory.md`
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m pytest -q tests/test_review_memory_cli.py tests/test_review_memory_*.py tests/test_validator_review_memory.py`
+- `python -m py_compile zscope/cli/review_memory.py`
+
+验证结果：
+- `32 passed`。
+- Python 编译检查和 diff 检查通过。
+
+遗留问题：
+- 无。
+
+## [2026-09-14] 阶段 24：缺失 ReviewRecord 文件恢复
+
+状态：completed
+
+完成内容：
+- `ReviewMemoryStore.save_record()` 现在检查对应的 `records/<review_id>.json` 是否存在。
+- 当 SQLite 仍有旧索引但 JSON 归档文件缺失时，将其视为归档缺失，允许 Web 再次保存并原子重建记录文件。
+- 重建操作写入 `review_record_created` 审计事件，并标记 `recreated_missing_file`。
+- 增加 SQLite 残留行与 JSON 文件缺失场景的回归测试。
+
+修改文件：
+- `zscope/review_memory/store.py`
+- `tests/test_review_memory_acceptance_gaps.py`
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m pytest -q tests/test_review_memory_acceptance_gaps.py tests/test_review_memory_lifecycle.py tests/test_validator_review_memory.py`
+- `python -m py_compile zscope/review_memory/store.py zscope/web/services.py`
+
+验证结果：
+- `25 passed`。
+- Python 编译检查通过。
+
+遗留问题：
+- 当前工作区中用户已删除的历史 record 文件不会由本次修改自动补建；下一次 Web 保存该 finding 后会自动重建。
+
+## [2026-09-14] 阶段 25：Review Memory Agent Prompt 与 Final Tool
+
+状态：completed
+
+完成内容：
+- 新增 `zscope/agents/review_memory/AGENT.md` 和 `ReviewMemoryAgent`。
+- 抽取输入改为精简 projection，避免把完整 ReviewRecord 直接发送给模型。
+- 使用 `emit_review_pattern` final tool；schema 校验失败最多重试两次。
+- 新增 extraction input schema 注册。
+- 保留旧 chat_completion 测试替身兼容路径；生产 LLM 使用 BaseAgent tool-loop。
+- 更新 Review Memory 模块文档。
+
+修改文件：
+- `zscope/agents/review_memory/AGENT.md`
+- `zscope/agents/review_memory/agent.py`
+- `zscope/agents/review_memory/__init__.py`
+- `zscope/review_memory/extractor.py`
+- `zscope/review_memory/schemas/review-memory-extraction-input.schema.json`
+- `zscope/review_memory/schemas/schema-registry.json`
+- `docs/modules/review-memory.md`
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m pytest -q tests/test_review_memory*.py tests/test_validator_review_memory.py tests/test_agent_docs.py tests/test_llm_client_recording.py`
+- `python -m compileall -f -q zscope/agents/review_memory zscope/review_memory`
+- `git diff --check`
+
+验证结果：
+- `47 passed`。
+- 编译检查和 diff 检查通过。
+- 未启动真实 LLM 抽取或 benchmark 扫描。
+
+遗留问题：
+- 尚未为 final tool 的真实 provider 响应新增独立集成测试；当前通过共享 BaseAgent 机制和兼容测试替身验证。
+
+## [2026-09-15] 阶段 27：单阶段强制 Final Tool 提交
+
+状态：completed
+
+完成内容：
+- Review Memory Agent 设置 `require_structured_finalization=False`。
+- 设置 `single_pass_final_tool=True`，首个模型请求即要求调用 `emit_review_pattern`。
+- 避免先生成普通回复、再额外发起 structured finalization，减少一次无效模型调用。
+- 明确 user prompt 使用 `FINAL TOOL ONLY`，禁止 prose 或 tool 外 JSON。
+
+修改文件：
+- `zscope/agents/review_memory/agent.py`
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m pytest -q tests/test_review_memory*.py tests/test_validator_review_memory.py tests/test_agent_docs.py tests/test_llm_client_recording.py`
+- `python -m compileall -f -q zscope/agents/review_memory zscope/review_memory`
+- `git diff --check`
+
+验证结果：
+- `51 passed`。
+- 编译检查和 diff 检查通过。
+
+遗留问题：
+- 使用不支持 tool-call 的旧测试替身时仍保留兼容路径；生产 LLM 使用强制 final tool 路径。
+
+## [2026-09-15] 阶段 26：区分失败重试与强制重抽取
+
+状态：completed
+
+完成内容：
+- `--retry-failed` 现在仅选择状态为 `proposal_failed` 的 ReviewRecord。
+- 新增 `--retry-all`，用于强制重新抽取所有选中的最新记录，包括 `extracted` 和 `proposal_failed`。
+- 两个参数同时使用时返回用法错误，避免语义歧义。
+- 更新 Review Memory CLI 文档和命令示例。
+
+修改文件：
+- `zscope/cli/review_memory.py`
+- `docs/modules/review-memory.md`
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m pytest -q tests/test_review_memory_*.py tests/test_validator_review_memory.py`
+- `python -m py_compile zscope/cli/review_memory.py`
+
+验证结果：
+- `30 passed`。
+- Python 编译检查和 diff 检查通过。
+
+遗留问题：
+- 无。

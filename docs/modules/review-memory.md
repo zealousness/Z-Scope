@@ -127,7 +127,7 @@ Web save_validation_feedback
 
 当前 qualification 要求：项目非空、状态为 `proposed/advisory`、至少一个非空 matchable feature、非空 evidence refs，以及 required checks 或 counter conditions 至少一项非空。它尚不核验引用是否可解析、规则版本或特征真实性；不要把它等同于完整设计门禁。
 
-- 单条记录抽取成功后变为 `extracted`，失败变为 `proposal_failed` 并保存错误；默认跳过失败和已抽取记录，`--retry-failed` 放开此过滤。
+- 单条记录抽取成功后变为 `extracted`，失败变为 `proposal_failed` 并保存错误；默认跳过失败和已抽取记录。`--retry-failed` 仅重试 `proposal_failed`，`--retry-all` 强制重新抽取所有选中的最新记录；两者不能同时使用。`superseded` 记录始终排除，不会被任何抽取模式重新处理。
 - 无 rebuttal 的记录不调用 LLM 抽取，CLI 会生成程序型 proposal；模式不会因归档本身获得 advisory 权限。
 - Pattern schema 接受 `pending_extraction`、`proposal_failed`、`proposed`、`semantic_only`、`advisory`、`stale`、`disabled`、`deprecated`，但 Store 尚非严格的状态迁移图。
 - `enable` 调用 qualification；目前 `disabled/stale` 不在 qualification 允许状态内，不能把 `enable` 当作通用恢复开关。
@@ -175,6 +175,7 @@ zscope-review-memory -c zscope.yaml list
 zscope-review-memory -c zscope.yaml show REVIEW_ID
 zscope-review-memory -c zscope.yaml extract --review-id REVIEW_ID
 zscope-review-memory -c zscope.yaml extract --review-id REVIEW_ID --retry-failed
+zscope-review-memory -c zscope.yaml extract --review-id REVIEW_ID --retry-all
 zscope-review-memory -c zscope.yaml extract --enqueue
 zscope-review-memory -c zscope.yaml jobs
 zscope-review-memory -c zscope.yaml extract --job-id JOB_ID
@@ -203,6 +204,10 @@ zscope-review-memory -c zscope.yaml export --output review-memory.json
 - LLM 语义抽取与激活门禁：`extractor.py`、`lifecycle.py`。
 - 模式选择与上下文预算：`matcher.py`、`projector.py`；接入点在 validation runner。
 - 反馈 API：`web/services.py`；CLI 命令：`cli/review_memory.py`。
+- 抽取 Agent 契约位于 `zscope/agents/review_memory/AGENT.md`；CLI 使用 compact extraction projection，并通过 `emit_review_pattern` final tool 提交。final tool/schema 校验失败最多重试两次，LLM 网络重试仍由共享 `LLMClient` 管理。
+- CLI 抽取通过共享 conversation recorder 将完整 LLM 会话归档到
+  `<project.root>/.zscope_conversations/`，与其他 Agent 使用相同的 JSONL/Markdown
+  格式；`records/` 和 `proposals/` 仍分别保存原始反馈与结构化抽取结果。
 - 公共配置：`config/config.py`、`config/v2.py`；不要向用户 YAML 暴露 RuntimeSpec 私有字段。
 - 运行时能力变化同步本文及对应跨模块文档；本次文档建立不修复上述实现限制。
 

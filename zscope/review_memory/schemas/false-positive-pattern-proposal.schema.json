@@ -5,6 +5,7 @@
   "properties": {
     "schema_version": {"const": "zscope.false-positive-pattern-proposal.v1"},
     "pattern_id": {"type": "string", "minLength": 1},
+    "review_subject_id": {"type": "string", "minLength": 1},
     "project_id": {"type": "string", "minLength": 1},
     "scope": {"type": "object"},
     "trigger_features": {"type": "array", "items": {"type": "object"}},

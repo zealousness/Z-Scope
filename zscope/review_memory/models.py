@@ -14,6 +14,7 @@ class ReviewRecord:
     review_id: str
     project_id: str
     finding: Dict[str, Any]
+    review_subject_id: str = ""
     user_rebuttal: str = ""
     source_context: Dict[str, Any] = field(default_factory=dict)
     evidence_refs: List[str] = field(default_factory=list)

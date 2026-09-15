@@ -17,3 +17,17 @@ def stable_id(prefix: str, value: Dict[str, Any]) -> str:
 
 def project_id(project: Any) -> str:
     return str(getattr(project, "project_id", "") or getattr(project, "project_root", "project"))
+
+
+def review_subject_id(record: Dict[str, Any]) -> str:
+    """Stable identity of a finding review subject, excluding rebuttal text."""
+    finding = record.get("finding") or {}
+    if not isinstance(finding, dict):
+        finding = {}
+    identity = {
+        "project_id": record.get("project_id", ""),
+        "issue_id": finding.get("issue_id") or finding.get("id"),
+        "dedup_key": finding.get("dedup_key"),
+        "stable_fingerprint": finding.get("stable_fingerprint"),
+    }
+    return stable_id("subject", identity)

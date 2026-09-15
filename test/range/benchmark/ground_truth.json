@@ -1,8 +1,8 @@
 {
   "benchmark": "zscope-range-service-runtime",
-  "version": 15,
-  "total_vulnerabilities": 136,
-  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 15 corrects the REAL-029 primary source range and adds the concrete ISSUE42-028 signal-record helper anchor without changing the truth count; version 14 adds ISSUE43 stream-journal and lock-cache runtime models for missing C memory, concurrency, and resource CWE coverage; version 13 removes ISSUE42-012/log_level_misuse as a code-style-only case and strengthens issue #41/#42 models with concrete impact chains; version 12 neutralizes benchmark function names, refreshes ISSUE42 to natural runtime API flows, and adds wrapper/evidence anchors for scoring; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite; version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors.",
+  "version": 16,
+  "total_vulnerabilities": 139,
+  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 16 adds three independently verified findings from the 20260908 trial review: the externally reachable header-allocation addition overflow, the refcount update after releasing the lookup lock, and the unhandled SIGPIPE path in network send. Existing truth-covered roots, duplicate roots, and explicitly excluded hardening/speculative cases are not added; version 15 corrects the REAL-029 primary source range and adds the concrete ISSUE42-028 signal-record helper anchor without changing the truth count; version 14 adds ISSUE43 stream-journal and lock-cache runtime models for missing C memory, concurrency, and resource CWE coverage; version 13 removes ISSUE42-012/log_level_misuse as a code-style-only case and strengthens issue #41/#42 models with concrete impact chains; version 12 neutralizes benchmark function names, refreshes ISSUE42 to natural runtime API flows, and adds wrapper/evidence anchors for scoring; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite; version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors.",
   "vulnerabilities": [
     {
       "id": "RANGE-001",
@@ -4208,6 +4208,65 @@
       "related_functions": [
         "td_runtime_maintain_lock_cache",
         "_runtime_maintain_lock_cache"
+      ]
+    },
+    {
+      "id": "ISSUE44-001",
+      "cwe": "CWE-190",
+      "category": "integer_overflow",
+      "title": "Header allocation wraps size before reserving the eight-byte header",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_header_alloc",
+      "line": 2681,
+      "end_line": 2681,
+      "severity": "high",
+      "tier": "legacy_range",
+      "weight": 1,
+      "keywords": [
+        "size + 8u",
+        "_safe_malloc",
+        "integer overflow",
+        "allocation",
+        "header"
+      ]
+    },
+    {
+      "id": "ISSUE44-002",
+      "cwe": "CWE-362",
+      "category": "refcount_race",
+      "title": "Reference count is updated after releasing the lookup lock",
+      "file": "src/lifecycle.c",
+      "function": "_lifecycle_ref_put",
+      "line": 197,
+      "end_line": 197,
+      "severity": "high",
+      "tier": "legacy_range",
+      "weight": 1,
+      "keywords": [
+        "ref_count",
+        "unlock",
+        "reference count",
+        "race",
+        "use after free"
+      ]
+    },
+    {
+      "id": "ISSUE44-003",
+      "cwe": "CWE-248",
+      "category": "sigpipe_unhandled",
+      "title": "Network send path does not suppress or handle SIGPIPE",
+      "file": "src/network.c",
+      "function": "_net_send_data",
+      "line": 101,
+      "end_line": 101,
+      "severity": "medium",
+      "tier": "legacy_range",
+      "weight": 1,
+      "keywords": [
+        "send",
+        "SIGPIPE",
+        "peer disconnect",
+        "network write"
       ]
     }
   ],

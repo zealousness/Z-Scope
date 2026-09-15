@@ -111,17 +111,27 @@ class ReviewMemoryStore:
 
     def save_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
         validate_review_record(record)
+        record_path = self.records_dir / f"{record['review_id']}.json"
         existing = self.get_record(str(record["review_id"]))
+        # SQLite is an index/cache of the JSON archive, not the archive's
+        # authority.  If the JSON event was removed or lost, allow the next
+        # Web feedback submission to recreate it instead of treating the
+        # stale database row as an existing immutable event.
+        record_file_missing = not record_path.is_file()
+        if record_file_missing:
+            existing = None
         if existing is not None:
             immutable = ("project_id", "finding", "user_rebuttal", "source_context", "evidence_refs", "repository_identity", "created_at")
             if any(existing.get(key) != record.get(key) for key in immutable):
                 raise ValueError("review record identity is immutable; create a new review event")
-        now = str(record.get("created_at") or utc_now())
+        # Re-submitting the same rebuttal is idempotent; retain the original
+        # event timestamp while allowing mutable extraction fields to update.
+        now = str((existing or {}).get("created_at") or record.get("created_at") or utc_now())
         record = dict(record, created_at=now)
-        self._atomic_json(self.records_dir / f"{record['review_id']}.json", record)
+        self._atomic_json(record_path, record)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT OR REPLACE INTO review_records VALUES (?, ?, ?, ?, ?)", (record["review_id"], record["project_id"], record["status"], json.dumps(record, ensure_ascii=False), now))
-        self.append_audit("review_record_updated" if existing is not None else "review_record_created", {"review_id": record["review_id"], "project_id": record["project_id"]})
+        self.append_audit("review_record_updated" if existing is not None else "review_record_created", {"review_id": record["review_id"], "project_id": record["project_id"], "recreated_missing_file": record_file_missing})
         return record
 
     def list_records(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -189,6 +199,48 @@ class ReviewMemoryStore:
 
     def update_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
         return self.save_record(record)
+
+    @staticmethod
+    def _finding_matches(record_finding: Dict[str, Any], finding: Dict[str, Any]) -> bool:
+        """Match a feedback update to the immutable finding snapshot."""
+        for key in ("candidate_id", "issue_id", "id", "stable_fingerprint", "dedup_key"):
+            left = record_finding.get(key)
+            right = finding.get(key)
+            if left and right and str(left) == str(right):
+                return True
+        return False
+
+    def supersede_for_finding(self, finding: Dict[str, Any], *, reason: str = "validated") -> Dict[str, Any]:
+        """Expire rejected-memory artifacts after a later validation reversal.
+
+        Review records remain immutable audit history; they are marked
+        superseded and their derived proposals are deprecated so they cannot
+        be projected as current advisory context.
+        """
+        changed_records: List[str] = []
+        changed_patterns: List[str] = []
+        for record in self.list_records():
+            snapshot = record.get("finding")
+            if not isinstance(snapshot, dict) or not self._finding_matches(snapshot, finding):
+                continue
+            if record.get("status") != "superseded":
+                updated = dict(record, status="superseded", superseded_at=utc_now(), superseded_reason=reason)
+                self.save_record(updated)
+                changed_records.append(str(record["review_id"]))
+            subject = str(record.get("review_subject_id") or "")
+            for proposal in self.list_proposals():
+                origins = {str(item) for item in proposal.get("origin_review_ids", [])}
+                if str(record.get("review_id")) in origins or (subject and proposal.get("review_subject_id") == subject):
+                    if proposal.get("status") not in {"deprecated", "disabled"}:
+                        self.save_proposal(dict(proposal, status="deprecated", deprecated_at=utc_now(), deprecated_reason=reason))
+                        changed_patterns.append(str(proposal["pattern_id"]))
+        if changed_records or changed_patterns:
+            self.append_audit("review_memory_superseded", {
+                "reason": reason,
+                "review_ids": changed_records,
+                "pattern_ids": changed_patterns,
+            })
+        return {"review_ids": changed_records, "pattern_ids": changed_patterns}
 
     def get_proposal(self, pattern_id: str) -> Optional[Dict[str, Any]]:
         rows = [item for item in self.list_proposals() if item.get("pattern_id") == pattern_id]

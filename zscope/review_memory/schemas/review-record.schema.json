@@ -5,6 +5,7 @@
   "properties": {
     "schema_version": {"const": "zscope.review-record.v1"},
     "review_id": {"type": "string", "minLength": 1},
+    "review_subject_id": {"type": "string", "minLength": 1},
     "project_id": {"type": "string", "minLength": 1},
     "finding": {"type": "object"},
     "user_rebuttal": {"type": "string"},
