@@ -291,7 +291,7 @@ class ReviewMemoryConfig:
     mode: str = "off"
     state_dir: str = ".zscope/review-memory"
     project_scope: str = "project"
-    extraction: str = "async_cli"
+    extraction: str = "auto_extract"
     llm_enabled: bool = True
     max_patterns_per_finding: int = 3
     max_context_tokens: int = 1200
@@ -300,13 +300,13 @@ class ReviewMemoryConfig:
 
     def __post_init__(self) -> None:
         self.mode = str(self.mode or "off").strip().lower()
-        if self.mode not in {"off", "archive", "extract", "advisory"}:
-            raise ValueError("project.review_memory.mode must be off, archive, extract, or advisory")
+        if self.mode not in {"off", "archive", "extract", "active"}:
+            raise ValueError("project.review_memory.mode must be off, archive, extract, or active")
         path = Path(str(self.state_dir or ".zscope/review-memory"))
         if path.is_absolute() or ".." in path.parts:
             raise ValueError("project.review_memory.state_dir must be project-root relative")
-        if self.project_scope != "project" or self.extraction != "async_cli":
-            raise ValueError("review memory requires project scope and async_cli extraction")
+        if self.project_scope != "project" or self.extraction not in {"auto_extract", "async_cli"}:
+            raise ValueError("review memory requires project scope and auto_extract or async_cli extraction")
         if self.max_patterns_per_finding < 0 or self.max_context_tokens < 0:
             raise ValueError("review memory limits must be non-negative")
         if self.allow_direct_suppression:

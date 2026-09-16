@@ -742,7 +742,7 @@ def _parse_project(raw: Any, *, language: str) -> ProjectConfig:
         mode=_string(review_data.get("mode", "off"), "project.review_memory.mode"),
         state_dir=_string(review_data.get("state_dir", ".zscope/review-memory"), "project.review_memory.state_dir"),
         project_scope=_string(review_data.get("project_scope", "project"), "project.review_memory.project_scope"),
-        extraction=_string(review_data.get("extraction", "async_cli"), "project.review_memory.extraction"),
+        extraction=_string(review_data.get("extraction", "auto_extract"), "project.review_memory.extraction"),
         llm_enabled=_boolean(review_data.get("llm_enabled", True), "project.review_memory.llm_enabled"),
         max_patterns_per_finding=_non_negative_int(review_data.get("max_patterns_per_finding", 3), "project.review_memory.max_patterns_per_finding"),
         max_context_tokens=_non_negative_int(review_data.get("max_context_tokens", 1200), "project.review_memory.max_context_tokens"),

@@ -54,7 +54,7 @@ Web save_validation_feedback
   └─ persist_validation_feedback
        ├─ 既有 baseline / suppression
        └─ rejected → ReviewRecord
-                        └─ CLI extract（可先 enqueue，再按 job-id 执行）
+       └─ auto_extract worker / CLI extract
                              └─ 程序型 proposal / LLM 语义提议
                                   └─ qualification → advisory
                                        └─ matcher → projector
@@ -64,8 +64,8 @@ Web save_validation_feedback
 - `ReportFeedbackService` 在 `project.review_memory.mode != off` 时尝试创建 Store。当前归档位于既有 user-config 反馈持久化分支内，没有 `user_config_store` 时会提前返回。
 - 只有 rejected 更新生成 ReviewRecord；有 `user_rebuttal` 时状态为 `pending_extraction`，无说明时为 `insufficient`。Web 请求不调用抽取 LLM。
 - 归档分支异常进入 `review_memory.errors`，不回滚已执行的 baseline/suppression 写入。Store 初始化异常当前只使 Store 不可用，未逐条回传初始化错误。
-- CLI 负责抽取、模式管理、任务状态、export 和离线 replay。`async_cli` 指与 Web 请求解耦；`extract` 在 CLI 进程内执行，不是自动后台守护进程。
-- Validation runner 仅在 `mode=advisory` 时查询模式；查询异常记 debug 日志，继续原验证路径。
+- `extraction=auto_extract` 时，`extract/active` 保存反馈后自动创建并消费后台任务；`async_cli` 保留手动 CLI 抽取。
+- Validation runner 仅在 `mode=active` 时查询模式；查询异常记 debug 日志，继续原验证路径。
 
 单条成功归档的反馈响应包含：
 
@@ -158,7 +158,7 @@ project:
     mode: off
     state_dir: .zscope/review-memory
     project_scope: project
-    extraction: async_cli
+    extraction: auto_extract
     llm_enabled: true
     max_patterns_per_finding: 3
     max_context_tokens: 1200
@@ -166,7 +166,7 @@ project:
     allow_direct_suppression: false
 ```
 
-`off` 关闭 Web 归档和 Validator 注入；`archive/extract` 都允许归档但不注入；`advisory` 增加注入。CLI 管理入口目前不按 mode 阻止显式抽取。`stale_on_source_drift` 已在配置登记，但 matcher 的 source 指纹比较和显式 stale 操作不由该值控制，也没有扫描时全库自动 stale 服务。数量/token 非负，scope/extraction 固定取值，direct suppression 永远不得开启。
+`off` 关闭 Web 归档和 Validator 注入；`archive` 只归档；`extract` 自动抽取但不注入；`active` 自动抽取并增加 advisory 注入。`extraction=async_cli` 时不自动消费任务。数量/token 非负，scope/extraction 固定取值，direct suppression 永远不得开启。
 
 实际命令入口是 `zscope-review-memory`，不是 `zscope review-memory`。以下占位 ID 需替换为 list/proposals/jobs 返回值：
 
