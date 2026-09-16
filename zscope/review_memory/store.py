@@ -343,6 +343,42 @@ class ReviewMemoryStore:
         self.append_audit("extraction_job_updated", {"job_id": updated["job_id"], "status": status, "error": error})
         return updated
 
+    def claim_extraction_job(self) -> Dict[str, Any] | None:
+        """Atomically claim one pending job."""
+        now = utc_now()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT job_id, status, review_ids_json, attempts, error, created_at, updated_at "
+                "FROM extraction_jobs WHERE status = 'pending' ORDER BY created_at LIMIT 1"
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return None
+            job_id = row[0]
+            conn.execute(
+                "UPDATE extraction_jobs SET status='running', attempts=attempts+1, updated_at=? WHERE job_id=?",
+                (now, job_id),
+            )
+            conn.commit()
+        job = {
+            "schema_version": "zscope.review-memory-operation.v1",
+            "operation": "extraction_job", "job_id": row[0], "status": "running",
+            "review_ids": json.loads(row[2]), "attempts": int(row[3]) + 1,
+            "error": row[4], "created_at": row[5], "updated_at": now,
+        }
+        self.append_audit("extraction_job_claimed", {"job_id": job_id})
+        return job
+
+    def recover_extraction_jobs(self) -> int:
+        """Return jobs left running by a stopped worker to the queue."""
+        with sqlite3.connect(self.db_path) as conn:
+            result = conn.execute(
+                "UPDATE extraction_jobs SET status='pending', updated_at=? WHERE status='running'",
+                (utc_now(),),
+            )
+        return int(result.rowcount)
+
     def list_extraction_jobs(self) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(

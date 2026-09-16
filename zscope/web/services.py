@@ -959,9 +959,16 @@ class ReportFeedbackService:
                         }
                         self.review_memory_store.save_record(record)
                         result["review_memory_records"] += 1
+                        review_config = getattr(self.project_config, "review_memory", None)
+                        if (review_config is not None and review_config.mode in {"extract", "active"}
+                                and review_config.extraction == "auto_extract" and rebuttal):
+                            job = self.review_memory_store.create_extraction_job([review_id])
+                        else:
+                            job = None
                         result["review_memory_items"].append({
                             "review_id": review_id,
                             "extraction_status": record["status"],
+                            **({"extraction_status": "queued", "job_id": job["job_id"]} if job else {}),
                         })
                     except Exception as exc:
                         result["review_memory_errors"].append(str(exc))

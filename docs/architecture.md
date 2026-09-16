@@ -122,6 +122,11 @@ Wiki constraint，也不能生成 deterministic proof、直接 suppression 或�
 finding 的 verdict。Review Memory 按项目、规则和类别隔离，并在源码上下文
 发生漂移时失效。
 
+配置 `review_memory.mode=extract` 或 `active` 且使用 `extraction=auto_extract`
+时，人工 rejected feedback 会进入独立的持久化抽取队列；后台 worker 生成
+proposal。只有 `active` 才将合格 proposal 作为 `authority=advisory` 的
+Validator 上下文使用。
+
 总体架构由事实、证据、验证和反馈四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面保留确定性快车道，并在 balanced/deep 中用独立安全语义地图和 candidate-blind coverage gap 扩展主动发现；所有来源统一进入全局 Candidate Ledger。验证平面只让完整 proof 或分层 Validator 改变终态，模型 hypothesis 不能直接确认漏洞。反馈平面通过 SnapshotStore、Security Map sidecar、UserConfigStore 与 ReviewMemory 保留中间产物、最终报告和人工决策。LLMClient 的所有 profile 共享 scan-wide token 账本；ToolsRuntime 仅向 V3 调查和受控发现开放白名单内的只读查询。
 
 跨语言规则治理在既有候选生命周期上增加严格预检：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；包内目录、YAML pack、指定 provider、Skill 契约和 disabled IDs 组合为不可变 `EffectiveRuleSet`。重复 ID/alias、未知字段、语言错配、缺失 Skill 或能力错配在任何外部工具/LLM 启动前失败。`zscope.candidate.v3.3` 仍是内部候选协议，规则 provenance 以兼容字段追加，不改变稳定候选身份算法。

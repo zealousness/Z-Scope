@@ -466,10 +466,10 @@ Wiki 编译器固定读取名为 `wiki_compiler` 的 profile（未定义时用 `
 
 | 字段 | 默认 | 作用 |
 |---|---|---|
-| `mode` | `off` | `off`、`archive`、`extract` 或 `advisory` |
+| `mode` | `off` | `off`、`archive`、`extract` 或 `active` |
 | `state_dir` | `.zscope/review-memory` | 项目根相对的 Review Memory 状态目录 |
 | `project_scope` | `project` | 仅允许项目级隔离 |
-| `extraction` | `async_cli` | 使用 `zscope-review-memory extract` 异步抽取 |
+| `extraction` | `auto_extract` | `auto_extract` 自动后台抽取；`async_cli` 由 CLI 手动抽取 |
 | `llm_enabled` | true | 是否允许抽取命令调用 LLM；反馈归档不受影响 |
 | `max_patterns_per_finding` | 3 | 单个 finding 最大 advisory hint 数 |
 | `max_context_tokens` | 1200 | Review Memory hint 的独立预算 |

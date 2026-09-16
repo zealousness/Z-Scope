@@ -1327,7 +1327,7 @@ class ValidationRunner:
     def _review_memory_cache_identity(self) -> Optional[Dict[str, Any]]:
         project = getattr(self.config, "project", None)
         settings = getattr(project, "review_memory", None)
-        if getattr(settings, "mode", "off") != "advisory":
+        if getattr(settings, "mode", "off") != "active":
             return None
         try:
             from ...review_memory.store import ReviewMemoryStore
@@ -2836,7 +2836,7 @@ class ValidationRunner:
         """Attach bounded historical review hints without changing verdict authority."""
         project = getattr(self.config, "project", None)
         settings = getattr(project, "review_memory", None)
-        if getattr(settings, "mode", "off") != "advisory":
+        if getattr(settings, "mode", "off") != "active":
             return
         try:
             from ...review_memory.matcher import match_patterns

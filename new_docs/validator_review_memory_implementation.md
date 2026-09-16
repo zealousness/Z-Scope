@@ -945,3 +945,61 @@
 遗留问题：
 - 全仓仍有上述 9 个与本次 Review Memory 字段 contract 无关的失败。
 - source drift 的自动扫描期 stale 服务和跨介质 Store 事务仍保留既有实现边界。
+## [2026-09-16] 阶段 30：active 模式与自动抽取
+
+状态：partial
+
+完成内容：
+- 配置模式由 `advisory` 切换为 `active`。
+- 新增 `auto_extract` 配置值，并保留 `async_cli`。
+- `extract/active` 的 rejected feedback 会创建 extraction job。
+- 增加 Web 进程内后台任务 worker，使用 SQLite 原子领取任务。
+- worker 复用默认 LLM profile，并在任务结束后关闭客户端。
+- Validator 仅在 `active` 模式查询历史 advisory。
+
+修改文件：
+- `zscope/config/config.py`
+- `zscope/config/v2.py`
+- `zscope/review_memory/store.py`
+- `zscope/review_memory/worker.py`
+- `zscope/web/services.py`
+- `zscope/web/server.py`
+- `zscope/core/validation/runner.py`
+- `README.md`
+- `docs/modules/review-memory.md`
+
+验证命令：
+- `python -m compileall -f -q zscope/review_memory zscope/web zscope/config zscope/core/validation`
+
+验证结果：
+- 编译检查通过。
+
+遗留问题：
+- 尚未完成完整测试和 worker 的真实 LLM 客户端装配；当前阶段不宣称功能完整。
+
+## [2026-09-16] 阶段 30：定向验证与任务恢复
+
+状态：completed
+
+完成内容：
+- worker 启动时将异常退出遗留的 running job 恢复为 pending。
+- SQLite `BEGIN IMMEDIATE` 保证任务领取互斥。
+- 补充架构文档中的自动抽取语义。
+
+修改文件：
+- `zscope/review_memory/store.py`
+- `zscope/review_memory/worker.py`
+- `docs/architecture.md`
+
+验证命令：
+- `python -m pytest -q tests/test_config_v2.py tests/test_review_memory_acceptance_gaps.py tests/test_review_memory_lifecycle.py tests/test_validator_review_memory.py tests/test_validator_replay.py`
+- `python -m compileall -f -q zscope scripts test tests`
+- `git diff --check`
+
+验证结果：
+- 定向测试 `94 passed`。
+- compileall 和 diff 检查通过。
+
+遗留问题：
+- 尚未运行完整仓库测试。
+- Web worker 的端到端 LLM 调用需要部署环境中的默认 LLM profile；CLI 的手动 `async_cli` 路径保持原行为。

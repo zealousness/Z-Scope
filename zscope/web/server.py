@@ -405,16 +405,30 @@ def run_server(
         report_filename=REPORT_FILENAME,
         project_config=project_config,
     )
+    worker = None
+    review_config = getattr(project_config, "review_memory", None)
+    if (review_config is not None and review_config.mode in {"extract", "active"}
+            and review_config.extraction == "auto_extract"
+            and _report_feedback_service.review_memory_store is not None):
+        from ..review_memory.worker import ReviewMemoryWorker
+        from ..cli.review_memory import _llm_client
+        from ..config.config import ConfigLoader
+        worker_config = ConfigLoader.load(str(config_file_path))
+        worker = ReviewMemoryWorker(
+            _report_feedback_service.review_memory_store,
+            llm_client_factory=lambda: _llm_client(worker_config),
+            llm_enabled=review_config.llm_enabled,
+        )
+        worker.start()
     _scan_request_service = ScanRequestService(
         config_file_path,
         default_scan_depth=scan_depth,
     )
-    DashboardHttpServer(
-        handler_class=ZScopeHandler,
-        web_dir=WEB_DIR,
-        host=host,
-        port=port,
-    ).serve_forever()
+    try:
+        DashboardHttpServer(handler_class=ZScopeHandler, web_dir=WEB_DIR, host=host, port=port).serve_forever()
+    finally:
+        if worker is not None:
+            worker.stop()
 
 
 if __name__ == "__main__":
