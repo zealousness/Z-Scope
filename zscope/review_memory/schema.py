@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 from .models import PATTERN_MATCH_SCHEMA, PATTERN_SCHEMA, REVIEW_RECORD_SCHEMA
+from .identity import CANDIDATE_MATCHABLE_FIELDS
 
 SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 
@@ -55,10 +56,26 @@ def validate_pattern(value: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError(f"pattern missing {key}")
     if not isinstance(value["trigger_features"], list):
         raise ValueError("pattern trigger_features must be a list")
-    if value.get("status") not in {"pending_extraction", "proposal_failed", "proposed", "semantic_only", "advisory", "stale", "disabled", "deprecated"}:
+    if value.get("status") not in {"pending_extraction", "proposal_failed", "proposed", "semantic_only", "advisory", "stale", "disabled", "deprecated", "superseded"}:
         raise ValueError("invalid pattern status")
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", str(value["pattern_id"])):
         raise ValueError("invalid pattern_id")
+    contract = value.get("match_contract")
+    if contract is not None and not isinstance(contract, dict):
+        raise ValueError("pattern match_contract must be an object")
+    if isinstance(contract, dict):
+        if contract.get("schema_version") != "zscope.candidate-stable-fields.v1":
+            raise ValueError("unsupported candidate stable-field contract")
+        if not isinstance(contract.get("groups"), list):
+            raise ValueError("pattern match_contract groups must be a list")
+        for group in contract["groups"]:
+            if not isinstance(group, dict) or not isinstance(group.get("all"), list):
+                raise ValueError("pattern match_contract group must contain all")
+            for predicate in group["all"]:
+                if not isinstance(predicate, dict) or not predicate.get("path") or predicate.get("operator", "eq") not in {"eq", "contains"}:
+                    raise ValueError("invalid candidate stable-field predicate")
+                if predicate.get("path") not in CANDIDATE_MATCHABLE_FIELDS:
+                    raise ValueError("candidate predicate references a non-matchable field")
     return value
 
 

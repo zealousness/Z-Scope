@@ -691,32 +691,6 @@
 遗留问题：
 - 无。
 
-## [2026-09-15] 阶段 27：排除 Superseded Record
-
-状态：completed
-
-完成内容：
-- 抽取筛选在所有模式下先排除 `superseded` record。
-- `--retry-failed` 仍只处理 `proposal_failed`。
-- `--retry-all` 不再包含 `superseded`，但仍处理其他状态。
-- 增加失败重试和强制重抽取的排除回归测试。
-
-修改文件：
-- `zscope/cli/review_memory.py`
-- `tests/test_review_memory_cli.py`
-- `docs/modules/review-memory.md`
-- `new_docs/validator_review_memory_implementation.md`
-
-验证命令：
-- `python -m pytest -q tests/test_review_memory_cli.py tests/test_review_memory_*.py tests/test_validator_review_memory.py`
-- `python -m py_compile zscope/cli/review_memory.py`
-
-验证结果：
-- `32 passed`。
-- Python 编译检查和 diff 检查通过。
-
-遗留问题：
-- 无。
 
 ## [2026-09-14] 阶段 24：缺失 ReviewRecord 文件恢复
 
@@ -779,7 +753,7 @@
 遗留问题：
 - 尚未为 final tool 的真实 provider 响应新增独立集成测试；当前通过共享 BaseAgent 机制和兼容测试替身验证。
 
-## [2026-09-15] 阶段 27：单阶段强制 Final Tool 提交
+## [2026-09-15] 阶段 26：单阶段强制 Final Tool 提交
 
 状态：completed
 
@@ -805,7 +779,7 @@
 遗留问题：
 - 使用不支持 tool-call 的旧测试替身时仍保留兼容路径；生产 LLM 使用强制 final tool 路径。
 
-## [2026-09-15] 阶段 26：区分失败重试与强制重抽取
+## [2026-09-15] 阶段 27：区分失败重试与强制重抽取
 
 状态：completed
 
@@ -830,3 +804,144 @@
 
 遗留问题：
 - 无。
+
+## [2026-09-15] 阶段 28：排除 Superseded Record
+
+状态：completed
+
+完成内容：
+- 抽取筛选在所有模式下先排除 `superseded` record。
+- `--retry-failed` 仍只处理 `proposal_failed`。
+- `--retry-all` 不再包含 `superseded`，但仍处理其他状态。
+- 增加失败重试和强制重抽取的排除回归测试。
+
+修改文件：
+- `zscope/cli/review_memory.py`
+- `tests/test_review_memory_cli.py`
+- `docs/modules/review-memory.md`
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m pytest -q tests/test_review_memory_cli.py tests/test_review_memory_*.py tests/test_validator_review_memory.py`
+- `python -m py_compile zscope/cli/review_memory.py`
+
+验证结果：
+- `32 passed`。
+- Python 编译检查和 diff 检查通过。
+
+遗留问题：
+- 无。
+
+## [2026-09-16] 阶段 29：Candidate 稳定字段匹配契约
+
+状态：completed
+
+完成内容：
+- 新增程序拥有的 Candidate 稳定字段投影和规范化契约。
+- PatternProposal 增加 `match_contract`，支持函数名、Candidate identity、root cause 及 source/sink/resource 等字段的 OR/AND 谓词匹配。
+- 保留旧 `trigger_features` 和 source fingerprint proposal 的兼容读取。
+- Web rejected ReviewRecord 保存 Candidate snapshot 和 stable projection。
+- Matcher 严格隔离项目、规则、规则 revision、类别和 Candidate schema；Review Memory 始终以 advisory 形式注入。
+- 增加函数级、跨函数语义匹配、规则 revision 隔离测试。
+
+修改文件：
+- `zscope/review_memory/identity.py`
+- `zscope/review_memory/models.py`
+- `zscope/review_memory/schema.py`
+- `zscope/review_memory/extractor.py`
+- `zscope/review_memory/matcher.py`
+- `zscope/review_memory/lifecycle.py`
+- `zscope/review_memory/schemas/review-record.schema.json`
+- `zscope/review_memory/schemas/false-positive-pattern-proposal.schema.json`
+- `zscope/agents/review_memory/agent.py`
+- `zscope/agents/review_memory/AGENT.md`
+- `zscope/web/services.py`
+- `tests/test_review_memory_lifecycle.py`
+- `docs/modules/review-memory.md`
+- `docs/modules/analysis-pipeline.md`
+
+验证命令：
+- `python -m pytest -q tests/test_review_memory.py tests/test_review_memory_lifecycle.py tests/test_review_memory_extractor_boundaries.py tests/test_validator_review_memory.py tests/test_review_memory_acceptance_gaps.py`
+- `python -m compileall -f -q zscope/review_memory zscope/agents/review_memory zscope/web`
+- `git diff --check`
+
+验证结果：
+- 36 passed。
+- 编译检查和 diff 检查通过。
+
+遗留问题：
+- 尚未运行完整 Review Memory/Validator 回归和全仓测试。
+- source drift 的自动扫描期 stale 服务仍沿用既有生命周期入口，未在本阶段扩展。
+
+## [2026-09-16] 阶段 29：字段 contract 校验与兼容性修正
+
+状态：completed
+
+完成内容：
+- LLM 可从程序投影中选择字段 contract；未知字段和值不会被提升为可匹配条件。
+- proposal schema 和手写校验增加 contract 结构、操作符和稳定字段白名单校验。
+- paired replay 对变更源码上下文保持保守的兼容性审计语义。
+- 修复零 pattern limit 的注入边界，并修正文档模块归属，避免重复覆盖 `review_memory`。
+
+修改文件：
+- `zscope/review_memory/extractor.py`
+- `zscope/review_memory/replay.py`
+- `zscope/review_memory/schema.py`
+- `zscope/review_memory/schemas/false-positive-pattern-proposal.schema.json`
+- `zscope/agents/review_memory/AGENT.md`
+- `docs/modules/configuration-state.md`
+- `docs/modules/review-memory.md`
+- `docs/modules/analysis-pipeline.md`
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m pytest -q tests/test_review_memory_*.py tests/test_validator_review_memory.py tests/test_agent_docs.py`
+- `python -m pytest -q tests/test_config_v2.py tests/test_web_user_config_workbook_api.py tests/test_validation_runner.py tests/test_validator_evidence_slice.py tests/test_validator_replay.py`
+- `python -m compileall -f -q zscope scripts test tests`
+- `git diff --check`
+
+验证结果：
+- Review Memory、Validator 和文档测试 41 passed。
+- 配置、Web、Validator 和 replay 回归 180 passed。
+- compileall 和 diff 检查通过。
+
+遗留问题：
+- 尚未运行全仓测试。
+- source drift 的自动扫描期 stale 服务和跨介质 Store 事务仍保留既有实现边界。
+
+## [2026-09-16] 阶段 29：全仓验证
+
+状态：partial
+
+完成内容：
+- 完成全仓 pytest、compileall 和 diff 检查。
+- Review Memory、Validator、配置、Web 和文档相关测试均通过。
+- 按仓库约束保留与本次变更无关的既有失败，不修改无关产品代码。
+
+修改文件：
+- `new_docs/validator_review_memory_implementation.md`
+
+验证命令：
+- `python -m pytest -q`
+- `python -m compileall -f -q zscope scripts test tests`
+- `git diff --check`
+
+验证结果：
+- 全仓：`2565 passed, 94 skipped, 9 failed`。
+- 定向 Review Memory/Validator：`41 passed`。
+- 配置、Web、Validator 和 replay 回归：`180 passed`。
+- 编译检查和 diff 检查通过。
+
+失败原因及范围：
+- `tests/test_benchmark_cli_wsl_argv.py`：WSL argv 路径转换既有失败。
+- `tests/test_benchmark_isolation_executor.py`：测试 SimpleNamespace 缺少 `analysis`。
+- `tests/test_benchmark_leakage.py`：现有源码命中 Range truth 函数名。
+- `tests/test_benchmark_runner.py`：现有 concurrency 配置断言不一致。
+- `tests/test_benchmark_runner.py`：render trial metrics fixture 命令失败。
+- `tests/test_compiler_compat.py`：既有工具路径为 None。
+- `tests/test_scan_session_resume_svf.py`：既有 resume entry 合并断言失败。
+- `tests/test_tau_channel_replay.py`：两个历史 trial report artifact 缺失。
+
+遗留问题：
+- 全仓仍有上述 9 个与本次 Review Memory 字段 contract 无关的失败。
+- source drift 的自动扫描期 stale 服务和跨介质 Store 事务仍保留既有实现边界。

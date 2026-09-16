@@ -14,6 +14,8 @@ class ReviewRecord:
     review_id: str
     project_id: str
     finding: Dict[str, Any]
+    candidate_snapshot: Dict[str, Any] = field(default_factory=dict)
+    candidate_projection: Dict[str, Any] = field(default_factory=dict)
     review_subject_id: str = ""
     user_rebuttal: str = ""
     source_context: Dict[str, Any] = field(default_factory=dict)
@@ -32,6 +34,8 @@ class PatternProposal:
     project_id: str
     scope: Dict[str, Any]
     trigger_features: List[Dict[str, Any]] = field(default_factory=list)
+    match_contract: Dict[str, Any] = field(default_factory=dict)
+    contract_digest: str = ""
     false_positive_reason: str = ""
     required_checks: List[str] = field(default_factory=list)
     counter_conditions: List[str] = field(default_factory=list)

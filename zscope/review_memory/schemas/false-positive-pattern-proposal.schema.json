@@ -9,6 +9,20 @@
     "project_id": {"type": "string", "minLength": 1},
     "scope": {"type": "object"},
     "trigger_features": {"type": "array", "items": {"type": "object"}},
+    "match_contract": {
+      "type": "object",
+      "required": ["schema_version", "groups"],
+      "properties": {
+        "schema_version": {"const": "zscope.candidate-stable-fields.v1"},
+        "groups": {"type": "array", "items": {"type": "object", "required": ["all"], "properties": {
+          "all": {"type": "array", "items": {"type": "object", "required": ["path", "value"], "properties": {
+            "path": {"type": "string"}, "operator": {"enum": ["eq", "contains"]}, "value": {}
+          }, "additionalProperties": false}}
+        }, "additionalProperties": false}}
+      },
+      "additionalProperties": false
+    },
+    "contract_digest": {"type": "string"},
     "false_positive_reason": {"type": "string"},
     "required_checks": {"type": "array", "items": {"type": "string"}},
     "counter_conditions": {"type": "array", "items": {"type": "string"}},
