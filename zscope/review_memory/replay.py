@@ -42,7 +42,13 @@ def paired_replay(
     potential_suppression = 0
     overturned = 0
     for issue in issues:
-        hints = match_patterns(issue, [pattern], project_id=project_key, limit=1)
+        # Paired replay is a conservative source-compatibility audit. Runtime
+        # contract matching may reuse a semantic pattern across functions, but
+        # replay must not claim impact for a changed archived source context.
+        source_fingerprints = {str(value) for value in pattern.get("source_fingerprints", []) if value}
+        current_source = str(issue.get("source_context_fingerprint") or "")
+        source_compatible = not source_fingerprints or current_source in source_fingerprints
+        hints = match_patterns(issue, [pattern], project_id=project_key, limit=1) if source_compatible else []
         hit = bool(hints)
         matched += int(hit)
         status = str(issue.get("validation_status") or issue.get("policy_disposition") or "")

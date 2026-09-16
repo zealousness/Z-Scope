@@ -21,6 +21,8 @@ sources:
   - zscope/semantics/security_map.py
   - zscope/snapshots/store.py
   - zscope/memory/review_memory.py
+  - zscope/review_memory/identity.py
+  - zscope/review_memory/store.py
   - zscope/common/issue_identity.py
   - zscope/common/portable.py
 tests:

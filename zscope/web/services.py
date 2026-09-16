@@ -23,7 +23,7 @@ from ..reporting.views import (
 from ..reporting.issue_markdown import issue_identity
 from ..rules.query import query_effective_rules, validate_rule_filters
 from ..wiki.control import wiki_query, wiki_status
-from ..review_memory.identity import project_id, review_subject_id, stable_id, utc_now
+from ..review_memory.identity import candidate_projection, project_id, review_subject_id, stable_id, utc_now
 from ..review_memory.store import ReviewMemoryStore
 
 
@@ -944,6 +944,8 @@ class ReportFeedbackService:
                             "project_id": project_id(self.project_config),
                             "repository_identity": {},
                             "finding": finding,
+                            "candidate_snapshot": dict(finding),
+                            "candidate_projection": candidate_projection(finding),
                             "user_rebuttal": str(rebuttal or ""),
                             "source_context": {
                                 "source_context_fingerprint": finding.get("source_context_fingerprint", ""),

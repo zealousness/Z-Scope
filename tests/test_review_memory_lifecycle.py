@@ -74,3 +74,27 @@ def test_same_finding_revisions_share_one_proposal_identity():
     first = _record()
     second = dict(first, review_id="r2", user_rebuttal="later explanation")
     assert proposal_from_record(first)["pattern_id"] == proposal_from_record(second)["pattern_id"]
+
+
+def test_candidate_function_predicate_matches_across_issue_ids():
+    finding = {"rule": "R", "category": "C", "function": "_safe_calloc", "candidate_uid": "uid-1"}
+    pattern = proposal_from_record({**_record(), "finding": finding})
+    pattern.update({"status": "advisory", "required_checks": ["recheck"]})
+    current = {"candidate_id": "new-id", "issue_id": "new-issue", **finding, "candidate_uid": "uid-other", "file": "other.c", "line": 99}
+    matches = match_patterns(current, [pattern], project_id="p1")
+    assert matches and "function" in matches[0]["match_basis"]
+
+
+def test_candidate_semantic_group_matches_different_function():
+    finding = {"rule": "R", "category": "C", "function": "first", "root_cause_key": "unchecked-allocation", "source_identity": "allocator", "sink_identity": "copy"}
+    pattern = proposal_from_record({**_record(), "finding": finding})
+    pattern.update({"status": "advisory", "required_checks": ["recheck"]})
+    current = {**finding, "function": "second", "candidate_uid": "different", "candidate_id": "different"}
+    assert match_patterns(current, [pattern], project_id="p1")
+
+
+def test_candidate_rule_revision_is_strictly_isolated():
+    finding = {"rule": "R", "rule_revision": "2", "category": "C", "function": "same"}
+    pattern = proposal_from_record({**_record(), "finding": finding})
+    pattern.update({"status": "advisory", "required_checks": ["recheck"]})
+    assert match_patterns({**finding, "rule_revision": "3"}, [pattern], project_id="p1") == []

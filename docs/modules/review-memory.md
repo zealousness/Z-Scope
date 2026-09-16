@@ -88,12 +88,12 @@ Web save_validation_feedback
 
 | 对象 | 主要字段 | 边界 |
 |---|---|---|
-| ReviewRecord | `review_id`、`project_id`、`finding`、`user_rebuttal`、`source_context`、`evidence_refs`、`repository_identity`、`status`、`created_at` | finding 是字典快照；源码和人工说明不得被抽取器覆盖 |
-| PatternProposal | `pattern_id`、`scope`、`trigger_features`、`false_positive_reason`、`required_checks`、`counter_conditions`、引用、源指纹、来源 review IDs、`generator`、状态和时间 | 身份与来源由程序派生，LLM 只提议语义内容 |
+| ReviewRecord | `review_id`、`project_id`、`finding`、`candidate_snapshot`、`candidate_projection`、`user_rebuttal`、`source_context`、`evidence_refs`、`repository_identity`、`status`、`created_at` | Candidate 快照和人工说明不得被抽取器覆盖；projection 由程序按稳定字段契约生成 |
+| PatternProposal | `pattern_id`、`scope`、`match_contract`、`contract_digest`、兼容的 `trigger_features`、`false_positive_reason`、`required_checks`、`counter_conditions`、引用、源指纹、来源 review IDs、`generator`、状态和时间 | match contract 由 Candidate 已有字段组成；LLM 只能选择程序提供的谓词，不能发明路径或值 |
 | PatternMatch | pattern/scan/issue 身份、`match_basis`、`source_compatible`、`injected`、`validator_status`、成本、`overturned` | Store 可持久化；当前 CLI replay 写入的是投影记录，不是实际 Validator 调用回执 |
 | extraction job | `job_id`、`review_ids`、`status`、`attempts`、`error`、时间 | 独立 SQLite 表，不属于 Wiki revision |
 
-`identity.py` 用规范排序 JSON 的 SHA-256 前缀生成 review/pattern ID，时间采用 UTC。Web review ID 的输入含项目、issue ID、dedup key 和 rebuttal；pattern ID 由项目和 review ID 派生。当前 `project_id()` 优先使用配置 ID，否则回退项目路径，不等于完整 Git 仓库身份校验。
+`identity.py` 用规范排序 JSON 的 SHA-256 前缀生成 review/pattern ID，时间采用 UTC。Web review ID 的输入含项目、issue ID、dedup key 和 rebuttal；pattern ID 由项目、scope 和规范化 match contract 派生，因此相同模式可合并不同 review event。当前 `project_id()` 优先使用配置 ID，否则回退项目路径，不等于完整 Git 仓库身份校验。
 
 `save_record()` 对同一 review ID 禁止修改项目、finding、原始 rebuttal、源码上下文、引用、仓库身份和创建时间；抽取状态、错误等可更新。当前 Web 从 finding 现有字段复制 snippet/fingerprint/refs，`repository_identity` 写为空对象；它没有重新从源码文件读取、核验引用或自动补全 Git 身份。
 
@@ -121,7 +121,7 @@ Web save_validation_feedback
 
 ## 抽取与生命周期
 
-`proposal_from_record()` 当前只从 finding 的 `stable_fingerprint` 生成可匹配 `fingerprint` 特征，复制 source context fingerprint 与引用。有特征时为 `proposed`，否则为 `semantic_only`；不自动分析 AST/CFG。
+`proposal_from_record()` 从 Candidate JSON 的程序稳定字段投影生成 `match_contract`。支持函数名、history/candidate identity、root cause、source/sink/resource identity、candidate kind/source 和其他已注册枚举字段。contract 的 groups 为 OR，每组的 all 谓词为 AND；函数名可以产生函数级命中，root-cause/语义字段可以跨函数复用。`candidate_id`、位置、代码片段和自由文本只用于审计。旧的 `trigger_features` proposal 仍按旧逻辑读取。
 
 `extract_with_llm()` 使用 `LLMClient.chat_completion` 请求 JSON，补充原因、检查条件、反例条件和候选特征。LLM 引入原记录之外的 evidence ref 会被拒绝；不在程序特征白名单中的 `(kind, value)` 被标成 `matchable=false`。CLI 使用 `llms.default`，模型和 extractor version 写入 `generator`。原始 rebuttal 保留在 ReviewRecord 中。
 
@@ -136,9 +136,9 @@ Web save_validation_feedback
 
 ## Validator 匹配、预算与缓存
 
-runner 从 Store 读取当前项目 proposal，再由 `match_patterns()` 筛选 advisory。项目 ID 必须相等；rule/category 当前仅在 pattern scope 非空时比较，空 scope 实际具有通配效果。有 source fingerprints 时要求当前 source context fingerprint 属于该集合。
+runner 从 Store 读取当前项目 proposal，再由 `match_patterns()` 筛选 advisory。新 contract 严格比较 project、rule、rule revision、category/defect class 和 Candidate schema scope；所有 required predicates 必须满足，groups 之间取 OR。函数名既可作为精确条件，也可与语义字段组合。新 contract 不把 source context fingerprint 作为跨函数必需条件；它仍用于兼容性/stale 管理。历史无 contract proposal 保留原 source fingerprint 兼容行为。
 
-matcher 支持 stable/candidate fingerprint、source context、AST、CFG、call graph、type、macro 的 fingerprint 字段比较。它比较已有字符串，不在扫描时计算这些结构，也不采用自然语言相似度。
+matcher 只比较 Candidate 已存在且注册的规范化字段，不在扫描时计算新的 AST/CFG，也不采用自然语言相似度。每个 finding 默认最多 3 个 hint，projector 继续执行 token budget，命中永远标记 `authority=advisory`。
 
 `project_hints()` 输出 `zscope.validator-review-memory.v1`，含 `authority: advisory`、`hints` 与候选/选中/省略数量、token budget。当前固定最多 3 条，按 JSON 字符数除以 4 估算单条成本；超预算停止选择。该估算不是模型 tokenizer 计数，也未包含完整封套开销。
 

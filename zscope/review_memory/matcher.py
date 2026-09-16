@@ -2,8 +2,43 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Tuple
 
+from .identity import candidate_projection, normalize_candidate_value
 
-def _feature_value(issue: Dict[str, Any], kind: str) -> str:
+
+def _scope_matches(issue: Dict[str, Any], scope: Dict[str, Any]) -> bool:
+    current = candidate_projection(issue)["fields"]
+    aliases = {"rule_id": ("rule_id", "rule"), "rule": ("rule", "rule_id")}
+    for path, expected in scope.items():
+        if expected in (None, "", [], {}):
+            continue
+        keys = aliases.get(path, (path,))
+        actual = next((current.get(key) for key in keys if current.get(key) not in (None, "", [], {})), None)
+        if normalize_candidate_value(actual) != normalize_candidate_value(expected):
+            return False
+    return True
+
+
+def _predicate_matches(fields: Dict[str, Any], predicate: Dict[str, Any]) -> bool:
+    path = str(predicate.get("path") or "")
+    if path not in fields:
+        return False
+    actual = normalize_candidate_value(fields[path])
+    expected = normalize_candidate_value(predicate.get("value"))
+    if str(predicate.get("operator") or "eq") == "contains":
+        return expected in actual if isinstance(actual, list) else str(expected) in str(actual)
+    return actual == expected
+
+
+def _contract_matches(issue: Dict[str, Any], contract: Dict[str, Any]) -> Tuple[List[str], bool]:
+    fields = candidate_projection(issue)["fields"]
+    for group in contract.get("groups", []):
+        predicates = group.get("all", []) if isinstance(group, dict) else []
+        if predicates and all(_predicate_matches(fields, predicate) for predicate in predicates):
+            return [str(predicate.get("path")) for predicate in predicates], True
+    return [], False
+
+
+def _legacy_feature_value(issue: Dict[str, Any], kind: str) -> str:
     aliases = {
         "fingerprint": ("stable_fingerprint", "candidate_uid"),
         "source_context_fingerprint": ("source_context_fingerprint",),
@@ -14,45 +49,48 @@ def _feature_value(issue: Dict[str, Any], kind: str) -> str:
         "macro": ("macro_fingerprint", "macro_feature_fingerprint"),
     }
     for key in aliases.get(kind, (kind,)):
-        value = issue.get(key)
-        if value:
-            return str(value)
+        if issue.get(key):
+            return str(issue[key])
     return ""
 
 
-def _matching_features(issue: Dict[str, Any], pattern: Dict[str, Any]) -> List[Tuple[str, str]]:
-    matches: List[Tuple[str, str]] = []
-    for feature in pattern.get("trigger_features", []):
-        if not isinstance(feature, dict) or not feature.get("matchable"):
-            continue
-        kind = str(feature.get("kind") or "")
-        value = str(feature.get("value") or "")
-        if value and _feature_value(issue, kind) == value:
-            matches.append((kind, value))
-    return matches
+def _legacy_matches(issue: Dict[str, Any], pattern: Dict[str, Any]) -> List[str]:
+    return [
+        str(feature.get("kind"))
+        for feature in pattern.get("trigger_features", [])
+        if isinstance(feature, dict) and feature.get("matchable")
+        and feature.get("value")
+        and _legacy_feature_value(issue, str(feature.get("kind"))) == str(feature.get("value"))
+    ]
 
 
 def match_patterns(issue: Dict[str, Any], patterns: Iterable[Dict[str, Any]], *, project_id: str, limit: int = 3) -> List[Dict[str, Any]]:
-    results = []
+    if limit <= 0:
+        return []
+    results: List[Dict[str, Any]] = []
     for pattern in patterns:
         if pattern.get("status") != "advisory" or pattern.get("project_id") != project_id:
             continue
-        scope = pattern.get("scope") or {}
-        if scope.get("rule") and scope.get("rule") != issue.get("rule"):
+        if not _scope_matches(issue, pattern.get("scope") or {}):
             continue
-        category = issue.get("category") or issue.get("defect_class") or issue.get("subcategory")
-        scoped_category = scope.get("category") or scope.get("defect_class") or scope.get("subcategory")
-        if scoped_category and scoped_category != category:
+        contract = pattern.get("match_contract")
+        if isinstance(contract, dict) and contract.get("groups"):
+            bases, matched = _contract_matches(issue, contract)
+        else:
+            bases = _legacy_matches(issue, pattern)
+            matched = bool(bases)
+            source_fingerprints = {str(value) for value in pattern.get("source_fingerprints", []) if value}
+            current_source = str(issue.get("source_context_fingerprint") or "")
+            if source_fingerprints and (not current_source or current_source not in source_fingerprints):
+                matched = False
+        if not matched:
             continue
-        source_fingerprints = {str(value) for value in pattern.get("source_fingerprints", []) if value}
-        current_source = str(issue.get("source_context_fingerprint") or "")
-        if source_fingerprints and (not current_source or current_source not in source_fingerprints):
-            continue
-        matches = _matching_features(issue, pattern)
-        if not matches:
-            continue
-        bases = [kind for kind, _value in matches]
-        results.append({"pattern_id": pattern.get("pattern_id"), "summary": pattern.get("false_positive_reason", ""), "match_basis": bases, "required_checks": pattern.get("required_checks", []), "counter_conditions": pattern.get("counter_conditions", []), "evidence_refs": pattern.get("evidence_refs", []), "authority": "advisory"})
-        if len(results) >= limit:
+        results.append({
+            "pattern_id": pattern.get("pattern_id"), "summary": pattern.get("false_positive_reason", ""),
+            "match_basis": bases, "required_checks": pattern.get("required_checks", []),
+            "counter_conditions": pattern.get("counter_conditions", []), "evidence_refs": pattern.get("evidence_refs", []),
+            "authority": "advisory", "contract_digest": pattern.get("contract_digest", ""),
+        })
+        if len(results) >= max(0, limit):
             break
     return results

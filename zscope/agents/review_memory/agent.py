@@ -15,6 +15,7 @@ REVIEW_PATTERN_SCHEMA: Dict[str, Any] = {
         "required_checks": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 400}},
         "counter_conditions": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 400}},
         "trigger_features": {"type": "array", "maxItems": 8, "items": {"type": "object"}},
+        "match_contract": {"type": "object"},
     },
     "required": ["false_positive_reason", "required_checks", "counter_conditions", "trigger_features"],
     "additionalProperties": False,
