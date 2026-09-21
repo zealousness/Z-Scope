@@ -34,7 +34,16 @@ from .scheduler import ENTRY_ROLE, ScanScheduler
 
 logger = logging.getLogger(__name__)
 
-MAX_FAILED_FUNCTIONS_FOR_STAGE = 10
+MAX_FAILED_FUNCTIONS_FOR_STAGE = 0
+
+
+def modeling_profile(config: ZScopeConfig) -> str:
+    profiles = getattr(getattr(config, "scan", None), "llm_profiles", None)
+    public = str(getattr(profiles, "modeling", "") or "")
+    if public:
+        return public
+    agent = next((a for a in config.project.agents if a.name == "semantic_modeler"), None)
+    return str(getattr(agent, "llm_ref", "") or "default")
 
 
 @dataclass(frozen=True, order=True)
@@ -44,6 +53,12 @@ class FunctionKey:
     name: str
     file_path: str = ""
     signature: str = ""
+
+    def __post_init__(self) -> None:
+        from ..semantics.contracts import code_tokens
+
+        object.__setattr__(self, "file_path", self.file_path.replace("\\", "/"))
+        object.__setattr__(self, "signature", " ".join(code_tokens(self.signature)))
 
 
 @dataclass
@@ -67,11 +82,31 @@ class GlobalModelStats:
     unknown_project_callees: int = 0
     components: int = 0
     cyclic_components: int = 0
+    recursive_rounds: int = 0
     total_context_tokens: int = 0
     duration_seconds: float = 0.0
     modeled_order: List[str] = field(default_factory=list)
+    rebuild_reasons: Dict[str, str] = field(default_factory=dict)
+    propagated_functions: int = 0
+    peak_concurrency: int = 0
+    wait_seconds: float = 0.0
+    partial_reasons: List[str] = field(default_factory=list)
+    contract_validation_retry_count: int = 0
+    contract_validation_failure_count: int = 0
+    published_contract_count: int = 0
+    derived_pair_count: int = 0
+    extracted_contract_count: int = 0
+    rejected_contract_count: int = 0
+    standard_model_count: int = 0
+    external_model_missing: List[str] = field(default_factory=list)
+    modeling_tasks: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from dataclasses import asdict
+
+        return {**asdict(self), "stage_complete": self.stage_complete}
+
+    def _legacy_to_dict(self) -> Dict[str, Any]:
         return {
             "reachable_functions": self.reachable_functions,
             "modeled_functions": self.modeled_functions,
@@ -100,8 +135,10 @@ class GlobalModelStats:
     def stage_complete(self) -> bool:
         return (
             self.failed_functions <= MAX_FAILED_FUNCTIONS_FOR_STAGE
+            and self.failed_dependencies == 0
             and self.unresolved_entry_functions == 0
             and self.reconciliation_failures == 0
+            and not self.partial_reasons
         )
 
 
@@ -113,6 +150,7 @@ class _Graph:
     impls: Dict[FunctionKey, Dict[str, Any]] = field(default_factory=dict)
     unresolved: Set[FunctionKey] = field(default_factory=set)
     aliases: Dict[FunctionKey, FunctionKey] = field(default_factory=dict)
+    external_models: Dict[FunctionKey, str] = field(default_factory=dict)
     depth_capped_edges: int = 0
     breadth_capped_edges: int = 0
 
@@ -145,9 +183,13 @@ class GlobalModeler:
         self.scheduler = scheduler
         self.max_workers = max(
             1,
-            int(max_workers or config.concurrency.entry_workers or 1),
+            min(
+                int(max_workers or config.concurrency.llm_max_inflight or 1),
+                int(config.concurrency.llm_max_inflight or 1),
+            ),
         )
         self._stats_lock = threading.Lock()
+        self.result: Any = None
 
     @classmethod
     def from_analyzer_helpers(
@@ -163,11 +205,7 @@ class GlobalModeler:
         attach_contract: AttachContract,
         scheduler: Optional[ScanScheduler] = None,
     ) -> "GlobalModeler":
-        sm_agent_cfg = next(
-            (a for a in config.project.agents if a.name == "semantic_modeler"),
-            None,
-        )
-        sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
+        sm_llm_ref = modeling_profile(config)
         sm_client = llm_clients.get(sm_llm_ref) or llm_clients.get("default")
         if sm_client is None:
             raise RuntimeError("No LLM client configured for semantic_modeler")
@@ -187,10 +225,18 @@ class GlobalModeler:
             semantic_agent_factory=make_agent,
             attach_contract=attach_contract,
             scheduler=scheduler,
-            max_workers=config.concurrency.entry_workers,
+            max_workers=config.concurrency.llm_max_inflight,
         )
 
     def run(self, entries: Sequence[FunctionEntry]) -> GlobalModelStats:
+        from .semantic_modeling import IncrementalSemanticModeling
+        from ..retrieval.code_index import semantic_modeling_context
+
+        with semantic_modeling_context():
+            self.result = IncrementalSemanticModeling(self).run(entries)
+        return cast(GlobalModelStats, self.result.stats)
+
+    def _run_legacy(self, entries: Sequence[FunctionEntry]) -> GlobalModelStats:
         started = time.time()
         graph = self._collect_graph(entries)
         stats = GlobalModelStats(
@@ -297,12 +343,12 @@ class GlobalModeler:
             for entry in entries
         ]
         graph.entry_keys = {key for key, _depth in queue}
-        max_depth = int(self.config.analysis.max_premodel_depth)
-        max_callees = int(self.config.analysis.max_premodel_callees)
+        max_depth = -1
+        max_callees = -1
         if max_depth == 0 or max_callees == 0:
             graph.unresolved.update(graph.entry_keys)
             return graph
-        callee_query_limit = max_callees + 1 if max_callees > 0 else 1_000_000
+        callee_query_limit = max_callees + 1 if max_callees > 0 else 2_147_483_647
         best_depth: Dict[FunctionKey, int] = {}
 
         while queue:
@@ -332,7 +378,16 @@ class GlobalModeler:
                     graph.depth_capped_edges += len(callees)
                 continue
 
-            callee_records = self._get_callee_records(key, callee_query_limit)
+            try:
+                callee_records = self._get_callee_records(key, callee_query_limit)
+            except Exception as exc:
+                from ..common.cancellation import CancellationError
+
+                if isinstance(exc, CancellationError):
+                    raise
+                logger.warning("Callgraph dependencies unavailable for %s: %s", key, exc)
+                graph.unresolved.add(key)
+                continue
             if max_callees > 0 and len(callee_records) > max_callees:
                 graph.breadth_capped_edges += len(callee_records) - max_callees
                 callee_records = callee_records[:max_callees]
@@ -340,6 +395,11 @@ class GlobalModeler:
             for record in callee_records:
                 callee = self._key_from_callee_record(record)
                 if not callee.name:
+                    continue
+                classifier = getattr(self.code_index, "call_model_status", None)
+                status = classifier(callee.name, key.name, record) if callable(classifier) else ""
+                if status in {"standard_model", "external_model_missing"}:
+                    graph.external_models[callee] = status
                     continue
                 graph.children[key].add(callee)
                 queue.append((callee, depth + 1))
@@ -552,6 +612,7 @@ class GlobalModeler:
                 context,
                 log_context="global",
                 index_name=index_name,
+                snapshot_store=self.snapshot_store,
             )
             metadata = response.metadata if response.metadata else {}
             finalization_mode = str(metadata.get("finalization_mode") or "legacy")
@@ -645,7 +706,7 @@ class GlobalModeler:
             try:
                 result = self.code_index.get_function_impl(
                     key.signature,
-                    max_lines=self.config.analysis.max_function_lines,
+                    max_lines=None,
                     warn_missing=False,
                     include_context=include_context,
                     file_path=key.file_path,
@@ -661,7 +722,7 @@ class GlobalModeler:
         try:
             impl = self.code_index.get_function_impl(
                 key.name,
-                max_lines=self.config.analysis.max_function_lines,
+                max_lines=None,
                 warn_missing=False,
                 include_context=include_context,
                 file_path=key.file_path,
@@ -682,7 +743,7 @@ class GlobalModeler:
                 Optional[Dict[str, Any]],
                 self.code_index.get_function_impl(
                     key.name,
-                    max_lines=self.config.analysis.max_function_lines,
+                    max_lines=None,
                     warn_missing=False,
                     include_context=include_context,
                     file_path="",
@@ -695,6 +756,28 @@ class GlobalModeler:
             )
 
     def _get_callee_records(self, key: FunctionKey, limit: int) -> List[Any]:
+        # Prefer canonical per-symbol facts: a name-only callgraph can combine
+        # file-local homonyms or overloads from different implementations.
+        finder = getattr(self.code_index, "find_function_metadata", None) or getattr(
+            self.code_index, "find_function_infos", None
+        )
+        if callable(finder):
+            impl = self._get_impl(key, include_context=False) or {}
+            infos = finder(str(impl.get("index_name") or key.name), file_path=key.file_path)
+            matches = [
+                info
+                for info in infos or []
+                if isinstance(info, dict)
+                and (not impl.get("index_name") or info.get("index_name") == impl["index_name"])
+            ]
+            if len(matches) == 1 and "project_callees" in matches[0]:
+                project = list(matches[0].get("project_callees") or [])
+                # Retain external declarations for coverage accounting, while the
+                # graph classifier keeps them out of implementation modeling.
+                external = [r for r in self.code_index.get_callees(key.name, limit=limit)
+                            if isinstance(r, dict) and r.get("callee_kind") in
+                            {"system_function", "external_function"}]
+                return project + external
         records = self.code_index.get_callees(
             key.signature or key.name,
             limit=limit,
@@ -703,7 +786,7 @@ class GlobalModeler:
             records = self.code_index.get_callees(key.name, limit=limit)
         if records:
             return list(records)
-        impl = self._get_impl(key, include_context=True)
+        impl = self._get_impl(key, include_context=True) or {}
         if not impl:
             return []
         return list(impl.get("callees") or [])
@@ -722,6 +805,8 @@ class GlobalModeler:
             return FunctionKey(record)
         if not isinstance(record, dict):
             return FunctionKey("")
+        if record.get("callee_index_name"):
+            return FunctionKey(str(record["callee_index_name"]))
         name = str(
             record.get("name")
             or record.get("func_name")
@@ -750,44 +835,47 @@ class GlobalModeler:
         self,
         graph: _Graph,
     ) -> Tuple[Dict[FunctionKey, int], List[List[FunctionKey]]]:
+        # Iterative Kosaraju traversal avoids Python's recursion limit on long
+        # entry paths. The scheduler owns dependency ordering between SCCs.
         nodes = sorted(graph.impls)
-        index = 0
-        stack: List[FunctionKey] = []
-        on_stack: Set[FunctionKey] = set()
-        indexes: Dict[FunctionKey, int] = {}
-        lowlinks: Dict[FunctionKey, int] = {}
+        adjacency = {
+            node: sorted(child for child in graph.children.get(node, set()) if child in graph.impls)
+            for node in nodes
+        }
+        reverse: Dict[FunctionKey, List[FunctionKey]] = {node: [] for node in nodes}
+        for node, children in adjacency.items():
+            for child in children:
+                reverse[child].append(node)
+        visited: Set[FunctionKey] = set()
+        order: List[FunctionKey] = []
+        for root in nodes:
+            stack = [(root, False)]
+            while stack:
+                node, exiting = stack.pop()
+                if exiting:
+                    order.append(node)
+                elif node not in visited:
+                    visited.add(node)
+                    stack.append((node, True))
+                    stack.extend(
+                        (child, False)
+                        for child in reversed(adjacency[node])
+                        if child not in visited
+                    )
+        visited.clear()
         components: List[List[FunctionKey]] = []
-
-        def strongconnect(node: FunctionKey) -> None:
-            nonlocal index
-            indexes[node] = index
-            lowlinks[node] = index
-            index += 1
-            stack.append(node)
-            on_stack.add(node)
-
-            for child in sorted(graph.children.get(node, set())):
-                if child not in graph.impls:
+        for root in reversed(order):
+            if root in visited:
+                continue
+            component: List[FunctionKey] = []
+            pending = [root]
+            while pending:
+                node = pending.pop()
+                if node in visited:
                     continue
-                if child not in indexes:
-                    strongconnect(child)
-                    lowlinks[node] = min(lowlinks[node], lowlinks[child])
-                elif child in on_stack:
-                    lowlinks[node] = min(lowlinks[node], indexes[child])
-
-            if lowlinks[node] == indexes[node]:
-                component: List[FunctionKey] = []
-                while stack:
-                    child = stack.pop()
-                    on_stack.remove(child)
-                    component.append(child)
-                    if child == node:
-                        break
-                components.append(sorted(component))
-
-        for node in nodes:
-            if node not in indexes:
-                strongconnect(node)
-
+                visited.add(node)
+                component.append(node)
+                pending.extend(reverse[node])
+            components.append(sorted(component))
         component_for = {key: idx for idx, component in enumerate(components) for key in component}
         return component_for, components

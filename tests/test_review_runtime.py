@@ -126,16 +126,52 @@ def test_checkpoint_replay_retains_exact_prior_result_and_evidence(compile_facts
     assert replay["candidate"]["candidate_disposition"] == "needs_review"
 
 
+def test_feature_measurement_flags_injected_on_live_and_replay(compile_facts, tmp_path):
+    store, _, path = compile_facts("void f(void) { int n = 0; (void)n; }\n")
+    candidate = issue(path, category="race", rule_id="unsupported", source="n", line=1)
+    agent = UncertainAgent()
+    analysis = SimpleNamespace(
+        validation_review_checkpoint=True,
+        llm_decision_explanation=False,
+        snapshot_dir=str(tmp_path / "snapshots"),
+    )
+    index = FakeCodeIndex()
+    index.get_function_impl = lambda *_args, **_kwargs: {
+        "code": path.read_text(),
+        "file": str(path),
+    }
+    runner = _runner(agent, analysis=analysis, code_index=index)
+    runner.config.project.project_root = tmp_path
+    runner.config.project.compile_commands_path = store.compile_commands
+    runner.run(_state(candidate))
+    keys = (
+        "validation_uncertain_replay_review",
+        "validation_demote_source_lifecycle_confirm",
+        "validation_obligation_infunction_release_guard",
+        "validation_checked_proofs",
+    )
+    for key in keys:
+        assert key in candidate, f"live 路径未注入 {key}"
+        assert isinstance(candidate[key], bool), f"{key} 应为 bool"
+    prior = candidate["review_latest_result"]
+    replay = runner.replay_review_candidate(
+        candidate, prior, investigate_uncertain=False, audit_rejection=False
+    )
+    for key in keys:
+        assert key in replay["candidate"], f"replay 路径未注入 {key}"
+
+
 def test_default_flags_and_conditional_risk_survive_report_deduplication():
     config = AnalysisConfig()
     for flag in (
         "validation_review_checkpoint",
         "validation_review_protocol",
-        "validation_checked_proofs",
         "validation_positive_case",
         "validation_related_findings",
     ):
         assert getattr(config, flag) is False
+    # checked_proofs 为 tri-state（None = 深度作用域默认），不再恒 False
+    assert config.validation_checked_proofs is None
     base = {
         "function": "f",
         "file": "a.c",

@@ -16,10 +16,38 @@ import subprocess
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, cast
 
 
-FACT_VERSION = "zscope.complete-validation-facts.v1"
+FACT_VERSION = "zscope.complete-validation-facts.v3"
+_STORE_LOCK = threading.Lock()
+
+
+def scan_compiler_facts(index: Any, root: Path, commands: Path, directory: Path) -> "CompleteFactStore":
+    """Share immutable compiler facts across candidate and validation workers."""
+    key = (str(root.resolve()), str(commands.resolve()), str(directory.resolve()))
+    with _STORE_LOCK:
+        stores = getattr(index, "_complete_fact_stores", None)
+        if stores is None:
+            stores = {}
+            setattr(index, "_complete_fact_stores", stores)
+        if key not in stores:
+            compiler = "clang"
+            try:
+                rows = json.loads(commands.read_text(encoding="utf-8"))
+                drivers = set()
+                for row in rows:
+                    args = row.get("arguments") or shlex.split(row.get("command", ""))
+                    driver = shutil.which(args[0]) or str(Path(row.get("directory") or root) / args[0])
+                    drivers.add(str(Path(driver).resolve()))
+                if len(drivers) == 1:
+                    driver = next(iter(drivers))
+                    if re.fullmatch(r"clang(?:\+\+)?(?:-[\d.]+)?", Path(driver).name):
+                        compiler = driver
+            except (OSError, ValueError, KeyError, IndexError, TypeError):
+                pass  # The normal binding gate reports the precise failure.
+            stores[key] = CompleteFactStore(root, commands, directory, clang=compiler)
+        return cast(CompleteFactStore, stores[key])
 
 
 def digest(value: Any) -> str:
@@ -65,7 +93,18 @@ def split_cfg(text: str, *, identity: str = "") -> list[Dict[str, Any]]:
             if edge:
                 values = re.findall(r"\bB\d+\b", edge[3])
                 block["successors" if edge[1] == "Succs" else "predecessors"] = values
-                if len(values) != int(edge[2]) or "NULL" in edge[3]:
+                # Clang prints a pruned back-edge for do { ... } while (0),
+                # including ordinary statement macros. Preserve that edge and
+                # its constant-false proof instead of calling it missing CFG.
+                terminator = next((s for s in block["statements"] if s.startswith("T: do ")), "")
+                test = re.search(r"while \[(B\d+)\.(\d+)\]$", terminator)
+                constant_false = bool(test and test[1] == block["id"] and
+                    any(re.fullmatch(rf"{test[2]}:\s*0", s) for s in block["statements"]))
+                pruned = (edge[1] == "Succs" and constant_false and int(edge[2]) == 2
+                          and re.fullmatch(r"\s*NULL\s+B\d+\s*", edge[3]))
+                if pruned:
+                    block["pruned_successors"] = [{"slot": 0, "reason": "constant_false_do_while"}]
+                elif len(values) != int(edge[2]) or "NULL" in edge[3]:
                     block["unresolved_edge"] = True
             elif raw.strip():
                 block["statements"].append(raw.strip())
@@ -169,6 +208,7 @@ class CompleteFactStore:
         self._lock = threading.RLock()
         self._cache: Dict[str, str] = {}
         self._collected: set[str] = set()
+        self._decoded_facts: Dict[str, Any] = {}
 
     def driver_bound(self) -> bool:
         """Return True when every compile_commands driver is the fact compiler.
@@ -448,15 +488,29 @@ class CompleteFactStore:
         if not re.fullmatch(r"CF_[0-9a-f]{64}", uid):
             return {"complete": False, "reason": "invalid_fact_store_id"}
         try:
-            data = json.loads((self.directory / f"{uid}.json").read_text(encoding="utf-8"))
-            raw = {k: v for k, v in data.items() if k != "fact_store_id"}
-            if "CF_" + digest(raw) != uid:
-                raise ValueError("fact_payload_tampered")
+            from ..reporting.shared_objects import ObjectEncoder, ObjectDecoder
+            path = self.directory / f"{uid}.json"
+            stat = path.stat()
+            stamp = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            with self._lock:
+                cached = self._decoded_facts.get(uid)
+                if cached is not None and cached[0] == stamp:
+                    decoder = cached[1]
+                    data = decoder.decode(decoder.root_node)
+                else:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    raw = {k: v for k, v in data.items() if k != "fact_store_id"}
+                    if "CF_" + digest(raw) != uid:
+                        raise ValueError("fact_payload_tampered")
+                    envelope = ObjectEncoder().envelope(data)
+                    decoder = ObjectDecoder(envelope)
+                    self._decoded_facts[uid] = (stamp, decoder)
+                    data = decoder.root
             if self._hash_files(data["dependencies"]) != data["dependencies"]:
                 raise ValueError("stale_fact_dependencies")
             if data.get("compiler_environment") != self.compiler_environment():
                 raise ValueError("stale_compiler_environment")
-            return dict(data)
+            return cast(Dict[str, Any], data)
         except (OSError, ValueError, KeyError) as exc:
             return {"complete": False, "reason": str(exc)}
 

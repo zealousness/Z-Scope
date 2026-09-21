@@ -28,7 +28,8 @@ def main():
     args = parser.parse_args()
     if platform.system() != "Linux":
         parser.error("Range diagnostics use Linux/WSL compiler facts")
-    report = json.loads(args.report.read_text(encoding="utf-8"))
+    from zscope.reporting.json_io import read_report
+    report = read_report(args.report)
     confirmed = {str(i.get("candidate_uid") or i.get("id")) for i in report.get("issues", [])}
     candidates = report.get("issues_with_needs_review") or report.get("observations", [])
     if args.limit:

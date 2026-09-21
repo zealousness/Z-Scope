@@ -18,7 +18,7 @@ from threading import RLock
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 
-DECISION_FACT_VERSION = "zscope.decision-facts.v1.2"
+DECISION_FACT_VERSION = "zscope.decision-facts.v1.3"
 SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.2"
 DECISION_CONTEXT_V31 = "zscope.decision-context.v3.1"
 DECISION_CONTEXT_V32 = "zscope.decision-context.v3.2"
@@ -244,7 +244,13 @@ class DecisionFactSlice:
     assumptions: tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        for name in (
+            "fact_uids", "edge_uids", "dependency_code_hashes",
+            "missing_fact_kinds", "assumptions",
+        ):
+            value[name] = list(value[name])
+        return value
 
 
 @dataclass(frozen=True)
@@ -262,6 +268,7 @@ class SecurityObligation:
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
+        data["required_fact_kinds"] = list(data["required_fact_kinds"])
         if self.decision_fact_slice is not None:
             data["decision_fact_slice"] = self.decision_fact_slice.to_dict()
         return data

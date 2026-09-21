@@ -33,7 +33,7 @@ cd /path/to/Z-Scope
 # 使用 WSL/Linux Python 安装当前 checkout；不要复用 Windows Python。
 python3 -m venv "$HOME/.venvs/zscope"
 source "$HOME/.venvs/zscope/bin/activate"
-python3 -m pip install -e .
+python3 -m pip install -e '.[benchmark]'
 
 export PATH="$HOME/go/bin:/usr/lib/llvm-18/bin:$HOME/.local/svf/SVF-linux-x86_64/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/svf/SVF-linux-x86_64/lib:$HOME/.local/svf/llvm-18.1.0.obj/lib:${LD_LIBRARY_PATH:-}"
@@ -72,6 +72,10 @@ zscope-benchmark run --language c_cpp --mode smoke
 从 Windows PowerShell 启动时，前端只会通过 `WSLENV` 转发当前 Windows 进程中已经存在的三个 LLM 变量；它不会读取 WSL 的 `~/.bashrc` 或私有 env 文件。最稳妥的方式是在已经完成上述 bootstrap 的 WSL shell 中直接运行 `zscope-benchmark`。若必须从 PowerShell 启动，则应先在同一 PowerShell 进程中设置 `$env:Z_SCOPE_LLM_BASE_URL`、`$env:Z_SCOPE_LLM_MODEL`、`$env:Z_SCOPE_API_KEY`，并保证 WSL 的非交互 shell 也能找到完整工具链和共享库。
 
 在 WSL 中，trial 会把 scan-input、构建目录、索引和 Z-SCOPE 状态放到 WSL 原生文件系统的临时工作区。每轮结束前，runner 会把密封输入、日志、报告和评分结果导出到 `benchmark-artifacts/`，并将 `.zscope_conversations/`、`.zscope_snapshots/`、`.zscope_knowledge/`、扫描报告等额外扫描产物按原相对路径归档到 `run-XX/scan-extras/`；`scan-extras-manifest.json` 记录逐文件大小和 SHA-256。可重建的 `build/`、bitcode、SVF 与 Joern 缓存不进入该目录。可用绝对路径环境变量 `Z_SCOPE_BENCHMARK_WORK_ROOT` 覆盖临时根；C/C++ 会拒绝 `/mnt/<drive>`，避免 DrvFS I/O 进入正式性能结果。
+
+需要完整保留执行现场时，显式传入 `--work-directory /home/<user>/zscope-benchmark-runs/<run-name>`。该目录必须是尚不存在的绝对路径；每轮使用其中独立的 `run-NN`，成功、失败或中断后均不自动清理。它保留源码、构建、索引、快照、用量日志和报告，产物中的 `workspace.json` 在扫描前记录路径；归档仅复制密封输入，不删除现场中的生成文件。C/C++ 在 WSL 下同样要求原生文件系统。此选项不改变冷扫描、truth 隔离、评分或资格门禁。
+
+trial/formal 需要 `benchmark` 安装附加项中的流式 JSON 解析器。大报告读取保留全部字段但不构造整份文本副本；归档与回放包使用原子流式写入，父进程在独立评分前释放完整报告对象。
 
 formal 与 sealed 还必须在 rootless Podman/Docker 容器中执行 scanner。只读挂载 answer-free scan-input、配置和工具链，只写挂载输出；不得挂载 Z-SCOPE 源码 checkout、`test/`、truth 或 scorer，容器工作目录也不能位于源码树中。网络仅允许配置的模型 endpoint。runner 必须保存 runtime、cwd、mount 和 network-policy evidence，并在隔离能力缺失或越界挂载时 fail closed；评分在 scanner 容器退出后由独立进程完成。
 

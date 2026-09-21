@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import click
 
 from ..config.config import ConfigLoader
+from ..reporting.json_io import read_report
 from ..review_memory.extractor import extract_with_llm, proposal_from_record
 from ..review_memory.lifecycle import qualify_and_activate
 from ..review_memory.identity import review_subject_id, utc_now
@@ -94,7 +95,7 @@ def extract(ctx: click.Context, review_id: Optional[str], retry_failed: bool, re
     config = ctx.obj["config"]
     records = [record for record in store.list_records() if not review_id or record.get("review_id") == review_id]
     # ReviewRecord is an immutable event log; proposal extraction is subject-level.
-    latest_by_subject = {}
+    latest_by_subject: Dict[str, Dict[str, Any]] = {}
     for record in records:
         subject = str(record.get("review_subject_id") or review_subject_id(record))
         previous = latest_by_subject.get(subject)
@@ -241,8 +242,7 @@ def replay(ctx: click.Context, pattern_id: str, input_path: Path, output_path: O
     pattern = ctx.obj["store"].get_proposal(pattern_id)
     if pattern is None:
         raise click.ClickException("pattern not found")
-    payload = json.loads(input_path.read_text(encoding="utf-8"))
-    issues = payload.get("issues", []) if isinstance(payload, dict) else []
+    payload = read_report(input_path)
     from ..review_memory.replay import paired_replay
     result = paired_replay(payload, pattern, scan_id=f"replay-{input_path.stem}")
     result["input"] = str(input_path)

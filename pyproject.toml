@@ -22,6 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+benchmark = ["ijson>=3.4,<4"]
 browser-test = ["playwright>=1.49.0"]
 java = [
     "cpgqls-client>=0.0.5",
@@ -46,6 +47,7 @@ zscope-maven-cache = "zscope.cli.maven_cache:main"
 zscope-wiki = "zscope.cli.wiki:main"
 zscope-review-memory = "zscope.cli.review_memory:main"
 zscope-benchmark = "zscope.cli.benchmark:main"
+zscope-report = "zscope.cli.report_export:main"
 
 # sqlite3 is part of Python's standard library and therefore is not a pip
 # dependency. This constrains the SQLite library reported by

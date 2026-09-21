@@ -7,6 +7,9 @@ covers:
 sources:
   - zscope/reporting/assembler.py
   - zscope/reporting/schema.py
+  - zscope/reporting/json_io.py
+  - zscope/reporting/shared_objects.py
+  - zscope/reporting/immutable_evidence.py
   - zscope/reporting/sarif_exporter.py
   - zscope/web/server.py
   - zscope/web/services.py
@@ -18,6 +21,7 @@ sources:
   - zscope/mcp/security.py
 tests:
   - tests/test_report_assembler.py
+  - tests/test_shared_read_cache.py
   - tests/test_report_schema_v2.py
   - tests/test_sarif_exporter.py
   - tests/test_web_dashboard_server.py
@@ -59,7 +63,7 @@ evidence references or source identity.
 - Web server 负责路由，services 负责配置、报告、反馈和索引状态等业务操作。
 - Dashboard 的脚本、样式和许可证位于 `zscope/web/static/vendor/` 并随 wheel 发布，支持无外网加载。更新工具 `scripts/portable/web_assets.py --update` 生成静态 Tailwind CSS 和资源 SHA-256 锁，常规发布只校验已提交资源。
 - Web 验证反馈保留 validator 的原始 `validation_reasoning`（Dashboard 中只读展示）；人工反驳 / 复核说明保存于 issue 级 `user_rebuttal`，随报告、snapshot final reports 与 finding_baselines 持久化。rejected 的 suppression reason 优先取 `user_rebuttal`，历史数据回退到 `validation_reasoning`。
-- Issue 详情与离线阅读器共用 `static/report_view.js`。`reporting/issue_markdown.py` 从完整 finding 生成 `zscope.issue-markdown.v1`，列表压缩不得影响正文；真实源码行号与片段内行号必须区分，IR 记录编号不构成源码位置。
+- Issue 详情与离线阅读器共用 `static/report_view.js`。结构化证据整章默认折叠，标题可展开/收起，章节导航自动展开目标；旧版 JSON 证据章节同样适用。`reporting/issue_markdown.py` 从完整 finding 生成 `zscope.issue-markdown.v1`，列表压缩不得影响正文；真实源码行号与片段内行号必须区分，IR 记录编号不构成源码位置。
 - `reporting/issue_markdown.py` 以确定性字段映射生成结构化证据摘要及折叠附录；原始 JSON 完整保留，重复字段只在展示中合并。候选阶段事实、启发式保护条件扫描和配置的引擎不得升级为验证结论，坐标必须绑定正确的文件与函数范围。展示变更不改变复核基线或导入协议。
 - `web/review_reports.py` 提供 `/api/issue_report`、`/api/offline_report`、`/api/import_reviews` 和 `/api/import_reviews/resolve`。导出 ZIP 包含内嵌本地资源的 HTML 与独立 Markdown，默认及含复核视图共享 issue 文件。原始说明作为历史只读内容，本次说明默认为空。
 - Markdown 导入只接受本次人工说明和验证状态；空说明在任何持久化前跳过。按报告/issue 身份和验证/证据基线做增量合并；冲突保留线上结果，人工确认时再次检查版本。不得信任导入文件中的其他正文，也不得用整个离线 findings 替换线上报告。旧单 HTML 导入不再支持。
@@ -72,6 +76,11 @@ evidence references or source identity.
 
 - `report_views.default` 与 `report_views.with_needs_review` 的语义和计数必须一致且可复算。
 - 报告 schema 变更必须保持明确版本、向后兼容策略和对应测试。
+- 默认 JSON 使用自包含的 `zscope.shared-json.v1` 存储封套：根对象与按内容摘要寻址的对象表保留完整逻辑数据和顺序。`reporting/json_io.py` 统一读取新旧格式；消费者不得直接对报告使用 `json.load`。对象校验拒绝缺失引用、摘要错误和环。共享对象按访问懒加载，修改隔离；从磁盘读取不会恢复进程内证明权限。
+- 共享视图的只读缓存不代表内容变化；嵌套写入使自身及祖先失效，未修改的投影仍复用内容引用。dataclass 输出保留共享视图的独立副本，不通过字典子类构造或展开全部证据完成转换。
+- 契约、决策事实切片和证明的 JSON 输出使用数组，内部不可变 tuple 保持不变；证据池继续保留真正非 JSON 内部值的类型。不能因这些标准输出携带 tuple 而使整份候选回退为深拷贝。
+- 报告组装与最终注释完成后只发布一次，原子替换并同步文件和目录；序列化失败保留旧报告。旁路 `*.timings.json` 记录对象表、序列化和落盘耗时，不为补计时重写报告。`zscope-report export --input report.json --output report.legacy.json --format legacy-json` 完整展开旧格式。
+- 检查点使用 `zscope.review-checkpoint.v2`：候选状态、运行参数与完整证据通过内容引用保存，`evidence/objects.sqlite3` 事务提交对象后再发布引用。历史 v1 仍可读取，历史产物不原地迁移。备份检查点需保留整个 evidence 目录。
 - SARIF location、rule、level、code flow 和 partial fingerprint 必须来自结构化 finding，不能从展示文本猜测。
 - Web 保存反馈必须通过统一 config/review store，不能创建第二套状态语义。
 - MCP 工具必须经过 ToolPolicy；远程非 loopback 绑定必须要求认证 token 和客户端 allowlist。
@@ -107,3 +116,15 @@ python -m pytest -q tests/test_issue_markdown.py tests/test_report_views.py
 - 用户可见输出、WebUI 和 MCP 命令见 `README.md`。
 - Markdown 契约、离线复核操作及接口示例见 [离线复核](../offline-reviews.md)。
 - 接口与持久化关系见 `docs/architecture.md` 的“对外接口”和“持久化与反馈平面”。
+
+完整事实的函数索引可在同一不可变对象版本间复用。索引只保存编码后的引用，每次返回独立可修改视图；局部修改过的 AST 重新遍历，事实或依赖变化不能复用旧版本。该优化不恢复证明权限，也不删去任何证据。
+
+检查点编码可直接复用本对象库已经原子提交的不可变证据引用，避免再次遍历整份 facts。跨对象库、数据库替换或视图修改时仍完整编码所需内容；自包含报告继续携带全部依赖对象，读取时校验摘要及缺失引用。
+
+Ledger 接收终态时将 JSON 证据保存到会话内的不可变对象池。原始 ticket 与最终 outcome 都在此时转入同一个池，避免 ticket 继续持有独立检查点读取器的完整对象表；全部可达证据仍保留，pending 期间的更新行为不变。后续生命周期快照及报告投影拥有独立修改视图，复用未修改的证据内容；外部调用者继续修改原输入不会改变已保存终态。非 JSON 内部值保留原有深拷贝行为，不隐式改变类型。对象池仅属于当前 Ledger，不赋予持久化证明权限。
+
+验证回放包也通过统一共享 JSON 读写层保存，旧回放仍可读取；严格读取继续拒绝重复键、非有限数字和损坏引用，逻辑分组摘要及完整输入不变。独立评分启动前归档器只保留脱离共享解码器的摘要，完整报告与回放证据先落盘，不让父进程持有完整对象图与评分器争用内存。
+
+只读消费者可使用 `read_report(..., immutable=True)`：相同内容对象只解码一次，避免遍历时重新物化每次逻辑出现。共享视图拒绝修改，显式深拷贝返回独立可修改视图；默认读取行为保持兼容。评分器使用这一边界，matcher 本身及完整字段、顺序保持不变。
+
+旧格式导出通过不可变读取视图流式展开完整内容；重复引用复用同一只读容器，导出过程不构造另一份展开后的可修改对象图。

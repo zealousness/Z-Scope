@@ -27,7 +27,10 @@ class DecisionProof:
     cfg_nodes: tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        for name in ("fact_ids", "assumptions", "cfg_nodes"):
+            value[name] = list(value[name])
+        return value
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
@@ -245,7 +248,17 @@ def deterministic_decision_proof(
     expected = str(outcome or "").lower()
     if issue.get("analysis_scope") == "conditional_source_branch":
         return None
-    if expected == "reject" and issue.get("review_checked_proofs_enabled") is True:
+    compiler_required = str(issue.get("rule_id") or issue.get("rule") or "") in {
+        "configured_acquire_without_release", "clang_cfg_acquire_without_release_on_exit",
+        "clang_cfg_parent_release_without_owned_member_cleanup", "clang_cfg_unchecked_insert_after_ownership_handoff",
+        "clang_cfg_allocation_result_used_without_null_check", "clang_cfg_fd_open_return_without_close",
+        "clang_cfg_nonliteral_format_string", "clang_cfg_narrowed_allocation_original_length_copy",
+        "clang_cfg_unbounded_count_indexes_fixed_array", "clang_cfg_return_with_lock_held",
+        "clang_cfg_borrowed_pointer_returned_after_unlock", "insert_failure_leaves_stale_tree_node",
+        "global_container_registration_without_cleanup_path", "clang_cfg_external_size_allocation_without_limit",
+        "clang_cfg_allocation_size_arithmetic_without_overflow_guard", "clang_cfg_callback_while_lock_held",
+    }
+    if expected == "reject" and (compiler_required or issue.get("review_checked_proofs_enabled") is True):
         from .review_checks import checked_receipt
 
         receipt = checked_receipt(dict(issue))
@@ -267,6 +280,12 @@ def deterministic_decision_proof(
         if proof_outcome not in {expected, "rejected" if expected == "reject" else "confirmed"}:
             continue
         kind = str(proof.get("proof_kind") or proof.get("kind") or "").lower()
+        if expected == "confirm" and kind == "deterministic_cfg_obligation_path" and str(
+            issue.get("rule_id") or issue.get("rule") or ""
+        ) == "clang_cfg_nonliteral_format_string":
+            # Historical detector-produced format events were not compiler
+            # operand/data-flow certificates. Keep the evidence, revoke authority.
+            continue
         required = requirements.get(kind)
         if not required:
             continue

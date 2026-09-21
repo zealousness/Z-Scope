@@ -80,8 +80,9 @@ IMPLS = {
 
 
 class FakeCodeIndex:
-    source_root = Path(".")
-    project_root = Path(".")
+    def __init__(self, root: Path):
+        self.source_root = root
+        self.project_root = root
 
     def list_functions(self, limit=0):
         return sorted(IMPLS)
@@ -104,8 +105,8 @@ class FakeLLM:
         return {"choices": [{"message": {"content": content}}]}
 
 
-def test_infer_user_config_rows_covers_extended_roles() -> None:
-    rows = infer_user_config_rows(FakeCodeIndex())
+def test_infer_user_config_rows_covers_extended_roles(tmp_path) -> None:
+    rows = infer_user_config_rows(FakeCodeIndex(tmp_path))
     resource = {row["symbol_name"]: row for row in rows["resource"]}
     lock = {row["symbol_name"]: row for row in rows["lock"]}
 
@@ -126,15 +127,15 @@ def test_infer_user_config_rows_covers_extended_roles() -> None:
     assert "obtain_ctx" not in resource  # unhinted bodies stay out of the cheap pass
 
 
-def test_collect_ambiguous_interface_candidates_prefers_unhinted_risk_bodies() -> None:
-    rows = infer_user_config_rows(FakeCodeIndex())
+def test_collect_ambiguous_interface_candidates_prefers_unhinted_risk_bodies(tmp_path) -> None:
+    rows = infer_user_config_rows(FakeCodeIndex(tmp_path))
     known = {
         str(row.get("symbol_name") or "")
         for sheet in ("resource", "lock")
         for row in rows[sheet]
     }
     ambiguous = collect_ambiguous_interface_candidates(
-        FakeCodeIndex(), exclude=known, max_candidates=50
+        FakeCodeIndex(tmp_path), exclude=known, max_candidates=50
     )
     names = [item["symbol"] for item in ambiguous]
     assert "obtain_ctx" in names  # calls malloc but has no name hint

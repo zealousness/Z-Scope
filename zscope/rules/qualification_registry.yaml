@@ -1,3 +1,6 @@
+# C/C++ v4 contracts / v15 source composition require fresh qualification evidence;
+# source-chain tests and trial results do not establish formal qualification.
+# Object/path ownership and compiler-bound refutation revisions remain pending.
 schema_version: zscope.rule-qualification.v1
 legacy_stable_policy: legacy_stable_pending
 qualifications: []

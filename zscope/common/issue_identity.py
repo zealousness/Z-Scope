@@ -1044,7 +1044,7 @@ def _resource_signature_from_text(value: Any) -> str:
     raw_lower = text.lower()
     identifier = r"[A-Za-z_][A-Za-z0-9_]*"
     member_identifier = r"[a-z_][a-z0-9_]*"
-    allocator = r"(?:_safe_calloc|safe_calloc|calloc|malloc|realloc|strdup|xmalloc)"
+    allocator = r"(?:calloc|malloc|realloc|strdup)"
 
     assignment = re.search(
         rf"(?<![A-Za-z0-9_])({identifier})\s*=\s*(?:\([^)]*\)\s*)?{allocator}\s*\(",

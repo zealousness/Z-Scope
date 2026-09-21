@@ -34,8 +34,8 @@ FDR_GATE_DELTA = 0.01
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as stream:
-        return json.load(stream)
+    from zscope.reporting.json_io import read_report
+    return read_report(path)
 
 
 def _tau_predicate(issue: Dict[str, Any], tau: float) -> bool:

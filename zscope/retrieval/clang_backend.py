@@ -52,6 +52,10 @@ class ClangBackend(CodeBackend):
         self._include_paths: List[Path] = []
         self._exclude_paths: List[Path] = []
         self._type_ref_scheduler: Any = None
+        self._compile_preparation: Any = None
+        self._compile_commands_path: Optional[str] = None
+        self._compile_generation_started = False
+        self._compile_preparation_tools: Dict[str, Any] = {}
 
     @property
     def db(self) -> Optional[KnowledgeDB]:
@@ -63,6 +67,9 @@ class ClangBackend(CodeBackend):
         """初始化 clangd + SQLite 后端。"""
         project_root = kwargs.get("project_root", source_path)
         self._compile_commands_path = kwargs.get("compile_commands_path")
+        self._compile_preparation = kwargs.get("compile_preparation")
+        self._compile_generation_started = False
+        self._compile_preparation_tools = kwargs.get("compile_preparation_tools", {})
         wait = kwargs.get("wait", True)
 
         self._source_path = Path(source_path).absolute()
@@ -121,6 +128,11 @@ class ClangBackend(CodeBackend):
                 compile_commands_dir=cc_dir,
                 max_threads=self._max_threads,
             )
+        receipt = self._compile_preparation
+        if receipt is not None:
+            receipt.validate()
+            for shard in getattr(self._extractor, "_shards", [self._extractor]):
+                shard._compile_preparation = receipt
         if not self._extractor.start():
             logger.error("Failed to start clangd extractor")
             return False
@@ -131,6 +143,11 @@ class ClangBackend(CodeBackend):
         # replacing their function/type IDs, then start a new generation owner.
         self._stop_type_ref_scheduler()
         with self.pause_type_references():
+            if self._compile_generation_started:
+                # This explicit refresh starts a new generation after all old
+                # continuations stop. Deferred SVF never enters this branch.
+                self._compile_preparation = None
+            self._compile_generation_started = True
             result = self._run_full_extraction_impl()
         if (result and self._frontend == "auto" and self._db is not None
                 and self._db.get_metadata("clang_fact_frontend") == "batch"):
@@ -158,6 +175,18 @@ class ClangBackend(CodeBackend):
     def _run_full_extraction_impl(self) -> bool:
         """Refresh base TU facts, then independently refresh derived indexes."""
         try:
+            if self._compile_commands_path:
+                if self._compile_preparation is None:
+                    from .compile_commands_prepare import prepare_compile_commands
+                    from .compile_preflight import discover_tools
+                    self._compile_preparation = prepare_compile_commands(
+                        Path(self._compile_commands_path),
+                        discover_tools(indexer=self._clang_indexer_path if self._frontend != "lsp" else "",
+                                       clangd=self._clangd_path, **self._compile_preparation_tools),
+                        workers=self._max_threads,
+                    )
+                else:
+                    self._compile_preparation.validate()
             if self._frontend != "lsp":
                 from .clang_batch import BatchIndexer, find_indexer
 
@@ -242,6 +271,19 @@ class ClangBackend(CodeBackend):
                         }
             deferred_tu_commits = bool(getattr(db, "SUPPORTS_DEFERRED_TU_COMMITS", False))
             force_refresh_paths: set[str] = set()
+            compile_context = ""
+            if self._compile_preparation is not None:
+                import json
+                from .indexing_identity import digest_json
+                receipt = self._compile_preparation
+                compile_context = digest_json([
+                    receipt.effective_digest, receipt.dependencies_json,
+                    [tool for tool in json.loads(receipt.tools_json) if tool["name"] == "clangd"],
+                ])
+                previous = db.get_metadata("clang_prepared_lsp_context")
+                if ((previous and previous != compile_context) or
+                    (not previous and receipt.effective_digest != receipt.original_digest)):
+                    force_refresh_paths.update(current_files)
             deleted_paths: List[Path] = []
             changed_count = 0
             prescanned_tus: Dict[str, Tuple[int, bool]] = {}
@@ -493,6 +535,8 @@ class ClangBackend(CodeBackend):
                             )
                         else:
                             combined_result = combined_rebuild(db, use_staging=True)
+                        if self._compile_preparation is not None:
+                            self._compile_preparation.validate()
                         counts = dict(combined_result.get("counts") or {})
                         errors = dict(combined_result.get("errors") or {})
                         for index_name, target_version, _rebuild_method in derived_work:
@@ -596,6 +640,8 @@ class ClangBackend(CodeBackend):
                             else:
                                 row_count = 0
                                 last_stats = {"rows": 0, "files": 0, "functions": 0}
+                            if self._compile_preparation is not None:
+                                self._compile_preparation.validate()
                             if partial_only_files is not None:
                                 db.finalize_derived_index_rebuild(
                                     index_name,
@@ -630,6 +676,9 @@ class ClangBackend(CodeBackend):
             if derived_failed or not self._derived_indexes_are_current(db):
                 self._status = "error"
                 return False
+            if self._compile_preparation is not None:
+                self._compile_preparation.validate()
+                db.set_metadata("clang_prepared_lsp_context", compile_context)
             db.set_metadata("clang_fact_frontend", "lsp")
             self._status = "ready"
             return True
@@ -1018,6 +1067,9 @@ class ClangBackend(CodeBackend):
         if not self._db:
             return []
         return self._db.get_macro_definitions_batch(names)
+
+    def get_global_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        return self._db.get_global_definitions_batch(names) if self._db else []
 
     def get_function_program_facts(self, func_name: str, file_path: str = "") -> Dict[str, Any]:
         if not self._db:

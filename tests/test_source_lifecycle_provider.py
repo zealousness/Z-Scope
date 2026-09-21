@@ -9,6 +9,8 @@ supplied no CFG events, and confirms the path-independent negative existential
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+from dataclasses import asdict
+from semantic_fixtures import configured_test_semantics
 
 from zscope.core.validation.evidence_completion import EvidenceCompletionQueue
 from zscope.core.validation.proofs import deterministic_decision_proof
@@ -35,7 +37,19 @@ def _issue(**overrides: Any) -> Dict[str, Any]:
 
 
 def _pack(code: Optional[str]) -> Dict[str, Any]:
-    return {"function_context": {"code": code or ""}}
+    return {
+        "function_context": {"code": code or ""},
+        "semantic_contracts": {
+            "api_contracts": [asdict(c) for c in configured_test_semantics().contracts.contracts]
+        },
+    }
+
+
+def test_names_cannot_create_allocation_proofs() -> None:
+    for name in ("_safe_malloc", "fake_malloc", "inspect_malloc"):
+        code = f"void f(void) {{ void *p={name}(8); }}"
+        _, proofs, _ = _run(_issue(), {"function_context": {"code": code}})
+        assert proofs == []
 
 
 def _run(issue: Dict[str, Any], pack: Dict[str, Any]) -> tuple[str, list, str]:
@@ -253,7 +267,9 @@ def test_writes_under_single_lock_rejects_unsynchronized_claim() -> None:
     assert proof["proof_kind"] == "source_lockset_dominates_access"
     assert proof["producer_engine"] == "source_lockset_event_facts_v12"
     assert proof["subject_identity"] == "g_running"
-    assert any(item.startswith("all_writes_guarded_by:g_lifecycle.lock") for item in proof["facts"])
+    assert any(
+        item.startswith("all_writes_guarded_by:&g_lifecycle.lock") for item in proof["facts"]
+    )
 
 
 def test_unguarded_write_keeps_claim_reviewable() -> None:
@@ -463,13 +479,14 @@ def test_caller_lock_states_extracted_from_call_paths() -> None:
         _StubIndex(),
         "_lifecycle_ref_get",
         ["td_process_control_message", "td_unguarded_caller", "td_missing_caller"],
+        semantic_contracts=_pack(None)["semantic_contracts"],
     )
 
     assert len(states) == 3
     guarded = states[0]
     assert guarded["caller"] == "td_process_control_message"
     assert guarded["resolved"] is True
-    assert guarded["held_lock"] == "g_lifecycle.lock"
+    assert guarded["held_lock"] == "&g_lifecycle.lock"
     assert guarded["call_site_line"] == 3
     unguarded = states[1]
     assert unguarded["resolved"] is True

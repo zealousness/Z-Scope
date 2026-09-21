@@ -104,6 +104,7 @@ _ENTRY_EXPOSURE_WEIGHTS = {
     "other_user_input": 420,
     "communication": 380,
     "thread": 360,
+    "callback": 360,
     "api": 140,
 }
 
@@ -163,9 +164,11 @@ class ParallelAnalyzer:
         project_knowledge_service: Any = _PROJECT_KNOWLEDGE_UNSET,
         owns_project_knowledge_service: bool = False,
         llm_clients: Optional[Dict[str, LLMClient]] = None,
+        semantic_result: Any = None,
     ):
         preflight_rules(config)
         self.base_config = config
+        self.semantic_result = semantic_result
         self.max_workers = config.concurrency.entry_workers
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
@@ -345,7 +348,14 @@ class ParallelAnalyzer:
             f"Starting parallel analysis of {total} function entries with {self.max_workers} workers"
         )
         try:
-            if total and not self.maintain_mode:
+            if total:
+                if self.base_config.project.language != "java":
+                    if self.semantic_result is None:
+                        self._global_modeling_succeeded = self._run_global_modeling(entries)
+                    if self.semantic_result is not None:
+                        self._shared_local_pattern_semantics = self.semantic_result.local_semantics
+                        self._shared_semantic_overlay = self.semantic_result.overlay
+                        self._last_global_model_stats = self.semantic_result.stats.to_dict()
                 semantics_started = time.time()
                 logger.info("[entry-worker] shared-semantics start entries=%d", total)
                 self._prepare_shared_semantics()
@@ -354,12 +364,6 @@ class ParallelAnalyzer:
                     total,
                     time.time() - semantics_started,
                 )
-                if self.base_config.analysis.enable_global_model:
-                    self._global_modeling_succeeded = self._run_global_modeling(entries)
-                    if not self._global_modeling_succeeded:
-                        raise RuntimeError(
-                            "Global semantic modeling did not complete; entry analysis was not started."
-                        )
                 self._run_project_deterministic_fact_pass(entries)
         except Exception:
             scheduler.shutdown(wait=True, cancel_futures=True)
@@ -607,6 +611,7 @@ class ParallelAnalyzer:
 
         helper = Analyzer(
             self.base_config,
+            semantic_result=self.semantic_result,
             code_index=self.code_index,
             snapshot_store=self.snapshot_store,
             user_config=self.user_config,
@@ -681,6 +686,10 @@ class ParallelAnalyzer:
         )
         self._bind_ablation_validator_policy(helper.validation_runner)
         helper.validation_runner.run(state)
+        if self.semantic_result is not None:
+            from .snapshot_candidates import update_snapshot_outcomes
+
+            update_snapshot_outcomes(self.semantic_result, self._candidate_ledger)
         state.update(self._validator_v3_outcome_summary(pending))
         self._global_validation_duration_seconds = max(0.0, time.monotonic() - started)
         self._global_validation_state = state
@@ -778,14 +787,15 @@ class ParallelAnalyzer:
         try:
             helper = Analyzer(
                 self.base_config,
+                semantic_result=self.semantic_result,
                 code_index=self.code_index,
                 snapshot_store=self.snapshot_store,
                 user_config=self.user_config,
                 force_ignore_history=self.force_ignore_history,
                 maintain_mode=self.maintain_mode,
                 candidate_ledger=self._candidate_ledger,
-                shared_local_pattern_semantics=self._get_shared_local_pattern_semantics(),
-                shared_semantic_overlay=self._get_shared_semantic_overlay(),
+                shared_local_pattern_semantics=self._shared_local_pattern_semantics,
+                shared_semantic_overlay=self._shared_semantic_overlay,
                 llm_clients=self._shared_llm_clients,
                 validation_result_cache=self._validation_result_cache,
                 cancellation_token=self._cancellation_token,
@@ -809,6 +819,7 @@ class ParallelAnalyzer:
                 self._cancellation_token.raise_if_cancelled()
                 stats = modeler.run(entries)
             self._last_global_model_stats = stats.to_dict()
+            self.semantic_result = modeler.result
             logger.info(
                 "[global-model] end entries=%d reachable=%d modeled=%d cache_hits=%d "
                 "deterministic=%d llm=%d failed=%d unresolved_entries=%d "
@@ -827,7 +838,7 @@ class ParallelAnalyzer:
             )
             if not stats.stage_complete:
                 logger.error(
-                    "[global-model] stage gate rejected entry fan-out "
+                    "[global-model] continuing with partial semantics "
                     "failed=%d unresolved_entries=%d reconcile_failed=%d",
                     stats.failed_functions,
                     stats.unresolved_entry_functions,
@@ -835,6 +846,8 @@ class ParallelAnalyzer:
                 )
                 return False
             return True
+        except CancellationError:
+            raise
         except Exception as exc:
             self._last_global_model_stats = {"error": str(exc)}
             logger.exception("[global-model] failed before entry fan-out.")
@@ -874,6 +887,7 @@ class ParallelAnalyzer:
         )
         helper = Analyzer(
             self.base_config,
+            semantic_result=self.semantic_result,
             code_index=self.code_index,
             snapshot_store=self.snapshot_store,
             user_config=self.user_config,
@@ -1625,6 +1639,7 @@ class ParallelAnalyzer:
                 write_root_reports=False,
                 defer_validation_to_scan=self._uses_scan_validation_queue(),
                 project_knowledge_service=self.project_knowledge_service,
+                semantic_result=self.semantic_result,
             )
             logger.info(
                 "[entry-worker] analyzer-ready entry=%s key=%s duration=%.2fs",
@@ -2570,6 +2585,23 @@ class ParallelAnalyzer:
         from ..benchmarking.protocol import candidate_funnel
 
         combined_report["metadata"]["candidate_funnel"] = candidate_funnel(combined_report)
+        from ..snapshots.policy import SNAPSHOT_CANDIDATE_POLICY_VERSION
+
+        combined_report["metadata"]["snapshot_candidate_policy"] = SNAPSHOT_CANDIDATE_POLICY_VERSION
+        semantic_result = getattr(self, "semantic_result", None)
+        if semantic_result is not None:
+            combined_report["metadata"][
+                "semantic_contract_version"
+            ] = semantic_result.contract_version
+            combined_report["metadata"]["semantic_modeling"] = semantic_result.stats.to_dict()
+            combined_report["metadata"][
+                "semantic_snapshot_candidates"
+            ] = semantic_result.suspicious_metrics
+            if semantic_result.partial:
+                combined_report["completeness"] = "partial"
+                combined_report["scan_outcome"] = "incomplete"
+                combined_report.setdefault("run_manifest", {})["completeness"] = "partial"
+                combined_report["run_manifest"]["scan_outcome"] = "incomplete"
 
         # Keep the exact post-validation projection available to the Markdown
         # renderer.  Entry results are deliberately only intermediate
@@ -2578,8 +2610,9 @@ class ParallelAnalyzer:
         self._last_combined_report = combined_report
 
         if output_path:
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(combined_report, f, indent=2, ensure_ascii=False)
+            from ..reporting.json_io import write_report_atomic
+
+            write_report_atomic(output_path, combined_report)
             logger.info(f"Combined report saved to: {output_path}")
 
         return combined_report

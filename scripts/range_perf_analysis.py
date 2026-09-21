@@ -29,7 +29,8 @@ TIMESTAMP_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 def _json_load(path: Path, default: Any = None) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        from zscope.reporting.json_io import read_report
+        return read_report(path)
     except (OSError, json.JSONDecodeError):
         return default
 

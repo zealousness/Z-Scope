@@ -1,3 +1,4 @@
+from semantic_fixtures import configured_test_semantics
 from zscope.core.candidates.regex import (
     RegexCandidateGenerator,
     LocalPatternSemantics,
@@ -5,7 +6,7 @@ from zscope.core.candidates.regex import (
 
 
 def _classes(code: str) -> set[str]:
-    issues = RegexCandidateGenerator().generate_issues(
+    issues = RegexCandidateGenerator(configured_test_semantics()).generate_issues(
         "entry",
         code,
         "src/demo.c",
@@ -124,7 +125,9 @@ int entry(const char* key) {
     return 0;
 }
 """
-    issues = RegexCandidateGenerator().generate_issues("entry", code, "src/demo.c")
+    issues = RegexCandidateGenerator(configured_test_semantics()).generate_issues(
+        "entry", code, "src/demo.c"
+    )
 
     assert any(
         issue.get("rule") == "object_published_by_helper_before_initialization"
@@ -143,7 +146,9 @@ int entry(plugin_callback_t cb, void* ctx) {
     return 0;
 }
 """
-    issues = RegexCandidateGenerator().generate_issues("entry", code, "src/demo.c")
+    issues = RegexCandidateGenerator(configured_test_semantics()).generate_issues(
+        "entry", code, "src/demo.c"
+    )
 
     assert any(issue.get("rule") == "callback_while_lock_held" for issue in issues)
 
@@ -240,7 +245,9 @@ int load(int should_stop) {{
     return 0;
 }}
 """
-        issues = RegexCandidateGenerator().generate_issues("load", code, "src/demo.c")
+        semantics = LocalPatternSemantics()
+        semantics.add_api("allocator", allocator, "user_config")
+        issues = RegexCandidateGenerator(semantics).generate_issues("load", code, "src/demo.c")
         observed.append(
             {
                 (issue.get("defect_class"), issue.get("rule"))
@@ -328,7 +335,7 @@ int entry(VOS_UINT32 count, VOS_UINT32 width) {
     )
 
 
-def test_safe_free_macro_is_a_default_deallocator_api() -> None:
+def test_safe_free_macro_requires_explicit_deallocator_contract() -> None:
     code = r"""
 int entry(char* p) {
     char* owned = malloc(16);
@@ -339,8 +346,7 @@ int entry(char* p) {
 """
 
     default_issues = RegexCandidateGenerator().generate_issues("entry", code, "src/demo.c")
-    assert any(issue.get("rule") == "same_pointer_freed_twice" for issue in default_issues)
-    assert all(issue.get("rule") != "same_function_allocation_not_released" for issue in default_issues)
+    assert not any(issue.get("rule") == "same_pointer_freed_twice" for issue in default_issues)
 
     semantics = LocalPatternSemantics(deallocators={"SAFE_FREE": ["user_config"]})
     configured_issues = RegexCandidateGenerator(semantics).generate_issues("entry", code, "src/demo.c")
@@ -362,7 +368,9 @@ int entry(const char* key) {
     return 0;
 }
 """
-    issues = RegexCandidateGenerator().generate_issues("entry", code, "src/demo.c")
+    issues = RegexCandidateGenerator(configured_test_semantics()).generate_issues(
+        "entry", code, "src/demo.c"
+    )
 
     assert all(
         not (
@@ -410,7 +418,9 @@ int entry(const char* key) {
     return 0;
 }
 """
-    issues = RegexCandidateGenerator().generate_issues("entry", code, "src/demo.c")
+    issues = RegexCandidateGenerator(configured_test_semantics()).generate_issues(
+        "entry", code, "src/demo.c"
+    )
 
     assert any(issue.get("rule") == "unchecked_insert_after_ownership_handoff" for issue in issues)
 
@@ -469,7 +479,7 @@ const char* entry(Node* node) {
     return value;
 }
 """
-    issues = RegexCandidateGenerator().generate_issues(
+    issues = RegexCandidateGenerator(configured_test_semantics()).generate_issues(
         "entry",
         code,
         "src/demo.c",
@@ -506,7 +516,7 @@ int entry(void) {
     assert "stale_fd" not in _classes(code)
 
 
-def test_name_heuristics_cover_custom_alloc_and_lock_wrappers() -> None:
+def test_custom_alloc_and_lock_names_require_explicit_semantics() -> None:
     code = r"""
 int entry(size_t packet_len) {
     VOS_Lock(&g_lock);
@@ -526,11 +536,17 @@ int entry(size_t packet_len) {
     )
     classes = {str(issue["defect_class"]) for issue in issues}
 
-    assert {"missing_unlock", "integer_overflow", "memory_leak"}.issubset(classes)
-    assert any(
-        "name_heuristic" in evidence
-        for issue in issues
-        for evidence in issue.get("positive_evidence", [])
+    assert not {"missing_unlock", "integer_overflow", "memory_leak"}.intersection(classes)
+    semantics = LocalPatternSemantics()
+    for role, name in (
+        ("lock", "VOS_Lock"),
+        ("unlock", "VOS_Unlock"),
+        ("allocator", "VOS_MemAlloc"),
+    ):
+        semantics.add_api(role, name, "user_config")
+    configured = RegexCandidateGenerator(semantics).generate_issues("entry", code, "src/demo.c")
+    assert {"missing_unlock", "integer_overflow", "memory_leak"}.issubset(
+        {i["defect_class"] for i in configured}
     )
 
 
@@ -541,7 +557,7 @@ int entry(size_t payload_len) {
     return response ? 0 : -1;
 }
 """
-    issues = RegexCandidateGenerator().generate_issues(
+    issues = RegexCandidateGenerator(configured_test_semantics()).generate_issues(
         "entry",
         code,
         "src/demo.c",
@@ -554,5 +570,3 @@ int entry(size_t payload_len) {
     assert "根因" in reasoning
     assert "line 3" in reasoning
     assert "Regex candidate generated" not in reasoning
-
-

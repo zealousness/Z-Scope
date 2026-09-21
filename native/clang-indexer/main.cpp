@@ -6,6 +6,7 @@
 #include "clang/Analysis/CFG.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/Version.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Index/IndexDataConsumer.h"
@@ -13,6 +14,7 @@
 #include "clang/Index/USRGeneration.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/MacroArgs.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Tooling/CompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
@@ -31,6 +33,7 @@
 #include <string>
 #include <vector>
 #include "ArgumentPolicy.h"
+#include "ArgumentCheck.h"
 #include "FunctionOwnership.h"
 
 using namespace clang;
@@ -66,6 +69,8 @@ struct State {
   std::vector<std::string> includes, excludes;
   SourceManager *sm = nullptr;
   ASTContext *context = nullptr;
+  std::string targetTriple, targetLibc;
+  std::map<std::string, int64_t> targetConstants;
   std::set<std::string> dependencies, emitted, searchDirectories;
   Object dependencyDigests;
   mutable std::map<const NamedDecl *, std::string> definitionHashes;
@@ -76,6 +81,12 @@ struct State {
   bool dependencyComplete = true;
   explicit State(llvm::raw_ostream &output) : output(output) {}
 
+  Object targetValues() const {
+    Object result{{"target.triple", targetTriple}, {"target.libc", targetLibc}};
+    if (context) result["target.pointer_bits"] = context->getTargetInfo().getPointerWidth(LangAS::Default);
+    for (const auto &item : targetConstants) result[item.first] = item.second;
+    return result;
+  }
   static bool under(llvm::StringRef path, llvm::StringRef parent) {
     return path == parent || (path.starts_with(parent) && path.size() > parent.size() &&
                               (path[parent.size()] == '/' || path[parent.size()] == '\\'));
@@ -107,6 +118,12 @@ struct State {
     return std::string(result);
   }
   Object target(const NamedDecl *decl) const {
+    // Anonymous tags are indexed through their actual typedef declaration.
+    // MemberExpr desugaring otherwise points at a tag USR with no base record.
+    const NamedDecl *referencedDecl = decl;
+    if (const auto *tag = dyn_cast<TagDecl>(decl))
+      if (tag->getName().empty())
+        if (const auto *alias = tag->getTypedefNameForAnonDecl()) decl = alias;
     const NamedDecl *definition = decl;
     if (const auto *var = dyn_cast<VarDecl>(decl)) {
       if (const auto *value = var->getDefinition()) definition = value;
@@ -115,13 +132,33 @@ struct State {
     } else if (const auto *tag = dyn_cast<TagDecl>(decl)) {
       if (const auto *value = tag->getDefinition()) definition = value;
     }
-    std::string definitionHash;
+    std::string definitionHash, typeDefinition, typeKind;
+    if (isa<TypeDecl>(definition) && sm->isInSystemHeader(sm->getSpellingLoc(definition->getLocation()))) {
+      llvm::raw_string_ostream stream(typeDefinition);
+      definition->print(stream, context->getPrintingPolicy());
+      stream.flush();
+      if (const auto *record = dyn_cast<RecordDecl>(definition)) typeKind = record->isUnion() ? "union" : "struct";
+      else typeKind = isa<EnumDecl>(definition) ? "enum" : "typedef";
+    }
     if (context && isa<TypeDecl>(definition)) {
       auto found = definitionHashes.find(definition);
       if (found == definitionHashes.end()) {
         std::string printed;
         llvm::raw_string_ostream stream(printed);
         definition->print(stream, context->getPrintingPolicy());
+        // Typedef printing can contain only the alias spelling, hiding a
+        // different preprocessor-selected layout of its underlying record.
+        if (const auto *alias = dyn_cast<TypedefNameDecl>(definition)) {
+          const TagDecl *tag = nullptr;
+          if (const auto *record = alias->getUnderlyingType()->getAs<RecordType>())
+            tag = record->getDecl();
+          else if (const auto *enumeration = alias->getUnderlyingType()->getAs<EnumType>())
+            tag = enumeration->getDecl();
+          if (tag && tag->getDefinition()) {
+            stream << "\n";
+            tag->getDefinition()->print(stream, context->getPrintingPolicy());
+          }
+        }
         stream.flush();
         auto digest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(
           reinterpret_cast<const uint8_t *>(printed.data()), printed.size()));
@@ -129,8 +166,17 @@ struct State {
       }
       definitionHash = found->second;
     }
-    return Object{{"usr", usr(decl)}, {"name", decl->getNameAsString()}, {"definition_hash", definitionHash},
-            {"qualified_name", decl->getQualifiedNameAsString()},
+    std::string qualifiedName = decl->getQualifiedNameAsString();
+    if (isa<TagDecl>(decl) && decl->getName().empty())
+      qualifiedName = "<anonymous:" + usr(decl) + ">";
+    const auto *function = dyn_cast<FunctionDecl>(decl);
+    const auto definitionLoc = sm->getSpellingLoc(definition->getLocation());
+    return Object{{"usr", usr(decl)}, {"referenced_usr", usr(referencedDecl)}, {"name", decl->getNameAsString()}, {"definition_hash", definitionHash},
+            {"is_system_header", sm->isInSystemHeader(definitionLoc)},
+            {"type_definition", typeDefinition}, {"type_kind", typeKind},
+            {"has_definition", function && function->getDefinition()},
+            {"signature", function ? function->getType().getAsString() : ""},
+            {"qualified_name", qualifiedName},
             {"location", location(definition->getLocation(), true).json()},
             {"declaration", location(decl->getLocation(), true).json()}};
   }
@@ -182,7 +228,11 @@ public:
   bool VisitTagDecl(TagDecl *decl) {
     if (!decl->isCompleteDefinition() || decl->isImplicit()) return true;
     auto loc = state.location(decl->getLocation());
-    if (!state.allowed(loc.file) || decl->getName().empty()) return true;
+    if (!state.allowed(loc.file)) return true;
+    // A typedef-backed anonymous tag is emitted once through the typedef.
+    // Other anonymous records still need their own compiler identity: nested
+    // members and local anonymous objects can be referenced independently.
+    if (decl->getName().empty() && decl->getTypedefNameForAnonDecl()) return true;
     Array members;
     if (const auto *record = dyn_cast<RecordDecl>(decl))
       for (const auto *field : record->fields())
@@ -367,14 +417,29 @@ public:
                 {"definition", "#define " + definition}, {"is_function_like", info->isFunctionLike()}});
   }
   void MacroExpands(const Token &token, const MacroDefinition &definition, SourceRange range,
-                     const MacroArgs *) override {
+                     const MacroArgs *arguments) override {
     const auto *info = definition.getMacroInfo();
     if (!info || !token.getIdentifierInfo()) return;
     auto use = state.location(range.getBegin());
     if (!state.allowed(use.file)) return;
     auto target = state.location(info->getDefinitionLoc(), true);
     if (target.file.empty()) return;
+    Array parameterMap;
+    if (arguments && info->isFunctionLike()) {
+      unsigned index = 0;
+      for (const auto *parameter : info->params()) {
+        std::string actual;
+        const auto *argument = arguments->getUnexpArgument(index);
+        for (unsigned i = 0; argument[i].isNot(tok::eof); ++i) {
+          if (!actual.empty()) actual += " ";
+          actual += pp.getSpelling(argument[i]);
+        }
+        parameterMap.push_back(Object{{"parameter", parameter->getName().str()},
+          {"argument_index", index++}, {"argument", actual}});
+      }
+    }
     state.macroUses.push_back(Object{{"kind", "macro_reference"},
+      {"parameter_map", std::move(parameterMap)}, {"invocation", state.text(range)},
       {"location", use.json()}, {"spelling", state.location(token.getLocation(), true).json()},
       {"target", Object{{"name", token.getIdentifierInfo()->getName().str()},
                          {"usr", macroIdentity(token.getIdentifierInfo()->getName(), info)},
@@ -391,6 +456,18 @@ public:
   Consumer(State &state, CompilerInstance &compiler) : state(state), compiler(compiler) {}
   void HandleTranslationUnit(ASTContext &context) override {
     state.context = &context;
+    state.targetTriple = context.getTargetInfo().getTriple().str();
+    auto &pp = compiler.getPreprocessor();
+    if (pp.getMacroDefinition(pp.getIdentifierInfo("__GLIBC__")).getMacroInfo())
+      state.targetLibc = "glibc";
+    for (const auto *name : {"EOWNERDEAD", "ETIMEDOUT"}) {
+      auto *macro = pp.getMacroDefinition(pp.getIdentifierInfo(name)).getMacroInfo();
+      if (macro && macro->getNumTokens() == 1 && macro->tokens_begin()->is(tok::numeric_constant)) {
+        int64_t value;
+        if (!llvm::StringRef(pp.getSpelling(*macro->tokens_begin())).getAsInteger(0, value))
+          state.targetConstants[name] = value;
+      }
+    }
     Declarations declarations(state);
     declarations.TraverseDecl(context.getTranslationUnitDecl());
     state.functionOwners.build(state.functions);
@@ -454,10 +531,14 @@ public:
 };
 
 int main(int argc, char **argv) {
+  if (argc >= 2 && std::string(argv[1]) == "--check-arguments")
+    return checkArguments(argc, argv);
   if (argc == 2 && std::string(argv[1]) == "--version") {
-    llvm::outs() << Value(Object{{"protocol", "zscope.clang-facts.v2"}, {"version", 2},
+    llvm::outs() << Value(Object{{"protocol", "zscope.clang-facts.v2"}, {"version", 4}, {"type_identity_version", 1},
+      {"target_origin_version", 1},
       {"clang_version", CLANG_VERSION_STRING}, {"position_encoding", "utf-8"},
       {"argument_policy_version", argumentPolicyVersion()},
+      {"argument_check_protocol", "zscope.clang-arguments.v1"},
       {"argument_policy_digest", ArgumentPolicySHA}}) << '\n';
     return 0;
   }

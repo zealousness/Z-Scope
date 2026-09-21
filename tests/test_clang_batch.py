@@ -69,6 +69,46 @@ def build(project):
     return backend.initialize(str(root), compile_commands_path=str(cdb))
 
 
+def test_native_header_call_edges_reach_definitions_in_modeling_graph(project):
+    from types import SimpleNamespace
+    from zscope.retrieval.code_index import CodeIndex
+    from zscope.config.function_entry import FunctionEntry
+    from test_incremental_semantic_modeling import modeler_for
+
+    backend, root, cdb = project
+    assert build(project)
+    index = CodeIndex(root, cdb, backend=backend, indexing_config=SimpleNamespace(backend="clang"))
+    metadata = index.find_function_metadata("use")[0]
+    assert any(c["callee_index_name"].startswith("other@b.c:") for c in metadata["project_callees"])
+    modeler = modeler_for(root, index, [])
+    graph = modeler._collect_graph([FunctionEntry("use")])
+    assert {"use", "other"} <= {key.name for key in graph.impls}
+
+
+def test_native_macro_global_carrier_reaches_workbook(project):
+    from types import SimpleNamespace
+    from zscope.retrieval.code_index import CodeIndex
+    from zscope.snapshots.modeling_input import build_semantic_model_input
+    from test_wrapper_contract_compiler import compile_all, publish
+
+    backend, root, cdb = project
+    (root / "a.c").write_text(
+        '#include "shared.h"\n#include <pthread.h>\n'
+        'static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;\n'
+        '#define ON() pthread_mutex_lock(&gate)\n'
+        '#define OFF() pthread_mutex_unlock(&gate)\n'
+        'int global;\nint use(Item *p) { ON(); OFF(); return 0; }\n', encoding="utf-8"
+    )
+    assert build(project)
+    index = CodeIndex(root, cdb, backend=backend, indexing_config=SimpleNamespace(backend="clang"))
+    contexts = [build_semantic_model_input(index, name) for name in ("ON", "OFF")]
+    assert all(c["referenced_globals"][0]["name"] == "gate" for c in contexts)
+    snapshots = compile_all(contexts)
+    _, semantics, _ = publish(root, snapshots)
+    assert semantics.contracts.find("ON")[0].carrier.global_name == "gate"
+    assert semantics.contracts.allows("ON", "OFF")
+
+
 def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
     executable = os.environ.get("Z_SCOPE_TEST_CLANG_INDEXER")
     if not executable:
@@ -84,7 +124,8 @@ def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
         "void macro_release(int *p) { TWICE(p); }\n"
         "void comma_release(int *p) { free(p), free(p); }\n"
         "void private_fields() { State local; local.total++; thread_local State tls; tls.total++; }\n"
-        "struct Guard { ~Guard(); };\nvoid cleanup() { Guard guard; }\n",
+        "struct Guard { ~Guard(); };\nvoid cleanup() { Guard guard; }\n"
+        "int conditional(int n) { if (n > 0) return n; return 0; }\n",
         encoding="utf-8",
     )
     cdb = tmp_path / "compile_commands.json"
@@ -95,6 +136,7 @@ def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
         assert backend.initialize(str(tmp_path), compile_commands_path=str(cdb))
         facts = backend.get_function_program_facts("demo", "events.cpp")
         assert facts["complete"]
+        assert facts["functions"][0]["fact_version"] == "zscope.program-events.v4"
         assert facts["functions"][0]["cfg_edges"]
         assert {row["resource_family"] for row in facts["events"]} >= {"new_array"}
         releases = [row for row in facts["events"] if row["event_kind"] == "release"]
@@ -110,6 +152,11 @@ def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
         assert not backend.get_function_program_facts("private_fields", "events.cpp")["accesses"]
         cleanup = backend.get_function_program_facts("cleanup", "events.cpp")
         assert any(event["event_kind"] == "implicit_release" and event["object"]["usr"] for event in cleanup["events"])
+        branches = backend.get_function_program_facts("conditional", "events.cpp")
+        assert {edge["branch"] for edge in branches["functions"][0]["cfg_edges"] if edge["condition"]} == {"true", "false"}
+        assert {event["return_value"] for event in branches["events"] if event["event_kind"] == "return"} == {"n", "0"}
+        calls = backend.get_function_program_facts("macro_release", "events.cpp")
+        assert any(event.get("callee", {}).get("usr") and event["arguments"] == ["p"] for event in calls["events"] if event["event_kind"] == "call")
         from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
         generator = ClangAstCfgCandidateGenerator(program_facts_provider=backend.get_function_program_facts)
         for name, line in (("macro_release", 6), ("comma_release", 7)):
@@ -370,3 +417,32 @@ def test_many_homonyms_use_compiler_identity(project, count):
 
 def test_missing_tool_handshake():
     assert find_indexer("zscope-indexer-does-not-exist-48323") is None
+
+
+def test_system_declarations_are_covered_without_source_modeling(project):
+    from types import SimpleNamespace
+    from zscope.retrieval.code_index import CodeIndex
+    from zscope.config.function_entry import FunctionEntry
+    from test_incremental_semantic_modeling import modeler_for
+
+    backend, root, cdb = project
+    (root / "a.c").write_text(
+        '#include <stdlib.h>\n#include <pthread.h>\n#include <stdio.h>\n'
+        'int use(void) { void *p = malloc(8); free(p); pthread_mutex_t m; '
+        'pthread_mutex_init(&m, NULL); pthread_mutex_destroy(&m); return puts("ok"); }\n',
+        encoding="utf-8",
+    )
+    assert build(project)
+    records = backend.get_callees("use", limit=100)
+    assert all(r["callee_kind"] == "system_function" for r in records)
+    assert all(r["callee_signature"] for r in records)
+    # A macro-origin lookup may only have an unresolved name record; origin is
+    # recovered from the compiler declaration, not from the API spelling.
+    index = CodeIndex(root, cdb, backend=backend, indexing_config=SimpleNamespace(backend="clang"))
+    assert index.call_model_status("pthread_mutex_init", "MACRO", {"callee_name": "pthread_mutex_init"}) == "standard_model"
+    graph = modeler_for(root, index, [])._collect_graph([FunctionEntry("use")])
+    assert {k.name for k in graph.impls} == {"use"}
+    assert not graph.unresolved
+    assert {k.name for k, value in graph.external_models.items() if value == "standard_model"} >= {
+        "malloc", "free", "pthread_mutex_init", "pthread_mutex_destroy",
+    }

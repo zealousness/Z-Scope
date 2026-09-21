@@ -149,6 +149,7 @@ class ClangAstCfgCandidateGenerator(
         if semantics is not None:
             self.semantics.merge(semantics)
         self.semantic_overlay = semantic_overlay or {}
+        self.semantics.merge_overlay(self.semantic_overlay)
         self.tooling_evidence_provider = tooling_evidence_provider
         self.rule_policy = rule_policy
         self.program_facts_provider = program_facts_provider
@@ -163,27 +164,35 @@ class ClangAstCfgCandidateGenerator(
         *,
         allowed_skills: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
+        self._function_name = str(func_name).split("@", 1)[0].rsplit("::", 1)[-1]
         lines = self._parse_lines(code)
+        self.last_semantic_events = self.semantics.contracts.trace_calls(
+            {"func_name": func_name, "file_path": file_path, "code": code}
+        )
         self.program_facts = (
             self.program_facts_provider(func_name, file_path)
-            if self.program_facts_provider is not None else {}
+            if self.program_facts_provider is not None
+            else {}
         )
         if not lines:
             return []
         allowed = set(allowed_skills) if allowed_skills is not None else None
         issues: List[Dict[str, Any]] = []
-        run_detector_plan(
-            "clang_ast_cfg",
-            "function",
-            ClangRuleContext(
-                generator=self,
-                issues=issues,
-                func_name=func_name,
-                file_path=file_path,
-                lines=lines,
-                allowed_skills=allowed,
-            ),
-        )
+        from ...semantics.call_context import bind_call_context
+        with bind_call_context({"func_name": func_name, "file_path": file_path, "code": code,
+                                "program_facts": self.program_facts}, self.semantics.contracts):
+            run_detector_plan(
+                "clang_ast_cfg",
+                "function",
+                ClangRuleContext(
+                    generator=self,
+                    issues=issues,
+                    func_name=func_name,
+                    file_path=file_path,
+                    lines=lines,
+                    allowed_skills=allowed,
+                ),
+            )
         return self._dedupe(issues)
 
     def generate_tickets(
@@ -265,7 +274,7 @@ class ClangAstCfgCandidateGenerator(
         # candidate behavior; user-defined wrappers join through semantics,
         # checker defaults, and semantic-overlay rows.
         self._send_sink_names = (
-            {"send", "write", "sendto", "sendmsg", "_net_send_data"}
+            {"send", "write", "sendto", "sendmsg"}
             | self._semantics_names(semantics, "send_sinks")
             | self._checker_defaults("extended_send_sinks")
         )
@@ -280,15 +289,13 @@ class ClangAstCfgCandidateGenerator(
             | self._checker_defaults("extended_io_acquirers")
         )
         self._recv_source_names = (
-            {"recv", "read", "recvfrom", "_net_recv_data"}
+            {"recv", "read", "recvfrom"}
             | self._semantics_names(semantics, "recv_sources")
             | self._checker_defaults("extended_recv_sources")
         )
-        self._callback_registrar_names = (
-            {"register_callback"}
-            | self._semantics_names(semantics, "callback_registrars")
-            | self._checker_defaults("extended_callback_registrars")
-        )
+        self._callback_registrar_names = self._semantics_names(
+            semantics, "callback_registrars"
+        ) | self._checker_defaults("extended_callback_registrars")
         self._io_acquire_names = self._semantics_names(
             semantics, "io_acquirers"
         ) | self._checker_defaults("extended_io_acquirers")
@@ -301,8 +308,16 @@ class ClangAstCfgCandidateGenerator(
         self._user_io_release_names = semantics.names_from_nondefault_sources("io_releasers")
         self._user_send_sink_names = semantics.names_from_nondefault_sources("send_sinks")
         self._user_recv_source_names = semantics.names_from_nondefault_sources("recv_sources")
-        self._macro_lock_names: Set[str] = set()
-        self._macro_unlock_names: Set[str] = set()
+        self._macro_lock_names: Set[str] = {
+            c.symbol.name
+            for c in semantics.contracts.contracts
+            if c.role == "lock" and c.symbol.symbol_type == "macro"
+        }
+        self._macro_unlock_names: Set[str] = {
+            c.symbol.name
+            for c in semantics.contracts.contracts
+            if c.role == "unlock" and c.symbol.symbol_type == "macro"
+        }
 
         self._return_acquirers = set(
             self._allocator_names | self._calloc_names | self._reallocator_names
@@ -310,22 +325,26 @@ class ClangAstCfgCandidateGenerator(
         self._out_param_acquirers: Set[str] = set()
         self._release_names = set(self._deallocator_names)
 
-        _RESOURCE_KIND_RETURN_ACQUIRERS = {"allocator", "calloc", "reallocator", "resource", "resource_acquire"}
+        _RESOURCE_KIND_RETURN_ACQUIRERS = {
+            "allocator",
+            "calloc",
+            "reallocator",
+            "resource",
+            "resource_acquire",
+        }
         for row in self._overlay_rows("resource_models"):
             name = str(row.get("name") or "").strip()
             if not self._is_ident(name):
                 continue
             kind = str(row.get("kind") or "").lower()
             carrier = str(row.get("carrier") or "").lower()
-            text = " ".join(
-                str(row.get(key) or "")
-                for key in ("description", "return_semantics", "memory_behavior")
-            ).lower()
+            binding = row.get("object_binding") or {}
             if kind in _RESOURCE_KIND_RETURN_ACQUIRERS:
                 if carrier == "return_value":
                     self._return_acquirers.add(name)
-                if self._mentions_output_argument(text):
+                if binding.get("kind") == "output_argument":
                     self._out_param_acquirers.add(name)
+                    self._return_acquirers.discard(name)
             if kind in {"deallocator", "resource_release"}:
                 self._release_names.add(name)
             if kind == "copy" or carrier == "copy_arguments":
@@ -333,7 +352,7 @@ class ClangAstCfgCandidateGenerator(
             if kind == "io_acquire":
                 self._io_acquire_names.add(name)
                 self._user_io_acquire_names.add(name)
-                if self._mentions_output_argument(text):
+                if binding.get("kind") == "output_argument":
                     self._out_param_acquirers.add(name)
             if kind == "io_release":
                 self._io_release_names.add(name)
@@ -354,41 +373,58 @@ class ClangAstCfgCandidateGenerator(
             if not self._is_ident(name):
                 continue
             kind = str(row.get("kind") or "").lower()
-            raw_behavior = row.get("concurrency_behavior")
-            behavior: Dict[str, Any] = raw_behavior if isinstance(raw_behavior, dict) else {}
-            description = str(row.get("description") or "").lower()
-            haystack = " ".join(
-                [kind, description, " ".join(str(v).lower() for v in behavior.values())]
-            )
-            if (
-                kind == "lock"
-                or behavior.get("acquires_lock")
-                or "acquire" in haystack
-                and "lock" in haystack
-            ):
+            if kind == "lock":
                 self._macro_lock_names.add(name)
-            if (
-                kind == "unlock"
-                or behavior.get("releases_lock")
-                or "release" in haystack
-                and "lock" in haystack
-            ):
+            if kind == "unlock":
                 self._macro_unlock_names.add(name)
 
+        for name in (
+            self._allocator_names
+            | self._calloc_names
+            | self._reallocator_names
+            | self._io_acquire_names
+        ):
+            contracts = [
+                c
+                for c in semantics.contracts.find(name)
+                if c.role in {"allocator", "calloc", "reallocator", "io_acquire"}
+            ]
+            if not contracts:
+                continue
+            if any(c.carrier.kind == "return" for c in contracts):
+                self._return_acquirers.add(name)
+            else:
+                self._return_acquirers.discard(name)
+            if any(c.carrier.kind == "output_argument" for c in contracts):
+                self._out_param_acquirers.add(name)
+            else:
+                self._out_param_acquirers.discard(name)
+        # A project definition shadows a same-spelled standard declaration.
+        # Explicitly published project roles remain eligible; bare builtin sets do not.
+        for attr, value in vars(self).copy().items():
+            if isinstance(value, set) and (attr.endswith("_names") or attr.endswith("_acquirers")):
+                for name in semantics.contracts.shadowed_symbols:
+                    if not any(c.effects_trusted for c in semantics.contracts.find(name)):
+                        value.discard(name)
         self._alloc_call_re = self._call_re(self._return_acquirers)
         self._out_acquire_call_re = self._call_re(self._out_param_acquirers)
-        self._realloc_call_re = self._call_re(self._reallocator_names)
+        self._realloc_call_re = self._call_re(self._reallocator_names & self._return_acquirers)
         self._release_call_re = self._call_re(self._release_names)
         self._lock_call_re = self._call_re(
-            self._lock_names, extra_patterns=[r"pthread_rwlock_[rw]dlock"]
+            self._lock_names, extra_patterns=[r"pthread_rwlock_(?:rdlock|wrlock)"]
         )
         self._unlock_call_re = self._call_re(self._unlock_names)
         self._send_call_re = self._call_re(self._send_sink_names)
         self._recv_call_re = self._call_re(self._recv_source_names)
         self._format_call_re = self._call_re(self._format_sink_names)
-        self._io_acquire_call_re = self._call_re(self._io_acquire_names)
+        self._io_acquire_call_re = self._call_re(self._io_acquire_names & self._return_acquirers)
         self._io_release_call_re = self._call_re(self._io_release_names)
         self._callback_registrar_call_re = self._call_re(self._callback_registrar_names)
+
+    def _semantic_api_pattern(self, pattern: str) -> str:
+        from ...semantics.contracts import expand_api_pattern
+
+        return expand_api_pattern(pattern, self.semantics)
 
     _FD_OPEN_EXCLUDED_NAMES = {"fopen", "fdopen", "freopen", "popen"}
 
@@ -480,6 +516,8 @@ class ClangAstCfgCandidateGenerator(
             ]
         )
         evidence_pack = {
+            "contract_version": self.semantics.contracts.version,
+            "interface_inference_is_proof": False,
             "candidate_id": candidate_id,
             "candidate_source": "clang_ast_cfg",
             "checker": "clang_ast_cfg_checker",
@@ -622,28 +660,34 @@ class ClangAstCfgCandidateGenerator(
         return result
 
     def _match_release(self, text: str) -> Optional[Tuple[str, str]]:
-        call = self._release_call_re.search(text)
+        call = self._first_operation_call(self._release_call_re, text)
         if not call:
             return None
-        return call.group("api"), self._first_arg(call.group("args"))
+        api = call.group("api")
+        obj = self.semantics.contracts.resolve_object(
+            api, "deallocator", self._split_args(call.group("args"))
+        )
+        return (api, obj) if obj else None
 
     def _match_lock(self, text: str) -> Optional[Tuple[str, str]]:
-        call = self._lock_call_re.search(text)
+        call = self._first_operation_call(self._lock_call_re, text)
         if not call:
             return None
-        return (
-            call.group("api"),
-            self._resource_var(self._first_arg(call.group("args"))) or "global_lock",
+        api = call.group("api")
+        obj = self.semantics.contracts.resolve_object(
+            api, "lock", self._split_args(call.group("args"))
         )
+        return (api, obj) if obj else None
 
     def _match_unlock(self, text: str) -> Optional[Tuple[str, str]]:
-        call = self._unlock_call_re.search(text)
+        call = self._first_operation_call(self._unlock_call_re, text)
         if not call:
             return None
-        return (
-            call.group("api"),
-            self._resource_var(self._first_arg(call.group("args"))) or "global_lock",
+        api = call.group("api")
+        obj = self.semantics.contracts.resolve_object(
+            api, "unlock", self._split_args(call.group("args"))
         )
+        return (api, obj) if obj else None
 
     def _is_var_redefined(self, text: str, var: str) -> bool:
         return bool(re.search(rf"\b{re.escape(var)}\s*=", text))
@@ -696,16 +740,14 @@ class ClangAstCfgCandidateGenerator(
             or re.match(r"(?:case\b|default\b)", stripped)
         )
 
-    @staticmethod
-    def _release_followed_by_return(lines: Sequence[ClangCfgLine], line: ClangCfgLine) -> bool:
+    def _release_followed_by_return(
+        self, lines: Sequence[ClangCfgLine], line: ClangCfgLine
+    ) -> bool:
         for item in lines[line.index + 1 : line.index + 5]:
             text = item.text.strip()
             if not text or text in {"}", "};"}:
                 continue
-            if re.fullmatch(
-                r"(?:UNLOCK|pthread_mutex_unlock|spin_unlock|mtx_unlock)\s*\([^;]*\)\s*;",
-                text,
-            ):
+            if self._match_unlock(text) and not re.search(r"\breturn\b", text):
                 continue
             return bool(re.search(r"\breturn\b", text))
         return False
@@ -727,9 +769,43 @@ class ClangAstCfgCandidateGenerator(
         for match in self._CALL_NAME_RE.finditer(text):
             api = match.group(1)
             args = self._extract_call_args(text, match.end() - 1)
-            if args is not None:
+            if args is not None and not self._is_function_declarator(
+                text, api, match.start(), match.end() + len(args) + 1
+            ):
                 calls.append((api, args))
         return calls
+
+    def _first_operation_call(self, pattern: re.Pattern[str], text: str) -> Optional[re.Match[str]]:
+        return next(
+            (
+                match
+                for match in pattern.finditer(text)
+                if not self._is_function_declarator(
+                    text, match.group("api"), match.start(), match.end()
+                )
+            ),
+            None,
+        )
+
+    def _is_function_declarator(self, text: str, api: str, start: int, after: int) -> bool:
+        """Exclude the scanned function's declaration, preserving body/recursive calls.
+
+        Interface recognition must not turn its own typed parameter list into an
+        allocation or lock event. This uses declaration syntax and the indexed
+        function identity, never a naming convention for project interfaces.
+        """
+        if api != getattr(self, "_function_name", ""):
+            return False
+        prefix = text[:start].strip()
+        if not prefix:
+            return text[after:].lstrip().startswith("{")
+        if re.search(
+            r"\b(?:return|co_return|throw|if|while|for|switch|sizeof|alignof|new|delete)\b", prefix
+        ):
+            return False
+        # A type/qualifier prefix cannot contain a statement, assignment, call,
+        # or expression operator. Calls in an initializer remain executable.
+        return bool(re.fullmatch(r"[A-Za-z_][\w\s:*&<>,\[\]]*", prefix))
 
     @staticmethod
     def _resource_var(arg: str) -> str:
@@ -856,6 +932,21 @@ class ClangAstCfgCandidateGenerator(
     def _overlay_rows(self, key: str) -> List[Dict[str, Any]]:
         if not isinstance(self.semantic_overlay, dict):
             return []
+        if "api_contracts" in self.semantic_overlay:
+            rows = []
+            for contract in self.semantics.contracts.contracts:
+                if not contract.effects_trusted or contract not in self.semantics.contracts.find(contract.symbol.name):
+                    continue
+                is_lock = contract.role in {"lock", "unlock", "lock_init", "lock_destroy", "lock_wait", "lock_state"}
+                if key == "macro_models" and contract.symbol.symbol_type != "macro":
+                    continue
+                if key == "resource_models" and is_lock or key == "lock_models" and not is_lock:
+                    continue
+                rows.append({"name": contract.symbol.name, "kind": contract.role,
+                             "symbol_type": contract.symbol.symbol_type,
+                             "carrier": "return_value" if contract.carrier.kind == "return" else contract.carrier.kind,
+                             "object_binding": contract.to_dict()["carrier"]})
+            return rows
         rows = self.semantic_overlay.get(key) or []
         return [dict(row) for row in rows if isinstance(row, dict)]
 
@@ -897,16 +988,19 @@ class ClangAstCfgCandidateGenerator(
             "program_fact_version": "zscope.program-events.v1",
             "compiler_cfg_complete": bool(self.program_facts.get("complete")),
             "compiler_cfg_edges": [
-                edge for function in self.program_facts.get("functions", [])
+                edge
+                for function in self.program_facts.get("functions", [])
                 for edge in function.get("cfg_edges", [])
             ],
             "compiler_events": [
-                event for event in self.program_facts.get("events", [])
+                event
+                for event in self.program_facts.get("events", [])
                 if (event.get("location") or {}).get("line") in cfg_path
             ],
             "ordering_known": all(line.ordered for line in lines),
             "shared_accesses": [
-                access for access in self.program_facts.get("accesses", [])
+                access
+                for access in self.program_facts.get("accesses", [])
                 if (access.get("location") or {}).get("line") in cfg_path
             ],
             "statement_count": len(lines),
@@ -915,6 +1009,15 @@ class ClangAstCfgCandidateGenerator(
             "condition_guards": self._condition_guards(lines),
             "scope_summary": self._scope_summary(lines),
             "events": events,
+            "unresolved_interface_effects": [
+                event
+                for event in getattr(self, "last_semantic_events", [])
+                if not event.get("effects_trusted")
+                or (
+                    event.get("role") in {"deallocator", "unlock", "ownership_transfer"}
+                    and event.get("applicability") == "unknown"
+                )
+            ],
             "cfg_path": cfg_path,
             "path_constraints": self._path_constraints(lines, cfg_path),
         }

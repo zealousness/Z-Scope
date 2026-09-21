@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..common.utils import extract_json_blocks
 from ..config.user_config_workbook import SHEET_HEADERS
-from ..core.candidates.regex import RegexCandidateGenerator
+from ..semantics.models import classify_api_name
 from ..semantics.defaults import default_local_pattern_semantics
 
 
@@ -1291,7 +1291,7 @@ def _has_action_token(name: str, action: str) -> bool:
 def _classify_symbol_name(name: str) -> str:
     if _looks_like_constant_config_symbol(name):
         return ""
-    regex_role = RegexCandidateGenerator._classify_api_name(name)
+    regex_role = classify_api_name(name)
     if regex_role and _role_has_api_action_shape(name, regex_role):
         return regex_role
     lower = name.lower()
@@ -1398,7 +1398,8 @@ def _roles_from_snapshots(snapshot_dir: Optional[Path]) -> List[Tuple[str, str, 
         if not isinstance(snapshot, dict):
             continue
         name = str(snapshot.get("func_name") or "")
-        kind = _classify_snapshot_text(json.dumps(snapshot, ensure_ascii=False).lower())
+        interface_input = {key: value for key, value in snapshot.items() if key != "suspicious_points"}
+        kind = _classify_snapshot_text(json.dumps(interface_input, ensure_ascii=False).lower())
         if name and kind:
             roles.append((name, kind, 0.80))
     return roles

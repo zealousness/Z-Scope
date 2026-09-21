@@ -313,7 +313,7 @@ def test_lifecycle_snapshot_filters_entry_and_excludes_triage_leads() -> None:
 
     snapshot = ledger.lifecycle_snapshot(entry_identity="entry_a")
 
-    assert snapshot["candidate_schema_version"] == "zscope.candidate.v3.3"
+    assert snapshot["candidate_schema_version"] == "zscope.candidate.v3.4"
     assert len(snapshot["records"]) == 1
     assert snapshot["records"][0]["validation_cluster_uid"] == (obligation.validation_cluster_uid)
     assert snapshot["records"][0]["entry_count"] == 1

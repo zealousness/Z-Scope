@@ -30,6 +30,7 @@ from ..reporting.schema import (
     report_reuse_blockers,
     unresolved_obligation_count as count_unresolved_obligations,
 )
+from ..reporting.json_io import write_report_atomic
 from .entry_discovery import EntryDiscovery
 from .java_entry_discovery import JavaEntryDiscovery
 from .diff_impact import DiffImpactPlanner
@@ -144,6 +145,7 @@ class ScanSessionRunner:
             steps = self._selected_workflow_steps()
             self.session_executor.execute(state, steps)
             self._ensure_batch_entries(state)
+            self._ensure_semantic_phase(state)
 
             if state.get("batch_mode"):
                 return self._run_batch(state, steps)
@@ -360,6 +362,7 @@ class ScanSessionRunner:
             return False
 
         self._ensure_batch_entries(state)
+        self._ensure_semantic_phase(state)
         if not state.get("batch_mode"):
             return False
 
@@ -375,6 +378,18 @@ class ScanSessionRunner:
                 code_index,
                 entry,
             )
+            semantic_result = state.get("semantic_result")
+            if semantic_result is not None:
+                from ..snapshots.policy import SNAPSHOT_CANDIDATE_POLICY_VERSION
+
+                if (
+                    semantic_result.partial
+                    or (saved_report or {}).get("metadata", {}).get("snapshot_candidate_policy")
+                    != SNAPSHOT_CANDIDATE_POLICY_VERSION
+                    or (saved_report or {}).get("metadata", {}).get("semantic_contract_version")
+                    != semantic_result.contract_version
+                ):
+                    saved_report = None
             if saved_report:
                 blockers = report_reuse_blockers(saved_report)
                 if blockers:
@@ -399,6 +414,38 @@ class ScanSessionRunner:
             f"Skipped {len(skipped)} already-completed functions, " f"{len(remaining)} remaining."
         )
         return False
+
+    def _ensure_semantic_phase(self, state: Dict[str, Any]) -> None:
+        if self.config.project.language == "java" or state.get("semantic_result") is not None:
+            return
+        self._ensure_batch_entries(state)
+        entries = list(state.get("all_entries") or state.get("entries") or [])
+        if not entries and self.config.project.entry_function:
+            entries = [
+                FunctionEntry(
+                    self.config.project.entry_function,
+                    file_path=self.config.project.entry_file_path,
+                    signature=self.config.project.entry_signature,
+                )
+            ]
+        if not entries:
+            return
+        code_index = self._ensure_code_index(state, defer_svf=True)
+        if state.get("llm_clients") is None:
+            state["llm_clients"] = ParallelAnalyzer._build_shared_llm_clients(self.config)
+        self.emit("Modeling entry-reachable functions before rule scanning...")
+        helper = Analyzer(
+            self.config,
+            code_index=code_index,
+            llm_clients=state["llm_clients"],
+            project_knowledge_service=state.get("project_knowledge_service"),
+            cancellation_token=self._cancellation_token,
+            write_root_reports=False,
+        )
+        try:
+            state["semantic_result"] = helper.prepare_semantics(entries)
+        finally:
+            helper.close()
 
     @staticmethod
     def _entry_report_file_path(entry: FunctionEntry) -> Optional[str]:
@@ -601,6 +648,7 @@ class ScanSessionRunner:
             self._ensure_svf_for_entries(state, entries)
 
         parallel_kwargs: Dict[str, Any] = {}
+        parallel_kwargs["semantic_result"] = state.get("semantic_result")
         if state.get("wiki_compile_completed"):
             parallel_kwargs["project_knowledge_service"] = state.get("project_knowledge_service")
             parallel_kwargs["llm_clients"] = state.get("llm_clients")
@@ -630,7 +678,7 @@ class ScanSessionRunner:
             report_started = time.monotonic()
             combined_report = parallel_analyzer.generate_combined_report(
                 state["results"],
-                json_report_path,
+                None,
             )
             parallel_analyzer.generate_combined_markdown_report(
                 state["results"],
@@ -640,10 +688,7 @@ class ScanSessionRunner:
             self._annotate_task_report(combined_report)
             combined_report.setdefault("summary", {})["report_tail_seconds"] = report_tail_seconds
             combined_report.setdefault("metadata", {})["report_tail_seconds"] = report_tail_seconds
-            json_report_path.write_text(
-                json.dumps(combined_report, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+            write_report_atomic(json_report_path, combined_report)
 
             total_issues = combined_report["summary"]["total_issues"]
             functions_analyzed = combined_report["summary"]["functions_analyzed"]
@@ -709,6 +754,7 @@ class ScanSessionRunner:
         )
         try:
             analyzer_kwargs: Dict[str, Any] = {}
+            analyzer_kwargs["semantic_result"] = state.get("semantic_result")
             if state.get("wiki_compile_completed"):
                 analyzer_kwargs["project_knowledge_service"] = state.get(
                     "project_knowledge_service"

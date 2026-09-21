@@ -137,7 +137,7 @@ def test_older_glibc_failure_requires_recorded_reason():
         check_smoke(evidence, "aarch64", "cpp", "a" * 64, "2.38")
 
 
-@pytest.mark.parametrize("check", ["clang-batch", "clang-batch-references", "clang-batch-cache"])
+@pytest.mark.parametrize("check", ["clang-batch", "clang-batch-references", "clang-batch-cache", "compile-commands-preparation"])
 def test_cpp_smoke_requires_batch_extraction_and_cache(check):
     evidence = smoke()
     evidence["runs"][1]["checks"].pop(check)

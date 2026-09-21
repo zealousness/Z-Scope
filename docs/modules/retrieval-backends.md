@@ -5,6 +5,8 @@ covers:
 sources:
   - zscope/retrieval/code_index.py
   - zscope/retrieval/validation_facts.py
+  - zscope/retrieval/lifecycle_analysis.py
+  - zscope/retrieval/claim_paths.py
   - zscope/retrieval/knowledge_db.py
   - zscope/retrieval/clang_backend.py
   - zscope/retrieval/clang_batch.py
@@ -18,6 +20,8 @@ sources:
   - zscope/retrieval/clang_derived_cache.py
   - zscope/retrieval/clang_source_snapshot.py
   - zscope/retrieval/compiler_compat.py
+  - zscope/retrieval/compile_commands_prepare.py
+  - zscope/retrieval/compile_preflight.py
   - zscope/retrieval/clang_extractor_pool.py
   - zscope/retrieval/joern_backend.py
   - zscope/retrieval/unified_backend.py
@@ -32,10 +36,12 @@ tests:
   - tests/test_code_index_cache.py
   - tests/test_function_lookup_index.py
   - tests/test_review_fact_checks.py
+  - tests/test_lifecycle_obligations.py
   - tests/test_clang_incremental_extraction.py
   - tests/test_clang_batch.py
   - tests/test_clang_batch_arguments.py
   - tests/test_compiler_compat.py
+  - tests/test_compile_commands_prepare.py
   - tests/test_clang_source_snapshot.py
   - tests/test_clang_identity_validation.py
   - tests/test_clang_cache_pressure.py
@@ -62,6 +68,12 @@ tests:
 本子系统负责把 C/C++ 或 Java 源码、编译数据库和外部分析器转换为可查询事实：函数、类型、调用边、AST/CFG、间接调用、指针/值流、结构/信号 provider 和缓存状态。`CodeIndex` 为上层提供统一门面；C/C++ 使用 regex、Clang、Unified，Java 使用 java_source 或 java_unified。
 
 它不负责决定候选是否成为最终漏洞，不负责模型提示词，也不负责报告视图。
+
+`lifecycle_analysis.py` 将编译器 AST 和路径分支转换为逐次获取的对象义务，复用扫描级事实缓存。义务绑定获取位置、编译上下文、对象赋值版本、资源族、池身份和契约版本；合法释放必须匹配同一对象与资源域。返回和未改写的输出参数可转移本函数义务，赋给全局/成员或传入不透明容器仍保留所有者清理缺口。循环、异常、汇编、未解析偏移和条件效果不完整时不得签发全路径反证。
+
+生命周期事实 v2 的路径约束使用 `branch_taken` 布尔值记录条件成立或不成立，并保留表达式和源码行号。该版本参与事实缓存身份，旧版派生事实重新计算，不重做底层编译事实或语义建模。候选及完整事实通过检查点保存与共享引用重读时不得丢失分支信息；检查点仍拒绝 `truth`、评分标签等离线答案字段，不通过放宽隔离校验来兼容旧字段。
+
+KnowledgeDB 的调用边查询枚举全部获取站点，不以同函数出现释放函数名过滤。名称查询仍可供检索使用；泄漏判断交由共享对象事实和 Validator。`claim_paths.py` 独立检查报告的操作是否能到达报告的观察点，不从互斥分支拼接锁状态，也不推断隐藏的加锁返回值。
 
 ## 主入口和数据流
 
@@ -114,7 +126,10 @@ tests:
 - bitcode 裁剪、符号闭包、共享/互斥 pool 和回退原因必须保留 manifest 供审计。
 - WPA/Saber worker 只执行工具并返回结果；协调线程负责检查点、状态及 KnowledgeDB 导入。并发同时受 CPU、容器限制与当前可用内存 75% 的总预算约束；每进程预留完整 `heap_limit_mb`，不能把单进程堆预算当作所有 worker 共享额度。
 - bitcode 缓存必须校验源文件、实际头文件、搜索目录、编译参数及工具身份；无依赖证明不得持久复用，禁止仅按时间戳判断有效。普通 TU 由匹配 llvm-link 主版本的 Clang 直接生成 bitcode，包装器保留 gllvm 路径。WPA/Saber 成功产物按内容、工具、模型和分析参数复用，worker 数变化不使成功结果失效；每个组仍有独立的导入状态。
-- batch、直接 Clang 和 gllvm 共用版本化参数策略及契约测试：忽略 `-Werror` 提升，只按真实编译器未知选项诊断重试一次，原始命令与响应文件不改写。LibTooling 保留结构化诊断；gllvm 子编译器诊断独立落盘，不从交错的包装器输出猜测。策略与适配器身份进入缓存，失败首轮产物不发布。
+- 创建 TU/bitcode 任务及启动 clangd 前，`compile_commands_prepare` 在真实数据库路径的进程间锁内备份并原子改写原始 `compile_commands.json`；三条后端共用有效命令及同代准备凭据。`directory/file/output`、条目顺序和变体不变，改写条目使用 `arguments`。同目录 `.zscope-compile-commands/` 保存按摘要寻址的不可覆盖备份、报告、预检缓存及兼容响应文件；原始响应文件不改动且继续参与失效校验。无变化不更新时间戳，策略、工具或响应文件变化从原始备份重新处理。
+- 参数策略 v3 消除命令行 warning 提升（含 pedantic、旧式 implicit-function 及汇编器/链接器转发），保留普通 warning。Linux x86_64 上下文移除选项位置的遗留 `-m32` 并补 `-m64`；显式冲突 target/x32 在改写前失败，其他架构不套用此修正。参数操作数、项目宏、sysroot 和真实源码错误不能当作不兼容选项删除。
+- `compile_preflight` 按实际工具、语言、目标、目录、环境和参数上下文合并检查，并发不超过 4。批量工具 `--check-arguments` 使用绑定 SDK 的 driver/CompilerInvocation/诊断选项解析，独立 SVF 使用配套 Clang 的 driver dry-run 和 cc1 help 参数检查；两者均不解析真实 TU、不生成 AST/对象/bitcode。每组每工具最多两轮，共享 10 秒；只能持久复用已验证的未知参数修正。扩展参数、超时及缺少检查能力记录 unverified；clangd 身份单独记录，不声称 Clang 18 的预检覆盖 clangd 22。
+- 当前扫描代次不再改写公共数据库；后台类型任务复用准备凭据，原始/兼容响应文件加入会话输入监测，禁止逐函数重新哈希整个数据库。显式基础刷新先停止旧任务，再准备新代次。运行阶段 batch、直接 Clang 和 gllvm 仍保留一次真实诊断重试，调整仅限本任务；优化、调试及输出参数仍属于各自阶段。gllvm 子编译器诊断独立落盘，失败首轮产物不发布，第二轮失败仍进入 failed_tus。
 - 派生位置解析复用会话路径与源码快照，文件系统校验放在任务/发布边界；路径、文件版本和符号链接目标变化拒绝旧结果。快照与现有缓存共用字节预算，路径/版本元数据与源码正文分别保留容量；坐标直接从当前快照转换，不为每个坐标建立缓存项而挤掉源码工作集。冷快照只在会话 TEMP 表保存，任务校验和检查点按批读取轻量版本凭据，不为校验反复载入正文。文件检查点仅在完成校验成功后保存，发布前仍重新校验。symbol context 完成后才交接后台类型收集，交接日志与消费者等待日志明确区分。
 - 派生缓存使用同一预算内的固定大小存在性过滤器，跳过已证明不存在的新键的 SQLite 查询；过滤器命中仅表示可能存在，必须继续查真实缓存。恢复时先装载全部已持久化键，过滤器误判或饱和不能改变绑定及失效结果。JSON 解码不得持有共享登记锁；统计分别报告 SQL 查询数、读取/写入字节及被跳过的空查询。
 - 输入目录校验只排除分析器拥有的缓存和数据库文件；同一目录中的真实头文件、其他缓存目录里的构建输入仍参与失效判断。
@@ -155,6 +170,8 @@ python -m pytest -q tests/test_build_llvm_lazy_plan.py tests/test_partial_derive
 
 ## 权威源码和关联文档
 
+函数调用的声明位置和定义身份需要分开处理。Clang 调用边指向头文件（包括 `.ph`）时，函数元数据可解析到唯一、签名兼容的非静态项目定义，供入口可达图和语义建模共用；源码文件约束、静态同名函数与重载歧义不能通过名称回退消除。原生跨文件调用测试覆盖这一边界。
+
 - 稳定入口见本文 frontmatter 的 `sources`。
 - 后端定位与能力矩阵见 `README.md` 和 `docs/architecture.md` 的“事实平面”。
 - WSL 特有问题见 `.agents/workflows/wsl-pitfalls.md`；原生 Linux 不应套用 WSL/NTFS 假设。
@@ -169,6 +186,16 @@ Portable 的 clangd 22.1.7 索引环境与 LLVM 18.1.0 / SVF 3.2 bitcode 环境�
 
 ## 程序事件与共享分析缓存
 
-批量 Clang 协议 `zscope.clang-facts.v2` 在原有 TU 解析中提取函数 CFG、语句/表达式位置、new/delete 家族及带 USR 的全局/字段访问，不为每个候选另启编译器。`function_program_facts` 随同其他事实表事务发布；CFG 构建失败或函数身份不唯一时显式返回不完整。旧工具按既有 auto/batch 策略降级或报错，旧协议产物不能冒充新版事件事实。
+批量 Clang 协议 `zscope.clang-facts.v2` 在原有 TU 解析中提取函数 CFG、语句/表达式位置、new/delete 家族及带 USR 的全局/字段访问，不为每个候选另启编译器。内部 `zscope.program-events.v4` 还记录 CFG 边条件、返回表达式、赋值两端、直接 callee 身份及实参；宏引用记录形参与实参映射。`function_program_facts` 随同其他事实表事务发布；CFG 构建失败或函数身份不唯一时显式返回不完整。旧工具按既有 auto/batch 策略降级或报错，旧协议产物不能冒充新版事件事实。
 
 KnowledgeDB 的 IR 语句身份包含列号和事件序号，升级保留既有语句 ID 及边引用。同一扫描的 Graph 函数事实和锁边通过有容量上限的共享缓存复用，同一键的并发请求只运行一个生产者。缓存身份包含源码/索引版本和语义上下文；入口可达性单独计算，锁顺序反转使用反向锁对索引，模糊别名仍需核验。
+
+语义建模阶段通过线程隔离的 `semantic_modeling_context` 读取完整 callee、宏、全局对象和类型定义，绕过工具展示用的数量与定义字节限制。作用域退出后恢复原查询预算；真实后端缺失或截断仍作为 partial 覆盖记录。
+
+宏体中的标识符只是检索线索；全局载体由索引中的声明或定义绑定，排除其他翻译单元的静态对象，歧义保持未知。无参锁宏因此携带实际全局对象进入建模及工作簿发布，不能从宏名称或描述推断锁身份。
+
+契约源码组合包含条件表达式中的接口调用，并区分每次调用的结果。内部锁配对按成功路径检查，失败即返回的路径不等于对外持锁；无法解析的短路副作用不视为完整覆盖。声明左值、成员左值和输出参数分别解析，防止返回状态别名或载体路径丢失。
+
+原生类型身份将匿名 typedef 的成员引用绑定到其真实 typedef 声明，并单独登记嵌套或局部匿名类型。保留原始引用 USR；布局哈希包含 typedef 底层展开定义，不把不同编译宏下的布局相互投影。类型缺口不能靠同名搜索或人工接口确认消除。
+
+- 批量投影以当前编译单元代次替换程序事件，源码位于项目根目录时也使用统一的 TU 相对路径；迁移旧绝对路径登记后撤销旧调用位置和已删除函数。重新发布原子提交，失败仍保留上一完整代次。

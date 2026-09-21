@@ -6,16 +6,8 @@ from copy import deepcopy
 import re
 from typing import Any, Dict, List
 
+SNAPSHOT_CANDIDATE_POLICY_VERSION = "zscope.snapshot-candidates.disabled.v6"
 
-LIGHTWEIGHT_MACRO_RE = re.compile(
-    r"^(?:LOG_(?:DEBUG|INFO|WARN|ERROR)|LOCK(?:_READ|_WRITE)?|UNLOCK|"
-    r"ARRAY_SIZE|OFFSET_OF|RETURN_IF_(?:NULL|ERR)|GOTO_IF_(?:NULL|ERR)|"
-    r"MIN|MAX|CLAMP|STR_LEN|STR_EQ|STR_EMPTY|LIKELY|UNLIKELY)$"
-)
-LIGHTWEIGHT_WRAPPER_RE = re.compile(
-    r"^_(?:log|lock|unlock|lock_read|lock_write)_wrapper$"
-)
-LIGHTWEIGHT_ALLOCATOR_WRAPPER_RE = re.compile(r"^_safe_(?:malloc|calloc|realloc)$")
 
 DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS = (
     "func_name",
@@ -38,6 +30,7 @@ DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS = (
     "project_callees",
     "external_callees",
     "suspicious_points",
+    "interface_contracts",
     "code",
 )
 DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS = (
@@ -411,6 +404,7 @@ def _build_deterministic_snapshot(
         if field in impl:
             snapshot[field] = deepcopy(impl[field])
     snapshot["suspicious_points"] = _normalize_suspicious_points(suspicious_points)
+    snapshot["interface_contracts"] = []
     snapshot["code"] = str(impl.get("code") or "")
     if not is_current_deterministic_snapshot_shape(snapshot):
         raise ValueError("deterministic snapshot fields do not match the canonical shape")
@@ -532,7 +526,7 @@ def trivial_suspicious_points(
             "Pointer-expression deallocation remains security-relevant even in a short helper.",
         ),
         (
-            r"\b(?:malloc|calloc|realloc|_safe_malloc|_safe_calloc|_safe_realloc)\s*\([^;]*(?:count|size|len|window|batch|segment)",
+            r"\b(?:malloc|calloc|realloc)\s*\([^;]*(?:count|size|len|window|batch|segment)",
             "unbounded_allocation_primitive",
             "resource_allocation_without_limits",
             "Short helper allocates heap memory from a data-derived size/count.",
@@ -553,7 +547,7 @@ def trivial_suspicious_points(
             "Count-driven local writes should remain auditable even when semantic modeling is skipped.",
         ),
         (
-            r"\b(?:pthread_mutex_unlock|UNLOCK|spin_unlock|mtx_unlock)\s*\(",
+            r"\b(?:pthread_mutex_unlock|spin_unlock|mtx_unlock)\s*\(",
             "unlock_primitive",
             "lock_protocol_violation",
             "Short helper releases a lock and may rely on a caller-held-lock contract.",
@@ -604,204 +598,18 @@ def trivial_suspicious_points(
 
 
 def is_lightweight_snapshot_candidate(func_name: str, impl: Dict[str, Any]) -> bool:
-    """Return true for macros/wrappers that can be summarized without an LLM call."""
-    if impl.get("is_macro"):
-        if LIGHTWEIGHT_MACRO_RE.match(func_name):
-            return True
-        code = str(impl.get("code") or "")
-        return bool(
-            re.search(r"#\s*define\s+\w+\s+\(?[0-9A-Za-z_+\-*/<>=&| ]+\)?\s*$", code)
-            and len(code.splitlines()) <= 3
-        )
-    if LIGHTWEIGHT_WRAPPER_RE.match(func_name):
-        return True
-    if _looks_like_checked_allocator_wrapper(func_name, impl):
-        return True
-    return False
-
-
-def _looks_like_checked_allocator_wrapper(func_name: str, impl: Dict[str, Any]) -> bool:
-    if not LIGHTWEIGHT_ALLOCATOR_WRAPPER_RE.match(func_name):
+    """Only literal macros have a complete contract without semantic modeling."""
+    if not impl.get("is_macro"):
         return False
-    code = str(impl.get("code") or "")
-    cleaned_lines = [
-        re.sub(r"^\s*\d+\s*\|\s*", "", line).strip()
-        for line in code.splitlines()
-    ]
-    logic_lines = [line for line in cleaned_lines if line and line not in {"{", "}"}]
-    if len(logic_lines) > 14:
-        return False
-
-    allocator_name = {
-        "_safe_malloc": "malloc",
-        "_safe_calloc": "calloc",
-        "_safe_realloc": "realloc",
-    }.get(func_name)
-    if not allocator_name:
-        return False
-    body = "\n".join(logic_lines)
-    if not re.search(rf"\b{allocator_name}\s*\(", body):
-        return False
-    if not re.search(r"\breturn\s+[A-Za-z_]\w*\s*;", body):
-        return False
-    disallowed_side_effects = r"\b(?:memcpy|memmove|strcpy|strncpy|strcat|strncat|pthread_|socket|send|recv|read|write|open|fopen)\b"
-    return not re.search(disallowed_side_effects, body)
+    code = re.sub(r"(?m)^\s*\d+\s*\| ?", "", str(impl.get("code") or ""))
+    return bool(re.fullmatch(r"\s*#\s*define\s+[A-Za-z_]\w*\s+[-+]?\d+[uUlL]*\s*", code))
 
 
-def build_lightweight_snapshot(
-    func_name: str,
-    impl: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Create a lightweight static snapshot for common macros and tiny wrapper APIs."""
-    code = str(impl.get("code") or "")
-    upper = func_name.upper()
-    line = _snapshot_line(impl)
-    return_values = _unknown_return_values()
-    effects: List[Dict[str, Any]] = []
-    error_handling: Dict[str, Any] = {"error_paths": []}
-    summary = "Lightweight macro/wrapper summarized without LLM semantic modeling."
-
-    if upper.startswith("LOG_") or func_name == "_log_wrapper":
-        summary = (
-            "Logging helper. Validate format-string safety at the call site where "
-            "the format argument is chosen; this helper alone is not a vulnerability."
-        )
-        effects.append(
-            {
-                "category": "io",
-                "description": "Writes a formatted diagnostic message to the logging sink.",
-                "line": line,
-                "object": "log output",
-                "api": func_name,
-                "details": {
-                    "direction": "write",
-                    "operation_kind": "log",
-                },
-            }
-        )
-    elif upper.startswith("LOCK") or upper == "UNLOCK" or "lock" in func_name:
-        is_unlock = upper == "UNLOCK" or "unlock" in func_name.lower()
-        operation = "release" if is_unlock else "acquire"
-        summary = (
-            "Locking helper. Treat calls as acquiring or releasing the referenced "
-            "mutex/rwlock at the call site; inspect caller ordering for deadlocks."
-        )
-        effects.append(
-            {
-                "category": "lock",
-                "description": (
-                    f"Deterministically identified wrapper that may {operation} "
-                    "the caller-provided lock."
-                ),
-                "line": line,
-                "object": "lock argument",
-                "api": func_name,
-                "details": {"operation_kind": operation},
-            }
-        )
-    elif upper in {"MIN", "MAX", "CLAMP", "ARRAY_SIZE", "OFFSET_OF"}:
-        summary = "Pure expression macro. Analyze bounds at the caller expression."
-    elif upper.startswith(("RETURN_IF_", "GOTO_IF_")):
-        summary = "Guard/control-flow macro. Analyze the caller's guarded path."
-        exit_action = "goto" if upper.startswith("GOTO_IF_") else "return"
-        error_handling = {
-            "error_paths": [
-                {
-                    "trigger": "The guard condition evaluates true.",
-                    "exit_line": line,
-                    "exit_action": exit_action,
-                    "exit_states": [],
-                }
-            ]
-        }
-    elif _looks_like_checked_allocator_wrapper(func_name, impl):
-        allocator = func_name.removeprefix("_safe_")
-        allocation_line = _matching_source_line(
-            code,
-            line,
-            rf"\b{re.escape(allocator)}\s*\(",
-        )
-        failure_line = _matching_source_line(code, line, r"\breturn\s+NULL\b")
-        summary = (
-            f"Checked {allocator} wrapper. Treat the returned pointer as caller-owned; "
-            "callers must handle NULL before dereference, copy, or ownership transfer."
-        )
-        return_values = {
-            "return_type": "pointer",
-            "meaning": f"Returns storage produced by {allocator} on success.",
-            "nullable": "yes",
-            "ownership": "caller_owned",
-            "success_cases": [
-                {
-                    "value": "non-NULL pointer",
-                    "condition": f"The underlying {allocator} call succeeds.",
-                }
-            ],
-            "failure_cases": [
-                {
-                    "value": "NULL",
-                    "condition": (
-                        f"The underlying {allocator} call fails for a nonzero request."
-                    ),
-                }
-            ],
-            "caller_obligation": "Check for NULL before using the returned pointer.",
-        }
-        effects = [
-            {
-                "category": "memory",
-                "description": f"Calls {allocator} to obtain heap storage.",
-                "line": allocation_line,
-                "object": "returned pointer",
-                "api": allocator,
-                "details": {
-                    "allocation_kind": allocator,
-                    "failure_value": "NULL",
-                },
-            },
-            {
-                "category": "ownership",
-                "description": "Transfers ownership of successful allocation to the caller.",
-                "line": allocation_line,
-                "object": "returned pointer",
-                "details": {
-                    "owner_before": "wrapper",
-                    "owner_after": "caller",
-                    "transfer_kind": "return",
-                },
-            },
-        ]
-        error_handling = {
-            "error_paths": [
-                {
-                    "trigger": (
-                        f"The underlying {allocator} call returns NULL for a nonzero request."
-                    ),
-                    "exit_line": failure_line,
-                    "exit_action": "return NULL",
-                    "exit_states": [
-                        {
-                            "kind": "memory",
-                            "object": "returned pointer",
-                            "state": "not_acquired",
-                            "owner": "none",
-                        }
-                    ],
-                    "return_value": "NULL",
-                }
-            ]
-        }
-
-    return _build_deterministic_snapshot(
-        func_name,
-        impl,
-        snapshot_kind="lightweight",
-        summary=summary,
-        return_values=return_values,
-        effects=effects,
-        error_handling=error_handling,
-        suspicious_points=[],
-    )
+def build_lightweight_snapshot(func_name: str, impl: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarize a literal macro without assuming a role from its spelling."""
+    snapshot = build_trivial_snapshot(func_name, impl)
+    snapshot["interface_contracts"] = []
+    return snapshot
 
 
 def is_trivial_function(code: str, max_lines_threshold: int) -> bool:

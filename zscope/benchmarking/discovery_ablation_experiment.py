@@ -256,7 +256,8 @@ def _stable_json_load(path: Path, *, label: str) -> Tuple[Dict[str, Any], str]:
         raise DiscoveryAblationExperimentError(f"cannot load {label}: {selected}") from exc
     if before != after:
         raise DiscoveryAblationExperimentError(f"{label} changed while it was being frozen")
-    return value, _sha256_bytes(before)
+    from ..reporting.shared_objects import decode_storage
+    return decode_storage(value), _sha256_bytes(before)
 
 
 def _stable_plan_load(path: Path, *, expected_plan_sha256: str) -> Tuple[Dict[str, Any], str]:

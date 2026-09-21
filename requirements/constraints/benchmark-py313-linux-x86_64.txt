@@ -1,0 +1,4 @@
+# Additional host-side benchmark dependency (CPython 3.13, Linux x86_64 CI).
+# Scanner/portable runtime dependencies are unchanged.
+ijson==3.5.1 \
+    --hash=sha256:bad5d55c99c89de8cd0a4cded51f86427ba3353c4dccca37ec2e32e06f26b437

@@ -110,7 +110,7 @@ def test_defaults_cover_extended_roles() -> None:
     assert {"send", "write", "sendto", "sendmsg"} <= set(semantics.send_sinks)
     assert {"recv", "read", "recvfrom"} <= set(semantics.recv_sources)
     assert {"printf", "fprintf", "syslog", "vprintf"} <= set(semantics.format_sinks)
-    assert "register_callback" in semantics.callback_registrars
+    assert "register_callback" not in semantics.callback_registrars
     # Builtin memory/lock defaults must stay untouched by the extension.
     assert "malloc" in semantics.allocators
     assert "free" in semantics.deallocators

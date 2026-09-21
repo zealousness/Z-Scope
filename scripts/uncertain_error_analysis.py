@@ -137,7 +137,8 @@ def main() -> None:
     parser.add_argument("--score", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    report = json.loads(args.report.read_text(encoding="utf-8"))
+    from zscope.reporting.json_io import read_report
+    report = read_report(args.report)
     score = json.loads(args.score.read_text(encoding="utf-8"))
     result = analyze(report, score)
     args.output.parent.mkdir(parents=True, exist_ok=True)

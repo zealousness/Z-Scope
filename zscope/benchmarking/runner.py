@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import json
 import os
 import platform
@@ -91,6 +92,7 @@ SPECS = {
             "gcc",
             "clang",
             "clangd",
+            "zscope-clang-indexer",
             "gclang",
             "get-bc",
             "llvm-link",
@@ -124,12 +126,15 @@ def _sha256_file(path: Path) -> str:
 
 
 def _json_dump(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    from ..reporting.json_io import write_json_atomic
+
+    write_json_atomic(path, payload, shared="issues" in payload and "report_views" in payload)
 
 
-def _load_json_object(path: Path) -> Dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+def _load_json_object(path: Path, *, immutable: bool = False) -> Dict[str, Any]:
+    from ..reporting.json_io import read_report
+
+    value = read_report(path, immutable=immutable)
     if not isinstance(value, dict):
         raise BenchmarkError(f"expected a JSON object: {path}")
     return value
@@ -713,7 +718,7 @@ def _performance_outliers(summaries: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 
 def score_artifact(report_path: Path, truth_path: Path, output_path: Path) -> Dict[str, Any]:
-    report = _load_json_object(report_path)
+    report = _load_json_object(report_path, immutable=True)
     truth = _validate_truth(truth_path)
     views = score_report_views(report, truth)
     usage_spans = _read_archived_usage_events(report_path.parent)
@@ -1423,6 +1428,55 @@ def _report_provenance(report: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _archive_report_for_scoring(
+    report_path: Path,
+    execution_root: Path,
+    run_dir: Path,
+    source_metrics: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Persist full evidence, then detach only the metadata used after scoring.
+
+    Shared child views keep their decoder alive. Keep all report/replay views in
+    this scope so the scoring subprocess does not compete with a retained graph.
+    """
+    archived_report = _load_json_object(report_path)
+    archived_metadata = archived_report.setdefault("metadata", {})
+    if isinstance(archived_metadata, dict):
+        archived_metadata.update(source_metrics)
+    archived_manifest = archived_report.setdefault("run_manifest", {})
+    if isinstance(archived_manifest, dict):
+        archived_manifest.update(source_metrics)
+    _archive_usage_events(
+        archived_report,
+        scan_root=execution_root,
+        run_dir=run_dir,
+    )
+    _json_dump(report_path, archived_report)
+    replay_bundle_path = run_dir / "validator-replay-bundle.json"
+    _json_dump(run_dir / "archive-state.json", {"stage": "replay_bundle"})
+    replay_bundle = write_validator_replay_bundle(
+        replay_bundle_path,
+        archived_report,
+    )
+    # Keep only the summary fields needed after scoring. Never hold the full report
+    # and replay evidence in this parent while a scorer decodes another copy.
+    replay_bundle = {
+        key: replay_bundle[key] for key in ("schema_version", "group_count", "bundle_sha256")
+    }
+    report_has_batch_wall = (
+        _as_dict(archived_report.get("summary")).get("batch_wall_seconds") is not None
+    )
+    report_ablation = _as_dict(_as_dict(archived_report.get("metadata")).get("benchmark_ablation"))
+    report_provenance = _report_provenance(archived_report)
+    detached: Dict[str, Any] = json.loads(json.dumps({
+        "replay_bundle": replay_bundle,
+        "report_has_batch_wall": report_has_batch_wall,
+        "report_ablation": report_ablation,
+        "report_provenance": report_provenance,
+    }))
+    return detached
+
+
 def _run_trial_in_workspace(
     spec: BenchmarkSpec,
     run_dir: Path,
@@ -1431,6 +1485,7 @@ def _run_trial_in_workspace(
     mode: str,
     workspace: Path,
     scan_depth: str = "fast",
+    retain_workspace: bool = False,
 ) -> Dict[str, Any]:
     started = time.monotonic()
     scan_root = workspace / "scan-input"
@@ -1448,19 +1503,29 @@ def _run_trial_in_workspace(
     config_path = run_dir / "zscope.execution.yaml"
     _write_execution_config(spec, execution_root, config_path, scan_depth=scan_depth)
     effective = _validate_config(config_path, smoke=False)
-    review_experiment = any(bool(getattr(effective.analysis, name, False)) for name in (
-        "validation_review_checkpoint", "validation_review_protocol", "validation_checked_proofs",
-        "validation_positive_case", "validation_related_findings",
-    ))
+    review_experiment = any(
+        bool(getattr(effective.analysis, name, False))
+        for name in (
+            "validation_review_checkpoint",
+            "validation_review_protocol",
+            "validation_checked_proofs",
+            "validation_positive_case",
+            "validation_related_findings",
+        )
+    )
     if review_experiment and mode == "formal":
         raise BenchmarkError("review experiment capabilities are not qualified for formal runs")
     if review_experiment:
         # Absolute compiler dependencies must remain replayable after trial.
         # The retained workspace contains only scanner inputs and outputs;
         # independent scoring still runs outside it.
-        retained = {"schema_version": "zscope.review-workspace.v1", "workspace": str(workspace),
-                    "source": str(execution_root), "snapshot_dir": str(effective.analysis.snapshot_dir),
-                    "reason": "retain original dependency paths for review checkpoint replay"}
+        retained = {
+            "schema_version": "zscope.review-workspace.v1",
+            "workspace": str(workspace),
+            "source": str(execution_root),
+            "snapshot_dir": str(effective.analysis.snapshot_dir),
+            "reason": "retain original dependency paths for review checkpoint replay",
+        }
         _json_dump(workspace / ".review-checkpoints-retained.json", retained)
         _json_dump(run_dir / "review-workspace.json", retained)
     environment = _benchmark_environment()
@@ -1635,19 +1700,11 @@ def _run_trial_in_workspace(
     _json_dump(run_dir / "tool-health.json", health)
     source_report = _locate_report(execution_root)
     report_path = run_dir / "report.json"
+    _json_dump(run_dir / "archive-state.json", {"stage": "copy_report", "source": str(source_report)})
     shutil.copy2(source_report, report_path)
-    archived_report = _load_json_object(report_path)
-    source_metrics = _source_line_metrics(scan_root, spec.language)
-    archived_metadata = archived_report.setdefault("metadata", {})
-    if isinstance(archived_metadata, dict):
-        archived_metadata.update(source_metrics)
-    archived_manifest = archived_report.setdefault("run_manifest", {})
-    if isinstance(archived_manifest, dict):
-        archived_manifest.update(source_metrics)
-    _archive_usage_events(
-        archived_report,
-        scan_root=execution_root,
-        run_dir=run_dir,
+    _json_dump(run_dir / "archive-state.json", {"stage": "read_report", "bytes": report_path.stat().st_size})
+    archive_summary = _archive_report_for_scoring(
+        report_path, execution_root, run_dir, _source_line_metrics(scan_root, spec.language)
     )
     extras = _archive_scan_extras(
         execution_root=execution_root,
@@ -1655,19 +1712,32 @@ def _run_trial_in_workspace(
         input_manifest=input_manifest,
         extra_roots={"oci-output": oci_output} if oci_output is not None else None,
     )
-    _json_dump(report_path, archived_report)
+    replay_bundle = archive_summary["replay_bundle"]
+    report_has_batch_wall = archive_summary["report_has_batch_wall"]
+    report_ablation = archive_summary["report_ablation"]
+    report_provenance = archive_summary["report_provenance"]
     replay_bundle_path = run_dir / "validator-replay-bundle.json"
-    replay_bundle = write_validator_replay_bundle(
-        replay_bundle_path,
-        _load_json_object(report_path),
-    )
+    gc.collect()
     generated_entries = execution_root / "entry_functions_list.json"
     if generated_entries.is_file():
         if generated_entries.is_symlink():
             raise BenchmarkError("generated entry manifest must not be a symbolic link")
         shutil.copy2(generated_entries, run_dir / "entry_functions_list.json")
     archived_scan_root = run_dir / "scan-input"
-    if review_experiment:
+    # Export the contract publication before restoring sealed scanner inputs.
+    # This contains source-grounded interface evidence, never benchmark truth.
+    publication = Path(effective.analysis.snapshot_dir) / ".semantic-modeling" / "publication.json"
+    if not publication.is_absolute():
+        publication = execution_root / publication
+    if publication.is_file() and not publication.is_symlink():
+        semantic_dir = run_dir / "semantic-publication"
+        semantic_dir.mkdir(exist_ok=True)
+        shutil.copy2(publication, semantic_dir / "publication.json")
+        published = _load_json_object(publication)
+        workbook = Path(str(published.get("workbook") or ""))
+        if workbook.is_file() and not workbook.is_symlink():
+            shutil.copy2(workbook, semantic_dir / "user_config.xlsx")
+    if review_experiment or retain_workspace:
         copy_scan_input(scan_root, archived_scan_root, spec.language)
     else:
         restore_scan_input(scan_root, input_manifest)
@@ -1679,6 +1749,7 @@ def _run_trial_in_workspace(
         truth_environment.pop(key, None)
     truth_environment["Z_SCOPE_BENCHMARK_TRUTH"] = str(spec.truth_path.resolve())
     score_path = run_dir / "score.json"
+    _json_dump(run_dir / "archive-state.json", {"stage": "independent_score"})
     score_argv = [
         python,
         "-m",
@@ -1706,8 +1777,7 @@ def _run_trial_in_workspace(
         "end_to_end_metric": "end_to_end_wall_seconds",
         "scan_wall_source": (
             "report.summary.batch_wall_seconds"
-            if _as_dict(_load_json_object(report_path).get("summary")).get("batch_wall_seconds")
-            is not None
+            if report_has_batch_wall
             else "runner.phase_seconds.scan"
         ),
     }
@@ -1723,10 +1793,10 @@ def _run_trial_in_workspace(
     gate_failures = _gate_c(score, scan_depth=scan_depth) if spec.language == "c_cpp" else []
     sealed_failures = _gate_c_sealed(score) if spec.language == "c_cpp" else []
     if review_experiment:
-        gate_failures.append("review experiment requires independent audit and paired qualification")
+        gate_failures.append(
+            "review experiment requires independent audit and paired qualification"
+        )
         sealed_failures.append("review experiment is not release eligible")
-    report = _load_json_object(report_path)
-    report_ablation = _as_dict(_as_dict(report.get("metadata")).get("benchmark_ablation"))
     if report_ablation:
         gate_failures.append("semantic/discovery ablation artifacts are not release eligible")
         sealed_failures.append("semantic/discovery ablation artifacts are not release eligible")
@@ -1794,7 +1864,9 @@ def _run_trial_in_workspace(
             "score_argv": [python, "-m", "zscope.cli.benchmark", "_score"],
         },
         "workspace": {
-            "temporary": not review_experiment,
+            "temporary": not (review_experiment or retain_workspace),
+            "path": str(workspace),
+            "retained_by_request": retain_workspace,
             "retained_for_review": review_experiment,
             "storage_class": _workspace_storage_class(workspace),
             "artifact_exported": True,
@@ -1811,13 +1883,14 @@ def _run_trial_in_workspace(
             "truth_available_to_scan": False,
         },
         "provenance": {
-            **_report_provenance(report),
+            **report_provenance,
             "runtime_spec_sha256": effective.runtime_provenance.sha256,
             "rule_catalog_sha256": effective.rule_catalog_provenance.catalog_sha256,
             "effective_rules_sha256": effective.rule_catalog_provenance.effective_sha256,
         },
     }
     _json_dump(run_dir / "summary.json", summary_payload)
+    _json_dump(run_dir / "archive-state.json", {"stage": "complete"})
     return summary_payload
 
 
@@ -1828,11 +1901,29 @@ def _run_trial(
     *,
     mode: str,
     scan_depth: str = "fast",
+    work_directory: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    parent = _benchmark_work_parent(spec.language)
-    workspace = Path(
-        tempfile.mkdtemp(prefix=f"zscope-benchmark-{spec.language}-{run_number:02d}-", dir=parent)
-    )
+    if work_directory is None:
+        parent = _benchmark_work_parent(spec.language)
+        workspace = Path(
+            tempfile.mkdtemp(
+                prefix=f"zscope-benchmark-{spec.language}-{run_number:02d}-", dir=parent
+            )
+        )
+    else:
+        workspace = work_directory / f"run-{run_number:02d}"
+        workspace.mkdir(parents=True, exist_ok=False)
+        _json_dump(
+            run_dir / "workspace.json",
+            {
+                "schema_version": "zscope.benchmark-workspace.v1",
+                "path": str(workspace),
+                "temporary": False,
+                "retained_on_success": True,
+                "retained_on_failure": True,
+                "truth_available_to_scan": False,
+            },
+        )
     try:
         summary = _run_trial_in_workspace(
             spec,
@@ -1841,11 +1932,29 @@ def _run_trial(
             mode=mode,
             workspace=workspace,
             scan_depth=scan_depth,
+            **({"retain_workspace": True} if work_directory is not None else {}),
         )
         _render_trial_metrics(run_dir, language=spec.language)
         return summary
     finally:
-        if not (workspace / ".review-checkpoints-retained.json").is_file():
+        # A failed/interrupted trial may never reach the publication barrier.
+        # Preserve any committed model responses before removing its workspace.
+        if not (run_dir / "semantic-publication" / "publication.json").exists():
+            snapshot_root = workspace / "scan-input" / ".zscope_snapshots"
+            committed = list(snapshot_root.glob("*.json")) if snapshot_root.is_dir() else []
+            if committed:
+                archive = run_dir / "semantic-publication" / "incomplete"
+                archive.mkdir(parents=True, exist_ok=True)
+                for snapshot in committed:
+                    if snapshot.is_file() and not snapshot.is_symlink():
+                        shutil.copy2(snapshot, archive / snapshot.name)
+                _json_dump(
+                    archive / "status.json", {"status": "incomplete", "release_eligible": False}
+                )
+        if (
+            work_directory is None
+            and not (workspace / ".review-checkpoints-retained.json").is_file()
+        ):
             shutil.rmtree(workspace, ignore_errors=True)
 
 
@@ -2129,6 +2238,7 @@ def run_benchmark(
     output: Optional[Path] = None,
     dry_run: bool = False,
     scan_depth: str = "fast",
+    work_directory: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if language not in SPECS:
         raise BenchmarkError(f"unsupported language: {language}")
@@ -2144,7 +2254,23 @@ def run_benchmark(
     if mode == "smoke" and runs not in {None, 1}:
         raise BenchmarkError("smoke mode runs once")
     spec = SPECS[language]
+    if work_directory is not None:
+        if mode == "smoke":
+            raise BenchmarkError(
+                "--work-directory applies to trial/formal; smoke already retains its input"
+            )
+        if not work_directory.is_absolute():
+            raise BenchmarkError("--work-directory must be an absolute, new directory")
+        work_directory = work_directory.resolve()
+        if spec.language == "c_cpp" and _is_wsl() and _is_windows_mount_in_wsl(work_directory):
+            raise BenchmarkError("C/C++ work-directory must use the WSL native filesystem")
+        if work_directory.exists():
+            raise BenchmarkError(
+                "--work-directory must not already exist (each run must start cold)"
+            )
     plan = benchmark_plan(language, mode, run_count, scan_depth=scan_depth)
+    if work_directory is not None:
+        plan["workspace"] = {"path": str(work_directory), "temporary": False}
     if dry_run:
         return {"dry_run": True, **plan}
     if mode == "formal":
@@ -2190,11 +2316,20 @@ def run_benchmark(
             "C/C++ trial and all formal benchmarks require Linux (Windows must use WSL2)"
         )
     _require_llm_environment()
+    from ..reporting.json_io import require_streaming_json
+
+    try:
+        require_streaming_json()
+    except RuntimeError as exc:
+        raise BenchmarkError(str(exc)) from exc
     summaries = []
     for index in range(1, run_count + 1):
         run_dir = destination / f"run-{index:02d}"
         run_dir.mkdir()
-        summaries.append(_run_trial(spec, run_dir, index, mode=mode, scan_depth=scan_depth))
+        workspace_options = {"work_directory": work_directory} if work_directory is not None else {}
+        summaries.append(
+            _run_trial(spec, run_dir, index, mode=mode, scan_depth=scan_depth, **workspace_options)
+        )
     aggregate = _aggregate(spec, summaries, mode, scan_depth=scan_depth)
     if mode == "trial":
         aggregate["release_eligible"] = False

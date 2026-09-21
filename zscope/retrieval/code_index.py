@@ -4,14 +4,19 @@ Supports pluggable backends (Joern / Clang-SQLite / regex fallback).
 """
 
 import logging
+import hashlib
+import json
 import os
 import re
 import threading
 import time
+import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
 from bisect import bisect_right
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable, List, Sequence, Union, Tuple
+from typing import Optional, Dict, Any, Iterable, Iterator, List, Sequence, Union, Tuple
 
 from ..common.utils import (
     extract_function_calls,
@@ -23,6 +28,25 @@ from .backend_base import CodeBackend
 from .indexing_runtime import observed
 
 logger = logging.getLogger(__name__)
+
+_SEMANTIC_MODELING_CONTEXT: ContextVar[bool] = ContextVar(
+    "semantic_modeling_context", default=False
+)
+
+
+@contextmanager
+def semantic_modeling_context() -> Iterator[None]:
+    """Read full dependency facts without changing other threads' tool budgets."""
+    token = _SEMANTIC_MODELING_CONTEXT.set(True)
+    try:
+        yield
+    finally:
+        _SEMANTIC_MODELING_CONTEXT.reset(token)
+
+
+def _context_limit(limit: int) -> int:
+    return sys.maxsize if _SEMANTIC_MODELING_CONTEXT.get() else limit
+
 
 DECLARATION_LINE_RE = re.compile(
     r"^[ \t]*(?!(?:return|if|while|for|switch)\b)"
@@ -130,6 +154,8 @@ class CodeIndex:
         self._svf_parallel_workers = max(1, int(svf_parallel_workers or 1))
         self._index_ready = False
         self._index_epoch = 0
+        self._callback_registration_payload: Optional[Dict[str, Any]] = None
+        self._callback_registration_checked_stats: Optional[Dict[str, Any]] = None
         self._cache_lock = threading.RLock()
         self._declaration_comment_index_lock = threading.Lock()
         self._macro_definition_index_lock = threading.Lock()
@@ -510,6 +536,8 @@ class CodeIndex:
         """Build function index from project."""
         with self._cache_lock:
             self._index_epoch += 1
+            self._callback_registration_payload = None
+            self._callback_registration_checked_stats = None
             self._function_index.clear()
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
@@ -2414,13 +2442,41 @@ class CodeIndex:
             referenced_macros,
             extra_macros or [],
         )
+        # Token discovery supplies names only; object identity must come from
+        # indexed declarations. In particular, another TU's static is not visible.
+        if self._backend:
+            getter = getattr(self._backend, "get_global_definitions_batch", None)
+            globals_rows = getter(sorted(candidates)) if callable(getter) else []
+        else:
+            globals_rows = [
+                record for name, rows in self._get_global_definition_index().items()
+                if name in candidates for record in rows
+            ]
+        globals_index: Dict[str, List[Dict[str, Any]]] = {}
+        for record in globals_rows:
+            same_file = self._paths_match_hint(str(record.get("file_path") or ""), file_path)
+            if record.get("storage_class") == "static" and not same_file:
+                continue
+            globals_index.setdefault(str(record.get("name") or ""), []).append(record)
+        referenced_globals = []
+        for name, records in globals_index.items():
+            definitions = [r for r in records if r.get("definition_kind") != "declaration"]
+            selected = self._resolve_macro_symbol_definition(
+                name, definitions or records, file_path, strict=True
+            )
+            if selected is not None and name in candidates:
+                referenced_globals.append(self._normalize_function_info_global({
+                    **selected, "reference_lines": candidates[name]["reference_lines"]
+                }))
         payload: Dict[str, Any] = {
-            "referenced_globals": [],
+            "referenced_globals": referenced_globals,
         }
-        payload["referenced_macros"] = referenced_macros[:FUNCTION_INFO_MACROS_LIMIT]
-        if len(referenced_macros) > FUNCTION_INFO_MACROS_LIMIT:
+        payload["referenced_macros"] = referenced_macros[
+            : _context_limit(FUNCTION_INFO_MACROS_LIMIT)
+        ]
+        if len(referenced_macros) > _context_limit(FUNCTION_INFO_MACROS_LIMIT):
             payload["referenced_macros_truncation"] = self._truncation_payload(
-                FUNCTION_INFO_MACROS_LIMIT,
+                _context_limit(FUNCTION_INFO_MACROS_LIMIT),
                 len(referenced_macros),
             )
         return payload
@@ -2958,7 +3014,7 @@ class CodeIndex:
         truncated = False
         for item in candidates:
             item_bytes = len(str(item["full_definition"]).encode("utf-8"))
-            if item_bytes > REFERENCED_TYPE_DEFINITION_BYTES_LIMIT:
+            if item_bytes > _context_limit(REFERENCED_TYPE_DEFINITION_BYTES_LIMIT):
                 add_unresolved(
                     item["_name"],
                     "definition_too_large",
@@ -2967,10 +3023,12 @@ class CodeIndex:
                 )
                 truncated = True
                 continue
-            if len(returned) >= REFERENCED_TYPES_LIMIT:
+            if len(returned) >= _context_limit(REFERENCED_TYPES_LIMIT):
                 truncated = True
                 continue
-            if definition_bytes + item_bytes > REFERENCED_TYPES_DEFINITION_BYTES_LIMIT:
+            if definition_bytes + item_bytes > _context_limit(
+                REFERENCED_TYPES_DEFINITION_BYTES_LIMIT
+            ):
                 truncated = True
                 continue
             returned.append({key: value for key, value in item.items() if key != "_name"})
@@ -2987,7 +3045,7 @@ class CodeIndex:
                 "returned": len(returned),
                 "total": len(candidates),
                 "definition_bytes_returned": definition_bytes,
-                "definition_bytes_limit": REFERENCED_TYPES_DEFINITION_BYTES_LIMIT,
+                "definition_bytes_limit": _context_limit(REFERENCED_TYPES_DEFINITION_BYTES_LIMIT),
             }
         return result
 
@@ -3074,9 +3132,11 @@ class CodeIndex:
                 except TypeError:
                     callees = getter(backend_lookup)
             else:
-                callees = self._backend.get_callees(backend_lookup, limit=1_000_000)
+                callees = self._backend.get_callees(backend_lookup, limit=_context_limit(1_000_000))
         except Exception as exc:
             logger.debug("Callee lookup failed for %s: %s", index_key, exc)
+            if _SEMANTIC_MODELING_CONTEXT.get():
+                raise
             return []
         aggregated = self._aggregate_function_info_callees(callees)
         return aggregated
@@ -3106,12 +3166,14 @@ class CodeIndex:
             macro_edges,
         ) = self._split_function_info_callees(rows)
         payload: Dict[str, Any] = {
-            "project_callees": project_callees[:FUNCTION_INFO_CALLEES_LIMIT],
-            "external_callees": external_callees[:FUNCTION_INFO_EXTERNAL_CALLEES_LIMIT],
+            "project_callees": project_callees[: _context_limit(FUNCTION_INFO_CALLEES_LIMIT)],
+            "external_callees": external_callees[
+                : _context_limit(FUNCTION_INFO_EXTERNAL_CALLEES_LIMIT)
+            ],
         }
         if unresolved_callees:
             payload["unresolved_callees"] = unresolved_callees[
-                :FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT
+                : _context_limit(FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT)
             ]
         if len(project_callees) > len(payload["project_callees"]):
             payload["project_callees_truncation"] = self._truncation_payload(
@@ -3121,7 +3183,7 @@ class CodeIndex:
             payload["external_callees_truncation"] = self._truncation_payload(
                 len(payload["external_callees"]), len(external_callees)
             )
-        if len(unresolved_callees) > FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT:
+        if len(unresolved_callees) > _context_limit(FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT):
             payload["unresolved_callees_truncation"] = self._truncation_payload(
                 len(payload["unresolved_callees"]), len(unresolved_callees)
             )
@@ -3210,6 +3272,8 @@ class CodeIndex:
                 raw_context = getter(backend_lookup, raw_file)
             except Exception as exc:
                 logger.debug("Symbol context lookup failed for %s: %s", index_key, exc)
+                if _SEMANTIC_MODELING_CONTEXT.get():
+                    raise
                 return context
 
         globals_result = [
@@ -3229,16 +3293,18 @@ class CodeIndex:
         )
         globals_result.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
 
-        context["referenced_globals"] = globals_result[:FUNCTION_INFO_GLOBALS_LIMIT]
-        context["referenced_macros"] = macros_result[:FUNCTION_INFO_MACROS_LIMIT]
-        if len(globals_result) > FUNCTION_INFO_GLOBALS_LIMIT:
+        context["referenced_globals"] = globals_result[
+            : _context_limit(FUNCTION_INFO_GLOBALS_LIMIT)
+        ]
+        context["referenced_macros"] = macros_result[: _context_limit(FUNCTION_INFO_MACROS_LIMIT)]
+        if len(globals_result) > _context_limit(FUNCTION_INFO_GLOBALS_LIMIT):
             context["referenced_globals_truncation"] = self._truncation_payload(
-                FUNCTION_INFO_GLOBALS_LIMIT,
+                _context_limit(FUNCTION_INFO_GLOBALS_LIMIT),
                 len(globals_result),
             )
-        if len(macros_result) > FUNCTION_INFO_MACROS_LIMIT:
+        if len(macros_result) > _context_limit(FUNCTION_INFO_MACROS_LIMIT):
             context["referenced_macros_truncation"] = self._truncation_payload(
-                FUNCTION_INFO_MACROS_LIMIT,
+                _context_limit(FUNCTION_INFO_MACROS_LIMIT),
                 len(macros_result),
             )
         return context
@@ -3727,6 +3793,10 @@ class CodeIndex:
         """Classify one raw edge as a project function, macro, external, or unresolved."""
         clean_name = str(callee_name or "").strip()
         matches = self._find_function_matches(clean_name, file_path=callee_file)
+        if len(matches) > 1 and callee_signature:
+            expected = self._normalize_signature_query(callee_signature)
+            matches = [(key, info) for key, info in matches
+                       if self._normalize_signature_query(str(info.get("signature") or "")) == expected]
         if len(matches) == 1:
             index_name, info = matches[0]
             return "project_function", {
@@ -3744,6 +3814,33 @@ class CodeIndex:
                 "definition": str(macro_impl.get("code") or ""),
                 "is_function_like": True,
             }
+        # Native call edges often point to a declaration in a header, while
+        # the implementation index contains only definitions. A declaration
+        # location must not hide a unique project implementation. Never relax
+        # a source-file constraint or merge static homonyms/overloads.
+        from ..snapshots.modeling_input import is_header_like_path
+
+        if not matches and callee_file and is_header_like_path(callee_file):
+            definitions = [
+                (index_name, info)
+                for index_name, info in self._find_function_matches(clean_name)
+                if not self._function_record_is_static(info)
+                and not info.get("is_declaration")
+            ]
+            if callee_signature:
+                expected = self._normalize_signature_query(callee_signature)
+                definitions = [
+                    (index_name, info) for index_name, info in definitions
+                    if self._normalize_signature_query(str(info.get("signature") or "")) == expected
+                ]
+            if len(definitions) == 1:
+                index_name, info = definitions[0]
+                return "project_function", {
+                    "callee_index_name": index_name,
+                    "callee_signature": str(info.get("signature") or ""),
+                    "is_static": False,
+                    "callee_summary": "unknown",
+                }
         # Signature is accepted only when a backend explicitly marks it as the callee's
         # declaration. The projection must not infer it from a bare function name.
         external_signature = str(callee_signature or "").strip()
@@ -3926,25 +4023,112 @@ class CodeIndex:
     ) -> List[Dict[str, Any]]:
         """Get functions that call the given function."""
         if not self._backend:
-            return []
+            return [{**e, "name": e["caller_name"], "filename": e["caller_file"]}
+                    for e in self.callback_registrations()
+                    if e["callee_name"] == func_name.split("@", 1)[0]
+                    and (not callee_file or self._paths_match_hint(e.get("callee_file", ""), callee_file))][:max(0, limit)]
         lookup_name = self._resolve_function_name(func_name, file_path=callee_file)
         with self._cache_lock:
             info = self._function_index.get(lookup_name) or {}
         backend_lookup = str(info.get("qualified_name") or lookup_name)
         backend_callee_file = str(info.get("file") or callee_file or "")
         try:
-            return self._backend.get_callers(
+            records = self._backend.get_callers(
                 backend_lookup,
                 limit=limit,
                 callee_file=backend_callee_file,
             )
         except TypeError:
-            return self._backend.get_callers(backend_lookup, limit=limit)
+            records = self._backend.get_callers(backend_lookup, limit=limit)
+        callbacks = [{**e, "name": e["caller_name"], "filename": e["caller_file"]}
+                     for e in self.callback_registrations()
+                     if e["callee_name"] == backend_lookup and (not backend_callee_file or
+                        self._paths_match_hint(e.get("callee_file", ""), backend_callee_file))]
+        return [*records, *callbacks][:limit]
+
+    def publish_callback_registrations(self, edges: List[Dict[str, Any]], files: List[str]) -> None:
+        """Persist registration reachability separately from executable calls."""
+        dependencies = {}
+        for file in sorted(set(files)):
+            path = Path(file)
+            path = path if path.is_absolute() else self.project_root / path
+            try:
+                dependencies[str(path.resolve())] = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                return  # Incomplete discovery cannot replace valid persisted evidence.
+        payload = {"schema_version": "zscope.callback-registrations.v1", "dependencies": dependencies, "edges": edges}
+        self._callback_registration_payload = payload
+        self._callback_registration_checked_stats = None
+        backend = getattr(self._backend, "_clang", None) or self._backend
+        db = getattr(backend, "_db", None)
+        if db is not None:
+            db.set_metadata("callback_registrations", json.dumps(payload, sort_keys=True))
+
+    def callback_registrations(self) -> List[Dict[str, Any]]:
+        payload = getattr(self, "_callback_registration_payload", None)
+        if payload is None:
+            backend = getattr(self._backend, "_clang", None) or self._backend
+            db = getattr(backend, "_db", None)
+            try:
+                payload = json.loads(db.get_metadata("callback_registrations") or "{}") if db else {}
+                if any(hashlib.sha256(Path(p).read_bytes()).hexdigest() != h
+                       for p, h in payload.get("dependencies", {}).items()):
+                    payload = {}
+            except (ValueError, OSError, TypeError):
+                payload = {}
+            self._callback_registration_payload = payload
+        try:
+            current_stats = {}
+            for path in payload.get("dependencies", {}):
+                stat = Path(path).stat()
+                current_stats[path] = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            if current_stats != getattr(self, "_callback_registration_checked_stats", None):
+                if any(hashlib.sha256(Path(p).read_bytes()).hexdigest() != h
+                       for p, h in payload.get("dependencies", {}).items()):
+                    self._callback_registration_payload = {}
+                    return []
+                self._callback_registration_checked_stats = current_stats
+        except OSError:
+            self._callback_registration_payload = {}
+            return []
+        return [dict(e) for e in payload.get("edges", [])]
+
+
+    def call_model_status(self, name: str, caller: str = "", record: Any = None) -> str:
+        """Classify origin from indexed definitions/declarations, never a prefix."""
+        clean = str(name or "")
+        matches = self._find_function_matches(clean)
+        if any(not info.get("is_declaration") for _, info in matches):
+            return "project"
+        if self._function_info_project_macro_matches(clean, ""):
+            return "project"
+        records = [record] if isinstance(record, dict) else []
+        if caller:
+            records.extend(r for r in self.get_callees(caller, limit=1_000_000)
+                           if str(r.get("name") or r.get("callee_name") or "") == clean)
+        if not any(r.get("callee_kind") or r.get("callee_signature") for r in records):
+            backend = getattr(self, "_backend", None)
+            backend = getattr(backend, "_clang", None) or backend
+            database = getattr(backend, "_db", None)
+            if database is not None:
+                records = [dict(row) for row in database._conn.execute(
+                    "SELECT DISTINCT callee_kind,callee_signature FROM call_edges WHERE callee_name=?",
+                    (clean,)).fetchall()]
+        kinds = {str(r.get("callee_kind") or "") for r in records}
+        if "system_function" in kinds:
+            from ..semantics.defaults import default_local_pattern_semantics
+            return ("standard_model" if default_local_pattern_semantics().contracts.find(clean)
+                    else "external_model_missing")
+        if "external_function" in kinds or any(r.get("callee_signature") for r in records):
+            return "external_model_missing"
+        return "source_unavailable"
 
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Get functions called by the given function."""
         if not self._backend:
-            return []
+            return [{**e, "name": e["callee_name"], "filename": e.get("callee_file", "")}
+                    for e in self.callback_registrations()
+                    if e["caller_name"] == func_name.split("@", 1)[0]][:max(0, limit)]
         requested_limit = max(0, int(limit))
         if requested_limit == 0:
             return []
@@ -3957,12 +4141,15 @@ class CodeIndex:
         while True:
             records = list(self._backend.get_callees(backend_lookup, limit=raw_limit) or [])
             filtered = self._filter_callee_records(records)
+            callbacks = [{**e, "name": e["callee_name"], "filename": e.get("callee_file", "")}
+                         for e in self.callback_registrations() if e["caller_name"] == backend_lookup
+                         and (not info.get("file") or self._paths_match_hint(e["caller_file"], str(info["file"])))]
             if (
                 len(filtered) >= requested_limit
                 or len(records) < raw_limit
                 or raw_limit >= max_raw_limit
             ):
-                return filtered[:requested_limit]
+                return [*filtered, *callbacks][:requested_limit]
             raw_limit = min(max_raw_limit, raw_limit * 2)
 
     def get_type_info(self, type_name: str) -> Optional[Dict[str, Any]]:

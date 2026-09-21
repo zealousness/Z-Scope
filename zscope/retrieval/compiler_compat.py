@@ -71,8 +71,8 @@ def expand_arguments(arguments: list[str], directory: Path) -> list[str]:
     return expand(arguments, frozenset())
 
 
-def _option_positions(values: list[str]) -> Iterable[int]:
-    operands = set(POLICY["operand_options"])
+def _option_positions(values: list[str], extra_operands: Iterable[str] = ()) -> Iterable[int]:
+    operands = set(POLICY["operand_options"]) | set(extra_operands)
     i = 0
     while i < len(values):
         value = values[i]
@@ -89,6 +89,8 @@ def _option_positions(values: list[str]) -> Iterable[int]:
 def adjust_arguments(
     arguments: list[str],
     unknown: Iterable[str] = (),
+    *,
+    unknown_scopes: dict[str, list[str]] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     unknown = set(unknown)
     ignored: list[str] = []
@@ -100,14 +102,19 @@ def adjust_arguments(
     }
     wrappers: dict[int, tuple[str, list[str], list[int]]] = {}
 
-    def adjust(value: str) -> str | None:
-        if value in POLICY["remove_warning_options"]:
+    def adjust(value: str, stream: str = "") -> str | None:
+        if value in POLICY["remove_warning_options"] or (
+            stream in {"-Xassembler", "-Xlinker"} and value in POLICY["forwarded_warning_options"]
+        ):
             ignored.append(value)
             return None
+        if value in POLICY["warning_replacements"]:
+            ignored.append(value)
+            return str(POLICY["warning_replacements"][value])
         if value.startswith(POLICY["warning_error_prefix"]):
             ignored.append(value)
             return str(POLICY["warning_prefix"]) + value[len(POLICY["warning_error_prefix"]) :]
-        if value in unknown:
+        if value in unknown and (unknown_scopes is None or stream in unknown_scopes.get(value, [])):
             removed.append(value)
             return None
         return value
@@ -123,8 +130,10 @@ def adjust_arguments(
             stream, parts, indices = value, [arguments[i + 1]], [i, i + 1]
         elif value.startswith("-Xclang="):
             prefix, stream, parts, indices = "-Xclang=", "-Xclang", [value[8:]], [i]
-        elif value.startswith("-Wp,"):
-            prefix, stream, parts, indices = "-Wp,", "-Xpreprocessor", value[4:].split(","), [i]
+        elif value.startswith(("-Wp,", "-Wa,", "-Wl,")):
+            prefix = value[:4]
+            stream = {"-Wp,": "-Xpreprocessor", "-Wa,": "-Xassembler", "-Wl,": "-Xlinker"}[prefix]
+            parts, indices = value[4:].split(","), [i]
         if stream:
             wrappers[i] = (prefix, parts, indices)
             forwarded[stream].extend((i, n, part) for n, part in enumerate(parts))
@@ -152,10 +161,13 @@ def adjust_arguments(
         elif changed != direct[position]:
             replacements[index] = changed
     changes: dict[tuple[int, int], str | None] = {}
-    for forwarded_stream in forwarded.values():
-        for position in _option_positions([value for _, _, value in forwarded_stream]):
+    for stream, forwarded_stream in forwarded.items():
+        for position in _option_positions(
+            [value for _, _, value in forwarded_stream],
+            POLICY["forwarded_operand_options"].get(stream, []),
+        ):
             index, part, value = forwarded_stream[position]
-            changes[index, part] = adjust(value)
+            changes[index, part] = adjust(value, stream)
     for index, (prefix, parts, indices) in wrappers.items():
         updated = [changes.get((index, n), value) for n, value in enumerate(parts)]
         kept = [value for value in updated if value is not None]
@@ -171,7 +183,7 @@ def adjust_arguments(
 
 _UNKNOWN = re.compile(
     r"^(?:(?:[^\s:]*[/\\])?clang(?:\+\+|-cl)?(?:-\d+(?:\.\d+)*)?(?:\.exe)?: )?"
-    r"(?:fatal )?error: unknown argument: '([^'\r\n]+)'(?:; did you mean '[^']+'\?)?\s*$"
+    r"(?:fatal )?error: unknown argument:? '([^'\r\n]+)'(?:; did you mean '[^']+'\?)?\s*$"
 )
 
 

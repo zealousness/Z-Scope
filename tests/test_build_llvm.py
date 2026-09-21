@@ -107,6 +107,9 @@ def _install_measured_tools(monkeypatch, fake_run):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr("zscope.retrieval.build_llvm.matching_clang", lambda *args, **kw: "clang")
+    # This fixture models only build/link actions. Real argument preflight is
+    # exercised separately, without routing --version into the fake linker.
+    monkeypatch.setattr("zscope.retrieval.compile_preflight.discover_tools", lambda **kw: [])
     monkeypatch.setattr("zscope.retrieval.build_llvm.run_process", measured)
     monkeypatch.setattr("zscope.retrieval.bitcode_compile.run_process", measured)
     monkeypatch.setenv("Z_SCOPE_BITCODE_MEMORY_MB", "256")

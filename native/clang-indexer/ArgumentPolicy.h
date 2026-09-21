@@ -83,15 +83,24 @@ static bool expandArguments(std::vector<std::string> &arguments,
 // Unknown options have no known arity: do not guess and consume the next input.
 static bool adjustOption(std::string &value, const std::set<std::string> &unknown,
                          std::vector<std::string> &ignoredWarningErrors,
-                         std::vector<std::string> &removedUnknownOptions) {
+                         std::vector<std::string> &removedUnknownOptions,
+                         bool assemblerOrLinker = false) {
   llvm::StringRef option(value);
   bool removeWarning = false;
   for (const auto &value : *argumentPolicy().getArray("remove_warning_options"))
     removeWarning |= value.getAsString() == option;
+  if (assemblerOrLinker)
+    for (const auto &value : *argumentPolicy().getArray("forwarded_warning_options"))
+      removeWarning |= value.getAsString() == option;
   auto errorPrefix = *argumentPolicy().getString("warning_error_prefix");
   if (removeWarning) {
     ignoredWarningErrors.push_back(value);
     return true;
+  }
+  if (auto replacement = argumentPolicy().getObject("warning_replacements")->getString(option)) {
+    ignoredWarningErrors.push_back(value);
+    value = replacement->str();
+    return false;
   }
   if (option.starts_with(errorPrefix)) {
     ignoredWarningErrors.push_back(value);
@@ -130,7 +139,9 @@ static void adjustArguments(std::vector<std::string> &arguments,
       } else if (forwarding == "-Xclang" && raw.starts_with("-Xclang=")) {
         values.push_back(raw.drop_front(8).str());
         owners.emplace_back(index, 0);
-      } else if (forwarding == "-Xpreprocessor" && raw.starts_with("-Wp,")) {
+      } else if ((forwarding == "-Xpreprocessor" && raw.starts_with("-Wp,")) ||
+                 (forwarding == "-Xassembler" && raw.starts_with("-Wa,")) ||
+                 (forwarding == "-Xlinker" && raw.starts_with("-Wl,"))) {
         llvm::SmallVector<llvm::StringRef, 8> parts;
         raw.drop_front(4).split(parts, ',');
         for (size_t i = 0; i < parts.size(); ++i) {
@@ -143,8 +154,18 @@ static void adjustArguments(std::vector<std::string> &arguments,
     for (const auto &value : values) forwarded.push_back(value.c_str());
     auto options = clang::driver::getDriverOptTable().ParseArgs(
         forwarded, missingIndex, missingCount);
+    std::set<size_t> protectedOperands;
+    if (auto extra = argumentPolicy().getObject("forwarded_operand_options")->getArray(forwarding)) {
+      for (size_t i = 0; i < values.size(); ++i) {
+        if (protectedOperands.count(i)) continue;
+        for (const auto &operand : *extra)
+          if (operand.getAsString() == values[i] && i + 1 < values.size())
+            protectedOperands.insert(i + 1);
+      }
+    }
     for (const auto *option : options)
-      if (option->getOption().getKind() != llvm::opt::Option::InputClass)
+      if (option->getOption().getKind() != llvm::opt::Option::InputClass &&
+          !protectedOperands.count(option->getIndex()))
         forwardedOptions.insert(owners[option->getIndex()]);
   }
   std::set<size_t> removed;
@@ -155,22 +176,23 @@ static void adjustArguments(std::vector<std::string> &arguments,
     size_t valueIndex = index;
     std::string prefix;
     llvm::StringRef value(arguments[index]);
-    if (value.starts_with("-Wp,")) {
+    if (value.starts_with("-Wp,") || value.starts_with("-Wa,") || value.starts_with("-Wl,")) {
       llvm::SmallVector<llvm::StringRef, 8> parts;
       value.drop_front(4).split(parts, ',');
       std::string replacement;
       for (size_t i = 0; i < parts.size(); ++i) {
         std::string part = parts[i].str();
         if (forwardedOptions.count({index, i}) &&
-            adjustOption(part, unknown, ignoredWarningErrors, removedUnknownOptions))
+            adjustOption(part, unknown, ignoredWarningErrors, removedUnknownOptions, !value.starts_with("-Wp,")))
           continue;
-        replacement += (replacement.empty() ? "-Wp," : ",") + part;
+        replacement += (replacement.empty() ? value.take_front(4).str() : ",") + part;
       }
       if (replacement.empty()) removed.insert(index);
       else if (replacement != value) replacements[index] = std::move(replacement);
       continue;
     }
-    if ((value == "-Xclang" || value == "-Xpreprocessor") &&
+    bool assemblerOrLinker = value == "-Xassembler" || value == "-Xlinker";
+    if ((value == "-Xclang" || value == "-Xpreprocessor" || assemblerOrLinker) &&
         argument->getNumValues() == 1 && index + 1 < arguments.size()) {
       if (!forwardedOptions.count({index, 0})) continue;
       valueIndex = index + 1;
@@ -181,7 +203,7 @@ static void adjustArguments(std::vector<std::string> &arguments,
       value = value.drop_front(prefix.size());
     }
     std::string replacement(value);
-    bool erase = adjustOption(replacement, unknown, ignoredWarningErrors, removedUnknownOptions);
+    bool erase = adjustOption(replacement, unknown, ignoredWarningErrors, removedUnknownOptions, assemblerOrLinker);
     if (!erase && replacement != value) replacements[valueIndex] = prefix + replacement;
     if (erase) {
       removed.insert(index);

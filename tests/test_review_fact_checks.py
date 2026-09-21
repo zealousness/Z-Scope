@@ -115,7 +115,7 @@ def test_type_identity_proof_and_stale_or_forged_receipt_rejected(compile_facts)
     [
         ("void *node = malloc(8); if (!node) return; free(node);", "supported"),
         ("void *node = malloc(8); if (fail) return; free(node);", "unknown"),
-        ("void *node = malloc(8); if (!node) return; retain(node);", "supported"),
+        ("void *node = malloc(8); if (!node) return; retain(node);", "unknown"),
         ("void *node = malloc(8); if (!node) return; maybe_retain(node, fail);", "unknown"),
         ("void *node = malloc(8); owner = node; owner = 0;", "unknown"),
     ],

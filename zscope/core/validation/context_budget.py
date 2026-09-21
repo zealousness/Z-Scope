@@ -81,7 +81,7 @@ def fit_evidence(source: dict[str, Any], *, max_tokens: int) -> dict[str, Any]:
     # from a reported sink. Their surrounding lines preserve local context.
     important = re.compile(
         r"\b(if|else|switch|case|while|for|return|throw|catch|delete|new|"
-        r"free|realloc|fclose|closedir|close|unlock|assert)\b|\b\w*(?:lock|release|destroy)\s*\("
+        r"free|realloc|fclose|closedir|close|unlock|assert)\b|\b\w*(?:lock)\s*\("
     )
     scores: dict[int, int] = {}
     for i, line in enumerate(lines):

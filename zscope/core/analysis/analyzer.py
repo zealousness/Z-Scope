@@ -103,6 +103,7 @@ from ...semantics.inference import (
 )
 from ...semantics.user_config_context import relevant_user_config_context
 from ...snapshots.policy import (
+    SNAPSHOT_CANDIDATE_POLICY_VERSION,
     build_lightweight_snapshot,
     build_trivial_snapshot,
     is_lightweight_snapshot_candidate,
@@ -252,8 +253,10 @@ class Analyzer:
         defer_validation_to_scan: bool = False,
         project_knowledge_service: Any = _PROJECT_KNOWLEDGE_UNSET,
         owns_project_knowledge_service: bool = False,
+        semantic_result: Any = None,
     ):
         self.config = config
+        self.semantic_result = semantic_result
         # Defensive preflight for third-party callers that construct an
         # Analyzer from an in-memory config instead of going through
         # ConfigLoader.  It is intentionally before CodeIndex/external tools.
@@ -465,7 +468,48 @@ class Analyzer:
         with bind_cancellation_token(self.cancellation_token):
             if self.cancellation_token is not None:
                 self.cancellation_token.raise_if_cancelled()
+            self.prepare_semantics()
             return self.workflow_runner.run()
+
+    def prepare_semantics(self, entries: Optional[List[FunctionEntry]] = None) -> Any:
+        """Shared pre-rule barrier, also used by direct Analyzer callers."""
+        if self.config.project.language == "java":
+            return None
+        if self.semantic_result is None:
+            from ...orchestration.global_modeler import GlobalModeler
+
+            modeler = GlobalModeler.from_analyzer_helpers(
+                self.config,
+                self.code_index,
+                self.snapshot_store,
+                self.user_config,
+                llm_clients=self.llm_clients,
+                tools_factory=self._get_tools,
+                tool_policy_factory=self._tool_policy_for_agent,
+                attach_contract=self._attach_agent_contract,
+            )
+            if entries is None:
+                entries = [
+                    FunctionEntry(
+                        str(self.config.project.entry_function or ""),
+                        file_path=self.config.project.entry_file_path,
+                        signature=self.config.project.entry_signature,
+                    )
+                ]
+            with bind_cancellation_token(self.cancellation_token):
+                modeler.run(entries)
+            self.semantic_result = modeler.result
+        if getattr(self, "semantic_result", None) is not None:
+            self._local_pattern_semantics = deepcopy(self.semantic_result.local_semantics)
+            self._semantic_overlay = deepcopy(self.semantic_result.overlay)
+            self._record_engine_capability(
+                "semantic_modeling",
+                status="partial" if self.semantic_result.partial else "complete",
+                active=True,
+                contract_version=self.semantic_result.contract_version,
+                **self.semantic_result.stats.to_dict(),
+            )
+        return self.semantic_result
 
     def close(self) -> None:
         if getattr(self, "_owns_project_knowledge_service", False):
@@ -1050,6 +1094,8 @@ class Analyzer:
         )
 
     def _reuse_unchanged_report(self, state: Dict[str, Any]) -> bool:
+        if getattr(self, "semantic_result", None) is not None and self.semantic_result.partial:
+            return False
         if not state.get("history_loaded"):
             self._load_history_state(state)
 
@@ -1150,7 +1196,10 @@ class Analyzer:
         state["history_reconciled"] = True
 
     def _step_premodel_reachable_callees(self, state: Dict[str, Any]) -> None:
-        if self.config.analysis.enable_global_model:
+        if (
+            getattr(self, "semantic_result", None) is not None
+            or self.config.analysis.enable_global_model
+        ):
             state["notes"].append(
                 "Premodel reachable callees skipped because global modeling is enabled."
             )
@@ -1209,7 +1258,10 @@ class Analyzer:
         )
 
     def _step_model_entry(self, state: Dict[str, Any]) -> None:
-        if self.config.analysis.enable_global_model:
+        if (
+            getattr(self, "semantic_result", None) is not None
+            or self.config.analysis.enable_global_model
+        ):
             impl_result = _as_dict(state.get("impl_result"))
             entry_func = str(state.get("entry_func") or "")
             entry_index_name = str(state.get("entry_index_name") or "")
@@ -1272,6 +1324,7 @@ class Analyzer:
             semantic_context,
             log_context="entry",
             index_name=state["entry_index_name"],
+            snapshot_store=self.snapshot_store,
         )
         sm_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
         state["total_context_tokens"] += sm_tokens
@@ -1354,47 +1407,8 @@ class Analyzer:
         max_depth: int,
         max_callees: int,
     ) -> int:
-        """Add semantic-snapshot suspicious points from reachable functions to the ledger."""
-        added = 0
-        visited: Set[str] = set()
-        queue: List[tuple[str, List[str], int]] = [(entry_index_name, [entry_index_name], 0)]
-
-        while queue:
-            func, path, depth = queue.pop(0)
-            if func in visited or depth > max_depth:
-                continue
-            visited.add(func)
-
-            snapshot = self.snapshot_store.load_snapshot(func)
-            if snapshot:
-                tickets = orchestrator.plan_snapshot_candidates(
-                    func,
-                    snapshot,
-                    allowed_skills=active_skills,
-                )
-                for ticket in tickets:
-                    record, _ = ledger.add(
-                        ticket,
-                        source=f"semantic_snapshot:{func}",
-                        call_path=path,
-                    )
-                    local_records.append(record)
-                added += len(tickets)
-
-            if depth >= max_depth:
-                continue
-            try:
-                callees = self.code_index.get_callees(func, limit=max_callees)
-            except Exception as exc:
-                logger.debug("Failed to collect snapshot callees for %s: %s", func, exc)
-                continue
-            for callee in callees:
-                callee_name = callee.get("name") if isinstance(callee, dict) else None
-                if not callee_name or callee_name in visited:
-                    continue
-                queue.append((callee_name, path + [callee_name], depth + 1))
-
-        return added
+        """Compatibility entry point: observations are Validator context only."""
+        return 0
 
     def _step_vulnerability_mining(self, state: Dict[str, Any]) -> None:
         agent_context = state["agent_context"]
@@ -1467,6 +1481,8 @@ class Analyzer:
             )
             continue
 
+        # Snapshot observations remain validator context, not independent
+        # validation obligations. Deterministic rule priority groups are unrelated.
         if not getattr(self, "defer_validation_to_scan", False):
             self._run_single_entry_active_discovery(state)
 
@@ -2285,7 +2301,7 @@ class Analyzer:
         ):
             return False
         return bool(
-            re.search(r"\b(?:malloc|calloc|alloc|realloc|_safe_malloc|_safe_calloc)\b", text)
+            re.search(r"\b(?:malloc|calloc|alloc|realloc)\b", text)
             or re.search(r"\b(?:allocation|allocate|heap|resource)\b", text)
         )
 
@@ -2370,10 +2386,22 @@ class Analyzer:
         """Run local candidate rules on project callees of thin public facades."""
         issues: List[Dict[str, Any]] = []
         root = str(entry_func or impl.get("function") or impl.get("name") or "").strip()
+        def external_modeled(name: str, caller: str, item: Any = None) -> bool:
+            classify = getattr(self.code_index, "call_model_status", None)
+            status = classify(name, caller, item) if callable(classify) else ""
+            if status in {"standard_model", "external_model_missing"}:
+                if state is not None:
+                    records = state.setdefault("external_call_models", [])
+                    row = {"name": name, "caller": caller, "status": status}
+                    if row not in records:
+                        records.append(row)
+                return True
+            return False
+
         queued: List[tuple[str, int, List[str]]] = []
         for item in impl.get("callees", []):
             name = self._callee_item_name(item)
-            if not name or name == root:
+            if not name or name == root or external_modeled(name, root, item):
                 continue
             queued.append((name, 1, [root, name] if root else [name]))
         # Breadth is a prioritization hint only. Deterministic work must not
@@ -2389,7 +2417,7 @@ class Analyzer:
         )
         while queued and analyzed < total_limit:
             callee, depth, call_path = queued.pop(0)
-            if callee in visited:
+            if callee in visited or external_modeled(callee, call_path[-2] if len(call_path) > 1 else root):
                 continue
             visited.add(callee)
             try:
@@ -2459,7 +2487,7 @@ class Analyzer:
             if depth >= max_depth and not expand_dispatcher_siblings:
                 for nested in callee_impl.get("callees", []):
                     nested_name = self._callee_item_name(nested)
-                    if nested_name and nested_name not in visited and nested_name not in call_path:
+                    if nested_name and nested_name not in visited and nested_name not in call_path and not external_modeled(nested_name, callee, nested):
                         self._record_deferred_deterministic_work(
                             state,
                             engine=engine_name,
@@ -2472,7 +2500,7 @@ class Analyzer:
             nested_queue: List[tuple[str, int, List[str]]] = []
             for nested in callee_impl.get("callees", []):
                 nested_name = self._callee_item_name(nested)
-                if nested_name and nested_name not in visited and nested_name not in call_path:
+                if nested_name and nested_name not in visited and nested_name not in call_path and not external_modeled(nested_name, callee, nested):
                     nested_queue.append((nested_name, depth + 1, call_path + [nested_name]))
             queued.extend(nested_queue)
             queued = self._order_callee_work_queue(queued)
@@ -3383,8 +3411,10 @@ class Analyzer:
     ) -> List[Dict[str, Any]]:
         if db is None or self._candidate_backend_profile() not in {"clang", "unified"}:
             return []
-        find_missing = getattr(db, "find_callers_without_callee", None)
+        find_missing = getattr(db, "find_acquisition_calls", None)
         if not callable(find_missing):
+            self._record_engine_capability("clang_knowledge_db", status="degraded", active=True,
+                reason="object_acquisition_inventory_unavailable")
             return []
         entry_func = str(state.get("entry_func") or "")
         pairs = self._resource_release_pairs_from_overlay()
@@ -3398,12 +3428,17 @@ class Analyzer:
         rows_seen = 0
         query_failures = 0
         legacy_queries = 0
+        grouped_pairs: Dict[str, Tuple[Set[str], Set[str]]] = {}
         for acquire, release, pair_source in pairs:
+            releases, sources = grouped_pairs.setdefault(acquire, (set(), set()))
+            releases.add(release)
+            sources.add(pair_source)
+        for acquire, (releases, sources) in grouped_pairs.items():
+            release = " or ".join(sorted(releases))
+            pair_source = ", ".join(sorted(sources))
             try:
                 rows, legacy_query = self._collect_missing_release_rows(
-                    find_missing,
-                    acquire,
-                    release,
+                    find_missing, acquire, sorted(releases)
                 )
             except Exception as exc:
                 logger.warning("Unable to query KnowledgeDB pair %s/%s: %s", acquire, release, exc)
@@ -3421,13 +3456,12 @@ class Analyzer:
                 func = str(row.get("function") or "")
                 if not self._target_in_reachable_functions(func, reachable_funcs):
                     continue
-                candidates.append(
-                    self._clang_pair_row_to_candidate(
-                        row,
-                        entry_func=entry_func,
-                        pair_source=pair_source,
+                for object_row in self._knowledge_db_object_rows(row):
+                    candidates.append(
+                        self._clang_pair_row_to_candidate(
+                            object_row, entry_func=entry_func, pair_source=pair_source,
+                        )
                     )
-                )
         logger.info(
             "Backend Clang KnowledgeDB signal scan entry='%s': pairs=%d rows=%d reachable=%d "
             "candidates=%d duration=%.2fs",
@@ -3440,7 +3474,7 @@ class Analyzer:
         )
         capability_status = "complete"
         capability_reason = ""
-        if query_failures and query_failures >= len(pairs):
+        if query_failures and query_failures >= len(grouped_pairs):
             capability_status = "failed"
             capability_reason = "all_resource_pair_queries_failed"
         elif query_failures:
@@ -3461,11 +3495,41 @@ class Analyzer:
         )
         return candidates
 
+    def _knowledge_db_object_rows(self, row: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Resolve every acquisition object; absence of facts stays reviewable."""
+        from ...retrieval.validation_facts import scan_compiler_facts
+        from ...retrieval.lifecycle_analysis import lifecycle_facts
+        from ..validation.review_checks import ReviewClaimChecker, function_in_source
+
+        try:
+            root = Path(self.config.project.project_root).resolve()
+            commands = Path(self.config.project.compile_commands_path or root / "compile_commands.json")
+            directory = Path(self.config.analysis.snapshot_dir) / "review_experiment" / "facts"
+            store = scan_compiler_facts(self.code_index, root, commands, directory)
+            descriptor = store.collect(str(row.get("file_path") or ""))
+            if not descriptor.get("complete"):
+                return [{**row, "lifecycle_gap": descriptor.get("reason", "compiler_facts_incomplete")}]
+            data = store.load(descriptor["fact_store_id"])
+            fn = ReviewClaimChecker._functions(data).get(str(row.get("function") or ""))
+            if not fn or not function_in_source(fn, data["source"]):
+                return [{**row, "lifecycle_gap": "function_identity_missing_or_ambiguous"}]
+            registry = self._get_local_pattern_semantics().contracts
+            source = Path(data["source"]).read_text(encoding="utf-8")
+            analysis = lifecycle_facts(store, registry, data, fn, source)
+            objects = [o for o in analysis["obligations"]
+                       if o["api"] == row.get("acquire_func") and o["line"] == row.get("line")]
+            if not objects:
+                return [{**row, "lifecycle_gap": "acquisition_identity_not_resolved"}]
+            return [{**row, "lifecycle_obligation": obj, "lifecycle_gap": analysis["gaps"],
+                     "contract_version": registry.version} for obj in objects]
+        except (AttributeError, OSError, KeyError, TypeError, ValueError) as exc:
+            return [{**row, "lifecycle_gap": "compiler_lifecycle_unavailable:" + type(exc).__name__}]
+
     @staticmethod
     def _collect_missing_release_rows(
         query: Any,
         acquire: str,
-        release: str,
+        release: Any,
         *,
         page_size: int = 500,
     ) -> tuple[List[Dict[str, Any]], bool]:
@@ -3528,6 +3592,22 @@ class Analyzer:
         entry_func: str,
         pair_source: str,
     ) -> Dict[str, Any]:
+        from ...semantics.models import LocalPatternSemantics
+
+        semantics = LocalPatternSemantics()
+        semantics.merge_overlay(self._get_semantic_overlay())
+        row = {"contract_version": semantics.contracts.version, **row}
+        getter = getattr(getattr(self, "code_index", None), "get_function_impl", None)
+        if callable(getter):
+            try:
+                impl = getter(str(row.get("function") or ""), file_path=str(row.get("file_path") or ""), max_lines=None)
+                if isinstance(impl, dict):
+                    row["call_semantics"] = semantics.contracts.trace_calls({
+                        **impl, "func_name": row.get("function"),
+                        "file_path": row.get("file_path"),
+                    })
+            except (KeyError, ValueError, TypeError, RuntimeError) as exc:
+                row["call_semantics_unavailable"] = type(exc).__name__
         return clang_pair_row_to_candidate(
             row,
             entry_func=entry_func,
@@ -4859,6 +4939,7 @@ class Analyzer:
             result_cache=getattr(self, "validation_result_cache", None),
             scheduler=getattr(self, "scheduler", None),
             project_knowledge_service=getattr(self, "project_knowledge_service", None),
+            get_contract_registry=lambda: self._get_local_pattern_semantics().contracts,
         )
 
     def _remember_validation_result(self, issue: Dict[str, Any], status: str) -> None:
@@ -5413,14 +5494,22 @@ class Analyzer:
     def _build_final_report(self, state: Dict[str, Any]) -> None:
         state.setdefault("_report_tail_started", time.monotonic())
         ledger = state.get("candidate_ledger")
+        if getattr(self, "semantic_result", None) is not None and ledger is not None:
+            from ...orchestration.snapshot_candidates import update_snapshot_outcomes
+
+            update_snapshot_outcomes(self.semantic_result, ledger)
         snapshot = getattr(ledger, "lifecycle_snapshot", None)
         if callable(snapshot):
             state["candidate_lifecycle_snapshot"] = snapshot(
                 entry_identity=str(state.get("entry_identity") or state.get("entry_func") or "")
             )
+        if getattr(self, "semantic_result", None) is not None and self.semantic_result.partial:
+            state["completeness"] = "partial"
         self.report_assembler.build(state)
 
     def _build_workflow_metadata(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        if getattr(self, "semantic_result", None) is not None:
+            state["semantic_contract_version"] = self.semantic_result.contract_version
         engine_capabilities = self._engine_capabilities()
         state["engine_capabilities"] = engine_capabilities
         llm_usage = scan_token_usage_snapshot(self.config)
@@ -5455,6 +5544,16 @@ class Analyzer:
         state["wiki_telemetry"] = wiki_telemetry
         return {
             "timestamp": datetime.datetime.now().isoformat(),
+            "snapshot_candidate_policy": SNAPSHOT_CANDIDATE_POLICY_VERSION,
+            "semantic_contract_version": (
+                self.semantic_result.contract_version if self.semantic_result else ""
+            ),
+            "semantic_modeling": (
+                self.semantic_result.stats.to_dict() if self.semantic_result else {}
+            ),
+            "semantic_snapshot_candidates": (
+                self.semantic_result.suspicious_metrics if self.semantic_result else {}
+            ),
             "run_id": state.get("run_id", ""),
             "entry_identity": state.get("entry_identity", state.get("entry_func", "")),
             "entry_file_path": state.get("entry_file_path", ""),
@@ -5500,7 +5599,7 @@ class Analyzer:
             },
             "version": __version__,
             "knowledge_db_version": self._knowledge_db_version(),
-            "snapshot_schema_version": "semantic_snapshot_v1",
+            "snapshot_schema_version": "semantic_snapshot_v2",
             "context_tokens": state.get("total_context_tokens", 0),
             "cumulative_prompt_tokens": state.get("total_cumulative_prompt_tokens", 0),
             "cumulative_completion_tokens": state.get("total_cumulative_completion_tokens", 0),
@@ -5905,7 +6004,11 @@ class Analyzer:
 
     def _config_hash(self) -> str:
         payload = {
+            "snapshot_candidate_policy": SNAPSHOT_CANDIDATE_POLICY_VERSION,
             "analysis": self._public_config_value(getattr(self.config, "analysis", None)),
+            "semantic_contract_version": (
+                getattr(getattr(self, "semantic_result", None), "contract_version", "")
+            ),
             "indexing": self._public_config_value(getattr(self.config, "indexing", None)),
             "reporting": self._public_config_value(getattr(self.config, "reporting", None)),
             "scan": self._public_config_value(getattr(self.config, "scan", None)),
@@ -6374,6 +6477,25 @@ class Analyzer:
         self, func_name: str, file_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """Load a snapshot, or build and persist one under the snapshot lock."""
+        if getattr(self, "semantic_result", None) is not None:
+            matches = [
+                snapshot
+                for snapshot in self.semantic_result.snapshots.values()
+                if func_name in {snapshot.get("func_name"), snapshot.get("index_name")}
+                and (not file_path or snapshot.get("file_path") == file_path)
+            ]
+            if len(matches) == 1:
+                return {
+                    "success": True,
+                    "data": deepcopy(matches[0]),
+                    "message": "Pinned session semantic snapshot.",
+                }
+            return {
+                "success": False,
+                "data": None,
+                "reason": "snapshot_outside_pinned_semantic_coverage",
+                "error": "No unique current snapshot in this scan's semantic coverage; use source evidence.",
+            }
         try:
             context = build_semantic_model_input(
                 self.code_index,
@@ -6507,6 +6629,7 @@ class Analyzer:
                 context,
                 log_context="on_demand",
                 index_name=index_name,
+                snapshot_store=self.snapshot_store,
             )
             response_metadata = response.metadata or {}
             context_tokens = int(
@@ -6595,6 +6718,8 @@ class Analyzer:
         is paid once per function and the result feeds rule-facing semantics.
         """
 
+        if getattr(self, "semantic_result", None) is not None:
+            return snapshot
         analysis_cfg = self.config.analysis
         if not bool(getattr(analysis_cfg, "llm_interface_inference", True)):
             return snapshot
@@ -7010,6 +7135,7 @@ class Analyzer:
                     context,
                     log_context="premodel",
                     index_name=index_name,
+                    snapshot_store=self.snapshot_store,
                 )
                 call_tokens = resp.metadata.get("context_tokens", 0) if resp.metadata else 0
                 total_tokens += call_tokens

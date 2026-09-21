@@ -26,7 +26,7 @@ def _predicate_matches(fields: Dict[str, Any], predicate: Dict[str, Any]) -> boo
     expected = normalize_candidate_value(predicate.get("value"))
     if str(predicate.get("operator") or "eq") == "contains":
         return expected in actual if isinstance(actual, list) else str(expected) in str(actual)
-    return actual == expected
+    return bool(actual == expected)
 
 
 def _contract_matches(issue: Dict[str, Any], contract: Dict[str, Any]) -> Tuple[List[str], bool]:

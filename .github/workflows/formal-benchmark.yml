@@ -42,7 +42,8 @@ jobs:
       - name: Install the source-controlled benchmark frontend
         run: |
           python3 -m pip install --require-hashes -r requirements/constraints/py313.txt
-          python3 -m pip install --no-deps -e .
+          python3 -m pip install --require-hashes -r requirements/constraints/benchmark-py313-linux-x86_64.txt
+          python3 -m pip install --no-deps -e '.[benchmark]'
           python3 scripts/check_benchmark_hygiene.py
       - name: Run five isolated cold starts
         env:

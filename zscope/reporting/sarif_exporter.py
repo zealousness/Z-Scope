@@ -64,7 +64,9 @@ def report_to_sarif(
 
 def _load_report(report_or_path: Any) -> Dict[str, Any]:
     if isinstance(report_or_path, (str, Path)):
-        loaded = json.loads(Path(report_or_path).read_text(encoding="utf-8"))
+        from .json_io import read_report
+
+        loaded = read_report(Path(report_or_path))
         if isinstance(loaded, dict):
             return loaded
         raise TypeError("SARIF report JSON root must be an object")

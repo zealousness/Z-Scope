@@ -1,9 +1,16 @@
+from semantic_fixtures import configured_test_semantics
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from zscope.core.candidates.regex import LocalPatternSemantics
 
 
 def _rules(code: str, *, semantics=None, overlay=None):
+    from semantic_fixtures import configured_test_semantics
+
+    configured = configured_test_semantics()
+    if semantics is not None:
+        configured.merge(semantics)
+    semantics = configured
     generator = ClangAstCfgCandidateGenerator(semantics, semantic_overlay=overlay)
     return generator.generate_issues("demo", code, "src/demo.c")
 
@@ -178,7 +185,7 @@ def test_clang_ast_cfg_terminal_release_returning_freed_global_is_uaf() -> None:
     assert "g_runtime_pbuf_pool" in issue["sink"]
 
 
-def test_clang_ast_cfg_safe_free_comes_from_packaged_default_semantics() -> None:
+def test_clang_ast_cfg_safe_free_requires_explicit_configuration() -> None:
     code = """
 10 | int demo(char *p) {
 11 |     SAFE_FREE(p);
@@ -187,8 +194,12 @@ def test_clang_ast_cfg_safe_free_comes_from_packaged_default_semantics() -> None
 14 | }
 """
 
-    default_rules = {issue["rule"] for issue in _rules(code)}
-    assert "clang_cfg_same_object_released_twice" in default_rules
+    default_rules = {
+        issue["rule"]
+        for issue in ClangAstCfgCandidateGenerator().generate_issues("demo", code, "src/demo.c")
+    }
+    assert "clang_cfg_same_object_released_twice" not in default_rules
+    assert "clang_cfg_same_object_released_twice" in {issue["rule"] for issue in _rules(code)}
 
     semantics = LocalPatternSemantics()
     semantics.add_api("deallocator", "SAFE_FREE", "user_config")
@@ -287,15 +298,13 @@ def test_clang_ast_cfg_detects_parent_release_without_owned_member_cleanup() -> 
         for issue in _rules(explicit_code)
         if issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
     )
-    implicit = next(
-        issue
+    assert not any(
+        issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
         for issue in _rules(implicit_code)
-        if issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
     )
 
     assert explicit["defect_class"] == "memory_leak"
     assert "node->children" in explicit["description"]
-    assert "子节点/链表" in implicit["description"]
 
 
 def test_clang_ast_cfg_preserves_member_allocation_identity() -> None:
@@ -348,7 +357,7 @@ def test_clang_ast_cfg_treats_returning_allocator_wrappers_as_ownership_transfer
     assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
 
 
-def test_clang_ast_cfg_treats_explicit_global_assignment_as_ownership_transfer() -> None:
+def test_clang_ast_cfg_global_spelling_is_not_ownership_proof() -> None:
     code = """
 10 | int install(void) {
 11 |     g_cache.buffer = malloc(32);
@@ -359,7 +368,7 @@ def test_clang_ast_cfg_treats_explicit_global_assignment_as_ownership_transfer()
 
     issues = _rules(code)
 
-    assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
+    assert any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
 
 
 def test_clang_ast_cfg_suppresses_varargs_format_forwarding_wrappers() -> None:
@@ -377,7 +386,12 @@ def test_clang_ast_cfg_suppresses_varargs_format_forwarding_wrappers() -> None:
 32 | }
 """
 
-    wrapper_rules = {issue["rule"] for issue in _rules(wrapper)}
+    wrapper_rules = {
+        issue["rule"]
+        for issue in ClangAstCfgCandidateGenerator(configured_test_semantics()).generate_issues(
+            "log_wrapper", wrapper, "demo.c"
+        )
+    }
     direct_rules = {issue["rule"] for issue in _rules(direct_sink)}
 
     assert "clang_cfg_nonliteral_format_string" not in wrapper_rules
@@ -495,7 +509,12 @@ def test_clang_ast_cfg_does_not_analyze_unlock_wrapper_or_macro_definition() -> 
 """
 
     assert "clang_cfg_unlock_without_matching_lock" not in {issue["rule"] for issue in _rules(macro)}
-    assert "clang_cfg_unlock_without_matching_lock" not in {issue["rule"] for issue in _rules(wrapper)}
+    assert "clang_cfg_unlock_without_matching_lock" not in {
+        issue["rule"]
+        for issue in ClangAstCfgCandidateGenerator(configured_test_semantics()).generate_issues(
+            "_unlock_wrapper", wrapper, "demo.c"
+        )
+    }
 
 
 def test_clang_ast_cfg_respects_custom_user_config_out_param_acquire() -> None:
@@ -505,9 +524,12 @@ def test_clang_ast_cfg_respects_custom_user_config_out_param_acquire() -> None:
         "resource_models": [
             {
                 "name": "SHM_FileMngFileCreate",
+                "pair": "SHM_FileClose",
                 "kind": "resource_acquire",
                 "carrier": "argument_resource",
                 "return_semantics": "returns resource via output argument",
+                "object_binding": {"kind": "output_argument", "argument_index": 1},
+                "contract": {"carrier": {"kind": "output_argument", "argument_index": 1}},
                 "memory_behavior": {"allocates": True},
                 "source": "user_config",
             },
@@ -545,9 +567,12 @@ def test_clang_ast_cfg_suppresses_out_param_leak_after_configured_release() -> N
         "resource_models": [
             {
                 "name": "SHM_FileMngFileCreate",
+                "pair": "SHM_FileClose",
                 "kind": "resource_acquire",
                 "carrier": "argument_resource",
                 "return_semantics": "returns resource via output argument",
+                "object_binding": {"kind": "output_argument", "argument_index": 1},
+                "contract": {"carrier": {"kind": "output_argument", "argument_index": 1}},
                 "memory_behavior": {"allocates": True},
                 "source": "user_config",
             }
@@ -575,9 +600,12 @@ def test_clang_ast_cfg_suppresses_out_param_leak_after_braced_failure_return() -
         "resource_models": [
             {
                 "name": "SHM_FileMngFileCreate",
+                "pair": "SHM_FileClose",
                 "kind": "resource_acquire",
                 "carrier": "argument_resource",
                 "return_semantics": "returns resource via output argument",
+                "object_binding": {"kind": "output_argument", "argument_index": 1},
+                "contract": {"carrier": {"kind": "output_argument", "argument_index": 1}},
                 "memory_behavior": {"allocates": True},
                 "source": "user_config",
             }
@@ -604,9 +632,12 @@ def test_clang_ast_cfg_detects_out_param_use_before_status_guard() -> None:
         "resource_models": [
             {
                 "name": "SHM_FileMngFileCreate",
+                "pair": "SHM_FileClose",
                 "kind": "resource_acquire",
                 "carrier": "argument_resource",
                 "return_semantics": "returns resource via output argument",
+                "object_binding": {"kind": "output_argument", "argument_index": 1},
+                "contract": {"carrier": {"kind": "output_argument", "argument_index": 1}},
                 "memory_behavior": {"allocates": True},
                 "source": "user_config",
             },
@@ -1190,7 +1221,24 @@ def test_clang_ast_cfg_macro_lock_race_uses_generic_macro_guard_shape() -> None:
 146 | }
 """
 
-    issues = _rules(code)
+    from zscope.semantics.contracts import ApiContract
+
+    semantics = configured_test_semantics()
+    for name, role in (("PROJECT_FAST_LOCK", "lock"), ("PROJECT_FAST_UNLOCK", "unlock")):
+        semantics.contracts.add(
+            ApiContract.from_row(
+                {
+                    "symbol_name": name,
+                    "symbol_type": "macro",
+                    "kind": role,
+                    "pair": ["PROJECT_FAST_UNLOCK"] if role == "lock" else [],
+                    "contract": {"carrier": {"kind": "global", "global_name": "g_guard"}},
+                }
+            )
+        )
+        semantics.add_api(role, name, "test:user_config")
+    overlay = {"api_contracts": [c.to_dict() for c in semantics.contracts.contracts]}
+    issues = _rules(code, semantics=semantics, overlay=overlay)
     issue = next(issue for issue in issues if issue["rule"] == "clang_cfg_macro_guarded_lock_may_compile_to_noop")
 
     assert issue["defect_class"] == "race"
@@ -1444,10 +1492,13 @@ def test_clang_ast_cfg_detects_unlock_without_matching_lock() -> None:
 """
 
     issues = _rules(code)
-    rule = next(issue for issue in issues if issue["rule"] == "clang_cfg_unlock_without_matching_lock")
-
-    assert rule["category"] == "lock_protocol_violation"
-    assert rule["cwe"] == "CWE-832"
+    # A parameter may already be held by the caller; a hidden status cannot
+    # independently establish a successful unmatched unlock.
+    assert not any(issue["rule"] == "clang_cfg_unlock_without_matching_lock" for issue in issues)
+    generator = ClangAstCfgCandidateGenerator(semantics=configured_test_semantics())
+    generator.generate_issues("demo", code, "demo.c")
+    assert any(event["role"] == "unlock" and event["applicability"] == "unknown"
+               for event in generator.last_semantic_events)
 
 
 def test_analyzer_prioritizes_dangerous_callees_for_local_rule_scan() -> None:
@@ -1975,8 +2026,8 @@ def test_clang_ast_cfg_emits_key_truncation_and_key_generation_race() -> None:
 """
     race_code = """
 590 | int demo(const char *path, int project_id) {
-591 |     if (!_file_exists(path)) { LOG_WARN("missing"); }
-592 |     int key = (int)(_hash_string(path) & 0xffffu) | ((project_id & 0xff) << 16);
+591 |     struct stat st; if (stat(path, &st) != 0) { return -1; }
+592 |     int key = (int)(ftok(path, project_id) & 0xffffu) | ((project_id & 0xff) << 16);
 593 |     LOCK(&g_runtime_ftok_lock); if (_runtime_find_shared_zone(path) != NULL) { LOG_WARN("collision"); }
 594 |     UNLOCK(&g_runtime_ftok_lock);
 595 |     return key;
@@ -2118,4 +2169,3 @@ def test_analyzer_balanced_callee_queue_preserves_original_prefix_before_danger_
 
     assert [item[0] for item in selected[:2]] == ["first_plain", "second_plain"]
     assert {item[0] for item in selected[2:]} == {"late_alloc_helper", "late_release_helper"}
-

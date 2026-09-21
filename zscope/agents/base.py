@@ -32,6 +32,8 @@ class JsonOutputSpec:
     nested_keys: Sequence[str] = ()
     fallback_empty_payload: Optional[Dict[str, Any]] = None
     metadata_prefix: str = "json"
+    validation_error: Optional[Callable[[], str]] = None
+    terminal_observer: Optional[Callable[[Dict[str, Any], bool], None]] = None
 
 
 class ToolCallingAgent(BaseAgent):
@@ -258,12 +260,15 @@ class JsonToolAgent(ToolCallingAgent):
                 if not json_output_spec:
                     return {"valid": True, "payload": payload}
                 parsed_payload = self._coerce_payload_for_spec(payload, json_output_spec)
+                if json_output_spec.terminal_observer:
+                    json_output_spec.terminal_observer(payload, parsed_payload is not None)
                 if parsed_payload is None:
                     return {
                         "valid": False,
                         "error": (
                             f"Invalid {json_output_spec.type_name} payload; follow the supplied "
-                            "schema and call the terminal tool again."
+                            "schema and call the terminal tool again. "
+                            + (json_output_spec.validation_error() if json_output_spec.validation_error else "")
                         ),
                     }
                 return {"valid": True, "payload": parsed_payload}
@@ -553,7 +558,10 @@ class JsonToolAgent(ToolCallingAgent):
             return data
         if isinstance(data, dict):
             for key in json_output_spec.nested_keys:
-                nested = data.get(key)
+                # Preserve the root schema errors when no wrapper was supplied.
+                if key not in data:
+                    continue
+                nested = data[key]
                 if json_output_spec.validator(nested):
                     return nested
         return None

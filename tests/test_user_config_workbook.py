@@ -157,7 +157,7 @@ def test_workbook_cache_reloads_after_external_edit(
     rows = workbook.read_rows()
 
     assert [row["symbol_name"] for row in rows["resource"]] == ["After", "ExtraSymbol"]
-    assert read_count == 1
+    assert read_count == 2
 
 
 def test_user_config_scan_paths_share_one_workbook_read(
@@ -261,6 +261,12 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
         def __init__(self, *args, **kwargs):
             captured["kwargs"] = kwargs
 
+        def list_functions(self, **kwargs):
+            return ["entry"]
+
+        def find_function_infos(self, name):
+            return [{"function_name": name, "file_path": "entry.c"}]
+
         def close(self):
             captured["closed"] = True
 
@@ -338,6 +344,20 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
         fake_classify_ambiguous_interfaces_with_llm,
     )
 
+    from zscope.core.analysis import analyzer as analyzer_module
+
+    class FakeAnalyzer:
+        def __init__(self, config, **kwargs):
+            captured["modeling_workers"] = config.concurrency.llm_max_inflight
+
+        def prepare_semantics(self, entries):
+            captured["entries"] = [entry.function_name for entry in entries]
+            return None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(analyzer_module, "Analyzer", FakeAnalyzer)
     result = CliRunner().invoke(
         cli_module.main,
         ["--config", str(config_path), "--infer-user-config"],
@@ -346,8 +366,8 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert captured["kwargs"]["wait_for_cpg"] is True
     assert captured["kwargs"]["defer_svf"] is True
-    assert captured_filter["kwargs"]["max_workers"] == 3
-    assert "3 worker(s)" in result.output
+    assert captured["modeling_workers"] == 3
+    assert captured["entries"] == ["entry"]
     assert captured["closed"] is True
 
 

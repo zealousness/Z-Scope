@@ -5,11 +5,12 @@ Handles conversion of analysis results to JSON and Markdown formats.
 
 import json
 import datetime
-from dataclasses import dataclass, asdict, field, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from ..common.defect_cwe_map import cwe_tokens
+from .shared_objects import dataclass_dict
 
 
 @dataclass
@@ -234,7 +235,7 @@ class Issue:
         return cls(**filtered_data)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return dataclass_dict(self)
 
 
 @dataclass
@@ -302,8 +303,9 @@ class ReportGenerator:
         """Save report as JSON."""
         output_path = self.project_root / filename
         data = report.to_dict()
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        from .json_io import write_report_atomic
+
+        write_report_atomic(output_path, data)
         return output_path
 
     @staticmethod

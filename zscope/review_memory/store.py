@@ -181,7 +181,8 @@ class ReviewMemoryStore:
         path = self.state / "active.json"
         if not path.exists():
             return self._publish_active()
-        return json.loads(path.read_text(encoding="utf-8"))
+        pointer: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        return pointer
 
     def list_proposals(self, project_id: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, args = [], []

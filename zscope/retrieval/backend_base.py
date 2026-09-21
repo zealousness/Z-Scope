@@ -148,6 +148,10 @@ class CodeBackend(ABC):
         """Return macro definitions for a set of symbol names."""
         return []
 
+    def get_global_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        """Return indexed global declarations/definitions, without guessing scope."""
+        return []
+
     def get_function_symbol_context(
         self,
         func_name: str,

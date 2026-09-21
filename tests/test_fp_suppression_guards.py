@@ -81,6 +81,8 @@ def test_m2_other_kinds_unaffected_by_demotion_flag() -> None:
 
 
 def test_m3_infunction_release_contradiction_helper() -> None:
+    # 注意：仅裸 free(...) 属于工具规则识别范围；SAFE_FREE 等项目专属
+    # wrapper 宏的识别由语义建模暴露（语义建模方向：工具规则不做硬编码）。
     body = (
         "int _runtime_release_reader_channel(const char* key, int role) {\n"
         "    ServiceNode* node = _service_alloc_node(key, \"reader\");\n"
@@ -88,11 +90,11 @@ def test_m3_infunction_release_contradiction_helper() -> None:
         "    node->role = role;\n"
         "    if (node->role == 1) {\n"
         "        _service_release_by_role(node, 0);\n"
-        "        SAFE_FREE(node);\n"
+        "        free(node);\n"
         "        return 0;\n"
         "    }\n"
         "    _service_release_by_role(node, 0);\n"
-        "    SAFE_FREE(node);\n"
+        "    free(node);\n"
         "    return 0;\n"
         "}\n"
     )

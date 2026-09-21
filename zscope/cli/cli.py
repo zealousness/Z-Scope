@@ -318,15 +318,11 @@ def main(
             sys.exit(0)
 
         if infer_user_config:
-            from ..config.user_config_workbook import UserConfigWorkbook
-            from ..framework.llm_client import LLMClient
-            from ..orchestration.user_config_inference import (
-                classify_ambiguous_interfaces_with_llm,
-                filter_user_config_rows_with_llm,
-                infer_user_config_rows,
-            )
+            from ..config.user_config_store import UserConfigStore
+            from ..config.function_entry import FunctionEntry
+            from ..core.analysis.analyzer import Analyzer
 
-            click.echo("Inferring user configuration candidates...")
+            click.echo("Building interface contracts with the shared incremental modeling stage...")
             code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
@@ -336,97 +332,59 @@ def main(
                 exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=True,
                 defer_svf=True,
-                svf_parallel_workers=(
-                    zscope_config.concurrency.svf_workers or zscope_config.concurrency.index_workers
-                ),
+                svf_parallel_workers=zscope_config.concurrency.svf_workers
+                or zscope_config.concurrency.index_workers,
             )
             workbook_path = _resolve_user_config_workbook_path(zscope_config)
-            generated = infer_user_config_rows(
-                code_index,
-                snapshot_dir=Path(zscope_config.analysis.snapshot_dir),
-            )
-            llm_workers = zscope_config.concurrency.llm_max_inflight
-            click.echo(
-                f"Screening user configuration candidates with LLM ({llm_workers} worker(s))..."
-            )
-            llm_cfg = zscope_config.llms.get("default") or next(iter(zscope_config.llms.values()))
-            token_usage_ledger = ensure_scan_token_usage_ledger(zscope_config)
-            llm_client = LLMClient(
-                api_key=llm_cfg.api_key,
-                base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
-                models=llm_cfg.models,
-                timeout=llm_cfg.timeout,
-                max_retries=llm_cfg.max_retries,
-                retry_until_available=getattr(llm_cfg, "retry_until_available", False),
-                max_tokens=llm_cfg.max_tokens,
-                base_url_rate_limit_per_minute=getattr(
-                    llm_cfg, "base_url_rate_limit_per_minute", 0
-                ),
-                base_url_max_concurrent_requests=getattr(
-                    llm_cfg, "base_url_max_concurrent_requests", 0
-                ),
-                global_max_concurrent_requests=zscope_config.concurrency.llm_max_inflight,
-                supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
-                token_usage_ledger=token_usage_ledger,
-                llm_ref="default",
+            helper = Analyzer(
+                zscope_config,
+                code_index=code_index,
+                user_config=UserConfigStore(workbook_path),
+                write_root_reports=False,
             )
             try:
-                generated, llm_stats = filter_user_config_rows_with_llm(
-                    generated,
-                    code_index,
-                    llm_client,
-                    max_workers=llm_workers,
+                entries = []
+                for name in code_index.list_functions(limit=2_147_483_647):
+                    infos = code_index.find_function_infos(name)
+                    for info in infos:
+                        entries.append(
+                            FunctionEntry(
+                                function_name=str(info.get("function_name") or name),
+                                file_path=str(info.get("file_path") or ""),
+                                signature=str(info.get("signature") or ""),
+                            )
+                        )
+                result = helper.prepare_semantics(entries)
+                from ..orchestration.user_config_inference import infer_user_config_rows
+
+                generated = infer_user_config_rows(
+                    code_index, Path(zscope_config.analysis.snapshot_dir)
                 )
-                existing_symbols = {
-                    str(row.get("symbol_name") or "")
-                    for sheet in ("resource", "lock")
-                    for row in generated.get(sheet, [])
+                ancillary = {
+                    sheet: rows
+                    for sheet, rows in generated.items()
+                    if sheet not in {"resource", "lock"}
                 }
-                ambiguous_rows, ambiguous_stats = classify_ambiguous_interfaces_with_llm(
-                    code_index,
-                    llm_client,
-                    exclude=existing_symbols,
-                    max_workers=llm_workers,
+                workbook = UserConfigStore(workbook_path).workbook
+                merge_stats = workbook.merge_generated(ancillary)
+                _write_user_config_infer_report(
+                    workbook_path.with_suffix(".infer_report.md"),
+                    workbook.read_rows(),
+                    {},
+                    {},
+                    merge_stats,
+                    read_warnings=workbook.read_warnings,
                 )
-                for sheet in ("resource", "lock"):
-                    generated.setdefault(sheet, []).extend(ambiguous_rows.get(sheet, []))
+                if result is not None:
+                    click.echo(
+                        f"Modeling: {result.stats.modeled_functions} rebuilt, {result.stats.cache_hit_functions} reused, {result.stats.failed_functions} failed."
+                    )
+                    click.echo(f"Semantic contract version: {result.contract_version}")
+                    click.echo("Coverage: partial" if result.partial else "Coverage: complete")
+                click.echo(f"User config workbook: {workbook_path}")
             finally:
-                llm_client.close()
-            workbook = UserConfigWorkbook(workbook_path)
-            stats = workbook.merge_generated(generated)
-            read_warnings = list(workbook.read_warnings)
-            total_symbols = sum(len(items) for items in generated.values())
-            click.echo(f"User config workbook: {workbook_path}")
-            click.echo(
-                "LLM screening: "
-                f"{llm_stats['reviewed']} reviewed, "
-                f"{llm_stats['kept']} kept, {llm_stats['revised']} revised, "
-                f"{llm_stats['dropped']} dropped, {llm_stats['unreviewed']} unreviewed, "
-                f"{llm_stats.get('recheck', 0)} rechecked, "
-                f"{llm_stats['errors']} batch error(s)."
-            )
-            click.echo(
-                "LLM ambiguous classification: "
-                f"{ambiguous_stats['collected']} collected, "
-                f"{ambiguous_stats['classified']} classified, "
-                f"{ambiguous_stats['dropped']} dropped, "
-                f"{ambiguous_stats['errors']} batch error(s)."
-            )
-            click.echo(
-                "Inference complete: "
-                f"{total_symbols} generated row(s), "
-                f"{stats['added']} added, {stats['refreshed']} refreshed, {stats['removed']} removed."
-            )
-            report_path = _write_user_config_infer_report(
-                workbook_path.parent / "user_config.infer_report.md",
-                generated,
-                llm_stats,
-                ambiguous_stats,
-                stats,
-                read_warnings=read_warnings,
-            )
-            click.echo(f"Inference report: {report_path}")
-            click.echo("Review the workbook, then run Z-SCOPE normally.")
+                helper.close()
+                code_index.close()
             sys.exit(0)
 
         if plan_entries:

@@ -11,7 +11,7 @@ import hashlib
 import re
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
-from ...semantics.models import LocalPatternSemantics, attr_for_category, classify_api_name
+from ...semantics.models import LocalPatternSemantics
 from .cpp_domains.models import CodeLine
 from .cpp_domains.resource_lifecycle import RegexResourceLifecycleRules
 from .cpp_domains.memory_bounds_integer import RegexMemoryBoundsIntegerRules
@@ -78,15 +78,25 @@ class RegexCandidateGenerator(
         self._compile_patterns()
 
     def _compile_patterns(self) -> None:
-        self._allocator_names = set(self.semantics.allocators)
-        self._calloc_names = set(self.semantics.calloc_allocators)
-        self._reallocator_names = set(self.semantics.reallocators)
+        from ...semantics.contracts import return_acquisition_names
+
+        self._allocator_names = return_acquisition_names(
+            self.semantics, self.semantics.allocators, "allocator"
+        )
+        self._calloc_names = return_acquisition_names(
+            self.semantics, self.semantics.calloc_allocators, "calloc"
+        )
+        self._reallocator_names = return_acquisition_names(
+            self.semantics, self.semantics.reallocators, "reallocator"
+        )
         self._deallocator_names = set(self.semantics.deallocators)
         self._copy_sink_names = set(self.semantics.copy_sinks)
         self._lock_names = set(self.semantics.lock_apis)
         self._unlock_names = set(self.semantics.unlock_apis)
         self._size_type_names = self._DEFAULT_SIZE_TYPES | set(self.semantics.type_aliases)
-        self._io_acquire_names = set(self.semantics.io_acquirers)
+        self._io_acquire_names = return_acquisition_names(
+            self.semantics, self.semantics.io_acquirers, "io_acquire"
+        )
         self._io_release_names = set(self.semantics.io_releasers)
         self._send_sink_names = set(self.semantics.send_sinks)
         self._recv_source_names = set(self.semantics.recv_sources)
@@ -109,13 +119,37 @@ class RegexCandidateGenerator(
         )
         self._copy_sink_re = self._call_re(self._copy_sink_names)
         self._lock_re = self._call_re(
-            self._lock_names, extra_patterns=[r"pthread_rwlock_[rw]dlock"]
+            self._lock_names, extra_patterns=[r"pthread_rwlock_(?:rdlock|wrlock)"]
         )
         self._unlock_re = self._call_re(self._unlock_names)
         self._size_type_pattern = self._type_pattern(self._size_type_names)
         self._integer_pointer_type_pattern = self._type_pattern(
             name for name in self._size_type_names if name != "char" and name != "unsigned char"
         )
+
+    def _semantic_api_pattern(self, pattern: str) -> str:
+        from ...semantics.contracts import expand_api_pattern
+
+        return expand_api_pattern(pattern, self.semantics)
+
+    def _bound_api_calls(self, text: str, roles: set[str]) -> List[Tuple[str, str]]:
+        names = {c.symbol.name for c in self.semantics.contracts.contracts if c.role in roles}
+        events: List[Tuple[str, str]] = []
+        for call in re.finditer(
+            rf"\b(?P<api>{self._names_pattern(names)})\s*\((?P<args>[^()]*)\)", text
+        ):
+            prefix = text[: call.start()]
+            assignment = re.search(
+                r"(?P<lhs>[A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)?)\s*=\s*(?:\([^)]*\)\s*)?$", prefix
+            )
+            returned = assignment["lhs"] if assignment else ""
+            for role in roles:
+                obj = self.semantics.contracts.resolve_object(
+                    call["api"], role, call["args"].split(","), returned
+                )
+                if obj:
+                    events.append((call["api"], obj))
+        return events
 
     _RESOURCE_BY_CLASS = {
         "integer_overflow": "memory",
@@ -182,19 +216,23 @@ class RegexCandidateGenerator(
         *,
         allowed_skills: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
+        self.last_semantic_events = self.semantics.contracts.trace_calls({
+            "func_name": func_name, "file_path": file_path, "code": code})
         self.program_facts = self.program_facts_provider(func_name, file_path) if self.program_facts_provider else {}
-        self._augment_name_heuristics_from_code(str(code or ""))
         lines = self._parse_lines(code)
         if not lines:
             return []
         allowed = set(allowed_skills) if allowed_skills is not None else None
         issues: List[Dict[str, Any]] = []
         emit = self._make_emit(issues, func_name, file_path, lines, allowed)
-        run_detector_plan(
-            "regex",
-            "function",
-            RegexRuleContext(generator=self, lines=lines, emit=emit),
-        )
+        from ...semantics.call_context import bind_call_context
+        with bind_call_context({"func_name": func_name, "file_path": file_path, "code": code,
+                                "program_facts": self.program_facts}, self.semantics.contracts):
+            run_detector_plan(
+                "regex",
+                "function",
+                RegexRuleContext(generator=self, lines=lines, emit=emit),
+            )
 
         deduped: Dict[str, Dict[str, Any]] = {}
         for issue in issues:
@@ -509,27 +547,6 @@ class RegexCandidateGenerator(
                         f"`{name}` classified as {category} API via {', '.join(sources)}"
                     )
         return evidence
-
-    def _augment_name_heuristics_from_code(self, code: str) -> None:
-        changed = False
-        for name in sorted(set(re.findall(r"\b([A-Za-z_]\w*)\s*\(", code))):
-            category = self._classify_api_name(name)
-            if not category:
-                continue
-            before = set(getattr(self.semantics, self._attr_for_category(category)))
-            self.semantics.add_api(category, name, "name_heuristic")
-            after = set(getattr(self.semantics, self._attr_for_category(category)))
-            changed = changed or before != after
-        if changed:
-            self._compile_patterns()
-
-    @staticmethod
-    def _classify_api_name(name: str) -> str:
-        return classify_api_name(name)
-
-    @staticmethod
-    def _attr_for_category(category: str) -> str:
-        return attr_for_category(category)
 
     def _parse_lines(self, code: str) -> List[CodeLine]:
         parsed: List[CodeLine] = []

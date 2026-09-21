@@ -42,7 +42,7 @@ from .clang_source_snapshot import DerivedSourceSnapshots
 
 logger = logging.getLogger(__name__)
 PROTOCOL = "zscope.clang-facts.v2"
-PRODUCER = "zscope.batch.v1"
+PRODUCER = "zscope.batch.v2"
 FAILURE_LOG_SAMPLES = 3
 FACT_TABLES = (
     "translation_units",
@@ -720,6 +720,9 @@ class BatchIndexer:
                 stage.set_metadata("clang_batch_stats", json.dumps(self.stats))
                 stage.set_metadata("clang_fact_frontend", "batch")
                 self.backend._mark_base_indexes_current(stage)
+                receipt = getattr(self.backend, "_compile_preparation", None)
+                if receipt is not None:
+                    receipt.validate()
                 stage.commit()
                 self._commit(stage, path)
                 self.stats["import_seconds"] = time.monotonic() - import_started
@@ -748,6 +751,11 @@ class BatchIndexer:
         self, stage: KnowledgeDB, kind: str, target: Dict[str, Any], types: Dict[Any, Any]
     ) -> Dict[str, Any]:
         usr, name = target.get("usr", ""), target.get("qualified_name") or target["name"]
+        if kind == "type" and target.get("is_system_header"):
+            record = types.get((name, target.get("type_kind"),
+                                self._relative(target["location"]["file"]), target["location"]["line"]))
+            if record:
+                return {"id": record["id"], "index_name": KnowledgeDB.type_index_name(record), "reason": ""}
 
         def compute() -> Dict[str, Any]:
             self.stats["identity_queries"] = self.stats.get("identity_queries", 0) + 1
@@ -833,10 +841,23 @@ class BatchIndexer:
     def _publish_base(self, stage: KnowledgeDB, hashes: Dict[str, str], fallback: Set[str]) -> None:
         from .clang_extractor import ClangExtractor
 
+        definitions: Dict[str, Dict[str, Any]] = {}
+        for record in self._rows(stage, kinds=("function",)):
+            if not record.get("is_declaration") and record.get("usr"):
+                definitions[str(record["usr"])] = record
         existing = {
             str((self.root / row["file_path"]).resolve()): row for row in stage.get_all_tus()
         }
         for source, row in existing.items():
+            # File-owned query rows use project-relative paths. Older batch
+            # versions registered absolute TU paths, so purge missed root-level
+            # files (and retained old call sites after a line move).
+            relative = self._relative(source)
+            if row["file_path"] != relative:
+                stage._conn.execute(
+                    "UPDATE translation_units SET file_path=? WHERE id=?",
+                    (relative, row["id"]),
+                )
             if source not in hashes:
                 stage.delete_tu(int(row["id"]))
         for source, digest in hashes.items():
@@ -854,10 +875,10 @@ class BatchIndexer:
                     "include_rows",
                 )
             }
-            tu_id, changed = stage.register_tu_hash(source, digest)
+            tu_id, changed = stage.register_tu_hash(relative, digest)
             seen: Set[str] = set()
             for row in self._rows(
-                stage, source, ("function", "type", "global", "macro", "include", "call")
+                stage, source, ("function", "type", "global", "macro", "include", "call", "type_reference")
             ):
                 key = digest_json(row)
                 if key in seen:
@@ -878,6 +899,17 @@ class BatchIndexer:
                             tu_id,
                         )
                     )
+                elif kind == "type_reference" and row["target"].get("is_system_header"):
+                    target = row["target"]
+                    if target.get("type_definition"):
+                        values["type_rows"].append({
+                            "name": target.get("qualified_name") or target["name"],
+                            "kind": target["type_kind"],
+                            "file_path": self._relative(target["location"]["file"]),
+                            "start_line": target["location"]["line"],
+                            "end_line": target["location"]["line"],
+                            "full_definition": target["type_definition"], "members": [],
+                        })
                 elif kind == "type":
                     values["type_rows"].append(
                         {
@@ -934,19 +966,27 @@ class BatchIndexer:
                     )
                 elif kind == "call":
                     target = row["target"]
+                    definition = definitions.get(str(target.get("usr") or ""))
+                    resolved_file = (definition["begin"]["file"] if definition
+                                     else target["location"]["file"])
+                    resolved_signature = (definition["signature"] if definition
+                                          else target.get("signature", ""))
                     values["call_rows"].append(
                         (
                             row["owner"]["name"],
                             relative,
                             target["qualified_name"],
-                            self._relative(target["location"]["file"]),
+                            self._relative(resolved_file),
                             row["location"]["line"],
                             row.get("call_type", "direct"),
-                            row.get("callee_kind", "function"),
-                            "",
+                            ("function" if definition else
+                             "system_function" if target.get("is_system_header") else
+                             "external_function" if not target.get("has_definition", True) else
+                             row.get("callee_kind", "function")),
+                            resolved_signature,
                         )
                     )
-            fingerprint = digest_json(values)
+            fingerprint = digest_json([PRODUCER, values])
             if changed or stage.get_metadata("clang_batch_base:" + relative) != fingerprint:
                 ClangExtractor._publish_tu_facts(stage, tu_id, **values)
                 stage.mark_tu_indexed(tu_id)
@@ -965,6 +1005,10 @@ class BatchIndexer:
                 raise RuntimeError("clangd fallback base facts incomplete")
 
     def _publish_program_facts(self, stage: KnowledgeDB) -> None:
+        # This stage contains the complete selected native projection. Replace
+        # it as a generation: changed/removed functions and newly unsupported
+        # fallback files must not inherit compiler evidence from an older TU.
+        stage._conn.execute("DELETE FROM function_program_facts")
         for row in self._rows(stage, kinds=("program_function", "program_access")):
             owner = row.get("owner") or {}
             location = row.get("location") or {}

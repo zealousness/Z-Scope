@@ -5,6 +5,12 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import yaml
+
+from zscope.benchmarking.runner import copy_scan_input
+from zscope.orchestration.entry_discovery import EntryDiscovery
+from zscope.retrieval.code_index import CodeIndex
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "check_entry_coverage.py"
@@ -232,3 +238,34 @@ def test_range_benchmark_is_provider_neutral_auto_unified() -> None:
     assert "\nanalysis:\n" not in config
     assert "\nreporting:\n" not in config
     assert "candidate_lifecycle_v3" not in config
+
+
+def test_range_flush_is_reachable_from_discovered_public_api(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan"
+    copy_scan_input(BENCHMARK_CONFIG_PATH.parent, scan_root, "c_cpp")
+    config = yaml.safe_load(BENCHMARK_CONFIG_PATH.read_text(encoding="utf-8"))
+    discovery_config = config["project"]["entry_discovery"]
+    index = CodeIndex(scan_root, source_root=scan_root)
+    try:
+        result = EntryDiscovery(
+            index,
+            project_root=scan_root,
+            source_root=scan_root,
+            search_root=scan_root / discovery_config["search_root"],
+            interface_files=discovery_config["interface_files"],
+            max_functions=discovery_config["max_functions"],
+        ).discover(max_candidates=discovery_config["max_entries"])
+        entries = [
+            entry
+            for entry in result.candidates
+            if entry.function_name == "td_schedule_flush"
+        ]
+        assert len(entries) == 1
+        assert entries[0].file_path == "src/main.c"
+        assert "declared_in_header" in entries[0].reasons
+
+        implementation = index.get_function_impl("td_schedule_flush")
+        assert implementation is not None
+        assert "_lifecycle_schedule_flush" in implementation["callees"]
+    finally:
+        index.close()

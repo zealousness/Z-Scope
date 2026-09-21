@@ -197,6 +197,8 @@ Agent 启停、分析预算、deadline、缓存与报告策略属于 RuntimeSpec
 
    Portable 用户解压即可使用批量工具，不需要安装 LLVM 开发包或再运行 `build_clang_indexer.py`。默认 `indexing.clang.frontend: auto` 从包内定位工具，显式 `indexing.tools.clang_indexer` 仍优先，模板不写绝对工具路径。验收必须验证含标准库头文件的 C++ TU、USR 引用/宏/类型/调用边和热缓存复用；严格 `batch` 下禁止 LSP 降级，成功 TU 的派生 LSP 请求必须为零。这些检查与原有 clangd、bitcode、WPA/Saber、WebUI、MCP 检查一起在普通用户、只读包、含空格路径和断网容器内运行。
 
+   编译数据库前置处理也是 C/C++ 包验收门禁：批量工具必须声明 `zscope.clang-arguments.v1` 并支持 `--check-arguments`，使用包内 Clang SDK 做无 AST 的参数检查。验证原始数据库备份、warning 提升降级、未知转发参数删除、x86_64 的 `-m32`→`-m64`、热准备不启动检查进程且不改变数据库时间戳；结果记录为 `compile-commands-preparation`。`ArgumentCheck.h` 与共用参数策略参与批量组件构建指纹，不能只更新 Python 而沿用旧工具。原始响应文件保持不变，兼容副本及报告由项目侧 `.zscope-compile-commands/` 管理，不写只读发布包。
+
    `source-materials.json` 索引本次真实源码快照及分卷第三方源码包；`system-sources.lock.json` 固定 Ubuntu 对应源码，`redistribution.lock.json` 固定完整 JDK 源码。源码材料是附属发布资产，不装入运行目录。manifest v2 记录全部输入锁摘要、每包语言/架构、符号下限和实际测试下限；许可证在每包 `licenses/` 中，SBOM 同时列出文件、Python、Maven、Joern 和实际系统运行包。
 
 4. 模板与运行时约定：`zscope.c_cpp.yaml`、`zscope.java.yaml`、随包示例及 `zscope-init` 不展示工具路径和 extractor/provider 命令。public config v2 的工具字段仍完整保留，实验可以手工写入；显式配置优先于包内默认，显式无效配置不得退回其他工具，源码安装继续使用 PATH。不得把运行时解析出的绝对路径写回配置。clangd 22.1.7 只用于索引；gllvm/SVF 3.2 的 bitcode 链路固定 LLVM/Clang 18.1.0。Java 包使用预编译 JAR、JDK 21 和 Maven，不包含 Gradle；Maven 业务依赖由工程提供，可用 `zscope-maven-cache` 导入用户缓存。CodeQL 和 LLM 服务由用户自备。

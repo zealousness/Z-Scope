@@ -29,7 +29,7 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], value) if isinstance(value, Mapping) else {}
 
 
-CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.3"
+CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.4"
 DECISION_CONTEXT_VERSION = DECISION_CONTEXT_V33
 CANDIDATE_DISPOSITIONS = {
     "confirmed",
@@ -717,6 +717,9 @@ class CandidateEnvelope:
             or pack.get("code_hash")
             or pack.get("source_fingerprint"),
         }
+        semantic_version = issue.get("semantic_contract_version") or pack.get("semantic_contract_version")
+        if semantic_version:
+            decision_evidence["semantic_contract_version"] = semantic_version
         if requested_context_version in {
             DECISION_CONTEXT_V31,
             DECISION_CONTEXT_V32,

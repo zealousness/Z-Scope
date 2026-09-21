@@ -90,6 +90,9 @@ class UnifiedBackend(CodeBackend):
         self._project_root = Path(kwargs.get("project_root", source_path))
         self._compile_commands_path = kwargs.get("compile_commands_path")
 
+        kwargs["compile_preparation_tools"] = dict(
+            llvm_link=self._svf_cfg["llvm_link_path"], gclang=self._svf_cfg["gclang_path"]
+        )
         ok = self._clang.initialize(source_path, **kwargs)
         if not ok:
             self._status = "error"
@@ -133,6 +136,7 @@ class UnifiedBackend(CodeBackend):
         cc = Path(self._compile_commands_path) if self._compile_commands_path else None
         source_path = self._source_path or Path(".")
         project_root = self._project_root or source_path
+        self._svf._compile_preparation = getattr(self._clang, "_compile_preparation", None)
         svf_ok = self._svf.run(
             Path(source_path),
             Path(project_root),
@@ -194,6 +198,9 @@ class UnifiedBackend(CodeBackend):
 
     def get_macro_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
         return self._clang.get_macro_definitions_batch(names)
+
+    def get_global_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        return self._clang.get_global_definitions_batch(names)
 
     def get_function_symbol_context(
         self,

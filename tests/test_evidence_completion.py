@@ -55,12 +55,12 @@ def test_evidence_completion_derives_lock_proof_only_for_all_local_assignments()
     evidence = {
         "function_context": {
             "code": """
-LOCK(&state.lock);
+pthread_mutex_lock(&state.lock);
 state.current = event;
-UNLOCK(&state.lock);
-LOCK(&state.lock);
+pthread_mutex_unlock(&state.lock);
+pthread_mutex_lock(&state.lock);
 state.current = NULL;
-UNLOCK(&state.lock);
+pthread_mutex_unlock(&state.lock);
 """
         }
     }
@@ -86,9 +86,9 @@ def test_evidence_completion_refuses_lock_proof_when_one_write_is_unlocked() -> 
     evidence = {
         "function_context": {
             "code": """
-LOCK(&state.lock);
+pthread_mutex_lock(&state.lock);
 state.current = event;
-UNLOCK(&state.lock);
+pthread_mutex_unlock(&state.lock);
 state.current = NULL;
 """
         }
@@ -104,7 +104,7 @@ state.current = NULL;
     assert "deterministic_proofs" not in issue
 
 
-def test_evidence_completion_derives_terminating_null_guard_proof() -> None:
+def test_legacy_unbound_evidence_completion_derives_terminating_null_guard_proof() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
@@ -117,7 +117,7 @@ def test_evidence_completion_derives_terminating_null_guard_proof() -> None:
             "code": """
 task = _safe_calloc(1, sizeof(*task));
 if (!task || !frame) {
-    SAFE_FREE(task);
+    free(task);
     return NULL;
 }
 task->state = READY;
@@ -127,8 +127,9 @@ task->state = READY;
 
     queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
 
-    assert issue["evidence_completion_status"] == "completed"
-    assert issue["deterministic_proofs"][0]["proof_kind"] == "guard_dominates_sink"
+    assert issue["evidence_completion_status"] == "exhausted"
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
 def test_evidence_completion_confirms_complete_cfg_obligation_path() -> None:
@@ -208,7 +209,7 @@ def test_evidence_completion_uses_structured_ast_null_guard_without_source_text(
     assert proof["code_hash"]
 
 
-def test_evidence_completion_rejects_failed_fd_acquisition_branch() -> None:
+def test_legacy_unbound_evidence_completion_rejects_failed_fd_acquisition_branch() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
@@ -237,9 +238,8 @@ def test_evidence_completion_rejects_failed_fd_acquisition_branch() -> None:
 
     queue.complete(issue, validator_data={"verdict": "rejected"})
 
-    proof = issue["deterministic_proofs"][0]
-    assert proof["outcome"] == "reject"
-    assert proof["proof_kind"] == "failed_acquisition_exit"
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
 def test_evidence_completion_confirms_rule_scoped_structured_contract() -> None:
@@ -313,7 +313,7 @@ def test_evidence_completion_keeps_allocator_wrapper_without_caller_taint_as_rev
     assert "deterministic_proofs" not in issue
 
 
-def test_evidence_completion_rejects_dynamic_array_as_fixed_array() -> None:
+def test_legacy_unbound_evidence_completion_rejects_dynamic_array_as_fixed_array() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
@@ -333,10 +333,11 @@ def test_evidence_completion_rejects_dynamic_array_as_fixed_array() -> None:
 
     queue.complete(issue, validator_data={"verdict": "rejected"})
 
-    assert issue["deterministic_proofs"][0]["proof_kind"] == "dynamic_array_not_fixed_storage"
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
-def test_evidence_completion_rejects_global_resource_owner_transfer() -> None:
+def test_evidence_completion_does_not_prove_ownership_from_global_spelling() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
@@ -354,10 +355,8 @@ def test_evidence_completion_rejects_global_resource_owner_transfer() -> None:
 
     queue.complete(issue, validator_data={"verdict": "rejected"})
 
-    assert issue["deterministic_proofs"][0]["proof_kind"] == "durable_global_owner_transfer"
     proof = deterministic_decision_proof(issue, outcome="reject")
-    assert proof is not None
-    assert proof.proof_kind == "durable_global_owner_transfer"
+    assert proof is None
 
 
 def test_evidence_completion_proofs_route_all_structured_transfer_and_graph_contracts() -> None:
@@ -386,7 +385,7 @@ def test_evidence_completion_proofs_route_all_structured_transfer_and_graph_cont
         },
     }
     queue.complete(fd_issue, validator_data={"verdict": "rejected"})
-    assert deterministic_decision_proof(fd_issue, outcome="reject") is not None
+    assert deterministic_decision_proof(fd_issue, outcome="reject") is None
 
     graph_issue = {
         "impact_level": "high",
@@ -405,7 +404,7 @@ def test_evidence_completion_proofs_route_all_structured_transfer_and_graph_cont
     assert deterministic_decision_proof(graph_issue, outcome="confirm") is not None
 
 
-def test_evidence_completion_rejects_matched_unlock_on_complete_local_path() -> None:
+def test_legacy_unbound_evidence_completion_rejects_matched_unlock_on_complete_local_path() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
@@ -416,9 +415,9 @@ def test_evidence_completion_rejects_matched_unlock_on_complete_local_path() -> 
         "function_context": {
             "code": """
 void tick(void) {
-    LOCK(&state.lock);
+    pthread_mutex_lock(&state.lock);
     update();
-    UNLOCK(&state.lock);
+    pthread_mutex_unlock(&state.lock);
 }
 """
         }
@@ -427,8 +426,9 @@ void tick(void) {
     queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
 
     proof = deterministic_decision_proof(issue, outcome="reject")
-    assert proof is not None
-    assert proof.proof_kind == "matching_lock_dominates_unlock"
+    assert proof is None
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
 def test_evidence_completion_confirms_failure_return_while_lock_is_held() -> None:
@@ -442,12 +442,12 @@ def test_evidence_completion_confirms_failure_return_while_lock_is_held() -> Non
         "function_context": {
             "code": """
 int link(void) {
-    LOCK(&state.lock);
+    pthread_mutex_lock(&state.lock);
     void *node = allocate();
     if (!node) {
         return -1;
     }
-    UNLOCK(&state.lock);
+    pthread_mutex_unlock(&state.lock);
     return 0;
 }
 """
@@ -461,13 +461,13 @@ int link(void) {
     assert proof.proof_kind == "lock_held_on_failure_return"
 
 
-def test_evidence_completion_rejects_parent_cleanup_when_member_acquisition_failed() -> None:
+def test_legacy_unbound_evidence_completion_rejects_parent_cleanup_when_member_acquisition_failed() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
         "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
         "source": "proc->name = duplicate(input);",
-        "sink": "SAFE_FREE(proc);",
+        "sink": "free(proc);",
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
     evidence = {
@@ -476,7 +476,7 @@ def test_evidence_completion_rejects_parent_cleanup_when_member_acquisition_fail
 int attach(void) {
     proc->name = duplicate(input);
     if (!proc->name) {
-        SAFE_FREE(proc);
+        free(proc);
         return -1;
     }
     return 0;
@@ -488,8 +488,9 @@ int attach(void) {
     queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
 
     proof = deterministic_decision_proof(issue, outcome="reject")
-    assert proof is not None
-    assert proof.proof_kind == "failed_member_acquisition_cleanup"
+    assert proof is None
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
 def test_evidence_completion_confirms_detached_stack_thread_argument() -> None:
@@ -540,7 +541,7 @@ def test_evidence_completion_confirms_field_sensitive_incomplete_cleanup() -> No
 void reset(Cache *cache) {
     cache->primary = duplicate(name);
     cache->scratch = duplicate(name);
-    SAFE_FREE(cache->primary);
+    free(cache->primary);
 }
 """
         }
@@ -561,7 +562,7 @@ def test_evidence_completion_does_not_reject_when_validator_reports_blocking_cou
         "blocking_negative_evidence": True,
         "evidence_pack": {"path": {"complete_in_function": True}},
     }
-    evidence = {"function_context": {"code": "LOCK(&lock);\nUNLOCK(&lock);"}}
+    evidence = {"function_context": {"code": "pthread_mutex_lock(&lock);\nUNLOCK(&lock);"}}
 
     queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
 
@@ -582,7 +583,7 @@ def test_evidence_completion_confirms_owned_member_left_live_when_parent_freed()
         },
     }
     evidence = {
-        "function_context": {"code": "node->children = service_alloc_child();\nSAFE_FREE(node);"}
+        "function_context": {"code": "node->children = service_alloc_child();\nfree(node);"}
     }
 
     queue.complete(issue, validator_data={"verdict": "uncertain"}, validation_evidence=evidence)
@@ -604,7 +605,7 @@ def test_evidence_completion_keeps_parent_release_as_review_without_member_acqui
             },
         },
     }
-    evidence = {"function_context": {"code": "SAFE_FREE(node);"}}
+    evidence = {"function_context": {"code": "free(node);"}}
 
     queue.complete(issue, validator_data={"verdict": "uncertain"}, validation_evidence=evidence)
 
@@ -642,7 +643,7 @@ def test_v12_confirms_external_value_reaching_real_allocation_sink() -> None:
                         "kind": "unbounded_allocation",
                         "line": 11,
                         "variable": "length",
-                        "expression": "return allocate(length);",
+                        "expression": "return malloc(length);",
                     }
                 ]
             },
@@ -652,9 +653,7 @@ def test_v12_confirms_external_value_reaching_real_allocation_sink() -> None:
     queue.complete_prevalidation(
         issue,
         validation_evidence={
-            "function_context": {
-                "code": "void *reserve(size_t length) { return allocate(length); }"
-            }
+            "function_context": {"code": "void *reserve(size_t length) { return malloc(length); }"}
         },
     )
 
@@ -713,7 +712,7 @@ def test_v12_confirms_unchecked_allocation_arithmetic() -> None:
                     {
                         "kind": "integer_size_arithmetic",
                         "line": 20,
-                        "expression": "void *p = allocate(request->count * sizeof(Item));",
+                        "expression": "void *p = malloc(request->count * sizeof(Item));",
                     }
                 ]
             },
@@ -850,10 +849,10 @@ def test_v12_confirms_entry_supplied_callback_invoked_under_lock() -> None:
         "rule": "clang_cfg_callback_while_lock_held",
         "code_snippet": "\n".join(
             [
-                "10 | LOCK(&registry.lock);",
+                "10 | pthread_mutex_lock(&registry.lock);",
                 "11 | callback_slot = cb;",
                 "12 | callback_slot(node);",
-                "13 | UNLOCK(&registry.lock);",
+                "13 | pthread_mutex_unlock(&registry.lock);",
             ]
         ),
         "evidence_pack": {
@@ -881,7 +880,7 @@ def test_v12_confirms_entry_supplied_callback_invoked_under_lock() -> None:
                     {
                         "kind": "lock",
                         "line": 10,
-                        "expression": "LOCK(&registry.lock);",
+                        "expression": "pthread_mutex_lock(&registry.lock);",
                     },
                     {
                         "kind": "callback_call",
@@ -908,9 +907,9 @@ def test_v12_does_not_confirm_stored_callback_without_entry_parameter_assignment
         "rule": "clang_cfg_callback_while_lock_held",
         "code_snippet": "\n".join(
             [
-                "10 | LOCK(&registry.lock);",
+                "10 | pthread_mutex_lock(&registry.lock);",
                 "12 | callback_slot(node);",
-                "13 | UNLOCK(&registry.lock);",
+                "13 | pthread_mutex_unlock(&registry.lock);",
             ]
         ),
         "evidence_pack": {
@@ -932,7 +931,7 @@ def test_v12_does_not_confirm_stored_callback_without_entry_parameter_assignment
                     {
                         "kind": "lock",
                         "line": 10,
-                        "expression": "LOCK(&registry.lock);",
+                        "expression": "pthread_mutex_lock(&registry.lock);",
                     },
                     {
                         "kind": "callback_call",
@@ -955,10 +954,10 @@ def test_v12_does_not_confirm_callback_when_matching_unlock_is_absent() -> None:
         "rule": "clang_cfg_callback_while_lock_held",
         "code_snippet": "\n".join(
             [
-                "10 | LOCK(&registry.lock);",
+                "10 | pthread_mutex_lock(&registry.lock);",
                 "11 | callback_slot = cb;",
                 "12 | callback_slot(node);",
-                "13 | UNLOCK(&other.lock);",
+                "13 | pthread_mutex_unlock(&other.lock);",
             ]
         ),
         "evidence_pack": {
@@ -986,7 +985,7 @@ def test_v12_does_not_confirm_callback_when_matching_unlock_is_absent() -> None:
                     {
                         "kind": "lock",
                         "line": 10,
-                        "expression": "LOCK(&registry.lock);",
+                        "expression": "pthread_mutex_lock(&registry.lock);",
                     },
                     {
                         "kind": "callback_call",
@@ -1180,7 +1179,7 @@ def test_v12_single_access_needs_project_complete_access_set() -> None:
     assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
-def test_v12_rejects_copy_when_exact_allocation_length_matches() -> None:
+def test_legacy_unbound_v12_rejects_copy_when_exact_allocation_length_matches() -> None:
     queue = EvidenceCompletionQueue(enable_v12_providers=True)
     issue = {
         "rule": "clang_cfg_narrowed_allocation_original_length_copy",
@@ -1207,10 +1206,11 @@ def test_v12_rejects_copy_when_exact_allocation_length_matches() -> None:
         },
     }
 
-    assert queue.complete_prevalidation(issue)
+    assert not queue.complete_prevalidation(issue)
     proof = deterministic_decision_proof(issue, outcome="reject")
-    assert proof is not None
-    assert proof.proof_kind == "exact_allocation_length_covers_copy"
+    assert proof is None
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
 def test_v12_does_not_equate_different_allocation_and_copy_lengths() -> None:
@@ -1242,7 +1242,7 @@ def test_v12_does_not_equate_different_allocation_and_copy_lengths() -> None:
     assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
-def test_v12_rejects_reported_leak_when_same_resource_is_released_before_exit() -> None:
+def test_legacy_unbound_v12_rejects_reported_leak_when_same_resource_is_released_before_exit() -> None:
     queue = EvidenceCompletionQueue(enable_v12_providers=True)
     issue = {
         "rule": "clang_cfg_acquire_without_release_on_exit",
@@ -1266,7 +1266,7 @@ def test_v12_rejects_reported_leak_when_same_resource_is_released_before_exit() 
             "code": """void *build(Owner *owner) {
 owner->items = allocate(count);
 if (!initialize(owner->items)) {
-    SAFE_FREE(owner->items);
+    free(owner->items);
     return NULL;
 }
 return owner;
@@ -1274,10 +1274,11 @@ return owner;
         }
     }
 
-    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+    assert not queue.complete_prevalidation(issue, validation_evidence=evidence)
     proof = deterministic_decision_proof(issue, outcome="reject")
-    assert proof is not None
-    assert proof.proof_kind == "matching_release_precedes_reported_exit"
+    assert proof is None
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
 def test_v12_does_not_apply_release_proof_to_different_field() -> None:
@@ -1300,7 +1301,7 @@ def test_v12_does_not_apply_release_proof_to_different_field() -> None:
     }
     evidence = {
         "function_context": {
-            "code": "owner->items = allocate(count);\nSAFE_FREE(owner->backup);\nreturn NULL;"
+            "code": "owner->items = allocate(count);\nfree(owner->backup);\nreturn NULL;"
         }
     }
 
@@ -1331,7 +1332,7 @@ def test_v12_release_after_reported_early_exit_is_not_a_rejection_proof() -> Non
 if (!ready) {
     return 0;
 }
-SAFE_FREE(info->reserved);
+free(info->reserved);
 return 0;"""
         }
     }
@@ -1374,7 +1375,7 @@ return 0;"""
     assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
-def test_v12_rejects_parent_cleanup_when_member_acquisition_failed() -> None:
+def test_legacy_unbound_v12_rejects_parent_cleanup_when_member_acquisition_failed() -> None:
     queue = EvidenceCompletionQueue(enable_v12_providers=True)
     issue = {
         "line": 8,
@@ -1397,13 +1398,14 @@ return task;"""
         }
     }
 
-    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+    assert not queue.complete_prevalidation(issue, validation_evidence=evidence)
     proof = deterministic_decision_proof(issue, outcome="reject")
-    assert proof is not None
-    assert proof.proof_kind == "zero_initialized_member_failed_before_parent_release"
+    assert proof is None
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
-def test_v12_rejects_leak_when_resource_moves_to_caller_owned_field() -> None:
+def test_legacy_unbound_v12_rejects_leak_when_resource_moves_to_caller_owned_field() -> None:
     queue = EvidenceCompletionQueue(enable_v12_providers=True)
     issue = {
         "rule": "clang_cfg_acquire_without_release_on_exit",
@@ -1428,10 +1430,11 @@ def test_v12_rejects_leak_when_resource_moves_to_caller_owned_field() -> None:
         }
     }
 
-    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+    assert not queue.complete_prevalidation(issue, validation_evidence=evidence)
     proof = deterministic_decision_proof(issue, outcome="reject")
-    assert proof is not None
-    assert proof.proof_kind == "caller_owned_field_transfer"
+    assert proof is None
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
 def test_v12_does_not_treat_local_owner_field_as_caller_transfer() -> None:
@@ -1455,7 +1458,7 @@ def test_v12_does_not_treat_local_owner_field_as_caller_transfer() -> None:
     assert queue.complete_prevalidation(issue, validation_evidence=evidence) is False
 
 
-def test_v12_propagates_terminating_bound_to_derived_allocation_size() -> None:
+def test_legacy_unbound_v12_propagates_terminating_bound_to_derived_allocation_size() -> None:
     queue = EvidenceCompletionQueue(enable_v12_providers=True)
     issue = {
         "rule": "clang_cfg_external_size_allocation_without_limit",
@@ -1486,13 +1489,14 @@ void *buffer = allocate(total_len);"""
         }
     }
 
-    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+    assert not queue.complete_prevalidation(issue, validation_evidence=evidence)
     proof = deterministic_decision_proof(issue, outcome="reject")
-    assert proof is not None
-    assert proof.proof_kind == "terminating_allocation_upper_bound"
+    assert proof is None
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
-def test_failed_fd_acquisition_guard_can_span_nested_diagnostic_branch() -> None:
+def test_legacy_unbound_failed_fd_acquisition_guard_can_span_nested_diagnostic_branch() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "rule": "clang_cfg_fd_open_return_without_close",
@@ -1524,10 +1528,11 @@ def test_failed_fd_acquisition_guard_can_span_nested_diagnostic_branch() -> None
         },
     }
 
-    assert queue.complete_prevalidation(issue)
+    assert not queue.complete_prevalidation(issue)
     proof = deterministic_decision_proof(issue, outcome="reject")
-    assert proof is not None
-    assert proof.proof_kind == "failed_acquisition_exit"
+    assert proof is None
+    # Derived events and source snippets lack compiler-bound proof authority.
+    assert deterministic_decision_proof(issue, outcome="reject") is None
 
 
 def test_requested_fact_resolution_dispatches_only_named_fact_kind(monkeypatch) -> None:
