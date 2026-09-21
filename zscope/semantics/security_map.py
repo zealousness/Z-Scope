@@ -2,7 +2,8 @@
 
 The security map is intentionally separate from the historical per-function
 semantic snapshot.  It contains only program/user facts that can be rebuilt
-without an LLM, plus bounded audit units planned from those facts.  LLM
+without an LLM, plus explicitly unverified published contracts and bounded audit
+units planned from those observations. LLM
 discovery reports are persisted alongside the map but never mutate a claim
 into a confirmed finding.
 """
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..config.function_entry import FunctionEntry
+from .contracts import CallSemanticMatch, code_tokens
+from .models import LocalPatternSemantics
 
 
 SECURITY_MAP_SCHEMA_VERSION = "zscope.security_semantic_map.v1"
@@ -85,6 +88,7 @@ _EVENT_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
         "callback_or_lock_event",
         re.compile(
             r"\b(pthread_create|pthread_mutex_(?:lock|unlock)|pthread_rwlock_|"
+            r"pthread_cond_(?:wait|signal|broadcast)|sem_(?:wait|post|trywait)|"
             r"std::thread|Thread\s*\(|Executor|CompletableFuture|register_callback|"
             r"callback|schedule|timer|atomic_)\b",
             re.IGNORECASE,
@@ -132,6 +136,33 @@ _INDIRECT_CALL_RE = re.compile(
     r"(?:\(\s*\*\s*[A-Za-z_]\w*\s*\)|[A-Za-z_]\w*\s*->\s*[A-Za-z_]\w*)\s*\("
 )
 _LINE_PREFIX_RE = re.compile(r"^\s*(\d+)\s*\|\s?(.*)$")
+
+_CONTRACT_EVENT_KINDS = {
+    "allocator": ("resource_lifecycle", "resource_transition"),
+    "calloc": ("resource_lifecycle", "resource_transition"),
+    "reallocator": ("resource_lifecycle", "resource_transition"),
+    "deallocator": ("resource_lifecycle", "resource_transition"),
+    "io_acquire": ("resource_lifecycle", "resource_transition"),
+    "io_release": ("resource_lifecycle", "resource_transition"),
+    "ownership_transfer": ("resource_lifecycle", "ownership_transfer"),
+    "lock": ("callback_concurrency", "lock_order"),
+    "unlock": ("callback_concurrency", "lock_order"),
+    "callback_register": ("callback_concurrency", "callback_lifetime"),
+    "lock_init": ("callback_concurrency", "state_transition"),
+    "lock_destroy": ("callback_concurrency", "state_transition"),
+    "lock_state": ("callback_concurrency", "state_transition"),
+    "lock_wait": ("callback_concurrency", "state_transition"),
+    "condition_init": ("callback_concurrency", "state_transition"),
+    "condition_destroy": ("callback_concurrency", "state_transition"),
+    "condition_signal": ("callback_concurrency", "state_transition"),
+    "thread_create": ("callback_concurrency", "callback_lifetime"),
+    "thread_release": ("callback_concurrency", "callback_lifetime"),
+    "standard_operation": ("resource_lifecycle", "resource_transition"),
+    "copy": ("memory_bounds", "bounds_contract"),
+    "recv_source": ("input_boundary", "input_origin"),
+    "send_sink": ("sensitive_sink", "sensitive_sink"),
+    "format_sink": ("sensitive_sink", "sensitive_sink"),
+}
 
 
 def _utc_now() -> str:
@@ -1422,33 +1453,18 @@ class ZeroLLMSecurityMapBuilder:
         self.project_root = Path(project_root).resolve() if project_root else None
         self.max_functions = max(1, int(max_functions))
         self.callee_limit = max(1, int(callee_limit))
-        self._overlay_api_re = self._compile_overlay_api_pattern()
-
-    def _compile_overlay_api_pattern(self) -> Optional[re.Pattern[str]]:
-        """Compile user-defined risk API names from the semantic overlay.
-
-        The static ``_EVENT_PATTERNS`` only know standard-library API names;
-        user-defined wrappers (``_safe_malloc``, ``file_open_wrap``, ...)
-        would never produce ``resource_transition`` events without this.
-        """
-
-        names = set()
-        for row in self.semantic_overlay.get("resource_models") or []:
-            if not isinstance(row, Mapping):
-                continue
-            name = str(row.get("name") or "").strip()
-            if re.fullmatch(r"[A-Za-z_]\w*", name):
-                names.add(name)
-        if not names:
-            return None
-        alternation = "|".join(sorted((re.escape(name) for name in names), key=len, reverse=True))
-        return re.compile(rf"\b(?:{alternation})\s*\(")
+        semantics = LocalPatternSemantics()
+        semantics.merge_overlay(self.semantic_overlay)
+        self._contracts = semantics.contracts
+        self._contract_names = {c.symbol.name for c in self._contracts.contracts}
+        self._contract_event_values: Dict[str, CallSemanticMatch] = {}
 
     def build(self, entries: Sequence[FunctionEntry]) -> SecuritySemanticMap:
         mutable: Dict[str, Dict[str, Any]] = {}
         claims: Dict[str, SemanticClaim] = {}
         unknowns: Dict[str, SemanticUnknown] = {}
         pending: List[Tuple[str, str, str, Tuple[str, ...], Dict[str, Any]]] = []
+        entry_exposures = {entry.identity_key(self.project_root): entry.exposure for entry in entries}
         for entry in entries:
             identity = entry.identity_key(self.project_root)
             pending.append(
@@ -1545,6 +1561,7 @@ class ZeroLLMSecurityMapBuilder:
                     line=start_line,
                     entry_identity=entry_identity,
                     impl=impl,
+                    entry_exposure=entry_exposures.get(entry_identity),
                 )
             self._event_claims(claims, events)
             self._framework_claims(claims, function_uid, function_name, impl)
@@ -1610,8 +1627,9 @@ class ZeroLLMSecurityMapBuilder:
             },
             fingerprints={
                 "backend": backend_name,
-                "builder": "zero_llm_security_map_v1",
+                "builder": "zero_llm_security_map_v3",
                 "semantic_overlay": _digest(self.semantic_overlay, length=64),
+                "contract_version": self._contracts.version,
             },
         )
 
@@ -1840,43 +1858,103 @@ class ZeroLLMSecurityMapBuilder:
         code: str,
     ) -> Tuple[SecurityEvent, ...]:
         result: Dict[str, SecurityEvent] = {}
-        for offset, raw_line in enumerate(code.splitlines()):
-            line, expression = self._source_line(raw_line, offset, start_line)
-            for family, kind, pattern in _EVENT_PATTERNS:
-                if not pattern.search(expression):
-                    continue
-                evidence_ref = f"source:{file_path}:{line}"
-                event_id = f"EVT_{_digest((function_uid, family, kind, line, expression.strip()))}"
-                result.setdefault(
-                    event_id,
-                    SecurityEvent(
-                        event_id=event_id,
-                        family=family,
-                        kind=kind,
-                        function_uid=function_uid,
-                        file=file_path,
-                        line=line,
-                        expression=expression.strip()[:400],
-                        evidence_ref=evidence_ref,
-                    ),
-                )
-            if self._overlay_api_re is not None and self._overlay_api_re.search(expression):
-                evidence_ref = f"source:{file_path}:{line}"
-                event_id = f"EVT_{_digest((function_uid, 'resource_lifecycle', 'resource_transition', line, expression.strip()))}"
-                result.setdefault(
-                    event_id,
-                    SecurityEvent(
-                        event_id=event_id,
-                        family="resource_lifecycle",
-                        kind="resource_transition",
-                        function_uid=function_uid,
-                        file=file_path,
-                        line=line,
-                        expression=expression.strip()[:400],
-                        evidence_ref=evidence_ref,
-                    ),
-                )
+        # Program-facts expressions (macro-expanded by the batch indexer) are
+        # scanned alongside the raw source so wrapper macros such as LOCK()
+        # still yield events; each fact line carries its true line number.
+        scanned: List[str] = list(code.splitlines())
+        try:
+            pf = self.code_index.get_function_program_facts(function_name, file_path)
+            for body in pf.get("functions") or []:
+                for ev in body.get("events") or []:
+                    loc = ev.get("location") or {}
+                    ln = int(loc.get("line") or ev.get("line") or 0)
+                    expr = str(ev.get("expression") or "").strip()
+                    if ln and expr:
+                        scanned.append(f"{ln} | {expr}")
+        except Exception:
+            pass
+        from .call_context import bind_call_context
+        with bind_call_context({"func_name": function_name, "file_path": file_path, "code": code}, self._contracts):
+            for offset, raw_line in enumerate(scanned):
+                line, expression = self._source_line(raw_line, offset, start_line)
+                for family, kind, pattern in _EVENT_PATTERNS:
+                    if not pattern.search(expression):
+                        continue
+                    evidence_ref = f"source:{file_path}:{line}"
+                    event_id = f"EVT_{_digest((function_uid, family, kind, line, expression.strip()))}"
+                    result.setdefault(
+                        event_id,
+                        SecurityEvent(
+                            event_id=event_id,
+                            family=family,
+                            kind=kind,
+                            function_uid=function_uid,
+                            file=file_path,
+                            line=line,
+                            expression=expression.strip()[:400],
+                            evidence_ref=evidence_ref,
+                        ),
+                    )
+                for ordinal, operation in self._contract_calls(expression):
+                    family, kind = _CONTRACT_EVENT_KINDS[operation.role]
+                    evidence_ref = f"source:{file_path}:{line}"
+                    event_id = f"EVT_{_digest((function_uid, line, expression.strip(), ordinal, operation.to_dict()))}"
+                    self._contract_event_values[event_id] = operation
+                    result.setdefault(
+                        event_id,
+                        SecurityEvent(
+                            event_id=event_id,
+                            family=family,
+                            kind=kind,
+                            function_uid=function_uid,
+                            file=file_path,
+                            line=line,
+                            expression=expression.strip()[:400],
+                            evidence_ref=evidence_ref,
+                        ),
+                    )
         return tuple(result.values())
+
+    def _contract_calls(self, expression: str) -> Iterable[Tuple[int, CallSemanticMatch]]:
+        """Resolve all explicit calls; prose and summary names cannot assign a role.
+
+        These observations do not prove reachability. The map supplies evidence
+        to discovery; path-sensitive lifecycle reasoning stays in the engines.
+        """
+        from .contract_compiler import closing, split_tokens
+
+        tokens = code_tokens(expression)
+        for offset, name in enumerate(tokens):
+            if name not in self._contract_names:
+                continue
+            if offset and tokens[offset - 1] in {".", "->", "::"}:
+                continue
+            arguments: List[str] = []
+            if tokens[offset + 1 : offset + 2] == ["("]:
+                end = closing(tokens, offset + 1)
+                if tokens[end] != ")":
+                    continue
+                # A source declaration is not an invocation.
+                if tokens[end + 1 : end + 2] == ["{"]:
+                    continue
+                arguments = ["".join(p) for p in split_tokens(tokens[offset + 2 : end]) if p]
+            elif not any(c.symbol.symbol_type == "macro" for c in self._contracts.find(name)):
+                continue
+            returned = ""
+            if offset >= 2 and tokens[offset - 1] == "=":
+                prefix = tokens[: offset - 1]
+                for separator in (";", "{", "}"):
+                    if separator in prefix:
+                        prefix = prefix[len(prefix) - prefix[::-1].index(separator) :]
+                if (
+                    prefix
+                    and prefix[0] != "*"
+                    and all(re.fullmatch(r"[A-Za-z_]\w*|\*", t) for t in prefix)
+                    and re.fullmatch(r"[A-Za-z_]\w*", prefix[-1])
+                ):
+                    returned = prefix[-1]
+            for operation in self._contracts.match_call(name, "", arguments, returned):
+                yield offset, operation
 
     def _entry_claims(
         self,
@@ -1888,10 +1966,13 @@ class ZeroLLMSecurityMapBuilder:
         line: int,
         entry_identity: str,
         impl: Mapping[str, Any],
+        entry_exposure: Optional[str] = None,
     ) -> None:
         framework = impl.get("framework_semantics") or impl.get("framework_runtime_ir") or {}
+        explicit_exposure = set(str(entry_exposure or "").lower().split("+"))
         has_external = bool(
-            impl.get("entry_exposure")
+            explicit_exposure & {"api", "communication", "other_user_input"}
+            or impl.get("entry_exposure")
             or impl.get("exposure")
             or (isinstance(framework, Mapping) and framework.get("has_external_input"))
         )
@@ -1925,8 +2006,9 @@ class ZeroLLMSecurityMapBuilder:
                 ),
             )
 
-    @staticmethod
-    def _event_claims(claims: Dict[str, SemanticClaim], events: Sequence[SecurityEvent]) -> None:
+    def _event_claims(
+        self, claims: Dict[str, SemanticClaim], events: Sequence[SecurityEvent]
+    ) -> None:
         claim_kind_by_family = {
             "resource_lifecycle": "resource_transition",
             "memory_bounds": "bounds_contract",
@@ -1938,7 +2020,22 @@ class ZeroLLMSecurityMapBuilder:
         }
         for event in events:
             kind = claim_kind_by_family[event.family]
-            value = {"event_kind": event.kind, "expression": event.expression}
+            value: Dict[str, Any] = {"event_kind": event.kind, "expression": event.expression}
+            origin, confidence, status = "program", 0.9, "known"
+            operation = self._contract_event_values.get(event.event_id)
+            if operation is not None:
+                kind = _CONTRACT_EVENT_KINDS[operation.role][1]
+                value["call_semantics"] = operation.to_dict()
+                value["observation"] = "call_site; reachability requires separate evidence"
+                origin = self._contract_origin(operation.source, operation.effects_trusted)
+                status = (
+                    "known"
+                    if operation.effects_trusted
+                    and operation.applicability != "unknown"
+                    and operation.object
+                    else "unknown"
+                )
+                confidence = 0.9 if status == "known" else 0.5
             claim_id = f"CLAIM_{_digest((event.function_uid, kind, value, event.evidence_ref))}"
             claims.setdefault(
                 claim_id,
@@ -1954,9 +2051,9 @@ class ZeroLLMSecurityMapBuilder:
                         },
                     ),
                     evidence_refs=(event.evidence_ref,),
-                    origin="program",
-                    confidence=0.9,
-                    status="known",
+                    origin=origin,
+                    confidence=confidence,
+                    status=status,
                 ),
             )
 
@@ -2002,12 +2099,48 @@ class ZeroLLMSecurityMapBuilder:
         claims: Dict[str, SemanticClaim],
         functions: Sequence[FunctionSecurityRecord],
     ) -> None:
-        by_name = {item.function_name: item for item in functions}
+        for contract in self._contracts.contracts:
+            records = [
+                record
+                for record in functions
+                if record.function_name == contract.symbol.name
+                and (not contract.symbol.file_path or contract.symbol.file_path == record.file_path)
+                and (not contract.symbol.signature or contract.symbol.signature == record.signature)
+            ]
+            if len(records) != 1:
+                continue
+            record = records[0]
+            kind = _CONTRACT_EVENT_KINDS[contract.role][1]
+            value = {
+                "api_contract": contract.to_dict(),
+                "contract_version": self._contracts.version,
+            }
+            evidence_ref = f"contract:{self._contracts.version}:{contract.symbol.key}"
+            claim_id = f"CLAIM_{_digest((record.function_uid, kind, value, evidence_ref))}"
+            claims.setdefault(
+                claim_id,
+                SemanticClaim(
+                    claim_id=claim_id,
+                    subject_uid=record.function_uid,
+                    kind=kind,
+                    value=value,
+                    locations=(),
+                    evidence_refs=(evidence_ref,),
+                    origin=self._contract_origin(contract.source, contract.effects_trusted),
+                    confidence=contract.confidence,
+                    status="known" if contract.effects_trusted else "unknown",
+                ),
+            )
+        by_name: Dict[str, List[FunctionSecurityRecord]] = {}
+        for record in functions:
+            by_name.setdefault(record.function_name, []).append(record)
         for collection, claim_kind in (
             ("resource_models", "resource_transition"),
             ("lock_models", "lock_order"),
             ("function_intent_models", "trust_boundary"),
         ):
+            if collection != "function_intent_models" and "api_contracts" in self.semantic_overlay:
+                continue
             rows = self.semantic_overlay.get(collection) or []
             if not isinstance(rows, list):
                 continue
@@ -2015,10 +2148,12 @@ class ZeroLLMSecurityMapBuilder:
                 if not isinstance(raw, Mapping):
                     continue
                 name = str(raw.get("name") or raw.get("func_name") or "")
-                record = by_name.get(name)
-                if record is None:
+                records = by_name.get(name, [])
+                if len(records) != 1:
                     continue
+                record = records[0]
                 value = dict(raw)
+                inferred = str(raw.get("source") or "").startswith("inferred")
                 evidence_ref = f"overlay:{collection}:{index}:{name}"
                 claim_id = (
                     f"CLAIM_{_digest((record.function_uid, claim_kind, value, evidence_ref))}"
@@ -2032,11 +2167,17 @@ class ZeroLLMSecurityMapBuilder:
                         value=value,
                         locations=(),
                         evidence_refs=(evidence_ref,),
-                        origin="user",
-                        confidence=1.0,
-                        status="known",
+                        origin="llm" if inferred else "user",
+                        confidence=0.5 if inferred else 1.0,
+                        status="unknown" if inferred else "known",
                     ),
                 )
+
+    @staticmethod
+    def _contract_origin(source: str, trusted: bool) -> str:
+        if source.startswith("inferred"):
+            return "program" if trusted else "llm"
+        return "program" if source == "builtin_defaults" else "user"
 
     @staticmethod
     def _unknown(

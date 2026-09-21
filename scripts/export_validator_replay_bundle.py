@@ -22,7 +22,8 @@ def main() -> int:
     args = parser.parse_args()
     if not args.report.is_file():
         parser.error(f"report does not exist: {args.report}")
-    report = json.loads(args.report.read_text(encoding="utf-8"))
+    from zscope.reporting.json_io import read_report
+    report = read_report(args.report)
     if not isinstance(report, dict):
         parser.error("report must be a JSON object")
     args.output.parent.mkdir(parents=True, exist_ok=True)

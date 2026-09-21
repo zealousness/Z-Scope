@@ -227,6 +227,7 @@ def clang_batch(arguments):
     found = find_indexer(executable)
     assert found and Path(found[0]).name == "zscope-clang-indexer"
     assert found[1]["clang_version"].startswith("18.1.0")
+    assert found[1]["argument_check_protocol"] == "zscope.clang-arguments.v1"
     project = WORK / "batch project"
     project.mkdir()
     (project / "shared.h").write_text(
@@ -244,7 +245,9 @@ def clang_batch(arguments):
     cdb = project / "compile_commands.json"
     cdb.write_text(json.dumps([
         {"directory": str(project), "file": str(project / name),
-         "arguments": [*arguments[:-1], str(project / name)]}
+         "arguments": [*arguments[:-1], "-Werror", "-pedantic-errors",
+                       "-Xclang", "-funknown-zscope-portable",
+                       *(["-m32"] if platform.machine() == "x86_64" else []), str(project / name)]}
         for name in ("a.cpp", "b.cpp")
     ]))
     backend = ClangBackend(frontend="batch", clang_indexer_path=executable, max_threads=2)
@@ -252,6 +255,19 @@ def clang_batch(arguments):
     with patch.object(ClangBackend, "_ensure_extractor", side_effect=AssertionError("Unexpected LSP fallback")):
         try:
             assert backend.initialize(str(project), compile_commands_path=str(cdb))
+            from zscope.retrieval.compile_commands_prepare import prepare_compile_commands
+            from zscope.retrieval.compile_preflight import discover_tools
+            receipt = backend._compile_preparation
+            assert receipt and Path(receipt.report_path).is_file()
+            prepared = json.loads(cdb.read_text())
+            assert len(prepared) == 2 and all("-funknown-zscope-portable" not in row["arguments"] for row in prepared)
+            if platform.machine() == "x86_64":
+                assert all("-m64" in row["arguments"] and "-m32" not in row["arguments"] for row in prepared)
+            stamp = cdb.stat().st_mtime_ns
+            with patch("zscope.retrieval.compile_commands_prepare.preflight", side_effect=AssertionError("Hot preparation probed compiler")):
+                prepare_compile_commands(cdb, discover_tools(indexer=executable, clangd=backend._clangd_path))
+            assert cdb.stat().st_mtime_ns == stamp
+            CHECKS["compile-commands-preparation"] = True
             db = backend.db
             stats = json.loads(db.get_metadata("clang_batch_stats"))
             assert stats["complete"] and stats["compiled_tus"] == 2

@@ -340,7 +340,9 @@ def test_analyzer_enriches_deterministic_candidate_but_never_disables_backend_si
     assert deterministic[0]["rule"] == "unchecked_strchr_result"
     assert deterministic[0]["rule_engine"] == "cpp_regex"
     assert deterministic[0]["skill"] == "null_and_failure"
-    assert deterministic[0]["evidence_pack"]["rule_revision"] == 1
+    descriptor = catalog.get("unchecked_strchr_result")
+    assert descriptor is not None
+    assert deterministic[0]["evidence_pack"]["rule_revision"] == descriptor.revision
 
     signal = analyzer._annotate_candidate_issues(
         [

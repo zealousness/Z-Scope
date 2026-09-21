@@ -37,7 +37,7 @@ def build(source, work, arch, jobs):
         "argument_policy": digest(source / "zscope/retrieval/compiler_argument_policy.json"),
         "source": {
             name: digest(source / "native/clang-indexer" / name)
-            for name in ("CMakeLists.txt", "main.cpp", "ArgumentPolicy.h", "FunctionOwnership.h")
+            for name in ("CMakeLists.txt", "main.cpp", "ArgumentPolicy.h", "ArgumentCheck.h", "FunctionOwnership.h")
         },
     }
     identity = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()

@@ -179,7 +179,8 @@ class ScanRequestService:
         report: Dict[str, Any] = {}
         if report_path is not None:
             try:
-                parsed = json.loads(report_path.read_text(encoding="utf-8"))
+                from ..reporting.json_io import read_report
+                parsed = read_report(report_path)
                 report = parsed if isinstance(parsed, dict) else {}
             except (OSError, json.JSONDecodeError):
                 report = {}

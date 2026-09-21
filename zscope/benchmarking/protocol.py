@@ -281,7 +281,9 @@ def finding_attribution(issue: Dict[str, Any]) -> Dict[str, Any]:
         str(value).strip().lower() for value in (issue.get("evidence_sources") or []) if value
     )
     discovered = set()
-    if any("llm" in value or "active_audit" in value for value in source_values):
+    if any(value in {"semantic_snapshot", "semantic_snapshot_hypothesis", "semantic_modeling"} for value in source_values):
+        discovered.add("semantic_modeling")
+    elif any("llm" in value or "active_audit" in value for value in source_values):
         discovered.add("llm_active_discovery")
     if any(
         "backend_signal" in value
@@ -1738,21 +1740,47 @@ _STRUCTURED_CATEGORY_FAMILIES: Dict[str, frozenset[str]] = {
             "file_descriptor_leak",
             "optimization_resource_lifecycle",
             "thread_cache_leak",
+            "partial_resource_leak",
         }
     ),
-    "race": frozenset({"race", "data_race", "shared_state_race", "refcount_race"}),
+    # signal_race: signal-context races are races (measured pair, 20260908 trial)
+    # lock_protocol_violation: lock-protocol defects are synchronization/race
+    # family (author-confirmed, 20260908; recovers RANGE-009)
+    "race": frozenset(
+        {
+            "race",
+            "data_race",
+            "shared_state_race",
+            "refcount_race",
+            "signal_race",
+            "lock_protocol_violation",
+        }
+    ),
     "deadlock": frozenset({"deadlock", "signal_deadlock", "lock_order_deadlock"}),
     "allocation_limit": frozenset(
         {
             "resource_allocation_without_limits",
             "unchecked_allocation",
             "excessive_allocation",
+            # fd handles are allocated resources; an unbounded fd allocation is
+            # the same allocation-limit defect class (measured pair, 20260908)
+            "fd_allocation_without_limits",
         }
     ),
-    "use_after_free": frozenset({"use_after_free", "expired_pointer", "stale_pointer"}),
+    # invalid_free: 释放后使用/过期指针的释放类主张同族（作者确认 ISSUE43-012）
+    "use_after_free": frozenset(
+        {"use_after_free", "expired_pointer", "stale_pointer", "invalid_free"}
+    ),
     "busy_loop": frozenset({"busy_loop", "infinite_loop", "spin_loop"}),
     "integer_conversion": frozenset(
-        {"integer_overflow", "signed_unsigned", "signed_unsigned_conversion"}
+        {
+            "integer_overflow",
+            "signed_unsigned",
+            "signed_unsigned_conversion",
+            # realloc size arithmetic misuse is the same allocation-size
+            # arithmetic family (measured pair, 20260908 trial)
+            "realloc_misuse",
+        }
     ),
     "file_type_validation": frozenset({"file_type_validation", "incorrect_validation_order"}),
     "permission": frozenset({"permission", "incorrect_permission_check"}),

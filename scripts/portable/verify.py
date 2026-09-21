@@ -34,6 +34,7 @@ PROFILE_CHECKS = {
         "clang-batch",
         "clang-batch-references",
         "clang-batch-cache",
+        "compile-commands-preparation",
         "wpa",
         "saber",
         "clangd-headers",

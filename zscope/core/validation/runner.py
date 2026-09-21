@@ -175,7 +175,7 @@ class ValidationRunner:
 
     # v5 invalidates v4 entries after source-centric validation groups stopped
     # carrying occurrence-only reachability projections.
-    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v8"
+    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v9"
     _DEFAULT_VALIDATION_CACHE_SIZE = 4096
     _TRANSIENT_VALIDATOR_STOP_REASONS = frozenset(
         {
@@ -184,27 +184,6 @@ class ValidationRunner:
             "output_truncated",
         }
     )
-    _EXTERNAL_API_NAMES = {
-        "calloc",
-        "close",
-        "free",
-        "malloc",
-        "memcpy",
-        "memmove",
-        "memset",
-        "open",
-        "pthread_create",
-        "read",
-        "realloc",
-        "recv",
-        "send",
-        "snprintf",
-        "sprintf",
-        "strcpy",
-        "strncpy",
-        "thrd_create",
-        "write",
-    }
 
     def __init__(
         self,
@@ -226,6 +205,7 @@ class ValidationRunner:
         result_cache: Optional[ValidationResultCache] = None,
         scheduler: Optional[ScanScheduler] = None,
         project_knowledge_service: Optional[Any] = None,
+        get_contract_registry: Optional[Callable[[], Any]] = None,
     ):
         self.config = config
         self.llm_clients = llm_clients
@@ -244,6 +224,7 @@ class ValidationRunner:
         # injected rather than constructed inside Validator threads so one
         # scan pins a single manifest/revision and cache identity.
         self.project_knowledge_service = project_knowledge_service
+        self.get_contract_registry = get_contract_registry
         self._review_checker_instance: Any = None
         self._review_init_lock = Lock()
         # Validator verdicts are contextual.  Keeping this cache on the runner
@@ -442,6 +423,10 @@ class ValidationRunner:
             "validation_uncertain_replay_review"
         )
         issue["validation_uncertain_replay_review"] = uncertain_replay_review
+        # Canonical per-feature measurement flags (validation_*).
+        issue["validation_demote_source_lifecycle_confirm"] = issue["demote_source_lifecycle_confirm"]
+        issue["validation_obligation_infunction_release_guard"] = issue["obligation_infunction_release_guard"]
+        issue["validation_checked_proofs"] = issue["review_checked_proofs_enabled"]
         ledger = CandidateLedger(project_root=str(self.config.project.project_root), revision=str(issue.get("revision") or ""))
         ledger.restore_review_candidate(issue)
         ledger.freeze()
@@ -901,6 +886,19 @@ class ValidationRunner:
         raw_issue["obligation_infunction_release_guard"] = self._depth_scoped_flag(
             "validation_obligation_infunction_release_guard"
         )
+        # Canonical per-feature measurement flags (validation_*): mirror the
+        # resolved tri-state values so downstream TP/FP attribution can slice
+        # per feature without reaching into scan config.
+        raw_issue["validation_demote_source_lifecycle_confirm"] = raw_issue[
+            "demote_source_lifecycle_confirm"
+        ]
+        raw_issue["validation_obligation_infunction_release_guard"] = raw_issue[
+            "obligation_infunction_release_guard"
+        ]
+        raw_issue["validation_uncertain_replay_review"] = self._depth_scoped_flag(
+            "validation_uncertain_replay_review"
+        )
+        raw_issue["validation_checked_proofs"] = self._checked_proofs_enabled()
         if self._review_enabled():
             if raw_issue.pop("_review_restore_evidence", False) and raw_issue.get("review_validation_evidence"):
                 evidence_pack = deepcopy(raw_issue["review_validation_evidence"])
@@ -1294,6 +1292,9 @@ class ValidationRunner:
                 return ""
         payload = {
             "protocol": self._VALIDATION_CACHE_PROTOCOL,
+            "semantic_contract_version": issue.get("semantic_contract_version")
+            or pack.get("semantic_contract_version")
+            or "",
             "evidence_slice_version": VALIDATOR_EVIDENCE_SLICE_V3,
             "decision_context_version": DECISION_CONTEXT_VERSION,
             "environment": self._validation_environment_fingerprint,
@@ -1327,7 +1328,7 @@ class ValidationRunner:
     def _review_memory_cache_identity(self) -> Optional[Dict[str, Any]]:
         project = getattr(self.config, "project", None)
         settings = getattr(project, "review_memory", None)
-        if getattr(settings, "mode", "off") != "active":
+        if project is None or settings is None or getattr(settings, "mode", "off") != "active":
             return None
         try:
             from ...review_memory.store import ReviewMemoryStore
@@ -2622,7 +2623,8 @@ class ValidationRunner:
             return issue_func
         if self._get_function_impl(issue_func):
             return issue_func
-        if not self._looks_like_external_api(issue_func):
+        origin = self._indexed_external_api_origin(issue_func, default_func)
+        if not origin:
             return issue_func
 
         for candidate in (
@@ -2635,7 +2637,9 @@ class ValidationRunner:
             if not fallback or fallback == issue_func:
                 continue
             if fallback == default_func or self._get_function_impl(fallback):
-                self._record_issue_function_normalization(raw_issue, issue_func, fallback)
+                self._record_issue_function_normalization(
+                    raw_issue, issue_func, fallback, origin=origin
+                )
                 return fallback
         return issue_func
 
@@ -2658,27 +2662,33 @@ class ValidationRunner:
         except Exception:
             return None
 
-    @classmethod
-    def _looks_like_external_api(cls, func_name: str) -> bool:
-        cleaned = str(func_name or "").strip()
-        if cleaned in cls._EXTERNAL_API_NAMES:
-            return True
-        return cleaned.startswith(("VOS_", "vos_", "osal_", "OSAL_")) and any(
-            token in cleaned.lower()
-            for token in ("alloc", "free", "mem", "taskcreate", "thread", "lock", "unlock")
-        )
+    def _indexed_external_api_origin(self, func_name: str, caller: str) -> str:
+        classifier = getattr(self.code_index, "call_model_status", None)
+        if not callable(classifier):
+            return ""
+        try:
+            origin = classifier(func_name, caller=caller)
+        except Exception:
+            # Missing origin evidence must not move validation to another body.
+            return ""
+        if isinstance(origin, str) and origin in {"standard_model", "external_model_missing"}:
+            return origin
+        return ""
 
     @staticmethod
     def _record_issue_function_normalization(
         raw_issue: Dict[str, Any],
         original_func: str,
         normalized_func: str,
+        *,
+        origin: str,
     ) -> None:
         raw_issue.setdefault("sink_function", original_func)
         raw_issue["validation_function_normalized_from"] = original_func
         raw_issue["validation_function_normalization_reason"] = (
             "external_api_function_without_indexed_body"
         )
+        raw_issue["validation_function_normalization_origin"] = origin
         raw_issue["function"] = normalized_func
         logger.info(
             "Normalized validation function for issue %s from external API %s to %s.",
@@ -2836,7 +2846,7 @@ class ValidationRunner:
         """Attach bounded historical review hints without changing verdict authority."""
         project = getattr(self.config, "project", None)
         settings = getattr(project, "review_memory", None)
-        if getattr(settings, "mode", "off") != "active":
+        if project is None or settings is None or getattr(settings, "mode", "off") != "active":
             return
         try:
             from ...review_memory.matcher import match_patterns
@@ -2918,14 +2928,22 @@ class ValidationRunner:
             state.pop("_validating_review_appendix", None)
 
     def _review_enabled(self) -> bool:
-        return any(self._review_flag(name) for name in (
-            "validation_review_protocol", "validation_checked_proofs",
-            "validation_positive_case", "validation_related_findings",
-            "validation_review_checkpoint",
-        ))
+        # Tri-state flags (None = depth-scoped) resolve through their own
+        # helpers; plain flags keep the bool semantics here.
+        if self._checked_proofs_enabled():
+            return True
+        return any(
+            self._review_flag(name)
+            for name in (
+                "validation_review_protocol",
+                "validation_positive_case",
+                "validation_related_findings",
+                "validation_review_checkpoint",
+            )
+        )
 
     def _review_facts_enabled(self) -> bool:
-        return self._review_flag("validation_checked_proofs") or self._review_flag("validation_related_findings")
+        return self._checked_proofs_enabled() or self._review_flag("validation_related_findings")
 
     def _checked_proofs_enabled(self) -> bool:
         """Depth-scoped checked-proofs switch with a toolchain safety gate.
@@ -2936,19 +2954,28 @@ class ValidationRunner:
         """
         if not self._depth_scoped_flag("validation_checked_proofs"):
             return False
-        return bool(self._review_checker().store.driver_bound())
+        project = getattr(self.config, "project", None)
+        if project is None or not getattr(project, "project_root", None):
+            return False
+        try:
+            return bool(self._review_checker().store.driver_bound())
+        except Exception:  # pragma: no cover - fail closed on any gate error
+            return False
 
     def _review_checker(self) -> Any:
         with self._review_init_lock:
             if self._review_checker_instance is None:
-                from ...retrieval.validation_facts import CompleteFactStore
+                from ...retrieval.validation_facts import scan_compiler_facts
                 from .review_checks import ReviewClaimChecker
 
                 project = self.config.project
                 root = Path(project.project_root).resolve()
                 commands = Path(getattr(project, "compile_commands_path", None) or root / "compile_commands.json")
                 directory = Path(getattr(self.config.analysis, "snapshot_dir", ".zscope_snapshots")) / "review_experiment"
-                self._review_checker_instance = ReviewClaimChecker(CompleteFactStore(root, commands, directory / "facts"))
+                registry = self.get_contract_registry() if self.get_contract_registry else None
+                self._review_checker_instance = ReviewClaimChecker(
+                    scan_compiler_facts(self.code_index, root, commands, directory / "facts"), registry
+                )
             return self._review_checker_instance
 
     def _review_checkpoint(self, issue: Dict[str, Any], stage: str) -> None:

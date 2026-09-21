@@ -222,11 +222,11 @@
   },
   "first_party": {
     "report_view.js": {
-      "sha256": "576c354c4b02c1131efef255360c5b61ce0b344daaf42ee2899df8218f3602bf",
+      "sha256": "ad0b93ea04440cfe7d6e2e1e73b12c51a9a1d49b101027451fd15a9d8bbe225a",
       "license": "MIT"
     },
     "report_view.css": {
-      "sha256": "4739d2703fa9100a37b84562857e77db48534466e21c06b8d37be193a2410506",
+      "sha256": "d2e2a3c95d89c709bcaa91a737b9fa4bdf11cfea53f377fa6a24d9f918b90ad8",
       "license": "MIT"
     },
     "offline_review.js": {

@@ -36,10 +36,10 @@ def test_compile_api_models_consumes_extended_semantics() -> None:
 def test_builtin_base_sets_unchanged_without_user_semantics() -> None:
     generator = ClangAstCfgCandidateGenerator(LocalPatternSemantics())
 
-    assert {"send", "write", "sendto", "sendmsg", "_net_send_data"} <= generator._send_sink_names
-    assert {"recv", "read", "recvfrom", "_net_recv_data"} <= generator._recv_source_names
+    assert {"send", "write", "sendto", "sendmsg"} <= generator._send_sink_names
+    assert {"recv", "read", "recvfrom"} <= generator._recv_source_names
     assert {"printf", "fprintf", "syslog", "vprintf", "vfprintf"} <= generator._format_sink_names
-    assert {"register_callback"} <= generator._callback_registrar_names
+    assert "register_callback" not in generator._callback_registrar_names
     assert {"close", "closesocket"} <= generator._io_release_names
     assert generator._user_send_sink_names == set()
     assert generator._user_recv_source_names == set()

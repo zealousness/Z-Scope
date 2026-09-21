@@ -12,6 +12,7 @@ FINDING_DISCOVERY_SOURCES = frozenset(
         "deterministic_rule",
         "backend_signal",
         "llm_active_discovery",
+        "semantic_modeling",
     }
 )
 FINDING_DECISION_SOURCES = frozenset(

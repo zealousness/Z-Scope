@@ -27,7 +27,8 @@ def relevant_user_config_context(
         summary = str(item.get("description") or "").strip()
         memory = str(item.get("memory_behavior") or "").strip()
         concurrency = str(item.get("concurrency_behavior") or "").strip()
-        details = ", ".join(part for part in (summary, memory, concurrency) if part)
+        contract = str(item.get("contract") or "").strip()
+        details = ", ".join(part for part in (summary, memory, concurrency, contract) if part)
         external_lines.append(f"  {name}: {details}" if details else f"  {name}")
     if external_lines:
         parts.append("[Relevant user-config API semantics]\n" + "\n".join(external_lines))
@@ -40,9 +41,7 @@ def relevant_user_config_context(
             continue
         desc = str(pair.get("description") or "").strip()
         suffix = f" ({desc})" if desc else ""
-        pair_lines.append(
-            f"  {pair.get('category', 'pair')}: {acquire} <-> {release}{suffix}"
-        )
+        pair_lines.append(f"  {pair.get('category', 'pair')}: {acquire} -> {release}{suffix}")
     if pair_lines:
         parts.append("[Relevant user-config pairs]\n" + "\n".join(pair_lines))
 

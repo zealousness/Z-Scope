@@ -50,6 +50,9 @@ class ResourceState:
     null_guarded: bool = False
     status_guarded: bool = False
     transferred: bool = False
+    object_identity: str = ""
+    resource_domain: str = ""
+    resource_family: str = ""
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,7 @@ class LockState:
     lock_id: str
     api: str
     line: ClangCfgLine
+    definite: bool = True
 
 
 @dataclass(frozen=True)

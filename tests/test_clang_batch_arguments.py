@@ -226,27 +226,29 @@ def test_adjusted_tu_cache_and_failed_retry_keep_old_published_facts(
         assert backend.initialize(str(tmp_path), compile_commands_path=str(cdb))
         cache = Path(backend.db._db_path).parent / "clang_batch_cache"
         report = json.loads((cache / "latest_run.json").read_text())
-        assert report["argument_retries"] == 1 and report["compiled_tus"] == 1
+        assert report["argument_retries"] == 0 and report["compiled_tus"] == 1
         package = next(
             json.loads(p.read_text())
             for p in cache.glob("*.json")
             if "artifact_sha256" in p.read_text()
         )
-        assert package["argument_adjustments"]["removed_unknown_options"] == ["-fconserve-stack"]
+        assert package["argument_adjustments"]["removed_unknown_options"] == []
+        preparation = json.loads(Path(backend._compile_preparation.report_path).read_text())
+        assert preparation["adjustments"][0]["removed_unknown_options"] == ["-fconserve-stack"]
         assert backend._run_full_extraction()
         report = json.loads((cache / "latest_run.json").read_text())
         assert report["reused_tus"] == 1 and report["argument_retries"] == 0
         source.write_text("int broken(void) { return missing_identifier; }\n", encoding="utf-8")
         assert not backend._run_full_extraction()
         report = json.loads((cache / "latest_run.json").read_text())
-        assert not report["complete"] and report["argument_retries"] == 1
+        assert not report["complete"] and report["argument_retries"] == 0
         assert len(report["failed_tus"]) == 1
         failure = report["failed_tus"][0]
         assert failure["source"] == str(source)
-        assert len(failure["argument_adjustments"]["attempts"]) == 2
+        assert len(failure["argument_adjustments"]["attempts"]) == 1
         assert "missing_identifier" in failure["reason"]
-        assert "[clang-batch-arguments] retry=1" in Path(failure["stderr_path"]).read_text()
-        assert json.loads(cdb.read_text())[0]["arguments"] == command
+        assert "[clang-batch-arguments] retry=1" not in Path(failure["stderr_path"]).read_text()
+        assert json.loads(cdb.read_text())[0]["arguments"] == ["clang", "-c", str(source)]
         assert backend.db._conn.execute("SELECT name FROM functions").fetchall()[0][0] == "kept"
     finally:
         backend.close()

@@ -75,6 +75,7 @@ class SvfAnalyzer:
         )
         self._parallel_workers = max(1, int(parallel_workers or 1))
         self._project_root: Optional[Path] = None
+        self._compile_preparation: Any = None
 
     @observed("svf-validate-build-analyze-import")
     def run(
@@ -92,6 +93,16 @@ class SvfAnalyzer:
         self._project_root = Path(project_root)
 
         try:
+            if self._compile_preparation is None:
+                from .compile_commands_prepare import prepare_compile_commands
+                from .compile_preflight import discover_tools
+                self._compile_preparation = prepare_compile_commands(
+                    Path(compile_commands_path),
+                    discover_tools(llvm_link=self._llvm_link, gclang=self._gclang),
+                    workers=self._parallel_workers,
+                )
+            else:
+                self._compile_preparation.validate()
             self.__dict__.pop("_analysis_tools", None)
             runner = SvfRunner(
                 svf_bin_dir=self._svf_bin_dir,
@@ -121,6 +132,7 @@ class SvfAnalyzer:
                 llvm_link_path=self._llvm_link,
                 timeout=self._timeout,
             )
+            builder._compile_preparation = self._compile_preparation
             only_sources: Optional[Set[str]] = None
             if self._lazy_bitcode_enabled():
                 only_sources = self._plan_lazy_bitcode(
@@ -710,6 +722,8 @@ class SvfAnalyzer:
                 bugs = list(data["bugs"])
 
             generation = self._db.get_svf_db_generation()
+            if self._compile_preparation is not None:
+                self._compile_preparation.validate()
             with self._db.svf_materialization_transaction():
                 self._db.purge_svf_data(group=group_name, commit=False)
                 mapper = SvfOutputMapper(

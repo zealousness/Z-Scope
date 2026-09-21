@@ -37,12 +37,11 @@ class ClangTypedResourceRules:
         # Wrapper roles come from the existing semantic contract. The family
         # can be declared explicitly, or inferred from a FILE*/DIR* carrier.
         for row in self.semantic_overlay.get("resource_models", []):
-            family = row.get("resource_family") or ""
-            if not family:
-                match = re.search(
-                    r"\bresource_family\s*=\s*(\w+)", str(row.get("description") or "")
-                )
-                family = match[1] if match else ""
+            family = (
+                row.get("resource_family")
+                or (row.get("contract") or {}).get("resource_family")
+                or ""
+            )
             if family not in families:
                 continue
             if row.get("kind") in {"io_acquire", "allocator"}:
@@ -85,7 +84,13 @@ class ClangTypedResourceRules:
                     call = re.match(r"(?:(?:std)::)?(\w+)\s*\(", value)
                     if call:
                         family = acquire.get(call[1], "")
-                        if not family and call[1] in self._allocator_names | self._calloc_names:
+                        if not family and call[1] in {
+                            "malloc",
+                            "calloc",
+                            "realloc",
+                            "strdup",
+                            "strndup",
+                        }:
                             family = "malloc"
                         if not family and call[1] in self._io_acquire_names:
                             declared = re.search(r"\b(FILE|DIR)\s*\*", text[: assignment.start()])
@@ -98,7 +103,12 @@ class ClangTypedResourceRules:
                     if reopened and reopened[1] in aliases:
                         resources[aliases[reopened[1]]]["transferred"] = True
                     resources[line.index] = dict(
-                        var=var, family=family, line=line, released=False, transferred=False
+                        var=var,
+                        family=family,
+                        line=line,
+                        released=False,
+                        transferred=False,
+                        acquire_api=(call[1] if not re.match(r"new\b", value) and call else ""),
                     )
                     aliases[var] = line.index
                 elif value in aliases:
@@ -115,9 +125,14 @@ class ClangTypedResourceRules:
                 family = ("new_array" if deleted["array"] else "new_scalar") if deleted else release.get(closed[1], "")  # type: ignore[index]
                 if var in aliases:
                     state = resources[aliases[var]]
+                    if (
+                        closed
+                        and state.get("acquire_api")
+                        and self.semantics.contracts.release_in_text(state["acquire_api"], closed[1], text, var) != "applies"
+                    ):
+                        state["uncertain_release"] = line
+                        continue
                     if not family:
-                        # A configured generic IO releaser consumes a typed
-                        # carrier; this remains a candidate-level assumption.
                         family = state["family"]
                     if state["family"] == "custom":
                         state["uncertain_release"] = line
@@ -192,6 +207,8 @@ class ClangTypedResourceRules:
         if not lines:
             return
         for state in resources.values():
+            if state.get("uncertain_release") and not state.get("unreleased_exit"):
+                continue
             if state["family"] == "malloc":
                 continue  # Existing malloc state machine owns leak reporting.
             if (state["released"] or state["transferred"]) and not state.get("unreleased_exit"):

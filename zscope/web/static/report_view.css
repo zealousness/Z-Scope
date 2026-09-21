@@ -11,11 +11,11 @@
 .markdown-report blockquote { border-left:3px solid #a5b4fc; padding:8px 18px; color:#475569; background:#f8fafc; }
 .markdown-report :not(pre) > code { font:0.88em ui-monospace,SFMono-Regular,Consolas,monospace; background:#f1f5f9; padding:2px 5px; border-radius:4px; }
 .markdown-report table { border-collapse:collapse; }
-.markdown-report > table { display:block; overflow-x:auto; }
-.markdown-report > table th, .markdown-report > table td { padding:7px 12px; border:1px solid #dbe3ee; }
-.markdown-report > table code { white-space:nowrap; }
-.markdown-report > table a[href^="#code-"] { white-space:nowrap; }
-.report-code { margin:18px 0; border:1px solid #26364f; border-radius:8px; overflow:hidden; background:#0f172a; color:#e2e8f0; scroll-margin-top:12px; }
+.markdown-report > table, .report-evidence-body > table { display:block; overflow-x:auto; }
+.markdown-report > table th, .markdown-report > table td, .report-evidence-body > table th, .report-evidence-body > table td { padding:7px 12px; border:1px solid #dbe3ee; }
+.markdown-report > table code, .report-evidence-body > table code { white-space:nowrap; }
+.markdown-report > table a[href^="#code-"], .report-evidence-body > table a[href^="#code-"] { white-space:nowrap; }
+.report-code { margin:18px auto; border:1px solid #26364f; border-radius:8px; overflow:hidden; background:#0f172a; color:#e2e8f0; scroll-margin-top:12px; }
 .report-code header { padding:9px 12px; display:flex; justify-content:space-between; gap:12px; align-items:center; background:#1e293b; font:12px/1.6 ui-monospace,Consolas,monospace; }
 .report-code header span { overflow-wrap:anywhere; }
 .report-code button { color:inherit; background:transparent; border:0; cursor:pointer; white-space:nowrap; padding:2px 5px; }
@@ -30,6 +30,15 @@
 .report-code tr:first-child td { padding-top:12px; }
 .report-code tr:last-child td { padding-bottom:12px; }
 .report-code tr { scroll-margin-top:14px; }
+.report-evidence-section { margin-top:30px; margin-bottom:14px; border-top:1px solid #e2e8f0; }
+.report-evidence-section > summary { display:list-item; list-style:disclosure-closed; padding-top:14px; cursor:pointer; }
+.report-evidence-section[open] > summary { list-style:disclosure-open; }
+.report-evidence-section > summary::marker { color:#64748b; }
+.report-evidence-section > summary:focus-visible { outline:2px solid #6366f1; outline-offset:4px; border-radius:4px; }
+.markdown-report .report-evidence-section > summary h2 { display:inline; margin:0; padding:0; border:0; }
+.report-evidence-section > summary span { margin-left:12px; font-size:12px; color:#64748b; }
+.report-evidence-section > summary .report-evidence-collapse, .report-evidence-section[open] > summary .report-evidence-expand { display:none; }
+.report-evidence-section[open] > summary .report-evidence-collapse { display:inline; }
 .evidence-appendix { margin:22px auto; }
 .evidence-detail { margin:10px 0; border:1px solid #dbe3ee; border-radius:8px; background:#fff; }
 .evidence-detail > summary { padding:12px 16px; color:#334155; font-weight:600; cursor:pointer; background:#f8fafc; border-radius:8px; }

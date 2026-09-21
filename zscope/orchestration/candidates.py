@@ -128,6 +128,8 @@ class CandidateRegistrar:
             str(value or "").strip().lower().replace("-", "_") for value in raw_sources if value
         }
         discovered: set[str] = set()
+        if normalized & {"semantic_snapshot", "semantic_snapshot_hypothesis", "semantic_modeling"}:
+            discovered.add("semantic_modeling")
         if any(
             "active_discovery" in value
             or "llm_observation" in value
@@ -157,6 +159,9 @@ class CandidateRegistrar:
             )
 
         detail_ids = {
+            "semantic_modeling": str(
+                issue.get("snapshot_version") or issue.get("id") or producer_source
+            ),
             "llm_active_discovery": str(
                 issue.get("audit_unit_uid")
                 or issue.get("audit_unit_id")
@@ -570,6 +575,9 @@ class CandidateLedger:
     ) -> None:
         self._records: Dict[str, CandidateRecord] = {}
         self._lock = threading.RLock()
+        from ..reporting.immutable_evidence import ImmutableEvidencePool
+
+        self._terminal_evidence = ImmutableEvidencePool()
         self.project_id = self._normalize_project_id(project_id)
         self.project_root = str(project_root or "")
         self.revision = str(revision or "")
@@ -853,9 +861,12 @@ class CandidateLedger:
                     disposition if disposition in TERMINAL_DISPOSITIONS else "needs_review"
                 )
                 record.status = status or record.disposition
-                record.terminal_issue = deepcopy(issue)
+                # Rebase the original ticket too: a checkpoint-backed view can
+                # otherwise retain its entire private decoder after completion.
+                record.ticket.evidence = self._terminal_evidence.clone(record.ticket.evidence)
+                record.terminal_issue = self._terminal_evidence.clone(issue)
                 proof = issue.get("decision_proof") or issue.get("rejection_proof")
-                record.decision_proof = deepcopy(proof) if isinstance(proof, dict) else {}
+                record.decision_proof = self._terminal_evidence.clone(proof) if isinstance(proof, dict) else {}
                 record.evidence_completion_status = str(
                     issue.get("evidence_completion_status") or record.evidence_completion_status
                 )

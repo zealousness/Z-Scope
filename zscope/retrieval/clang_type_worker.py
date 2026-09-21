@@ -43,6 +43,7 @@ class FunctionTypeCollector:
             compile_commands_dir=Path(compilation).parent if compilation else None,
             max_threads=max(1, min(backend._max_threads, int(limits["cpu_count"]))),
         )
+        self.ex._compile_preparation = getattr(backend, "_compile_preparation", None)
         self.cache: DerivedCache | None = None
         self.resolver: DerivedResolver | None = None
         self.by_name: dict[str, list[dict[str, Any]]] = {}
@@ -77,6 +78,8 @@ class FunctionTypeCollector:
         try:
             self._prepare_checkpoint()
             self.check_resources()
+            if self.ex._compile_preparation is not None:
+                self.ex._compile_preparation.validate()
             if not self.ex.start():
                 raise TypeContextUnavailable("clangd_unavailable")
             epoch, self.reusable, reason = build_identity(self.ex, self.db)
@@ -104,6 +107,8 @@ class FunctionTypeCollector:
                     or p == Path(self.ex.clangd_path)
                 )
             }
+            if self.ex._compile_preparation is not None:
+                self.common.update(Path(path) for path in json.loads(self.ex._compile_preparation.dependencies_json))
             self.watch = InputStampWatch(self.stamps)
             self.check_inputs(None)
             self.cache = DerivedCache(

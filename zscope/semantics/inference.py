@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, Iterator, List
 
 from ..semantics.defaults import default_local_pattern_semantics
 from ..semantics.models import LocalPatternSemantics, classify_api_name
+from .contracts import ApiContract, ApiPair, SymbolIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +46,6 @@ class LocalPatternSemanticBuilder:
         semantics = default_local_pattern_semantics()
         semantics.merge(self.scan_typedef_aliases())
         semantics.merge(self.semantics_from_user_config())
-        semantics.merge(self.semantics_from_snapshots())
-        semantics.merge(self.semantics_from_function_names())
         logger.info(
             "Local pattern semantics: %d typedef alias(es), %d allocator(s), %d deallocator(s), "
             "%d reallocator(s), %d copy sink(s), %d lock API(s), %d unlock API(s), "
@@ -112,26 +111,47 @@ class LocalPatternSemanticBuilder:
 
     def semantics_from_user_config(self) -> LocalPatternSemantics:
         semantics = LocalPatternSemantics()
+        classifier = getattr(self.code_index, "call_model_status", None)
+        if callable(classifier):
+            names = {c.symbol.name for c in default_local_pattern_semantics().contracts.contracts}
+            semantics.contracts.shadowed_symbols = {n for n in names if classifier(n) == "project"}
         for ext in self.user_config.list_external_functions():
-            name = str(ext.get("func_name") or "")
-            kind = str(ext.get("kind") or "").lower()
-            add_api_for_config_kind(semantics, name, kind, "user_config")
-            memory = parse_jsonish(ext.get("memory_behavior"))
-            concurrency = parse_jsonish(ext.get("concurrency_behavior"))
-            text = " ".join(
-                [
-                    str(ext.get("description") or ""),
-                    str(ext.get("return_semantics") or ""),
-                    json.dumps(memory, ensure_ascii=False),
-                    json.dumps(concurrency, ensure_ascii=False),
-                ]
-            ).lower()
-            add_api_from_semantic_text(semantics, name, text, "user_config")
+            contract = ApiContract.from_row(ext)
+            if contract is not None:
+                semantics.contracts.add(contract)
+                semantics.add_api(contract.role, contract.symbol.name, contract.source)
 
         for pair in self.user_config.list_paired_functions():
             category = str(pair.get("category") or "").lower()
             acquire = str(pair.get("acquire_func") or "")
             release = str(pair.get("release_func") or "")
+            semantics.contracts.pairs.append(
+                ApiPair(
+                    SymbolIdentity.from_value(
+                        {
+                            "name": acquire,
+                            "file_path": pair.get("acquire_file_path"),
+                            "signature": pair.get("acquire_signature"),
+                            "symbol_type": pair.get("acquire_symbol_type"),
+                        }
+                    ),
+                    SymbolIdentity.from_value(
+                        {
+                            "name": release,
+                            "file_path": pair.get("release_file_path"),
+                            "signature": pair.get("release_signature"),
+                            "symbol_type": pair.get("release_symbol_type"),
+                        }
+                    ),
+                    pair.get("conditions") or [],
+                    str(pair.get("source") or "user_config"),
+                    pair.get("evidence") or [],
+                )
+            )
+            if str(pair.get("source") or "").startswith("inferred"):
+                # A generated pair reference cannot manufacture a manual role
+                # for an unmodeled target or change a builtin's provenance.
+                continue
             if _looks_like_lock_category(category):
                 semantics.add_api("lock", acquire, "user_config:paired_functions")
                 semantics.add_api("unlock", release, "user_config:paired_functions")
@@ -139,11 +159,12 @@ class LocalPatternSemanticBuilder:
                 semantics.add_api("io_acquire", acquire, "user_config:paired_functions")
                 semantics.add_api("io_release", release, "user_config:paired_functions")
             elif _looks_like_resource_category(category):
-                semantics.add_api("allocator", acquire, "user_config:paired_functions")
+                if not any(
+                    c.role in {"allocator", "calloc", "reallocator"}
+                    for c in semantics.contracts.find(acquire)
+                ):
+                    semantics.add_api("allocator", acquire, "user_config:paired_functions")
                 semantics.add_api("deallocator", release, "user_config:paired_functions")
-            else:
-                add_api_by_name_heuristic(semantics, acquire, "user_config:paired_functions")
-                add_api_by_name_heuristic(semantics, release, "user_config:paired_functions")
         return semantics
 
     def semantics_from_snapshots(self) -> LocalPatternSemantics:
@@ -282,6 +303,8 @@ def add_api_for_config_kind(
         semantics.add_api("format_sink", name, source)
     elif normalized == "callback_register":
         semantics.add_api("callback_register", name, source)
+    elif normalized == "ownership_transfer":
+        semantics.add_api("ownership_transfer", name, source)
     else:
         if normalized:
             logger.warning(
@@ -320,6 +343,7 @@ _SNAPSHOT_VALID_ROLES = frozenset(
         "recv_source",
         "format_sink",
         "callback_register",
+        "ownership_transfer",
     }
 )
 

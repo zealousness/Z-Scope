@@ -19,6 +19,8 @@ from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 from zscope.orchestration.subagents import SubAgentTicket
 from zscope.rules.catalog import RuleCatalogError
 from zscope.semantics.models import LocalPatternSemantics
+from zscope.orchestration.semantic_modeling import SessionSemanticResult
+from zscope.orchestration.global_modeler import GlobalModelStats
 
 
 class FakeCodeIndex:
@@ -122,7 +124,12 @@ def test_parallel_analyzer_builds_shared_semantics_once_per_batch(monkeypatch, t
     )
     monkeypatch.setattr(analyzer_module.Analyzer, "run", fake_run)
 
-    parallel = ParallelAnalyzer(_config(tmp_path), code_index=FakeCodeIndex())
+    semantics = CountingLocalPatternSemanticBuilder().build()
+    overlay = CountingSemanticOverlayCompiler().compile()
+    result = SessionSemanticResult(GlobalModelStats(), local_semantics=semantics, overlay=overlay)
+    parallel = ParallelAnalyzer(
+        _config(tmp_path), code_index=FakeCodeIndex(), semantic_result=result
+    )
     results = parallel.analyze_function_entries(
         [
             FunctionEntry("alpha"),
@@ -179,6 +186,7 @@ def test_parallel_analyzer_runs_global_model_before_entries(monkeypatch, tmp_pat
             return {"reachable_functions": 1, "modeled_functions": 1}
 
     class FakeGlobalModeler:
+        result = SessionSemanticResult(FakeStats(), local_semantics=LocalPatternSemantics())
         def run(self, entries):
             events.append(("global", [entry.function_name for entry in entries]))
             return FakeStats()
@@ -230,7 +238,7 @@ def test_parallel_analyzer_runs_global_model_before_entries(monkeypatch, tmp_pat
     }
 
 
-def test_parallel_analyzer_stops_when_global_model_fails(monkeypatch, tmp_path) -> None:
+def test_parallel_analyzer_continues_partial_when_global_model_fails(monkeypatch, tmp_path) -> None:
     observed_flags = []
 
     class CountingLocalPatternSemanticBuilder:
@@ -263,6 +271,7 @@ def test_parallel_analyzer_stops_when_global_model_fails(monkeypatch, tmp_path) 
             return {"failed_functions": 1, "stage_complete": False}
 
     class IncompleteGlobalModeler:
+        result = SessionSemanticResult(IncompleteStats(), local_semantics=LocalPatternSemantics())
         def run(self, entries):
             return IncompleteStats()
 
@@ -307,10 +316,10 @@ def test_parallel_analyzer_stops_when_global_model_fails(monkeypatch, tmp_path) 
     config = _config(tmp_path)
     config.analysis.enable_global_model = True
     parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
-    with pytest.raises(RuntimeError, match="Global semantic modeling did not complete"):
-        parallel.analyze_function_entries([FunctionEntry("alpha")])
+    parallel.analyze_function_entries([FunctionEntry("alpha")])
 
-    assert observed_flags == []
+    assert observed_flags == [True]
+    assert parallel.semantic_result.partial
     assert parallel._last_global_model_stats == {
         "failed_functions": 1,
         "stage_complete": False,
@@ -454,7 +463,7 @@ int worker(void) {
     candidate_payload = stack_records[0].ticket.evidence["candidate_payload"]
     assert candidate_payload["candidate_kind"] == "deterministic_rule"
     assert candidate_payload["rule_engine"] == "cpp_clang_cfg"
-    assert candidate_payload["rule_revision"] == 1
+    assert candidate_payload["rule_revision"] == 2
     assert candidate_payload["rule_catalog_sha256"]
 
 

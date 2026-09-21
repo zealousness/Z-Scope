@@ -191,7 +191,7 @@ zscope-review-memory -c zscope.yaml export --output review-memory.json
 
 ## Replay 与测量边界
 
-`review_memory.replay.paired_replay()` 读取报告 `issues/findings`，比较历史状态与假想 hint 投影，输出 `mode=offline_paired_projection`、`validator_invoked=false`、`verdict_changed=false`。CLI 可写 JSON 结果，并保存命中 PatternMatch。
+`review_memory.replay.paired_replay()` 读取报告 `issues/findings`，比较历史状态与假想 hint 投影，输出 `mode=offline_paired_projection`、`validator_invoked=false`、`verdict_changed=false`。CLI 经统一报告读取层支持传统 JSON 和共享对象存储封套，可写 JSON 结果，并保存命中 PatternMatch。
 
 `potential_false_suppression` 统计命中且历史状态为 validated/confirmed/true_positive 的项，不是实测误抑制；`pattern_overturn_count` 当前按命中且 rejected/false_positive、有 rebuttal 的项计数，不等于模式被人工推翻。CLI match 的 `injected/overturned` 也来自投影/历史状态，不能作为实际 Validator 遥测。该回放不验证输入报告项目身份，运行前必须人工确认项目归属。
 

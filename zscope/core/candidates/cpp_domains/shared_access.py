@@ -22,6 +22,7 @@ class SharedAccessIndex:
         facts: Mapping[str, Any],
         lock_names: set[str],
         unlock_names: set[str],
+        contracts: Any = None,
     ) -> None:
         self.complete = bool(facts.get("complete"))
         self.accesses: dict[int, set[str]] = defaultdict(set)
@@ -46,19 +47,35 @@ class SharedAccessIndex:
         names = "|".join(re.escape(n) for n in sorted(lock_names | unlock_names))
         lock_call = re.compile(rf"\b({names or '__no_lock__'})\s*\(([^)]*)\)")
         self.lock_prefixes: dict[int, tuple[bool, list[int], list[bool]]] = {}
-        held: Counter[str] = Counter()
+        if contracts is None:
+            from ....semantics.defaults import default_local_pattern_semantics
+
+            contracts = default_local_pattern_semantics().contracts
+        held: Counter[tuple[str, str]] = Counter()
         count = 0
         for line in lines:
             before = bool(count)
             offsets, guarded = [], []
             for call in lock_call.finditer(line.text):
-                lock = re.sub(r"[\s&()]", "", call[2])
+                role = "unlock" if call[1] in unlock_names else "lock"
+                matches = contracts.match_call(call[1], role, call[2].split(","))
+                lock = next((m.object for m in matches if m.applicability == "applies"), "")
+                if not lock:
+                    continue
                 if call[1] in unlock_names:
-                    if held[lock]:
-                        held[lock] -= 1
+                    key = next(
+                        (
+                            key
+                            for key in held
+                            if held[key] and key[1] == lock and contracts.release_in_text(key[0], call[1], line.text, lock) == "applies"
+                        ),
+                        None,
+                    )
+                    if key is not None:
+                        held[key] -= 1
                         count -= 1
                 else:
-                    held[lock] += 1
+                    held[(call[1], lock)] += 1
                     count += 1
                 offsets.append(call.end())
                 guarded.append(bool(count))

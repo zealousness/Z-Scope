@@ -26,7 +26,8 @@ SCHEMA_VERSION = "zscope.llm-wiki-demo-metrics.v1"
 
 
 def _load_object(path: Path) -> Dict[str, Any]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    from zscope.reporting.json_io import read_report
+    payload = read_report(Path(path))
     if not isinstance(payload, dict):
         raise ValueError(f"expected a JSON object: {path}")
     return payload

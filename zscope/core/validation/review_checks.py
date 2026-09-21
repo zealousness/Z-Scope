@@ -17,12 +17,17 @@ from typing import Any, Dict, Iterable, Optional
 
 from ...retrieval.validation_facts import CompleteFactStore, digest, walk_ast
 
-CHECKER_VERSION = "zscope.review-checkers.v1"
+CHECKER_VERSION = "zscope.review-checkers.v2"
 RULE_CONTRACT_REVISIONS = {
-    "clang_cfg_parent_release_without_owned_member_cleanup": 1,
-    "clang_cfg_acquire_without_release_on_exit": 1,
-    "clang_cfg_unchecked_insert_after_ownership_handoff": 1,
-    "clang_cfg_unbounded_count_indexes_fixed_array": 1,
+    "clang_cfg_parent_release_without_owned_member_cleanup": {1, 7},
+    "clang_cfg_acquire_without_release_on_exit": {1, 9},
+    "clang_cfg_unchecked_insert_after_ownership_handoff": {1, 8},
+    "clang_cfg_unbounded_count_indexes_fixed_array": {1, 6, 7},
+    "clang_cfg_nonliteral_format_string": {1, 6, 7},
+    "clang_cfg_narrowed_allocation_original_length_copy": {1, 6, 7},
+    "clang_cfg_return_with_lock_held": {1, 8, 9},
+    "clang_cfg_fd_open_return_without_close": {1, 8, 9},
+    "clang_cfg_allocation_result_used_without_null_check": {1, 6},
 }
 _RECEIPT_KEY = secrets.token_bytes(32)
 _TRANSPARENT = {"ImplicitCastExpr", "ParenExpr", "ExprWithCleanups", "ConstantExpr"}
@@ -91,7 +96,7 @@ def integer(node: Dict[str, Any]) -> Optional[int]:
     node = strip(node)
     if node.get("kind") == "ImplicitCastExpr" and node.get("castKind") == "IntegralCast":
         value = integer(node.get("inner", [{}])[0])
-        ty = node.get("type", {}).get("qualType", "")
+        ty = node.get("type", {}).get("desugaredQualType") or node.get("type", {}).get("qualType", "")
         if ty in {
             "int",
             "unsigned int",
@@ -106,7 +111,7 @@ def integer(node: Dict[str, Any]) -> Optional[int]:
     if node.get("kind") in {"IntegerLiteral", "CharacterLiteral"}:
         return int(node["value"])
     if node.get("kind") == "UnaryOperator" and node.get("opcode") == "-":
-        if "unsigned" in str(node.get("type", {}).get("qualType") or ""):
+        if "unsigned" in str(node.get("type", {}).get("desugaredQualType") or node.get("type", {}).get("qualType") or ""):
             return None
         value = integer(node.get("inner", [{}])[0])
         return -value if value is not None else None
@@ -144,6 +149,8 @@ def _binding(issue: Dict[str, Any]) -> str:
                 "path_constraints",
                 "call_paths",
                 "entry_paths",
+                "contract_version",
+                "lifecycle_obligation",
             )
         }
     )
@@ -172,8 +179,12 @@ def checked_receipt(issue: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 class ReviewClaimChecker:
-    def __init__(self, store: CompleteFactStore):
+    def __init__(self, store: CompleteFactStore, registry: Any = None):
         self.store = store
+        if registry is None:
+            from ...semantics.defaults import default_local_pattern_semantics
+            registry = default_local_pattern_semantics().contracts
+        self.registry = registry
 
     def prepare(self, issue: Dict[str, Any]) -> Dict[str, Any]:
         file = str(issue.get("file") or issue.get("file_path") or "")
@@ -220,8 +231,6 @@ class ReviewClaimChecker:
                     "buffer_overflow",
                 } and not issue.get("related_generation"):
                     for risk in issue["review_conditional_risks"]:
-                        if not re.search(r"LOCK|GUARD|CHECK|ASSERT|BOUND", risk["name"], re.I):
-                            continue
                         proposal = {
                             k: issue.get(k, "")
                             for k in (
@@ -247,13 +256,9 @@ class ReviewClaimChecker:
 
     @staticmethod
     def _functions(data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-        grouped: Dict[str, list[Dict[str, Any]]] = {}
-        for n in walk_ast(data["ast"]):
-            if n.get("kind") == "FunctionDecl" and any(
-                c.get("kind") == "CompoundStmt" for c in n.get("inner", [])
-            ):
-                grouped.setdefault(str(n.get("name")), []).append(n)
-        return {name: nodes[0] for name, nodes in grouped.items() if len(nodes) == 1}
+        from .function_index import function_definitions
+
+        return function_definitions(data)
 
     def check(self, issue: Dict[str, Any], kind: str = "auto") -> Dict[str, Any]:
         descriptor = issue.get("review_fact_store") or self.prepare(issue)
@@ -298,15 +303,39 @@ class ReviewClaimChecker:
         functions_checked: set[str] = {name}
         rule = str(issue.get("rule_id") or issue.get("rule") or "")
         category = str(issue.get("category") or issue.get("defect_class") or "")
+        if issue.get("contract_version") and issue["contract_version"] != self.registry.version:
+            result["reason"] = "candidate_contract_version_mismatch"
+            issue.setdefault("review_claim_checks", []).append(deepcopy(result))
+            return result
         if (
             rule in RULE_CONTRACT_REVISIONS
-            and issue.get("rule_revision") != RULE_CONTRACT_REVISIONS[rule]
+            and issue.get("rule_revision") not in RULE_CONTRACT_REVISIONS[rule]
         ):
             result["reason"] = "unqualified_rule_contract_revision"
             issue.setdefault("review_claim_checks", []).append(deepcopy(result))
             return result
         reason = "unsupported_candidate_obligation"
         proved = False
+        if kind in {"auto", "format_operand"} and category == "format_string":
+            # A literal at the exact original call refutes the operand claim.
+            # A nonliteral value remains unknown until its data flow is checked.
+            position = re.search(r":(\d+)$", str(issue.get("location") or ""))
+            target_line = int(issue.get("line") or (position[1] if position else 0))
+            calls = [n for n in walk_ast(fn) if n.get("kind") == "CallExpr" and line_of(n, source) == target_line]
+            operands = []
+            ambiguous_operand = False
+            for operation in calls:
+                name_, args_ = call(operation)
+                mappings = [c for c in self.registry.find(name_, "format_sink", str(data["source"]))
+                            if not (name_ in functions and c.source.startswith("builtin"))]
+                if any(not mapping.effects_trusted for mapping in mappings):
+                    ambiguous_operand = True
+                for mapping in mappings:
+                    slot = mapping.carrier.argument_index
+                    if mapping.effects_trusted and mapping.carrier.kind == "argument" and slot is not None and slot < len(args_):
+                        operands.append(strip(args_[slot]))
+            proved = bool(operands) and not ambiguous_operand and all(n.get("kind") == "StringLiteral" for n in operands)
+            reason = "actual_format_operands_are_literals" if proved else "format_operand_or_input_flow_unclosed"
         if (
             kind in {"auto", "type_identity"}
             and rule == "clang_cfg_parent_release_without_owned_member_cleanup"
@@ -315,6 +344,8 @@ class ReviewClaimChecker:
             member = re.search(
                 r"common owned member [`']?(\w+)->(\w+)", str(issue.get("description") or "")
             )
+            if member is None:
+                member = re.search(r"成员\s*[`']?(\w+)->(\w+)", str(issue.get("description") or ""))
             if member:
                 variables = [
                     n
@@ -361,43 +392,70 @@ class ReviewClaimChecker:
             result["reason"] = "function_cfg_incomplete_or_ambiguous"
             issue.setdefault("review_claim_checks", []).append(deepcopy(result))
             return result
-        if (
-            not proved
-            and kind in {"auto", "ownership_cleanup"}
-            and category == "memory_leak"
-            and rule
-            in {
-                "clang_cfg_unchecked_insert_after_ownership_handoff",
-                "clang_cfg_acquire_without_release_on_exit",
-            }
-        ):
-            reason = "allocation_subject_not_resolved"
-            # The source allocation and tracked object must be identified from the
-            # actual declaration, not from a model-proposed substitute object.
-            source_text = str(issue.get("source") or "")
-            var = re.search(r"\b(\w+)\s*(?:allocated\b|=)", source_text)
-            if not var and rule == "clang_cfg_acquire_without_release_on_exit":
-                var = re.search(
-                    r"^`(\w+)` is acquired from `\w+`", str(issue.get("description") or "")
-                )
-            if var:
-                declarations = [
-                    n
-                    for n in walk_ast(fn)
-                    if n.get("kind") == "VarDecl" and n.get("name") == var[1]
-                ]
-                if len(declarations) == 1:
-                    subject = str(declarations[0]["id"])
-                    globals_ = self._globals(data)
-                    closed = self._ownership_paths(
-                        fn, subject, functions, globals_, functions_checked
-                    )
-                    proved = closed is True
-                    reason = (
-                        "all_relevant_exits_release_or_transfer_same_object"
-                        if proved
-                        else "ownership_alias_or_exit_coverage_unclosed"
-                    )
+        if not proved and kind in {"auto", "path_separation"} and rule == "clang_cfg_return_with_lock_held":
+            from ...retrieval.claim_paths import operation_reaches_observation
+            position = re.search(r":(\d+)$", str(issue.get("location") or ""))
+            target_line = int(issue.get("line") or (position[1] if position else 0))
+            acquisition = re.search(r"\bat line (\d+)\b", str(issue.get("source") or ""))
+            operations = set()
+            if acquisition:
+                for node in walk_ast(fn):
+                    called, arguments = call(node)
+                    if called and line_of(node, source) == int(acquisition[1]) and any(
+                        c.effects_trusted for c in self.registry.find(called, "lock")
+                    ):
+                        operations.add(str(node["id"]))
+            targets = {str(n["id"]) for n in walk_ast(fn) if n.get("kind") == "ReturnStmt" and line_of(n, source) == target_line}
+            if operations and targets:
+                complete, reaches = operation_reaches_observation(fn, operations, targets)
+                proved = complete and reaches == {False}
+                reason = "reported_acquisition_cannot_reach_reported_return" if proved else "lock_path_or_runtime_state_unclosed"
+        if not proved and kind in {"auto", "copy_capacity"} and rule == "clang_cfg_narrowed_allocation_original_length_copy":
+            proved = self._same_copy_extent(fn, issue, source, functions)
+            reason = "allocation_and_copy_use_same_unchanged_extent" if proved else "allocation_conversion_or_copy_extent_unclosed"
+        if not proved and kind in {"auto", "ownership_cleanup"} and rule == "clang_cfg_fd_open_return_without_close":
+            proved, reason = self._reported_descriptor_exit(fn, issue, source, functions)
+        if not proved and kind in {"auto", "ownership_cleanup", "allocation_guard"} and rule in {
+            "configured_acquire_without_release", "clang_cfg_acquire_without_release_on_exit",
+            "clang_cfg_allocation_result_used_without_null_check", "clang_cfg_fd_open_return_without_close",
+            "clang_cfg_unchecked_insert_after_ownership_handoff",
+        }:
+            from ...retrieval.lifecycle_analysis import lifecycle_facts
+            analysis = lifecycle_facts(self.store, self.registry, data, fn, source)
+            issue["lifecycle_analysis"] = analysis
+            reported = issue.get("lifecycle_obligation") or {}
+            selected = [o for o in analysis["obligations"] if o["acquisition_id"] == reported.get("acquisition_id")]
+            if not selected:
+                # Legacy claims name an acquisition API rather than an object.
+                # Check every matching acquisition, never MIN(call_line).
+                api = str((issue.get("resource_pair") or (issue.get("evidence_pack") or {}).get("resource_pair") or {}).get("acquire") or issue.get("source") or "")
+                selected = [o for o in analysis["obligations"] if o["api"] == api]
+            if not selected and rule != "configured_acquire_without_release":
+                # Text supplies only a subject selector. The object and all
+                # its acquisition sites are independently resolved from AST.
+                var = re.search(r"\b([A-Za-z_]\w*)\s*(?:allocated\b|=)", str(issue.get("source") or ""))
+                if not var:
+                    var = re.search(r"^`(\w+)` is acquired from `\w+`", str(issue.get("description") or ""))
+                if var:
+                    selected = [o for o in analysis["obligations"] if o["object"] == var[1]]
+            if selected and rule != "clang_cfg_allocation_result_used_without_null_check":
+                proved = all(o["status"] == "discharged" for o in selected)
+                reason = "all_exits_release_or_transfer_same_object" if proved else "ownership_alias_or_exit_coverage_unclosed"
+                if not proved and rule == "clang_cfg_fd_open_return_without_close":
+                    position = re.search(r":(\d+)$", str(issue.get("location") or ""))
+                    exit_line = int(issue.get("line") or (position[1] if position else 0))
+                    exits = [e for o in selected for e in o["exits"] if e["exit_line"] == exit_line]
+                    proved = bool(exits) and all(e["complete"] and e["state"] == "not_acquired" for e in exits)
+                    if proved:
+                        reason = "reported_exit_is_acquisition_failure_branch"
+            elif rule == "clang_cfg_allocation_result_used_without_null_check":
+                # All source objects and all uses must be closed. This deliberately
+                # refuses to prove a report about one object from another's guard.
+                position = re.search(r":(\d+)$", str(issue.get("location") or ""))
+                sink_line = int(issue.get("line") or (position[1] if position else 0))
+                sink_uses = [u for u in analysis["uses"] if u["line"] == sink_line]
+                proved = bool(sink_uses) and analysis["complete"] and not analysis["gaps"] and all(u["non_null"] for u in analysis["uses"])
+                reason = "allocation_guards_dominate_all_object_uses" if proved else "allocation_guard_coverage_unclosed"
         if (
             not proved
             and kind in {"auto", "guard_bounds"}
@@ -412,6 +470,10 @@ class ReviewClaimChecker:
                 if proved
                 else "numeric_conversion_overflow_or_path_unclosed"
             )
+            if not proved:
+                proved = self._dynamic_array_bounds(fn, issue, source, functions)
+                if proved:
+                    reason = "dynamic_calloc_capacity_matches_unchanged_loop_bound"
             if not proved:
                 witness = self._constant_bad_access(fn, issue, source)
                 if witness:
@@ -481,7 +543,7 @@ class ReviewClaimChecker:
             result["coverage"].update(complete=True, scope="candidate_obligation_in_current_build")
             result["coverage"].update(
                 path_coverage_required=not type_only,
-                basis="complete_type_definition" if type_only else "complete_function_control_flow",
+                basis=("compiler_call_operand" if type_only and category == "format_string" else "complete_type_definition") if type_only else "complete_function_control_flow",
             )
             result["coverage"]["functions"] = [
                 {
@@ -577,6 +639,191 @@ class ReviewClaimChecker:
         issue.setdefault("review_claim_checks", []).append(deepcopy(result))
         return result
 
+    def _dynamic_array_bounds(self, fn: Dict[str, Any], issue: Dict[str, Any], source: str, functions: Optional[Dict[str, Any]] = None) -> bool:
+        from ...retrieval.lifecycle_analysis import unwrap, invocation
+        position = re.search(r":(\d+)$", str(issue.get("location") or ""))
+        target_line = int(issue.get("line") or (position[1] if position else 0))
+        nodes = list(walk_ast(fn))
+        parents = {str(c.get("id")): n for n in nodes for c in n.get("inner", []) if c.get("id")}
+        declarations = {str(n.get("id")): n for n in nodes if n.get("kind") in {"VarDecl", "ParmVarDecl"}}
+        accesses = [n for n in nodes if n.get("kind") == "ArraySubscriptExpr" and line_of(n, source) == target_line]
+        if not accesses or self._unsupported_lifetime_effects(fn):
+            return False
+        for access in accesses:
+            array, subscript = access.get("inner", [{}, {}])
+            decl = declarations.get(symbol(array), {})
+            initializer = decl.get("inner", [])
+            if len(initializer) != 1:
+                return False
+            api, args = invocation(unwrap(initializer[0]))
+            contracts = [c for c in self.registry.find(api, "calloc")
+                         if not (api in (functions or {}) and c.source.startswith("builtin"))]
+            if len(args) != 2 or not contracts or not all(c.effects_trusted for c in contracts):
+                return False
+            # Require the actual element-size operand and reviewed extent
+            # mapping, not a suggestive name or a pointer declaration alone.
+            from ...semantics.contracts import ObjectBinding
+            if any([ObjectBinding.from_value(v) for v in c.protocol.get("allocation_extent", [])]
+                   != [ObjectBinding("argument", 0), ObjectBinding("argument", 1)] for c in contracts):
+                return False
+            size = strip(args[1])
+            if size.get("kind") != "UnaryExprOrTypeTraitExpr" or size.get("name") != "sizeof":
+                return False
+            pointee = str(decl.get("type", {}).get("desugaredQualType") or decl.get("type", {}).get("qualType", "")).rstrip().removesuffix("*").strip()
+            element = size.get("argType", {}).get("desugaredQualType") or size.get("argType", {}).get("qualType", "")
+            if not element or element != pointee:
+                return False
+            count = args[0]
+            if count.get("kind") == "ImplicitCastExpr" and count.get("castKind") == "IntegralCast":
+                # calloc's size_t widening is legal only for an unsigned source;
+                # narrowing or signed conversion requires an explicit range.
+                child = strip(count.get("inner", [{}])[0])
+                ty = child.get("type", {})
+                if (ty.get("desugaredQualType") or ty.get("qualType")) != "unsigned int":
+                    return False
+                count = child
+            count_id = symbol(count)
+            if count_id not in declarations:
+                return False
+            if declarations[count_id].get("storageClass") == "static" or "volatile" in declarations[count_id].get("type", {}).get("qualType", ""):
+                return False
+            ancestor = access
+            while str(ancestor.get("id")) in parents and ancestor.get("kind") != "ForStmt":
+                ancestor = parents[str(ancestor["id"]) ]
+            parts = ancestor.get("inner", [])
+            if ancestor.get("kind") != "ForStmt" or len(parts) != 5:
+                return False
+            loop_decls = parts[0].get("inner", [])
+            if len(loop_decls) != 1 or not loop_decls[0].get("inner"):
+                return False
+            iteration = loop_decls[0]
+            index_id = str(iteration.get("id"))
+            condition, step = strip(parts[2]), strip(parts[3])
+            operands = condition.get("inner", [])
+            ty = iteration.get("type", {})
+            count_type = declarations[count_id].get("type", {})
+            if not (integer(iteration["inner"][-1]) == 0 and symbol(subscript) == index_id
+                    and condition.get("opcode") == "<" and len(operands) == 2
+                    and symbol(operands[0]) == index_id and symbol(operands[1]) == count_id
+                    and step.get("opcode") == "++" and symbol(step.get("inner", [{}])[0]) == index_id
+                    and (ty.get("desugaredQualType") or ty.get("qualType")) == "unsigned int"
+                    and (count_type.get("desugaredQualType") or count_type.get("qualType")) == "unsigned int"):
+                return False
+            watched = {symbol(array), index_id, count_id}
+            loop_end = line_of({"loc": ancestor.get("range", {}).get("end", {})}, source)
+            for node in nodes:
+                if node is step or node.get("kind") == "UnaryOperator" and node.get("id") == step.get("id"):
+                    continue
+                children = node.get("inner", [])
+                if node.get("kind") in {"GotoStmt", "IndirectGotoStmt", "GCCAsmStmt", "MSAsmStmt"}:
+                    return False
+                if loop_end and line_of(node, source) > loop_end:
+                    # Cleanup after the entire loop cannot change an earlier
+                    # access. Mutations later inside the loop still affect its
+                    # next iteration and must be rejected below.
+                    continue
+                if children and (node.get("kind") == "CompoundAssignOperator"
+                    or node.get("kind") == "BinaryOperator" and node.get("opcode") == "="
+                    or node.get("kind") == "UnaryOperator" and node.get("opcode") in {"++", "--", "&"}):
+                    if symbol(children[0]) in watched:
+                        return False
+                if node.get("kind") == "CallExpr" and line_of(node, source) < target_line:
+                    if any(symbol(a) == symbol(array) for a in call(node)[1]):
+                        return False
+        return True
+
+    def _reported_descriptor_exit(self, fn: Dict[str, Any], issue: Dict[str, Any], source: str,
+                                  functions: Dict[str, Dict[str, Any]]) -> tuple[bool, str]:
+        from ...semantics.contract_conditions import compare
+        subject = re.search(r"\b([A-Za-z_]\w*)\s*=", str(issue.get("source") or ""))
+        position = re.search(r":(\d+)$", str(issue.get("location") or ""))
+        target_line = int(issue.get("line") or (position[1] if position else 0))
+        nodes = list(walk_ast(fn))
+        decls = [n for n in nodes if n.get("kind") == "VarDecl" and subject and n.get("name") == subject[1]]
+        exits = [n for n in nodes if n.get("kind") == "ReturnStmt" and line_of(n, source) == target_line]
+        if len(decls) != 1 or len(exits) != 1 or len(decls[0].get("inner", [])) != 1:
+            return False, "descriptor_or_exit_identity_unclosed"
+        decl, target = decls[0], exits[0]
+        uid = str(decl["id"])
+        api, _ = call(decl["inner"][0])
+        contracts = self.registry.find(api, "io_acquire")
+        if not contracts or not all(c.effects_trusted and c.carrier.kind == "return" and c.resource_family == "descriptor" for c in contracts):
+            return False, "descriptor_contract_unclosed"
+        if api in functions and all(c.source.startswith("builtin") for c in contracts):
+            return False, "project_api_requires_own_contract"
+        for node in nodes:
+            children = node.get("inner", [])
+            if children and (node.get("kind") == "CompoundAssignOperator"
+                or node.get("kind") == "BinaryOperator" and node.get("opcode") == "="
+                or node.get("kind") == "UnaryOperator" and node.get("opcode") in {"&", "++", "--"}):
+                if symbol(children[0]) == uid:
+                    return False, "descriptor_assignment_version_unclosed"
+        if target.get("inner") and symbol(target["inner"][0]) == uid:
+            return True, "reported_exit_returns_descriptor_to_caller"
+        parents = {str(c.get("id")): n for n in nodes for c in n.get("inner", []) if c.get("id")}
+        child = target
+        while str(child.get("id")) in parents:
+            parent = parents[str(child["id"])]
+            parts = parent.get("inner", [])
+            if parent.get("kind") == "IfStmt" and len(parts) in {2, 3} and child is parts[1]:
+                condition = strip(parts[0])
+                operands = condition.get("inner", [])
+                if len(operands) == 2 and symbol(operands[0]) == uid and (
+                    condition.get("opcode") == "<" and integer(operands[1]) == 0
+                    or condition.get("opcode") == "==" and integer(operands[1]) == -1
+                ):
+                    effects = [e for c in contracts for e in c.effect_cases if e.get("effect") == "applies"]
+                    if effects and all(e.get("when") == compare({"kind": "return"}, ">=", 0) for e in effects):
+                        return True, "reported_exit_is_acquisition_failure_branch"
+            child = parent
+        return False, "descriptor_acquisition_or_exit_coverage_unclosed"
+
+    def _same_copy_extent(self, fn: Dict[str, Any], issue: Dict[str, Any], source: str,
+                          functions: Dict[str, Dict[str, Any]]) -> bool:
+        from ...retrieval.lifecycle_analysis import expression, unwrap
+        position = re.search(r":(\d+)$", str(issue.get("location") or ""))
+        target_line = int(issue.get("line") or (position[1] if position else 0))
+        copies = [n for n in walk_ast(fn) if call(n)[0] in {"memcpy", "memmove"}
+                  and call(n)[0] not in functions and line_of(n, source) == target_line]
+        if not copies:
+            return False
+        declarations = {str(n.get("id")): n for n in walk_ast(fn) if n.get("kind") == "VarDecl"}
+        for node in copies:
+            _, arguments = call(node)
+            if len(arguments) != 3:
+                return False
+            target = symbol(arguments[0])
+            declaration = declarations.get(target, {})
+            initializers = declaration.get("inner", [])
+            if len(initializers) != 1:
+                return False
+            called, args = call(unwrap(initializers[0]))
+            contracts = self.registry.find(called)
+            if not called or not any(c.effects_trusted and c.role in {"allocator", "calloc"} for c in contracts):
+                return False
+            if called in functions and all(c.source.startswith("builtin") for c in contracts):
+                return False
+            extent = self.registry.allocation_extent(called, [expression(a) for a in args])
+            length = expression(arguments[2])
+            if not extent or re.sub(r"\s+", "", extent) != re.sub(r"\s+", "", length):
+                return False
+            dependencies = {symbol(a) for a in walk_ast(arguments[2]) if a.get("kind") == "DeclRefExpr"} | {target}
+            locals_and_parameters = {str(n.get("id")): n for n in walk_ast(fn) if n.get("kind") in {"VarDecl", "ParmVarDecl"}}
+            if any(d not in locals_and_parameters or locals_and_parameters[d].get("storageClass") == "static"
+                   or "volatile" in locals_and_parameters[d].get("type", {}).get("qualType", "") for d in dependencies):
+                return False
+            if self._unsupported_lifetime_effects(fn):
+                return False
+            for other in walk_ast(fn):
+                children = other.get("inner", [])
+                if (other.get("kind") in {"BinaryOperator", "CompoundAssignOperator"} and other.get("opcode") in {"=", "+=", "-=", "*=", "/=", "<<=", ">>=", "|=", "&=", "^=", "%="}
+                    or other.get("kind") == "UnaryOperator" and other.get("opcode") in {"++", "--", "&"}):
+                    if children and symbol(children[0]) in dependencies:
+                        return False
+            if any(n.get("kind") in {"MemberExpr", "CallExpr", "ArraySubscriptExpr"} for n in walk_ast(arguments[2])):
+                return False
+        return True
+
     @staticmethod
     def _globals(data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         # File-scope declarations only. Locals and parameters cannot prove
@@ -586,211 +833,6 @@ class ReviewClaimChecker:
     @staticmethod
     def _body(fn: Dict[str, Any]) -> Dict[str, Any]:
         return next((c for c in fn.get("inner", []) if c.get("kind") == "CompoundStmt"), {})
-
-    def _transfers(
-        self,
-        name: str,
-        index: int,
-        functions: Dict[str, Dict[str, Any]],
-        globals_: Dict[str, Any],
-        checked: set[str],
-    ) -> bool:
-        fn = functions.get(name)
-        if not fn or name in checked:
-            return False
-        if self._unsupported_lifetime_effects(fn):
-            return False
-        params = [n for n in fn.get("inner", []) if n.get("kind") == "ParmVarDecl"]
-        if index >= len(params):
-            return False
-        checked.add(name)
-        target = str(params[index]["id"])
-        # All paths must commit the same parameter into persistent storage.
-        # A void/error-code return by itself says nothing about ownership.
-        slots: set[str] = set()
-        # Local durable cursors must be unconditionally initialized in the
-        # outer block. A declaration in one branch cannot justify another.
-        for statement in self._body(fn).get("inner", []):
-            if statement.get("kind") == "DeclStmt":
-                for var in statement.get("inner", []):
-                    init = var.get("inner", [])
-                    if (
-                        init
-                        and symbol(init[-1]).startswith("&")
-                        and symbol(init[-1])[1:] in globals_
-                    ):
-                        slots.add(var["id"])
-
-        def durable(expr: Dict[str, Any]) -> bool:
-            key = symbol(expr)
-            return key in globals_ or (key.startswith("*") and key[1:] in slots)
-
-        def evaluate(node: Dict[str, Any], owned: bool) -> Optional[list[tuple[bool, bool]]]:
-            node = strip(node)
-            children = node.get("inner", [])
-            k = node.get("kind")
-            if k == "CompoundStmt":
-                states = [(owned, False)]
-                for child in children:
-                    next_states = []
-                    for state, ended in states:
-                        values = [(state, True)] if ended else evaluate(child, state)
-                        if values is None:
-                            return None
-                        next_states.extend(values)
-                    states = next_states
-                return states
-            if k == "DeclStmt":
-                for var in children:
-                    init = var.get("inner", [])
-                    if (
-                        init
-                        and symbol(init[-1]).startswith("&")
-                        and symbol(init[-1])[1:] in globals_
-                    ):
-                        if var["id"] not in slots:
-                            return None
-                    elif any(symbol(n) == target for n in walk_ast(var)):
-                        return None
-                return [(owned, False)]
-            if k == "BinaryOperator" and node.get("opcode") == "=" and len(children) == 2:
-                left, right = children
-                # Once committed, an overwrite could lose the only owner.
-                if not owned:
-                    return None
-                if symbol(right) == target and durable(left):
-                    return [(False, False)]
-                if symbol(left) == target:
-                    return None
-                if symbol(left) in slots:
-                    # Preserve the invariant that cursor points into the same
-                    # durable tree, including cursor = &(*cursor)->left/right.
-                    refs = {symbol(n) for n in walk_ast(right) if n.get("kind") == "DeclRefExpr"}
-                    if strip(right).get("opcode") != "&" or not refs or not refs.issubset(slots):
-                        return None
-                if any(n.get("kind") == "CallExpr" for n in walk_ast(node)):
-                    return None
-                return [(owned, False)]
-            if k == "IfStmt" and len(children) in {2, 3}:
-                if self._side_effects(children[0]):
-                    return None
-                a = evaluate(children[1], owned)
-                b = evaluate(children[2], owned) if len(children) == 3 else [(owned, False)]
-                return None if a is None or b is None else a + b
-            if k == "WhileStmt" and len(children) == 2:
-                # A tree traversal is allowed only if it does not change
-                # ownership and preserves the durable-slot invariant.
-                if any(n.get("kind") == "CallExpr" for n in walk_ast(children[0])):
-                    return None
-                before = set(slots)
-                body = evaluate(children[1], owned)
-                if body is None or any(s != owned or end for s, end in body) or slots != before:
-                    return None
-                return [(owned, False)]
-            if k == "ReturnStmt":
-                if any(n.get("kind") == "CallExpr" for n in walk_ast(node)):
-                    return None
-                return [(owned, True)]
-            if k in {"NullStmt", "IntegerLiteral", "DeclRefExpr"}:
-                return [(owned, False)]
-            return None
-
-        states = evaluate(self._body(fn), True)
-        return bool(states and all(not owned for owned, _ in states))
-
-    def _ownership_paths(
-        self,
-        fn: Dict[str, Any],
-        subject: str,
-        functions: Dict[str, Dict[str, Any]],
-        globals_: Dict[str, Any],
-        checked: set[str],
-    ) -> Optional[bool]:
-        if self._unsupported_lifetime_effects(fn):
-            return None
-
-        # State: not acquired / live / closed; join uses all alternatives.
-        def execute(node: Dict[str, Any], state: str) -> Optional[list[tuple[str, bool]]]:
-            node = strip(node)
-            k, children = node.get("kind"), node.get("inner", [])
-            if k == "CompoundStmt":
-                states = [(state, False)]
-                for child in children:
-                    new = []
-                    for value, end in states:
-                        branch = [(value, True)] if end else execute(child, value)
-                        if branch is None:
-                            return None
-                        new.extend(branch)
-                    states = new
-                return states
-            if k == "DeclStmt":
-                if any(n.get("id") == subject for n in children):
-                    if len(children) != 1:
-                        return None
-                    return [("live", False)]
-                if any(symbol(n) == subject for n in walk_ast(node)) or self._side_effects(node):
-                    return None
-                return [(state, False)]
-            if k == "IfStmt" and len(children) in {2, 3}:
-                cond = strip(children[0])
-                if self._side_effects(cond):
-                    return None
-                null_branch = (
-                    cond.get("kind") == "UnaryOperator"
-                    and cond.get("opcode") == "!"
-                    and symbol(cond.get("inner", [{}])[0]) == subject
-                )
-                a = execute(children[1], "closed" if null_branch and state == "live" else state)
-                b = execute(children[2], state) if len(children) == 3 else [(state, False)]
-                return None if a is None or b is None else a + b
-            if k == "DoStmt" and len(children) == 2 and integer(children[1]) == 0:
-                return execute(children[0], state)
-            if k == "ReturnStmt":
-                if self._side_effects(node):
-                    return None
-                if children and symbol(children[0]) == subject:
-                    return [("closed", True)]
-                if any(symbol(n) == subject for n in walk_ast(node)):
-                    return None
-                return [(state, True)]
-            if k == "CallExpr":
-                name, args = call(node)
-                positions = [i for i, a in enumerate(args) if symbol(a) == subject]
-                if name == "free" and name not in functions and positions == [0]:
-                    return [("closed", False)]
-                if positions:
-                    if len(positions) == 1 and self._transfers(
-                        name, positions[0], functions, globals_, checked
-                    ):
-                        return [("closed", False)]
-                    return None
-                # Unknown code receiving a field/alias may mutate ownership.
-                if any(symbol(n) == subject for n in walk_ast(node)):
-                    return None
-                return None
-            if k == "BinaryOperator" and node.get("opcode") == "=":
-                if symbol(children[1]) == subject and symbol(children[0]) in globals_:
-                    return [("closed", False)]
-                if symbol(children[0]) == subject:
-                    return (
-                        [(state, False)]
-                        if state == "closed" and integer(children[1]) == 0
-                        else None
-                    )
-                if (
-                    any(symbol(n) == subject for n in walk_ast(node))
-                    or state == "closed"
-                    or self._side_effects(children[1])
-                ):
-                    return None
-                return [(state, False)]
-            if k in {"NullStmt", "IntegerLiteral"}:
-                return [(state, False)]
-            return None
-
-        states = execute(self._body(fn), "not_acquired")
-        return None if states is None else bool(states and all(s != "live" for s, _ in states))
 
     @staticmethod
     def _unsupported_lifetime_effects(node: Dict[str, Any]) -> bool:

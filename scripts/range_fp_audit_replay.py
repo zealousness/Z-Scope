@@ -21,7 +21,8 @@ FalsePositiveClassifier = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
 def load_json(path: Path) -> Dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    from zscope.reporting.json_io import read_report
+    return read_report(path)
 
 
 def write_json(path: Path, payload: Dict[str, Any]) -> None:

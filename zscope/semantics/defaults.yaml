@@ -6,7 +6,7 @@ resource_families:
     acquire: [opendir]
     release: [closedir]
   malloc:
-    acquire: [malloc, calloc, realloc]
+    acquire: [malloc, calloc, realloc, strdup, strndup]
     release: [free]
   new_scalar:
     acquire: [new]
@@ -14,19 +14,30 @@ resource_families:
   new_array:
     acquire: [new_array]
     release: [delete_array]
+  descriptor:
+    acquire: [open, creat, socket, accept]
+    release: [close]
+  mutex:
+    acquire: [pthread_mutex_lock, pthread_mutex_trylock]
+    release: [pthread_mutex_unlock]
+  rwlock:
+    acquire: [pthread_rwlock_rdlock, pthread_rwlock_wrlock]
+    release: [pthread_rwlock_unlock]
+  spinlock:
+    acquire: [spin_lock]
+    release: [spin_unlock]
+  c11_mutex:
+    acquire: [mtx_lock]
+    release: [mtx_unlock]
 api_roles:
   allocators:
     - malloc
-    - _safe_malloc
   calloc_allocators:
     - calloc
-    - _safe_calloc
   reallocators:
     - realloc
-    - _safe_realloc
   deallocators:
     - free
-    - SAFE_FREE
   copy_sinks:
     - memcpy
     - memmove
@@ -35,17 +46,18 @@ api_roles:
     - fread
     - send
     - write
-    - _net_recv_data
-    - _net_send_data
   lock_apis:
-    - LOCK
-    - LOCK_READ
-    - LOCK_WRITE
     - pthread_mutex_lock
+    - pthread_mutex_trylock
+    - pthread_rwlock_rdlock
+    - pthread_rwlock_wrlock
+    - spin_lock
+    - mtx_lock
   unlock_apis:
-    - UNLOCK
     - pthread_mutex_unlock
     - pthread_rwlock_unlock
+    - spin_unlock
+    - mtx_unlock
   io_acquirers:
     - open
     - fopen
@@ -62,20 +74,17 @@ api_roles:
     - write
     - sendto
     - sendmsg
-    - _net_send_data
   recv_sources:
     - recv
     - read
     - recvfrom
-    - _net_recv_data
   format_sinks:
     - printf
     - fprintf
     - syslog
     - vprintf
     - vfprintf
-  callback_registrars:
-    - register_callback
+  callback_registrars: []
 
 type_aliases:
   size_t: size_t
@@ -109,8 +118,6 @@ checker_roles:
     - mtx_unlock
   graph_release_apis:
     - free
-    - destroy
-    - release
     - delete
   extended_send_sinks: []
   extended_recv_sources: []

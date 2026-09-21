@@ -186,6 +186,7 @@ class RecordingAgent:
                 "effects": [],
                 "error_handling": {"error_paths": []},
                 "suspicious_points": [],
+                "interface_contracts": [],
                 "project_callees": context["project_callees"],
                 "external_callees": context["external_callees"],
             },
@@ -328,7 +329,8 @@ def test_global_modeler_excludes_llvm_intrinsics_from_graph_and_model_input(tmp_
 
     assert stats.reachable_functions == 2
     assert stats.unresolved_external_callees == 0
-    assert sorted(calls) == ["child", "entry"]
+    assert sorted(calls) == ["entry"]
+    assert stats.deterministic_snapshot_count == 1
     entry_snapshot = store.load_snapshot("entry@src/entry.c:1-1")
     assert entry_snapshot is not None
     assert [item["callee_index_name"] for item in entry_snapshot["project_callees"]] == [
@@ -337,7 +339,7 @@ def test_global_modeler_excludes_llvm_intrinsics_from_graph_and_model_input(tmp_
     assert entry_snapshot["external_callees"] == []
 
 
-def test_global_modeler_reconciles_mutual_recursion_without_extra_llm_calls(tmp_path):
+def test_global_modeler_reconciles_mutual_recursion_with_frozen_rounds(tmp_path):
     calls = []
     config = _config(tmp_path)
     index = FakeCodeIndex()
@@ -358,8 +360,8 @@ def test_global_modeler_reconciles_mutual_recursion_without_extra_llm_calls(tmp_
 
     stats = modeler.run([FunctionEntry("left"), FunctionEntry("right")])
 
-    assert sorted(calls) == ["left", "right"]
-    assert len(calls) == 2
+    assert sorted(calls) == ["left", "left", "right", "right"]
+    assert len(calls) == 4
     assert stats.stage_complete is True
     assert stats.reconciliation_failures == 0
     assert (
@@ -372,7 +374,7 @@ def test_global_modeler_reconciles_mutual_recursion_without_extra_llm_calls(tmp_
     )
 
 
-def test_global_modeler_reconciles_self_recursion_without_second_llm_call(tmp_path):
+def test_global_modeler_reconciles_self_recursion_until_contract_stable(tmp_path):
     calls = []
     config = _config(tmp_path)
     index = FakeCodeIndex()
@@ -389,7 +391,7 @@ def test_global_modeler_reconciles_self_recursion_without_second_llm_call(tmp_pa
 
     stats = modeler.run([FunctionEntry("self_call")])
 
-    assert calls == ["self_call"]
+    assert calls == ["self_call", "self_call"]
     assert stats.stage_complete is True
     assert (
         store.load_snapshot("self_call@src/self_call.c:1-8")["project_callees"][0]["callee_summary"]
@@ -397,7 +399,7 @@ def test_global_modeler_reconciles_self_recursion_without_second_llm_call(tmp_pa
     )
 
 
-def test_global_modeler_failure_skips_reconciliation_within_stage_tolerance(tmp_path):
+def test_global_modeler_failure_marks_stage_partial(tmp_path):
     config = _config(tmp_path)
     index = FakeCodeIndex()
     index.impls = {"entry": index._impl("entry", [])}
@@ -419,7 +421,7 @@ def test_global_modeler_failure_skips_reconciliation_within_stage_tolerance(tmp_
     assert stats.failed_functions == 1
     assert stats.reconciled_functions == 0
     assert stats.reconciliation_unchanged_functions == 0
-    assert stats.stage_complete is True
+    assert stats.stage_complete is False
 
 
 def test_global_modeler_unresolved_entry_fails_stage_gate(tmp_path):
@@ -483,7 +485,7 @@ def test_global_modeler_retries_terminal_guard_in_fresh_agent(tmp_path):
     assert store.load_snapshot("entry@src/entry.c:1-8")["summary"] == "modeled entry"
 
 
-def test_global_model_stats_allows_ten_but_rejects_more_than_ten_failed_functions(tmp_path):
+def test_global_model_stats_requires_no_failed_functions(tmp_path):
     config = _config(tmp_path)
     store = SnapshotStore(Path(config.analysis.snapshot_dir))
     user_config = UserConfigStore(Path(config.analysis.user_config_db))
@@ -496,8 +498,10 @@ def test_global_model_stats_allows_ten_but_rejects_more_than_ten_failed_function
     )
 
     stats = modeler.run([FunctionEntry("entry")])
-    stats.failed_functions = 10
+    stats.failed_functions = 0
     assert stats.stage_complete is True
+    stats.failed_functions = 1
+    assert stats.stage_complete is False
     stats.failed_functions = 11
 
     assert stats.stage_complete is False
@@ -596,8 +600,8 @@ def test_global_modeler_reuses_existing_snapshots(tmp_path):
 
     stats = modeler.run([FunctionEntry("entry")])
 
-    assert stats.cache_hit_functions == 1
-    assert "leaf" not in calls
+    assert stats.cache_hit_functions == 0
+    assert "leaf" in calls  # Legacy snapshots have no versioned interface contract inputs.
 
 
 def test_global_modeler_treats_negative_callee_cap_as_unlimited(tmp_path):
@@ -889,6 +893,7 @@ def test_on_demand_snapshot_build_uses_file_qualified_lock(monkeypatch, tmp_path
                     "concurrency": {},
                     "key_semantics": [context["index_name"]],
                     "suspicious_points": [],
+                    "interface_contracts": [],
                     "project_callees": [],
                     "external_callees": [],
                 },

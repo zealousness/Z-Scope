@@ -14,7 +14,7 @@ v1.3.2 在 v1.3.1 稳定线之上引入 LLM Wiki 项目知识层、自适应语�
 - **验证组终态与有界 Validator 协议**：`CandidateEnvelope v3.3`、`SecurityObligation` 和 scan-level validation group 保证每个安全义务只验证一次，并闭合为 `confirmed`、`rejected_with_proof`、`needs_review`、`engine_failed` 或 `interrupted`；只有完整、可追溯且无冲突的 proof 能改变安全终态，引擎故障不会伪装成漏洞。每个 cluster 只传 bounded `ValidatorEvidenceSlice v3`：V1 是无工具、严格 schema 的单次判定，V2 按义务一次补齐事实后单次复判，V3 是最长 50 次模型迭代、仅白名单只读工具的有界调查，可引用事实完全闭合后才进入默认视图。
 - **稳定缺陷身份与 Canonical 报告**：`canonical_issue_key`、`stable_issue_fingerprint` 等统一身份服务去重、baseline、SARIF partial fingerprints 与 benchmark 匹配。`ReportAssembler` 只从冻结的 canonical outcome 集合生成默认视图和含复核视图；`FindingRoot v1` 仅合并 defect family、结构化 subject、decision region、代码与 proof 上下文完全等价的义务。CLI 支持 `--export-sarif` 输出 SARIF v2.1.0，Web 端可导出包含离线阅读器与逐 issue Markdown 的 ZIP 报告包。
 - **运行模式与增量分析**：支持全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）与告警验证（`--mode alert-verify`）；diff impact 扫描（`--diff-base/--diff-head`）按变更意图选择最小必要扫描 root，并区分增量/存量发现。`--discover-entries` 自动识别头文件暴露的公共 API、网络收发、线程入口与用户输入点作为批量入口。
-- **用户配置与反馈记忆**：`user_config.xlsx` 维护外部函数描述、配对函数、函数指针指向、dispatcher 分支、模块生命周期与函数意图；`--infer-user-config` 从源码、函数式宏与语义快照生成候选行供人工审阅（LLM 逐行筛选，低置信度行二轮复核），运行时只注入当前函数真正引用到的配置。Web 复核状态持久化为误报抑制与 finding baseline，经 `ReviewMemory` 在后续扫描自动复用；分析结果与证据 IR 落入 `.zscope_snapshots/` 与 `code_knowledge.db`。
+- **用户配置与反馈记忆**：`user_config.xlsx` 维护外部函数描述、配对函数、函数指针指向、dispatcher 分支、模块生命周期与函数意图；所有 C/C++ 扫描在规则执行前通过增量并发语义建模更新接口契约，`--infer-user-config` 共用该链路并补充 dispatcher 等配置；人工角色和配对优先，运行时只注入当前函数真正引用到的配置。Web 复核状态持久化为误报抑制与 finding baseline，经 `ReviewMemory` 在后续扫描自动复用；分析结果与证据 IR 落入 `.zscope_snapshots/` 与 `code_knowledge.db`。
 - **多入口与多模型接入**：提供 CLI、Alpine.js + DaisyUI Web 仪表盘（审计发现、规则目录、项目配置、用户配置与看板）与 MCP Server（本地 stdio；实验性 Streamable HTTP 远程绑定需显式 bearer token 与客户端 allowlist）。LLM 支持多 profile 并按 modeling/analysis/validation 角色映射，同一 profile 可配置多个 `base_urls` 与 endpoint 限流分摊批量请求。
 
 ## 系统架构
@@ -903,7 +903,7 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 - **C 内存/并发确定性候选层**：新增通用候选生成与证据包路径，覆盖边界/整数、资源生命周期、时序内存、栈逃逸、锁与共享状态等高价值缺陷，并接入 Deep Worker、Validator、报告分层和回归评测。
 - **CLI Workflow 自动映射**：`--maintain` 自动选择 `maintain.yaml`，`--resume` 自动选择 `resume.yaml`。`analysis.workflow_name` 是运行时内部字段，禁止写入 `zscope.yaml`；两种 CLI 模式互斥，CLI 会提前拦截非法组合。
 - **Deep Worker 启发式任务规划**：引入 `SubAgentOrchestrator`，基于启发式自动探测函数内的分配、拷贝、加锁等关键操作，先全量收集候选点，再按风险和预算下发给聚焦型 `Deep Worker`。未执行候选、失败/invalid/partial Worker 结果都会回传给主 Agent，避免预算截断造成静默漏检。
-- **智能入口点自动发现**：新增 `--discover-entries` 特性。如果未给定分析列表，通过 `EntryDiscovery` 启发式扫描公共头文件 API、通信 IPC 接口、线程创建函数和标准 IO 输入源，自动推测最优的安全审计切入点。
+- **智能入口点自动发现**：使用 `--discover-entries` 时，`EntryDiscovery` 扫描公共头文件 API、通信 IPC 接口、线程入口、注册回调和标准 IO 输入源。`signal` / `sigaction` 的处理函数及 `atexit` / `at_quick_exit` / `on_exit` 的退出回调作为 `callback` 入口；支持源码可解析的嵌套函数封装和参数转发，信号回调保留异步信号审计上下文。
 - **原生支持 MCP (Model Context Protocol)**：内置本地 MCP stdio Server (`--mcp-stdio`)，对外暴露了 Z-SCOPE 专有的 `CodeIndex` 结构化查询、语义快照索引等能力，允许第三方 MCP 客户端（如 Claude Desktop）安全地调取分析底座的数据与工具链。
 - **递归预建模与并发防护**：引入 `SnapshotLockManager`，在实际漏洞分析前通过 BFS 逆拓扑遍历，提前将所有可达子函数推给 `语义建模Agent` 并在多 Worker 间互斥上锁。彻底消除上下文膨胀问题以及多线程同时并发请求同一个下层函数的复述问题。
 - **平凡函数旁路拦截器**：结合极简代码行数（默认 `≤5`）和危险关键字黑名单正则（杜绝 `alloc`、`lock` 等操作漏网），直接在调度层利用 Python 硬拼装阻断 LLM API 请求，实现零成本微快照注入，整体节约 `20~40%` 并发扫描 Token 开销。
@@ -947,3 +947,23 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 
 ### v0.1.0
 - 初始版本：多智能体协作、语义建模缓存、模型自动降级。
+
+### 增量接口建模
+
+C/C++ 扫描在入口发现、索引和 Wiki 准备后，先建模入口可达函数及引用宏，再执行规则。普通重扫会自动复用有效语义缓存；只有代码/依赖/人工契约/建模规格变化才重建，callee 对外契约变化才继续向调用者传播。建模并发由 `concurrency.llm_max_inflight` 控制，与入口 worker 数分开。
+
+自动接口契约写入 `project.user_config_file` 并重新读取后生效，人工行优先。resource/lock 支持可选 `file_path`、`signature`、`contract`、`status`；`pair` 兼容逗号列表，也支持含身份的 JSON 数组。`contract.carrier` 支持 return、argument、output_argument、global，参数序号从 0 开始，并可附 member_path；v3 契约使用 `preconditions` 和 `effect_cases` 表达调用前提及条件效果，兼容旧 `conditions`。`resource_domain` 独立绑定池或上下文。多对多配对只使用显式或经实现验证的边，inactive/failed/stale 行不参与规则。
+
+已有底层契约的透明函数和宏优先由静态分析组合。未知池协议仍由 LLM 辅助发现，再由实现证据或人工契约建立底层模型；当前自动实现校验覆盖受限侵入式空闲链表。合法释放必须同时满足配对、同一对象、同一池和适用条件；无法证明的效果保持未知。
+
+模型提出的怀疑点保留在语义快照中，供 Validator 验证已有候选时参考；当前暂停其独立候选入口，缓存重扫也不因此触发验证任务，且没有公共开启开关。建模失败仍记录 partial；模型输出不会直接确认漏洞。规则/验证/报告均记录当前契约版本。
+
+### 共享报告与接口审核
+
+默认 JSON 报告是完整自包含的共享对象格式。Python 集成用 `zscope.reporting.json_io.read_report(Path(...))` 读取，新旧格式均返回相同逻辑字段；外部只支持旧 JSON 的工具可先完整导出：
+
+```bash
+zscope-report export --input report.json --output report.legacy.json --format legacy-json
+```
+
+语义工作簿的 `contract_review` 页列出无法由实现证据消解的根协议。检查源码依据、建议 contract 和适用条件后，可将 status 改为 `confirmed`；下一次扫描导入为人工契约，并沿已经核验的 wrapper 映射静态传播。`pending`、`rejected` 不生效。修改为 pending 会撤销该审核行导入的契约。确认角色不能替代运行时调用成功证据。

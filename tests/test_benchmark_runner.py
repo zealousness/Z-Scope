@@ -155,11 +155,11 @@ def test_individual_run_release_eligibility_requires_formal_mode_and_gates() -> 
 def test_cpp_benchmark_concurrency_matches_released_capacity() -> None:
     config = yaml.safe_load(SPECS["c_cpp"].config_path.read_text(encoding="utf-8"))
 
-    # Values tuned by the 1.3.2 release commit: 6 validator workers with the
-    # LLM in-flight and per-base-url caps aligned at 8.
-    assert config["concurrency"]["validator_workers"] == 6
-    assert config["concurrency"]["llm_max_inflight"] == 8
-    assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 8
+    # Current benchmark capacity keeps both LLM request caps aligned at 16
+    # while using 8 validator workers.
+    assert config["concurrency"]["validator_workers"] == 8
+    assert config["concurrency"]["llm_max_inflight"] == 16
+    assert config["llms"]["default"]["base_url_max_concurrent_requests"] == 16
 
 
 def test_wsl_cpp_work_root_rejects_windows_mount(monkeypatch, tmp_path: Path) -> None:
@@ -200,7 +200,9 @@ def test_trial_workspace_is_temporary_and_removed(monkeypatch, tmp_path: Path) -
     assert not observed["workspace"].exists()
 
 
-def test_experimental_review_workspace_keeps_bound_dependency_paths(monkeypatch, tmp_path: Path) -> None:
+def test_experimental_review_workspace_keeps_bound_dependency_paths(
+    monkeypatch, tmp_path: Path
+) -> None:
     work_parent = tmp_path / "work"
     work_parent.mkdir()
     monkeypatch.setattr(benchmark_runner, "_benchmark_work_parent", lambda _: work_parent)
@@ -210,8 +212,62 @@ def test_experimental_review_workspace_keeps_bound_dependency_paths(monkeypatch,
         return {"workspace": workspace}
 
     monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", run)
+    monkeypatch.setattr(benchmark_runner, "_render_trial_metrics", lambda *args, **kwargs: None)
     result = benchmark_runner._run_trial(SPECS["c_cpp"], tmp_path / "artifact", 1, mode="trial")
     assert result["workspace"].is_dir()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_explicit_workspace_retains_success_and_failure_without_mkdtemp(
+    monkeypatch, tmp_path, fail
+):
+    root = tmp_path / "persistent"
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("explicit workspaces must not use a temporary directory")
+
+    def run(spec, run_dir, run_number, *, mode, workspace, scan_depth, retain_workspace):
+        assert retain_workspace is True
+        state = workspace / "scan-input" / ".zscope_snapshots"
+        state.mkdir(parents=True)
+        (state / "state.db").write_bytes(b"retained")
+        if fail:
+            raise RuntimeError("simulated interruption")
+        return {"workspace": str(workspace)}
+
+    monkeypatch.setattr(benchmark_runner.tempfile, "mkdtemp", forbidden)
+    monkeypatch.setattr(benchmark_runner, "_run_trial_in_workspace", run)
+    monkeypatch.setattr(benchmark_runner, "_render_trial_metrics", lambda *args, **kwargs: None)
+    if fail:
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            benchmark_runner._run_trial(
+                SPECS["c_cpp"], artifact, 1, mode="trial", work_directory=root
+            )
+    else:
+        benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="trial", work_directory=root)
+    assert (root / "run-01/scan-input/.zscope_snapshots/state.db").read_bytes() == b"retained"
+    assert json.loads((artifact / "workspace.json").read_text())["temporary"] is False
+    with pytest.raises(FileExistsError):
+        benchmark_runner._run_trial(SPECS["c_cpp"], artifact, 1, mode="trial", work_directory=root)
+
+
+def test_explicit_work_directory_must_be_new_absolute_and_native(monkeypatch, tmp_path):
+    with pytest.raises(BenchmarkError, match="absolute"):
+        run_benchmark("c_cpp", "trial", dry_run=True, work_directory=Path("relative"))
+    with pytest.raises(BenchmarkError, match="already exist"):
+        run_benchmark("c_cpp", "trial", dry_run=True, work_directory=tmp_path)
+    monkeypatch.setattr(benchmark_runner, "_is_wsl", lambda: True)
+    monkeypatch.setattr(benchmark_runner, "_is_windows_mount_in_wsl", lambda _: True)
+    with pytest.raises(BenchmarkError, match="WSL native"):
+        run_benchmark("c_cpp", "trial", dry_run=True, work_directory=tmp_path / "new")
+
+
+def test_windows_forwarding_keeps_explicit_linux_workspace(monkeypatch):
+    monkeypatch.setattr(benchmark_cli.subprocess, "check_output", lambda *a, **kw: "/mnt/c/repo\n")
+    argv = benchmark_cli._wsl_argv(["run", "--work-directory", "/home/zeal/benchmark-runs/cold-01"])
+    assert "/home/zeal/benchmark-runs/cold-01" in argv[-1]
 
 
 def test_score_exposes_confirmed_and_with_review_views(monkeypatch, tmp_path: Path) -> None:

@@ -1141,7 +1141,9 @@ class EvidenceCompletionQueue:
         allocations = [
             event
             for event in allocations
-            if EvidenceCompletionQueue._allocation_call_names(str(event.get("expression") or ""))
+            if EvidenceCompletionQueue._allocation_call_names(
+                str(event.get("expression") or ""), issue, validation_evidence
+            )
             and re.search(r"(?:=|\breturn\b)", str(event.get("expression") or ""))
         ]
         if not allocations:
@@ -1230,15 +1232,17 @@ class EvidenceCompletionQueue:
             return None
         event = arithmetic[0]
         expression = str(event.get("expression") or "")
-        allocation_names = EvidenceCompletionQueue._allocation_call_names(expression)
+        allocation_names = EvidenceCompletionQueue._allocation_call_names(
+            expression, issue, validation_evidence
+        )
         if not allocation_names or not re.search(r"(?:\*|\+)", expression):
             return None
         # A generic ``size + constant`` or ``count * sizeof`` in a helper is
         # not by itself a proof that a violating value is externally
         # reachable.  Field-derived request data and calloc count arithmetic
         # carry the stronger source/range contract implemented by v1.2.
-        if "->" not in expression and not any(
-            "calloc" in name.lower() for name in allocation_names
+        if "->" not in expression and not EvidenceCompletionQueue._allocation_call_names(
+            expression, issue, validation_evidence, roles={"calloc"}
         ):
             return None
         guards = [
@@ -1447,7 +1451,7 @@ class EvidenceCompletionQueue:
         if not (0 < lock_line < callback_line):
             return None
         lock_match = re.search(
-            r"\b(?:LOCK|pthread_mutex_lock)\s*\(\s*&?([^)]+)\)",
+            r"\b(?:pthread_mutex_lock)\s*\(\s*&?([^)]+)\)",
             str(lock_event.get("expression") or ""),
         )
         callback_match = re.search(
@@ -1514,7 +1518,7 @@ class EvidenceCompletionQueue:
                 continue
             statement = numbered.group(2)
             unlock = re.search(
-                r"\b(?:UNLOCK|pthread_mutex_unlock)\s*\(\s*&?([^)]+)\)",
+                r"\b(?:pthread_mutex_unlock)\s*\(\s*&?([^)]+)\)",
                 statement,
             )
             if (
@@ -1651,15 +1655,32 @@ class EvidenceCompletionQueue:
         if not code or len(code) > 64 * 1024:
             return None
 
+        from ...semantics.defaults import default_local_pattern_semantics
+
+        semantics = default_local_pattern_semantics()
+        evidence_pack = _as_mapping(issue.get("evidence_pack"))
+        semantics.merge_overlay(
+            dict(
+                (validation_evidence or {}).get("semantic_contracts")
+                or issue.get("semantic_contracts")
+                or evidence_pack.get("semantic_contracts")
+                or {}
+            )
+        )
+        allocators = {
+            c.symbol.name
+            for c in semantics.contracts.contracts
+            if c.role in {"allocator", "calloc", "reallocator"}
+            and c.effects_trusted
+            and c.carrier.kind == "return"
+        }
+        if not allocators:
+            return None
         allocation = re.compile(
             r"\b([A-Za-z_]\w*)\s*=\s*(?:\(\s*[\w\s\*]+?\s*\)\s*)?"
-            r"[A-Za-z_]\w*(?:malloc|calloc|realloc|strdup)\s*\(",
-            re.IGNORECASE,
-        )
-        release_call = re.compile(
-            r"\b(?:free|safe_free|safe_delete|destroy|release|close|unlink)\s*"
-            r"\(\s*&?\s*([A-Za-z_][\w.>\-]*)",
-            re.IGNORECASE,
+            + r"(?:"
+            + "|".join(re.escape(name) for name in sorted(allocators))
+            + r")\s*\("
         )
 
         allocations: list[tuple[str, int]] = []
@@ -1678,14 +1699,15 @@ class EvidenceCompletionQueue:
         def var_released_or_transferred(variable: str, code_text: str) -> bool:
             pattern = rf"\b{re.escape(variable)}\b"
             for line in code_text.splitlines():
-                release_match = release_call.search(line)
-                if release_match and re.search(pattern, release_match.group(1)):
+                # A call receiving the object may consume it. Without complete
+                # callee/alias evidence this negative-existential provider must
+                # abstain, regardless of the function's name or model verdict.
+                if re.search(rf"\b(?!if\b|while\b|switch\b)[A-Za-z_]\w*\s*\([^;]*{pattern}", line):
                     return True
                 if re.search(rf"\breturn\b[^;\n]*{pattern}", line, re.IGNORECASE):
                     return True
                 if re.search(
-                    rf"(?:\*\s*[A-Za-z_]\w*|g_[A-Za-z_]\w*|[A-Za-z_]\w*(?:->|\.))[^\n;=]*="
-                    rf"[^;\n]*{pattern}",
+                    rf"[A-Za-z_]\w*[^\n;=]*=" rf"[^;\n]*{pattern}",
                     line,
                 ):
                     return True
@@ -1824,25 +1846,50 @@ class EvidenceCompletionQueue:
             rf"|\b{re.escape(resource)}\b\s*\.\s*[A-Za-z_]\w*\s*=(?!=)"
             rf"|\b{re.escape(resource)}\b\s*->\s*[A-Za-z_]\w*\s*=(?!=)"
         )
-        held: list[str] = []
+        from ...semantics.defaults import default_local_pattern_semantics
+
+        semantics = default_local_pattern_semantics()
+        semantics.merge_overlay(
+            dict(
+                (validation_evidence or {}).get("semantic_contracts")
+                or issue.get("semantic_contracts")
+                or _as_mapping(issue.get("evidence_pack")).get("semantic_contracts")
+                or {}
+            )
+        )
+        registry = semantics.contracts
+        if re.search(r"\b(?:if|else|for|while|switch|goto)\b", code):
+            return None
+        held: list[tuple[str, str]] = []
         write_locks: list[str] = []
         write_lines: list[int] = []
         saw_unlock = False
         for line_number, text in enumerate(code.splitlines(), start=1):
-            acquire = EvidenceCompletionQueue._lock_argument(text, acquire=True)
-            if acquire:
-                held.append(acquire)
-            release = EvidenceCompletionQueue._lock_argument(text, acquire=False)
-            if release:
-                saw_unlock = True
-                for index in range(len(held) - 1, -1, -1):
-                    if held[index] == release:
-                        held.pop(index)
-                        break
+            for name in re.findall(r"\b([A-Za-z_]\w*)\s*\(", text):
+                args = registry.call_arguments(name, text)
+                if args is None:
+                    continue
+                for event in registry.match_call(name, "lock", args):
+                    if event.applicability != "applies":
+                        return None
+                    held.append((name, event.object))
+                for event in registry.match_call(name, "unlock", args):
+                    if event.applicability != "applies":
+                        return None
+                    for index in range(len(held) - 1, -1, -1):
+                        if (
+                            registry.release_status(
+                                held[index][0], name, args, acquired_object=held[index][1]
+                            )
+                            == "applies"
+                        ):
+                            held.pop(index)
+                            saw_unlock = True
+                            break
             if write_pattern.search(text):
                 if not held:
                     return None
-                write_locks.append(held[-1])
+                write_locks.append(held[-1][1])
                 write_lines.append(line_number)
         if not write_lines or len(set(write_locks)) != 1:
             return None
@@ -1942,11 +1989,35 @@ class EvidenceCompletionQueue:
         return has_upper and terminates
 
     @staticmethod
-    def _allocation_call_names(expression: str) -> list[str]:
+    def _allocation_call_names(
+        expression: str,
+        issue: Optional[Mapping[str, Any]] = None,
+        evidence: Optional[Mapping[str, Any]] = None,
+        *,
+        roles: Optional[set[str]] = None,
+    ) -> list[str]:
+        from ...semantics.defaults import default_local_pattern_semantics
+
+        semantics = default_local_pattern_semantics()
+        pack = (issue or {}).get("evidence_pack") or {}
+        overlay = (
+            (evidence or {}).get("semantic_contracts")
+            or (issue or {}).get("semantic_contracts")
+            or pack.get("semantic_contracts")
+            or {}
+        )
+        semantics.merge_overlay(dict(overlay))
+        names = {
+            c.symbol.name
+            for c in semantics.contracts.contracts
+            if c.role in (roles or {"allocator", "calloc", "reallocator"})
+            and c.source in {"user", "user_config", "builtin_defaults"}
+            and not c.conditions
+        }
         return [
             name
             for name in re.findall(r"\b([A-Za-z_]\w*)\s*\(", str(expression or ""))
-            if any(token in name.lower() for token in ("malloc", "calloc", "realloc", "alloc"))
+            if name in names
         ]
 
     @staticmethod
@@ -2334,7 +2405,7 @@ class EvidenceCompletionQueue:
                         index
                         for index in range(acquire_index + 1, exit_index)
                         if re.search(
-                            rf"\b(?:SAFE_FREE|free)\s*\(\s*{escaped}\s*\)\s*;",
+                            rf"\b(?:free)\s*\(\s*{escaped}\s*\)\s*;",
                             code_lines[index],
                         )
                         and brace_depths[index] == brace_depths[exit_index]
@@ -2383,7 +2454,7 @@ class EvidenceCompletionQueue:
         if not code or len(code) > 64 * 1024:
             return None
         sink = str(issue.get("sink") or "")
-        parent_match = re.search(r"\b(?:SAFE_FREE|free)\s*\(\s*([A-Za-z_]\w*)\s*\)", sink)
+        parent_match = re.search(r"\b(?:free)\s*\(\s*([A-Za-z_]\w*)\s*\)", sink)
         if parent_match is None:
             return None
         parent = parent_match.group(1)
@@ -2407,7 +2478,7 @@ class EvidenceCompletionQueue:
         escaped_member = re.escape(member).replace(r"\->", r"\s*->\s*").replace(r"\.", r"\s*\.\s*")
         branch = re.search(
             rf"if\s*\(\s*!\s*{escaped_member}\s*\)\s*\{{?"
-            rf"(?P<body>.{{0,600}}?\b(?:SAFE_FREE|free)\s*\(\s*{re.escape(parent)}\s*\)\s*;)"
+            rf"(?P<body>.{{0,600}}?\b(?:free)\s*\(\s*{re.escape(parent)}\s*\)\s*;)"
             r"(?P<tail>.{0,160}?\breturn\b)",
             code[assignment_offset:],
             re.DOTALL,
@@ -2620,12 +2691,12 @@ class EvidenceCompletionQueue:
                 if (
                     owner
                     and re.search(
-                        rf"\b(?:safe_free|free|release|destroy)\s*\(\s*{re.escape(owner)}\s*\)",
+                        rf"\b(?:free)\s*\(\s*{re.escape(owner)}\s*\)",
                         code,
                         re.IGNORECASE,
                     )
                     and not re.search(
-                        rf"\b(?:safe_free|free|release|destroy)\s*\(\s*{re.escape(member.replace('.', '->'))}\s*\)",
+                        rf"\b(?:free)\s*\(\s*{re.escape(member.replace('.', '->'))}\s*\)",
                         code,
                         re.IGNORECASE,
                     )
@@ -2726,7 +2797,9 @@ class EvidenceCompletionQueue:
             "subject_identity": subject_identity,
             "code_hash": EvidenceCompletionQueue._evidence_code_hash(issue, ast_cfg),
             "facts": list(facts),
-            "completeness": "complete",
+            "completeness": (
+                "partial" if ast_cfg.get("unresolved_interface_effects") else "complete"
+            ),
             "scope": scope,
             "summary": summary,
         }
@@ -2798,9 +2871,9 @@ class EvidenceCompletionQueue:
     @staticmethod
     def _lock_argument(text: str, *, acquire: bool) -> str:
         names = (
-            r"(?:LOCK|pthread_mutex_lock|pthread_rwlock_[rw]dlock)"
+            r"(?:pthread_mutex_lock|pthread_rwlock_(?:rdlock|wrlock))"
             if acquire
-            else r"(?:UNLOCK|pthread_mutex_unlock|pthread_rwlock_unlock)"
+            else r"(?:pthread_mutex_unlock|pthread_rwlock_unlock)"
         )
         match = re.search(rf"\b{names}\s*\(\s*&?([^,)]+)", text)
         return EvidenceCompletionQueue._normalize_symbol(match.group(1)) if match else ""
@@ -2810,13 +2883,8 @@ class EvidenceCompletionQueue:
         issue: Mapping[str, Any],
         validation_evidence: Optional[Mapping[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Reject simple lock-protocol false positives from complete source CFG.
-
-        The provider deliberately handles only lexical lock/unlock pairs with
-        no ``goto``/``switch``/``else`` ambiguity between the matching pair.
-        More complicated interprocedural or branch-dependent protocols remain
-        reviewable until the project fact pass supplies a formal contract.
-        """
+        """Prove only a straight-line, trusted, explicitly paired protocol."""
+        from ...semantics.defaults import default_local_pattern_semantics
 
         rule = str(issue.get("rule") or "").lower()
         if rule not in {
@@ -2824,100 +2892,83 @@ class EvidenceCompletionQueue:
             "clang_cfg_unlock_without_matching_lock",
         }:
             return None
-        _ast_cfg, path, _events = EvidenceCompletionQueue._ast_pack(issue)
+        _, path, _ = EvidenceCompletionQueue._ast_pack(issue)
         if path.get("complete_in_function") is not True:
             return None
         lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
-        if not lines:
-            return None
         code = "\n".join(lines)
-        if re.search(r"\b(?:goto|switch|case)\b", code):
+        if re.search(r"\b(?:if|else|goto|switch|case|for|while)\b", code):
             return None
-
-        if rule == "clang_cfg_unlock_without_matching_lock":
-            for index, text in enumerate(lines):
-                lock = EvidenceCompletionQueue._lock_argument(text, acquire=False)
-                if not lock:
-                    continue
-                # A matching lexical acquire must appear after the previous
-                # return and before the reported unlock, without an ``else``
-                # branch that could bypass it.
-                previous_return = next(
-                    (
-                        prior + 1
-                        for prior in range(index - 1, -1, -1)
-                        if re.search(r"\breturn\b", lines[prior])
-                    ),
-                    0,
-                )
-                segment = lines[previous_return:index]
-                if any(re.search(r"\belse\b", item) for item in segment):
-                    continue
-                acquire_index = next(
-                    (
-                        prior
-                        for prior in range(index - 1, -1, -1)
-                        if EvidenceCompletionQueue._lock_argument(lines[prior], acquire=True)
-                        == lock
-                    ),
-                    -1,
-                )
-                if acquire_index < 0:
-                    continue
-                if any("return" in item for item in lines[acquire_index + 1 : index]):
-                    continue
-                return EvidenceCompletionQueue._proof_from_code(
-                    issue,
-                    outcome="reject",
-                    proof_kind="matching_lock_dominates_unlock",
-                    producer_engine="clang_ast_cfg_lock_protocol",
-                    code=code,
-                    line_numbers=[acquire_index + 1, index + 1],
-                    facts=["matching_lock_dominates_unlock"],
-                    summary="在同一完整路径上，匹配的本地加锁先于所报告的解锁",
-                    scope="完整的词法锁协议片段",
-                    subject_identity=lock,
-                )
-            return None
-
-        # For a return-with-lock-held candidate, inspect every return in a
-        # branch-free local body.  Each acquire must have a matching release
-        # before its subsequent return.  This intentionally refuses to prove
-        # safety in a body containing ``else`` because a linear scan is then
-        # insufficient to establish all paths.
-        if re.search(r"\belse\b", code):
-            return None
-        held: list[tuple[str, int]] = []
-        return_lines: list[int] = []
-        for index, text in enumerate(lines):
-            acquired = EvidenceCompletionQueue._lock_argument(text, acquire=True)
-            if acquired:
-                held.append((acquired, index + 1))
-            released = EvidenceCompletionQueue._lock_argument(text, acquire=False)
-            if released:
-                match_index = next(
-                    (item for item in range(len(held) - 1, -1, -1) if held[item][0] == released),
-                    -1,
-                )
-                if match_index >= 0:
-                    held.pop(match_index)
-            if re.search(r"\breturn\b", text):
-                return_lines.append(index + 1)
+        semantics = default_local_pattern_semantics()
+        pack = issue.get("evidence_pack") or {}
+        overlay = (
+            (validation_evidence or {}).get("semantic_contracts")
+            or issue.get("semantic_contracts")
+            or pack.get("semantic_contracts")
+            or {}
+        )
+        semantics.merge_overlay(dict(overlay))
+        registry = semantics.contracts
+        for contract in registry.contracts:
+            if contract.role in {"lock", "unlock"} and re.search(
+                rf"\b{re.escape(contract.symbol.name)}\s*\(", code
+            ):
+                if contract.source.startswith("inferred") or contract.conditions:
+                    return None
+        names = set(semantics.lock_apis) | set(semantics.unlock_apis)
+        pattern = re.compile(
+            r"\b(?P<api>"
+            + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+            + r")\s*\((?P<args>[^)]*)\)"
+        )
+        held: list[tuple[str, str]] = []
+        seen_acquire = False
+        returns = []
+        for number, line in enumerate(lines, 1):
+            for match in pattern.finditer(line):
+                api = match["api"]
+                role = "lock" if api in semantics.lock_apis else "unlock"
+                if registry.effect_status(api, role, line) != "applies":
+                    return None
+                obj = registry.resolve_object(api, role, match["args"].split(","))
+                if not obj:
+                    return None
+                if role == "lock":
+                    held.append((api, obj))
+                    seen_acquire = True
+                else:
+                    index = next(
+                        (
+                            i
+                            for i in range(len(held) - 1, -1, -1)
+                            if held[i][1] == obj
+                            and registry.release_in_text(held[i][0], api, line, obj) == "applies"
+                        ),
+                        None,
+                    )
+                    if index is None:
+                        return None
+                    held.pop(index)
+            if re.search(r"\breturn\b", line):
+                returns.append(number)
                 if held:
                     return None
-        if return_lines:
-            return EvidenceCompletionQueue._proof_from_code(
-                issue,
-                outcome="reject",
-                proof_kind="balanced_lock_return_paths",
-                producer_engine="clang_ast_cfg_lock_protocol",
-                code=code,
-                line_numbers=return_lines,
-                facts=["all_return_paths_unlocked"],
-                summary="完整本地锁协议中的每个可达 return 之前都存在匹配的解锁",
-                scope="完整的无分支本地锁协议",
-            )
-        return None
+        if held or not seen_acquire:
+            return None
+        if not returns:
+            # A straight-line void function exits at its closing brace.
+            returns = [len(lines)]
+        return EvidenceCompletionQueue._proof_from_code(
+            issue,
+            outcome="reject",
+            proof_kind="balanced_lock_return_paths",
+            producer_engine="clang_ast_cfg_lock_protocol",
+            code=code,
+            line_numbers=returns,
+            facts=["all_return_paths_unlocked"],
+            summary="Every return follows an explicit compatible release of the same lock.",
+            scope="complete straight-line lock protocol",
+        )
 
     @staticmethod
     def _allocation_copy_capacity_proof(
@@ -2942,7 +2993,7 @@ class EvidenceCompletionQueue:
         for index, text in enumerate(lines, start=1):
             match = re.search(
                 r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^;=]+\)\s*)?"
-                r"(?:[A-Za-z_]\w*(?:alloc|malloc|calloc)[A-Za-z_0-9]*)\s*\(\s*(?P<size>[^,)]+)",
+                r"(?:malloc|calloc)\s*\(\s*(?P<size>[^,)]+)",
                 text,
                 re.IGNORECASE,
             )
@@ -3012,9 +3063,7 @@ class EvidenceCompletionQueue:
         code = "\n".join(lines)
         source = str(issue.get("source") or "")
         member_match = re.search(r"\b([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)", source)
-        parent_match = re.search(
-            r"SAFE_FREE\s*\(\s*([A-Za-z_]\w*)\s*\)", str(issue.get("sink") or "")
-        )
+        parent_match = re.search(r"free\s*\(\s*([A-Za-z_]\w*)\s*\)", str(issue.get("sink") or ""))
         if not member_match or not parent_match or member_match.group(1) != parent_match.group(1):
             return None
         parent, member = member_match.groups()
@@ -3023,7 +3072,7 @@ class EvidenceCompletionQueue:
             if not pattern.search(text):
                 continue
             window = "\n".join(lines[index - 1 : index + 5])
-            if not re.search(rf"SAFE_FREE\s*\(\s*{re.escape(parent)}\s*\)", window):
+            if not re.search(rf"free\s*\(\s*{re.escape(parent)}\s*\)", window):
                 continue
             if not re.search(r"\breturn\b", window):
                 continue
@@ -3193,7 +3242,7 @@ class EvidenceCompletionQueue:
         if not subject:
             return None
         if re.search(
-            rf"\b(?:SAFE_FREE|free|release|destroy)\s*\(\s*{re.escape(subject)}\b",
+            rf"\b(?:free)\s*\(\s*{re.escape(subject)}\b",
             remainder,
             re.IGNORECASE,
         ):
@@ -3297,7 +3346,7 @@ class EvidenceCompletionQueue:
                 owner = EvidenceCompletionQueue._normalize_symbol(assignment.group("owner"))
                 initialized.setdefault(owner, set()).add(assignment.group("field"))
             cleanup = re.search(
-                r"\b(?:SAFE_FREE|free|close|release)\s*\(\s*(?P<owner>[A-Za-z_]\w*(?:(?:\s*->\s*|\s*\.\s*)[A-Za-z_]\w+)*?)\s*(?:->|\.)\s*(?P<field>[A-Za-z_]\w*)",
+                r"\b(?:free|close|release)\s*\(\s*(?P<owner>[A-Za-z_]\w*(?:(?:\s*->\s*|\s*\.\s*)[A-Za-z_]\w+)*?)\s*(?:->|\.)\s*(?P<field>[A-Za-z_]\w*)",
                 text,
                 re.IGNORECASE,
             )
@@ -3313,7 +3362,7 @@ class EvidenceCompletionQueue:
                     index
                     for index, text in enumerate(lines, start=1)
                     if re.search(
-                        rf"\b(?:SAFE_FREE|free|close|release|reset|destroy)\s*\(\s*"
+                        rf"\b(?:free|close)\s*\(\s*"
                         rf"(?:{re.escape(owner.replace('.', '->'))}|{re.escape(owner)})"
                         rf"(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)?",
                         text,
@@ -3425,9 +3474,8 @@ class EvidenceCompletionQueue:
 
         A descriptor is not leaked on the branch where acquisition explicitly
         failed.  Likewise, returning the descriptor transfers ownership to the
-        caller.  Global storage is treated as a durable ownership transfer only
-        for the conventional, explicit ``g_`` global form; arbitrary member
-        writes remain reviewable because their lifetime is not proven here.
+        caller. A global-looking name or a member write does not establish a
+        durable owner; those cases require an explicit ownership proof.
         """
 
         if str(issue.get("rule") or "").lower() != "clang_cfg_fd_open_return_without_close":
@@ -3449,18 +3497,6 @@ class EvidenceCompletionQueue:
             if not fd or open_line <= 0:
                 continue
             lhs = expression.split("=", 1)[0].strip() if "=" in expression else ""
-            if re.match(r"^g_[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)+$", lhs):
-                return EvidenceCompletionQueue._proof_from_ast(
-                    issue,
-                    outcome="reject",
-                    proof_kind="durable_global_owner_transfer",
-                    producer_engine="clang_ast_cfg_fd_ownership",
-                    events=[opened],
-                    facts=["fd_stored_in_global_owner", "ownership_transfer_complete"],
-                    summary="描述符被赋给显式的全局所有者",
-                    scope="描述符所有权转移",
-                    subject_identity=lhs,
-                )
             for exited in exits:
                 exit_line = int(exited.get("line") or 0)
                 return_expression = str(exited.get("expression") or "")
@@ -3696,18 +3732,6 @@ class EvidenceCompletionQueue:
         for acquire in acquires:
             expression = str(acquire.get("expression") or "")
             lhs = expression.split("=", 1)[0].strip() if "=" in expression else ""
-            if lhs.startswith("g_"):
-                return EvidenceCompletionQueue._proof_from_ast(
-                    issue,
-                    outcome="reject",
-                    proof_kind="durable_global_owner_transfer",
-                    producer_engine="clang_ast_cfg_ownership",
-                    events=[acquire],
-                    facts=["resource_stored_in_global_owner", "ownership_transfer_complete"],
-                    summary="获取的资源被存入显式全局所有权",
-                    scope="资源所有权转移",
-                    subject_identity=lhs,
-                )
             if lhs.startswith("*"):
                 return EvidenceCompletionQueue._proof_from_ast(
                     issue,
@@ -3857,13 +3881,28 @@ class EvidenceCompletionQueue:
             return ""
         return re.sub(r"\s+", "", max(candidates, key=len))
 
-    _FREE_CALL_RE = re.compile(r"\b(?:SAFE_FREE|SAFE_free|free)\s*\(\s*([^)]*)\)")
-    _SINK_IS_FREE_RE = re.compile(r"^\s*(?:SAFE_FREE|SAFE_free|free)\s*\(")
+    _FREE_CALL_RE = re.compile(r"\b(?:free)\s*\(\s*([^)]*)\)")
+    _SINK_IS_FREE_RE = re.compile(r"^\s*(?:free)\s*\(")
     _IDENT_RE = re.compile(r"\b[A-Za-z_]\w*\b")
     _SINK_RESERVED = {
-        "if", "for", "while", "switch", "return", "sizeof", "else", "do",
-        "case", "break", "continue", "NULL", "free", "SAFE_FREE", "const",
-        "unsigned", "signed", "struct", "size_t",
+        "if",
+        "for",
+        "while",
+        "switch",
+        "return",
+        "sizeof",
+        "else",
+        "do",
+        "case",
+        "break",
+        "continue",
+        "NULL",
+        "free",
+        "const",
+        "unsigned",
+        "signed",
+        "struct",
+        "size_t",
     }
 
     @staticmethod
@@ -3872,7 +3911,7 @@ class EvidenceCompletionQueue:
 
         Deterministic and purely textual: the obligation sink names an object
         (call arguments, or the assigned value of a store); if the same
-        function body contains a ``free``/``SAFE_FREE`` of that identifier,
+        function body contains a ``free``/``free`` of that identifier,
         the acquire/release obligation is self-contradicted.  Same-name means
         same variable intraprocedurally, so this cannot cross functions.
         """
@@ -3990,7 +4029,6 @@ class EvidenceCompletionQueue:
             "clang_cfg_unbounded_vla_or_stack_array": {"runtime_stack_array"},
             "clang_cfg_role_specific_release_argument_mismatch": {"role_check", "role_release"},
             "clang_cfg_shell_command_concat_env": {"command_concat", "environment_source"},
-            "clang_cfg_nonliteral_format_string": {"format_sink"},
             "clang_cfg_partial_aggregate_sent_with_sizeof": {"aggregate_decl", "aggregate_send"},
         }
         rule = str(issue.get("rule") or "").lower()
@@ -4147,14 +4185,14 @@ class EvidenceCompletionQueue:
         assignment_locks: list[str] = []
         fact_ids: list[str] = []
         for offset, line in enumerate(code.splitlines(), start=1):
-            for match in re.finditer(r"\b(?:LOCK|pthread_mutex_lock)\s*\(\s*&?([^,)]+)", line):
+            for match in re.finditer(r"\b(?:pthread_mutex_lock)\s*\(\s*&?([^,)]+)", line):
                 held.append(match.group(1).strip())
             if resource in line and re.search(rf"\b{re.escape(resource)}\s*=", line):
                 if not held:
                     return None
                 assignment_locks.append(held[-1])
                 fact_ids.append(f"local_cfg:{offset}")
-            for match in re.finditer(r"\b(?:UNLOCK|pthread_mutex_unlock)\s*\(\s*&?([^,)]+)", line):
+            for match in re.finditer(r"\b(?:pthread_mutex_unlock)\s*\(\s*&?([^,)]+)", line):
                 lock = match.group(1).strip()
                 for index in range(len(held) - 1, -1, -1):
                     if held[index] == lock:
@@ -4164,7 +4202,7 @@ class EvidenceCompletionQueue:
             return None
         lock_name = assignment_locks[0]
         if not any(
-            lock_name in line and re.search(r"\b(?:UNLOCK|pthread_mutex_unlock)\b", line)
+            lock_name in line and re.search(r"\b(?:pthread_mutex_unlock)\b", line)
             for line in code.splitlines()
         ):
             return None

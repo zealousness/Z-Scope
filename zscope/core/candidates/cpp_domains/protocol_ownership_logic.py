@@ -184,22 +184,23 @@ class RegexProtocolOwnershipLogicRules:
                 )
                 length_field_defs.pop(len_var, None)
 
-            fmt = re.search(
-                r"\b(?:printf|fprintf|syslog)\s*\(\s*(?P<arg>[A-Za-z_]\w*)\s*\)", line.text
-            )
-            if fmt:
+            from ....semantics.call_operands import call_operands, is_literal_string
+
+            for fmt in call_operands(self.semantics.contracts, line.text, "format_sink"):
+                if is_literal_string(fmt.expression):
+                    continue
                 emit(
                     defect_class="format_string",
                     rule="nonliteral_format_string",
                     line=line,
-                    description=f"`{fmt.group('arg')}` 被用作 printf 风格的格式字符串。",
+                    description=f"`{fmt.expression}` 被用作 printf 风格的格式字符串。",
                     root_cause="攻击者可控的百分号序列可能被解释为格式指令。",
-                    suggested_fix=f"使用如 `printf(\"%s\", {fmt.group('arg')})` 或等效的字面量格式。",
-                    source=fmt.group("arg"),
+                    suggested_fix="使用字面量格式，并通过数据参数传入待显示的文本。",
+                    source=fmt.expression,
                     sink=line.text.strip(),
                     confidence=0.86,
                     impact_level="high",
-                    positive=[f"line {line.number}: non-literal printf-style format"],
+                    positive=[f"line {line.number}: contract format argument {fmt.argument_index}"],
                 )
 
             if self._lock_re.search(line.text):
@@ -326,7 +327,7 @@ class RegexProtocolOwnershipLogicRules:
             if not re.search(r"\bwhile\s*\(", line.text):
                 continue
             window = "\n".join(item.text for item in lines[line.index : line.index + 14])
-            if not re.search(r"\b(?:recv|read|_net_recv_data)\s*\(", window):
+            if not re.search(self._semantic_api_pattern(r"\b(?:recv|read)\s*\("), window):
                 continue
             if re.search(r"\b(?:sleep|usleep|nanosleep|poll|select|break)\b", window):
                 continue
@@ -356,9 +357,9 @@ class RegexProtocolOwnershipLogicRules:
                 line.text,
             ):
                 later = "\n".join(item.text for item in lines[idx + 1 : idx + 10])
-                if re.search(
-                    r"\b(?:memcpy|memmove|_net_send_data|_net_recv_data)\s*\(", later
-                ) and re.search(r"\b(?:packet|wire|blob|frame|payload)_?len\b", text):
+                if re.search(r"\b(?:memcpy|memmove)\s*\(", later) and re.search(
+                    r"\b(?:packet|wire|blob|frame|payload)_?len\b", text
+                ):
                     if not re.search(
                         r"(?:packet|wire|blob|frame|payload)_?len\s*[-+*/<>]=?", later
                     ):
@@ -502,7 +503,7 @@ class RegexProtocolOwnershipLogicRules:
             break
 
         if (
-            "LOG_ERROR" in text
+            re.search(rf"\b(?:{self._names_pattern(self._format_sink_names)})\s*\(", text)
             and re.search(r"\breturn\s+(?:ret|rc|status)\s*;", text)
             and re.search(r"\breturn\s+0\s*;", text)
         ):
@@ -563,19 +564,19 @@ class RegexProtocolOwnershipLogicRules:
                 ],
             )
 
-        unchecked_insert = self._first_line_matching(
-            lines,
-            re.compile(r"\b[A-Za-z_]\w*(?:insert|Insert)[A-Za-z_0-9]*\s*\([^;]+\)\s*;"),
+        unchecked_insert = next(
+            (line for line in lines if self._bound_api_calls(line.text, {"ownership_transfer"})),
+            None,
         )
-        if unchecked_insert and re.search(
-            r"\b(?:node|entry|item|record)\b", unchecked_insert.text, re.I
-        ):
+        if unchecked_insert:
             prior_alloc = any(
                 self._alloc_re.search(item.text) or self._calloc_re.search(item.text)
                 for item in lines[max(0, unchecked_insert.index - 8) : unchecked_insert.index]
             )
-            if prior_alloc and not re.search(
-                r"\b(?:if|rc|ret|status)\b.*insert", unchecked_insert.text, re.I
+            if (
+                prior_alloc
+                and "=" not in unchecked_insert.text.split("(", 1)[0]
+                and not re.search(r"\b(?:if|while|for)\s*\(", unchecked_insert.text)
             ):
                 emit(
                     defect_class="memory_leak",
@@ -633,8 +634,10 @@ class RegexProtocolOwnershipLogicRules:
 
         for idx, line in enumerate(lines):
             alloc = re.search(
-                r"\b(?P<owner>[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)\s*=\s*(?:\([^)]*\)\s*)?"
-                r"(?P<alloc>[A-Za-z_]\w*(?:alloc|dup|create|new)[A-Za-z_0-9]*)\s*\(",
+                self._semantic_api_pattern(
+                    r"\b(?P<owner>[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)\s*=\s*(?:\([^)]*\)\s*)?"
+                    r"(?P<alloc>(?:malloc|calloc|realloc|strdup))\s*\("
+                ),
                 line.text,
                 re.IGNORECASE,
             )
@@ -642,7 +645,9 @@ class RegexProtocolOwnershipLogicRules:
                 continue
             owner = alloc.group("owner")
             later_lines = lines[idx + 1 : idx + 18]
-            release_re = re.compile(rf"\b(?:SAFE_FREE|free)\s*\(\s*{re.escape(owner)}\s*\)")
+            release_re = re.compile(
+                self._semantic_api_pattern(rf"\b(?:free)\s*\(\s*{re.escape(owner)}\s*\)")
+            )
             error_return = next(
                 (
                     item
@@ -676,7 +681,7 @@ class RegexProtocolOwnershipLogicRules:
                 base = owner.split("->", 1)[0]
                 later = "\n".join(item.text for item in later_lines)
                 if re.search(
-                    rf"\b(?:SAFE_FREE|free)\s*\(\s*{re.escape(base)}\s*\)", later
+                    self._semantic_api_pattern(rf"\b(?:free)\s*\(\s*{re.escape(base)}\s*\)"), later
                 ) and not release_re.search(later):
                     emit(
                         defect_class="memory_leak",
@@ -942,7 +947,9 @@ class GraphProtocolOwnershipLogicRules:
             reader_line
             and "__atomic_fetch_add" in text
             and "__atomic_fetch_sub" in text
-            and not re.search(r"\b(?:pthread_mutex_lock|LOCK|spin_lock)\s*\(", text)
+            and not re.search(
+                self._semantic_api_pattern(r"\b(?:pthread_mutex_lock|spin_lock)\s*\("), text
+            )
         ):
             issues.append(
                 self._issue(
@@ -1145,7 +1152,7 @@ class GraphProtocolOwnershipLogicRules:
             if callee_view and re.match(r"\s*(?:static\s+)?void\b", callee_view.signature):
                 continue
             if re.search(
-                rf"\b(?:SAFE_FREE|free|destroy|release|cleanup|delete)[A-Za-z_0-9]*\s*\([^;]*\b{re.escape(var)}\b",
+                self._semantic_api_pattern(rf"\b(?:free|delete)\s*\([^;]*\b{re.escape(var)}\b"),
                 text,
                 re.I,
             ):
@@ -1193,13 +1200,14 @@ class GraphProtocolOwnershipLogicRules:
             )
             return
 
-    @staticmethod
-    def _local_allocated_variables(view: FunctionView) -> Dict[str, GraphLine]:
+    def _local_allocated_variables(self, view: FunctionView) -> Dict[str, GraphLine]:
         allocs: Dict[str, GraphLine] = {}
         for line in view.lines:
             match = re.search(
-                r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
-                r"(?:_safe_calloc|_safe_malloc|calloc|malloc|kzalloc|kmalloc|[A-Za-z_]\w*(?:alloc|create|new)[A-Za-z_0-9]*)\s*\(",
+                self._semantic_api_pattern(
+                    r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
+                    r"(?:calloc|malloc|kzalloc|kmalloc)\s*\("
+                ),
                 line.text,
                 re.I,
             )
@@ -1392,7 +1400,11 @@ class ClangProtocolOwnershipLogicRules:
         held_locks: List[ClangCfgLine] = []
         emitted_shared_state: Set[str] = set()
         shared_accesses = SharedAccessIndex(
-            lines, self.program_facts, self._lock_names, self._unlock_names
+            lines,
+            self.program_facts,
+            self._lock_names,
+            self._unlock_names,
+            self.semantics.contracts,
         )
         local_aggregates: Dict[str, Tuple[ClangCfgLine, str]] = {}
         aggregate_field_writes: Dict[str, Set[str]] = {}
@@ -1843,10 +1855,8 @@ class ClangProtocolOwnershipLogicRules:
             prefix,
             re.compile(r"\bg_[A-Za-z_0-9.]*registry[A-Za-z_0-9.]*\.head\s*=\s*node->next\s*;"),
         )
-        unlock_line = self._last_line_matching(
-            prefix, re.compile(r"\bUNLOCK\s*\([^)]*registry[^)]*\)")
-        )
-        lock_line = self._last_line_matching(prefix, re.compile(r"\bLOCK\s*\([^)]*registry[^)]*\)"))
+        unlock_line = self._last_line_matching(prefix, self._unlock_call_re)
+        lock_line = self._last_line_matching(prefix, self._lock_call_re)
         if not (insert_line and unlink_line and unlock_line and lock_line):
             return
         if not (
@@ -2028,11 +2038,10 @@ class ClangProtocolOwnershipLogicRules:
             )
         )
 
-    @staticmethod
-    def _looks_like_owned_member_rhs(rhs: str) -> bool:
+    def _looks_like_owned_member_rhs(self, rhs: str) -> bool:
         return bool(
             re.search(
-                r"\b[A-Za-z_]\w*(?:alloc|calloc|malloc|dup|new|create|clone|open)[A-Za-z_0-9]*\s*\(",
+                rf"\b(?:{self._names_pattern(self._return_acquirers | self._io_acquire_names)})\s*\(",
                 str(rhs or ""),
                 re.IGNORECASE,
             )
@@ -2055,7 +2064,7 @@ class ClangProtocolOwnershipLogicRules:
             if re.search(member_expr, item.text) and re.search(r"\b(?:while|for)\b", item.text):
                 return True
             if re.search(
-                rf"\b(?:free|SAFE_FREE|safe_free|_safe_free)\s*\([^;]*{member_expr}", item.text
+                self._semantic_api_pattern(rf"\b(?:free)\s*\([^;]*{member_expr}"), item.text
             ):
                 return True
         return False
@@ -2071,8 +2080,10 @@ class ClangProtocolOwnershipLogicRules:
                 item
                 for item in reversed(lines[max(0, release_line.index - 40) : release_line.index])
                 if re.search(
-                    rf"\b{re.escape(parent)}\s*=\s*(?:\([^)]*\)\s*)?"
-                    r"[A-Za-z_]\w*(?:alloc|calloc|malloc|new|create)[A-Za-z_0-9]*\s*\(",
+                    self._semantic_api_pattern(
+                        rf"\b{re.escape(parent)}\s*=\s*(?:\([^)]*\)\s*)?"
+                        r"(?:malloc|calloc|realloc|strdup)\s*\("
+                    ),
                     item.text,
                     re.IGNORECASE,
                 )
@@ -2086,15 +2097,30 @@ class ClangProtocolOwnershipLogicRules:
         for member in common_members:
             member_expr = rf"{re.escape(parent)}\s*->\s*{member}"
             if re.search(member_expr, region) and not re.search(
-                rf"\b(?:free|SAFE_FREE|safe_free|_safe_free|destroy|release)[A-Za-z_0-9]*\s*\([^;]*{member_expr}",
+                self._semantic_api_pattern(rf"\b(?:free)\s*\([^;]*{member_expr}"),
                 region,
                 re.IGNORECASE,
             ):
                 return create_line, member
-        if re.search(r"_alloc_node|create_node|new_node", create_line.text, re.IGNORECASE):
-            for member in ("payload", "tag", "value"):
+        api = next(
+            (
+                name
+                for name, _args in self._calls(create_line.text)
+                if self.semantics.contracts.find(name)
+            ),
+            "",
+        )
+        owned_members = {
+            c.carrier.member_path.removeprefix("->").removeprefix(".")
+            for c in self.semantics.contracts.find(api)
+            if c.carrier.kind == "return" and c.carrier.member_path and not c.conditions
+        }
+        if owned_members:
+            for member in sorted(owned_members):
                 if not re.search(
-                    rf"\b(?:free|SAFE_FREE|safe_free|_safe_free|destroy|release)[A-Za-z_0-9]*\s*\([^;]*{re.escape(parent)}\s*->\s*{member}",
+                    self._semantic_api_pattern(
+                        rf"\b(?:free)\s*\([^;]*{re.escape(parent)}\s*->\s*{member}"
+                    ),
                     region,
                     re.IGNORECASE,
                 ):
@@ -2109,11 +2135,7 @@ class ClangProtocolOwnershipLogicRules:
         parent: str,
     ) -> bool:
         effective_name = self._function_name_hint(func_name, lines)
-        if not re.search(
-            r"(?:delete|remove|destroy|free|cleanup|unregister|release)",
-            effective_name,
-            re.IGNORECASE,
-        ):
+        if not self.semantics.contracts.find(effective_name, "deallocator"):
             return False
         declaration = self._parent_declaration_text(lines, release_line, parent)
         if not re.search(
@@ -2447,20 +2469,17 @@ class ClangProtocolOwnershipLogicRules:
             return
         window = lines[line.index : line.index + 16]
         text = "\n".join(item.text for item in window)
-        if not re.search(r"\b(?:recv|read|_net_recv_data)\s*\(", text):
-            return
-        if not re.search(r"\bEAGAIN\b", text) or not re.search(r"\bEINTR\b", text):
+        if not re.search(self._semantic_api_pattern(r"\b(?:recv|read)\s*\("), text):
             return
         if not re.search(r"\bcontinue\s*;", text):
             return
-        if re.search(
-            r"\b(?:timeout|deadline|retry|budget|max_attempt|sleep|usleep|poll|select)\b",
-            text,
-            re.IGNORECASE,
-        ):
+        status = re.search(self._semantic_api_pattern(r"\b(?P<result>[A-Za-z_]\w*)\s*=\s*(?:recv|read)\s*\("), text)
+        if status is None or not re.search(rf"\bif\s*\(\s*{re.escape(status['result'])}\s*(?:<=\s*0|<\s*0|==\s*-1)\s*\)\s*\{{?\s*continue\s*;", text):
+            return
+        if re.search(r"\b(?:sleep|usleep|poll|select)\s*\(", text):
             return
         retry_line = (
-            self._first_line_matching_in(window, re.compile(r"\bEAGAIN\b|\bEINTR\b")) or line
+            self._first_line_matching_in(window, re.compile(r"\bcontinue\s*;")) or line
         )
         self._emit(
             issues,
@@ -2471,8 +2490,8 @@ class ClangProtocolOwnershipLogicRules:
             defect_class="busy_loop",
             rule="clang_cfg_recv_retry_loop_without_timeout_or_budget",
             line=line,
-            description="接收循环在没有超时、重试预算或退避的情况下重试瞬时错误。",
-            root_cause="EAGAIN/EINTR 路径可能永远重复，而外层循环会在没有进展的读取上继续。",
+            description="接收返回非正值的路径直接继续循环，需验证是否存在无进展重试。",
+            root_cause="接收失败或无数据路径可能重复，而循环进度变量尚未更新。",
             suggested_fix="添加重试预算、截止时间、poll/select 等待，或将瞬时失败向上传播给调用方。",
             source=retry_line.text,
             sink=line.text,
@@ -2480,15 +2499,14 @@ class ClangProtocolOwnershipLogicRules:
             impact_level="high",
             positive=[
                 f"line {line.number}: receive loop waits for progress",
-                f"line {retry_line.number}: transient EAGAIN/EINTR retry is visible",
-                "no timeout, retry budget, or backoff is visible in the loop window",
+                f"line {retry_line.number}: non-progress receive status reaches continue",
             ],
-            negative=[],
+            negative=["Validator must resolve termination, retry bounds and blocking behavior on this branch."],
             ast_cfg=self._ast_cfg_pack(
                 lines,
                 [
                     self._event("receive_loop", line, "recv", "", line.text),
-                    self._event("transient_retry", retry_line, "EAGAIN/EINTR", "", retry_line.text),
+                    self._event("transient_retry", retry_line, status['result'], "", retry_line.text),
                 ],
                 [line.number, retry_line.number],
             ),
@@ -2506,12 +2524,15 @@ class ClangProtocolOwnershipLogicRules:
         if "=" in line.text.split("(", 1)[0] or re.search(r"\b(?:if|while|for)\s*\(", line.text):
             return
         for api, args in self._calls(line.text):
-            if not re.search(r"(?:insert|link|attach|register|publish|add)", api, re.IGNORECASE):
-                continue
             split = self._split_args(args)
             if not split:
                 continue
-            owner = self._resource_var(split[0])
+            owners = {
+                event.object
+                for event in self.semantics.contracts.match_call(api, "ownership_transfer", split)
+                if event.applicability != "does_not_apply"
+            }
+            owner = next(iter(owners)) if len(owners) == 1 else ""
             if not owner:
                 continue
             previous = lines[max(0, line.index - 12) : line.index]
@@ -2520,8 +2541,10 @@ class ClangProtocolOwnershipLogicRules:
                     item
                     for item in reversed(previous)
                     if re.search(
-                        rf"\b{re.escape(owner)}\s*=\s*(?:\([^)]*\)\s*)?"
-                        r"[A-Za-z_]\w*(?:alloc|calloc|malloc|new)[A-Za-z_0-9]*\s*\(",
+                        self._semantic_api_pattern(
+                            rf"\b{re.escape(owner)}\s*=\s*(?:\([^)]*\)\s*)?"
+                            r"(?:malloc|calloc|realloc|strdup)\s*\("
+                        ),
                         item.text,
                         re.IGNORECASE,
                     )
@@ -2531,7 +2554,9 @@ class ClangProtocolOwnershipLogicRules:
             if not alloc_line:
                 continue
             later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 8])
-            if re.search(rf"\b(?:free|SAFE_FREE)\s*\(\s*{re.escape(owner)}\s*\)", later):
+            if re.search(
+                self._semantic_api_pattern(rf"\b(?:free)\s*\(\s*{re.escape(owner)}\s*\)"), later
+            ):
                 continue
             self._emit(
                 issues,
@@ -2736,7 +2761,9 @@ class ClangProtocolOwnershipLogicRules:
                 item
                 for item in reversed(previous)
                 if re.search(
-                    rf"\b{re.escape(status)}\s*=\s*(?:recv|read|recvfrom|_net_recv_data)\s*\(",
+                    self._semantic_api_pattern(
+                        rf"\b{re.escape(status)}\s*=\s*(?:recv|read|recvfrom)\s*\("
+                    ),
                     item.text,
                 )
             ),
@@ -2745,7 +2772,6 @@ class ClangProtocolOwnershipLogicRules:
         if not recv_line:
             return
         branch = lines[idx + 1 : idx + 8]
-        log_line = next((item for item in branch if "LOG_ERROR" in item.text), None)
         return_line = next(
             (
                 item
@@ -2754,7 +2780,7 @@ class ClangProtocolOwnershipLogicRules:
             ),
             None,
         )
-        if not log_line or not return_line:
+        if not return_line:
             return
         self._emit(
             issues,
@@ -2765,7 +2791,7 @@ class ClangProtocolOwnershipLogicRules:
             defect_class="unchecked_return",
             rule="clang_cfg_probe_error_branch_can_return_success_status",
             line=line,
-            description=f"探测失败分支记录了一个错误，却返回 `{status}`，当 `{cond.group('flag')}` 触发了该分支时，`{status}` 仍可能为零。",
+            description=f"探测失败分支返回 `{status}`，当 `{cond.group('flag')}` 触发了该分支时，`{status}` 仍可能为零。",
             root_cause="该分支把状态码失败与分类器失败混为一谈，并返回传输状态而不是显式错误。",
             suggested_fix="当分类器标志指示失败时返回负数/错误码，即便接收调用本身返回了成功。",
             source=recv_line.text,
@@ -2804,19 +2830,15 @@ class ClangProtocolOwnershipLogicRules:
     ) -> None:
         api = ""
         arg = ""
-        for call_api, args in self._calls(line.text):
-            if call_api not in self._format_sink_names:
+        from ....semantics.call_operands import call_operands, is_literal_string
+
+        for operand in call_operands(
+            self.semantics.contracts, line.text, "format_sink", file_path=file_path
+        ):
+            candidate = operand.expression
+            if is_literal_string(candidate):
                 continue
-            split_args = self._split_args(args)
-            arg_index = 1 if call_api in {"fprintf", "vfprintf"} else 0
-            if len(split_args) <= arg_index:
-                continue
-            candidate = split_args[arg_index].strip()
-            if self._is_string_literal(candidate):
-                continue
-            if not re.match(r"^[A-Za-z_]\w*(?:\[[^]]+\])?$", candidate):
-                continue
-            api = call_api
+            api = operand.name
             arg = candidate
             break
         if not arg:
@@ -2840,7 +2862,7 @@ class ClangProtocolOwnershipLogicRules:
             confidence=0.88,
             impact_level="high",
             positive=[
-                f"line {line.number}: printf-style call uses non-literal first format argument"
+                f"line {line.number}: published contract selects non-literal format operand"
             ],
             negative=[],
             ast_cfg=self._ast_cfg_pack(
@@ -3030,7 +3052,7 @@ class ClangProtocolOwnershipLogicRules:
         arg = validate.group("arg")
         window = "\n".join(item.text for item in lines[line.index : line.index + 10])
         dangerous_use = re.search(
-            rf"\b(?:read|recv|write|send|close|dup|fcntl|ioctl|mmap|munmap|_net_[A-Za-z_0-9]+)\s*"
+            rf"\b(?:read|recv|write|send|close|dup|fcntl|ioctl|mmap|munmap)\s*"
             rf"\([^;]*\b{re.escape(arg)}\b",
             window,
         )

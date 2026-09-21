@@ -1944,7 +1944,8 @@ def _text_has_category(text: str, truth: dict[str, Any]) -> bool:
 
 
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
-    report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    from zscope.reporting.json_io import read_report
+    report = read_report(Path(args.report))
     truth_path = Path(args.truth)
     truth = json.loads(truth_path.read_text(encoding="utf-8"))
     fp_audit_classifier = _fp_audit_classifier_for_truth(truth, truth_path=truth_path)

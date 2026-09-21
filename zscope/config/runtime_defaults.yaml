@@ -23,12 +23,14 @@ analysis:
   validation_cache_entries: 4096
   # Experimental review ablations; formal release behavior stays unchanged.
   validation_review_protocol: false
-  validation_checked_proofs: false
+  # null = depth-scoped: enabled for balanced scans (driver gate applies).
+  validation_checked_proofs: null
   validation_positive_case: false
   validation_related_findings: false
   validation_review_checkpoint: false
   enable_global_model: false
   max_premodel_depth: 3
+  semantic_model_max_rounds: 3
   max_premodel_callees: 20
   trivial_function_max_lines: 5
   # Scan-time LLM classification of unknown lightweight wrapper callees

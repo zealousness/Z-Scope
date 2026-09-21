@@ -35,6 +35,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Select the analysis depth; token use is measured after the run.",
     )
     run.add_argument("--output", type=Path)
+    run.add_argument(
+        "--work-directory",
+        type=Path,
+        help="New absolute directory for persistent, cold run-NN workspaces; never cleaned automatically.",
+    )
     run.add_argument("--dry-run", action="store_true")
     clean = commands.add_parser("clean", help="preview or remove generated fixture artifacts")
     clean.add_argument("--scope", choices=("c_cpp", "java", "all"), required=True)
@@ -58,11 +63,15 @@ def _wsl_argv(argv: List[str]) -> List[str]:
         ["wsl", "wslpath", "-a", root.as_posix()], text=True
     ).strip()
     converted_arguments = list(argv)
-    if "--output" in converted_arguments:
-        index = converted_arguments.index("--output") + 1
+    for option in ("--output", "--work-directory"):
+        if option not in converted_arguments:
+            continue
+        index = converted_arguments.index(option) + 1
         if index < len(converted_arguments):
+            if converted_arguments[index].startswith("/"):
+                continue
             converted_arguments[index] = subprocess.check_output(
-                ["wsl", "wslpath", "-a", Path(converted_arguments[index]).as_posix()],
+                ["wsl", "wslpath", "-a", converted_arguments[index].replace("\\", "/")],
                 text=True,
             ).strip()
     forwarded = ["python3", "-m", "zscope.cli.benchmark", *converted_arguments]
@@ -123,6 +132,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 output=args.output,
                 dry_run=args.dry_run,
                 scan_depth=args.scan_depth,
+                work_directory=args.work_directory,
             )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     except BenchmarkError as exc:

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from zscope.reporting.json_io import read_report
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_ROOT = REPO_ROOT / "benchmark-artifacts"
 REQUIRED_RUN_FILES = ("summary.json", "score.json", "report.json")
@@ -58,8 +60,8 @@ def _read_json(path: Path, *, required: bool = True) -> Dict[str, Any]:
             raise TrialMetricsError(f"required JSON file does not exist: {path}")
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = read_report(path, immutable=True)
+    except (OSError, ValueError) as exc:
         raise TrialMetricsError(f"failed to read JSON object {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise TrialMetricsError(f"JSON root must be an object: {path}")

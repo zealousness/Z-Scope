@@ -1789,6 +1789,10 @@ def test_validation_runner_uses_explicit_concurrency_validator_workers() -> None
 
 def test_validation_runner_normalizes_external_api_function_to_entry_function() -> None:
     class MissingExternalApiCodeIndex(FakeCodeIndex):
+        def call_model_status(self, name, caller=""):
+            assert (name, caller) == ("pthread_create", "api_entry")
+            return "standard_model"
+
         def get_function_impl(self, func_name, *args, **kwargs):
             if func_name == "pthread_create":
                 return None
@@ -1822,6 +1826,7 @@ def test_validation_runner_normalizes_external_api_function_to_entry_function() 
     assert evidence_slice["obligation"]["function"] == "api_entry"
     assert evidence_slice["evidence"]["sink"] == "pthread_create"
     assert issue["validation_function_normalized_from"] == "pthread_create"
+    assert issue["validation_function_normalization_origin"] == "standard_model"
     assert (
         issue["validation_function_normalization_reason"]
         == "external_api_function_without_indexed_body"

@@ -8,7 +8,11 @@ sources:
   - scripts/balanced_rollout_operator.py
   - zscope/cli/cli.py
   - zscope/orchestration/scan_session.py
+  - zscope/orchestration/entry_discovery.py
+  - zscope/orchestration/callback_discovery.py
   - zscope/orchestration/parallel_analyzer.py
+  - zscope/orchestration/semantic_modeling.py
+  - zscope/orchestration/snapshot_candidates.py
   - zscope/orchestration/rollout.py
   - zscope/orchestration/workflow_runner.py
   - zscope/orchestration/workflow_executor.py
@@ -19,6 +23,8 @@ tests:
   - tests/test_workflow_runner.py
   - tests/test_workflow_specs.py
   - tests/test_scan_session_resume_svf.py
+  - tests/test_signal_callback_entries.py
+  - tests/test_incremental_semantic_modeling.py
   - tests/test_wiki_workflow.py
   - tests/test_active_discovery.py
   - tests/test_balanced_rollout.py
@@ -38,7 +44,10 @@ tests:
 - `ScanSessionRunner` 把显式入口、自动发现入口或 diff impact 入口统一成扫描会话。
 - `WorkflowRunner` 创建单入口运行态并调用 `WorkflowExecutor`。
 - `zscope/workflows/*.yaml` 只声明阶段顺序；具体 handler 由 Python 编排层提供。内置扫描 workflow 在入口发现后先执行一次 session 级 `wiki_compile`，该阶段完整结束后才允许进入任何 entry 分析或 Validator 验证。
-- 批量任务经 scheduler/parallel analyzer 分发。确定性候选完成后，balanced/deep 在全局验证之前依次构建 Security Semantic Map、规划 coverage gap、登记主动发现 hypothesis；所有来源统一冻结 Ledger，最后按 validation cluster 验证和装配报告。单入口必须保持同样的阶段顺序。
+- C/C++ 所有扫描档位在入口与索引/Wiki 就绪后，先对可达并集进行增量语义建模、合并并重读 user_config，再启动规则；直接 Analyzer、单入口、批量、diff、resume、maintain 共用此阶段。独立建模池以 `llm_max_inflight` 为上限，复用 modeling profile 和全局/endpoint 限流，不受 entry_workers 限制。依赖完成即调度父函数，递归组件冻结上一轮契约并最多迭代 RuntimeSpec 的 `semantic_model_max_rounds`（默认 3）轮，失败或未收敛标为 partial；取消仍传播中断。
+- 建模任务先尝试由已验证 callee 或人工契约静态生成透明封装快照；无法确定的底层资源协议仍进入 LLM 发现和实现校验。静态快照与模型快照共用依赖调度、发布屏障和缓存；释放端提议可驱动不可达对应接口的补建。普通重扫输入不变时不调用模型也不改写工作簿。
+- 模型请求归因包含稳定符号 `audit_unit_uid` 和 `semantic_modeling_attempt_N`，可与发布快照及 `.attempts.json` 中成功/失败的尝试记录关联；位置移动不改变符号 UID。旧用量事件缺少符号身份时，只能按阶段汇总，不能把线程活动次数当成逐符号 token 成本。
+- 批量任务经 scheduler/parallel analyzer 分发。确定性候选完成后，balanced/deep 在全局验证之前依次构建 Security Semantic Map、规划 coverage gap、登记主动发现 hypothesis；所有候选通过 CandidateRegistrar 登记并统一冻结 Ledger，最后按 validation cluster 验证和装配报告。快照怀疑点只作为已有候选的验证背景，不登记新候选；单入口保持相同策略及阶段顺序。
 
 ## 必须保持的不变量
 
@@ -89,3 +98,19 @@ python -m pytest -q tests/test_balanced_rollout.py tests/test_balanced_rollout_o
 ## 关闭与共享资源
 
 ParallelAnalyzer 关闭后拒绝接收新批次，先停止并等待调度器，再清理拥有的项目知识服务和 LLM 客户端。外部传入的客户端由调用方关闭，多重引用不会造成重复关闭。共享额度注销与已在途请求排空由 LLMClient 自身协调。
+
+## 建模任务所有权
+
+`modeling_coordinator.py` 跨入口、Analyzer 和按需快照合并相同命名空间、符号及输入版本的任务。Future 保存原子提交后的结果或同一失败；所有者负责最多三次格式/契约修复尝试，等待者不能另起重试。局部等待取消不传播到共享任务；独立扫描根共享活动任务，只有所有参与扫描均取消时才取消该任务。完成后的失败按参与扫描保存，下一轮可重试。新扫描可以重试缺失或失败缓存。独立符号继续并发，SCC 使用冻结契约和统一发布；指标分别记录请求、唯一任务、合并等待、内部尝试、物理 LLM 调用、等待时间和峰值并发。
+
+扫描级中断先取消根令牌，再等待建模任务池退出，避免线程退出等待阻止取消传播。没有外部取消作用域的直接调用也建立本轮令牌；单个请求的局部超时仍不能取消其他请求依赖的共享任务。
+
+线程入口发现从标准线程调用及实际源码参数转发推导外层封装的回调位置，支持嵌套与参数换位；不预置项目接口名称。项目同名定义和不确定的重赋值不能继承标准回调位置。这些发现只是入口线索，不授予生命周期证明。
+
+回调注册同样产生自动入口：`signal` 的处理函数、`sigaction` 新 action 中的 `sa_handler` / `sa_sigaction`，以及 `atexit`、`at_quick_exit`、`on_exit` 的退出回调使用 `callback` exposure，参与现有去重、入口预算、批量调度和入口持久化。源代码参数转发支持嵌套函数封装、参数换位、局部别名和 action 成员映射；不根据项目接口名称猜测注册角色。已知 `sa_flags` 选择对应成员，只读取新 action，不把旧 action 输出查询或 `SIG_DFL` / `SIG_IGN` / `SIG_ERR` 当作回调。项目同名实现、重赋值和不确定对象写入不能继承过期绑定。
+
+信号回调保留 `callback_context:signal` 和异步信号审计提示，沿调用链检查信号安全、重入和共享状态；退出回调使用 `callback_context:exit`。入口仅表示可能执行，不证明注册成功，也不授予资源生命周期证明。无法解析的动态函数指针、复杂控制流下的别名及递归增长的成员路径不猜测目标；该入口发现扩展不等于完整的间接调用图或新增系统 API 生命周期模型。
+
+建模任务的物理尝试数直接来自全局账本已结算的同一调用事件，包含网络失败；成功响应数、提供方报告 tokens 与失败保守计量分列。等待者不重复归集所有者的用量，单个任务失败或取消也保留已发生的调用。
+
+注册关系在 CodeIndex 中单独保存目标身份、注册位置及异步上下文，并按源码摘要失效；调用查询以 `callback_registration` 类型返回这些边。Graph 不将注册边作为同步调用传播持锁状态。线程创建端在没有其他已覆盖上层入口时同时纳入入口，worker 入口保留，避免只检查线程体而遗漏创建端的参数与所有权义务。

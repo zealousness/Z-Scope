@@ -504,6 +504,7 @@ class AnalysisConfig:
     )
     enable_global_model: bool = False  # Batch-level global premodel/model_entry replacement.
     max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
+    semantic_model_max_rounds: int = 3  # Frozen-contract rounds for recursive components
     max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
     # Scan-time LLM classification of unknown lightweight wrapper callees
@@ -612,7 +613,7 @@ class AnalysisConfig:
         self.validation_v3_reattempt = bool(self.validation_v3_reattempt)
         self.validation_v2b_adjudication = bool(self.validation_v2b_adjudication)
         self.validation_review_protocol = bool(self.validation_review_protocol)
-        self.validation_checked_proofs = bool(self.validation_checked_proofs)
+        # tri-state (None = depth-scoped): no bool coercion here
         self.validation_positive_case = bool(self.validation_positive_case)
         self.validation_related_findings = bool(self.validation_related_findings)
         self.validation_review_checkpoint = bool(self.validation_review_checkpoint)

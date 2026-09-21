@@ -214,6 +214,13 @@ def build_identity(ex: Any, db: Any) -> tuple[str, bool, str]:
     """
     components: dict[str, str] = {}
     inventory: set[Path] = set()
+    receipt = getattr(ex, "_compile_preparation", None)
+    if receipt is not None:
+        receipt.validate(check_tools=False)
+        inventory.update(Path(path) for path in json.loads(receipt.dependencies_json))
+        components["context:compile-preparation"] = cache_key(
+            [receipt.policy_digest, receipt.original_digest, receipt.effective_digest, receipt.tools_json]
+        )
     dependencies_by_source: dict[str, set[Path]] = {}
     # Per-TU attestation: only TUs whose full depfile is fresh and self-consistent
     # may scope completeness-critical decisions (candidate pre-pruning).

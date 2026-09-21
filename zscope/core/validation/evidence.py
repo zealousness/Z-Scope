@@ -154,6 +154,7 @@ def _caller_lock_states(
     issue_func: str,
     caller_names: List[str],
     limit: int = 8,
+    semantic_contracts: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Derive each caller's held lock at its call site of ``issue_func``.
 
@@ -165,7 +166,11 @@ def _caller_lock_states(
     caller is analysed by design.
     """
 
-    from .evidence_completion import EvidenceCompletionQueue  # lazy: avoids import cycle
+    from ...semantics.defaults import default_local_pattern_semantics
+
+    semantics = default_local_pattern_semantics()
+    semantics.merge_overlay(semantic_contracts or {})
+    registry = semantics.contracts
 
     target = str(issue_func or "").strip()
     call_pattern = re.compile(rf"\b{re.escape(target)}\s*\(") if target else None
@@ -181,31 +186,46 @@ def _caller_lock_states(
         code = str((impl or {}).get("code") or "")
         held_lock = ""
         call_site_line = 0
+        uncertain = False
+        operations: List[Dict[str, Any]] = []
         if code:
-            stack: List[str] = []
+            stack: List[tuple[str, str]] = []
             for line_number, text in enumerate(code.splitlines(), start=1):
                 if call_pattern.search(text):
                     call_site_line = line_number
-                    held_lock = stack[-1] if stack else ""
+                    held_lock = stack[-1][1] if stack else ""
                     break
-                acquired = EvidenceCompletionQueue._lock_argument(text, acquire=True)
-                if acquired:
-                    stack.append(acquired)
-                    continue
-                released = EvidenceCompletionQueue._lock_argument(text, acquire=False)
-                if released:
-                    for index in range(len(stack) - 1, -1, -1):
-                        if stack[index] == released:
-                            stack.pop(index)
-                            break
+                for site in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", text):
+                    name = site[1]
+                    if name not in semantics.lock_apis and name not in semantics.unlock_apis:
+                        continue
+                    arguments = registry.call_arguments(name, text[site.start():])
+                    if arguments is None:
+                        continue
+                    role = "lock" if name in semantics.lock_apis else "unlock"
+                    for event in registry.match_call(name, role, arguments):
+                        operations.append(event.to_dict())
+                        if event.applicability == "does_not_apply":
+                            continue
+                        uncertain |= event.applicability == "unknown" or event.source.startswith("inferred")
+                        if role == "lock" and event.object:
+                            stack.append((name, event.object))
+                        elif role == "unlock":
+                            for index in range(len(stack) - 1, -1, -1):
+                                if stack[index][1] == event.object and registry.release_status(stack[index][0], name, arguments, acquired_object=event.object) == "applies":
+                                    stack.pop(index)
+                                    break
         states.append(
             {
                 "caller": caller,
                 "call_site_line": call_site_line,
-                "held_lock": held_lock,
+                "held_lock": held_lock if not uncertain else "",
+                "possible_held_lock": held_lock if uncertain else "",
+                "call_semantics": operations,
+                "contract_version": registry.version,
                 # A retrievable body without the call site says nothing about
                 # the lock state; treat it as unresolved, not as unguarded.
-                "resolved": bool(code) and call_site_line > 0,
+                "resolved": bool(code) and call_site_line > 0 and not uncertain,
             }
         )
     return states
@@ -264,6 +284,7 @@ def build_validation_evidence_pack(
         "api",
         "communication",
         "thread",
+        "callback",
         "other_user_input",
     }
     reachable_from_entry = bool(
@@ -281,6 +302,7 @@ def build_validation_evidence_pack(
             code_index,
             issue_func,
             _direct_callers_from_paths(issue),
+            semantic_contracts=issue.get("semantic_contracts") or candidate_evidence.get("semantic_contracts") or {},
         )
     return {
         "mode": "tri_state_exploitability_validation",
@@ -306,6 +328,12 @@ def build_validation_evidence_pack(
         "semantic_overlays": issue.get("semantic_overlays")
         or candidate_evidence.get("semantic_overlays")
         or {},
+        "semantic_contracts": issue.get("semantic_contracts")
+        or candidate_evidence.get("semantic_contracts")
+        or {},
+        "semantic_contract_version": issue.get("semantic_contract_version")
+        or candidate_evidence.get("semantic_contract_version")
+        or "",
         "semantic_overlay_evidence": issue.get("semantic_overlay_evidence")
         or candidate_evidence.get("semantic_overlay_evidence")
         or {},
@@ -1056,6 +1084,9 @@ def compact_snapshot(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
             snapshot.get("referenced_types")
         ),
         "suspicious_points": snapshot.get("suspicious_points"),
+        "interface_contracts": snapshot.get("interface_contracts"),
+        "contract_diagnostics": snapshot.get("contract_diagnostics"),
+        "snapshot_observation_status": "unverified_context_only",
     }
     for field in (
         "project_callees_truncation",
@@ -1103,6 +1134,8 @@ def _entry_root_reachable(evidence_pack: Dict[str, Any]) -> bool:
 
 def _entry_exposure_from_prompt(entry_custom_prompt: str) -> str:
     prompt_lower = str(entry_custom_prompt or "").lower()
+    if "registered callback entry" in prompt_lower:
+        return "callback"
     if "public api declared" in prompt_lower or "header file" in prompt_lower:
         return "api"
     if "communication or ipc entry" in prompt_lower:

@@ -169,7 +169,7 @@ class RegexMemoryBoundsIntegerRules:
             identifiers = [
                 item
                 for item in self._IDENT_RE.findall(args)
-                if item not in {"calloc", "_safe_calloc", "sizeof", "NULL"}
+                if item not in {"calloc", "sizeof", "NULL"}
             ]
             nearby = "\n".join(item.text for item in lines[max(0, line.index - 4) : line.index + 1])
             if (
@@ -398,7 +398,9 @@ class RegexMemoryBoundsIntegerRules:
         )
         for line in lines:
             read = re.search(
-                rf"\bint\s+(?P<var>[A-Za-z_]\w*)\s*=\s*(?:recv|read|_net_recv_data|{user_recv})\s*\(",
+                self._semantic_api_pattern(
+                    rf"\bint\s+(?P<var>[A-Za-z_]\w*)\s*=\s*(?:recv|read|{user_recv})\s*\("
+                ),
                 line.text,
             )
             if read:
@@ -411,7 +413,7 @@ class RegexMemoryBoundsIntegerRules:
                 casts[cast.group("size")] = (line, cast.group("src"))
             for size_var, (cast_line, src_var) in list(casts.items()):
                 if re.search(
-                    rf"\b(?:memcpy|memmove|_net_send_data|_net_recv_data|{user_io_len})\s*\([^;]*\b{re.escape(size_var)}\b",
+                    rf"\b(?:memcpy|memmove|{user_io_len})\s*\([^;]*\b{re.escape(size_var)}\b",
                     line.text,
                 ):
                     emit(
@@ -539,7 +541,9 @@ class RegexMemoryBoundsIntegerRules:
                 elif re.search(rf"\b{re.escape(var)}\.[A-Za-z_]\w*\s*=", line.text):
                     struct_locals[var] = (decl_line, field_writes + 1, has_memset)
                 elif re.search(
-                    rf"\b(?:_net_send_data|send|write|{self._names_pattern(getattr(self, '_user_send_sink_names', set()) or set())})\s*\([^;]*&{re.escape(var)}\s*,\s*sizeof\s*\(\s*{re.escape(var)}\s*\)",
+                    self._semantic_api_pattern(
+                        rf"\b(?:send|write|{self._names_pattern(getattr(self, '_user_send_sink_names', set()) or set())})\s*\([^;]*&{re.escape(var)}\s*,\s*sizeof\s*\(\s*{re.escape(var)}\s*\)"
+                    ),
                     line.text,
                 ):
                     if not has_memset and field_writes > 0:
@@ -1263,8 +1267,10 @@ class ClangMemoryBoundsIntegerRules:
         patterns = [
             (
                 re.search(
-                    r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
-                    r"(?P<api>[A-Za-z_]\w*(?:alloc|malloc|calloc|realloc)[A-Za-z_0-9]*)\s*\((?P<expr>[^;]*(?:\+|\*)[^;]*)\)",
+                    self._semantic_api_pattern(
+                        r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
+                        r"(?P<api>(?:malloc|calloc|realloc|strdup))\s*\((?P<expr>[^;]*(?:\+|\*)[^;]*)\)"
+                    ),
                     line.text,
                     re.IGNORECASE,
                 ),
@@ -1343,8 +1349,10 @@ class ClangMemoryBoundsIntegerRules:
         casts: Dict[str, Tuple[ClangCfgLine, str]],
     ) -> None:
         read = re.search(
-            rf"\b(?:int|ssize_t)\s+(?P<var>[A-Za-z_]\w*)\s*=\s*"
-            rf"(?:recv|read|recvfrom|_net_recv_data|{self._names_pattern(getattr(self, '_user_recv_source_names', set()) or set())})\s*\(",
+            self._semantic_api_pattern(
+                rf"\b(?:int|ssize_t)\s+(?P<var>[A-Za-z_]\w*)\s*=\s*"
+                rf"(?:recv|read|recvfrom|{self._names_pattern(getattr(self, '_user_recv_source_names', set()) or set())})\s*\("
+            ),
             line.text,
         )
         if read:
@@ -1531,10 +1539,12 @@ class ClangMemoryBoundsIntegerRules:
             return
         alloc_line, alloc_size = alloc_data
         alloc_base = self._allocation_base_from_size(lines, alloc_line, alloc_size)
-        copy_base = self._expression_origin_base(lines, line, copy_len)
-        if not alloc_base or not copy_base or alloc_base != copy_base:
-            if not self._looks_like_external_length_pair(lines, line, alloc_size, copy_len):
-                return
+        # A narrowing claim needs an actual conversion on the allocation
+        # operand. Words such as 'length' or 'packet' are not type evidence.
+        if not alloc_base:
+            return
+        if re.sub(r"\s+", "", copy_len) == re.sub(r"\s+", "", alloc_size):
+            return
         if self._copy_length_bounded_by_alloc(lines, line, copy_len, alloc_size):
             return
         self._emit(
@@ -1992,7 +2002,7 @@ class ClangMemoryBoundsIntegerRules:
             r"\*\s*\([^;)]*\*\s*\)\s*(?:\([^)]*\)\s*)?(?P<src>[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*)",
             line.text,
         )
-        if direct and self._looks_wire_pointer_source(direct.group("src")):
+        if direct and self._looks_wire_pointer_source(line.text):
             source_line = line
             var = direct.group("src")
         else:
@@ -2012,15 +2022,15 @@ class ClangMemoryBoundsIntegerRules:
             defect_class="untrusted_pointer",
             rule="clang_cfg_wire_integer_cast_to_pointer_deref",
             line=line,
-            description="序列化/头部中的整数被转换为进程内指针并被解引用。",
-            root_cause="线上数据不能被信任为进程内地址；对其解引用可能访问任意内存。",
-            suggested_fix="把线上值当作不透明的偏移或句柄，并通过经过校验的表来解析它们。",
+            description="整数经过显式指针转换后被解引用，需要核验地址来源与有效范围。",
+            root_cause="整数转换不能单独证明地址有效；需要检查输入来源、对象身份及边界。",
+            suggested_fix="核验该值对应的对象或句柄及其存活范围，再允许解引用。",
             source=source_line.text,
             sink=line.text,
             confidence=0.88,
             impact_level="critical",
             positive=[
-                f"line {source_line.number}: wire/header-derived value is cast into pointer `{var}`",
+                f"line {source_line.number}: explicitly converted integer is cast into pointer `{var}`",
                 f"line {line.number}: the resulting pointer is dereferenced",
             ],
             negative=[],
@@ -2168,9 +2178,7 @@ class ClangMemoryBoundsIntegerRules:
         line: ClangCfgLine,
     ) -> None:
         for api, args in self._calls(line.text):
-            if api not in self._return_acquirers and not re.search(
-                r"(?:malloc|calloc|alloc|realloc)$", api, re.IGNORECASE
-            ):
+            if api not in self._return_acquirers:
                 continue
             count_expr = self._allocation_count_expression(api, args)
             if not count_expr:
@@ -2429,7 +2437,7 @@ class ClangMemoryBoundsIntegerRules:
             if not re.search(rf"\b{re.escape(array_name)}\s*=", guarded_text):
                 continue
             if not re.search(
-                r"\b(?:calloc|malloc|realloc|_safe_calloc|_safe_malloc|_safe_realloc)\s*\(",
+                self._semantic_api_pattern(r"\b(?:calloc|malloc|realloc)\s*\("),
                 guarded_text,
             ):
                 continue
@@ -2507,7 +2515,7 @@ class ClangMemoryBoundsIntegerRules:
         later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 16])
         return bool(
             re.search(
-                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc|_safe_malloc|_safe_calloc)\s*"
+                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc)\s*"
                 rf"\([^;]*\b{re.escape(length_var)}\b",
                 later,
             )
@@ -2538,16 +2546,14 @@ class ClangMemoryBoundsIntegerRules:
                 prev
                 and re.search(rf"\b{escaped}\s*=\s*$", prev.text)
                 and re.search(
-                    r"\b[A-Za-z_]\w*(?:alloc|calloc|malloc|realloc)[A-Za-z_0-9]*\s*\(",
+                    self._semantic_api_pattern(r"\b(?:malloc|calloc|realloc|strdup)\s*\("),
                     item.text,
                     re.IGNORECASE,
                 )
             ):
                 return item
             for api, _args in self._calls(item.text):
-                if api not in self._return_acquirers and not re.search(
-                    r"(?:malloc|calloc|alloc|realloc)$", api, re.IGNORECASE
-                ):
+                if api not in self._return_acquirers:
                     continue
                 if re.search(
                     rf"\b{escaped}\s*=\s*(?:\([^)]*\)\s*)?\b{re.escape(api)}\s*\(", item.text
@@ -2565,9 +2571,11 @@ class ClangMemoryBoundsIntegerRules:
     ) -> Optional[Tuple[ClangCfgLine, str]]:
         for item in reversed(lines[max(0, line.index - 32) : line.index]):
             match = re.search(
-                rf"\b(?:[A-Za-z_][\w\s\*]*\s+)?{re.escape(var)}\s*=\s*"
-                r"(?:\([^)]*\)\s*)?(?P<api>[A-Za-z_]\w*(?:alloc|malloc|calloc|realloc)[A-Za-z_0-9]*)"
-                r"\s*\((?P<args>[^;]*)\)",
+                self._semantic_api_pattern(
+                    rf"\b(?:[A-Za-z_][\w\s\*]*\s+)?{re.escape(var)}\s*=\s*"
+                    r"(?:\([^)]*\)\s*)?(?P<api>(?:malloc|calloc|realloc|strdup))"
+                    r"\s*\((?P<args>[^;]*)\)"
+                ),
                 item.text,
                 re.IGNORECASE,
             )
@@ -2594,9 +2602,12 @@ class ClangMemoryBoundsIntegerRules:
                     item.text,
                 )
                 if assign:
-                    base = self._narrowed_origin_base(
-                        assign.group("expr")
-                    ) or self._expr_base_token(assign.group("expr"))
+                    base = self._narrowed_origin_base(assign.group("expr"))
+                    if not base and re.search(
+                        rf"\b(?:u?int(?:8|16)_t|unsigned\s+(?:short|char)|short|char)\s+{re.escape(name)}\s*=",
+                        item.text,
+                    ):
+                        base = self._expr_base_token(assign.group("expr"))
                     if base:
                         return base
         return ""
@@ -2617,25 +2628,6 @@ class ClangMemoryBoundsIntegerRules:
                 if assign:
                     return self._expr_base_token(assign.group("rhs"))
         return base
-
-    def _looks_like_external_length_pair(
-        self,
-        lines: Sequence[ClangCfgLine],
-        line: ClangCfgLine,
-        alloc_size: str,
-        copy_len: str,
-    ) -> bool:
-        text = f"{alloc_size} {copy_len}"
-        for name in self._expr_identifiers(f"{alloc_size} {copy_len}"):
-            for item in reversed(lines[max(0, line.index - 24) : line.index]):
-                assign = re.search(rf"\b{re.escape(name)}\s*=\s*(?P<rhs>[^;]+);", item.text)
-                if assign:
-                    text += " " + assign.group("rhs")
-        return bool(
-            re.search(
-                r"(?:header|wire|packet|payload|fragment|copy|len|length|size|count)", text, re.I
-            )
-        )
 
     @staticmethod
     def _narrowed_origin_base(expr: str) -> str:
@@ -2843,7 +2835,8 @@ class ClangMemoryBoundsIntegerRules:
         escaped = re.escape(array)
         for item in reversed(lines[max(0, line.index - 32) : line.index]):
             match = re.search(
-                rf"\b{escaped}\s*\[\s*(?P<size>[A-Za-z_]\w*|\d+)\s*\]\s*(?:=|;)", item.text
+                rf"(?:^|[;{{}}])\s*(?!(?:return|else)\b)"
+                rf"(?:[A-Za-z_]\w*\s+)+(?:\*\s*)?{escaped}\s*\[\s*(?P<size>[A-Za-z_]\w*|\d+)\s*\]\s*(?:=|;)", item.text
             )
             if match:
                 return item, match.group("size")
@@ -2906,9 +2899,8 @@ class ClangMemoryBoundsIntegerRules:
     def _looks_wire_pointer_source(expr: str) -> bool:
         return bool(
             re.search(
-                r"\b(?:wire|header|hdr|packet|pkt|frame|request|req|msg|message|payload)\b",
+                r"\(\s*(?:uintptr_t|intptr_t|u?int(?:32|64)_t|size_t)\s*\)",
                 expr,
-                re.IGNORECASE,
             )
         )
 
@@ -2922,11 +2914,12 @@ class ClangMemoryBoundsIntegerRules:
         for item in reversed(lines[max(0, line.index - 16) : line.index]):
             if not re.search(rf"\b{escaped}\s*=", item.text):
                 continue
+            statement = " ".join(row.text for row in lines[item.index:line.index]).split(";", 1)[0]
             if not re.search(
-                r"\([^)]*\*\s*\)|uintptr_t|intptr_t|uint64_t|uint32_t|size_t", item.text
+                r"\([^)]*\*\s*\)", statement
             ):
                 continue
-            rhs = item.text.split("=", 1)[1]
+            rhs = statement.split("=", 1)[1]
             if self._looks_wire_pointer_source(rhs):
                 return item
         return None
@@ -2976,12 +2969,7 @@ class ClangMemoryBoundsIntegerRules:
         return False
 
     def _allocation_count_expression(self, api: str, args: str) -> str:
-        split = self._split_args(args)
-        if not split:
-            return ""
-        if api in {"calloc", "_safe_calloc"} and len(split) >= 2:
-            return f"{split[0]} * {split[1]}"
-        return str(split[0])
+        return str(self.semantics.contracts.allocation_extent(api, self._split_args(args)))
 
     @staticmethod
     def _looks_external_size_expr(expr: str) -> bool:
@@ -3066,7 +3054,7 @@ class ClangMemoryBoundsIntegerRules:
             if self._is_var_redefined(text, count_var):
                 return None
             if re.search(
-                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc|_safe_malloc|_safe_calloc)\s*"
+                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc)\s*"
                 rf"\([^;]*\b{escaped}\b",
                 text,
             ):

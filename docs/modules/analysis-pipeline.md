@@ -72,15 +72,25 @@ Validator，也不会改变 verdict。
 - Candidate ledger 负责候选身份、合并、生命周期和证据保留。
 - `fast` 只运行确定性/backend 候选快车道；`balanced`/`deep` 还可接收 candidate-blind 主动发现产生的 hypothesis。所有来源完成后先冻结全局 Ledger，再按 validation cluster 验证一次。
 - Validation runner 依次执行 V0 确定性 proof、V1 单次结构化判定、按 obligation 全部必需 fact kinds 定向补证后的单次 V2 无状态复判，以及分档 V3 调查；balanced 覆盖 high/critical 或外部可达的可闭合未决 cluster，deep 覆盖全部无完整反证的非 shadow 未决 cluster。validation pipeline 再应用 suppression、baseline、评分和状态分流。
+- 格式串载体由共享契约解析，V0 独立核对真实调用与实际参数，候选自带的 `format_sink` 事件不能证明可利用性。字面量反证只否定该调用的原主张；非字面量仍需输入可控性证据。
+- 对象生命周期和类型/路径反证由 `ReviewClaimChecker` 绑定实际编译驱动、源码依赖、对象、规则 revision 和契约版本后签发。模型 rejected 或旧的文本/事件凭证不能替代该校验；驱动不匹配、不完整 CFG、未知池或所有者清理缺口保留 review。程序结果区分原主张已反驳、支持缺陷的反例及仍未知，不宣称整个函数安全。
 - Finding attribution 显式区分 `discovered_by` 集合与 `decided_by`/`decision_level`，因此“规则发现、LLM 判定”和“LLM 独占发现”不会混为一类。
 - 验证升级阶梯（balanced confirmed TP 计划）由 `runtime.analysis` 独立开关控制，默认全关：`validation_v3_reattempt`（R2 V3 复判）、`validation_v2b_adjudication`（R3 V2b 二次裁决）、`validation_uncertain_confirm_threshold`（τ 高置信确认通道，null 关闭；离线测量未找到通过 FDR 门禁的 τ，保持关闭）。usage 事件按 `call_kind` 派生 `escalation_rung`（initial→R1、targeted_investigation/investigation_synthesis→R2、v2b_adjudication→R3），确认项写入 `confirmed_via`（deterministic_proof | validator_model | high_confidence_band）。
 - `needs_review` 落点带呈现子状态 `needs_review_sub_state`：`model_uncertain`（证据仍缺失）、`policy_pending_promotion`（义务完整且无反证、等待策略通道）、`model_rejected_unproven`（模型否决未获确定性证明）；该字段只描述呈现，不改变 disposition 语义。报告视图可用 `build_report_views(..., demote_unproven_rejections=True)` 把 rejected-unproven 在 review 视图内降级呈现（带 `downgraded_from_disposition` 痕迹），计分归因不受影响。
 - 报告级 `evidence_completeness` 由验证终点从 `decision_fact_coverage`（优先）与 `evidence_completion_status`（兜底）派生；扫描期 envelope 只能是 `unknown`。
 - v12 事件形态 fact provider（`_source_lifecycle_acquire_exit_proof`、`_source_lockset_dominance_proof`、`_caller_lock_context_proof`）在引擎事件缺失时从验证用函数源码/调用点锁态重建生命周期与锁集事实，规则表与 proof requirement 表一一对应；不满足条件一律保持 needs_review。
-- 扫描期接口探测（`analysis.llm_interface_inference`）的分类计数、skip 原因与 role 分布以 `run_manifest.interface_probe` 汇总，供扫描侧 A/B 归因。
+- 前置建模统计、契约版本与快照候选入口暂停状态进入报告 metadata；当前不产生怀疑点独立验证终态。历史 `interface_probe` 字段仅用于旧报告兼容，本轮不再通过后置快照探测更新接口。
 - Rule engine 和 alert verifier 将规则或外部告警转换为相同的验证/报告语义。
 
 ## 必须保持的不变量
+
+- 生命周期消费者同时跟踪资源对象与池身份；确定的直线别名可合并，重赋值和条件别名不能冒充同一对象。合法配对、同一对象、同一池和成立的效果条件都满足时才解除义务。未知释放或解锁保留既有候选，不得使候选消失；未验证契约和未闭合条件使相关 AST proof 保持 partial。
+- 所有权转移通过源码输出或 `ownership_transfer` 契约识别，`add/put/register` 等函数名称及 `g_` 前缀不能授权转移。Validator 的源码生命周期补证同样读取已发布契约，未知调用接收资源时放弃否定存在证明，不使用名称后缀猜测分配器。
+- Validator 只有在索引明确分类为系统接口或缺少模型的外部接口时，才可将无函数体的接口候选关联到入口验证上下文，并保留原接口和来源分类。项目定义优先；分类缺失或查询失败时保留原函数，不按标准函数名列表、项目名前缀或 alloc/free 等片段改选。验证和报告缓存按该上下文选择策略失效，语义建模输入指纹不因此改变。
+- 自动发现的注册回调以 `callback` 进入 Validator 外部入口上下文；没有普通直接调用者不能作为不可达的单独依据。信号回调的异步信号提示随入口传入证据包，注册线索不等于注册成功或漏洞证明。
+- 当前池对象跟踪由 Clang/Regex 本地生命周期规则执行；Graph 共享结构化调用事件及契约版本，不宣称具备任意跨函数池别名分析。静态组合及受限实现校验不等于通用形状分析，复杂池与跨分支别名保持未知。
+- 快照怀疑点的独立候选入口已暂停，没有公共开启开关。直接 Analyzer、批量、diff、resume 和 maintain 均不生成 `candidate_source=semantic_snapshot`，缓存快照也不触发验证任务。规则优先组 `semantic_suspicious_point` 保持原有规则行为。
+- `suspicious_points` 与接口契约仍由 Validator 作为已有候选的背景读取，明确标记为未验证信息。怀疑点不写工作簿，也不进入 candidate-blind 主动发现提示词；暂停不计为 partial，不阻止有效报告复用。报告缓存绑定候选策略版本，旧策略产物必须重新扫描。
 
 - 实验性 review 链路使用 `zscope.review-adjudication.v1` 封套，分别记录旧拒绝的事实／范围审查和具体缺陷案例；内部校验后仍交给 ValidatorResult v3 的统一策略。只推翻拒绝而未闭合正面案例时保留 review，原因记录在 `review_disposition_reason`，不得扩充旧 `stop_reason` 枚举或借高置信 uncertain 通道晋升。
 - `check_validation_claim` 只核验绑定的原候选。当前支持完整类型中的不存在成员／内联字节数组、受限结构化所有权路径、常量或规范归纳循环的固定数组下标、明确检查成功返回值的静态互斥锁访问。递归、未知别名、辅助函数失败出口、复杂整数转换和未闭合并发条件返回 unknown。支持的反证带进程内签名、依赖哈希、编译环境与候选绑定；恢复时重新运行检查，报告字典不能自行授权拒绝。此能力按检查器版本管理，未改变默认检测器契约或现有规则资格状态。
@@ -117,7 +127,7 @@ Validator，也不会改变 verdict。
 
 RuleDriven/Joern 与 SARIF alert-verify 也遵循统一验证边界。RuleDriven 把全部 backend signal 先注册进共享 Candidate Ledger，跨原生规则合并同一义务并 freeze，再走 V0–V3；SARIF alert-verify 是面向单条外部告警的有界 V1 子集。两条路径中，模型拒绝无确定性反证时都只能进入 `needs_review`。产品 token 账本只计量，不因成本阈值停止验证调用；超时、取消或工具故障仍按实际覆盖情况标记 partial。
 
-规则目录原始字节、规范化 descriptor、相关引擎实现、enabled/disabled IDs、qualification、pack/provider 来源、当前语言与 backend 能力共同形成 effective SHA-256。该身份参与规则候选、gap plan、Validator environment fingerprint 与最终报告 provenance，但不改变 `zscope.candidate.v3.3` 的稳定候选身份，也不应使独立的程序事实或 Security Semantic Map 骨架缓存失效。
+规则目录原始字节、规范化 descriptor、相关引擎实现、enabled/disabled IDs、qualification、pack/provider 来源、当前语言与 backend 能力共同形成 effective SHA-256。该身份参与规则候选、gap plan、Validator environment fingerprint 与最终报告 provenance，但不改变 `zscope.candidate.v3.4` 的稳定候选身份，也不应使独立的程序事实或 Security Semantic Map 骨架缓存失效。
 
 ## 常见变更应落到哪里
 

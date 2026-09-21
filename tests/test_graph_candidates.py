@@ -7,6 +7,21 @@ from zscope.core.candidates.graph import FunctionView, GraphCandidateGenerator
 from zscope.retrieval.code_index import CodeIndex
 
 
+def test_graph_keeps_pointer_and_address_lock_obligations_distinct():
+    from zscope.core.candidates.cpp_domains.models import GraphLine
+    from zscope.semantics.defaults import default_local_pattern_semantics
+    graph = GraphCandidateGenerator(object(), default_local_pattern_semantics())
+    line = GraphLine(1, "pthread_mutex_lock(p);", "pthread_mutex_lock(p);", 0)
+    held = [(graph.semantics.contracts.resolve_object("pthread_mutex_lock", "lock", ["p"]), line)]
+    assert not graph._release_held_lock("pthread_mutex_unlock(&p);", held)
+    assert len(held) == 1
+    uncertain = set()
+    assert graph._release_held_lock("pthread_mutex_unlock(p);", held, uncertain)
+    # A hidden return status identifies the correct object but cannot discharge it.
+    assert len(held) == 1
+    assert uncertain == {"p"}
+
+
 @pytest.fixture(scope="module")
 def range_index() -> CodeIndex:
     """Share one lazily-warmed index across the range-project tests.
@@ -26,8 +41,22 @@ def _range_index() -> CodeIndex:
 
 
 def _range_semantics() -> LocalPatternSemantics:
-    semantics = LocalPatternSemantics()
-    semantics.add_api("deallocator", "SAFE_FREE", "range_test:user_config")
+    from semantic_fixtures import configured_test_semantics
+    from zscope.semantics.contracts import ApiContract
+
+    semantics = configured_test_semantics()
+    pairs = {
+        "_lifecycle_register_topic_subscription": "_lifecycle_unregister_topic_subscription",
+        "_lifecycle_attach_proc_node": "_lifecycle_delete_os_node",
+    }
+    for acquire, release in pairs.items():
+        semantics.contracts.add(
+            ApiContract.from_row({"symbol_name": acquire, "kind": "allocator", "pair": [release]})
+        )
+        semantics.add_api("allocator", acquire, "test:user_config")
+        semantics.add_api("deallocator", release, "test:user_config")
+    for release in ("_plugin_registry_cleanup", "_executor_cleanup_resources"):
+        semantics.add_api("deallocator", release, "test:user_config")
     return semantics
 
 
@@ -62,17 +91,10 @@ def test_graph_candidates_cover_open_global_registration_cleanup_pair(range_inde
         ]
     )
 
-    pair = next(
-        issue
-        for issue in issues
-        if issue.get("rule") == "paired_global_registration_cleanup_omitted"
+    # No caller-visible resource contract was declared for the business handler.
+    assert not any(
+        issue.get("rule") == "paired_global_registration_cleanup_omitted" for issue in issues
     )
-    assert pair["function"] == "_lifecycle_customize_control_message"
-    assert "_lifecycle_customize_transport_cleanup" in pair["sink"]
-    assert pair["evidence_pack"]["lifecycle_pair"] == {
-        "registration_function": "_lifecycle_customize_control_message",
-        "cleanup_function": "_lifecycle_customize_transport_cleanup",
-    }
 
 
 def test_graph_candidates_cover_liveness_and_lock_order_shapes(range_index) -> None:
@@ -135,7 +157,7 @@ def test_graph_candidates_cover_issue41_42_system_protocol_shapes(range_index) -
     assert "global_registration_slot_checked_before_lock" in rules
     assert "mutable_global_mode_drives_callback_without_lock" in rules
     assert "callback_allocator_pair_not_enforced" in rules
-    assert "path_state_checked_separately_from_key_generation" in rules
+    assert "path_state_checked_separately_from_key_generation" not in rules
     assert "unchecked_ownership_transfer_return_loses_node" in rules
     assert "protocol_mismatch_accepted_under_non_strict_auth" in rules
 
@@ -158,14 +180,11 @@ def test_graph_candidates_lift_callee_key_generation_race(range_index) -> None:
     generator = GraphCandidateGenerator(range_index, _range_semantics())
     issues = generator.generate_for_functions(["_runtime_shutdown_local_session"])
 
-    lifted = next(
-        issue
+    # Private path/hash names carry no implicit POSIX contract.
+    assert not any(
+        issue.get("rule") == "callee_path_state_checked_separately_from_key_generation"
         for issue in issues
-        if issue.get("rule") == "callee_path_state_checked_separately_from_key_generation"
     )
-    assert lifted["function"] == "_runtime_shutdown_local_session"
-    assert "_runtime_make_shared_key" in lifted["source"]
-    assert "_runtime_make_shared_key" in lifted["sink"]
 
 
 def _function_view(generator: GraphCandidateGenerator, name: str, code: str) -> FunctionView:
@@ -211,8 +230,8 @@ def test_graph_candidates_use_custom_lock_semantics() -> None:
     issues = generator.generate_for_views([caller, helper])
 
     recursive = next(issue for issue in issues if issue["rule"] == "cross_function_recursive_lock")
-    assert recursive["source"] == "api_update:2:g_lock"
-    assert recursive["sink"] == "helper_update:11:g_lock"
+    assert recursive["source"] == "api_update:2:&g_lock"
+    assert recursive["sink"] == "helper_update:11:&g_lock"
 
 
 def test_graph_candidates_use_custom_resource_semantics() -> None:
@@ -289,7 +308,7 @@ def test_graph_candidates_expand_configured_pointer_targets_under_lock() -> None
     issues = generator.generate_for_entry("api_dispatch", max_depth=1, max_functions=4)
 
     recursive = next(issue for issue in issues if issue["rule"] == "cross_function_recursive_lock")
-    assert recursive["sink"] == "handler_update:11:g_lock"
+    assert recursive["sink"] == "handler_update:11:&g_lock"
     assert recursive["evidence_pack"]["path"]["call_evidence"]["source"] == "user_config:pointer_targets"
     assert "configured target" in "\n".join(recursive["positive_evidence"])
 
@@ -392,7 +411,7 @@ def test_graph_candidates_expand_configured_dispatcher_handlers() -> None:
     issues = generator.generate_for_entry("dispatch_msg", max_depth=1, max_functions=4)
 
     recursive = next(issue for issue in issues if issue["rule"] == "cross_function_recursive_lock")
-    assert recursive["sink"] == "handle_msg:11:g_lock"
+    assert recursive["sink"] == "handle_msg:11:&g_lock"
     assert recursive["evidence_pack"]["path"]["call_evidence"]["source"] == "user_config:dispatcher"
     assert "configured handler" in "\n".join(recursive["positive_evidence"])
 
@@ -462,4 +481,4 @@ def test_graph_candidates_expand_dispatcher_sibling_branches_at_depth_cap() -> N
 
     recursive = next(issue for issue in issues if issue["rule"] == "cross_function_recursive_lock")
     assert recursive["function"] == "dispatch_msg"
-    assert recursive["sink"] == "handle_b:31:g_lock"
+    assert recursive["sink"] == "handle_b:31:&g_lock"

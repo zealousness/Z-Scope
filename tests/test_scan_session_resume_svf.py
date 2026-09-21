@@ -436,7 +436,8 @@ def test_batch_task_id_writes_task_identified_reports(
     assert result.reports == [json_report, md_report]
     assert json_report.exists()
     assert md_report.exists()
-    payload = json.loads(json_report.read_text(encoding="utf-8"))
+    from zscope.reporting.json_io import read_report
+    payload = read_report(json_report)
     assert payload["task_id"] == "release/scan 42"
     assert payload["task_slug"] == "release_scan_42"
     assert payload["summary"]["task_id"] == "release/scan 42"
@@ -505,7 +506,8 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
     assert state["skipped_entries"] == []
 
 
-def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize("current_policy", [True, False])
+def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path, current_policy: bool) -> None:
     cfg = _config(tmp_path)
     store = SnapshotStore.from_config(cfg)
     reports = {
@@ -516,7 +518,7 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
             "completeness": "complete",
             "run_manifest": {
                 "valid": True,
-                "candidate_schema_version": "zscope.candidate.v3.3",
+                "candidate_schema_version": "zscope.candidate.v3.4",
             },
             "issues": [{"source": "a"}],
         },
@@ -527,12 +529,15 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
             "completeness": "complete",
             "run_manifest": {
                 "valid": True,
-                "candidate_schema_version": "zscope.candidate.v3.3",
+                "candidate_schema_version": "zscope.candidate.v3.4",
             },
             "issues": [{"source": "b"}],
         },
     }
     for file_path, report in reports.items():
+        from zscope.snapshots.policy import SNAPSHOT_CANDIDATE_POLICY_VERSION
+        report["metadata"] = {"semantic_contract_version": "published",
+                              "snapshot_candidate_policy": SNAPSHOT_CANDIDATE_POLICY_VERSION if current_policy else "old-snapshot-candidates-enabled"}
         index_name = f"handle_request@{file_path}:10-10"
         store.save_snapshot(
             index_name,
@@ -543,6 +548,7 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
                 "start_line": 10,
                 "end_line": 10,
                 "summary": file_path,
+                "project_callees": [],
                 "referenced_globals": [],
                 "referenced_macros": [],
                 "referenced_types": [],
@@ -568,11 +574,22 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
         ),
     }
 
+    from zscope.orchestration.semantic_modeling import SessionSemanticResult
+    from zscope.orchestration.global_modeler import GlobalModelStats
+
+    state["semantic_result"] = SessionSemanticResult(
+        GlobalModelStats(), contract_version="published"
+    )
+
     runner._handle_plan_resume_entries(state, None)  # type: ignore[arg-type]
     state["results"] = {}
     runner._handle_merge_skipped_reports(state, None)  # type: ignore[arg-type]
 
     expected_keys = {ParallelAnalyzer._entry_result_key(entry) for entry in entries}
+    if not current_policy:
+        assert state["entries"] == entries
+        assert state["results"] == {}
+        return
     assert state["entries"] == []
     assert set(state["results"]) == expected_keys
     assert state["results"]["default:handle_request@src/a.c"].issues == [{"source": "a"}]

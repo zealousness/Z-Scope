@@ -1394,7 +1394,7 @@ class ValidationPipeline:
 
         if original == "alloc_free_mismatch" and re.search(
             r"(?:actual|real|instead|rather than|实际|真正|而非|不是.*而是|属于).*"
-            r"(?:memory leak|leak|内存泄漏|未释放|不释放|no[- ]op free|noop_free|_noop_free|_runtime_noop_free)",
+            r"(?:memory leak|leak|内存泄漏|未释放|不释放|no[- ]op free)",
             text,
             re.IGNORECASE,
         ):

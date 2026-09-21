@@ -267,6 +267,7 @@ class ClangExtractor:
         # contain scanner outputs and must never become the input manifest.
         self._derived_source_files: Tuple[Path, ...] = ()
         self._derived_resolver: Optional[DerivedResolver] = None
+        self._compile_preparation: Any = None
 
     # ── 生命周期 ──
 

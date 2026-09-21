@@ -19,17 +19,17 @@ def _as_list(value: Any) -> List[Any]:
 
 
 def resource_release_pairs_from_overlay(overlay: Dict[str, Any]) -> List[tuple[str, str, str]]:
-    pairs: List[tuple[str, str, str]] = []
-    for row in overlay.get("resource_models", []) if isinstance(overlay, dict) else []:
-        if not isinstance(row, dict):
-            continue
-        kind = str(row.get("kind") or "").lower()
-        if kind not in RESOURCE_ACQUIRE_KINDS:
-            continue
-        acquire = str(row.get("name") or "").strip()
-        for pair in split_config_pair_names(row.get("pair")):
-            if acquire and pair:
-                pairs.append((acquire, pair, str(row.get("source") or "user_config")))
+    from ...semantics.models import LocalPatternSemantics
+
+    semantics = LocalPatternSemantics()
+    semantics.merge_overlay(overlay if isinstance(overlay, dict) else {})
+    registry = semantics.contracts
+    pairs = [
+        (edge.acquire.name, edge.release.name, edge.source)
+        for edge in registry.pairs
+        if any(c.role in RESOURCE_ACQUIRE_KINDS for c in registry.find(edge.acquire.name))
+        and registry.allows(edge.acquire.name, edge.release.name)
+    ]
     seen = set()
     deduped = []
     for item in pairs:
@@ -42,9 +42,9 @@ def resource_release_pairs_from_overlay(overlay: Dict[str, Any]) -> List[tuple[s
 
 
 def split_config_pair_names(value: Any) -> List[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+    from ...semantics.contracts import parse_pair_targets
+
+    return [target.name for target in parse_pair_targets(value) if target.name]
 
 
 def clang_pair_row_to_candidate(
@@ -58,10 +58,12 @@ def clang_pair_row_to_candidate(
     line = int(row.get("line") or 0)
     acquire = str(row.get("acquire_func") or "")
     release = str(row.get("release_func") or "")
-    candidate_id = f"CLANG_PAIR_MEMORY_LEAK_{func}_{line}_{uuid.uuid5(uuid.NAMESPACE_URL, acquire + release).hex[:8]}"
+    obligation = _as_dict(row.get("lifecycle_obligation"))
+    object_id = str(obligation.get("acquisition_id") or "")
+    candidate_id = f"CLANG_PAIR_MEMORY_LEAK_{func}_{line}_{uuid.uuid5(uuid.NAMESPACE_URL, acquire + release + object_id).hex[:8]}"
     positive = [
         f"Clang/KnowledgeDB call graph shows `{func}` calls `{acquire}` at {file_path}:{line}",
-        f"No same-function call to configured release `{release}` was found in Clang call_edges",
+        f"Acquisition object: {obligation.get('object') or 'unresolved'}; ownership exits require checking",
         f"Pair source: {pair_source}",
     ]
     evidence = {
@@ -77,13 +79,18 @@ def clang_pair_row_to_candidate(
             "backend": "Clang KnowledgeDB call_edges",
             "complete_in_function": False,
             "path_constraints": [
-                "same function lacks configured release call",
-                "validator must check ownership transfer and caller-side cleanup",
+                "release must refer to the same object and resource domain on the relevant path",
+                "return/output/container ownership transfer must be checked",
             ],
         },
         "positive_evidence": positive,
         "negative_evidence": ["ownership transfer or caller-side release has not been ruled out"],
         "resource_pair": {"acquire": acquire, "release": release, "source": pair_source},
+        "contract_version": row.get("contract_version", ""),
+        "call_semantics": row.get("call_semantics", []),
+        "interface_inference_is_proof": False,
+        "lifecycle_obligation": obligation,
+        "lifecycle_gap": row.get("lifecycle_gap", ""),
     }
     return {
         "id": candidate_id,
@@ -96,8 +103,8 @@ def clang_pair_row_to_candidate(
         "finding_kind": "clang_callgraph_candidate",
         "candidate_source": "clang_knowledgedb_call_edges",
         "rule": "configured_acquire_without_release",
-        "description": f"`{func}` 在 Clang 调用图中调用了配置的获取函数 `{acquire}`，但缺少同函数内的 `{release}`。",
-        "root_cause": "配置的资源获取在所提取的同一函数体内没有对应的释放。",
+        "description": f"核验 `{func}` 中 `{acquire}` 获取对象的释放或所有权转移义务。",
+        "root_cause": "获取站点的同对象、同资源域与出口所有权义务需要闭合。",
         "suggested_fix": "Release the resource on all paths or document/validate ownership transfer to another owner.",
         "confidence": 0.68,
         "rule_confidence": 0.68,
@@ -105,6 +112,9 @@ def clang_pair_row_to_candidate(
         "reasoning": "Clang KnowledgeDB call-edge candidate normalized into Z-SCOPE evidence pack.",
         "source": acquire,
         "sink": f"missing {release}",
+        "lifecycle_obligation": obligation,
+        "contract_version": row.get("contract_version", ""),
+        "resource_identity": object_id,
         "positive_evidence": positive,
         "negative_evidence": evidence["negative_evidence"],
         "evidence_pack": evidence,

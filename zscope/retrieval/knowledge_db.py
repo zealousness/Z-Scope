@@ -2177,6 +2177,21 @@ class KnowledgeDB:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_global_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        names = sorted(set(names))
+        result: List[Dict[str, Any]] = []
+        for offset in range(0, len(names), 500):
+            chunk = names[offset : offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                "SELECT name, type_str, file_path, line, is_extern, storage_class, "
+                "qualifiers, initializer, definition_kind FROM global_variables "
+                f"WHERE name IN ({placeholders}) ORDER BY name, file_path, line",
+                chunk,
+            ).fetchall()
+            result.extend(dict(row) for row in rows)
+        return result
+
     def get_all_macro_definitions(self) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT id, macro_index_name, name, file_path, line, start_line, end_line, "
@@ -3172,8 +3187,27 @@ class KnowledgeDB:
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
+        rows = self.find_callers_without_any_callee(
+            acquire_func, [release_func], limit=limit, offset=offset
+        )
+        return [
+            {key: value for key, value in row.items() if key != "release_funcs"} for row in rows
+        ]
+
+    def find_callers_without_any_callee(
+        self,
+        acquire_func: str,
+        release_funcs: List[str],
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        releases = sorted(set(release_funcs))
+        if not releases:
+            return []
+        placeholders = ",".join("?" for _ in releases)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT caller_name, caller_file, MIN(call_line) AS acquire_line
             FROM call_edges
             WHERE callee_name = ?
@@ -3181,13 +3215,13 @@ class KnowledgeDB:
                   SELECT 1 FROM call_edges rel
                   WHERE rel.caller_name = call_edges.caller_name
                     AND rel.caller_file = call_edges.caller_file
-                    AND rel.callee_name = ?
+                    AND rel.callee_name IN ({placeholders})
               )
             GROUP BY caller_name, caller_file
             ORDER BY caller_name, caller_file
             LIMIT ? OFFSET ?
             """,
-            (acquire_func, release_func, limit, max(0, int(offset))),
+            (acquire_func, *releases, limit, max(0, int(offset))),
         ).fetchall()
         return [
             {
@@ -3195,10 +3229,29 @@ class KnowledgeDB:
                 "file_path": r["caller_file"],
                 "line": r["acquire_line"],
                 "acquire_func": acquire_func,
-                "release_func": release_func,
+                "release_func": " or ".join(releases),
+                "release_funcs": releases,
             }
             for r in rows
         ]
+
+    def find_acquisition_calls(
+        self, acquire_func: str, release_funcs: List[str], *, limit: int = 100, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Enumerate acquisition sites; release names cannot settle ownership.
+
+        Several AST calls can share a source line. The compiler obligation
+        adapter expands those into distinct objects after this coarse lookup.
+        """
+        rows = self._conn.execute(
+            "SELECT caller_name, caller_file, call_line, id FROM call_edges "
+            "WHERE callee_name = ? ORDER BY caller_file, caller_name, call_line, id LIMIT ? OFFSET ?",
+            (acquire_func, limit, max(0, int(offset))),
+        ).fetchall()
+        return [{"function": r["caller_name"], "file_path": r["caller_file"],
+                 "line": r["call_line"], "call_edge_id": r["id"], "acquire_func": acquire_func,
+                 "release_func": " or ".join(sorted(set(release_funcs))),
+                 "release_funcs": sorted(set(release_funcs))} for r in rows]
 
     # ── Header functions ──
 

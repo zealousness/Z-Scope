@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Set
+from .contracts import ContractRegistry
 
 DEFAULT_SEMANTICS_SOURCE = "builtin_defaults"
 
@@ -22,6 +23,7 @@ MERGE_ATTRS = (
     "recv_sources",
     "format_sinks",
     "callback_registrars",
+    "ownership_transfers",
 )
 
 
@@ -43,6 +45,8 @@ class LocalPatternSemantics:
     recv_sources: Dict[str, List[str]] = field(default_factory=dict)
     format_sinks: Dict[str, List[str]] = field(default_factory=dict)
     callback_registrars: Dict[str, List[str]] = field(default_factory=dict)
+    ownership_transfers: Dict[str, List[str]] = field(default_factory=dict)
+    contracts: ContractRegistry = field(default_factory=ContractRegistry)
 
     def add_api(self, category: str, name: str, source: str) -> None:
         target = {
@@ -59,18 +63,46 @@ class LocalPatternSemantics:
             "recv_source": self.recv_sources,
             "format_sink": self.format_sinks,
             "callback_register": self.callback_registrars,
+            "ownership_transfer": self.ownership_transfers,
         }.get(category)
         if target is None:
             return
         clean = str(name or "").strip()
-        if not re.fullmatch(r"[A-Za-z_]\w*", clean):
+        if source == DEFAULT_SEMANTICS_SOURCE and clean in self.contracts.shadowed_symbols:
+            return
+        if not re.fullmatch(r"[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*", clean):
+            return
+        known = self.contracts.find(clean, category)
+        if category in {"allocator", "calloc", "reallocator", "deallocator", "lock", "unlock",
+                        "io_acquire", "io_release", "ownership_transfer"} and known and not any(
+            c.effects_trusted for c in known
+        ):
             return
         sources = target.setdefault(clean, [])
         if source and source not in sources:
             sources.append(source)
+        if not self.contracts.find(clean, category):
+            from .contracts import ApiContract
+
+            contract = ApiContract.from_row(
+                {"symbol_name": clean, "kind": category, "source": source}
+            )
+            if contract is not None:
+                self.contracts.add(contract)
 
     def merge(self, other: "LocalPatternSemantics") -> None:
         self.type_aliases.update(other.type_aliases)
+        self.contracts.shadowed_symbols.update(other.contracts.shadowed_symbols)
+        for attr in MERGE_ATTRS:
+            bucket = getattr(self, attr)
+            for name in self.contracts.shadowed_symbols:
+                if name in bucket and all(s == DEFAULT_SEMANTICS_SOURCE for s in bucket[name]):
+                    bucket.pop(name)
+        for contract in other.contracts.contracts:
+            self.contracts.add(contract)
+        for pair in other.contracts.pairs:
+            if pair not in self.contracts.pairs:
+                self.contracts.pairs.append(pair)
         for attr in MERGE_ATTRS:
             for name, sources in getattr(other, attr).items():
                 for source in sources:
@@ -92,6 +124,43 @@ class LocalPatternSemantics:
             if any(str(source) != DEFAULT_SEMANTICS_SOURCE for source in sources or ())
         }
 
+    def merge_overlay(self, overlay: dict) -> None:
+        """Consume compiled structured rows; summary names carry no semantics."""
+        from .contracts import ApiContract, ApiPair, SymbolIdentity
+
+        self.contracts.shadowed_symbols.update(overlay.get("shadowed_symbols", []))
+        for row in overlay.get("api_contracts", []):
+            contract = ApiContract.from_row({"contract": row, "kind": row.get("role")})
+            if contract:
+                self.contracts.add(contract)
+                self.add_api(contract.role, contract.symbol.name, contract.source)
+        for row in [
+            *overlay.get("resource_models", []),
+            *overlay.get("lock_models", []),
+            *overlay.get("macro_models", []),
+        ]:
+            if "api_contracts" in overlay:
+                continue
+            contract = ApiContract.from_row(row)
+            if contract and not self.contracts.find(
+                contract.symbol.name,
+                contract.role,
+                contract.symbol.file_path,
+                contract.symbol.signature,
+            ):
+                self.contracts.add(contract)
+                self.add_api(contract.role, contract.symbol.name, contract.source)
+        for row in overlay.get("api_pairs", []):
+            pair = ApiPair(
+                SymbolIdentity.from_value(row.get("acquire")),
+                SymbolIdentity.from_value(row.get("release")),
+                row.get("conditions") or [],
+                str(row.get("source") or ""),
+                row.get("evidence") or [],
+            )
+            if pair not in self.contracts.pairs:
+                self.contracts.pairs.append(pair)
+
 
 CATEGORY_BY_ATTR = {
     "allocators": "allocator",
@@ -107,6 +176,7 @@ CATEGORY_BY_ATTR = {
     "recv_sources": "recv_source",
     "format_sinks": "format_sink",
     "callback_registrars": "callback_register",
+    "ownership_transfers": "ownership_transfer",
 }
 
 _CATEGORY_ATTRS = {
@@ -123,6 +193,7 @@ _CATEGORY_ATTRS = {
     "recv_source": "recv_sources",
     "format_sink": "format_sinks",
     "callback_register": "callback_registrars",
+    "ownership_transfer": "ownership_transfers",
 }
 
 

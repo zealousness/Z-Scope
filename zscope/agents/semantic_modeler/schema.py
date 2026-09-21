@@ -155,11 +155,25 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                     "name": {"type": "string"},
                     "type": {"type": "string"},
                     "file_path": {"type": "string"},
-                    "line": {"type": "integer"}, 
-                    "storage_class": {"enum": ["static","extern","thread_local","global","unknown",]},
+                    "line": {"type": "integer"},
+                    "storage_class": {
+                        "enum": [
+                            "static",
+                            "extern",
+                            "thread_local",
+                            "global",
+                            "unknown",
+                        ]
+                    },
                     "qualifiers": {
                         "type": "array",
-                        "items": {"enum": ["const","volatile","atomic",]},
+                        "items": {
+                            "enum": [
+                                "const",
+                                "volatile",
+                                "atomic",
+                            ]
+                        },
                         "uniqueItems": True,
                     },
                     "initializer": {"type": "string"},
@@ -310,7 +324,14 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                     "parameter_name": {"type": "string"},
                     "parameter_type": {"type": "string"},
                     "meaning": {"type": "string"},
-                    "input_origin": {"enum": ["external","internal","mixed","unknown",]},
+                    "input_origin": {
+                        "enum": [
+                            "external",
+                            "internal",
+                            "mixed",
+                            "unknown",
+                        ]
+                    },
                     "nullable": {"enum": ["yes", "no", "unknown", "not_applicable"]},
                     "ownership_effect": {
                         "description": "How the callee treats ownership of a pointer, handle, reference, or resource parameter. Omit for scalar parameters.",
@@ -324,7 +345,7 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                             "initialize",
                             "mutate_borrowed",
                             "unknown",
-                        ]
+                        ],
                     },
                     "constraints": {
                         "type": "array",
@@ -352,7 +373,7 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                         "shared",
                         "static_storage",
                         "unknown",
-                    ]
+                    ],
                 },
                 "success_cases": {
                     "type": "array",
@@ -465,7 +486,16 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                                     "type": "object",
                                     "required": ["kind", "object", "state"],
                                     "properties": {
-                                        "kind": {"enum": ["memory", "resource", "lock", "reference", "state", "other"]},
+                                        "kind": {
+                                            "enum": [
+                                                "memory",
+                                                "resource",
+                                                "lock",
+                                                "reference",
+                                                "state",
+                                                "other",
+                                            ]
+                                        },
                                         "object": {"type": "string"},
                                         "state": {"enum": EXIT_STATE_ENUM},
                                         "owner": {"type": "string"},
@@ -597,24 +627,222 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
             "description": "Audit-relevant suspicious points for later validation. Use an empty array when no suspicious point is present.",
             "items": {
                 "type": "object",
-                "required": [
-                    "category",
-                    "lines",
-                    "description"
-                ],
+                "required": ["category", "lines", "description"],
                 "properties": {
                     "category": {"enum": SUSPICIOUS_POINT_CATEGORY_ENUM},
                     "lines": {"type": "string"},
-                    "description": {"type": "string"}
+                    "description": {"type": "string"},
                 },
             },
         },
     },
 }
 
+# Explicit caller-visible behavior. Ordinary functions that only use an API
+# internally must return an empty array here. Legacy snapshots are rebuilt by
+# the modeling-spec fingerprint before they can publish project contracts.
+DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["properties"]["interface_contracts"] = {
+    "type": "array",
+    "description": "Caller-visible interfaces only; include functions and macros, explicit compatible pair targets, object bindings and success conditions. Never infer a role from its name or an internal call alone.",
+    "items": {
+        "type": "object",
+        "required": ["role", "carrier", "conditions", "pairs", "confidence", "evidence"],
+        "properties": {
+            "role": {
+                "enum": [
+                    "allocator",
+                    "calloc",
+                    "reallocator",
+                    "deallocator",
+                    "lock",
+                    "unlock",
+                    "copy",
+                    "io_acquire",
+                    "io_release",
+                    "send_sink",
+                    "recv_source",
+                    "format_sink",
+                    "callback_register",
+                    "ownership_transfer",
+                    "lock_init", "lock_destroy", "lock_state", "lock_wait",
+                    "condition_init", "condition_destroy", "condition_signal",
+                    "thread_create", "thread_release", "standard_operation",
+                ]
+            },
+            "carrier": {
+                "type": "object",
+                "required": ["kind"],
+                "properties": {
+                    "kind": {
+                        "enum": ["return", "argument", "output_argument", "global", "unknown"]
+                    },
+                    "argument_index": {"type": ["integer", "null"], "minimum": 0},
+                    "member_path": {"type": "string"},
+                    "global_name": {"type": "string"},
+                    "address_of": {"type": "boolean"},
+                },
+                "anyOf": [
+                    {
+                        "properties": {
+                            "kind": {"enum": ["argument", "output_argument"]},
+                            "argument_index": {"type": "integer", "minimum": 0},
+                        },
+                        "required": ["kind", "argument_index"],
+                    },
+                    {"properties": {"kind": {"enum": ["return", "global", "unknown"]}}},
+                ],
+            },
+            "conditions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "subject": {"type": "string"},
+                        "operator": {"type": "string"},
+                        "value": {"type": ["string", "number", "boolean", "null"]},
+                    },
+                },
+            },
+            "pairs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": {"type": "string"},
+                        "file_path": {"type": "string"},
+                        "signature": {"type": "string"},
+                        "symbol_type": {"enum": ["function", "macro"]},
+                    },
+                },
+            },
+            "resource_family": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"lines": {"type": "string"}, "description": {"type": "string"}},
+                },
+            },
+        },
+    },
+}
+DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["required"].append("interface_contracts")
+# Conditions are machine-readable expressions; descriptive sentences stay in evidence.
+DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["$defs"] = {
+    "operand": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+            "kind": {"enum": ["return", "argument", "global", "call_result", "literal", "constant", "target"]},
+            "index": {"type": "integer", "minimum": 0},
+            "name": {"type": "string"},
+            "value": {"type": ["string", "number", "boolean", "null"]},
+            "member_path": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    "predicate": {
+        "type": "object",
+        "required": ["op"],
+        "properties": {
+            "op": {"enum": ["true", "false", "unknown", "compare", "all", "any", "not"]},
+            "left": {"$ref": "#/$defs/operand"},
+            "right": {"$ref": "#/$defs/operand"},
+            "operator": {"enum": ["==", "!=", "<", "<=", ">", ">="]},
+            "items": {"type": "array", "items": {"$ref": "#/$defs/predicate"}},
+            "item": {"$ref": "#/$defs/predicate"},
+        },
+        "additionalProperties": False,
+    },
+}
+_interface_schema = DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["properties"]["interface_contracts"]["items"]
+_interface_schema["required"] = [
+    "role",
+    "carrier",
+    "preconditions",
+    "effect_cases",
+    "pairs",
+    "confidence",
+    "evidence",
+]
+_interface_schema["properties"]["conditions"] = {"type": "array", "maxItems": 0}
+_interface_schema["properties"]["preconditions"] = {"$ref": "#/$defs/predicate"}
+_interface_schema["properties"]["effect_cases"] = {
+    "type": "array",
+    "minItems": 1,
+    "items": {
+        "type": "object",
+        "required": ["when", "effect"],
+        "properties": {
+            "when": {"$ref": "#/$defs/predicate"},
+            "effect": {"enum": ["applies", "no_effect", "unknown"]},
+        },
+        "additionalProperties": False,
+    },
+}
+_interface_schema["properties"]["evidence"]["minItems"] = 1
+# Canonical callee contracts use null for an inapplicable index/domain and an
+# empty protocol for ordinary APIs. Accept that representation without allowing
+# an argument carrier to omit its actual parameter index.
+_interface_schema["properties"]["resource_domain"] = deepcopy(
+    _interface_schema["properties"]["carrier"]
+)
+_interface_schema["properties"]["resource_domain"]["type"] = ["object", "null"]
+_interface_schema["properties"]["protocol"] = {
+    "type": ["object", "null"],
+    "anyOf": [
+        {"const": {}},
+        {"type": "null"},
+        {"type": "object", "required": ["kind"]},
+    ],
+    "description": "Propose a logical pool protocol even without malloc/free. The implementation checker, not the model, establishes effects. Identify counterpart symbols in pairs for discovery.",
+    "properties": {
+        "kind": {
+            "type": "string",
+            "minLength": 1,
+            "description": "intrusive_freelist for head/link storage; otherwise a descriptive protocol kind retained as unverified",
+        },
+        "head_path": {
+            "type": "string",
+            "pattern": r"^->[A-Za-z_]\w*$",
+            "description": "Pointer member access including the -> operator, e.g. ->available, never bare available.",
+        },
+        "link_path": {
+            "type": "string",
+            "pattern": r"^->[A-Za-z_]\w*$",
+            "description": "Node pointer member access including ->, e.g. ->next, never bare next.",
+        },
+    },
+    "additionalProperties": False,
+}
+_interface_schema["properties"]["evidence"]["items"]["required"] = ["lines", "description"]
+_member_path_schema = {
+    "type": "string",
+    "pattern": r"^(?:(?:->|\.)[A-Za-z_]\w*|\[\d+\])*$",
+    "description": "Member suffix relative to the referenced object, including operators: ->field or .field. Do not write a bare field name or include the root object.",
+}
+DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["$defs"]["operand"]["properties"]["member_path"] = deepcopy(
+    _member_path_schema
+)
+for _binding_field in ("carrier", "resource_domain"):
+    _interface_schema["properties"][_binding_field]["properties"]["member_path"] = deepcopy(
+        _member_path_schema
+    )
+DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["properties"]["effects"]["items"]["properties"][
+    "caller_visible"
+] = {
+    "type": "boolean",
+    "description": "True only for an effect observable after the call or a caller precondition; false for wholly internal temporary actions.",
+}
+
 
 def _build_java_method_snapshot_schema() -> Dict[str, Any]:
     schema = deepcopy(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
+    schema.pop("$defs", None)
+    schema["required"].remove("interface_contracts")
+    schema["properties"].pop("interface_contracts", None)
     required = list(schema.get("required") or [])
     for field in (
         "language",

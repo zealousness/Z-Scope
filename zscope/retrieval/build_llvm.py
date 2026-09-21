@@ -103,6 +103,7 @@ class BitcodeBuilder:
         self._linked_inputs_by_path: Dict[str, List[Path]] = {}
         self.failed_links: List[str] = []
         self.cancel = threading.Event()
+        self._compile_preparation: Any = None
         self._input_validator = InputValidator([self.output_dir])
 
     def _matching_compiler(self, cxx: bool) -> Optional[str]:
@@ -282,6 +283,8 @@ class BitcodeBuilder:
                         future.cancel()
                     raise
 
+        if self._compile_preparation is not None:
+            self._compile_preparation.validate()
         if not self._bc_to_src:
             self._manifest["analysis_tasks"] = []
             self._manifest_dirty = True
@@ -1466,6 +1469,15 @@ class BitcodeBuilder:
 
     def _load_compile_commands(self) -> List[dict]:
         """加载并过滤 compile_commands.json。"""
+        if self._compile_preparation is None and self.compile_commands_path.is_file():
+            from .compile_commands_prepare import prepare_compile_commands
+            from .compile_preflight import discover_tools
+            self._compile_preparation = prepare_compile_commands(
+                self.compile_commands_path,
+                discover_tools(llvm_link=self.llvm_link, gclang=self.gclang),
+            )
+        elif self._compile_preparation is not None:
+            self._compile_preparation.validate()
         try:
             with open(self.compile_commands_path, "r", encoding="utf-8") as f:
                 commands = json.load(f)

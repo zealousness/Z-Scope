@@ -229,8 +229,10 @@ def candidate_coverage_keys(ledger: CandidateLedger) -> Set[str]:
 
     The planner is intentionally not allowed to inspect candidate identities,
     sources, sinks, locations, or rule conclusions.  Those values are neither
-    prompt material nor trigger inputs; a family-level coverage count/presence
-    bit is the only information that crosses this boundary.
+    prompt material nor trigger inputs; the only information that crosses
+    this boundary is family-level presence plus a coarse family+file site
+    bit (no line, object, or conclusion) used for site-level desert
+    detection.
     """
 
     keys: Set[str] = set()
@@ -243,6 +245,16 @@ def candidate_coverage_keys(ledger: CandidateLedger) -> Set[str]:
         family = _candidate_event_family(record, payload)
         if family:
             keys.add(_normalize_key(f"family:{family}"))
+            # Site-level presence (family+file): lets the planner treat a
+            # function with no same-family candidate as a desert even when
+            # the family is covered elsewhere.  File presence crosses the
+            # boundary; candidate identities and conclusions do not.
+            site = str(payload.get("file") or payload.get("file_path") or "")
+            if not site:
+                loc = str(payload.get("location") or "")
+                site = loc.split(":")[0] if loc else ""
+            if site:
+                keys.add(_normalize_key(f"family:{family}:{site}"))
     return keys
 
 
@@ -598,8 +610,37 @@ class CoverageGapPlanner:
         records: Sequence[FunctionSecurityRecord],
         covered: Set[str],
     ) -> bool:
-        del records
-        return _normalize_key(f"family:{family}") in covered
+        """Family-level coverage, refined by site-level presence when available.
+
+        ``covered`` carries ``family:<f>`` and, when the candidate ledger
+        exposes the file, ``family:<f>:<file>`` site keys.  A unit is no
+        longer a desert only when a member site itself has a same-family
+        candidate; a family covered at OTHER sites keeps the unit a desert
+        so candidate-blind discovery still plans it.
+        """
+        family_key = _normalize_key(f"family:{family}")
+        if family_key not in covered:
+            return False
+        # Callers that only provide family-level coverage keep the old
+        # semantics (family presence == covered).
+        if not any(len(key.split(":")) >= 3 for key in covered):
+            return True
+        site_keys = {
+            _normalize_key(
+                f"family:{family}:{str(rec.file_path or getattr(rec, 'file', '') or '')}"
+            )
+            for rec in records
+        }
+        for key in covered:
+            parts = key.split(":")
+            if len(parts) < 3 or parts[1] != family:
+                continue
+            covered_file = ":".join(parts[2:])
+            for sk in site_keys:
+                sk_file = ":".join(sk.split(":")[2:])
+                if sk_file and (sk_file.endswith(covered_file) or covered_file.endswith(sk_file)):
+                    return True
+        return False
 
     @staticmethod
     def _is_known_variant(record: FunctionSecurityRecord, known_variants: Set[str]) -> bool:

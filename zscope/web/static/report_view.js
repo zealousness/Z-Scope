@@ -128,12 +128,27 @@
     const parsed = parse(content);
     element.innerHTML = render(content);
     const toc = [], seen = new Set();
-    const sectionIds = {'代码证据与路径':'report-code-evidence', '正反证据':'report-positive-negative', 'Validator 验证结果':'report-validator', '结构化证据解读':'report-evidence'};
+    const sectionIds = {'代码证据与路径':'report-code-evidence', '正反证据':'report-positive-negative', 'Validator 验证结果':'report-validator', '结构化证据':'report-evidence', '结构化证据解读':'report-evidence'};
     element.querySelectorAll('h2').forEach((heading, index) => {
       const id = sectionIds[heading.textContent];
       heading.id = id && !seen.has(id) ? id : `section-${index}`; seen.add(heading.id);
       toc.push({id: heading.id, label: heading.textContent});
     });
+    // Fold the entire evidence chapter, including legacy JSON-only reports.
+    // Keep headings and anchors intact so navigation can open their ancestors.
+    for (const heading of [...element.children]) {
+      if (heading.tagName !== 'H2' || !['结构化证据', '结构化证据解读'].includes(heading.textContent.trim())) continue;
+      const details = document.createElement('details'); details.className = 'report-evidence-section';
+      const summary = document.createElement('summary');
+      const body = document.createElement('div'); body.className = 'report-evidence-body';
+      heading.before(details); summary.append(heading);
+      for (const [state, label] of [['expand', '点击展开'], ['collapse', '点击收起']]) {
+        const hint = document.createElement('span'); hint.className = `report-evidence-${state}`;
+        hint.textContent = label; hint.setAttribute('aria-hidden', 'true'); summary.append(hint);
+      }
+      while (details.nextSibling && !/^H[12]$/.test(details.nextSibling.nodeName)) body.append(details.nextSibling);
+      details.append(summary, body);
+    }
     element.querySelectorAll('a[href^="#code-"]').forEach(link => {
       if (!/:[1-9]\d*(?:-[1-9]\d*)?$/.test(link.textContent)) return;
       const button = document.createElement('button'); button.type = 'button'; button.className = 'evidence-copy-location';

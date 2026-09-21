@@ -193,7 +193,13 @@ def _canonical_bytes(value: Any) -> bytes:
 
 
 def _sha256_payload(value: Any) -> str:
-    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+    for chunk in encoder.iterencode(value):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
 
 
 def canonical_json_sha256(value: Any) -> str:
@@ -283,9 +289,10 @@ def _canonical_group_records(
         candidate_issue: Mapping[str, Any] = (
             raw_candidate_issue if isinstance(raw_candidate_issue, Mapping) else raw
         )
-        if str(
-            raw.get("record_role") or candidate_issue.get("record_role") or ""
-        ).strip() == "operational_obligation":
+        if (
+            str(raw.get("record_role") or candidate_issue.get("record_role") or "").strip()
+            == "operational_obligation"
+        ):
             continue
         cluster = _cluster_uid(raw)
         candidate_uid = _candidate_uid(raw)
@@ -836,34 +843,20 @@ def validate_validator_replay_bundle(bundle: Mapping[str, Any]) -> None:
 
 
 def write_validator_replay_bundle(path: Path, report: Mapping[str, Any]) -> Dict[str, Any]:
+    from ..reporting.json_io import write_report_atomic
+
     bundle = build_validator_replay_bundle(report)
-    Path(path).write_text(
-        json.dumps(bundle, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    write_report_atomic(Path(path), bundle)
     return bundle
 
 
 def load_validator_replay_bundle(path: Path) -> Dict[str, Any]:
-    def reject_duplicates(pairs: Sequence[tuple[str, Any]]) -> Dict[str, Any]:
-        result: Dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ReplayBundleError(f"duplicate JSON key in replay bundle: {key}")
-            result[key] = value
-        return result
-
-    def reject_constant(value: str) -> None:
-        raise ReplayBundleError(f"non-finite JSON value in replay bundle: {value}")
+    from ..reporting.json_io import read_report
 
     try:
-        payload = json.loads(
-            Path(path).read_text(encoding="utf-8"),
-            object_pairs_hook=reject_duplicates,
-            parse_constant=reject_constant,
-        )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ReplayBundleError(f"invalid replay bundle: {path}") from exc
+        payload = read_report(Path(path), strict=True)
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ReplayBundleError(f"invalid replay bundle: {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ReplayBundleError("replay bundle must be an object")
     validate_validator_replay_bundle(payload)

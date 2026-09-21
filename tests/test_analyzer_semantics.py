@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from semantic_fixtures import configured_test_semantics
+from zscope.semantics.contracts import ApiContract
 
 import pytest
 
@@ -406,7 +408,29 @@ def test_graph_impl_query_failure_is_exposed() -> None:
 
 
 def test_graph_candidates_detect_free_wrapper_omitted_dynamic_payload() -> None:
-    semantics = LocalPatternSemantics()
+    semantics = configured_test_semantics()
+    for name, role, pair, carrier in (
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["_real_model_free_node", "SAFE_FREE"],
+            {"kind": "return"},
+        ),
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["SAFE_FREE"],
+            {"kind": "return", "member_path": "->payload"},
+        ),
+        ("_real_model_free_node", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+        ("service_release_by_role", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+    ):
+        semantics.contracts.add(
+            ApiContract.from_row(
+                {"symbol_name": name, "kind": role, "pair": pair, "contract": {"carrier": carrier}}
+            )
+        )
+        semantics.add_api(role, name, "user_config")
     semantics.add_api("deallocator", "SAFE_FREE", "user_config")
     generator = GraphCandidateGenerator(object(), semantics)
     creator = _graph_view(
@@ -445,7 +469,29 @@ def test_graph_candidates_detect_free_wrapper_omitted_dynamic_payload() -> None:
 def test_graph_candidates_detect_helper_alloc_wrapper_member_leak_without_primitive_pair_fp() -> (
     None
 ):
-    semantics = LocalPatternSemantics()
+    semantics = configured_test_semantics()
+    for name, role, pair, carrier in (
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["_real_model_free_node", "SAFE_FREE"],
+            {"kind": "return"},
+        ),
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["SAFE_FREE"],
+            {"kind": "return", "member_path": "->payload"},
+        ),
+        ("_real_model_free_node", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+        ("service_release_by_role", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+    ):
+        semantics.contracts.add(
+            ApiContract.from_row(
+                {"symbol_name": name, "kind": role, "pair": pair, "contract": {"carrier": carrier}}
+            )
+        )
+        semantics.add_api(role, name, "user_config")
     semantics.add_api("deallocator", "SAFE_FREE", "user_config")
     generator = GraphCandidateGenerator(NullCodeIndex(), semantics)
     unregister = _graph_view(
@@ -685,7 +731,30 @@ def test_graph_candidates_detect_protocol_contract_variants() -> None:
 
 
 def test_graph_candidates_detect_callback_self_destroy_and_role_contract() -> None:
-    generator = GraphCandidateGenerator(object(), LocalPatternSemantics())
+    semantics = configured_test_semantics()
+    for name, role, pair, carrier in (
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["_real_model_free_node", "SAFE_FREE"],
+            {"kind": "return"},
+        ),
+        (
+            "_real_model_alloc_node",
+            "allocator",
+            ["SAFE_FREE"],
+            {"kind": "return", "member_path": "->payload"},
+        ),
+        ("_real_model_free_node", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+        ("service_release_by_role", "deallocator", [], {"kind": "argument", "argument_index": 0}),
+    ):
+        semantics.contracts.add(
+            ApiContract.from_row(
+                {"symbol_name": name, "kind": role, "pair": pair, "contract": {"carrier": carrier}}
+            )
+        )
+        semantics.add_api(role, name, "user_config")
+    generator = GraphCandidateGenerator(object(), semantics)
     callback = _graph_view(
         generator,
         "_completion_callback",
@@ -1082,7 +1151,7 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
     ]
 
 
-def test_checked_allocator_wrappers_use_lightweight_snapshots() -> None:
+def test_allocator_wrappers_require_modeling_without_name_shortcuts() -> None:
     code = """
 13 | void* _safe_malloc(size_t size) {
 14 |     void* ptr = malloc(size);
@@ -1106,22 +1175,16 @@ def test_checked_allocator_wrappers_use_lightweight_snapshots() -> None:
     }
 
     assert not Analyzer._is_trivial_function(code, max_lines_threshold=10)
-    assert Analyzer._is_lightweight_snapshot_candidate("_safe_malloc", impl)
+    assert not Analyzer._is_lightweight_snapshot_candidate("_safe_malloc", impl)
 
     snapshot = Analyzer._build_lightweight_snapshot(
         "_safe_malloc",
         impl,
     )
 
-    assert snapshot["snapshot_kind"] == "lightweight"
-    assert snapshot["return_values"]["ownership"] == "caller_owned"
-    assert snapshot["return_values"]["caller_obligation"]
-    assert [effect["category"] for effect in snapshot["effects"]] == [
-        "memory",
-        "ownership",
-    ]
-    assert snapshot["error_handling"]["error_paths"][0]["return_value"] == "NULL"
-    assert snapshot["suspicious_points"] == []
+    assert snapshot["snapshot_kind"] == "syntactic"
+    assert snapshot["interface_contracts"] == []
+    assert snapshot["effects"] == []
     assert "semantic_fingerprint" not in snapshot
     assert "resources" not in snapshot
     assert "key_semantics" not in snapshot
@@ -1158,16 +1221,9 @@ def test_lightweight_snapshot_variants_use_unified_semantic_fields() -> None:
         assert tuple(snapshot) == DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS
         assert snapshot["parameters"] == []
         assert snapshot["return_values"]["return_type"] == "unknown"
-        if effect_category is None:
-            assert snapshot["effects"] == []
-        else:
-            assert snapshot["effects"][0]["category"] == effect_category
-        if name in {"LOCK", "UNLOCK"}:
-            assert snapshot["effects"][0]["details"]["operation_kind"] == operation
-        if name in {"RETURN_IF_ERR", "GOTO_IF_ERR"}:
-            assert snapshot["error_handling"]["error_paths"][0]["exit_action"] == operation
-        else:
-            assert snapshot["error_handling"] == {"error_paths": []}
+        assert snapshot["effects"] == []
+        assert snapshot["interface_contracts"] == []
+        assert snapshot["error_handling"] == {"error_paths": []}
 
 
 def test_deterministic_snapshot_preserves_context_truncation_and_isolation() -> None:
@@ -1802,7 +1858,7 @@ def test_clang_knowledge_candidates_reuse_precomputed_reachable_set() -> None:
             return graph.get(name, [])
 
     class FakeDB:
-        def find_callers_without_callee(self, acquire: str, release: str, limit: int = 100):
+        def find_acquisition_calls(self, acquire: str, release: list[str], limit: int = 100):
             return [
                 {"function": "api_open", "file_path": "src/api.c", "line": 7},
                 {"function": "unreachable", "file_path": "src/other.c", "line": 9},
@@ -1927,6 +1983,7 @@ def test_paged_adapter_internal_type_error_is_not_misread_as_legacy_api() -> Non
 
 def test_clang_pair_row_normalizes_to_candidate() -> None:
     analyzer = object.__new__(Analyzer)
+    analyzer._semantic_overlay = {}
     row = {
         "function": "api_open",
         "file_path": "src/demo.c",

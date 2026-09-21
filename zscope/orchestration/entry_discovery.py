@@ -35,6 +35,15 @@ COMM_PROMPT = (
     "of stopping at the low-level read wrapper."
 )
 THREAD_PROMPT = "Thread entry or thread creator. Audit stack lifetime, shared state, lock ordering, and handoff ownership."
+CALLBACK_PROMPT = (
+    "Registered callback entry. Registration makes this function a possible external execution root; "
+    "absence of direct callers does not imply dead code. Audit callback lifetime and shared state. "
+    "Registration is a reachability hint, not proof that registration succeeds or the callback runs."
+)
+SIGNAL_CALLBACK_PROMPT = (
+    "This callback is registered as an asynchronous signal handler. Preserve signal context when "
+    "following callees; audit async-signal safety, reentrancy, interrupted lock ownership, and shared state."
+)
 INPUT_PROMPT = (
     "User-controlled input entry. Treat file, environment, CLI, device, and stdin data as untrusted. "
     "Audit parsing, size conversion, range checks, termination, and resource cleanup before the data "
@@ -183,8 +192,6 @@ class EntryDiscovery:
     )
     DEFAULT_THREAD_CALLS = (
         "pthread_create",
-        "VOS_TaskCreate",
-        "OSAL_TaskCreate",
         "thrd_create",
         "CreateThread",
         "_beginthread",
@@ -193,8 +200,6 @@ class EntryDiscovery:
     )
     THREAD_ENTRY_ARG_INDEXES = {
         "pthread_create": 2,
-        "VOS_TaskCreate": 2,
-        "OSAL_TaskCreate": 1,
     }
     DEFAULT_INPUT_CALLS = (
         "scanf",
@@ -287,6 +292,7 @@ class EntryDiscovery:
         )
 
         merged = self._merge_candidates(header_candidates + body_candidates)
+        merged = self._retain_uncovered_creators(merged)
         merged.sort(
             key=lambda c: (
                 -c.confidence,
@@ -319,7 +325,10 @@ class EntryDiscovery:
         has_api = any("api" in c.exposure for c in selected)
         has_comm = any("communication" in c.exposure or "thread" in c.exposure for c in selected)
         has_other = any(c.exposure == "other_user_input" for c in selected)
-        if has_api and has_comm:
+        has_callback = any("callback" in c.exposure.split("+") for c in selected)
+        if has_callback:
+            exposure_kind = "mixed_with_callbacks" if has_api or has_comm or has_other else "callback_only"
+        elif has_api and has_comm:
             exposure_kind = "mixed_api_and_communication"
         elif has_api:
             exposure_kind = "api_only"
@@ -333,7 +342,7 @@ class EntryDiscovery:
         notes = []
         if not selected:
             notes.append(
-                "No header API, communication, thread, or other user-input entry candidates were found."
+                "No header API, communication, thread, callback, or other user-input entry candidates were found."
             )
         if self._inactive_implementation_identities:
             notes.append(
@@ -354,6 +363,30 @@ class EntryDiscovery:
             notes=notes,
             deferred_candidates=deferred,
         )
+
+    def _retain_uncovered_creators(self, candidates: List[EntryCandidate]) -> List[EntryCandidate]:
+        creators = [c for c in candidates if c.exposure == "thread" and
+                    any(r.startswith("thread_creator:") for r in c.reasons) and
+                    not any(r.startswith("thread_entry:") for r in c.reasons)]
+        others = [c for c in candidates if c not in creators]
+        reachable: set[tuple[str, str]] = set()
+        pending = [(c.function_name, c.file_path) for c in others]
+        getter = getattr(self.code_index, "get_callees", None)
+        while pending and callable(getter):
+            name, file = pending.pop()
+            if (name, file) in reachable:
+                continue
+            reachable.add((name, file))
+            try:
+                for row in getter(name, limit=1_000_000) or []:
+                    target = str(row.get("name") or row.get("callee_name") or "")
+                    target_file = self._normalize_entry_path(str(row.get("callee_file") or row.get("filename") or row.get("file_path") or ""))
+                    if target and (target, target_file) not in reachable:
+                        pending.append((target, target_file))
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                # Missing reachability cannot justify removing an entry.
+                continue
+        return others + [c for c in creators if (c.function_name, c.file_path) not in reachable]
 
     @classmethod
     def _select_stratified(
@@ -392,7 +425,7 @@ class EntryDiscovery:
         exposure = str(candidate.exposure or "").lower()
         if "communication" in exposure or "other_user_input" in exposure:
             return "input"
-        if "thread" in exposure:
+        if "thread" in exposure or "callback" in exposure:
             return "thread"
         text = " ".join(
             [
@@ -445,8 +478,17 @@ class EntryDiscovery:
         return candidates
 
     def _discover_body_entries(self) -> List[EntryCandidate]:
+        from .callback_discovery import registered_callback_targets
+
         candidates: List[EntryCandidate] = []
-        for name, impl in self._body_function_implementations():
+        implementations = list(self._body_function_implementations())
+        callback_maps = self._thread_callback_maps(implementations)
+        registration_edges: List[Dict[str, Any]] = []
+        published_edges: List[Dict[str, Any]] = []
+        registrations = registered_callback_targets([
+            (self._implementation_function_name(name, impl), impl) for name, impl in implementations
+        ], edges=registration_edges)
+        for ordinal, (name, impl) in enumerate(implementations):
             self._discovery_progress["functions"] = self._discovery_progress.get("functions", 0) + 1
             self._discovery_progress["function"] = name
             if not impl:
@@ -466,19 +508,51 @@ class EntryDiscovery:
             shm_hits = self._find_calls(
                 call_search_code, self.shared_memory_calls, code_is_stripped=True
             )
-            thread_hits = self._find_calls(call_search_code, self.thread_calls, code_is_stripped=True)
+            thread_indexes = callback_maps[ordinal]
+            thread_hits = self._find_calls(
+                call_search_code, tuple(thread_indexes), code_is_stripped=True
+            )
             input_hits = self._find_calls(call_search_code, self.input_calls, code_is_stripped=True)
+
+            for target, registrar, context in registrations[ordinal]:
+                target_impl = self._get_function_impl(target, file_path=file_path)
+                if not target_impl or not self._is_active_implementation(target_impl):
+                    continue
+                target_file = str(target_impl.get("file") or "")
+                if not self._is_in_search_root(target_file):
+                    continue
+                published_edges.extend({**edge, "callee_file": target_file,
+                    "callee_signature": str(target_impl.get("signature") or "")}
+                    for edge in registration_edges
+                    if edge["caller_file"] == file_path and edge["callee_name"] == target
+                    and edge["registrar"] == registrar)
+                candidates.append(EntryCandidate(
+                    function_name=self._implementation_function_name(target, target_impl),
+                    exposure="callback",
+                    reasons=[f"callback_entry:{registrar}", f"callback_context:{context}"],
+                    file_path=self._normalize_entry_path(target_file),
+                    signature=str(target_impl.get("signature") or ""),
+                    line=int(target_impl.get("start_line") or 0),
+                    custom_prompt=CALLBACK_PROMPT + (
+                        " " + SIGNAL_CALLBACK_PROMPT if context == "signal" else
+                        " This callback runs during process termination; audit cleanup ordering."
+                    ),
+                    confidence=0.88,
+                ))
 
             if comm_hits or shm_hits:
                 exposure_parts.append("communication")
                 reasons.extend([f"calls:{hit}" for hit in comm_hits])
                 reasons.extend([f"shared_memory:{hit}" for hit in shm_hits])
             if thread_hits:
+                exposure_parts.append("thread")
+                reasons.extend([f"thread_creator:{hit}" for hit in thread_hits])
                 reasons.extend([f"thread:{hit}" for hit in thread_hits])
                 for target, call in self._find_thread_entry_targets(
                     call_search_code,
                     thread_hits,
                     code_is_stripped=True,
+                    arg_indexes=thread_indexes,
                 ):
                     target_impl = self._get_function_impl(target, file_path=file_path)
                     if not target_impl:
@@ -528,7 +602,68 @@ class EntryDiscovery:
                     confidence=0.85 if exposure != "other_user_input" else 0.7,
                 )
             )
+        publish = getattr(self.code_index, "publish_callback_registrations", None)
+        if callable(publish):
+            publish(published_edges, [str(impl.get("file") or "") for _, impl in implementations])
         return candidates
+
+    def _thread_callback_maps(
+        self, implementations: List[Tuple[str, Dict[str, Any]]]
+    ) -> List[Dict[str, Tuple[int, ...]]]:
+        """Find possible thread callbacks by forwarding actual source parameters.
+
+        These are entry-discovery facts, never proof that a call succeeds or
+        transfers ownership. Ambiguous project definitions shadow builtin names.
+        """
+        from ..semantics.contract_compiler import read_source_facts, reference
+        from ..semantics.contracts import code_tokens
+        from ..semantics.defaults import default_local_pattern_semantics
+
+        registry = default_local_pattern_semantics().contracts
+        records = []
+        by_name: Dict[str, List[int]] = {}
+        for ordinal, (query, impl) in enumerate(implementations):
+            name = self._implementation_function_name(query, impl)
+            context = {**impl, "func_name": name, "file_path": impl.get("file", "")}
+            facts = read_source_facts(context, registry)
+            records.append((name, str(impl.get("file") or ""), facts))
+            by_name.setdefault(name, []).append(ordinal)
+        derived: List[set[int]] = [set() for _ in records]
+        builtins: Dict[str, Tuple[int, ...]] = {
+            name: ((self.THREAD_ENTRY_ARG_INDEXES[name],)
+                   if name in self.THREAD_ENTRY_ARG_INDEXES else ())
+            for name in self.thread_calls if name not in by_name
+        }
+
+        def targets(caller: int) -> Dict[str, Tuple[int, ...]]:
+            _, file_path, facts = records[caller]
+            result = {name: indices for name, indices in builtins.items()
+                      if name not in facts.parameters and name not in facts.local_variables}
+            for name, choices in by_name.items():
+                local = [i for i in choices if records[i][1] == file_path]
+                visible = local or choices
+                if len(visible) == 1 and derived[visible[0]]:
+                    result[name] = tuple(sorted(derived[visible[0]]))
+            return result
+
+        changed = True
+        while changed:
+            changed = False
+            for ordinal, (_, _, facts) in enumerate(records):
+                known = targets(ordinal)
+                for call in [*facts.calls, *facts.opaque_calls]:
+                    for index in known.get(call.name, ()):
+                        if index >= len(call.arguments):
+                            continue
+                        ref = reference(code_tokens(call.arguments[index]), facts.parameters,
+                                        call.aliases_at_call)
+                        if not ref or ref.get("kind") != "argument" or ref.get("member_path"):
+                            continue
+                        parameter = ref.get("index")
+                        if isinstance(parameter, int) and parameter not in derived[ordinal]:
+                            derived[ordinal].add(parameter)
+                            changed = True
+        return [targets(ordinal) for ordinal in range(len(records))]
 
     def _list_functions_for_discovery(self) -> List[str]:
         if self.search_root:
@@ -785,25 +920,28 @@ class EntryDiscovery:
         thread_calls: Sequence[str],
         *,
         code_is_stripped: bool = False,
+        arg_indexes: Optional[Dict[str, Tuple[int, ...]]] = None,
     ) -> List[Tuple[str, str]]:
         stripped = code if code_is_stripped else EntryDiscovery._strip_code_for_call_search(code)
         targets: List[Tuple[str, str]] = []
         seen = set()
         for call in thread_calls:
-            arg_index = EntryDiscovery.THREAD_ENTRY_ARG_INDEXES.get(call)
-            if arg_index is None:
-                continue
+            indices = (arg_indexes or {}).get(call)
+            if indices is None:
+                index = EntryDiscovery.THREAD_ENTRY_ARG_INDEXES.get(call)
+                indices = (index,) if index is not None else ()
             for args in EntryDiscovery._iter_call_args(stripped, call):
                 split_args = EntryDiscovery._split_c_arguments(args)
-                if len(split_args) <= arg_index:
-                    continue
-                target = EntryDiscovery._extract_function_reference(split_args[arg_index])
-                if not target:
-                    continue
-                key = (target, call)
-                if key not in seen:
-                    targets.append(key)
-                    seen.add(key)
+                for arg_index in indices:
+                    if len(split_args) <= arg_index:
+                        continue
+                    target = EntryDiscovery._extract_function_reference(split_args[arg_index])
+                    if not target:
+                        continue
+                    key = (target, call)
+                    if key not in seen:
+                        targets.append(key)
+                        seen.add(key)
         return targets
 
     @staticmethod

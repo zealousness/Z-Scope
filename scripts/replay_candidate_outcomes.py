@@ -30,8 +30,8 @@ def _sha256(path: Path) -> str:
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
-    with path.open(encoding="utf-8") as handle:
-        value = json.load(handle)
+    from zscope.reporting.json_io import read_report
+    value = read_report(path)
     if not isinstance(value, dict):
         raise ValueError(f"expected a JSON object: {path}")
     return value

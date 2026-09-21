@@ -93,6 +93,10 @@ class MacroSymbolBackend(FunctionInfoBackend):
             if record.get("name") in requested
         ]
 
+    def get_global_definitions_batch(self, names):
+        return [dict(row) for row in self.symbol_definitions.get("globals", [])
+                if row.get("name") in names]
+
 
 class EmptySnapshotStore:
     pass
@@ -728,6 +732,25 @@ def test_function_info_uses_three_callee_schema_with_verified_indirect_callsite(
             "indirect_callsites": [],
         }
     ]
+
+
+def test_header_declaration_edges_reach_unique_project_definitions(tmp_path) -> None:
+    source = tmp_path / "src" / "target.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int Target(void) { return 0; }\n", encoding="utf-8")
+    backend = FunctionInfoBackend({"Target": {
+        "name": "Target", "file": "src/target.c", "start_line": 1, "end_line": 1,
+        "signature": "int Target(void)",
+    }})
+    index = _index(tmp_path, backend, "unified")
+    kind, descriptor = index._function_info_callee_descriptor("Target", "include/api.ph")
+    assert kind == "project_function"
+    assert descriptor["callee_index_name"] == "Target@src/target.c:1-1"
+    assert index._function_info_callee_descriptor("Target", "src/other.c")[0] == "unresolved"
+    assert index._function_info_callee_descriptor("Target", "include/api.ph", callee_signature="int Target(int x)")[0] == "external"
+    backend.function_index["Target"]["is_static"] = True
+    index = _index(tmp_path, backend, "unified")
+    assert index._function_info_callee_descriptor("Target", "include/api.ph")[0] == "unresolved"
 
 
 def test_function_info_downgrades_call_type_to_direct_for_clang_backends(tmp_path) -> None:
@@ -1400,7 +1423,8 @@ def test_backend_macro_symbol_context_uses_regex_candidates_and_db_definitions(
         start_line=1,
     )
 
-    assert info["referenced_globals"] == []
+    assert [(r["name"], r["file_path"], r["reference_lines"])
+            for r in info["referenced_globals"]] == [("g_lock", "src/macro.c", [2])]
     assert info["referenced_macros"] == [
         {
             "macro_index_name": "OBJECT_LIMIT@include/common.h:40-40",
@@ -1415,7 +1439,7 @@ def test_backend_macro_symbol_context_uses_regex_candidates_and_db_definitions(
             "reference_lines": [2],
         },
     ]
-    assert semantic_input["referenced_globals"] == []
+    assert semantic_input["referenced_globals"] == info["referenced_globals"]
     assert semantic_input["referenced_macros"] == info["referenced_macros"]
     assert "UNLOCK@include/common.h:34-34" not in {
         item["callee_index_name"] for item in info["project_callees"]

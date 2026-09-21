@@ -58,7 +58,10 @@ def test_workbook_writes_readme_sheet_that_reader_ignores(tmp_path: Path) -> Non
     with zipfile.ZipFile(path) as zf:
         workbook_xml = zf.read("xl/workbook.xml").decode("utf-8")
         assert f'name="{README_SHEET_NAME}"' in workbook_xml
-        readme_sheet = zf.read("xl/worksheets/sheet7.xml").decode("utf-8")
+        import xml.etree.ElementTree as ET
+        sheets = ET.fromstring(workbook_xml).findall("{*}sheets/{*}sheet")
+        index = next(i for i, sheet in enumerate(sheets, 1) if sheet.attrib["name"] == README_SHEET_NAME)
+        readme_sheet = zf.read(f"xl/worksheets/sheet{index}.xml").decode("utf-8")
         assert "user_config" in readme_sheet  # guide text present
 
     rows = UserConfigWorkbook(path).read_rows()

@@ -41,8 +41,9 @@ public:
           const Stmt *stmt = statement->getStmt();
           auto begin = state.location(stmt->getBeginLoc());
           std::string kind = "statement", family, operation;
-          Object object;
-          Array argumentObjects;
+          Object object, calleeIdentity;
+          Array argumentObjects, argumentExpressions;
+          std::string returnValue, assignmentTarget, assignmentValue;
           if (const auto *allocation = dyn_cast<CXXNewExpr>(stmt)) {
             kind = "acquire";
             object = acquisitionIdentity(allocation);
@@ -58,13 +59,24 @@ public:
             kind = "call";
             object = acquisitionIdentity(call);
             if (const auto *callee = call->getDirectCallee()) {
+              calleeIdentity = state.target(callee);
               operation = callee->getQualifiedNameAsString() + "(";
               for (unsigned i = 0; i < call->getNumArgs(); ++i) {
                 if (i) operation += ", ";
                 operation += expression(call->getArg(i));
                 argumentObjects.push_back(objectIdentity(call->getArg(i)));
+                argumentExpressions.push_back(expression(call->getArg(i)));
               }
               operation += ")";
+            }
+          } else if (const auto *returned = dyn_cast<ReturnStmt>(stmt)) {
+            kind = "return";
+            if (returned->getRetValue()) returnValue = expression(returned->getRetValue());
+          } else if (const auto *assignment = dyn_cast<BinaryOperator>(stmt)) {
+            if (assignment->isAssignmentOp()) {
+              kind = "assignment";
+              assignmentTarget = expression(assignment->getLHS());
+              assignmentValue = expression(assignment->getRHS());
             }
           }
           events.push_back(Object{{"event_kind", kind}, {"resource_family", family},
@@ -72,16 +84,27 @@ public:
             {"location", begin.json()}, {"end", state.location(stmt->getEndLoc()).json()},
             {"ast_kind", stmt->getStmtClassName()}, {"expression", state.text(stmt->getSourceRange())},
             {"operation", operation}, {"object", std::move(object)},
+            {"callee", std::move(calleeIdentity)}, {"arguments", std::move(argumentExpressions)},
+            {"return_value", returnValue}, {"assignment_target", assignmentTarget},
+            {"assignment_value", assignmentValue},
             {"argument_objects", std::move(argumentObjects)}, {"macro_expansion", stmt->getBeginLoc().isMacroID()}});
         }
-        for (auto successor : block->succs())
+        unsigned successorIndex = 0;
+        const auto *condition = dyn_cast_or_null<Expr>(block->getTerminatorCondition());
+        for (auto successor : block->succs()) {
           if (const auto *target = successor.getReachableBlock())
-            edges.push_back(Object{{"from", block->getBlockID()}, {"to", target->getBlockID()}});
+            edges.push_back(Object{{"from", block->getBlockID()}, {"to", target->getBlockID()},
+              {"condition", condition ? expression(condition) : ""},
+              {"branch", condition && block->succ_size() == 2 &&
+                !isa_and_nonnull<SwitchStmt>(block->getTerminatorStmt())
+                ? (successorIndex == 0 ? "true" : "false") : "unknown"}});
+          ++successorIndex;
+        }
       }
     }
     state.emit(Object{{"kind", "program_function"}, {"owner", state.owner(loc)},
       {"location", loc.json()}, {"complete", bool(cfg)}, {"events", std::move(events)},
-      {"cfg_edges", std::move(edges)}, {"fact_version", "zscope.program-events.v1"}});
+      {"cfg_edges", std::move(edges)}, {"target_values", state.targetValues()}, {"fact_version", "zscope.program-events.v4"}});
     return true;
   }
   bool VisitDeclRefExpr(DeclRefExpr *expr) {

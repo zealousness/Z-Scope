@@ -522,7 +522,7 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
         "candidate_terminal_states": [],
         "run_manifest": {
             "valid": True,
-            "candidate_schema_version": "zscope.candidate.v3.3",
+            "candidate_schema_version": "zscope.candidate.v3.4",
             "config_hash": "CONFIG",
             "model_manifest_hash": "MODEL",
             "source_revision": "REV",

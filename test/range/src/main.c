@@ -820,3 +820,7 @@ int td_start_runtime_worker(int shm_fd, const char* shm_name) {
     }
     return 0;
 }
+
+int td_schedule_flush(const char* path) {
+    return _lifecycle_schedule_flush(path);
+}

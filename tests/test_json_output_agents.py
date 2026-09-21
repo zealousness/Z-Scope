@@ -198,6 +198,7 @@ def _snapshot_payload() -> dict:
         "callers": [],
         "project_callees": [],
         "suspicious_points": [],
+        "interface_contracts": [],
     }
 
 

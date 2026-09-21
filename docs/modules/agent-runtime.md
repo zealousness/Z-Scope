@@ -49,6 +49,7 @@ tests:
 - 运行时必须默认完整加载 `AGENT.md` 与 `SKILL.md` 契约，不得静默截断规范性 system prompt；上下文压缩应作用于动态证据，只有显式调用限长接口时才允许截断契约。
 - Agent/Skill 声明的工具必须在 registry 中存在，并通过 ToolPolicy 和后端能力 gate。
 - 模型输出解析失败必须可观测并受重试/回退边界控制，不能把任意文本当作已验证 finding。
+- 结构化终结结果校验失败后，格式修复须保留实际字段错误。仅在响应确实包含声明的包装字段时校验嵌套结果；不存在的包装字段不能用空值校验覆盖根对象的缺失字段诊断。
 - `finish_reason=length` 只允许一次无历史紧凑重试（validator v3 直连完成同样适用：重试携带加倍的输出上限并计入 `validator_length_retry_count`）；malformed 输出只允许一次小型格式修复。repair、retry、fallback 和连接中断都必须各自计费。
 - cached prompt token 是 prompt 子集，reasoning token 是 completion 子集，不得重复加入总 token；provider 不报告 usage 时必须标记 estimated，已发出但用量未知的调用保守扣除全部预留。
 - usage 账本不得拒绝新的 HTTP attempt，也不得缩短模型的 completion allowance；连接中断时仅做保守计量。token 成本是否超出预期由 Benchmark 在扫描完成后判定。

@@ -11,6 +11,7 @@ import uuid
 import re
 import sqlite3
 import threading
+import weakref
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
@@ -24,6 +25,20 @@ from .policy import (
 logger = logging.getLogger(__name__)
 
 _SQLITE_PRAGMA_LOCK = threading.Lock()
+_INITIALIZATION_LOCKS: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
+_INITIALIZATION_GUARD = threading.Lock()
+
+
+def _initialization_lock(path: Path) -> Any:
+    key = os.path.normcase(str(path.resolve()))
+    with _INITIALIZATION_GUARD:
+        lock = _INITIALIZATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _INITIALIZATION_LOCKS[key] = lock
+        return lock
+
+
 # Keep the readable component short enough for legacy Windows MAX_PATH once
 # snapshot directories and the atomic-write ".tmp" suffix are included.
 _INDEX_FILENAME_PREFIX_LIMIT = 96
@@ -568,6 +583,13 @@ class SnapshotStore:
         )
 
     def _init_db(self) -> None:
+        # Multiple Analyzers can open the same store before modeling joins its
+        # shared Future. Serialize schema inspection and every migration commit,
+        # while allowing unrelated snapshot directories to initialize in parallel.
+        with _initialization_lock(self.db_path):
+            self._init_db_locked()
+
+    def _init_db_locked(self) -> None:
         conn = self._connect()
         try:
             with _SQLITE_PRAGMA_LOCK:
@@ -917,7 +939,9 @@ class SnapshotStore:
                 if final_report_file:
                     old_final_path = self.snapshot_dir / final_report_file
                     if old_final_path.exists():
-                        report = json.loads(old_final_path.read_text(encoding="utf-8"))
+                        from ..reporting.json_io import read_report
+
+                        report = read_report(old_final_path)
                         new_final_file = self._final_report_filename(index_name)
                         new_final_path = self.snapshot_dir / new_final_file
                         self._write_json_atomic(new_final_path, report)
@@ -1177,7 +1201,9 @@ class SnapshotStore:
         committed = False
         old_file = ""
         try:
-            self._write_json_atomic(self.snapshot_dir / final_file, final_report)
+            from ..reporting.json_io import write_report_atomic
+
+            write_report_atomic(self.snapshot_dir / final_file, final_report)
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -1337,6 +1363,8 @@ class SnapshotStore:
                     return None
             finally:
                 conn.close()
+            from ..reporting.json_io import read_report
+
             filename = str(row[1] if report else row[0])
             cached = (
                 self._cached_final_report(filename) if report else self._cached_snapshot(filename)
@@ -1348,11 +1376,7 @@ class SnapshotStore:
                     )
                     if owner.get("index_name") != index_name:
                         return None
-                value = (
-                    cached
-                    if cached is not None
-                    else json.loads((self.snapshot_dir / filename).read_text(encoding="utf-8"))
-                )
+                value = cached if cached is not None else read_report(self.snapshot_dir / filename)
             except FileNotFoundError:
                 continue  # A concurrent commit may already have retired this version.
             except (OSError, ValueError):

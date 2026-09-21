@@ -714,23 +714,25 @@ class ReportFeedbackService:
         cache_key = (str(report_path.resolve()), stat.st_mtime_ns, stat.st_size)
         if self._report_cache_key == cache_key and self._report_cache is not None:
             return self._report_cache
-        raw_content = report_path.read_text(encoding="utf-8", errors="ignore")
-        sanitized = strip_json_code_fence(raw_content)
-        if not sanitized:
-            return empty_report()
         try:
-            raw_report = json.loads(sanitized)
+            from ..reporting.json_io import read_report
+
+            raw_report = read_report(report_path)
         except json.JSONDecodeError as exc:
-            print(f"Warning: failed to parse report JSON: {exc}")
-            return empty_report()
+            try:
+                raw_report = json.loads(strip_json_code_fence(report_path.read_text(encoding="utf-8")))
+            except json.JSONDecodeError:
+                print(f"Warning: failed to parse report JSON: {exc}")
+                return empty_report()
         report = raw_report if isinstance(raw_report, dict) else empty_report()
         self._report_cache_key = cache_key
         self._report_cache = report
         return report
 
     def save_report(self, report: Dict[str, Any]) -> None:
-        with Path(self.report_filename).open("w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
+        from ..reporting.json_io import write_report_atomic
+
+        write_report_atomic(Path(self.report_filename), report)
         self._report_cache_key = None
         self._report_cache = None
 
@@ -1136,7 +1138,8 @@ class ReportFeedbackService:
         for final_path in Path(snapshot_dir).glob("*_final.json"):
             result["final_reports_scanned"] += 1
             try:
-                report = json.loads(final_path.read_text(encoding="utf-8"))
+                from ..reporting.json_io import read_report
+                report = read_report(final_path)
             except (OSError, json.JSONDecodeError):
                 continue
             changed_count = apply_to_report(report)

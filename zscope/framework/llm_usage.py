@@ -8,6 +8,8 @@ benchmark policy and are evaluated after a scan has completed.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import re
 import threading
@@ -15,7 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Union
+from typing import Any, Dict, Iterator, Mapping, Optional, Union
 
 USAGE_EVENT_SCHEMA_VERSION = "zscope.llm-usage-event.v1"
 USAGE_ATTRIBUTION_SCHEMA_VERSION = "zscope.llm-usage-attribution.v1"
@@ -411,6 +413,35 @@ class LLMUsageEventAggregator:
         }
 
 
+_TASK_EVENTS: ContextVar[Optional[list[LLMUsageEvent]]] = ContextVar("llm_task_events", default=None)
+
+
+@contextmanager
+def collect_task_usage_events() -> Iterator[list[LLMUsageEvent]]:
+    """Observe the same immutable events already settled by the global ledger.
+
+    The owner captures its own physical attempts, including network failures.
+    Thread-local contexts isolate parallel tasks; a nested task owns its events.
+    This observer cannot alter provider admission, tokens or retry decisions.
+    """
+    events: list[LLMUsageEvent] = []
+    token = _TASK_EVENTS.set(events)
+    try:
+        yield events
+    finally:
+        _TASK_EVENTS.reset(token)
+
+
+def task_usage_counters(events: list[LLMUsageEvent]) -> Dict[str, int]:
+    return {
+        "provider_attempt_count": len(events),
+        "provider_success_count": sum(event.outcome == "success" for event in events),
+        "provider_accounted_tokens": sum(event.total_tokens for event in events),
+        "provider_reported_tokens": sum(event.total_tokens for event in events if event.provider_reported),
+        "provider_conservative_tokens": sum(event.total_tokens for event in events if event.conservative_charge),
+    }
+
+
 class ScanTokenUsageLedger:
     """Thread-safe usage ledger shared by a whole scan.
 
@@ -579,6 +610,9 @@ class ScanTokenUsageLedger:
         self._sequence += 1
         event = LLMUsageEvent(sequence=self._sequence, **values)
         self._events.append(event)
+        task_events = _TASK_EVENTS.get()
+        if task_events is not None:
+            task_events.append(event)
         self._aggregator.record(event)
         if self._event_sink_path is not None:
             try:
