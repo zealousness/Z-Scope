@@ -90,12 +90,12 @@ class JoernBackend(CodeBackend):
 
     def build_function_index(self) -> Dict[str, Dict[str, Any]]:
         result = self._joern.query(
-            'cpg.method.isExternal(false).map(m => Map('
+            "cpg.method.isExternal(false).map(m => Map("
             '"name" -> m.name, "filename" -> m.filename, '
             '"lineNumber" -> m.lineNumber.getOrElse(-1), '
             '"lineNumberEnd" -> m.lineNumberEnd.getOrElse(-1), '
             '"signature" -> m.signature'
-            ')).l.toJson'
+            ")).l.toJson"
         )
         if not isinstance(result, list):
             raise JoernQueryError(
@@ -148,6 +148,19 @@ class JoernBackend(CodeBackend):
         decl["members"] = members
         return decl
 
+    def list_type_infos(self) -> List[Dict[str, Any]]:
+        result = self._joern.query(
+            "cpg.typeDecl.isExternal(false).map(t => Map("
+            '"name" -> t.name, '
+            '"fullName" -> t.fullName, '
+            '"kind" -> "type", '
+            '"filename" -> t.filename, '
+            '"lineNumber" -> t.lineNumber.getOrElse(-1), '
+            '"lineNumberEnd" -> t.lineNumberEnd.getOrElse(-1)'
+            ")).l.toJson"
+        )
+        return [dict(item) for item in result] if isinstance(result, list) else []
+
     def find_type_infos(
         self,
         type_name: str,
@@ -183,7 +196,9 @@ class JoernBackend(CodeBackend):
             reference_line = int(reference.get("lineNumber") or start_line or 0)
             definitions = self.find_type_infos(type_name)
             if len(definitions) != 1:
-                reason = "type_definition_not_found" if not definitions else "type_definition_ambiguous"
+                reason = (
+                    "type_definition_not_found" if not definitions else "type_definition_ambiguous"
+                )
                 entry = unresolved.setdefault(
                     (type_name, reason),
                     {
@@ -208,9 +223,11 @@ class JoernBackend(CodeBackend):
                         },
                     )
                 else:
-                    definition_file = str(
-                        definition.get("file_path") or definition.get("filename") or ""
-                    ).replace("\\", "/").lstrip("./")
+                    definition_file = (
+                        str(definition.get("file_path") or definition.get("filename") or "")
+                        .replace("\\", "/")
+                        .lstrip("./")
+                    )
                     definition_start = int(
                         definition.get("start_line") or definition.get("lineNumber") or 0
                     )
@@ -219,9 +236,7 @@ class JoernBackend(CodeBackend):
                         or definition.get("lineNumberEnd")
                         or definition_start
                     )
-                    identity = (
-                        f"{type_name}@{definition_file}:{definition_start}-{definition_end}"
-                    )
+                    identity = f"{type_name}@{definition_file}:{definition_start}-{definition_end}"
                     entry = resolved.setdefault(
                         identity,
                         {
@@ -255,12 +270,24 @@ class JoernBackend(CodeBackend):
 
     @staticmethod
     def _direct_type_name(type_full_name: str) -> str:
-        clean = re.sub(r"\b(?:const|volatile|restrict|struct|union|enum|class)\b", " ", type_full_name)
+        clean = re.sub(
+            r"\b(?:const|volatile|restrict|struct|union|enum|class)\b", " ", type_full_name
+        )
         clean = re.sub(r"[\[\]*&<>(),]", " ", clean)
         identifiers = re.findall(r"[A-Za-z_]\w*", clean)
         builtins = {
-            "void", "char", "signed", "unsigned", "short", "int", "long",
-            "float", "double", "bool", "size_t", "ssize_t",
+            "void",
+            "char",
+            "signed",
+            "unsigned",
+            "short",
+            "int",
+            "long",
+            "float",
+            "double",
+            "bool",
+            "size_t",
+            "ssize_t",
         }
         identifiers = [item for item in identifiers if item not in builtins]
         return identifiers[-1] if identifiers else ""
@@ -277,11 +304,7 @@ class JoernBackend(CodeBackend):
         return bool(
             stored
             and hint
-            and (
-                stored == hint
-                or stored.endswith(f"/{hint}")
-                or hint.endswith(f"/{stored}")
-            )
+            and (stored == hint or stored.endswith(f"/{hint}") or hint.endswith(f"/{stored}"))
         )
 
     def get_data_flow(
@@ -300,7 +323,7 @@ class JoernBackend(CodeBackend):
             patterns = "|".join(re.escape(h) for h in header_files)
             filter_clause = f'.filter(_.filename.matches(".*({patterns})"))'
         result = self._joern.query(
-            f'cpg.method.isExternal(false){filter_clause}'
+            f"cpg.method.isExternal(false){filter_clause}"
             '.map(m => Map("name" -> m.name, "filename" -> m.filename, '
             '"lineNumber" -> m.lineNumber.getOrElse(-1))).l.toJson'
         )

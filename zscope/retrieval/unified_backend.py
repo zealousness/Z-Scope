@@ -376,12 +376,10 @@ class UnifiedBackend(CodeBackend):
         source_param: str,
         sink_pattern: str,
     ) -> List[Dict[str, Any]]:
-        db = self.db
-        if not db:
-            return []
-        return cast(
-            List[Dict[str, Any]],
-            db.get_enriched_taint_bugs(bug_type=sink_pattern, func_name=source_func),
+        raise NotImplementedError(
+            "UnifiedBackend does not expose persisted taint findings as source-to-sink "
+            "paths; use FlowQueryService for program-events v5 evidence and "
+            "query_static_findings for backend signals."
         )
 
     def get_indirect_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:

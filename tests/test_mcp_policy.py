@@ -13,10 +13,25 @@ from zscope.config.config import (
 from zscope.tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from zscope.tools.runtime import ToolsRuntime
 from zscope.mcp.provider import ZScopeMcpProvider
+from zscope.mcp.server import handle_jsonrpc_request
 from zscope.mcp.security import validate_remote_mcp_security
 
 
 class FakeCodeIndex:
+    backend_name = "unified"
+    language = "c_cpp"
+    _index_epoch = 1
+    _function_index = {
+        "api_entry": {
+            "name": "api_entry",
+            "qualified_name": "api_entry",
+            "signature": "void api_entry(void)",
+            "file": "src/api.c",
+            "start_line": 1,
+            "end_line": 3,
+        }
+    }
+
     def list_functions(self, pattern=None, limit=100000, offset=0):
         return [f"func_{idx}" for idx in range(20)][:limit]
 
@@ -86,22 +101,22 @@ def test_mcp_config_resource_exposes_effective_depth_and_usage(tmp_path: Path) -
 
 
 def test_mcp_tool_policy_blocks_unlisted_tool(tmp_path: Path) -> None:
-    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"query_knowledge"}))
+    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.knowledge.query"}))
 
-    result = provider.call_tool("discover_entries", {"max_candidates": 1})
+    result = provider.call_tool("zscope.entries.discover", {"max_candidates": 1})
 
     assert result["success"] is False
     assert result["policy_decision"] == "deny"
 
 
-def test_mcp_lists_and_accepts_namespaced_tool_alias(tmp_path: Path) -> None:
+def test_mcp_lists_and_accepts_only_namespaced_tools(tmp_path: Path) -> None:
     provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.knowledge.query"}))
 
-    names = {tool["function"]["name"] for tool in provider.list_tools()}
+    names = {tool["name"] for tool in provider.list_tools()}
     result = provider.call_tool("zscope.knowledge.query", {"sql": "SELECT 1"})
 
     assert "zscope.knowledge.query" in names
-    assert "query_knowledge" not in names
+    assert all("function" not in tool for tool in provider.list_tools())
     assert result["success"] is False
     assert result.get("policy_decision") is None
     assert "Knowledge DB not found" in result["error"]
@@ -128,7 +143,7 @@ def test_mcp_scan_tool_forwards_only_depth_override(tmp_path: Path) -> None:
         },
     )()
 
-    names = {tool["function"]["name"] for tool in provider.list_tools()}
+    names = {tool["name"] for tool in provider.list_tools()}
     result = provider.call_tool(
         "zscope.scan.run",
         {"scan_depth": "balanced"},
@@ -159,7 +174,7 @@ def test_mcp_exposes_only_readonly_wiki_status_and_query(tmp_path: Path, monkeyp
 
     monkeypatch.setattr("zscope.mcp.provider.wiki_query", fake_query)
 
-    names = {tool["function"]["name"] for tool in provider.list_tools()}
+    names = {tool["name"] for tool in provider.list_tools()}
     status = provider.call_tool("zscope.wiki.status")
     query = provider.call_tool(
         "zscope.wiki.query",
@@ -182,7 +197,9 @@ def test_mcp_exposes_only_readonly_wiki_status_and_query(tmp_path: Path, monkeyp
     assert not any("build" in name or "rollback" in name for name in names)
 
 
-def test_mcp_wiki_query_rejects_invalid_arguments_but_allows_large_explicit_budget(tmp_path: Path) -> None:
+def test_mcp_wiki_query_rejects_invalid_arguments_but_allows_large_explicit_budget(
+    tmp_path: Path,
+) -> None:
     provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.wiki.query"}))
 
     missing_subject = provider.call_tool("zscope.wiki.query", {})
@@ -232,9 +249,7 @@ def test_mcp_wiki_control_does_not_expose_internal_exception_text(
     provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.wiki.query"}))
     monkeypatch.setattr(
         "zscope.mcp.provider.wiki_query",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            ValueError("secret /home/private/wiki")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("secret /home/private/wiki")),
     )
 
     result = provider.call_tool(
@@ -252,26 +267,26 @@ def test_mcp_sensitive_path_hook_blocks_secret_file_tool(tmp_path: Path) -> None
     provider = _provider(
         tmp_path,
         ToolPolicy(
-            allowed_tools={"get_file_snippet"},
+            allowed_tools={"zscope.code.read"},
             pre_hooks=[deny_sensitive_paths_hook],
         ),
     )
 
     result = provider.call_tool(
-        "get_file_snippet",
+        "zscope.code.read",
         {"file_path": "zscope.local.env", "start_line": 1, "end_line": 1},
     )
 
     assert result["success"] is False
-    assert result["policy_decision"] == "deny"
-    assert "sensitive path" in result["error"]
+    assert result["status"] == "forbidden"
+    assert "sensitive path" in result["error"]["message"]
 
 
 def test_mcp_query_knowledge_rejects_unsafe_sql_before_db_access(tmp_path: Path) -> None:
-    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"query_knowledge"}))
+    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.knowledge.query"}))
 
     result = provider.call_tool(
-        "query_knowledge",
+        "zscope.knowledge.query",
         {"sql": "SELECT 1; DROP TABLE functions"},
     )
 
@@ -321,17 +336,30 @@ def test_mcp_post_hook_runs_after_tool_result(tmp_path: Path) -> None:
     provider = _provider(
         tmp_path,
         ToolPolicy(
-            allowed_tools={"list_known_functions"},
+            allowed_tools={"zscope.code.search"},
             post_hooks=[post_hook],
         ),
     )
 
-    result = provider.call_tool("list_known_functions", {"limit": 2})
+    result = provider.call_tool("zscope.code.search", {"query": "api"})
 
     assert result["success"] is True
     assert calls
     assert calls[0]["actor"] == "mcp"
-    assert calls[0]["name"] == "list_known_functions"
+    assert calls[0]["name"] == "zscope.code.search"
+
+
+def test_mcp_analysis_tool_rejects_non_object_arguments(tmp_path: Path) -> None:
+    provider = _provider(
+        tmp_path,
+        ToolPolicy(allowed_tools={"zscope.code.search"}),
+    )
+
+    result = provider.call_tool("zscope.code.search", [])  # type: ignore[arg-type]
+
+    assert result["success"] is False
+    assert result["status"] == "invalid_request"
+    assert result["error"]["path"] == "$"
 
 
 def test_mcp_provider_uses_configured_audit_log_without_explicit_policy(tmp_path: Path) -> None:
@@ -343,13 +371,13 @@ def test_mcp_provider_uses_configured_audit_log_without_explicit_policy(tmp_path
         snapshot_store=FakeSnapshotStore(),
     )
 
-    result = provider.call_tool("list_known_functions", {"limit": 1})
+    result = provider.call_tool("zscope.code.search", {"query": "api", "limit": 1})
 
     audit_log = tmp_path / "tool_audit.jsonl"
     assert result["success"] is True
     assert audit_log.exists()
     events = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()]
-    assert any(event["name"] == "list_known_functions" for event in events)
+    assert any(event["name"] == "zscope.code.search" for event in events)
 
 
 def test_remote_mcp_security_validation_requires_https_audience_and_scopes() -> None:
@@ -411,13 +439,13 @@ def test_mcp_query_knowledge_pages_with_offset_and_has_more(tmp_path: Path) -> N
     db_path = _seed_knowledge_db(tmp_path)
     provider = _knowledge_provider(
         tmp_path,
-        ToolPolicy(allowed_tools={"query_knowledge"}),
+        ToolPolicy(allowed_tools={"zscope.knowledge.query"}),
         db_path,
     )
     sql = "SELECT name FROM functions ORDER BY name"
 
-    page = provider.call_tool("query_knowledge", {"sql": sql, "limit": 5, "offset": 2})
-    last_page = provider.call_tool("query_knowledge", {"sql": sql, "limit": 5, "offset": 10})
+    page = provider.call_tool("zscope.knowledge.query", {"sql": sql, "limit": 5, "offset": 2})
+    last_page = provider.call_tool("zscope.knowledge.query", {"sql": sql, "limit": 5, "offset": 10})
 
     data = page["data"]
     assert [row["name"] for row in data["rows"]] == [f"func_{index:02d}" for index in range(2, 7)]
@@ -433,15 +461,15 @@ def test_mcp_query_knowledge_respects_user_limit_clause(tmp_path: Path) -> None:
     db_path = _seed_knowledge_db(tmp_path)
     provider = _knowledge_provider(
         tmp_path,
-        ToolPolicy(allowed_tools={"query_knowledge"}),
+        ToolPolicy(allowed_tools={"zscope.knowledge.query"}),
         db_path,
     )
 
     bounded = provider.call_tool(
-        "query_knowledge", {"sql": "SELECT name FROM functions ORDER BY name LIMIT 3"}
+        "zscope.knowledge.query", {"sql": "SELECT name FROM functions ORDER BY name LIMIT 3"}
     )
     paged = provider.call_tool(
-        "query_knowledge",
+        "zscope.knowledge.query",
         {"sql": "SELECT name FROM functions ORDER BY name LIMIT 3", "offset": 2},
     )
 
@@ -455,22 +483,107 @@ def test_mcp_query_knowledge_respects_user_limit_clause(tmp_path: Path) -> None:
     assert [row["name"] for row in paged["data"]["rows"]] == ["func_02"]
 
 
-def test_mcp_tool_result_over_limit_keeps_head_preview(tmp_path: Path) -> None:
+def test_mcp_analysis_result_over_limit_keeps_valid_envelope(tmp_path: Path) -> None:
     provider = _provider(
         tmp_path,
-        ToolPolicy(allowed_tools={"list_known_functions"}),
+        ToolPolicy(allowed_tools={"zscope.code.search"}),
         max_result_chars=1000,
     )
-    provider.code_index.list_functions = lambda pattern=None, limit=100000, offset=0: [
-        f"func_{index}_" + "x" * 200 for index in range(20)
-    ][:limit]
+    provider.code_index._function_index = {
+        f"func_{index}": {
+            "name": f"func_{index}_" + "x" * 200,
+            "qualified_name": f"func_{index}_" + "x" * 200,
+            "signature": "void f(void)",
+            "file": f"src/f{index}.c",
+            "start_line": index + 1,
+            "end_line": index + 2,
+        }
+        for index in range(20)
+    }
 
-    result = provider.call_tool("list_known_functions", {})
+    result = provider.call_tool("zscope.code.search", {"query": "func_", "limit": 20})
 
-    data = result["data"]
-    assert data["truncated"] is True
-    assert data["tool"] == "list_known_functions"
-    assert data["max_result_chars"] == 1000
-    assert data["original_chars"] > 1000
-    assert len(data["preview"]) == 200  # max_result_chars - 800
-    assert data["preview"].startswith('{"success": true')
+    assert result["success"] is True
+    assert result["status"] == "partial"
+    assert result["page"]["has_more"] is True
+    assert any("1000-character" in item for item in result["warnings"])
+
+
+def test_mcp_modern_protocol_exposes_native_output_and_structured_content(
+    tmp_path: Path,
+) -> None:
+    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.code.search"}))
+    initialized = handle_jsonrpc_request(
+        provider,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        },
+    )
+    listed = handle_jsonrpc_request(
+        provider,
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+    called = handle_jsonrpc_request(
+        provider,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "zscope.code.search",
+                "arguments": {"query": "api_entry", "match_mode": "exact"},
+            },
+        },
+    )
+
+    assert initialized["result"]["protocolVersion"] == "2025-06-18"
+    schema = listed["result"]["tools"][0]
+    assert schema["name"] == "zscope.code.search"
+    assert "inputSchema" in schema and "outputSchema" in schema
+    assert schema["annotations"]["readOnlyHint"] is True
+    result = called["result"]
+    assert result["structuredContent"]["success"] is True
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+    assert result["isError"] is False
+
+
+def test_mcp_legacy_protocol_keeps_native_names_but_uses_text_results(
+    tmp_path: Path,
+) -> None:
+    provider = _provider(tmp_path, ToolPolicy(allowed_tools={"zscope.code.search"}))
+    initialized = handle_jsonrpc_request(
+        provider,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05"},
+        },
+    )
+    listed = handle_jsonrpc_request(
+        provider,
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+    called = handle_jsonrpc_request(
+        provider,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "zscope.code.search",
+                "arguments": {},
+            },
+        },
+    )
+
+    assert initialized["result"]["protocolVersion"] == "2024-11-05"
+    schema = listed["result"]["tools"][0]
+    assert schema["name"] == "zscope.code.search"
+    assert "function" not in schema and "outputSchema" not in schema
+    assert "structuredContent" not in called["result"]
+    assert called["result"]["isError"] is True
+    assert json.loads(called["result"]["content"][0]["text"])["status"] == "invalid_request"

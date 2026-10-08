@@ -24,7 +24,6 @@ from ..reporting.attribution import (
     finding_attribution_mapping_errors,
 )
 
-
 TERMINAL_DISPOSITIONS = frozenset(
     {
         "confirmed",
@@ -601,24 +600,46 @@ class CandidateLedger:
         if not issue.get("candidate_uid") or not issue.get("validation_cluster_uid"):
             raise ValueError("review restoration requires frozen candidate and cluster identities")
         evidence = deepcopy(issue.get("evidence_pack") or {})
-        for key in ("candidate_uid", "validation_cluster_uid", "obligation_uid", "evidence_hash",
-                    "decision_evidence_hash", "context_signature", "history_key", "defect_class",
-                    "decision_context_version", "source", "sink"):
+        for key in (
+            "candidate_uid",
+            "validation_cluster_uid",
+            "obligation_uid",
+            "evidence_hash",
+            "decision_evidence_hash",
+            "context_signature",
+            "history_key",
+            "defect_class",
+            "decision_context_version",
+            "source",
+            "sink",
+        ):
             if issue.get(key) is not None:
                 evidence[key] = deepcopy(issue[key])
-        evidence["candidate_payload"] = {key: deepcopy(value) for key, value in issue.items()
-                                         if key not in {"evidence_pack", "review_validation_evidence", "review_function_context"}}
-        ticket = SubAgentTicket(id=str(issue.get("id") or issue["candidate_uid"]),
-                                skill=str(issue.get("skill") or issue.get("category") or "security_review"),
-                                task=str(issue.get("description") or "Review candidate"),
-                                trigger=str(issue.get("rule_id") or issue.get("category") or ""),
-                                context_slice=str(issue.get("review_function_context") or issue.get("code_snippet") or ""),
-                                line=CandidateRegistrar._line_number(issue),
-                                source=str(issue.get("candidate_source") or "review_checkpoint"),
-                                origin=str(issue.get("source") or ""), sink=str(issue.get("sink") or ""),
-                                evidence=evidence)
-        self.add(ticket, source=ticket.source, record_role="validation_obligation",
-                 entry_identity=str(issue.get("entry_identity") or issue.get("function") or ""))
+        evidence["candidate_payload"] = {
+            key: deepcopy(value)
+            for key, value in issue.items()
+            if key not in {"evidence_pack", "review_validation_evidence", "review_function_context"}
+        }
+        ticket = SubAgentTicket(
+            id=str(issue.get("id") or issue["candidate_uid"]),
+            skill=str(issue.get("skill") or issue.get("category") or "security_review"),
+            task=str(issue.get("description") or "Review candidate"),
+            trigger=str(issue.get("rule_id") or issue.get("category") or ""),
+            context_slice=str(
+                issue.get("review_function_context") or issue.get("code_snippet") or ""
+            ),
+            line=CandidateRegistrar._line_number(issue),
+            source=str(issue.get("candidate_source") or "review_checkpoint"),
+            origin=str(issue.get("source") or ""),
+            sink=str(issue.get("sink") or ""),
+            evidence=evidence,
+        )
+        self.add(
+            ticket,
+            source=ticket.source,
+            record_role="validation_obligation",
+            entry_identity=str(issue.get("entry_identity") or issue.get("function") or ""),
+        )
 
     def add(
         self,
@@ -866,7 +887,9 @@ class CandidateLedger:
                 record.ticket.evidence = self._terminal_evidence.clone(record.ticket.evidence)
                 record.terminal_issue = self._terminal_evidence.clone(issue)
                 proof = issue.get("decision_proof") or issue.get("rejection_proof")
-                record.decision_proof = self._terminal_evidence.clone(proof) if isinstance(proof, dict) else {}
+                record.decision_proof = (
+                    self._terminal_evidence.clone(proof) if isinstance(proof, dict) else {}
+                )
                 record.evidence_completion_status = str(
                     issue.get("evidence_completion_status") or record.evidence_completion_status
                 )
@@ -970,15 +993,28 @@ class CandidateLedger:
                 "summary": self._summary_unlocked(),
             }
             for appendix in self._review_appendices:
-                extra = appendix.lifecycle_snapshot(entry_identity=entry_identity, include_triage=include_triage)
+                extra = appendix.lifecycle_snapshot(
+                    entry_identity=entry_identity, include_triage=include_triage
+                )
                 result["records"].extend(extra["records"])
                 result["outcomes"].extend(extra["outcomes"])
-                result["summary"]["review_appendix_count"] = int(result["summary"].get("review_appendix_count", 0)) + len(extra["records"])
-                for key in ("total", "validation_group_count", "triage_lead_count", "raw_occurrence_count", "nonterminal_validation_count", "duplicates_merged"):
+                result["summary"]["review_appendix_count"] = int(
+                    result["summary"].get("review_appendix_count", 0)
+                ) + len(extra["records"])
+                for key in (
+                    "total",
+                    "validation_group_count",
+                    "triage_lead_count",
+                    "raw_occurrence_count",
+                    "nonterminal_validation_count",
+                    "duplicates_merged",
+                ):
                     result["summary"][key] += extra["summary"][key]
                 for key in ("by_status", "by_disposition", "triage_by_status"):
                     for status, count in extra["summary"][key].items():
-                        result["summary"][key][status] = result["summary"][key].get(status, 0) + count
+                        result["summary"][key][status] = (
+                            result["summary"][key].get(status, 0) + count
+                        )
                 result["summary"]["incomplete"] |= extra["summary"]["incomplete"]
             return result
 
@@ -988,6 +1024,36 @@ class CandidateLedger:
         with self._lock:
             self._frozen = True
             return self.lifecycle_snapshot()
+
+    @property
+    def is_frozen(self) -> bool:
+        """Whether the discovery generation is immutable and safe to query."""
+        with self._lock:
+            return self._frozen
+
+    def frozen_records(self) -> List[Dict[str, Any]]:
+        """Return an immutable projection including terminal validator output.
+
+        LLM-facing readers must use this method rather than traversing mutable
+        records or private ledger state while candidate discovery is running.
+        """
+        with self._lock:
+            if not self._frozen:
+                raise RuntimeError("candidate ledger is not frozen")
+            projected = []
+            for record in self._records.values():
+                item = record.to_dict(include_context=False)
+                item["terminal_issue"] = deepcopy(record.terminal_issue)
+                projected.append(item)
+            for appendix in self._review_appendices:
+                projected.extend(appendix.frozen_records())
+            projected.sort(
+                key=lambda item: (
+                    str(item.get("validation_cluster_uid") or ""),
+                    str(item.get("candidate_uid") or ""),
+                )
+            )
+            return projected
 
     def to_context(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._lock:
@@ -999,7 +1065,11 @@ class CandidateLedger:
 
     def summary(self) -> Dict[str, Any]:
         with self._lock:
-            return self.lifecycle_snapshot()["summary"] if self._review_appendices else self._summary_unlocked()
+            return (
+                self.lifecycle_snapshot()["summary"]
+                if self._review_appendices
+                else self._summary_unlocked()
+            )
 
     def _summary_unlocked(self) -> Dict[str, Any]:
         counts: Dict[str, int] = {}

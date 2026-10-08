@@ -188,6 +188,9 @@ class JavaUnifiedBackend(CodeBackend):
     def get_type_info(self, type_name: str) -> Optional[Dict[str, Any]]:
         return self._structure.get_type_info(type_name)
 
+    def list_type_infos(self) -> List[Dict[str, Any]]:
+        return self._structure.list_type_infos()
+
     def get_data_flow(
         self,
         source_func: str,

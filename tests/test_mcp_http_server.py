@@ -6,7 +6,13 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from zscope.config.config import AnalysisConfig, IndexingConfig, LLMConfig, ProjectConfig, ZScopeConfig
+from zscope.config.config import (
+    AnalysisConfig,
+    IndexingConfig,
+    LLMConfig,
+    ProjectConfig,
+    ZScopeConfig,
+)
 from zscope.tools.policy import ToolPolicy
 from zscope.tools.runtime import ToolsRuntime
 from zscope.mcp.http_server import create_http_server
@@ -14,6 +20,20 @@ from zscope.mcp.provider import ZScopeMcpProvider
 
 
 class FakeCodeIndex:
+    backend_name = "unified"
+    language = "c_cpp"
+    _index_epoch = 1
+    _function_index = {
+        "api_entry": {
+            "name": "api_entry",
+            "qualified_name": "api_entry",
+            "signature": "void api_entry(void)",
+            "file": "src/api.c",
+            "start_line": 1,
+            "end_line": 3,
+        }
+    }
+
     def list_functions(self, pattern=None, limit=100000, offset=0):
         return ["api_entry"][:limit]
 
@@ -43,7 +63,7 @@ def _config(tmp_path: Path) -> ZScopeConfig:
 def _provider(tmp_path: Path) -> ZScopeMcpProvider:
     code_index = FakeCodeIndex()
     snapshots = FakeSnapshotStore()
-    policy = ToolPolicy(allowed_tools={"list_known_functions"})
+    policy = ToolPolicy(allowed_tools={"zscope.code.search"})
     runtime = ToolsRuntime(code_index, snapshots, tool_policy=policy)
     return ZScopeMcpProvider(
         _config(tmp_path),
@@ -115,12 +135,9 @@ def test_streamable_http_tools_list_uses_provider_policy(
             "params": {},
         },
     )
-    names = {
-        tool["function"]["name"]
-        for tool in json.loads(body)["result"]["tools"]
-    }
+    names = {tool["name"] for tool in json.loads(body)["result"]["tools"]}
 
-    assert names == {"list_known_functions"}
+    assert names == {"zscope.code.search"}
 
 
 def test_streamable_http_can_return_sse_for_post_response(

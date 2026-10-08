@@ -4,7 +4,7 @@ Z-Scope Framework Base Classes.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Sequence
 
 _JSON_SCHEMA_TYPES: Dict[str, Any] = {
     "string": str,
@@ -16,50 +16,148 @@ _JSON_SCHEMA_TYPES: Dict[str, Any] = {
 }
 
 
+def _schema_types(schema_type: Any) -> Sequence[str]:
+    if isinstance(schema_type, str):
+        return (schema_type,)
+    if isinstance(schema_type, list):
+        return tuple(item for item in schema_type if isinstance(item, str))
+    return ()
+
+
+def _validate_json_value(schema: Dict[str, Any], value: Any, path: str) -> Optional[str]:
+    """Validate the JSON-Schema subset used by tool contracts, recursively."""
+    if not isinstance(schema, dict):
+        return f"{path or '$'}: schema must be an object"
+
+    for keyword in ("oneOf", "anyOf"):
+        variants = schema.get(keyword)
+        if isinstance(variants, list):
+            matches = [
+                variant
+                for variant in variants
+                if isinstance(variant, dict) and _validate_json_value(variant, value, path) is None
+            ]
+            if (keyword == "oneOf" and len(matches) != 1) or (keyword == "anyOf" and not matches):
+                return f"{path or '$'}: value does not match {keyword}"
+            return None
+
+    schema_types = _schema_types(schema.get("type"))
+    if value is None and "null" in schema_types:
+        return None
+    if schema_types:
+        valid = False
+        for schema_type in schema_types:
+            expected = _JSON_SCHEMA_TYPES.get(schema_type)
+            if schema_type == "null":
+                candidate = value is None
+            elif expected is None:
+                candidate = True
+            else:
+                candidate = isinstance(value, expected)
+                if schema_type in {"integer", "number"} and isinstance(value, bool):
+                    candidate = False
+            valid = valid or candidate
+        if not valid:
+            expected_text = " or ".join(schema_types)
+            return f"{path or '$'}: must be {expected_text}"
+
+    enum = schema.get("enum")
+    if enum is not None and value not in enum:
+        return f"{path or '$'}: must be one of {list(enum)}"
+
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        max_length = schema.get("maxLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            return f"{path or '$'}: length must be at least {min_length}"
+        if isinstance(max_length, int) and len(value) > max_length:
+            return f"{path or '$'}: length must be at most {max_length}"
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str):
+            import re
+
+            try:
+                if re.search(pattern, value) is None:
+                    return f"{path or '$'}: must match pattern {pattern!r}"
+            except re.error:
+                return f"{path or '$'}: schema contains an invalid pattern"
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            return f"{path or '$'}: must be at least {minimum}"
+        if isinstance(maximum, (int, float)) and value > maximum:
+            return f"{path or '$'}: must be at most {maximum}"
+
+    if isinstance(value, list):
+        min_items = schema.get("minItems")
+        max_items = schema.get("maxItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            return f"{path or '$'}: must contain at least {min_items} item(s)"
+        if isinstance(max_items, int) and len(value) > max_items:
+            return f"{path or '$'}: must contain at most {max_items} item(s)"
+        if schema.get("uniqueItems") is True:
+            normalized = [repr(item) for item in value]
+            if len(set(normalized)) != len(normalized):
+                return f"{path or '$'}: items must be unique"
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                error = _validate_json_value(item_schema, item, f"{path}[{index}]")
+                if error:
+                    return error
+
+    if isinstance(value, dict):
+        properties = schema.get("properties") or {}
+        if not isinstance(properties, dict):
+            return f"{path or '$'}: schema properties must be an object"
+        for name in schema.get("required", []) or []:
+            if name not in value:
+                child = f"{path}.{name}" if path else str(name)
+                return f"{child}: is required"
+        additional = schema.get("additionalProperties", True)
+        if additional is False:
+            extras = sorted(name for name in value if name not in properties)
+            if extras:
+                child = f"{path}.{extras[0]}" if path else extras[0]
+                return f"{child}: unknown field"
+        for name, item in value.items():
+            property_schema = properties.get(name)
+            if not isinstance(property_schema, dict):
+                continue
+            child = f"{path}.{name}" if path else name
+            error = _validate_json_value(property_schema, item, child)
+            if error:
+                return error
+    return None
+
+
 def validate_function_arguments(
     schema: Optional[Dict[str, Any]],
     arguments: Any,
     *,
     reject_unknown: bool = False,
 ) -> Optional[str]:
-    """Validate arguments against the flat object schema used by function tools."""
+    """Validate arguments against a function tool schema, including nested values."""
     if schema is None:
         return "tool schema is missing"
     if not isinstance(arguments, dict):
         return "Tool arguments must be a JSON object"
 
-    parameters = schema.get("function", {}).get("parameters", {})
+    if isinstance(schema.get("function"), dict):
+        parameters = schema["function"].get("parameters", {})
+    elif isinstance(schema.get("inputSchema"), dict):
+        parameters = schema["inputSchema"]
+    else:
+        # Also accept a bare JSON schema for validating structured tool output.
+        parameters = schema
     if not isinstance(parameters, dict):
         return "tool schema parameters must be an object schema"
-    properties = parameters.get("properties") or {}
-    if not isinstance(properties, dict):
-        return "tool schema properties must be an object"
-
-    for name in parameters.get("required", []) or []:
-        if name not in arguments or arguments.get(name) is None:
-            return f"'{name}' is required"
-
+    effective = dict(parameters)
     if reject_unknown:
-        extra = sorted(name for name in arguments if name not in properties)
-        if extra:
-            return f"unknown argument(s): {', '.join(extra)}"
-
-    for name, value in arguments.items():
-        if name not in properties or value is None:
-            continue
-        property_schema = properties.get(name) or {}
-        schema_type = property_schema.get("type")
-        expected = _JSON_SCHEMA_TYPES.get(schema_type) if isinstance(schema_type, str) else None
-        if expected is not None:
-            valid = isinstance(value, expected)
-            if schema_type in {"integer", "number"} and isinstance(value, bool):
-                valid = False
-            if not valid:
-                return f"'{name}' must be {schema_type}"
-        enum = property_schema.get("enum")
-        if enum is not None and value not in enum:
-            return f"'{name}' must be one of {list(enum)}"
-    return None
+        effective["additionalProperties"] = False
+    return _validate_json_value(effective, arguments, "")
 
 
 @dataclass
@@ -134,7 +232,7 @@ class BaseTool(ABC):
         pass
 
     def validate_arguments(self, arguments: Any) -> Optional[Dict[str, Any]]:
-        """Validate flat tool arguments against this tool's function schema."""
+        """Validate tool arguments recursively against this tool's function schema."""
         error = validate_function_arguments(self.get_schema(), arguments)
         if not error:
             return None

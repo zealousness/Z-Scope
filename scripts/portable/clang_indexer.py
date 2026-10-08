@@ -5,6 +5,7 @@ Run only in the release builder, after native.py has produced LLVM 18. The
 component has its own fingerprint so product changes do not rebuild CPython,
 clangd, or SVF. No host LLVM headers or libraries are used.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,7 +38,14 @@ def build(source, work, arch, jobs):
         "argument_policy": digest(source / "zscope/retrieval/compiler_argument_policy.json"),
         "source": {
             name: digest(source / "native/clang-indexer" / name)
-            for name in ("CMakeLists.txt", "main.cpp", "ArgumentPolicy.h", "ArgumentCheck.h", "FunctionOwnership.h")
+            for name in (
+                "CMakeLists.txt",
+                "main.cpp",
+                "ArgumentPolicy.h",
+                "ArgumentCheck.h",
+                "FunctionOwnership.h",
+                "ProgramEvents.h",
+            )
         },
     }
     identity = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()

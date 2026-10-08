@@ -204,7 +204,9 @@ class JavaSourceBackend(CodeBackend):
         if self.requested_frontend == "auto":
             return ["spoon", "javaparser"] if bundle_root() else ["spoon", "javaparser", "builtin"]
         if self.requested_frontend in {"spoon", "javaparser"}:
-            return [self.requested_frontend] if bundle_root() else [self.requested_frontend, "builtin"]
+            return (
+                [self.requested_frontend] if bundle_root() else [self.requested_frontend, "builtin"]
+            )
         return ["builtin"]
 
     def _command_for_frontend(
@@ -337,6 +339,13 @@ class JavaSourceBackend(CodeBackend):
         if not key:
             return None
         return self._classes[key].to_type_info()
+
+    def list_type_infos(self) -> List[Dict[str, Any]]:
+        """Return each extracted Java type once, including its complete source range."""
+        unique: Dict[str, JavaClassRecord] = {}
+        for record in self._classes.values():
+            unique.setdefault(record.full_name, record)
+        return [unique[name].to_type_info() for name in sorted(unique)]
 
     def get_data_flow(
         self,

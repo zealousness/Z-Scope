@@ -14,7 +14,8 @@ def _index(tmp_path: Path) -> SourceIndex:
     index = SourceIndex(tmp_path / "source-index.db")
     result = index.rebuild(FIXTURE, project_id="fixture", max_excerpt_chars=8192)
     assert result.project_id == "fixture"
-    assert result.document_count == 5
+    expected_count = 5 + int(not (FIXTURE / "docs" / "outside.md").is_symlink())
+    assert result.document_count == expected_count
     assert result.section_count > 0
     return index
 

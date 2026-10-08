@@ -232,7 +232,7 @@ diff impact 模式由 CLI 的 `--diff-base` 启用，不能与 `--resume` 或 `-
 
 架构收益是明显的：LLM 的每次判断都可以回落到文件、行号、函数、路径切片、资源事件和锁事件，避免停留在自然语言印象。
 
-当前 `CodeIndex.get_function_impl()` 还会查找函数声明和实现前的 C/C++ 注释块，并把这些 comment block 连同带绝对行号的实现源码一起返回。v1.2 进一步加入 per-run 源文件行缓存、函数实现缓存、函数文件解析缓存和 macro 定义查询，函数式宏可作为轻量实现返回。这样头文件中的 API 契约、所有权说明、锁要求、宏别名和参数语义可以在不额外检索文档的情况下进入 Agent 上下文，同时仍然保留文件与行号来源。
+内部源码检索会查找函数声明和实现前的 C/C++ 注释块，并把这些 comment block 连同带绝对行号的实现源码一起返回。LLM 侧统一先通过 `search_code` 取得精确身份，再由 `read_code` 加载定义；函数式和 object-like 宏均进入符号目录，数值/字符串等直接字面量提供保守分类，表达式宏不递归求值。这样头文件中的 API 契约、所有权说明、锁要求、宏别名和参数语义可以按需进入 Agent 上下文，同时仍然保留文件与行号来源。
 
 Clang 后端把增量缓存分成两层：基础 TU 事实只由源码哈希、真实 pending 状态、删除影响和基础 extractor 版本失效，`indexed + hash unchanged` 的 TU 不会因为派生格式变化重新执行 documentSymbol；`function_symbol_context` 与 `function_type_refs` 则用 schema v14 既有 metadata 记录独立的 `dirty/in_progress/current/failed` 生命周期。基础刷新以有界并发执行 clangd/源码收集，再由单个 SQLite writer 用每 TU SAVEPOINT 和每批一次提交原子发布；收集失败时旧事实保持完整。派生重建同样按文件有界并发执行源码与 clangd 查询，worker 只返回行和统计，调用线程作为唯一 SQLite writer 将结果分批写入 TEMP staging；事实替换与 `current` 状态仍在同一事务发布，因此进程中断后可保留旧完整结果并只恢复派生阶段。两类派生索引同时失效时使用每文件一次的 combined semantic pass；解析按 clangd symbol identity 合并重复声明，并以 references 坐标反向映射做常数时间匹配，只有无法消歧的位置才请求 definition。semantic/source/references 缓存均有容量边界和并发 single-flight，避免超大项目常驻全量 token 或对同一声明重复发起 RPC。删除文件仍会清理对应 TU、函数、类型、调用边和 macro，并按 include/callee 影响标记相关文件强制刷新。KnowledgeDB 使用 WAL 与线程本地 SQLite connection，并对直接/间接 callee 查询做版本化缓存，写入调用图或 SVF 数据时会自动失效。
 
@@ -327,16 +327,15 @@ Skill 是漏洞领域契约，用于约束分析目标和证据要求，不是�
 
 LLMClient 是所有 Agent 的 OpenAI-compatible 调用门面。它支持多 endpoint 容量选择、限流/cooldown、线程本地 session 和共享 scan token 计量。V1/V2 各只发起一次无工具调用：V1/V2 的 truncated 或 malformed 输出直接保持可复核并交给 V3 资格判断，不追加格式修复调用。V3 使用一个最长 50 次模型迭代的连续会话；多轮 reasoning metadata 可在会话内传递，但永不落入普通日志或报告。
 
-ToolsRuntime 定义最多 12 个内置代码查询工具：
+ToolsRuntime 原子暴露六个证据导向工具：`search_code`、`read_code`、`get_semantic_context`、`query_code_graph`、`trace_data_flow`、`query_static_findings`。调用从轻量搜索得到 revision-aware `symbol_id`，后续源码、语义、图和流查询都绑定该精确身份；finding 查询只返回紧凑 evidence ref，再由模型按需读取原始证据。这避免名称清洗、重载歧义和一次性高聚合结果污染上下文。
 
-`get_function_impl`、`get_function_snapshot`、`list_known_functions`、`get_file_snippet`、`get_callers`、`get_type_info`、`get_call_graph`、`get_data_flow`、`find_function_pointers`、`query_pointer_alias`、`verify_taint_reachability`、`get_deep_call_context`。
-
-Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 根据后端能力提供基础及高级查询，再由对应 `AGENT.md` 与 `ToolPolicy` 过滤。V1/V2 不开放工具；V3 仅开放符号、caller/callee、路径、事实与 snapshot/semantic-map 的只读子集，active discovery 只接收预先构造的 candidate-blind 投影。MCP 侧复用 ToolsRuntime schema，但还会额外提供 `query_knowledge`、`discover_entries` 和 namespaced aliases，因此 MCP 工具集合与单个 Agent 的可见工具集合并不完全相同。
+六工具词汇不随后端改变。`Analyzer._get_tools()` 先建立 frozen-aware CandidateLedger 和 snapshot resolver，再由 `AGENT.md` 与 `ToolPolicy` 做角色最小白名单；能力缺口通过统一返回信封的 `coverage/status` 表达。V1/V2 不开放工具；V3 只使用角色白名单，active discovery 仍只接收预先构造的 candidate-blind 投影。MCP 从同一 `ToolContract` 生成原生 namespaced schema，另有六个管理工具，不暴露 raw/alias 重复项。
 
 工具层还做了三类重要防护：
 
-- 工具参数校验和文件路径存在性检查，避免模型反复调用无效路径。
-- 绝对行号注入，缓解 LLM 通过相对偏移定位源码时的行号幻觉。
+- 递归 schema、跨字段和项目相对路径校验，错误携带可修复的精确字段路径。
+- `symbol_id` 精确解析和绝对源码行号，避免同名/重载串线与相对偏移幻觉。
+- coverage、分页、截断和 evidence provenance 显式进入统一信封；空数组不再同时表示“不存在”和“不支持”。
 - `ToolPolicy` 约束工具、资源、文件读取、知识库查询和 subagent spawn allowlist，并通过敏感路径 hook 降低远程或自动化场景中的越界访问风险。
 
 ### 5.6 验证平面：ValidationRunner + ValidationPipeline
@@ -427,7 +426,7 @@ Z-SCOPE 将“hypothesis/候选”“模型 verdict”“policy disposition”�
 
 ### 6.5 工程化运行与开放集成
 
-每个函数的语义快照、最终报告、批量汇总、候选 IR 和用户反馈都有落地点。大规模扫描中断后可以 `--resume`，代码小改后可以 `--maintain`，旧报告覆盖前有自动备份。MCP Server 还暴露 `zscope://config`、`zscope://knowledge/stats`、`zscope://knowledge/functions`、`zscope://snapshots/list` 等资源，并在 `ToolPolicy` 过滤后提供 `query_knowledge`、`discover_entries`、代码查询工具和 namespaced aliases，使 Z-SCOPE 可以作为本地代码知识底座接入外部 AI IDE。
+每个函数的语义快照、最终报告、批量汇总、候选 IR 和用户反馈都有落地点。大规模扫描中断后可以 `--resume`，代码小改后可以 `--maintain`，旧报告覆盖前有自动备份。MCP Server 还暴露 `zscope://config`、`zscope://knowledge/stats`、`zscope://knowledge/functions`、`zscope://snapshots/list` 等资源，并在 `ToolPolicy` 过滤后提供六个 namespaced 证据工具及六个管理工具，使 Z-SCOPE 可以作为本地代码知识底座接入外部 AI IDE。
 
 ## 7. 业界领先或差异化特性
 
@@ -635,9 +634,9 @@ MCP 暴露三类能力，并统一经过 `ToolPolicy` 过滤：
 
 - Resources：`zscope://config`、`zscope://knowledge/stats`、`zscope://knowledge/functions`、`zscope://snapshots/list`
 - Prompts：`zscope.entry_discovery`、`zscope.resource_lifecycle_audit`、`zscope.concurrency_audit`
-- Tools：ToolsRuntime 的 12 个 raw schema，外加 `query_knowledge`、`discover_entries`，并为 raw 工具提供 `zscope.code.*`、`zscope.graph.*`、`zscope.knowledge.query` 和 `zscope.entries.discover` aliases
+- Tools：六个证据工具 `zscope.code.search`、`zscope.code.read`、`zscope.semantic.context`、`zscope.graph.query`、`zscope.flow.trace`、`zscope.findings.query`，以及 `zscope.knowledge.query`、`zscope.entries.discover`、`zscope.scan.run`、`zscope.scan.status`、`zscope.wiki.status`、`zscope.wiki.query` 六个管理工具；不暴露 raw 名称或重复 alias
 
-stdio MCP 适合作为本地 IDE/Agent 接入。HTTP MCP 是显式开启的远程实验入口：默认绑定 loopback；当绑定非 loopback 地址时，CLI 会强制要求 `--mcp-auth-token-env` 和至少一个 `--mcp-client-allowlist`，HTTP 层再做 Bearer token 与客户端 IP allowlist 校验。
+stdio MCP 适合作为本地 IDE/Agent 接入。协议优先协商 `2025-06-18`，此时 tool list 携带原生 `inputSchema/outputSchema`，调用结果同时返回 text 和 `structuredContent`；兼容 `2024-11-05` 时省略后两项新能力但仍使用 namespaced 名称。HTTP MCP 是显式开启的远程实验入口：默认绑定 loopback；当绑定非 loopback 地址时，CLI 会强制要求 `--mcp-auth-token-env` 和至少一个 `--mcp-client-allowlist`，HTTP 层再做 Bearer token 与客户端 IP allowlist 校验。
 
 ## 12. 扩展点
 

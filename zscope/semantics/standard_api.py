@@ -119,7 +119,10 @@ def standard_contracts() -> list[dict[str, Any]]:
         argument=0,
         behavior="stream_disassociated_even_on_flush_error",
     )
-    add("closedir", "io_release", "directory", argument=0, success=zero)
+    # A closedir invocation consumes the DIR stream obligation.  Its status is
+    # diagnostic (for example EBADF), not evidence that a valid stream remains
+    # owned by the caller and should be reported as leaked.
+    add("closedir", "io_release", "directory", argument=0)
     add(
         "pthread_mutex_lock pthread_mutex_trylock pthread_mutex_timedlock pthread_mutex_clocklock",
         "lock",

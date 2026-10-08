@@ -14,7 +14,13 @@ public:
     options.AddTemporaryDtors = true;
     options.AddEHEdges = true;
     auto cfg = CFG::buildCFG(decl, decl->getBody(), state.context, options);
-    Array events, edges;
+    Array events, edges, parameters;
+    for (unsigned index = 0; index < decl->getNumParams(); ++index) {
+      const auto *parameter = decl->getParamDecl(index);
+      auto identity = valueIdentity(parameter, nullptr);
+      identity["index"] = index;
+      parameters.push_back(std::move(identity));
+    }
     if (cfg) {
       for (const auto *block : *cfg) {
         unsigned ordinal = 0;
@@ -42,11 +48,24 @@ public:
           auto begin = state.location(stmt->getBeginLoc());
           std::string kind = "statement", family, operation;
           Object object, calleeIdentity;
-          Array argumentObjects, argumentExpressions;
+          Array argumentObjects, argumentExpressions, argumentUses, defs, uses;
           std::string returnValue, assignmentTarget, assignmentValue;
-          if (const auto *allocation = dyn_cast<CXXNewExpr>(stmt)) {
+          if (const auto *declaration = dyn_cast<DeclStmt>(stmt)) {
+            for (const auto *declared : declaration->decls()) {
+              const auto *var = dyn_cast<VarDecl>(declared);
+              if (!var) continue;
+              defs.push_back(valueIdentity(var, nullptr));
+              if (var->hasInit()) {
+                kind = "declaration_initializer";
+                assignmentTarget = var->getNameAsString();
+                assignmentValue = expression(var->getInit());
+                appendValues(uses, var->getInit());
+              }
+            }
+          } else if (const auto *allocation = dyn_cast<CXXNewExpr>(stmt)) {
             kind = "acquire";
             object = acquisitionIdentity(allocation);
+            if (!object.empty()) defs.push_back(acquisitionIdentity(allocation));
             family = allocation->isArray() ? "new_array" : "new_scalar";
             if (allocation->getNumPlacementArgs() || (allocation->getOperatorNew() &&
                 !allocation->getOperatorNew()->isReplaceableGlobalAllocationFunction())) family = "custom_allocation";
@@ -55,31 +74,65 @@ public:
             family = release->isArrayForm() ? "new_array" : "new_scalar";
             object = objectIdentity(release->getArgument());
             operation = std::string(release->isArrayForm() ? "delete[] " : "delete ") + expression(release->getArgument());
+            appendValues(uses, release->getArgument());
           } else if (const auto *call = dyn_cast<CallExpr>(stmt)) {
             kind = "call";
             object = acquisitionIdentity(call);
+            if (!object.empty()) defs.push_back(acquisitionIdentity(call));
             if (const auto *callee = call->getDirectCallee()) {
               calleeIdentity = state.target(callee);
-              operation = callee->getQualifiedNameAsString() + "(";
-              for (unsigned i = 0; i < call->getNumArgs(); ++i) {
-                if (i) operation += ", ";
-                operation += expression(call->getArg(i));
-                argumentObjects.push_back(objectIdentity(call->getArg(i)));
-                argumentExpressions.push_back(expression(call->getArg(i)));
-              }
-              operation += ")";
+              operation = callee->getQualifiedNameAsString();
+            } else {
+              calleeIdentity = objectIdentity(call->getCallee());
+              operation = expression(call->getCallee());
             }
+            operation += "(";
+            for (unsigned i = 0; i < call->getNumArgs(); ++i) {
+              if (i) operation += ", ";
+              operation += expression(call->getArg(i));
+              argumentObjects.push_back(objectIdentity(call->getArg(i)));
+              argumentExpressions.push_back(expression(call->getArg(i)));
+              Array oneArgumentUses;
+              appendValues(oneArgumentUses, call->getArg(i));
+              argumentUses.push_back(std::move(oneArgumentUses));
+              appendValues(uses, call->getArg(i));
+            }
+            operation += ")";
           } else if (const auto *returned = dyn_cast<ReturnStmt>(stmt)) {
             kind = "return";
-            if (returned->getRetValue()) returnValue = expression(returned->getRetValue());
+            if (returned->getRetValue()) {
+              returnValue = expression(returned->getRetValue());
+              appendValues(uses, returned->getRetValue());
+            }
           } else if (const auto *assignment = dyn_cast<BinaryOperator>(stmt)) {
             if (assignment->isAssignmentOp()) {
-              kind = "assignment";
+              kind = assignment->isCompoundAssignmentOp() ? "compound_assignment" : "assignment";
               assignmentTarget = expression(assignment->getLHS());
               assignmentValue = expression(assignment->getRHS());
+              defs.push_back(objectIdentity(assignment->getLHS()));
+              appendValues(uses, assignment->getRHS());
+              if (assignment->isCompoundAssignmentOp()) appendValues(uses, assignment->getLHS());
             }
+          } else if (const auto *unary = dyn_cast<UnaryOperator>(stmt)) {
+            if (unary->isIncrementDecrementOp()) {
+              kind = "increment_decrement";
+              defs.push_back(objectIdentity(unary->getSubExpr()));
+              appendValues(uses, unary->getSubExpr());
+            } else appendValues(uses, stmt);
+          } else {
+            appendValues(uses, stmt);
           }
-          events.push_back(Object{{"event_kind", kind}, {"resource_family", family},
+          unsigned nestedCalls = 0;
+          nestedCalls = appendNestedCallEvents(events, stmt, block->getBlockID(), ordinal);
+          // A nested call already represents the value transfer into the
+          // declaration/assignment target. Emitting the wrapper as another
+          // defining event would overwrite that call-result identity and make
+          // argument-to-result propagation look like a direct must-flow.
+          if (nestedCalls && (kind == "declaration_initializer" || kind == "assignment" ||
+                              kind == "compound_assignment"))
+            continue;
+          std::string eventId = std::to_string(block->getBlockID()) + ":" + std::to_string(ordinal);
+          events.push_back(Object{{"event_id", eventId}, {"event_kind", kind}, {"resource_family", family},
             {"block", block->getBlockID()}, {"ordinal", ordinal++},
             {"location", begin.json()}, {"end", state.location(stmt->getEndLoc()).json()},
             {"ast_kind", stmt->getStmtClassName()}, {"expression", state.text(stmt->getSourceRange())},
@@ -87,24 +140,31 @@ public:
             {"callee", std::move(calleeIdentity)}, {"arguments", std::move(argumentExpressions)},
             {"return_value", returnValue}, {"assignment_target", assignmentTarget},
             {"assignment_value", assignmentValue},
-            {"argument_objects", std::move(argumentObjects)}, {"macro_expansion", stmt->getBeginLoc().isMacroID()}});
+            {"argument_objects", std::move(argumentObjects)}, {"argument_uses", std::move(argumentUses)},
+            {"defs", std::move(defs)},
+            {"uses", std::move(uses)}, {"macro_expansion", stmt->getBeginLoc().isMacroID()}});
         }
         unsigned successorIndex = 0;
         const auto *condition = dyn_cast_or_null<Expr>(block->getTerminatorCondition());
         for (auto successor : block->succs()) {
-          if (const auto *target = successor.getReachableBlock())
+          if (const auto *target = successor.getReachableBlock()) {
+            Array conditionUses;
+            if (condition) appendValues(conditionUses, condition);
             edges.push_back(Object{{"from", block->getBlockID()}, {"to", target->getBlockID()},
               {"condition", condition ? expression(condition) : ""},
+              {"condition_uses", std::move(conditionUses)},
               {"branch", condition && block->succ_size() == 2 &&
                 !isa_and_nonnull<SwitchStmt>(block->getTerminatorStmt())
                 ? (successorIndex == 0 ? "true" : "false") : "unknown"}});
+          }
           ++successorIndex;
         }
       }
     }
     state.emit(Object{{"kind", "program_function"}, {"owner", state.owner(loc)},
       {"location", loc.json()}, {"complete", bool(cfg)}, {"events", std::move(events)},
-      {"cfg_edges", std::move(edges)}, {"target_values", state.targetValues()}, {"fact_version", "zscope.program-events.v4"}});
+      {"cfg_edges", std::move(edges)}, {"parameters", std::move(parameters)},
+      {"target_values", state.targetValues()}, {"fact_version", "zscope.program-events.v5"}});
     return true;
   }
   bool VisitDeclRefExpr(DeclRefExpr *expr) {
@@ -127,12 +187,112 @@ public:
     return true;
   }
 private:
+  class ValueCollector : public RecursiveASTVisitor<ValueCollector> {
+    ProgramEvents &owner;
+  public:
+    std::vector<std::pair<const ValueDecl *, const Expr *>> values;
+    explicit ValueCollector(ProgramEvents &value) : owner(value) {}
+    bool VisitDeclRefExpr(DeclRefExpr *expr) {
+      if (const auto *decl = dyn_cast<ValueDecl>(expr->getDecl())) values.emplace_back(decl, expr);
+      return true;
+    }
+    bool VisitMemberExpr(MemberExpr *expr) {
+      if (const auto *decl = dyn_cast<ValueDecl>(expr->getMemberDecl())) values.emplace_back(decl, expr);
+      return true;
+    }
+  };
+  class CallCollector : public RecursiveASTVisitor<CallCollector> {
+  public:
+    std::vector<const CallExpr *> calls;
+    bool VisitCallExpr(CallExpr *expr) {
+      calls.push_back(expr);
+      return true;
+    }
+  };
+  unsigned appendNestedCallEvents(Array &events, const Stmt *stmt,
+                                  unsigned blockId, unsigned &ordinal) {
+    CallCollector collector;
+    collector.TraverseStmt(const_cast<Stmt *>(stmt));
+    unsigned emitted = 0;
+    for (const auto *call : collector.calls) {
+      if (call == stmt) continue;
+      Object calleeIdentity;
+      std::string operation;
+      if (const auto *callee = call->getDirectCallee()) {
+        calleeIdentity = state.target(callee);
+        operation = callee->getQualifiedNameAsString();
+      } else {
+        calleeIdentity = objectIdentity(call->getCallee());
+        operation = expression(call->getCallee());
+      }
+      operation += "(";
+      Array argumentObjects, argumentExpressions, argumentUses, defs, uses;
+      for (unsigned index = 0; index < call->getNumArgs(); ++index) {
+        if (index) operation += ", ";
+        operation += expression(call->getArg(index));
+        argumentObjects.push_back(objectIdentity(call->getArg(index)));
+        argumentExpressions.push_back(expression(call->getArg(index)));
+        Array oneArgumentUses;
+        appendValues(oneArgumentUses, call->getArg(index));
+        argumentUses.push_back(std::move(oneArgumentUses));
+        appendValues(uses, call->getArg(index));
+      }
+      operation += ")";
+      auto result = acquisitionIdentity(call);
+      if (!result.empty()) defs.push_back(std::move(result));
+      std::string eventId = std::to_string(blockId) + ":" + std::to_string(ordinal);
+      events.push_back(Object{{"event_id", eventId}, {"event_kind", "call"},
+        {"resource_family", ""}, {"block", blockId}, {"ordinal", ordinal++},
+        {"location", state.location(call->getBeginLoc()).json()},
+        {"end", state.location(call->getEndLoc()).json()}, {"ast_kind", call->getStmtClassName()},
+        {"expression", state.text(call->getSourceRange())}, {"operation", operation},
+        {"object", Object{}}, {"callee", std::move(calleeIdentity)},
+        {"arguments", std::move(argumentExpressions)},
+        {"return_value", ""}, {"assignment_target", ""}, {"assignment_value", ""},
+        {"argument_objects", std::move(argumentObjects)},
+        {"argument_uses", std::move(argumentUses)}, {"defs", std::move(defs)},
+        {"uses", std::move(uses)}, {"macro_expansion", call->getBeginLoc().isMacroID()}});
+      ++emitted;
+    }
+    return emitted;
+  }
+  Object valueIdentity(const ValueDecl *decl, const Expr *expr) const {
+    Object result = state.target(decl);
+    std::string storage = "local";
+    if (isa<ParmVarDecl>(decl)) storage = "parameter";
+    else if (isa<FieldDecl>(decl)) storage = "field";
+    else if (const auto *var = dyn_cast<VarDecl>(decl))
+      if (var->hasGlobalStorage()) storage = "global";
+    result["value_kind"] = storage;
+    result["expression"] = expr ? expression(expr) : decl->getNameAsString();
+    if (expr) {
+      const auto *normalized = expr->IgnoreParenImpCasts();
+      if (const auto *member = dyn_cast<MemberExpr>(normalized)) {
+        result["base_expression"] = expression(member->getBase());
+        result["identity_complete"] = !member->isArrow();
+      }
+    }
+    return result;
+  }
+  void appendValues(Array &output, const Stmt *stmt) {
+    if (!stmt) return;
+    ValueCollector collector(*this);
+    collector.TraverseStmt(const_cast<Stmt *>(stmt));
+    std::set<std::string> seen;
+    for (const auto &item : collector.values) {
+      std::string key = state.usr(item.first) + "\x1f" + expression(item.second);
+      if (!seen.insert(key).second) continue;
+      output.push_back(valueIdentity(item.first, item.second));
+    }
+  }
   Object acquisitionIdentity(const Expr *expr) const {
     auto node = DynTypedNode::create(*expr);
     for (unsigned depth = 0; depth < 8; ++depth) {
       auto parents = state.context->getParents(node);
       if (parents.size() != 1) break;
       node = parents[0];
+      if (const auto *parentCall = node.get<CallExpr>())
+        if (parentCall != expr) break;
       if (const auto *var = node.get<VarDecl>()) return state.target(var);
       if (const auto *binary = node.get<BinaryOperator>()) {
         if (binary->isAssignmentOp()) return objectIdentity(binary->getLHS());
@@ -155,6 +315,9 @@ private:
     if (const auto *member = dyn_cast<MemberExpr>(expr)) {
       auto identity = state.target(member->getMemberDecl());
       identity["base_expression"] = expression(member->getBase());
+      identity["value_kind"] = "field";
+      identity["expression"] = expression(member);
+      identity["identity_complete"] = !member->isArrow();
       return identity;
     }
     return Object{{"expression", expression(expr)}, {"identity_complete", false}};

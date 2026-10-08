@@ -69,9 +69,14 @@ class LocalPatternSemanticBuilder:
 
     def scan_typedef_aliases(self) -> LocalPatternSemantics:
         semantics = LocalPatternSemantics()
-        roots = [self.code_index.source_root]
-        if self.code_index.project_root not in roots:
-            roots.append(self.code_index.project_root)
+        roots: list[Path] = []
+        for attribute in ("source_root", "project_root"):
+            value = getattr(self.code_index, attribute, None)
+            if value is None:
+                continue
+            root = Path(value)
+            if root not in roots:
+                roots.append(root)
         base_pattern = (
             r"(?:size_t|u?int(?:8|16|32|64)_t|"
             r"(?:unsigned|signed)?\s*(?:char|short|int|long|long\s+long))"

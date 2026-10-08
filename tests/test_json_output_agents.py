@@ -658,7 +658,7 @@ def test_semantic_modeler_accepts_nonempty_unresolved_callees() -> None:
     assert "unresolved_callees" in prompt_text
 
 
-def test_semantic_modeler_blocks_redundant_target_function_info_call(monkeypatch) -> None:
+def test_semantic_modeler_has_no_hidden_legacy_target_interceptor(monkeypatch) -> None:
     llm = SinglePassLLM(_snapshot_payload())
     agent = SemanticModeler(llm, [GetFunctionInfoTool()])
     tool_results = []
@@ -673,7 +673,7 @@ def test_semantic_modeler_blocks_redundant_target_function_info_call(monkeypatch
     response = agent.run(_semantic_model_input())
 
     assert response.success is True
-    assert tool_results[0]["reason"] == "target_function_info_preloaded"
+    assert tool_results[0] == {"success": True, "data": {"func_name": "api_entry"}}
 
 
 def test_semantic_modeler_schema_aligns_llm_snapshots_with_static_snapshots() -> None:

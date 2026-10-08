@@ -1503,8 +1503,9 @@ def _run_trial_in_workspace(
     config_path = run_dir / "zscope.execution.yaml"
     _write_execution_config(spec, execution_root, config_path, scan_depth=scan_depth)
     effective = _validate_config(config_path, smoke=False)
+    effective_analysis = getattr(effective, "analysis", None)
     review_experiment = any(
-        bool(getattr(effective.analysis, name, False))
+        bool(getattr(effective_analysis, name, False))
         for name in (
             "validation_review_checkpoint",
             "validation_review_protocol",
@@ -1523,7 +1524,7 @@ def _run_trial_in_workspace(
             "schema_version": "zscope.review-workspace.v1",
             "workspace": str(workspace),
             "source": str(execution_root),
-            "snapshot_dir": str(effective.analysis.snapshot_dir),
+            "snapshot_dir": str(getattr(effective_analysis, "snapshot_dir", "")),
             "reason": "retain original dependency paths for review checkpoint replay",
         }
         _json_dump(workspace / ".review-checkpoints-retained.json", retained)
@@ -1726,7 +1727,11 @@ def _run_trial_in_workspace(
     archived_scan_root = run_dir / "scan-input"
     # Export the contract publication before restoring sealed scanner inputs.
     # This contains source-grounded interface evidence, never benchmark truth.
-    publication = Path(effective.analysis.snapshot_dir) / ".semantic-modeling" / "publication.json"
+    publication = (
+        Path(str(getattr(effective_analysis, "snapshot_dir", "")))
+        / ".semantic-modeling"
+        / "publication.json"
+    )
     if not publication.is_absolute():
         publication = execution_root / publication
     if publication.is_file() and not publication.is_symlink():

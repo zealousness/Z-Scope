@@ -215,11 +215,12 @@ def test_validated_changeset_is_merged_into_new_revision(tmp_path: Path) -> None
     with SourceIndex(tmp_path / "source.db") as index, WikiStore(state) as store:
         index.rebuild(FIXTURE, manifest=manifest)
         first = store.build_skeleton(FIXTURE, manifest)
-        ref_id = store.connection.execute(
-            "SELECT ref_id FROM document_refs WHERE revision_id=? ORDER BY ref_id LIMIT 1",
-            (first.revision_id,),
-        ).fetchone()["ref_id"]
         source_id = manifest.accepted[0].source_id
+        ref_id = store.connection.execute(
+            "SELECT ref_id FROM document_refs WHERE revision_id=? AND source_id=? "
+            "ORDER BY ref_id LIMIT 1",
+            (first.revision_id, source_id),
+        ).fetchone()["ref_id"]
         workset = build_ingest_workset(
             manifest,
             source_index=index,
@@ -397,11 +398,12 @@ def test_new_page_slug_is_safe_when_page_id_contains_underscores(tmp_path: Path)
     with SourceIndex(tmp_path / "source.db") as index, WikiStore(tmp_path / "wiki") as store:
         index.rebuild(FIXTURE, manifest=manifest)
         first = store.build_skeleton(FIXTURE, manifest)
-        ref_id = store.connection.execute(
-            "SELECT ref_id FROM document_refs WHERE revision_id=? ORDER BY ref_id LIMIT 1",
-            (first.revision_id,),
-        ).fetchone()["ref_id"]
         source_id = manifest.accepted[0].source_id
+        ref_id = store.connection.execute(
+            "SELECT ref_id FROM document_refs WHERE revision_id=? AND source_id=? "
+            "ORDER BY ref_id LIMIT 1",
+            (first.revision_id, source_id),
+        ).fetchone()["ref_id"]
         workset = build_ingest_workset(
             manifest,
             source_index=index,

@@ -115,7 +115,7 @@ class IncrementalSemanticModeling:
             {
                 "version": 2,
                 "contract_compiler": CONTRACT_COMPILER_VERSION,
-                "program_facts": "zscope.program-events.v4",
+                "program_facts": "zscope.program-events.v5",
                 "schema": DEFAULT_FUNCTION_SNAPSHOT_SCHEMA,
                 "prompt": prompt.read_text(encoding="utf-8"),
                 "model": getattr(llm, "models", None),

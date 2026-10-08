@@ -13,20 +13,12 @@ from zscope.tools.runtime import ToolsRuntime
 from zscope.tools.taint_reachability import VerifyTaintReachabilityTool
 
 EXPECTED_TOOL_NAMES = [
-    "get_function_impl",
-    "get_function_info",
-    "get_function_snapshot",
-    "get_security_semantics",
-    "list_known_functions",
-    "get_file_snippet",
-    "get_callers",
-    "get_type_info",
-    "get_call_graph",
-    "get_data_flow",
-    "find_function_pointers",
-    "query_pointer_alias",
-    "verify_taint_reachability",
-    "get_deep_call_context",
+    "search_code",
+    "read_code",
+    "get_semantic_context",
+    "query_code_graph",
+    "trace_data_flow",
+    "query_static_findings",
 ]
 
 
@@ -146,9 +138,9 @@ def test_runtime_and_agent_reject_non_object_arguments_before_execution() -> Non
     assert agent_tool.calls == []
 
 
-def test_runtime_updates_location_and_autofills_file_snippet() -> None:
+def test_runtime_does_not_autofill_read_location_from_previous_call() -> None:
     info_tool = RecordingTool(
-        "get_function_info",
+        "search_code",
         {
             "success": True,
             "data": {
@@ -175,7 +167,7 @@ def test_runtime_updates_location_and_autofills_file_snippet() -> None:
         },
     }
     snippet_tool = RecordingTool(
-        "get_file_snippet",
+        "read_code",
         {"success": True, "data": {"file": "src/demo.c"}},
     )
     snippet_tool.get_schema = lambda: {
@@ -200,17 +192,28 @@ def test_runtime_updates_location_and_autofills_file_snippet() -> None:
         tools=[info_tool, snippet_tool],
     )
 
-    runtime.execute_tool("get_function_info", {"value": 1})
-    result = runtime.execute_tool("get_file_snippet", {})
+    runtime.execute_tool("search_code", {"value": 1})
+    result = runtime.execute_tool("read_code", {})
 
-    assert result["success"] is True
-    assert snippet_tool.calls == [{"file_path": "src/demo.c", "start_line": 12}]
+    assert result["success"] is False
+    assert snippet_tool.calls == []
 
 
-def test_runtime_caches_negative_type_info_results() -> None:
+def test_runtime_reuses_only_exact_read_code_calls() -> None:
     tool = RecordingTool(
-        "get_type_info",
-        {"success": False, "error": "Type 'missing' not found"},
+        "read_code",
+        {
+            "success": True,
+            "data": {
+                "source": {
+                    "file": "demo.c",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "code": "1 | int value;\n",
+                }
+            },
+            "warnings": [],
+        },
     )
     tool.get_schema = lambda: {
         "type": "function",
@@ -219,8 +222,12 @@ def test_runtime_caches_negative_type_info_results() -> None:
             "description": tool.description,
             "parameters": {
                 "type": "object",
-                "properties": {"type_name": {"type": "string"}},
-                "required": ["type_name"],
+                "properties": {
+                    "file_path": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                },
+                "required": ["file_path", "start_line", "end_line"],
             },
         },
     }
@@ -230,11 +237,12 @@ def test_runtime_caches_negative_type_info_results() -> None:
         tools=[tool],
     )
 
-    first = runtime.execute_tool("get_type_info", {"type_name": "missing"})
-    second = runtime.execute_tool("get_type_info", {"type_name": "missing"})
+    arguments = {"file_path": "demo.c", "start_line": 1, "end_line": 1}
+    first = runtime.execute_tool("read_code", arguments)
+    second = runtime.execute_tool("read_code", arguments)
 
-    assert first["success"] is False
-    assert second["cached_negative_result"] is True
+    assert first["success"] is True
+    assert "Reused the exact previous read_code result." in second["warnings"]
     assert len(tool.calls) == 1
 
 
@@ -281,7 +289,7 @@ def test_analyzer_uses_registry_backend_grouping() -> None:
     base_names = [tool.name for tool in base_tools]
 
     assert advanced_names == EXPECTED_TOOL_NAMES
-    assert base_names == EXPECTED_TOOL_NAMES[:8]
+    assert base_names == EXPECTED_TOOL_NAMES
     assert advanced_tools[2].resolver is not None
     assert base_tools[2].resolver is None
 

@@ -194,8 +194,7 @@ class KnowledgeDB:
             old_count = int(
                 conn.execute("SELECT COUNT(*) AS count FROM taint_signatures").fetchone()["count"]
             )
-            conn.execute(
-                f"""
+            conn.execute(f"""
                 CREATE TABLE "{replacement_table}" (
                     id          INTEGER PRIMARY KEY,
                     source_func TEXT NOT NULL DEFAULT '',
@@ -215,10 +214,8 @@ class KnowledgeDB:
                         svf_group
                     )
                 )
-                """
-            )
-            conn.execute(
-                f"""
+                """)
+            conn.execute(f"""
                 INSERT OR IGNORE INTO "{replacement_table}"
                     (id, source_func, sink_func, bug_type, file_path, line, tool, svf_group)
                 SELECT
@@ -232,8 +229,7 @@ class KnowledgeDB:
                     COALESCE(svf_group, 'default')
                 FROM taint_signatures
                 ORDER BY id
-                """
-            )
+                """)
             migrated_count = int(
                 conn.execute(f'SELECT COUNT(*) AS count FROM "{replacement_table}"').fetchone()[
                     "count"
@@ -274,8 +270,7 @@ class KnowledgeDB:
 
     def _create_tables(self):
         c = self._conn
-        c.executescript(
-            """
+        c.executescript("""
             CREATE TABLE IF NOT EXISTS translation_units (
                 id          INTEGER PRIMARY KEY,
                 file_path   TEXT NOT NULL UNIQUE,
@@ -645,8 +640,7 @@ class KnowledgeDB:
                 return_semantics TEXT DEFAULT '',
                 updated_at  REAL DEFAULT 0
             );
-        """
-        )
+        """)
         c.commit()
 
         c.execute("INSERT OR IGNORE INTO metadata (key, value) VALUES ('svf_db_generation', '0')")
@@ -686,8 +680,7 @@ class KnowledgeDB:
             "call_guard",
         }
         if not required_indirect_columns.issubset(indirect_columns):
-            c.executescript(
-                """
+            c.executescript("""
                 CREATE TABLE indirect_calls_v12 (
                     id INTEGER PRIMARY KEY,
                     caller_name TEXT NOT NULL,
@@ -721,8 +714,7 @@ class KnowledgeDB:
                 CREATE INDEX IF NOT EXISTS idx_ic_file_line ON indirect_calls(call_file, call_line);
                 CREATE INDEX IF NOT EXISTS idx_ic_callsite
                     ON indirect_calls(caller_name, callsite_id);
-                """
-            )
+                """)
             c.commit()
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_ic_callsite "
@@ -823,8 +815,7 @@ class KnowledgeDB:
         # while ensuring existing v14 databases receive the same purge/include indexes
         # as newly-created databases. This runs after compatibility columns/tables are
         # present (notably call_edges.callee_file and the taint table replacement).
-        c.executescript(
-            """
+        c.executescript("""
             CREATE INDEX IF NOT EXISTS idx_functions_tu ON functions(tu_id);
             CREATE INDEX IF NOT EXISTS idx_types_tu ON type_definitions(tu_id);
             CREATE INDEX IF NOT EXISTS idx_call_caller_file ON call_edges(caller_file);
@@ -847,8 +838,7 @@ class KnowledgeDB:
             CREATE INDEX IF NOT EXISTS idx_ir_shared_file ON ir_shared_accesses(file_path);
             CREATE INDEX IF NOT EXISTS idx_ir_path_source_stmt ON ir_path_slices(source_stmt);
             CREATE INDEX IF NOT EXISTS idx_ir_path_sink_stmt ON ir_path_slices(sink_stmt);
-            """
-        )
+            """)
         if "event_ordinal" not in {row[1] for row in c.execute("PRAGMA table_info(ir_statements)")}:
             # Rebuild the derived table without the old line/text uniqueness;
             # retain IDs so existing IR edges still refer to the same nodes.
@@ -1318,7 +1308,18 @@ class KnowledgeDB:
             "INSERT OR IGNORE INTO ir_statements "
             "(file_path, line, function, kind, normalized_code, ast_kind, defs, uses, column_number, event_ordinal) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (file_path, line, function, kind, normalized_code, ast_kind, defs, uses, column_number, event_ordinal),
+            (
+                file_path,
+                line,
+                function,
+                kind,
+                normalized_code,
+                ast_kind,
+                defs,
+                uses,
+                column_number,
+                event_ordinal,
+            ),
         )
         row = self._conn.execute(
             "SELECT id FROM ir_statements WHERE file_path = ? AND line = ? "
@@ -1654,8 +1655,11 @@ class KnowledgeDB:
             dict.fromkeys(self._canonical_derived_index_name(name) for name in requested_names)
         )
         with self._derived_index_lock:
-            if self.DERIVED_INDEX_TYPE_REFS in canonical_names and self.get_metadata("clang_type_refs_generation"):
+            if self.DERIVED_INDEX_TYPE_REFS in canonical_names and self.get_metadata(
+                "clang_type_refs_generation"
+            ):
                 import uuid
+
                 self._set_metadata_uncommitted("clang_type_refs_generation", uuid.uuid4().hex)
             for canonical in canonical_names:
                 previous = self.get_derived_index_state(canonical)
@@ -2383,6 +2387,116 @@ class KnowledgeDB:
             "referenced_macros": macros_result,
         }
 
+    def query_symbol_references(
+        self,
+        *,
+        function_name: str = "",
+        function_file: str = "",
+        symbol_name: str = "",
+        symbol_kind: str = "",
+        symbol_file: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return directional function-to-symbol references without materializing bodies."""
+        rows: List[Dict[str, Any]] = []
+        if not symbol_kind or symbol_kind in {"global", "function"}:
+            clauses: List[str] = []
+            values: List[Any] = []
+            if function_name:
+                clauses.append("function_name = ?")
+                values.append(function_name)
+            if symbol_name:
+                clauses.append("symbol_name = ?")
+                values.append(symbol_name)
+            if symbol_kind:
+                clauses.append("symbol_kind = ?")
+                values.append(symbol_kind)
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            for row in self._conn.execute(
+                "SELECT function_name,function_file,symbol_name,symbol_kind,symbol_file,"
+                "reference_line,access_kind FROM function_symbol_refs"
+                + where
+                + " ORDER BY function_file,reference_line,function_name,symbol_name",
+                tuple(values),
+            ).fetchall():
+                item = dict(row)
+                if function_file and not self._paths_match_hint(
+                    item["function_file"], function_file
+                ):
+                    continue
+                if symbol_file and not self._paths_match_hint(item["symbol_file"], symbol_file):
+                    continue
+                rows.append(item)
+
+        if not symbol_kind or symbol_kind == "macro":
+            macro_clauses: List[str] = []
+            macro_values: List[Any] = []
+            if function_name:
+                macro_clauses.append("f.name = ?")
+                macro_values.append(function_name)
+            if symbol_name:
+                macro_clauses.append("m.name = ?")
+                macro_values.append(symbol_name)
+            macro_where = " WHERE " + " AND ".join(macro_clauses) if macro_clauses else ""
+            macro_rows = self._conn.execute(
+                "SELECT f.name AS function_name,f.file_path AS function_file,"
+                "m.name AS symbol_name,'macro' AS symbol_kind,m.file_path AS symbol_file,"
+                "r.reference_line AS reference_line,'read' AS access_kind "
+                "FROM function_macro_refs r JOIN functions f ON f.id=r.function_id "
+                "JOIN macro_definitions m ON m.id=r.macro_id"
+                + macro_where
+                + " ORDER BY f.file_path,r.reference_line,f.name,m.name",
+                tuple(macro_values),
+            ).fetchall()
+            for row in macro_rows:
+                item = dict(row)
+                if function_file and not self._paths_match_hint(
+                    item["function_file"], function_file
+                ):
+                    continue
+                if symbol_file and not self._paths_match_hint(item["symbol_file"], symbol_file):
+                    continue
+                rows.append(item)
+
+        if not symbol_kind or symbol_kind == "type":
+            type_clauses: List[str] = []
+            type_values: List[Any] = []
+            if function_name:
+                type_clauses.append("f.name = ?")
+                type_values.append(function_name)
+            if symbol_name:
+                type_clauses.append("r.referenced_name = ?")
+                type_values.append(symbol_name)
+            type_where = " WHERE " + " AND ".join(type_clauses) if type_clauses else ""
+            type_rows = self._conn.execute(
+                "SELECT f.name AS function_name,f.file_path AS function_file,"
+                "r.referenced_name AS symbol_name,'type' AS symbol_kind,"
+                "COALESCE(t.file_path,'') AS symbol_file,r.reference_line AS reference_line,"
+                "r.reference_kind AS access_kind FROM function_type_refs r "
+                "JOIN functions f ON f.id=r.function_id "
+                "LEFT JOIN type_definitions t ON t.id=r.type_id"
+                + type_where
+                + " ORDER BY f.file_path,r.reference_line,f.name,r.referenced_name",
+                tuple(type_values),
+            ).fetchall()
+            for row in type_rows:
+                item = dict(row)
+                if function_file and not self._paths_match_hint(
+                    item["function_file"], function_file
+                ):
+                    continue
+                if symbol_file and not self._paths_match_hint(item["symbol_file"], symbol_file):
+                    continue
+                rows.append(item)
+        rows.sort(
+            key=lambda item: (
+                str(item.get("function_file") or ""),
+                int(item.get("reference_line") or 0),
+                str(item.get("function_name") or ""),
+                str(item.get("symbol_name") or ""),
+            )
+        )
+        return rows
+
     @staticmethod
     def _merge_access_kind(left: str, right: str) -> str:
         values = {left or "unknown", right or "unknown"}
@@ -2780,10 +2894,7 @@ class KnowledgeDB:
         affected: Set[str] = set()
         for file_path in candidates:
             normalized = self._normalize_include_graph_path(file_path)
-            if (
-                Path(file_path).name in changed_basenames
-                or normalized in changed_variants
-            ):
+            if Path(file_path).name in changed_basenames or normalized in changed_variants:
                 affected.add(file_path)
                 continue
             for member in closures.get(file_path) or ():
@@ -3248,10 +3359,18 @@ class KnowledgeDB:
             "WHERE callee_name = ? ORDER BY caller_file, caller_name, call_line, id LIMIT ? OFFSET ?",
             (acquire_func, limit, max(0, int(offset))),
         ).fetchall()
-        return [{"function": r["caller_name"], "file_path": r["caller_file"],
-                 "line": r["call_line"], "call_edge_id": r["id"], "acquire_func": acquire_func,
-                 "release_func": " or ".join(sorted(set(release_funcs))),
-                 "release_funcs": sorted(set(release_funcs))} for r in rows]
+        return [
+            {
+                "function": r["caller_name"],
+                "file_path": r["caller_file"],
+                "line": r["call_line"],
+                "call_edge_id": r["id"],
+                "acquire_func": acquire_func,
+                "release_func": " or ".join(sorted(set(release_funcs))),
+                "release_funcs": sorted(set(release_funcs)),
+            }
+            for r in rows
+        ]
 
     # ── Header functions ──
 

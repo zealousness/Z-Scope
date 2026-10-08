@@ -1053,7 +1053,10 @@ class SnapshotStore:
                 ).fetchone()
                 if not referenced:
                     try:
-                        (self.snapshot_dir / name).unlink(missing_ok=True)
+                        path = self.snapshot_dir / name
+                        path.unlink(missing_ok=True)
+                        if name.endswith("_final.json"):
+                            path.with_suffix(".timings.json").unlink(missing_ok=True)
                     except OSError:
                         logger.warning("[snapshot-store] retirement deferred file=%s", name)
         finally:
@@ -1198,12 +1201,14 @@ class SnapshotStore:
             )
             return False
         final_file = f"{self._encoded_index_name(index_name)}.{uuid.uuid4().hex}_final.json"
+        final_path = self.snapshot_dir / final_file
+        timing_path = final_path.with_suffix(".timings.json")
         committed = False
         old_file = ""
         try:
             from ..reporting.json_io import write_report_atomic
 
-            write_report_atomic(self.snapshot_dir / final_file, final_report)
+            write_report_atomic(final_path, final_report)
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -1215,7 +1220,11 @@ class SnapshotStore:
                     conflict_dir = self.snapshot_dir / "conflicts"
                     conflict_dir.mkdir(exist_ok=True)
                     conflict_file = conflict_dir / final_file
-                    (self.snapshot_dir / final_file).replace(conflict_file)
+                    final_path.replace(conflict_file)
+                    # A rejected report keeps its payload for diagnosis, but
+                    # its write timing is not a separately consumable report
+                    # and would make conflict enumeration ambiguous.
+                    timing_path.unlink(missing_ok=True)
                     final_report.setdefault("metadata", {})["snapshot_conflict_report"] = str(
                         conflict_file
                     )
@@ -1236,7 +1245,8 @@ class SnapshotStore:
                 conn.close()
         finally:
             if not committed:
-                (self.snapshot_dir / final_file).unlink(missing_ok=True)
+                final_path.unlink(missing_ok=True)
+                timing_path.unlink(missing_ok=True)
         self._cache_final_report(final_file, final_report)
         self._retire_files([old_file])
         return True
@@ -1699,6 +1709,8 @@ class SnapshotStore:
                 )
                 continue
             candidate.unlink(missing_ok=True)
+            if filename.endswith("_final.json"):
+                candidate.with_suffix(".timings.json").unlink(missing_ok=True)
         self._invalidate_snapshot_cache(index_name)
         self._invalidate_final_report_cache(index_name)
         self.lock_manager.invalidate(index_name)

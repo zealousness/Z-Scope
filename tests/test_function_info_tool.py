@@ -79,10 +79,7 @@ class MacroSymbolBackend(FunctionInfoBackend):
         self.symbol_definition_queries = []
 
     def get_macro_definitions(self, name: str, limit: int = 20):
-        return [
-            dict(record)
-            for record in self.macro_definitions.get(name, [])[:limit]
-        ]
+        return [dict(record) for record in self.macro_definitions.get(name, [])[:limit]]
 
     def get_macro_definitions_batch(self, names):
         requested = set(names)
@@ -94,8 +91,11 @@ class MacroSymbolBackend(FunctionInfoBackend):
         ]
 
     def get_global_definitions_batch(self, names):
-        return [dict(row) for row in self.symbol_definitions.get("globals", [])
-                if row.get("name") in names]
+        return [
+            dict(row)
+            for row in self.symbol_definitions.get("globals", [])
+            if row.get("name") in names
+        ]
 
 
 class EmptySnapshotStore:
@@ -109,6 +109,12 @@ class RecordingUserConfig:
 
     def get_external_function(self, func_name: str):
         return self.external_functions.get(func_name)
+
+    def list_external_functions(self):
+        return [
+            {"function_name": name, **dict(contract)}
+            for name, contract in self.external_functions.items()
+        ]
 
     def add_config_warning(self, warning_type: str, subject: str, message: str) -> None:
         self.warnings.append((warning_type, subject, message))
@@ -233,9 +239,7 @@ def test_function_info_normalizes_and_budgets_direct_type_context(tmp_path) -> N
         item["type_index_name"] == "ZSignature@include/types.h:100-100"
         for item in info["referenced_types"]
     )
-    assert info["referenced_types"][-1]["full_definition"] == (
-        "100 | typedef int ZSignature;\n"
-    )
+    assert info["referenced_types"][-1]["full_definition"] == ("100 | typedef int ZSignature;\n")
     assert all(
         set(item)
         == {
@@ -254,8 +258,7 @@ def test_function_info_normalizes_and_budgets_direct_type_context(tmp_path) -> N
         "returned": 30,
         "total": 31,
         "definition_bytes_returned": sum(
-            len(item["full_definition"].encode("utf-8"))
-            for item in info["referenced_types"]
+            len(item["full_definition"].encode("utf-8")) for item in info["referenced_types"]
         ),
         "definition_bytes_limit": 32768,
     }
@@ -308,9 +311,7 @@ def test_get_function_info_retries_without_wrong_file_path_and_returns_all_match
 
     index = RecordingIndex()
 
-    result = GetFunctionInfoTool(index).execute(
-        {"func_name": "Target", "file_path": "src/wrong.c"}
-    )
+    result = GetFunctionInfoTool(index).execute({"func_name": "Target", "file_path": "src/wrong.c"})
 
     assert result == {
         "success": True,
@@ -537,7 +538,7 @@ def test_function_info_aggregates_callee_callsites(tmp_path) -> None:
             "callee_name": "SharedTarget",
             "direct_callsite_lines": [40, 50],
             "indirect_callsites": [],
-        }
+        },
     ]
 
 
@@ -738,16 +739,28 @@ def test_header_declaration_edges_reach_unique_project_definitions(tmp_path) -> 
     source = tmp_path / "src" / "target.c"
     source.parent.mkdir(parents=True)
     source.write_text("int Target(void) { return 0; }\n", encoding="utf-8")
-    backend = FunctionInfoBackend({"Target": {
-        "name": "Target", "file": "src/target.c", "start_line": 1, "end_line": 1,
-        "signature": "int Target(void)",
-    }})
+    backend = FunctionInfoBackend(
+        {
+            "Target": {
+                "name": "Target",
+                "file": "src/target.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(void)",
+            }
+        }
+    )
     index = _index(tmp_path, backend, "unified")
     kind, descriptor = index._function_info_callee_descriptor("Target", "include/api.ph")
     assert kind == "project_function"
     assert descriptor["callee_index_name"] == "Target@src/target.c:1-1"
     assert index._function_info_callee_descriptor("Target", "src/other.c")[0] == "unresolved"
-    assert index._function_info_callee_descriptor("Target", "include/api.ph", callee_signature="int Target(int x)")[0] == "external"
+    assert (
+        index._function_info_callee_descriptor(
+            "Target", "include/api.ph", callee_signature="int Target(int x)"
+        )[0]
+        == "external"
+    )
     backend.function_index["Target"]["is_static"] = True
     index = _index(tmp_path, backend, "unified")
     assert index._function_info_callee_descriptor("Target", "include/api.ph")[0] == "unresolved"
@@ -958,7 +971,7 @@ def test_function_info_regex_backend_returns_exact_symbol_context(tmp_path) -> N
             "callee_summary": "unknown",
             "direct_callsite_lines": [6],
             "indirect_callsites": [],
-            }
+        }
     ]
     assert info["external_callees"] == []
     assert info["referenced_globals"][0]["name"] == "g_state"
@@ -1010,9 +1023,7 @@ def test_function_info_regex_backend_resolves_only_direct_visible_types(tmp_path
         "Plugin@include/types.h:1-1",
         "PluginRegistry@include/types.h:2-2",
     ]
-    by_identity = {
-        item["type_index_name"]: item for item in info["referenced_types"]
-    }
+    by_identity = {item["type_index_name"]: item for item in info["referenced_types"]}
     assert by_identity["Plugin@include/types.h:1-1"]["reference_kinds"] == [
         "local",
         "cast",
@@ -1085,13 +1096,16 @@ def test_function_tools_return_is_static_for_project_functions_only(tmp_path) ->
     visible_impl = index.get_function_impl("visible", include_context=False)
     macro_impl = index.get_function_impl("WRAP", include_context=False)
     runtime = ToolsRuntime(index, EmptySnapshotStore(), tool_policy=ToolPolicy.allow_all())
-    runtime_info = runtime.execute_tool("get_function_info", {"func_name": "hidden"})
+    runtime_info = runtime.execute_tool(
+        "search_code",
+        {"query": "hidden", "kinds": ["function"], "match_mode": "exact"},
+    )
 
     assert hidden_info["is_static"] is True
     assert visible_info["is_static"] is False
     assert hidden_impl is not None and hidden_impl["is_static"] is True
     assert visible_impl is not None and visible_impl["is_static"] is False
-    assert runtime_info["data"]["matches"][0]["is_static"] is True
+    assert runtime_info["data"]["symbols"][0]["name"] == "hidden"
     assert hidden_info["is_macro"] is False
     assert visible_info["is_macro"] is False
     assert macro_info["is_static"] is False
@@ -1149,7 +1163,7 @@ def test_function_static_metadata_precedes_source_fallback(tmp_path) -> None:
     assert structured_true is not None and structured_true["is_static"] is True
 
 
-def test_get_function_info_tool_and_runtime_return_match_count(tmp_path) -> None:
+def test_legacy_function_info_remains_internal_while_runtime_uses_search(tmp_path) -> None:
     source = tmp_path / "src" / "target.c"
     source.parent.mkdir(parents=True)
     source.write_text("int Target(void) { return 1; }\n", encoding="utf-8")
@@ -1168,13 +1182,16 @@ def test_get_function_info_tool_and_runtime_return_match_count(tmp_path) -> None
 
     tool_result = GetFunctionInfoTool(index).execute({"func_name": "Target"})
     runtime = ToolsRuntime(index, EmptySnapshotStore(), tool_policy=ToolPolicy.allow_all())
-    runtime_result = runtime.execute_tool("get_function_info", {"func_name": "Target"})
+    runtime_result = runtime.execute_tool(
+        "search_code",
+        {"query": "Target", "kinds": ["function"], "match_mode": "exact"},
+    )
     tool_schema = GetFunctionInfoTool(index).get_schema()["function"]
     properties = tool_schema["parameters"]["properties"]
     runtime_schema = next(
         schema["function"]
         for schema in runtime.get_tools_schema()
-        if schema["function"]["name"] == "get_function_info"
+        if schema["function"]["name"] == "search_code"
     )
 
     assert tool_result["success"] is True
@@ -1182,7 +1199,7 @@ def test_get_function_info_tool_and_runtime_return_match_count(tmp_path) -> None
     assert tool_result["data"]["matches"][0]["index_name"] == "Target@src/target.c:1-1"
     assert set(properties) == {"func_name", "file_path"}
     assert "does not include referenced" in tool_schema["description"]
-    assert "does not include referenced" in runtime_schema["description"]
+    assert "Does not return source" in runtime_schema["description"]
     assert "callers" not in tool_result["data"]["matches"][0]
     for field in (
         "referenced_globals",
@@ -1195,7 +1212,11 @@ def test_get_function_info_tool_and_runtime_return_match_count(tmp_path) -> None
     ):
         assert field not in tool_result["data"]["matches"][0]
     assert runtime_result["success"] is True
-    assert runtime_result["data"]["match_count"] == 1
+    assert runtime_result["data"]["symbols"][0]["name"] == "Target"
+    assert (
+        runtime.execute_tool("get_function_info", {"func_name": "Target"})["status"]
+        == "invalid_request"
+    )
     assert backend.type_context_calls == 0
 
 
@@ -1205,9 +1226,17 @@ def test_type_backend_error_cannot_be_reported_as_empty_context(tmp_path, monkey
     from zscope.snapshots.modeling_input import SemanticModelInputError
 
     (tmp_path / "a.c").write_text("int Target(void) { return 0; }\n", encoding="utf-8")
-    backend = FunctionInfoBackend({"Target": {
-        "name": "Target", "file": "a.c", "start_line": 1, "end_line": 1,
-        "signature": "int Target(void)"}})
+    backend = FunctionInfoBackend(
+        {
+            "Target": {
+                "name": "Target",
+                "file": "a.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(void)",
+            }
+        }
+    )
     index = _index(tmp_path, backend, "unified")
 
     def failed_context(*args):
@@ -1241,8 +1270,12 @@ def test_get_function_info_returns_function_like_macro_context(tmp_path) -> None
     result = GetFunctionInfoTool(index).execute({"func_name": "ALLOC_WRAP"})
     runtime = ToolsRuntime(index, EmptySnapshotStore(), tool_policy=ToolPolicy.allow_all())
     runtime_result = runtime.execute_tool(
-        "get_function_info",
-        {"func_name": "ALLOC_WRAP"},
+        "search_code",
+        {
+            "query": "ALLOC_WRAP",
+            "kinds": ["macro"],
+            "match_mode": "exact",
+        },
     )
 
     assert result["success"] is True
@@ -1258,9 +1291,7 @@ def test_get_function_info_returns_function_like_macro_context(tmp_path) -> None
         "is_static": False,
         "is_macro": True,
         "code": (
-            "1 | #define ALLOC_WRAP(sz) \\\n"
-            "2 |     alloc(sz) \\\n"
-            "3 |     + GLOBAL_LIMIT\n"
+            "1 | #define ALLOC_WRAP(sz) \\\n" "2 |     alloc(sz) \\\n" "3 |     + GLOBAL_LIMIT\n"
         ),
         "project_callees": [],
         "external_callees": [],
@@ -1272,7 +1303,10 @@ def test_get_function_info_returns_function_like_macro_context(tmp_path) -> None
             }
         ],
     }
-    assert runtime_result == result
+    runtime_match = runtime_result["data"]["symbols"][0]
+    assert runtime_match["kind"] == "macro"
+    assert runtime_match["macro"]["form"] == "function_like"
+    assert "alloc(sz)" in runtime_match["macro"]["replacement_text"]
     raw_match = index.find_function_infos(match["index_name"])[0]
     assert raw_match["referenced_macros"] == [
         {
@@ -1303,7 +1337,7 @@ def test_backend_macro_symbol_context_uses_regex_candidates_and_db_definitions(
     source.write_text(
         "#define TARGET(arg) do { \\\n"
         "    UNLOCK(&g_lock); \\\n"
-        "    consume((arg), OBJECT_LIMIT, NOT_CALLED, \"GHOST_GLOBAL\"); \\\n"
+        '    consume((arg), OBJECT_LIMIT, NOT_CALLED, "GHOST_GLOBAL"); \\\n'
         "    AMBIG(); /* GHOST_MACRO */ \\\n"
         "} while (0)\n"
         "static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;\n",
@@ -1325,9 +1359,9 @@ def test_backend_macro_symbol_context_uses_regex_candidates_and_db_definitions(
                 "name": "TARGET",
                 "file_path": "src/macro.c",
                 "line": 1,
-                "definition": source.read_text(encoding="utf-8").split(
-                    "static pthread_mutex_t", 1
-                )[0],
+                "definition": source.read_text(encoding="utf-8").split("static pthread_mutex_t", 1)[
+                    0
+                ],
                 "is_function_like": 1,
             }
         ],
@@ -1423,8 +1457,9 @@ def test_backend_macro_symbol_context_uses_regex_candidates_and_db_definitions(
         start_line=1,
     )
 
-    assert [(r["name"], r["file_path"], r["reference_lines"])
-            for r in info["referenced_globals"]] == [("g_lock", "src/macro.c", [2])]
+    assert [
+        (r["name"], r["file_path"], r["reference_lines"]) for r in info["referenced_globals"]
+    ] == [("g_lock", "src/macro.c", [2])]
     assert info["referenced_macros"] == [
         {
             "macro_index_name": "OBJECT_LIMIT@include/common.h:40-40",
@@ -1511,8 +1546,7 @@ def test_backend_macro_symbol_context_truncates_only_resolved_macros(tmp_path) -
         "total": 51,
     }
     assert all(
-        not item["macro_index_name"].startswith("AMBIGUOUS@")
-        for item in info["referenced_macros"]
+        not item["macro_index_name"].startswith("AMBIGUOUS@") for item in info["referenced_macros"]
     )
 
 
@@ -1625,8 +1659,8 @@ def test_get_function_info_prefers_backend_macro_facts(tmp_path, monkeypatch) ->
         "is_macro",
         "code",
         "project_callees",
-            "external_callees",
-            "unresolved_callees",
+        "external_callees",
+        "unresolved_callees",
         "referenced_globals",
         "referenced_macros",
         "referenced_types",
@@ -1750,9 +1784,7 @@ def test_get_function_impl_tool_preserves_exact_signature(tmp_path) -> None:
     )
     index = _index(tmp_path, backend, "unified")
 
-    result = GetFunctionImplTool(index).execute(
-        {"func_name": "static int Target(int value)"}
-    )
+    result = GetFunctionImplTool(index).execute({"func_name": "static int Target(int value)"})
 
     assert result["success"] is True
     assert result["data"]["index_name"] == "Target@src/z_int.c:1-1"
@@ -1765,9 +1797,7 @@ def test_get_function_info_returns_configured_external_function(tmp_path) -> Non
         source_root=tmp_path,
         indexing_config=SimpleNamespace(backend="regex"),
     )
-    user_config = RecordingUserConfig(
-        {"external_api": {"description": "Configured external API"}}
-    )
+    user_config = RecordingUserConfig({"external_api": {"description": "Configured external API"}})
 
     result = GetFunctionInfoTool(index, user_config).execute(
         {"func_name": "external_api(int value)"}
@@ -1782,12 +1812,17 @@ def test_get_function_info_returns_configured_external_function(tmp_path) -> Non
         tool_policy=ToolPolicy.allow_all(),
     )
     runtime_result = runtime.execute_tool(
-        "get_function_info",
-        {"func_name": "external_api(int value)"},
+        "search_code",
+        {
+            "query": "external_api",
+            "kinds": ["function"],
+            "match_mode": "exact",
+        },
     )
 
     assert result["success"] is True
-    assert runtime_result == result
+    assert runtime_result["success"] is True
+    assert runtime_result["data"]["symbols"][0]["kind"] == "external"
     assert impl_result["success"] is True
     assert impl_result["data"]["func_name"] == "external_api"
     assert impl_result["data"]["file"] == "[external]"

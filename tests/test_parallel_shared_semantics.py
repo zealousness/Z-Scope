@@ -463,7 +463,7 @@ int worker(void) {
     candidate_payload = stack_records[0].ticket.evidence["candidate_payload"]
     assert candidate_payload["candidate_kind"] == "deterministic_rule"
     assert candidate_payload["rule_engine"] == "cpp_clang_cfg"
-    assert candidate_payload["rule_revision"] == 2
+    assert candidate_payload["rule_revision"] == 6
     assert candidate_payload["rule_catalog_sha256"]
 
 

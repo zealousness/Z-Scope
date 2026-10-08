@@ -323,7 +323,10 @@ class ClangAstCfgCandidateGenerator(
             self._allocator_names | self._calloc_names | self._reallocator_names
         )
         self._out_param_acquirers: Set[str] = set()
-        self._release_names = set(self._deallocator_names)
+        # The shared lifecycle state machine owns both memory and typed I/O
+        # resources.  Omitting fclose/closedir and configured io_release
+        # wrappers made a visible close look like a leak.
+        self._release_names = set(self._deallocator_names) | set(self._io_release_names)
 
         _RESOURCE_KIND_RETURN_ACQUIRERS = {
             "allocator",
@@ -357,6 +360,7 @@ class ClangAstCfgCandidateGenerator(
             if kind == "io_release":
                 self._io_release_names.add(name)
                 self._user_io_release_names.add(name)
+                self._release_names.add(name)
             if kind == "send_sink":
                 self._send_sink_names.add(name)
                 self._user_send_sink_names.add(name)
@@ -664,9 +668,10 @@ class ClangAstCfgCandidateGenerator(
         if not call:
             return None
         api = call.group("api")
-        obj = self.semantics.contracts.resolve_object(
-            api, "deallocator", self._split_args(call.group("args"))
-        )
+        arguments = self._split_args(call.group("args"))
+        obj = self.semantics.contracts.resolve_object(api, "deallocator", arguments)
+        if not obj:
+            obj = self.semantics.contracts.resolve_object(api, "io_release", arguments)
         return (api, obj) if obj else None
 
     def _match_lock(self, text: str) -> Optional[Tuple[str, str]]:
