@@ -42,6 +42,12 @@ class ClangTypedResourceRules:
                 or (row.get("contract") or {}).get("resource_family")
                 or ""
             )
+            if not family:
+                described = re.search(
+                    r"(?:^|\s)resource_family=([A-Za-z_][A-Za-z0-9_]*)",
+                    str(row.get("description") or ""),
+                )
+                family = described.group(1) if described else ""
             if family not in families:
                 continue
             if row.get("kind") in {"io_acquire", "allocator"}:
@@ -207,7 +213,11 @@ class ClangTypedResourceRules:
         if not lines:
             return
         for state in resources.values():
-            if state.get("uncertain_release") and not state.get("unreleased_exit"):
+            if (
+                state.get("uncertain_release")
+                and not state.get("unreleased_exit")
+                and state["family"] != "custom"
+            ):
                 continue
             if state["family"] == "malloc":
                 continue  # Existing malloc state machine owns leak reporting.

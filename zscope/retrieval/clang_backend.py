@@ -149,15 +149,24 @@ class ClangBackend(CodeBackend):
                 self._compile_preparation = None
             self._compile_generation_started = True
             result = self._run_full_extraction_impl()
-        if (result and self._frontend == "auto" and self._db is not None
-                and self._db.get_metadata("clang_fact_frontend") == "batch"):
+        if (
+            result
+            and self._frontend == "auto"
+            and self._db is not None
+            and self._db.get_metadata("clang_fact_frontend") == "batch"
+        ):
             from .clang_type_state import FALLBACK_KEY
             import json
+
             if json.loads(self._db.get_metadata(FALLBACK_KEY) or "{}"):
                 from .clang_type_scheduler import acquire_scheduler
                 from .clang_type_state import counts
-                logger.info("[function-type-refs] handoff origin=batch_fallback mode=background "
-                            "query_ready=true functions=%s", counts(self._db))
+
+                logger.info(
+                    "[function-type-refs] handoff origin=batch_fallback mode=background "
+                    "query_ready=true functions=%s",
+                    counts(self._db),
+                )
                 self._type_ref_scheduler = acquire_scheduler(self)
         return result
 
@@ -165,11 +174,13 @@ class ClangBackend(CodeBackend):
         scheduler = getattr(self, "_type_ref_scheduler", None)
         if scheduler is not None:
             from .clang_type_scheduler import release_scheduler
+
             release_scheduler(scheduler)
             self._type_ref_scheduler = None
 
     def pause_type_references(self) -> Any:
         from .clang_type_scheduler import pause_registered_scheduler
+
         return pause_registered_scheduler(self._db)
 
     def _run_full_extraction_impl(self) -> bool:
@@ -179,10 +190,14 @@ class ClangBackend(CodeBackend):
                 if self._compile_preparation is None:
                     from .compile_commands_prepare import prepare_compile_commands
                     from .compile_preflight import discover_tools
+
                     self._compile_preparation = prepare_compile_commands(
                         Path(self._compile_commands_path),
-                        discover_tools(indexer=self._clang_indexer_path if self._frontend != "lsp" else "",
-                                       clangd=self._clangd_path, **self._compile_preparation_tools),
+                        discover_tools(
+                            indexer=self._clang_indexer_path if self._frontend != "lsp" else "",
+                            clangd=self._clangd_path,
+                            **self._compile_preparation_tools,
+                        ),
                         workers=self._max_threads,
                     )
                 else:
@@ -275,14 +290,23 @@ class ClangBackend(CodeBackend):
             if self._compile_preparation is not None:
                 import json
                 from .indexing_identity import digest_json
+
                 receipt = self._compile_preparation
-                compile_context = digest_json([
-                    receipt.effective_digest, receipt.dependencies_json,
-                    [tool for tool in json.loads(receipt.tools_json) if tool["name"] == "clangd"],
-                ])
+                compile_context = digest_json(
+                    [
+                        receipt.effective_digest,
+                        receipt.dependencies_json,
+                        [
+                            tool
+                            for tool in json.loads(receipt.tools_json)
+                            if tool["name"] == "clangd"
+                        ],
+                    ]
+                )
                 previous = db.get_metadata("clang_prepared_lsp_context")
-                if ((previous and previous != compile_context) or
-                    (not previous and receipt.effective_digest != receipt.original_digest)):
+                if (previous and previous != compile_context) or (
+                    not previous and receipt.effective_digest != receipt.original_digest
+                ):
                     force_refresh_paths.update(current_files)
             deleted_paths: List[Path] = []
             changed_count = 0
@@ -798,7 +822,8 @@ class ClangBackend(CodeBackend):
             or explicit_base_version_mismatch
             or deleted_tus
             or not existing_tus
-            or self._metadata_value(db, "schema_version") not in {"14", "15", KnowledgeDB.SCHEMA_VERSION}
+            or self._metadata_value(db, "schema_version")
+            not in {"14", "15", KnowledgeDB.SCHEMA_VERSION}
         ):
             return False
         if any(str(tu.get("status") or "") != "indexed" for tu in existing_tus):
@@ -905,11 +930,14 @@ class ClangBackend(CodeBackend):
             return True
         symbol = db.get_derived_index_state(self.FUNCTION_SYMBOL_CONTEXT_INDEX)
         types = db.get_derived_index_state(self.FUNCTION_TYPE_REFS_INDEX)
-        return bool(self._frontend == "auto" and db.get_metadata("clang_type_refs_generation")
-                    and symbol.get("status") == "current"
-                    and symbol.get("applied_version") == self.SYMBOL_CONTEXT_EXTRACTOR_VERSION
-                    and types.get("dirty_reason") == "deferred_type_refs"
-                    and types.get("target_version") == self.FUNCTION_TYPE_REF_EXTRACTOR_VERSION)
+        return bool(
+            self._frontend == "auto"
+            and db.get_metadata("clang_type_refs_generation")
+            and symbol.get("status") == "current"
+            and symbol.get("applied_version") == self.SYMBOL_CONTEXT_EXTRACTOR_VERSION
+            and types.get("dirty_reason") == "deferred_type_refs"
+            and types.get("target_version") == self.FUNCTION_TYPE_REF_EXTRACTOR_VERSION
+        )
 
     @staticmethod
     def _record_derived_failure(
@@ -1075,6 +1103,7 @@ class ClangBackend(CodeBackend):
         if not self._db:
             return {"complete": False, "events": [], "accesses": []}
         import json
+
         query = "SELECT data FROM function_program_facts WHERE function=?"
         args: list[Any] = [func_name]
         if file_path:
@@ -1083,9 +1112,13 @@ class ClangBackend(CodeBackend):
         values = [json.loads(row[0]) for row in self._db._conn.execute(query, args)]
         bodies = [row for row in values if row["kind"] == "program_function"]
         accesses = [row for row in values if row["kind"] == "program_access"]
-        return {"complete": len(bodies) == 1 and bool(bodies[0].get("complete")),
-                "functions": bodies, "accesses": accesses,
-                "events": [event for row in bodies for event in row.get("events", [])]}
+        return {
+            "complete": len(bodies) == 1 and bool(bodies[0].get("complete")),
+            "fact_version": (bodies[0].get("fact_version") if len(bodies) == 1 else None),
+            "functions": bodies,
+            "accesses": accesses,
+            "events": [event for row in bodies for event in row.get("events", [])],
+        }
 
     def get_function_symbol_context(
         self,

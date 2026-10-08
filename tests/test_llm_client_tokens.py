@@ -45,7 +45,9 @@ def test_direct_chat_records_length_finish_as_truncated(monkeypatch, tmp_path, t
         monkeypatch.setattr(
             client,
             "_session_for_thread",
-            lambda: type("Session", (), {"post": lambda self, *args, **kwargs: _CompletedResponse()})(),
+            lambda: type(
+                "Session", (), {"post": lambda self, *args, **kwargs: _CompletedResponse()}
+            )(),
         )
 
     try:
@@ -1004,7 +1006,7 @@ def test_other_tool_remains_executable_after_loop_guard(monkeypatch) -> None:
     assert result["content"].endswith("done")
 
 
-def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> None:
+def test_read_code_covered_range_is_delegated_to_runtime_cache(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid",
@@ -1018,7 +1020,7 @@ def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> Non
             "id": call_id,
             "type": "function",
             "function": {
-                "name": "get_file_snippet",
+                "name": "read_code",
                 "arguments": json.dumps(
                     {
                         "file_path": "src/demo.c",
@@ -1062,8 +1064,7 @@ def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> Non
     def fake_tool_executor(name, args):
         tool_calls.append((name, args))
         code = "".join(
-            f"{line} | int demo_{line}(void) {{ return {line}; }}\n"
-            for line in range(1, 21)
+            f"{line} | int demo_{line}(void) {{ return {line}; }}\n" for line in range(1, 21)
         )
         return {
             "success": True,
@@ -1086,20 +1087,13 @@ def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> Non
 
     assert result["iterations"] == 3
     assert result["tool_call_count"] == 2
-    assert len(tool_calls) == 1
-    covered_tool_messages = [
+    assert [name for name, _args in tool_calls] == ["read_code", "read_code"]
+    cached_tool_messages = [
         msg
         for msg in result["conversation"]
-        if msg.get("role") == "tool"
-        and "covered_file_snippet_replay" in str(msg.get("content", ""))
+        if msg.get("role") == "tool" and "cached_tool_result" in str(msg.get("content", ""))
     ]
-    assert covered_tool_messages
-    assert "cached_tool_result" in covered_tool_messages[0]["content"]
-    covered_payload = json.loads(covered_tool_messages[0]["content"])
-    assert covered_payload["data"]["start_line"] == 5
-    assert covered_payload["data"]["end_line"] == 10
-    assert covered_payload["data"]["code"].splitlines()[0].startswith("5 |")
-    assert len(covered_payload["data"]["code"].splitlines()) == 6
+    assert cached_tool_messages == []
 
 
 def test_run_conversation_reports_final_tool_call_after_tools_disabled(monkeypatch) -> None:

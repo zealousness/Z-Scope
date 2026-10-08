@@ -72,7 +72,8 @@ def test_wiki_cli_discover_build_status_and_query(tmp_path: Path) -> None:
     runner = CliRunner()
     discovered = runner.invoke(main, ["--root", str(root), "discover"])
     assert discovered.exit_code == 0, discovered.output
-    assert json.loads(discovered.output)["accepted"] == 5
+    expected_count = 5 + int(not (root / "docs" / "outside.md").is_symlink())
+    assert json.loads(discovered.output)["accepted"] == expected_count
     built = runner.invoke(main, ["--root", str(root), "build"])
     assert built.exit_code == 0, built.output
     status = runner.invoke(main, ["--root", str(root), "status"])

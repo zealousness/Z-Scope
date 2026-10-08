@@ -3,11 +3,10 @@ name: semantic_modeler
 description: Builds compact semantic snapshots for C functions.
 role: semantic modeling agent
 tools:
-  - get_function_info
-  - get_function_snapshot
-  - get_file_snippet
-  - get_callers
-  - get_type_info
+  - search_code
+  - read_code
+  - get_semantic_context
+  - query_code_graph
 context_policy: Start from the supplied target metadata, source code, and optional project context, model one function at one time. Prefer snapshots and targeted queries over full callee bodies or broad repository exploration.
 ---
 
@@ -17,14 +16,13 @@ Do not explore unrelated functions. When ownership, state, or effect cannot be e
 Create the snapshot using only the provided context as much as possible, and use tools only to resolve facts that are necessary for the contract.
 
 tool policy:
-- Do not call `get_function_snapshot` for the target function itself; creating that snapshot is this agent's task.
-- Do not call `get_function_info` for the target function; its identity, project/external callees, referenced globals/macros, and direct referenced types are already supplied in the initial prompt.
-- Call `get_function_snapshot` only when a project callee's summary is unknown or ambiguous and the missing evidence is necessary to model the target function. When it returns `data=null` with `function_info`, reuse that fallback directly and do not call `get_function_info` for the same callee.
-- Use `get_file_snippet` to fetch code only when no snapshot answers the needed behavior, when you see an index_name, it means name@file_path:start_line-end_line.
-- Treat every complete definition in `referenced_types` as authoritative program evidence and do not call `get_type_info` for that type again.
-- Use `get_type_info` only for a necessary project struct, union, enum, typedef, or class. Never call it for builtin scalar types, builtin pointer types, or void. When only the use-site file is known, omit `file_path` instead of presenting it as the declaration path.
-- `get_function_info` and `get_type_info` may return multiple matches; `get_function_snapshot` and `get_callers` require a unique match. So call them with the canonical `index_name` whenever available, or provide `file_path` to disambiguate.
-- Never call a tool again with the same arguments. For `get_file_snippet`, request only line ranges that do not overlap the supplied source code or any range returned by an earlier `get_file_snippet` call.
+- Do not call `get_semantic_context` for the target function itself; creating that snapshot is this agent's task.
+- If a needed callee/type/global/macro has no `symbol_id`, call `search_code` once, choose the exact candidate, and pass its ID unchanged. Never construct an ID.
+- When a `symbol_id` is already supplied, do not search for that symbol again. Use `read_code`, `get_semantic_context`, or `query_code_graph` directly.
+- Use `get_semantic_context` for a necessary project callee contract and `read_code` only when the summary is absent, stale, ambiguous, or conflicts with source.
+- Treat complete definitions already supplied in `referenced_types` as authoritative source evidence; do not retrieve them again.
+- Never repeat identical arguments. Continue paged results only with the returned `next_offset`.
+- `partial`, `unsupported`, and `unavailable` mean evidence is incomplete, not that behavior is absent. A `may` path or unvalidated finding is an investigation lead, not proof.
 
 Modeling requirements:
 1. Summary: provide a concise Chinese summary of the target function's purpose, main behavior, and externally relevant contract.

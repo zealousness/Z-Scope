@@ -181,12 +181,13 @@ class GlobalModeler:
         self.semantic_agent_factory = semantic_agent_factory
         self.attach_contract = attach_contract or (lambda context, agent_name: None)
         self.scheduler = scheduler
+        configured_inflight = max(
+            1,
+            int(getattr(config.concurrency, "llm_max_inflight", 1) or 1),
+        )
         self.max_workers = max(
             1,
-            min(
-                int(max_workers or config.concurrency.llm_max_inflight or 1),
-                int(config.concurrency.llm_max_inflight or 1),
-            ),
+            min(int(max_workers or configured_inflight), configured_inflight),
         )
         self._stats_lock = threading.Lock()
         self.result: Any = None

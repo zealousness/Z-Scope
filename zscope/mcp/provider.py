@@ -11,10 +11,12 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from ..config.config import ZScopeConfig
+from ..config.user_config_store import UserConfigStore
 from ..framework.llm_usage import scan_token_usage_snapshot
 from ..snapshots.store import SnapshotStore
 from ..tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from ..tools.runtime import ToolsRuntime
+from ..tools.contracts import tool_result
 from ..orchestration.entry_discovery import EntryDiscovery
 from ..orchestration.rollout import rollout_runtime_policy
 from ..orchestration.scan_request import ScanRequestError, ScanRequestService
@@ -23,30 +25,19 @@ from ..rules.catalog import serialize_effective_rules
 from ..rules.extensions import preflight_rules
 from ..wiki.control import wiki_query, wiki_status
 
-
-MCP_TOOL_ALIASES: Dict[str, str] = {
-    "zscope.code.get_function_impl": "get_function_impl",
-    "zscope.code.get_function_snapshot": "get_function_snapshot",
-    "zscope.code.list_known_functions": "list_known_functions",
-    "zscope.code.get_file_snippet": "get_file_snippet",
-    "zscope.code.get_callers": "get_callers",
-    "zscope.code.get_type_info": "get_type_info",
-    "zscope.graph.get_call_graph": "get_call_graph",
-    "zscope.graph.get_data_flow": "get_data_flow",
-    "zscope.graph.find_function_pointers": "find_function_pointers",
-    "zscope.graph.query_pointer_alias": "query_pointer_alias",
-    "zscope.graph.verify_taint_reachability": "verify_taint_reachability",
-    "zscope.graph.get_deep_call_context": "get_deep_call_context",
+MCP_TOOL_NAMES: Dict[str, str] = {
+    "zscope.code.search": "search_code",
+    "zscope.code.read": "read_code",
+    "zscope.semantic.context": "get_semantic_context",
+    "zscope.graph.query": "query_code_graph",
+    "zscope.flow.trace": "trace_data_flow",
+    "zscope.findings.query": "query_static_findings",
     "zscope.knowledge.query": "query_knowledge",
     "zscope.entries.discover": "discover_entries",
     "zscope.scan.run": "run_scan",
     "zscope.scan.status": "scan_status",
     "zscope.wiki.status": "wiki_status",
     "zscope.wiki.query": "wiki_query",
-}
-
-MCP_RAW_TOOL_ALIASES: Dict[str, str] = {
-    raw_name: namespaced_name for namespaced_name, raw_name in MCP_TOOL_ALIASES.items()
 }
 
 
@@ -60,7 +51,7 @@ class ZScopeMcpProvider:
         snapshot_store: Optional[SnapshotStore] = None,
         tools_runtime: Optional[ToolsRuntime] = None,
         tool_policy: Optional[ToolPolicy] = None,
-        max_result_chars: int = 100000,
+        max_result_chars: int = 60000,
         config_path: Optional[Path] = None,
         scan_request_service: Optional[ScanRequestService] = None,
     ):
@@ -83,13 +74,22 @@ class ZScopeMcpProvider:
             pre_hooks=[deny_sensitive_paths_hook],
             audit_log_path=self._tool_audit_log_path(config),
         )
-        self.tools_runtime = tools_runtime or ToolsRuntime(
-            self.code_index,
-            self.snapshot_store,
-            tool_policy=resolved_policy,
-        )
+        if tools_runtime is None:
+            user_config = None
+            configured_user_file = getattr(config.project, "user_config_file", None)
+            if configured_user_file and Path(configured_user_file).exists():
+                user_config = UserConfigStore(Path(configured_user_file))
+            self.tools_runtime = ToolsRuntime(
+                self.code_index,
+                self.snapshot_store,
+                user_config=user_config,
+                tool_policy=resolved_policy,
+            )
+        else:
+            self.tools_runtime = tools_runtime
         self.tool_policy = resolved_policy if tool_policy else self.tools_runtime.tool_policy
-        self.max_result_chars = max(1000, int(max_result_chars or 100000))
+        self.max_result_chars = max(1000, int(max_result_chars or 60000))
+        self.protocol_version = "2025-06-18"
         self.scan_request_service = scan_request_service
         if self.scan_request_service is None and config_path is not None:
             requested_depth_source = str(getattr(config.scan, "requested_depth_source", "") or "")
@@ -239,122 +239,162 @@ class ZScopeMcpProvider:
             raise KeyError(f"Unknown prompt: {name}")
         return {"messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
 
-    def list_tools(self) -> List[Dict[str, Any]]:
-        tools = list(self.tools_runtime.get_tools_schema(apply_policy=False))
-        tools.extend(
-            [
+    def list_tools(self, protocol_version: Optional[str] = None) -> List[Dict[str, Any]]:
+        protocol = protocol_version or self.protocol_version
+        include_output = protocol != "2024-11-05"
+        tools: List[Dict[str, Any]] = []
+        for public_name, runtime_name in MCP_TOOL_NAMES.items():
+            tool = self.tools_runtime._tools_by_name.get(runtime_name)
+            if tool is None:
+                continue
+            contract_getter = getattr(tool, "get_contract", None)
+            if callable(contract_getter):
+                schema = contract_getter().mcp_schema(public_name, include_output=include_output)
+                schema["_meta"] = {"anthropic/maxResultSizeChars": self.max_result_chars}
+                tools.append(schema)
+
+        tools.extend(self._management_tool_schemas(include_output=include_output))
+        return self.tool_policy.filter_tool_schemas(tools)
+
+    def _management_tool_schemas(self, *, include_output: bool) -> List[Dict[str, Any]]:
+        readonly = {
+            "readOnlyHint": True,
+            "idempotentHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        }
+        mutating = {
+            "readOnlyHint": False,
+            "idempotentHint": False,
+            "destructiveHint": False,
+            "openWorldHint": True,
+        }
+        specs = [
+            (
+                "zscope.knowledge.query",
+                "Run a safe read-only SELECT query against code_knowledge.db with limit/offset pagination.",
                 {
-                    "type": "function",
-                    "function": {
-                        "name": "query_knowledge",
-                        "description": (
-                            "Run a safe read-only SELECT query against code_knowledge.db. "
-                            "Rows are paged: returns up to `limit` rows starting at "
-                            "`offset`, with has_more=true when more rows match; page "
-                            "through by re-running with a larger offset."
-                        ),
-                        "_meta": {"anthropic/maxResultSizeChars": self.max_result_chars},
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "sql": {"type": "string"},
-                                "params": {"type": "array", "items": {"type": "string"}},
-                                "limit": {"type": "integer", "default": 100},
-                                "offset": {
-                                    "type": "integer",
-                                    "default": 0,
-                                    "description": "Rows to skip before this page",
-                                },
-                            },
-                            "required": ["sql"],
-                        },
+                    "type": "object",
+                    "properties": {
+                        "sql": {"type": "string", "minLength": 1},
+                        "params": {"type": "array", "items": {}},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+                        "offset": {"type": "integer", "minimum": 0},
                     },
+                    "required": ["sql"],
+                    "additionalProperties": False,
                 },
+                readonly,
+            ),
+            (
+                "zscope.entries.discover",
+                "Classify project exposure and return scan entry candidates.",
                 {
-                    "type": "function",
-                    "function": {
-                        "name": "run_scan",
-                        "description": "Start one asynchronous Z-SCOPE scan with a bounded depth override.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "scan_depth": {
-                                    "type": "string",
-                                    "enum": ["fast", "balanced", "deep"],
-                                },
-                            },
-                            "additionalProperties": False,
-                        },
+                    "type": "object",
+                    "properties": {
+                        "max_candidates": {"type": "integer", "minimum": 1, "maximum": 1000}
                     },
+                    "additionalProperties": False,
                 },
+                readonly,
+            ),
+            (
+                "zscope.scan.run",
+                "Start one asynchronous Z-SCOPE scan with a bounded depth override.",
                 {
-                    "type": "function",
-                    "function": {
-                        "name": "scan_status",
-                        "description": "Read status and token usage telemetry for an interface scan.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"scan_id": {"type": "string"}},
-                            "additionalProperties": False,
-                        },
+                    "type": "object",
+                    "properties": {
+                        "scan_depth": {"type": "string", "enum": ["fast", "balanced", "deep"]}
                     },
+                    "additionalProperties": False,
                 },
+                mutating,
+            ),
+            (
+                "zscope.scan.status",
+                "Read status and token usage telemetry for an interface scan.",
                 {
-                    "type": "function",
-                    "function": {
-                        "name": "discover_entries",
-                        "description": "Classify project exposure and return scan entry candidates.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "max_candidates": {"type": "integer", "default": 200},
-                            },
-                        },
-                    },
+                    "type": "object",
+                    "properties": {"scan_id": {"type": "string"}},
+                    "additionalProperties": False,
                 },
+                readonly,
+            ),
+            (
+                "zscope.wiki.status",
+                "Read the active project Wiki revision status.",
+                {"type": "object", "properties": {}, "additionalProperties": False},
+                readonly,
+            ),
+            (
+                "zscope.wiki.query",
+                "Query bounded project Wiki or direct Markdown context for candidate subjects.",
                 {
-                    "type": "function",
-                    "function": {
-                        "name": "wiki_status",
-                        "description": "Read the active project Wiki revision status.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {},
-                            "additionalProperties": False,
+                    "type": "object",
+                    "properties": {
+                        "subjects": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 32,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 300},
                         },
+                        "fact_kind": {"type": "string", "maxLength": 80},
+                        "candidate_file": {"type": "string", "maxLength": 500},
+                        "max_tokens": {"type": "integer", "minimum": 256},
                     },
+                    "required": ["subjects"],
+                    "additionalProperties": False,
                 },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "wiki_query",
-                        "description": "Query bounded project Wiki or direct Markdown context for candidate subjects.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "subjects": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "maxItems": 32,
-                                    "items": {"type": "string", "minLength": 1, "maxLength": 300},
-                                },
-                                "fact_kind": {"type": "string", "default": "unknown"},
-                                "candidate_file": {"type": "string", "default": ""},
-                                "max_tokens": {"type": "integer", "minimum": 256},
-                            },
-                            "required": ["subjects"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-            ]
-        )
-        return self.tool_policy.filter_tool_schemas(self._with_namespaced_aliases(tools))
+                readonly,
+            ),
+        ]
+        result = []
+        for name, description, input_schema, annotations in specs:
+            item: Dict[str, Any] = {
+                "name": name,
+                "description": description,
+                "inputSchema": input_schema,
+                "annotations": dict(annotations),
+                "_meta": {"anthropic/maxResultSizeChars": self.max_result_chars},
+            }
+            if include_output:
+                item["outputSchema"] = {"type": "object"}
+            result.append(item)
+        return result
 
     def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        arguments = arguments or {}
         requested_name = name
-        runtime_name = MCP_TOOL_ALIASES.get(requested_name, requested_name)
+        runtime_name = MCP_TOOL_NAMES.get(requested_name)
+        if arguments is None:
+            arguments = {}
+        elif not isinstance(arguments, dict):
+            if runtime_name in self.tools_runtime._tools_by_name:
+                return tool_result(
+                    status="invalid_request",
+                    data=None,
+                    coverage_level="unsupported",
+                    error={
+                        "code": "invalid_arguments",
+                        "path": "$",
+                        "message": "Tool arguments must be a JSON object",
+                        "retryable": True,
+                    },
+                )
+            return {
+                "success": False,
+                "error": "Tool arguments must be a JSON object",
+            }
+        runtime_tool = self.tools_runtime._tools_by_name.get(runtime_name or "")
+        if runtime_tool is not None:
+            validation_error = runtime_tool.validate_arguments(arguments)
+            if validation_error:
+                self.tool_policy.enforce_tool(
+                    requested_name,
+                    arguments,
+                    schema=self._tool_schema_by_name().get(requested_name),
+                    actor="mcp",
+                )
+                return validation_error
         policy_error = self.tool_policy.enforce_tool(
             requested_name,
             arguments,
@@ -362,7 +402,21 @@ class ZScopeMcpProvider:
             actor="mcp",
         )
         if policy_error:
+            if runtime_name in self.tools_runtime._tools_by_name:
+                return tool_result(
+                    status="forbidden",
+                    data=None,
+                    coverage_level="unsupported",
+                    error={
+                        "code": "policy_denied",
+                        "path": None,
+                        "message": str(policy_error.get("error") or "Tool use blocked by policy"),
+                        "retryable": False,
+                    },
+                )
             return policy_error
+        if runtime_name is None:
+            return {"success": False, "error": f"Unknown MCP tool: {requested_name}"}
         start = time.perf_counter()
         if runtime_name == "query_knowledge":
             result = self._bounded_tool_result(
@@ -421,11 +475,15 @@ class ZScopeMcpProvider:
                         or re.search(r"[\x00-\x1f\x7f]", item)
                         for item in subjects
                     ):
-                        raise ValueError("subjects must contain 1-32 non-empty strings up to 300 characters")
+                        raise ValueError(
+                            "subjects must contain 1-32 non-empty strings up to 300 characters"
+                        )
                     fact_kind = str(arguments.get("fact_kind") or "unknown").strip()
                     if len(fact_kind) > 80 or re.search(r"[\x00-\x1f\x7f]", fact_kind):
                         raise ValueError("fact_kind must be at most 80 characters")
-                    candidate_file = str(arguments.get("candidate_file") or "").replace("\\", "/").strip()
+                    candidate_file = (
+                        str(arguments.get("candidate_file") or "").replace("\\", "/").strip()
+                    )
                     if (
                         len(candidate_file) > 500
                         or candidate_file.startswith("/")
@@ -479,15 +537,13 @@ class ZScopeMcpProvider:
                 }
             result = self._bounded_tool_result(requested_name, result)
             return self._post_tool_result(requested_name, arguments, result, start)
-        result = self._bounded_tool_result(
-            requested_name,
-            self.tools_runtime.execute_tool(
-                runtime_name,
-                arguments,
-                actor="mcp",
-                enforce_policy=False,
-            ),
+        result = self.tools_runtime.execute_tool(
+            runtime_name,
+            arguments,
+            actor="mcp",
+            enforce_policy=False,
         )
+        result = self.tools_runtime._enforce_result_limit(result, self.max_result_chars)
         return self._post_tool_result(requested_name, arguments, result, start)
 
     def close(self) -> None:
@@ -624,34 +680,6 @@ class ZScopeMcpProvider:
 
     def _tool_schema_by_name(self) -> Dict[str, Dict[str, Any]]:
         return {self.tool_policy.schema_name(schema): schema for schema in self.list_tools()}
-
-    @staticmethod
-    def _with_namespaced_aliases(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        visible_tools: List[Dict[str, Any]] = []
-        for schema in tools:
-            visible_tools.append(schema)
-            raw_name = ToolPolicy.schema_name(schema)
-            alias_name = MCP_RAW_TOOL_ALIASES.get(raw_name)
-            if alias_name:
-                visible_tools.append(
-                    ZScopeMcpProvider._alias_tool_schema(schema, alias_name, raw_name)
-                )
-        return visible_tools
-
-    @staticmethod
-    def _alias_tool_schema(
-        schema: Dict[str, Any],
-        alias_name: str,
-        raw_name: str,
-    ) -> Dict[str, Any]:
-        alias_schema = dict(schema)
-        function = dict(alias_schema.get("function") or {})
-        function["name"] = alias_name
-        meta = dict(function.get("_meta") or {})
-        meta["zscope/rawToolName"] = raw_name
-        function["_meta"] = meta
-        alias_schema["function"] = function
-        return alias_schema
 
     @staticmethod
     def _tool_audit_log_path(config: ZScopeConfig) -> Optional[Path]:

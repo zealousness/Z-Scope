@@ -11,6 +11,9 @@ from .._version import __version__
 from ..config.config import ConfigLoader
 from .provider import ZScopeMcpProvider
 
+LATEST_PROTOCOL_VERSION = "2025-06-18"
+LEGACY_PROTOCOL_VERSION = "2024-11-05"
+
 
 def handle_jsonrpc_request(
     provider: ZScopeMcpProvider,
@@ -25,8 +28,15 @@ def handle_jsonrpc_request(
     try:
         result: Dict[str, Any]
         if method == "initialize":
+            requested_protocol = str(params.get("protocolVersion") or LATEST_PROTOCOL_VERSION)
+            negotiated_protocol = (
+                LEGACY_PROTOCOL_VERSION
+                if requested_protocol == LEGACY_PROTOCOL_VERSION
+                else LATEST_PROTOCOL_VERSION
+            )
+            provider.protocol_version = negotiated_protocol
             result = {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": negotiated_protocol,
                 "serverInfo": {
                     "name": "zscope-mcp",
                     "version": __version__,
@@ -55,20 +65,24 @@ def handle_jsonrpc_request(
         elif method == "prompts/get":
             result = provider.get_prompt(params["name"], params.get("arguments"))
         elif method == "tools/list":
-            result = {"tools": provider.list_tools()}
+            result = {"tools": provider.list_tools(provider.protocol_version)}
         elif method == "tools/call":
+            structured = provider.call_tool(params["name"], params.get("arguments"))
             result = {
                 "content": [
                     {
                         "type": "text",
                         "text": json.dumps(
-                            provider.call_tool(params["name"], params.get("arguments")),
+                            structured,
                             ensure_ascii=False,
-                            indent=2,
+                            separators=(",", ":"),
                         ),
                     }
-                ]
+                ],
+                "isError": structured.get("success") is False,
             }
+            if provider.protocol_version != LEGACY_PROTOCOL_VERSION:
+                result["structuredContent"] = structured
         elif method and method.startswith("notifications/"):
             return None
         else:

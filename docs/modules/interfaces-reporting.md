@@ -69,7 +69,7 @@ evidence references or source identity.
 - Markdown 导入只接受本次人工说明和验证状态；空说明在任何持久化前跳过。按报告/issue 身份和验证/证据基线做增量合并；冲突保留线上结果，人工确认时再次检查版本。不得信任导入文件中的其他正文，也不得用整个离线 findings 替换线上报告。旧单 HTML 导入不再支持。
 - 离线目录读写需浏览器授权；不支持时选择 Markdown/ZIP 并下载修改包。只保存修改过的文件，保存前比较磁盘内容，失败保留草稿。单 Markdown 上限 16 MiB，导入总正文上限 128 MiB、最多 10000 条；超限报错，不截断复核内容。
 - MCP stdio/HTTP server 复用工具与资源 provider；远程 HTTP 额外经过 token、allowlist 和绑定地址校验。
-- MCP `query_knowledge` 按页返回：`offset` 起始、`has_more` 标记是否还有剩余行；工具结果超过 `max_result_chars` 硬上限时保留头部 preview 和截断元数据，而不是整体替换为空桩。
+- MCP `zscope.knowledge.query` 按页返回：`offset` 起始、`has_more` 标记是否还有剩余行；工具结果超过 `max_result_chars` 硬上限时保留头部 preview 和截断元数据，而不是整体替换为空桩。
 - Web/MCP 扫描请求接受 `scan_depth`，响应回显 effective depth 与 usage 摘要；CLI/YAML/API 最终都走同一严格配置校验。
 
 ## 必须保持的不变量

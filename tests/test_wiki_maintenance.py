@@ -243,8 +243,9 @@ def test_manifest_delta_refresh_keeps_revision_and_marks_changed_constraint_stal
         first = store.build_skeleton(before_root, before)
         source_id = delta.changed_source_ids[0]
         ref_id = store.connection.execute(
-            "SELECT ref_id FROM document_refs WHERE revision_id=? ORDER BY ref_id LIMIT 1",
-            (first.revision_id,),
+            "SELECT ref_id FROM document_refs WHERE revision_id=? AND source_id=? "
+            "ORDER BY ref_id LIMIT 1",
+            (first.revision_id, source_id),
         ).fetchone()["ref_id"]
         seed_workset = build_ingest_workset(
             before,

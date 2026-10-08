@@ -737,26 +737,30 @@ Dashboard 的 `POST /api/scan` 可按请求传入 `scan_depth`，并以 `GET /ap
 
 开发者可在 Linux/WSL 虚拟环境中安装 `python -m pip install -e '.[dev,browser-test]'`、运行 `python -m playwright install chromium`，再执行 `python -m pytest -q tests/test_issue_markdown.py tests/test_markdown_report_browser.py` 验证报告与离线交互。
 
-## 分析工具清单（14 个内置 Agent 工具）
+## 分析工具清单（6 个证据导向 Agent 工具）
 
-| # | 工具名 | 用途 | 有效数据来源 |
-|---|--------|------|---------|
-| 1 | `get_function_impl` | 获取函数完整源码 | 全部 |
-| 2 | `get_function_info` | 获取函数身份、项目/外部 callee 与函数式宏定义等结构化元数据 | 全部 |
-| 3 | `get_function_snapshot` | 语义缓存复用 | 全部 |
-| 4 | `get_security_semantics` | 读取 Security Semantic Map 的有界只读投影 | balanced/deep 生成的 `security_map.db`（默认 fast 不生成） |
-| 5 | `list_known_functions` | 函数发现（正则搜索） | 全部 |
-| 6 | `get_file_snippet` | 读取指定行范围的上下文代码 | 全部 |
-| 7 | `get_callers` | 调用者查询（漏洞可达性分析） | joern/clang/unified；regex 返回空结果 |
-| 8 | `get_type_info` | 结构体/类型定义查询 | joern/clang/unified；regex 返回空结果 |
-| 9 | `get_call_graph` | 调用图聚合（直接调用；unified 可合并 SVF 间接调用） | joern/unified |
-| 10 | `get_data_flow` | 污点追踪 | joern/unified |
-| 11 | `find_function_pointers` | 回调/钩子发现 | joern/unified |
-| 12 | `query_pointer_alias` | 指针别名查询 | unified |
-| 13 | `verify_taint_reachability` | SVF/Saber 内存缺陷查询 | unified |
-| 14 | `get_deep_call_context` | 高聚合查询（调用者+被调用者+间接调用+污点缺陷） | unified |
+| Agent 工具 | MCP 名称 | 用途 |
+|---|---|---|
+| `search_code` | `zscope.code.search` | 搜索函数、方法、函数式或 object-like 宏、类型、全局变量和配置的外部函数，返回稳定 `symbol_id` |
+| `read_code` | `zscope.code.read` | 按 `symbol_id` 或明确的项目相对文件行范围读取带绝对行号的源码 |
+| `get_semantic_context` | `zscope.semantic.context` | 读取或按需重建函数快照，并查询 Claim、Audit Unit 与 Semantic Map 摘要 |
+| `query_code_graph` | `zscope.graph.query` | 查询 call、reference、callback 和 resolved indirect-call 关系 |
+| `trace_data_flow` | `zscope.flow.trace` | 基于真实 def-use/CFG 或 Joern 证据追踪有界 source-to-sink 路径 |
+| `query_static_findings` | `zscope.findings.query` | 查询 frozen CandidateLedger 和已持久化 backend signal，不启动新扫描 |
 
-Agent 工具可见性由 `AGENT.md` 与后端能力共同决定：`semantic_modeler` 与 `validator_agent` 主要使用基础工具（含 `get_function_info`），Validator 额外可读取 `get_security_semantics`；`vulnerability_analyzer` 与 `deep_worker` 再开放第 9-14 个高级查询，其中 SVF 特有结果只有 unified 后端会返回有效数据。MCP Server 会额外暴露 `query_knowledge`（只读查询 `code_knowledge.db`）、`discover_entries`（入口发现）、`run_scan`/`scan_status` 与 `wiki_status`/`wiki_query` 等工具，供外部 MCP 客户端交互式审计使用。MCP 侧还提供 `zscope.code.*`、`zscope.graph.*`、`zscope.knowledge.query`、`zscope.entries.discover` 等 namespaced aliases；无论 stdio 还是 HTTP 传输，工具调用都会经过 `ToolPolicy`。
+推荐调用链是 `search_code → symbol_id → read/semantic/graph/flow`；已有 `symbol_id` 时必须原样复用。列表结果按 `page.next_offset` 分页。所有调用返回统一的 `success/status/data/coverage/page/warnings/next_actions/error` 信封；`partial`、`unsupported` 和 `unavailable` 都不能解释为“没有问题”，`may` 路径和未验证 finding 也不能提升为已证明结论。
+
+MCP 只暴露上表中的 namespaced 名称，不再暴露 raw 名称或重复 alias。管理工具固定为 `zscope.knowledge.query`、`zscope.entries.discover`、`zscope.scan.run`、`zscope.scan.status`、`zscope.wiki.status` 和 `zscope.wiki.query`。MCP `2025-06-18` 返回 `outputSchema` 与 `structuredContent`；兼容 `2024-11-05` 时仍使用原生 `name/inputSchema`，但结果仅保留 text content。此次工具面切换是 breaking change，不提供旧名称兼容层。
+
+示例：先找数值宏，再按返回 ID 读取完整定义。
+
+```json
+{"query":"MAX_RETRIES","kinds":["macro"],"match_mode":"exact","limit":20,"offset":0}
+```
+
+```json
+{"symbol_id":"zs1:macro:<search_code 返回的摘要>","max_lines":200}
+```
 
 ## 用户辅助配置
 
@@ -811,6 +815,19 @@ python -m compileall -f -q zscope scripts test tests
 
 # 运行测试
 python -m pytest
+
+# 六工具 LLM 可用性评测：离线导出/评分已有 JSONL 轨迹
+python scripts/evaluate_tool_use.py --emit-template /tmp/zscope-tool-use-traces.jsonl
+python scripts/evaluate_tool_use.py --traces /tmp/zscope-tool-use-traces.jsonl --output /tmp/zscope-tool-use-score.json
+
+# 真实 LLM 首次选工具评测；从环境读取 Z_SCOPE_API_KEY、Z_SCOPE_LLM_BASE_URL、Z_SCOPE_LLM_MODEL
+python scripts/evaluate_tool_use.py --run-llm \
+  --trace-output /tmp/zscope-first-tool-traces.jsonl \
+  --output /tmp/zscope-first-tool-score.json
+
+# 对已有真实轨迹仅重算首次工具选择与首次参数合法率
+python scripts/evaluate_tool_use.py --traces /tmp/zscope-first-tool-traces.jsonl \
+  --first-tool-only --output /tmp/zscope-first-tool-score.json
 
 # 存量质量基线校验（mypy/Black 债务只允许缩小；--update 收敛需人工审查）
 python scripts/check_mypy_baseline.py
@@ -893,7 +910,7 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 - **用户配置工作簿与推断链路**：移除批量 `prompt_autofill` 流程，新增 `user_config.xlsx`、`UserConfigWorkbook` 和 `--infer-user-config`。系统可推断 resource/lock API、多对多配对、dispatcher 分支、module lifecycle、pointer target 与 function intent，并在扫描时只注入相关配置片段。
 - **入口发现结果落盘**：`--discover-entries` 会把候选入口、exposure、reasons、confidence 和审计提示写入项目根目录 `entry_functions_list.json`；`entry_discovery.search_root` 可把发现范围限制到指定目录（支持相对路径，固定基于 `source_root` 解析，且必须位于 `source_root` 之下）。
 - **Range benchmark 回归体系扩展到 v6**：`test/range` 新增全局容器注册生命周期、scheduler/pipe 复合并发失败、嵌套 child-list 清理、AVL key 截断/陈旧节点和宏门控锁场景，总漏洞数提升到 45 个，并由 pytest 回归用例约束确定性候选覆盖率。
-- **索引与构建鲁棒性补强**：Clang/regex 函数识别支持更多 C 声明修饰；`CodeIndex.get_function_impl()` 会附带声明/实现前导注释块，帮助 Agent 看到头文件契约；SVF bitcode 构建自动注入兼容 flag，并支持 `svf_scope` 入口裁剪、`llvm-nm` 符号闭包和 `bitcode_scope_<group>.json` 审计计划；Deep Worker 会接收结构化 evidence，Validator 输出兼容旧 `is_valid` 与新 `verdict` 格式。
+- **索引与构建鲁棒性补强**：Clang/regex 内部源码检索支持更多 C 声明修饰并附带声明/实现前导注释块，帮助 Agent 看到头文件契约；SVF bitcode 构建自动注入兼容 flag，并支持 `svf_scope` 入口裁剪、`llvm-nm` 符号闭包和 `bitcode_scope_<group>.json` 审计计划；Deep Worker 会接收结构化 evidence，Validator 输出兼容旧 `is_valid` 与新 `verdict` 格式。
 
 ### v0.5.0
 - **全架构重构与扁平化**：扁平化了冗余的 `zscope/zscope` 目录结构，统一通过 `pip install -e .` 安装，更贴合标准 Python 打包规范。大幅强化三库同源（`code_knowledge.db`, `snapshots.db`, `user_config.db`）的底层持久化隔离与可观测性。
@@ -928,7 +945,7 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 ### v0.4.0 (2026-02-28)
 - **UnifiedBackend Facade**：新增 `unified` 后端，组合 ClangBackend + SvfAnalyzer，共享 KnowledgeDB，通过 `(file_path, line)` 坐标缝合 Clang AST 与 SVF LLVM IR 结果。
 - **告警验证模式**：新增 `--mode alert-verify --sarif <file>`，导入外部工具 SARIF 报告，LLM 二次确认。
-- **新增工具**：`get_deep_call_context`（高聚合查询：调用者+被调用者+间接调用+污点缺陷一次返回）。
+- **工具增强**：增加高聚合的调用、间接调用和静态信号调查能力；该历史接口现已由六工具证据契约取代。
 - **KnowledgeDB schema v3**：`indirect_calls` 表增加 `call_file`/`call_line` 坐标列，新增 `find_function_at()` 和 `get_enriched_taint_bugs()` 缝合查询。
 - **废弃 SvfBackend**：独立 SVF 后端已废弃，功能合并至 `unified` 后端。
 
@@ -942,7 +959,7 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 
 ### v0.2.0 (2026-02-18)
 - **重大重构**：代码索引后端从 clangd LSP 迁移至 Joern CPG。
-- **新增工具**：`get_callers`、`get_type_info`、`get_call_graph`、`get_data_flow`、`find_function_pointers`。
+- **工具增强**：增加调用、类型、图、流和函数指针调查能力；这些历史入口现已收敛到六工具证据契约。
 - **依赖变更**：移除 `libclang`，新增 `cpgqls-client`。
 
 ### v0.1.0

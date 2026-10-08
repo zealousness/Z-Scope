@@ -7,6 +7,7 @@ from zscope.semantics.security_map import (
     SQLiteSecurityMapStore,
 )
 from zscope.tools.registry import build_tool_registry
+from zscope.tools.semantic_context import SemanticContextTool
 from zscope.tools.security_semantics import GetSecuritySemanticsTool
 
 
@@ -85,7 +86,7 @@ def test_security_semantics_tool_is_read_only_bounded_and_queryable(tmp_path) ->
     assert "edit" not in schema["properties"]
 
 
-def test_builtin_registry_contains_security_semantics_read_tool(tmp_path) -> None:
+def test_builtin_registry_routes_security_semantics_through_unified_tool(tmp_path) -> None:
     class SnapshotStoreStub:
         snapshot_dir = tmp_path
 
@@ -95,4 +96,5 @@ def test_builtin_registry_contains_security_semantics_read_tool(tmp_path) -> Non
         include_advanced=False,
     )
 
-    assert isinstance(registry["get_security_semantics"], GetSecuritySemanticsTool)
+    assert isinstance(registry["get_semantic_context"], SemanticContextTool)
+    assert "get_security_semantics" not in registry

@@ -86,7 +86,7 @@ KnowledgeDB 的调用边查询枚举全部获取站点，不以同函数出现�
 - 批量参数策略固定忽略 `-Werror` 的警告提升，并按 Clang 结构化诊断剔除未知选项后最多重试一次；原始参数和响应文件保持不变。成功必须通过驱动及前端的错误诊断校验，失败首轮事实不得混入重试结果。调整参数、尝试次数和失败原因随 TU 清单保存，缓存包含策略版本，旧能力工具不能绕过校验。详见批量索引指南。
 - auto 的 batch 回退只提前补齐基础事实及 symbol context；type refs 由统一后台调度器逐函数补齐，消费者提升同一个任务的优先级，不另开扫描。显式 lsp 保持提前构建；没有新增 YAML 配置。
 - `KnowledgeDB` 持久化代码事实和后端 IR，并维护版本化查询缓存。
-- Java source backend 提供方法、注解和框架结构；java_unified 叠加 SootUp、WALA、Joern provider evidence。
+- Java source backend 提供方法、注解和框架结构；java_unified 叠加 SootUp、WALA、Joern provider evidence。Java source、java_unified 与 Joern 同时提供可枚举的类型记录，保留完整限定名和定义起止行，供 `SymbolCatalog` 建立可读取的 type `symbol_id`。
 - C/C++ Joern 在 1.x 中仅为弃用兼容入口，不属于默认或离线 C 工具链。
 - Unified backend 组合 Clang 与 SVF；bitcode scope、LLVM 构建和 SVF runner 负责入口裁剪、链接与分析。
 - SVF 执行受三项性能机制约束：按组堆预算预检（超预算组跳过并保留降级语义）、saber 分组并行的堆上界 worker 池，以及可选的 scope-first 惰性位码构建（先按 KnowledgeDB 规划所需 TU，再只编译这些 TU）。
@@ -186,7 +186,11 @@ Portable 的 clangd 22.1.7 索引环境与 LLVM 18.1.0 / SVF 3.2 bitcode 环境�
 
 ## 程序事件与共享分析缓存
 
-批量 Clang 协议 `zscope.clang-facts.v2` 在原有 TU 解析中提取函数 CFG、语句/表达式位置、new/delete 家族及带 USR 的全局/字段访问，不为每个候选另启编译器。内部 `zscope.program-events.v4` 还记录 CFG 边条件、返回表达式、赋值两端、直接 callee 身份及实参；宏引用记录形参与实参映射。`function_program_facts` 随同其他事实表事务发布；CFG 构建失败或函数身份不唯一时显式返回不完整。旧工具按既有 auto/batch 策略降级或报错，旧协议产物不能冒充新版事件事实。
+批量 Clang 协议 `zscope.clang-facts.v2` 在原有 TU 解析中提取函数 CFG、语句/表达式位置、new/delete 家族及带 USR 的全局/字段访问，不为每个候选另启编译器。内部 `zscope.program-events.v5` 记录形式参数身份、稳定 event/value identity、逐事件 defs/uses、逐实参 uses、声明初始化、赋值/复合赋值/增减、嵌套调用、调用结果、return 和 CFG condition/guard。`function_program_facts` 随同其他事实表事务发布；CFG 构建失败或函数身份不唯一时显式返回不完整。v4 及更早事实不得用于 source-to-sink 推断；`ProgramEvents.h` 纳入 portable batch 组件指纹，协议变化必须真实重建二进制。
+
+六工具的符号入口由 revision-aware `SymbolCatalog` 统一生成 `zs1:<kind>:<24-hex>` ID，摘要绑定 kind、限定名、项目相对文件、定义范围和签名。函数重载、静态同名函数和 Java 方法不能通过名称清洗合并。宏搜索优先读 KnowledgeDB，缺失时按项目 include/exclude 与敏感路径策略扫描源码；函数式宏和 object-like 宏均可检索。object-like 直接字面量只规范化括号、正负号、整数进制/suffix、浮点、字符串、字符和布尔值，不递归展开或计算表达式。
+
+`FlowQueryService` 直接在 v5 facts 上做 reaching-definition 和有界路径搜索，并以 direct argument→parameter、callee return→caller result 以及真实存在的 SVF resolved callsite 连接跨函数证据。唯一 reaching definition、直接身份、无未知 guard/间接分派/may-alias 时才可标记 `must`；否则为 `may`。当前 SVF 数据库没有通用完整 alias 查询时必须报告 `coverage.details.alias=unavailable`，不能合成别名结论。Java 只有 Joern parameter→sink 路径映射为 flow；source/java_unified 明确返回 `unsupported`。
 
 KnowledgeDB 的 IR 语句身份包含列号和事件序号，升级保留既有语句 ID 及边引用。同一扫描的 Graph 函数事实和锁边通过有容量上限的共享缓存复用，同一键的并发请求只运行一个生产者。缓存身份包含源码/索引版本和语义上下文；入口可达性单独计算，锁顺序反转使用反向锁对索引，模糊别名仍需核验。
 

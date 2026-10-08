@@ -12,6 +12,8 @@ from ..common.utils import extract_json_blocks
 from ..framework.base import AgentResponse, BaseAgent
 from ..framework.llm_client import LLMClient
 from ..tools.policy import ToolPolicy
+from ..tools.contracts import ContractTool, invalid_request, tool_result
+from ..tools.runtime import ToolsRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,12 @@ class ToolCallingAgent(BaseAgent):
     def _tool_executor(self, name: str, args: Any) -> Dict[str, Any]:
         tool = self._tool_by_name.get(name)
         if not tool:
-            return {"error": f"Unknown tool: {name}"}
+            return invalid_request(
+                code="unknown_tool",
+                path="name",
+                message=f"Unknown tool: {name}",
+                retryable=False,
+            )
         if not isinstance(args, dict):
             validation_error = tool.validate_arguments(args)
             if validation_error:
@@ -69,6 +76,15 @@ class ToolCallingAgent(BaseAgent):
                 "success": False,
                 "error": "Tool arguments must be a JSON object; please correct the payload and retry.",
             }
+        validation_error = tool.validate_arguments(args)
+        if validation_error:
+            self.tool_policy.enforce_tool(
+                name,
+                args,
+                schema=tool.get_schema(),
+                actor=self.name,
+            )
+            return cast(Dict[str, Any], validation_error)
         policy_error = self.tool_policy.enforce_tool(
             name,
             args,
@@ -76,12 +92,41 @@ class ToolCallingAgent(BaseAgent):
             actor=self.name,
         )
         if policy_error:
+            if isinstance(tool, ContractTool):
+                return tool_result(
+                    status="forbidden",
+                    data=None,
+                    coverage_level="unsupported",
+                    error={
+                        "code": "policy_denied",
+                        "path": None,
+                        "message": str(policy_error.get("error") or "Tool use blocked by policy"),
+                        "retryable": False,
+                    },
+                )
             return policy_error
-        validation_error = tool.validate_arguments(args)
-        if validation_error:
-            return cast(Dict[str, Any], validation_error)
         start = time.perf_counter()
         result = cast(Dict[str, Any], tool.execute(args))
+        if isinstance(tool, ContractTool):
+            result = ToolsRuntime._enforce_result_limit(result)
+            result_error = tool.validate_result(result)
+            if result_error:
+                logger.error(
+                    "Tool %s returned a result outside its contract: %s",
+                    name,
+                    result_error,
+                )
+                result = tool_result(
+                    status="internal_error",
+                    data=None,
+                    coverage_level="unavailable",
+                    error={
+                        "code": "invalid_tool_result",
+                        "path": result_error.partition(": ")[0] or "$",
+                        "message": result_error,
+                        "retryable": False,
+                    },
+                )
         self.tool_policy.run_post_hooks(
             "tool",
             name,
@@ -268,7 +313,11 @@ class JsonToolAgent(ToolCallingAgent):
                         "error": (
                             f"Invalid {json_output_spec.type_name} payload; follow the supplied "
                             "schema and call the terminal tool again. "
-                            + (json_output_spec.validation_error() if json_output_spec.validation_error else "")
+                            + (
+                                json_output_spec.validation_error()
+                                if json_output_spec.validation_error
+                                else ""
+                            )
                         ),
                     }
                 return {"valid": True, "payload": parsed_payload}

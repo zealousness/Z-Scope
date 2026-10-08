@@ -7,17 +7,29 @@ triggers:
   - function implementation is first seen
   - callee snapshot is missing or stale
 allowed_tools:
-  - get_function_info
-  - get_function_snapshot
-  - get_file_snippet
-  - get_callers
-  - get_type_info
+  - search_code
+  - read_code
+  - get_semantic_context
+  - query_code_graph
+  - trace_data_flow
+  - query_static_findings
 allowed_mcp_tools:
-  - zscope.code.get_function_info
-  - zscope.get_function_snapshot
+  - zscope.code.search
+  - zscope.code.read
+  - zscope.semantic.context
+  - zscope.graph.query
+  - zscope.flow.trace
+  - zscope.findings.query
 allowed_mcp_resources:
   - zscope://snapshots/list
 ---
+
+## 工具调用纪律
+
+- 已有 `symbol_id` 时直接传给后续工具，不要重新搜索，也不要自行构造或修改 `symbol_id`。
+- `partial`、`unsupported`、`unavailable` 不能解释为“没有漏洞”或“没有路径”。
+- `may` 数据流路径和未验证 finding 只能作为调查线索，不能当作已证明结论。
+- 分页只使用返回的 `page.next_offset`；不要用完全相同的参数重复调用工具。
 
 Capture the function's contract, side effects, resources, error paths, and
 concurrency behavior. Preserve facts needed by downstream audit skills:

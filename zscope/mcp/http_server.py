@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 JsonRpcPayload = Union[Dict[str, Any], List[Dict[str, Any]]]
 
-PROTOCOL_VERSION = "2024-11-05"
+PROTOCOL_VERSION = "2025-06-18"
 EXPERIMENTAL_HEADER_VALUE = "streamable-http"
 
 

@@ -236,6 +236,8 @@ class LLMClient:
         self._sessions_lock = threading.Lock()
         self._sessions: Set[requests.Session] = set()
         self._usage_lock = threading.Lock()
+        self._tool_schema_lock = threading.Lock()
+        self._portable_tool_schema_only = False
         self._usage_telemetry = _UsageTelemetryState()
         self.session = self._new_session()
         self._thread_local.session = self.session
@@ -249,7 +251,9 @@ class LLMClient:
         with _ENDPOINT_CAPACITY_CONDITION:
             state = _GLOBAL_CAPACITY_STATE
             state.owners[self] = max_concurrent_requests
-            state.hard_max_concurrent_requests = self._strictest_positive_limit(*state.owners.values())
+            state.hard_max_concurrent_requests = self._strictest_positive_limit(
+                *state.owners.values()
+            )
             return state
 
     @classmethod
@@ -262,7 +266,10 @@ class LLMClient:
         )
 
     def _shared_endpoint_capacity_state(
-        self, url: str, max_concurrent_requests: int, rate_limit_per_minute: int = 0,
+        self,
+        url: str,
+        max_concurrent_requests: int,
+        rate_limit_per_minute: int = 0,
     ) -> _EndpointCapacityState:
         with _ENDPOINT_CAPACITY_CONDITION:
             now = time.monotonic()
@@ -598,8 +605,8 @@ class LLMClient:
                 return
             self._closed = True
             self._global_capacity_state.owners.pop(self, None)
-            self._global_capacity_state.hard_max_concurrent_requests = self._strictest_positive_limit(
-                *self._global_capacity_state.owners.values()
+            self._global_capacity_state.hard_max_concurrent_requests = (
+                self._strictest_positive_limit(*self._global_capacity_state.owners.values())
             )
             for endpoint in self._endpoint_capacity_states.values():
                 endpoint.owners.pop(self, None)
@@ -836,7 +843,9 @@ class LLMClient:
                 endpoint.max_concurrent_requests + 1,
             )
             endpoint.adaptive_limit = (
-                endpoint.max_concurrent_requests if endpoint.max_concurrent_requests < hard_limit else 0
+                endpoint.max_concurrent_requests
+                if endpoint.max_concurrent_requests < hard_limit
+                else 0
             )
             endpoint.success_streak = 0
             self._base_url_condition.notify_all()
@@ -1250,6 +1259,67 @@ class LLMClient:
             return
         recorder.record_loop_guard(trace_session, iteration, **fields)
 
+    @classmethod
+    def _strict_tool_schemas(cls, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Create OpenAI strict schemas while retaining nullable optional fields."""
+
+        def strict_value(schema: Any, *, optional: bool = False) -> Any:
+            if not isinstance(schema, dict):
+                return schema
+            result = {key: strict_value(value) for key, value in schema.items()}
+            schema_type = result.get("type")
+            if optional:
+                if isinstance(schema_type, str):
+                    result["type"] = [schema_type, "null"]
+                elif isinstance(schema_type, list) and "null" not in schema_type:
+                    result["type"] = [*schema_type, "null"]
+                elif schema_type is None:
+                    result["anyOf"] = [
+                        {key: value for key, value in result.items() if key != "anyOf"},
+                        {"type": "null"},
+                    ]
+                if isinstance(result.get("enum"), list) and None not in result["enum"]:
+                    result["enum"] = [*result["enum"], None]
+            properties = result.get("properties")
+            if isinstance(properties, dict):
+                originally_required = set(result.get("required") or [])
+                result["properties"] = {
+                    name: strict_value(value, optional=name not in originally_required)
+                    for name, value in properties.items()
+                }
+                result["required"] = list(properties)
+                result["additionalProperties"] = False
+            if isinstance(result.get("items"), dict):
+                result["items"] = strict_value(result["items"])
+            return result
+
+        strict_tools: List[Dict[str, Any]] = []
+        for tool in tools:
+            copied = json.loads(json.dumps(tool))
+            function = copied.get("function")
+            if isinstance(function, dict):
+                function["parameters"] = strict_value(function.get("parameters") or {})
+                function["strict"] = True
+            strict_tools.append(copied)
+        return strict_tools
+
+    @staticmethod
+    def _is_tool_schema_rejection(response_text: str) -> bool:
+        lowered = str(response_text or "").lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "strict",
+                "tool schema",
+                "function schema",
+                "invalid schema",
+                "additionalproperties",
+            )
+        ) or (
+            "required" in lowered
+            and any(marker in lowered for marker in ("schema", "function", "tool"))
+        )
+
     def chat_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -1281,6 +1351,15 @@ class LLMClient:
             )
             created_trace_session = True
 
+        portable_tools = tools
+        with self._tool_schema_lock:
+            portable_only = self._portable_tool_schema_only
+        strict_tools_active = bool(self.supports_structured_output and tools and not portable_only)
+        strict_fallback_used = False
+        request_tool_schemas = (
+            self._strict_tool_schemas(tools) if strict_tools_active and tools else tools
+        )
+
         for model in self.models:
             logger.info(f"Using model: {model}")
 
@@ -1291,8 +1370,8 @@ class LLMClient:
                 "max_tokens": max_tokens or self.max_tokens,
             }
 
-            if tools:
-                payload["tools"] = tools
+            if request_tool_schemas:
+                payload["tools"] = request_tool_schemas
                 payload["tool_choice"] = tool_choice if tool_choice is not None else "auto"
             if response_format:
                 payload["response_format"] = response_format
@@ -1437,7 +1516,10 @@ class LLMClient:
                             )
                     request_started = time.monotonic()
                     response = self._session_for_thread().post(
-                        url, json=attempt_payload, timeout=request_timeout, stream=True
+                        url,
+                        json=cast(Any, attempt_payload),
+                        timeout=request_timeout,
+                        stream=True,
                     )
 
                     if response.status_code == 200:
@@ -1523,6 +1605,32 @@ class LLMClient:
                             response_body=response.text,
                             payload=attempt_payload,
                         )
+                    if (
+                        response.status_code == 400
+                        and strict_tools_active
+                        and not strict_fallback_used
+                        and self._is_tool_schema_rejection(response.text)
+                    ):
+                        strict_fallback_used = True
+                        strict_tools_active = False
+                        with self._tool_schema_lock:
+                            self._portable_tool_schema_only = True
+                        total_attempts += 1
+                        request_tool_schemas = portable_tools
+                        payload["tools"] = portable_tools
+                        last_error = error_msg
+                        logger.warning(
+                            "tool_schema_strict_fallback model=%s endpoint=%s",
+                            model,
+                            endpoint.url,
+                        )
+                        self._record_control_event(
+                            trace_session,
+                            trace_iteration or 0,
+                            "tool_schema_strict_fallback",
+                            {"model": model, "base_url": endpoint.url},
+                        )
+                        continue
                     logger.warning(
                         "Model %s via %s failed (attempt %d/%s): %s",
                         model,
@@ -1612,6 +1720,33 @@ class LLMClient:
                         break  # Try next model
 
                 except Exception as e:
+                    exception_text = str(e)
+                    if (
+                        exception_text.startswith("HTTP 400:")
+                        and strict_tools_active
+                        and not strict_fallback_used
+                        and self._is_tool_schema_rejection(exception_text)
+                    ):
+                        strict_fallback_used = True
+                        strict_tools_active = False
+                        with self._tool_schema_lock:
+                            self._portable_tool_schema_only = True
+                        total_attempts += 1
+                        request_tool_schemas = portable_tools
+                        payload["tools"] = portable_tools
+                        last_error = exception_text
+                        logger.warning(
+                            "tool_schema_strict_fallback model=%s endpoint=%s",
+                            model,
+                            endpoint.url,
+                        )
+                        self._record_control_event(
+                            trace_session,
+                            trace_iteration or 0,
+                            "tool_schema_strict_fallback",
+                            {"model": model, "base_url": endpoint.url},
+                        )
+                        continue
                     local_fd_exhausted = self._is_too_many_open_files(e)
                     overload_reason = (
                         None if local_fd_exhausted else self._endpoint_overload_reason(e)
@@ -2135,9 +2270,7 @@ class LLMClient:
             if (
                 role == "assistant"
                 and not preserve_reasoning_metadata
-                and not (
-                    preserve_latest_reasoning_metadata and index == latest_assistant_index
-                )
+                and not (preserve_latest_reasoning_metadata and index == latest_assistant_index)
             ):
                 # reasoning_content is provider-specific scratchpad text. It is
                 # useful for continuing a truncated model turn, but replaying it
@@ -2357,8 +2490,7 @@ class LLMClient:
                 truncated=truncated,
                 cumulative_prompt_tokens=cumulative_prompt_tokens,
                 cumulative_completion_tokens=cumulative_completion_tokens,
-                cumulative_total_tokens=cumulative_prompt_tokens
-                + cumulative_completion_tokens,
+                cumulative_total_tokens=cumulative_prompt_tokens + cumulative_completion_tokens,
                 wall_seconds=max(0.0, time.monotonic() - conversation_started_monotonic),
                 finish_reason=finish_reason_value,
                 loop_guard_triggered=loop_guard_fired or None,
@@ -2416,9 +2548,7 @@ class LLMClient:
                     },
                 )
             elif force_no_tool_final:
-                self._record_control_event(
-                    trace_session, iterations, "forced_final_by_executor"
-                )
+                self._record_control_event(trace_session, iterations, "forced_final_by_executor")
             elif not warned_low_iterations and remaining_after_this <= low_iteration_threshold:
                 warned_low_iterations = True
                 conversation.append(
@@ -3014,6 +3144,11 @@ class LLMClient:
                 func_args: Dict[str, Any] = {}
                 try:
                     func_args = self._parse_tool_args(func_args_str)
+                    func_args = self._restore_portable_tool_args(
+                        str(func_name or ""),
+                        func_args,
+                        tools_schema,
+                    )
 
                     # VERY IMPORTANT: Re-serialize the corrected dict back into the conversation history
                     # so that strict upstreams like GLM-4/5 do not throw 400 Bad Request on "Expecting ','"
@@ -3029,16 +3164,6 @@ class LLMClient:
 
                     signature = self._tool_call_signature(func_name, func_args)
                     previous_calls = tool_call_history.get(signature, [])
-                    covered_snippet_call = None
-                    if not (
-                        max_identical_tool_calls > 0
-                        and len(previous_calls) >= max_identical_tool_calls
-                    ):
-                        covered_snippet_call = self._find_covering_file_snippet_call(
-                            tool_call_history,
-                            signature,
-                            func_args,
-                        )
                     cached_replayed = any(call.get("cached_replay") for call in previous_calls)
                     cached_previous_result = self._last_replayable_tool_result(previous_calls)
                     repeat_notice = self._build_repeat_tool_notice(
@@ -3063,29 +3188,6 @@ class LLMClient:
                             func_name,
                             func_args,
                         )
-                    elif covered_snippet_call is not None:
-                        repeated_call_count = 0
-                        sliced_result = self._slice_covering_file_snippet_result(
-                            covered_snippet_call,
-                            func_args,
-                        )
-                        if sliced_result is None:
-                            result = tool_executor(func_name, func_args)
-                        else:
-                            result = dict(sliced_result)
-                            result["cached_tool_result"] = True
-                            result["covered_file_snippet_replay"] = True
-                            result["repeat_call_warning"] = self._build_covered_file_snippet_notice(
-                                func_args,
-                                tool_id,
-                                covered_snippet_call,
-                            )
-                            logger.warning(
-                                "Replayed sliced cached result for covered get_file_snippet range: "
-                                "%s (covered by %s)",
-                                func_args,
-                                covered_snippet_call.get("arguments"),
-                            )
                     elif (
                         max_identical_tool_calls > 0
                         and len(previous_calls) >= max_identical_tool_calls
@@ -3416,19 +3518,136 @@ class LLMClient:
         )
 
     @classmethod
-    def _normalize_tool_args(cls, tool_name: str, value: Any) -> Any:
+    def _normalize_tool_args(cls, tool_name: str, value: Any, *, _root: bool = True) -> Any:
         if isinstance(value, dict):
             normalized = {
-                str(key): cls._normalize_tool_args(tool_name, val) for key, val in value.items()
+                str(key): cls._normalize_tool_args(tool_name, val, _root=False)
+                for key, val in value.items()
             }
-            if tool_name == "get_function_impl" and "max_lines" not in normalized:
-                normalized["max_lines"] = 200
-            if tool_name in {"get_call_graph", "query_pointer_alias"} and "limit" not in normalized:
-                normalized["limit"] = 30
+            if not _root:
+                return normalized
+            defaults: Dict[str, Dict[str, Any]] = {
+                "search_code": {
+                    "kinds": None,
+                    "match_mode": "substring",
+                    "path_prefix": None,
+                    "limit": 20,
+                    "offset": 0,
+                },
+                "read_code": {
+                    "symbol_id": None,
+                    "file_path": None,
+                    "start_line": None,
+                    "end_line": None,
+                    "max_lines": 200,
+                },
+                "get_semantic_context": {
+                    "symbol_id": None,
+                    "query": None,
+                    "limit": 20,
+                    "offset": 0,
+                },
+                "query_code_graph": {"direction": "both", "depth": 1, "limit": 30, "offset": 0},
+                "trace_data_flow": {
+                    "max_call_depth": 3,
+                    "include_may_alias": True,
+                    "limit": 10,
+                    "offset": 0,
+                },
+                "query_static_findings": {
+                    "symbol_id": None,
+                    "producers": None,
+                    "rule_id": None,
+                    "category": None,
+                    "validation_states": None,
+                    "limit": 20,
+                    "offset": 0,
+                },
+            }
+            for key, default in defaults.get(tool_name, {}).items():
+                normalized.setdefault(key, default)
+            if tool_name == "trace_data_flow":
+                source = normalized.get("source")
+                if isinstance(source, dict):
+                    for key in ("name", "file_path", "line", "column"):
+                        source.setdefault(key, None)
+                sink = normalized.get("sink")
+                if isinstance(sink, dict):
+                    for key, default in (
+                        ("query", None),
+                        ("match_mode", "exact"),
+                        ("name", None),
+                        ("file_path", None),
+                        ("line", None),
+                        ("column", None),
+                    ):
+                        sink.setdefault(key, default)
             return normalized
         if isinstance(value, list):
-            return [cls._normalize_tool_args(tool_name, item) for item in value]
+            return [cls._normalize_tool_args(tool_name, item, _root=False) for item in value]
         return value
+
+    @classmethod
+    def _restore_portable_tool_args(
+        cls,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        tools_schema: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Remove only nulls introduced by strict nullable-required adaptation.
+
+        The provider sees a strict copy in which every optional property is
+        required and nullable. Execution still validates against the original
+        portable contract, so an artificial null must become an omitted field.
+        Properties that were nullable in the original contract retain null.
+        """
+        parameters: Dict[str, Any] = {}
+        for tool in tools_schema:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(function, dict) or function.get("name") != tool_name:
+                continue
+            candidate = function.get("parameters")
+            if isinstance(candidate, dict):
+                parameters = candidate
+            break
+
+        def allows_null(schema: Dict[str, Any]) -> bool:
+            schema_type = schema.get("type")
+            if schema_type == "null":
+                return True
+            if isinstance(schema_type, list) and "null" in schema_type:
+                return True
+            for keyword in ("anyOf", "oneOf"):
+                variants = schema.get(keyword)
+                if isinstance(variants, list) and any(
+                    isinstance(variant, dict) and allows_null(variant) for variant in variants
+                ):
+                    return True
+            return False
+
+        def restore(value: Any, schema: Dict[str, Any]) -> Any:
+            if isinstance(value, dict):
+                properties = schema.get("properties")
+                properties = properties if isinstance(properties, dict) else {}
+                required = set(schema.get("required") or [])
+                result: Dict[str, Any] = {}
+                for key, item in value.items():
+                    property_schema = properties.get(key)
+                    if not isinstance(property_schema, dict):
+                        result[key] = item
+                        continue
+                    if item is None and key not in required and not allows_null(property_schema):
+                        continue
+                    result[key] = restore(item, property_schema)
+                return result
+            if isinstance(value, list):
+                item_schema = schema.get("items")
+                if isinstance(item_schema, dict):
+                    return [restore(item, item_schema) for item in value]
+            return value
+
+        restored = restore(arguments, parameters)
+        return restored if isinstance(restored, dict) else dict(arguments)
 
     @staticmethod
     def _build_repeat_tool_notice(
@@ -3465,157 +3684,6 @@ class LLMClient:
                 "tool_result_message_index": latest.get("tool_result_message_index"),
             }
         return notice
-
-    @classmethod
-    def _find_covering_file_snippet_call(
-        cls,
-        tool_call_history: Dict[str, List[Dict[str, Any]]],
-        current_signature: str,
-        arguments: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-        """Return a previous get_file_snippet call whose result covers this range."""
-        requested_file = cls._normalize_file_path_for_compare(arguments.get("file_path"))
-        requested_start = cls._line_number(arguments.get("start_line"))
-        requested_end = cls._line_number(arguments.get("end_line"))
-        if not requested_file or requested_start is None or requested_end is None:
-            return None
-        if requested_end < requested_start:
-            return None
-
-        for signature, calls in tool_call_history.items():
-            if signature == current_signature:
-                continue
-            for call in reversed(calls):
-                if call.get("tool") != "get_file_snippet":
-                    continue
-                if call.get("blocked") or call.get("cached_replay"):
-                    continue
-                result = call.get("result")
-                if not isinstance(result, dict) or result.get("success") is False:
-                    continue
-                data = result.get("data")
-                if not isinstance(data, dict):
-                    continue
-
-                previous_file = cls._normalize_file_path_for_compare(
-                    data.get("file") or (call.get("arguments") or {}).get("file_path")
-                )
-                previous_start = cls._line_number(
-                    data.get("start_line") or (call.get("arguments") or {}).get("start_line")
-                )
-                previous_end = cls._line_number(
-                    data.get("end_line") or (call.get("arguments") or {}).get("end_line")
-                )
-                if (
-                    previous_file == requested_file
-                    and previous_start is not None
-                    and previous_end is not None
-                    and previous_start <= requested_start
-                    and previous_end >= requested_end
-                ):
-                    return call
-        return None
-
-    @classmethod
-    def _build_covered_file_snippet_notice(
-        cls,
-        arguments: Dict[str, Any],
-        current_tool_call_id: Any,
-        covering_call: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        covering_args = covering_call.get("arguments") or {}
-        result = (
-            covering_call.get("result") if isinstance(covering_call.get("result"), dict) else {}
-        )
-        data = result.get("data") if isinstance(result, dict) else {}
-        if not isinstance(data, dict):
-            data = {}
-        return {
-            "tool": "get_file_snippet",
-            "arguments": arguments,
-            "current_tool_call_id": current_tool_call_id,
-            "covered_by_previous_snippet": {
-                "iteration": covering_call.get("iteration"),
-                "assistant_tool_call_id": covering_call.get("tool_call_id"),
-                "assistant_message_index": covering_call.get("assistant_message_index"),
-                "tool_result_message_index": covering_call.get("tool_result_message_index"),
-                "file_path": data.get("file") or covering_args.get("file_path"),
-                "start_line": data.get("start_line") or covering_args.get("start_line"),
-                "end_line": data.get("end_line") or covering_args.get("end_line"),
-            },
-            "instruction": (
-                "The requested file line range is already contained in a previous "
-                "get_file_snippet result. This tool message replays that cached "
-                "snippet. Use it directly and do not request overlapping snippets "
-                "unless the new range includes additional lines that are not present."
-            ),
-        }
-
-    @classmethod
-    def _slice_covering_file_snippet_result(
-        cls,
-        covering_call: Dict[str, Any],
-        arguments: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-        """Derive the exact requested line range from a covering snippet result."""
-        result = covering_call.get("result")
-        if not isinstance(result, dict) or result.get("success") is not True:
-            return None
-        data = result.get("data")
-        if not isinstance(data, dict):
-            return None
-
-        covering_start = cls._line_number(data.get("start_line"))
-        covering_end = cls._line_number(data.get("end_line"))
-        requested_start = cls._line_number(arguments.get("start_line"))
-        requested_end = cls._line_number(arguments.get("end_line"))
-        code = data.get("code")
-        if (
-            covering_start is None
-            or covering_end is None
-            or requested_start is None
-            or requested_end is None
-            or not isinstance(code, str)
-            or covering_start > requested_start
-            or covering_end < requested_end
-        ):
-            return None
-
-        code_lines = code.splitlines(keepends=True)
-        covering_line_count = covering_end - covering_start + 1
-        if len(code_lines) != covering_line_count:
-            return None
-        start_offset = requested_start - covering_start
-        end_offset = requested_end - covering_start + 1
-        selected_lines = code_lines[start_offset:end_offset]
-        if len(selected_lines) != requested_end - requested_start + 1:
-            return None
-
-        sliced_data = dict(data)
-        sliced_data.update(
-            {
-                "start_line": requested_start,
-                "end_line": requested_end,
-                "code": "".join(selected_lines),
-            }
-        )
-        sliced_result = dict(result)
-        sliced_result["data"] = sliced_data
-        return sliced_result
-
-    @staticmethod
-    def _normalize_file_path_for_compare(value: Any) -> str:
-        text = str(value or "").strip().replace("\\", "/")
-        while text.startswith("./"):
-            text = text[2:]
-        return text
-
-    @staticmethod
-    def _line_number(value: Any) -> Optional[int]:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
 
     @staticmethod
     def _last_replayable_tool_result(

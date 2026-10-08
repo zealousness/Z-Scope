@@ -1572,7 +1572,7 @@ class GraphConcurrencySharedStateRules:
         objects = {
             event.object
             for event in self.semantics.contracts.match_call(api, "lock", arguments or [])
-            if event.effects_trusted and event.applicability != "does_not_apply" and event.object
+            if event.effects_trusted and event.applicability == "applies" and event.object
         }
         return self._normalize_lock(next(iter(objects))) if len(objects) == 1 else ""
 

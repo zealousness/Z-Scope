@@ -53,13 +53,19 @@ def test_manifest_classification_and_digest_are_stable() -> None:
     first = build_source_manifest(FIXTURE, project_id="fixture", created_at="2026-01-01T00:00:00Z")
     second = build_source_manifest(FIXTURE, project_id="fixture", created_at="2026-02-01T00:00:00Z")
     assert first.source_manifest_digest == second.source_manifest_digest
-    assert [item.relative_path for item in first.accepted] == [
+    expected = [
         "README.md",
         "docs/api-limits-legacy.md",
         "docs/api-limits.md",
         "docs/background.md",
         "docs/module.md",
     ]
+    # Git represents this fixture as an out-of-tree symlink.  Windows
+    # checkouts with core.symlinks=false materialize the link target as a
+    # regular one-line Markdown file, which is legitimately discoverable.
+    if not (FIXTURE / "docs" / "outside.md").is_symlink():
+        expected.append("docs/outside.md")
+    assert [item.relative_path for item in first.accepted] == sorted(expected)
     excluded = {item.relative_path: item.classification for item in first.excluded}
     assert excluded["AGENTS.md"] == "runtime_instruction"
     assert excluded["GROUND_TRUTH.md"] == "benchmark_truth"

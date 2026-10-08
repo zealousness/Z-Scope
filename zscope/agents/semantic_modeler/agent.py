@@ -196,21 +196,6 @@ class SemanticModeler(JsonToolAgent):
             tools=tools,
             tool_policy=tool_policy,
         )
-        self._active_target_queries: set[str] = set()
-
-    def _tool_executor(self, name: str, args: Any) -> Dict[str, Any]:
-        if name == "get_function_info" and isinstance(args, dict):
-            query = str(args.get("func_name") or "").strip()
-            if query and query in self._active_target_queries:
-                return {
-                    "success": False,
-                    "error": (
-                        "Target function metadata is already present in the initial prompt; "
-                        "do not call get_function_info for the target function."
-                    ),
-                    "reason": "target_function_info_preloaded",
-                }
-        return super()._tool_executor(name, args)
 
     def run(self, input_data: Dict[str, Any]) -> AgentResponse:
         try:
@@ -277,55 +262,46 @@ class SemanticModeler(JsonToolAgent):
             prompt += f"\n\nUser-provided project context:\n{user_context}"
 
         messages = self._messages(input_data, prompt)
-        self._active_target_queries = {
-            str(program_fields["func_name"]),
-            str(program_fields["index_name"]),
-        }
-        try:
-            response = self._run_json_conversation(
-                messages,
-                extractor=lambda content, result, conversation: self._extract_valid_payload(
-                    content,
-                    result,
-                    conversation,
-                    validator=valid_payload,
-                    nested_keys=("function_snapshot", "payload"),
-                ),
-                trace_label=(
-                    f"function={func_name}; audit_unit_uid={semantic_model_unit_uid(program_fields)}; "
-                    f"call_kind=semantic_modeling_attempt_{input_data.get('semantic_model_attempt', 1)}"
-                ),
-                parse_label="snapshot JSON",
-                retry_prompt=(
-                    "The previous response did not contain a valid function_snapshot JSON. "
-                    "Re-output only one complete ```json ... ``` block that follows the schema."
-                ),
-                json_output_spec=JsonOutputSpec(
-                    type_name="function_snapshot",
-                    schema=effective_schema,
-                    final_tool_name="emit_function_snapshot",
-                    final_tool_description="Emit the final semantic function_snapshot object.",
-                    validator=valid_payload,
-                    validation_error=lambda: "; ".join(validation_errors[:12]),
-                    terminal_observer=record_terminal,
-                    nested_keys=("function_snapshot", "payload"),
-                    metadata_prefix="snapshot",
-                ),
-                post_process=lambda payload: _merge_program_snapshot_fields(
-                    dict(payload),
-                    program_fields,
-                ),
-                single_pass_final_tool=True,
-            )
+        response = self._run_json_conversation(
+            messages,
+            extractor=lambda content, result, conversation: self._extract_valid_payload(
+                content,
+                result,
+                conversation,
+                validator=valid_payload,
+                nested_keys=("function_snapshot", "payload"),
+            ),
+            trace_label=(
+                f"function={func_name}; audit_unit_uid={semantic_model_unit_uid(program_fields)}; "
+                f"call_kind=semantic_modeling_attempt_{input_data.get('semantic_model_attempt', 1)}"
+            ),
+            parse_label="snapshot JSON",
+            retry_prompt=(
+                "The previous response did not contain a valid function_snapshot JSON. "
+                "Re-output only one complete ```json ... ``` block that follows the schema."
+            ),
+            json_output_spec=JsonOutputSpec(
+                type_name="function_snapshot",
+                schema=effective_schema,
+                final_tool_name="emit_function_snapshot",
+                final_tool_description="Emit the final semantic function_snapshot object.",
+                validator=valid_payload,
+                validation_error=lambda: "; ".join(validation_errors[:12]),
+                terminal_observer=record_terminal,
+                nested_keys=("function_snapshot", "payload"),
+                metadata_prefix="snapshot",
+            ),
+            post_process=lambda payload: _merge_program_snapshot_fields(
+                dict(payload),
+                program_fields,
+            ),
+            single_pass_final_tool=True,
+        )
+        response.metadata = dict(response.metadata or {}, terminal_submissions=terminal_submissions)
+        if not response.success:
             response.metadata = dict(
-                response.metadata or {}, terminal_submissions=terminal_submissions
+                response.metadata or {},
+                terminal_validation_errors=list(validation_errors),
+                rejected_interface_contracts=last_terminal_payload.get("interface_contracts"),
             )
-            if not response.success:
-                response.metadata = dict(
-                    response.metadata or {},
-                    terminal_validation_errors=list(validation_errors),
-                    rejected_interface_contracts=last_terminal_payload.get("interface_contracts"),
-                )
-            return response
-        finally:
-            self._active_target_queries.clear()
+        return response

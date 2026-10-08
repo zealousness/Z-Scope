@@ -94,10 +94,11 @@ def test_native_macro_global_carrier_reaches_workbook(project):
     backend, root, cdb = project
     (root / "a.c").write_text(
         '#include "shared.h"\n#include <pthread.h>\n'
-        'static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;\n'
-        '#define ON() pthread_mutex_lock(&gate)\n'
-        '#define OFF() pthread_mutex_unlock(&gate)\n'
-        'int global;\nint use(Item *p) { ON(); OFF(); return 0; }\n', encoding="utf-8"
+        "static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;\n"
+        "#define ON() pthread_mutex_lock(&gate)\n"
+        "#define OFF() pthread_mutex_unlock(&gate)\n"
+        "int global;\nint use(Item *p) { ON(); OFF(); return 0; }\n",
+        encoding="utf-8",
     )
     assert build(project)
     index = CodeIndex(root, cdb, backend=backend, indexing_config=SimpleNamespace(backend="clang"))
@@ -129,14 +130,33 @@ def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
         encoding="utf-8",
     )
     cdb = tmp_path / "compile_commands.json"
-    cdb.write_text(json.dumps([{"file": str(source), "directory": str(tmp_path),
-                                "arguments": ["clang++", "-std=c++17", "-c", str(source)]}]), encoding="utf-8")
+    cdb.write_text(
+        json.dumps(
+            [
+                {
+                    "file": str(source),
+                    "directory": str(tmp_path),
+                    "arguments": ["clang++", "-std=c++17", "-c", str(source)],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     backend = ClangBackend(frontend="batch", clang_indexer_path=executable)
     try:
         assert backend.initialize(str(tmp_path), compile_commands_path=str(cdb))
         facts = backend.get_function_program_facts("demo", "events.cpp")
         assert facts["complete"]
-        assert facts["functions"][0]["fact_version"] == "zscope.program-events.v4"
+        assert facts["functions"][0]["fact_version"] == "zscope.program-events.v5"
+        assert facts["functions"][0]["parameters"][0]["value_kind"] == "parameter"
+        total_values = [
+            value
+            for event in facts["events"]
+            for value in [*(event.get("defs") or []), *(event.get("uses") or [])]
+            if value.get("name") == "total"
+        ]
+        assert any(value.get("base_expression") == "s" for value in total_values)
+        assert any(value.get("identity_complete") is False for value in total_values)
         assert facts["functions"][0]["cfg_edges"]
         assert {row["resource_family"] for row in facts["events"]} >= {"new_array"}
         releases = [row for row in facts["events"] if row["event_kind"] == "release"]
@@ -151,14 +171,28 @@ def test_program_events_include_cfg_and_compiler_object_identity(tmp_path):
         assert accesses["shared_value"]["access_kind"] == "read_write"
         assert not backend.get_function_program_facts("private_fields", "events.cpp")["accesses"]
         cleanup = backend.get_function_program_facts("cleanup", "events.cpp")
-        assert any(event["event_kind"] == "implicit_release" and event["object"]["usr"] for event in cleanup["events"])
+        assert any(
+            event["event_kind"] == "implicit_release" and event["object"]["usr"]
+            for event in cleanup["events"]
+        )
         branches = backend.get_function_program_facts("conditional", "events.cpp")
-        assert {edge["branch"] for edge in branches["functions"][0]["cfg_edges"] if edge["condition"]} == {"true", "false"}
-        assert {event["return_value"] for event in branches["events"] if event["event_kind"] == "return"} == {"n", "0"}
+        assert {
+            edge["branch"] for edge in branches["functions"][0]["cfg_edges"] if edge["condition"]
+        } == {"true", "false"}
+        assert {
+            event["return_value"] for event in branches["events"] if event["event_kind"] == "return"
+        } == {"n", "0"}
         calls = backend.get_function_program_facts("macro_release", "events.cpp")
-        assert any(event.get("callee", {}).get("usr") and event["arguments"] == ["p"] for event in calls["events"] if event["event_kind"] == "call")
+        assert any(
+            event.get("callee", {}).get("usr") and event["arguments"] == ["p"]
+            for event in calls["events"]
+            if event["event_kind"] == "call"
+        )
         from zscope.core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
-        generator = ClangAstCfgCandidateGenerator(program_facts_provider=backend.get_function_program_facts)
+
+        generator = ClangAstCfgCandidateGenerator(
+            program_facts_provider=backend.get_function_program_facts
+        )
         for name, line in (("macro_release", 6), ("comma_release", 7)):
             code = f"{line} | {source.read_text().splitlines()[line - 1]}"
             issues = generator.generate_issues(name, code, "events.cpp")
@@ -427,8 +461,8 @@ def test_system_declarations_are_covered_without_source_modeling(project):
 
     backend, root, cdb = project
     (root / "a.c").write_text(
-        '#include <stdlib.h>\n#include <pthread.h>\n#include <stdio.h>\n'
-        'int use(void) { void *p = malloc(8); free(p); pthread_mutex_t m; '
+        "#include <stdlib.h>\n#include <pthread.h>\n#include <stdio.h>\n"
+        "int use(void) { void *p = malloc(8); free(p); pthread_mutex_t m; "
         'pthread_mutex_init(&m, NULL); pthread_mutex_destroy(&m); return puts("ok"); }\n',
         encoding="utf-8",
     )
@@ -439,10 +473,18 @@ def test_system_declarations_are_covered_without_source_modeling(project):
     # A macro-origin lookup may only have an unresolved name record; origin is
     # recovered from the compiler declaration, not from the API spelling.
     index = CodeIndex(root, cdb, backend=backend, indexing_config=SimpleNamespace(backend="clang"))
-    assert index.call_model_status("pthread_mutex_init", "MACRO", {"callee_name": "pthread_mutex_init"}) == "standard_model"
+    assert (
+        index.call_model_status(
+            "pthread_mutex_init", "MACRO", {"callee_name": "pthread_mutex_init"}
+        )
+        == "standard_model"
+    )
     graph = modeler_for(root, index, [])._collect_graph([FunctionEntry("use")])
     assert {k.name for k in graph.impls} == {"use"}
     assert not graph.unresolved
     assert {k.name for k, value in graph.external_models.items() if value == "standard_model"} >= {
-        "malloc", "free", "pthread_mutex_init", "pthread_mutex_destroy",
+        "malloc",
+        "free",
+        "pthread_mutex_init",
+        "pthread_mutex_destroy",
     }

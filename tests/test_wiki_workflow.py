@@ -56,6 +56,9 @@ def test_scan_session_finishes_wiki_compile_before_analysis(
 ) -> None:
     config = _config(tmp_path)
     config.project.wiki.mode = "active"
+    # This case verifies session-stage ordering, not semantic premodeling.  An
+    # empty entry keeps the test independent of a real compile database.
+    config.project.entry_function = ""
     events = []
 
     class Resource:

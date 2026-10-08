@@ -398,6 +398,13 @@ class Analyzer:
             deduplicate_report_issues=self._deduplicate_report_issues,
             metadata_factory=self._build_workflow_metadata,
         )
+        self.candidate_ledger = candidate_ledger or CandidateLedger(
+            project_id=str(
+                getattr(config.project, "project_id", "") or config.project.project_root.name
+            ),
+            project_root=str(config.project.project_root),
+            revision=self._git_commit_sha(config.project.project_root),
+        )
         self.tools_runtime = ToolsRuntime(
             self.code_index,
             self.snapshot_store,
@@ -406,15 +413,10 @@ class Analyzer:
                 pre_hooks=[deny_sensitive_paths_hook],
                 audit_log_path=self._tool_audit_log_path(),
             ),
+            snapshot_resolver=self._get_or_build_snapshot,
+            candidate_ledger=self.candidate_ledger,
         )
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
-        self.candidate_ledger = candidate_ledger or CandidateLedger(
-            project_id=str(
-                getattr(config.project, "project_id", "") or config.project.project_root.name
-            ),
-            project_root=str(config.project.project_root),
-            revision=self._git_commit_sha(config.project.project_root),
-        )
         self.budget_planner = RiskBudgetPlanner(config.analysis)
         self._skill_selection_cache: Dict[str, SkillSelection] = {}
         self._local_pattern_semantics: Optional[LocalPatternSemantics] = (
@@ -1883,8 +1885,11 @@ class Analyzer:
         impl = state.get("impl_result") or {}
         if impl.get("truncated") or not str(impl.get("code") or "").strip():
             self._record_engine_failed_work(
-                state, engine="deterministic_local_rules", function_name=entry_func,
-                reason="source_truncated" if impl.get("truncated") else "source_unavailable", call_path=[entry_func],
+                state,
+                engine="deterministic_local_rules",
+                function_name=entry_func,
+                reason="source_truncated" if impl.get("truncated") else "source_unavailable",
+                call_path=[entry_func],
             )
             return []
         code = str(impl.get("code") or "")
@@ -2026,8 +2031,11 @@ class Analyzer:
         if impl.get("truncated") or not str(impl.get("code") or "").strip():
             function_name = str(state.get("entry_func") or impl.get("function") or "")
             self._record_engine_failed_work(
-                state, engine="extension_rules", function_name=function_name,
-                reason="source_truncated" if impl.get("truncated") else "source_unavailable", call_path=[function_name],
+                state,
+                engine="extension_rules",
+                function_name=function_name,
+                reason="source_truncated" if impl.get("truncated") else "source_unavailable",
+                call_path=[function_name],
             )
             return []
         context = RuleContext(
@@ -2386,6 +2394,7 @@ class Analyzer:
         """Run local candidate rules on project callees of thin public facades."""
         issues: List[Dict[str, Any]] = []
         root = str(entry_func or impl.get("function") or impl.get("name") or "").strip()
+
         def external_modeled(name: str, caller: str, item: Any = None) -> bool:
             classify = getattr(self.code_index, "call_model_status", None)
             status = classify(name, caller, item) if callable(classify) else ""
@@ -2417,7 +2426,9 @@ class Analyzer:
         )
         while queued and analyzed < total_limit:
             callee, depth, call_path = queued.pop(0)
-            if callee in visited or external_modeled(callee, call_path[-2] if len(call_path) > 1 else root):
+            if callee in visited or external_modeled(
+                callee, call_path[-2] if len(call_path) > 1 else root
+            ):
                 continue
             visited.add(callee)
             try:
@@ -2441,7 +2452,9 @@ class Analyzer:
                 continue
             if not callee_impl or callee_impl.get("truncated"):
                 self._record_engine_failed_work(
-                    state, engine=engine_name, function_name=callee,
+                    state,
+                    engine=engine_name,
+                    function_name=callee,
                     reason="source_truncated" if callee_impl else "source_unavailable",
                     call_path=call_path,
                 )
@@ -2487,7 +2500,12 @@ class Analyzer:
             if depth >= max_depth and not expand_dispatcher_siblings:
                 for nested in callee_impl.get("callees", []):
                     nested_name = self._callee_item_name(nested)
-                    if nested_name and nested_name not in visited and nested_name not in call_path and not external_modeled(nested_name, callee, nested):
+                    if (
+                        nested_name
+                        and nested_name not in visited
+                        and nested_name not in call_path
+                        and not external_modeled(nested_name, callee, nested)
+                    ):
                         self._record_deferred_deterministic_work(
                             state,
                             engine=engine_name,
@@ -2500,7 +2518,12 @@ class Analyzer:
             nested_queue: List[tuple[str, int, List[str]]] = []
             for nested in callee_impl.get("callees", []):
                 nested_name = self._callee_item_name(nested)
-                if nested_name and nested_name not in visited and nested_name not in call_path and not external_modeled(nested_name, callee, nested):
+                if (
+                    nested_name
+                    and nested_name not in visited
+                    and nested_name not in call_path
+                    and not external_modeled(nested_name, callee, nested)
+                ):
                     nested_queue.append((nested_name, depth + 1, call_path + [nested_name]))
             queued.extend(nested_queue)
             queued = self._order_callee_work_queue(queued)
@@ -3413,8 +3436,12 @@ class Analyzer:
             return []
         find_missing = getattr(db, "find_acquisition_calls", None)
         if not callable(find_missing):
-            self._record_engine_capability("clang_knowledge_db", status="degraded", active=True,
-                reason="object_acquisition_inventory_unavailable")
+            self._record_engine_capability(
+                "clang_knowledge_db",
+                status="degraded",
+                active=True,
+                reason="object_acquisition_inventory_unavailable",
+            )
             return []
         entry_func = str(state.get("entry_func") or "")
         pairs = self._resource_release_pairs_from_overlay()
@@ -3459,7 +3486,9 @@ class Analyzer:
                 for object_row in self._knowledge_db_object_rows(row):
                     candidates.append(
                         self._clang_pair_row_to_candidate(
-                            object_row, entry_func=entry_func, pair_source=pair_source,
+                            object_row,
+                            entry_func=entry_func,
+                            pair_source=pair_source,
                         )
                     )
         logger.info(
@@ -3503,12 +3532,16 @@ class Analyzer:
 
         try:
             root = Path(self.config.project.project_root).resolve()
-            commands = Path(self.config.project.compile_commands_path or root / "compile_commands.json")
+            commands = Path(
+                self.config.project.compile_commands_path or root / "compile_commands.json"
+            )
             directory = Path(self.config.analysis.snapshot_dir) / "review_experiment" / "facts"
             store = scan_compiler_facts(self.code_index, root, commands, directory)
             descriptor = store.collect(str(row.get("file_path") or ""))
             if not descriptor.get("complete"):
-                return [{**row, "lifecycle_gap": descriptor.get("reason", "compiler_facts_incomplete")}]
+                return [
+                    {**row, "lifecycle_gap": descriptor.get("reason", "compiler_facts_incomplete")}
+                ]
             data = store.load(descriptor["fact_store_id"])
             fn = ReviewClaimChecker._functions(data).get(str(row.get("function") or ""))
             if not fn or not function_in_source(fn, data["source"]):
@@ -3516,14 +3549,26 @@ class Analyzer:
             registry = self._get_local_pattern_semantics().contracts
             source = Path(data["source"]).read_text(encoding="utf-8")
             analysis = lifecycle_facts(store, registry, data, fn, source)
-            objects = [o for o in analysis["obligations"]
-                       if o["api"] == row.get("acquire_func") and o["line"] == row.get("line")]
+            objects = [
+                o
+                for o in analysis["obligations"]
+                if o["api"] == row.get("acquire_func") and o["line"] == row.get("line")
+            ]
             if not objects:
                 return [{**row, "lifecycle_gap": "acquisition_identity_not_resolved"}]
-            return [{**row, "lifecycle_obligation": obj, "lifecycle_gap": analysis["gaps"],
-                     "contract_version": registry.version} for obj in objects]
+            return [
+                {
+                    **row,
+                    "lifecycle_obligation": obj,
+                    "lifecycle_gap": analysis["gaps"],
+                    "contract_version": registry.version,
+                }
+                for obj in objects
+            ]
         except (AttributeError, OSError, KeyError, TypeError, ValueError) as exc:
-            return [{**row, "lifecycle_gap": "compiler_lifecycle_unavailable:" + type(exc).__name__}]
+            return [
+                {**row, "lifecycle_gap": "compiler_lifecycle_unavailable:" + type(exc).__name__}
+            ]
 
     @staticmethod
     def _collect_missing_release_rows(
@@ -3600,12 +3645,19 @@ class Analyzer:
         getter = getattr(getattr(self, "code_index", None), "get_function_impl", None)
         if callable(getter):
             try:
-                impl = getter(str(row.get("function") or ""), file_path=str(row.get("file_path") or ""), max_lines=None)
+                impl = getter(
+                    str(row.get("function") or ""),
+                    file_path=str(row.get("file_path") or ""),
+                    max_lines=None,
+                )
                 if isinstance(impl, dict):
-                    row["call_semantics"] = semantics.contracts.trace_calls({
-                        **impl, "func_name": row.get("function"),
-                        "file_path": row.get("file_path"),
-                    })
+                    row["call_semantics"] = semantics.contracts.trace_calls(
+                        {
+                            **impl,
+                            "func_name": row.get("function"),
+                            "file_path": row.get("file_path"),
+                        }
+                    )
             except (KeyError, ValueError, TypeError, RuntimeError) as exc:
                 row["call_semantics_unavailable"] = type(exc).__name__
         return clang_pair_row_to_candidate(
@@ -4718,10 +4770,24 @@ class Analyzer:
                     file_path,
                     line,
                     issue_func,
-                    column_number=int(((issue.get("evidence_pack") or {}).get("sink") or {}).get("column") or 1)
-                    if isinstance((issue.get("evidence_pack") or {}).get("sink"), dict) else 1,
-                    event_ordinal=int(((issue.get("evidence_pack") or {}).get("sink") or {}).get("event_ordinal") or 0)
-                    if isinstance((issue.get("evidence_pack") or {}).get("sink"), dict) else 0,
+                    column_number=(
+                        int(
+                            ((issue.get("evidence_pack") or {}).get("sink") or {}).get("column")
+                            or 1
+                        )
+                        if isinstance((issue.get("evidence_pack") or {}).get("sink"), dict)
+                        else 1
+                    ),
+                    event_ordinal=(
+                        int(
+                            ((issue.get("evidence_pack") or {}).get("sink") or {}).get(
+                                "event_ordinal"
+                            )
+                            or 0
+                        )
+                        if isinstance((issue.get("evidence_pack") or {}).get("sink"), dict)
+                        else 0
+                    ),
                     kind="candidate_sink",
                     normalized_code=sink_text or str(issue.get("description") or ""),
                     ast_kind=defect_class,
@@ -5902,7 +5968,10 @@ class Analyzer:
         call_path: Optional[Sequence[str]] = None,
     ) -> None:
         self._record_engine_capability(
-            engine, status="degraded", active=True, reason=reason,
+            engine,
+            status="degraded",
+            active=True,
+            reason=reason,
             failed_function=function_name,
         )
         self._record_deterministic_work_terminal(
@@ -6430,18 +6499,13 @@ class Analyzer:
         from ...tools.registry import build_tool_registry
 
         snapshot_resolver = self._get_or_build_snapshot if enable_on_demand_snapshots else None
-        include_advanced = getattr(self.code_index, "backend_name", "") in {
-            "joern",
-            "svf",
-            "unified",
-        }
         tools = list(
             build_tool_registry(
                 self.code_index,
                 self.snapshot_store,
                 self.user_config,
                 snapshot_resolver=snapshot_resolver,
-                include_advanced=include_advanced,
+                candidate_ledger=getattr(self, "candidate_ledger", None),
             ).values()
         )
         if agent_name:
@@ -7243,94 +7307,8 @@ class Analyzer:
         return order
 
     def _tool_executor_wrapper(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Wrapper to intercept tool execution for snapshot logic."""
-
-        # Intercept get_function_impl to check for snapshot refresh
-        if tool_name == "get_function_impl" and self.config.analysis.enable_snapshot_cache:
-            func_name = str(args.get("func_name") or "")
-            return self._smart_get_implementation(func_name, args)
-
+        """Execute through the unified runtime; semantic rebuild lives in its tool."""
         return self.tools_runtime.execute_tool(tool_name, args)
-
-    def _smart_get_implementation(self, func_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Smart implementation retrieval:
-        1. Get current code.
-        2. Check if snapshot exists.
-        3. If snapshot exists, check if code changed (hash check).
-        4. If code changed, ask LLM if refresh is needed.
-        """
-        # 1. Get real implementation
-        impl_result = self.tools_runtime.execute_tool("get_function_impl", args)
-        if not impl_result.get("success"):
-            return impl_result
-
-        current_code = impl_result["data"]["code"]
-        index_name = str(impl_result["data"].get("index_name") or "")
-        if not index_name:
-            return impl_result
-
-        try:
-            symbol_context = resolve_function_info(
-                self.code_index,
-                index_name,
-                file_path=str(impl_result["data"].get("file") or ""),
-                index_name=index_name,
-                start_line=int(impl_result["data"].get("start_line") or 0) or None,
-            )
-        except SemanticModelInputError as exc:
-            logger.warning(
-                "Snapshot refresh context unavailable index_name=%s reason=%s",
-                index_name,
-                exc.reason,
-            )
-            return impl_result
-
-        # 2. Check snapshot status with canonical index name
-        needs_refresh, reason = self.snapshot_store.needs_refresh(
-            index_name,
-            current_code,
-            symbol_context,
-        )
-
-        if not needs_refresh and reason != "no_snapshot":
-            # Snapshot is valid and up to date (or only cosmetic changes)
-            logger.info(
-                "Using cached snapshot index_name=%s reason=%s",
-                index_name,
-                reason,
-            )
-            snapshot = self.snapshot_store.load_snapshot(index_name)
-            return {
-                "success": True,
-                "data": impl_result["data"],
-                "snapshot": snapshot,
-                "note": "Snapshot allows skipping deep analysis if irrelevant.",
-            }
-
-        if reason == "code_changed":
-            # 3. Ask LLM if we really need to refresh (semantic check)
-            # This requires a mini-LLM call.
-            logger.info(
-                "Code changed index_name=%s; checking with LLM if refresh is needed",
-                index_name,
-            )
-            snapshot = self.snapshot_store.load_snapshot(index_name)
-            decision = self._ask_refresh_decision(func_name, snapshot or {}, current_code)
-
-            if not decision.get("refresh_needed"):
-                logger.info(f"LLM decided refresh NOT needed for '{func_name}'")
-                return {
-                    "success": True,
-                    "data": impl_result["data"],
-                    "snapshot": snapshot,
-                    "note": "Code changed but LLM deemed snapshot still valid.",
-                }
-
-            logger.info(f"Refresh needed for '{func_name}': {decision.get('reason')}")
-
-        # If we are here, we return the code and expect the LLM to analyze it and produce a new snapshot
-        return impl_result
 
     def _default_llm_client(self) -> LLMClient:
         client = self.llm_clients.get("default")

@@ -204,9 +204,7 @@ def test_get_type_info_retries_without_wrong_file_path_and_returns_all_matches()
     )
     tool = GetTypeInfoTool(index)
 
-    result = tool.execute(
-        {"type_name": "State", "file_path": "include/wrong.h"}
-    )
+    result = tool.execute({"type_name": "State", "file_path": "include/wrong.h"})
 
     assert result == {
         "success": True,
@@ -406,7 +404,7 @@ def test_clang_extractor_uses_source_for_type_kind_and_definition(
     ]
 
 
-def test_runtime_type_info_negative_cache_is_scoped_by_file_path() -> None:
+def test_runtime_does_not_apply_hidden_legacy_type_negative_cache() -> None:
     index = RecordingTypeIndex({"include/b.h": [_match("include/b.h")]})
     tool = GetTypeInfoTool(index)
     runtime = ToolsRuntime(
@@ -429,9 +427,12 @@ def test_runtime_type_info_negative_cache_is_scoped_by_file_path() -> None:
     )
 
     assert first["success"] is False
-    assert cached["cached_negative_result"] is True
+    assert cached["success"] is False
+    assert "cached_negative_result" not in cached
     assert other_file["success"] is True
     assert index.calls == [
+        ("State", "include/a.h"),
+        ("State", ""),
         ("State", "include/a.h"),
         ("State", ""),
         ("State", "include/b.h"),
@@ -463,12 +464,9 @@ def test_runtime_does_not_negative_cache_successful_file_path_fallback() -> None
 
 def test_semantic_modeler_policy_distinguishes_multi_match_tools() -> None:
     agent_text = (
-        Path(__file__).resolve().parents[1]
-        / "zscope"
-        / "agents"
-        / "semantic_modeler"
-        / "AGENT.md"
+        Path(__file__).resolve().parents[1] / "zscope" / "agents" / "semantic_modeler" / "AGENT.md"
     ).read_text(encoding="utf-8")
 
-    assert "`get_function_info` and `get_type_info` may return multiple matches" in agent_text
-    assert "`get_function_snapshot` and `get_callers` require a unique match" in agent_text
+    assert "call `search_code` once, choose the exact candidate" in agent_text
+    assert "pass its ID unchanged. Never construct an ID" in agent_text
+    assert "When a `symbol_id` is already supplied, do not search" in agent_text

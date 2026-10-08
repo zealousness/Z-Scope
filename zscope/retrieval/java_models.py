@@ -140,6 +140,7 @@ class JavaClassRecord:
             "kind": self.kind,
             "filename": self.file,
             "lineNumber": self.start_line,
+            "lineNumberEnd": self.end_line,
             "members": [
                 {"name": name, "typeFullName": type_name}
                 for name, type_name in sorted(self.fields.items())
