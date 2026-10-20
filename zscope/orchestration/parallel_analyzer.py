@@ -13,8 +13,18 @@ import time
 import uuid
 from copy import copy, deepcopy
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field, replace
+
+if TYPE_CHECKING:
+    from .instance_semantics_context import InstanceSemanticsContext
+    from ..semantics.instance_semantics import InstanceSemanticsSnapshot
+    from .jobs.instance_results import (
+        InstanceResultPayload,
+        RecoveryAccepted,
+        RecoveryIdentity,
+        RecoveryMiss,
+    )
 
 from ..config.config import ZScopeConfig, minimum_optional_positive_seconds
 from ..config.function_entry import FunctionEntry
@@ -34,6 +44,15 @@ from ..semantics.models import LocalPatternSemantics
 from ..semantics.security_map import SQLiteSecurityMapStore, ZeroLLMSecurityMapBuilder
 from ..snapshots.store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
+from ..retrieval.instance_index import (
+    GAP_INSTANCE_NOT_ANALYZED,
+    InstanceAnalysisOutcome,
+    InstanceAnalysisReport,
+    InstanceScope,
+    ScopedCodeIndex,
+    instance_scope_from_entry_instance,
+    wrap_scoped_code_index,
+)
 from ..orchestration.active_discovery import (
     ActiveDiscoveryAgent,
     ActiveDiscoveryCoordinator,
@@ -46,6 +65,7 @@ from ..orchestration.active_discovery import (
     resolve_discovery_profile,
 )
 from ..orchestration.candidates import CandidateLedger, CandidateRegistrar
+from ..orchestration.bounded_investigation import make_investigation_runner
 from ..orchestration.candidate_envelope import annotate_issue_identity
 from ..orchestration.global_modeler import GlobalModeler
 from ..orchestration.rollout import (
@@ -111,6 +131,350 @@ _ENTRY_EXPOSURE_WEIGHTS = {
 _PROJECT_KNOWLEDGE_UNSET = object()
 
 
+def _unwrapped_coverage_source(code_index: Any) -> Any:
+    """The index a scan-level coverage consumer must read.
+
+    A scoped instance facade pins ``get_build_contexts`` to one instance; its
+    ``coverage_index`` accessor exposes the shared base. Anything else is
+    returned unchanged.
+    """
+
+    resolver = getattr(code_index, "coverage_index", None)
+    if callable(resolver):
+        base = resolver()
+        if base is not None:
+            return base
+    return code_index
+
+
+def _llm_client_usage_snapshots(
+    clients: Dict[str, LLMClient],
+) -> Dict[int, Dict[str, Any]]:
+    snapshots: Dict[int, Dict[str, Any]] = {}
+    for client in clients.values():
+        client_id = id(client)
+        if client_id in snapshots:
+            continue
+        snapshotter = getattr(client, "usage_snapshot", None)
+        if callable(snapshotter):
+            raw = snapshotter()
+            snapshots[client_id] = dict(raw) if isinstance(raw, dict) else {}
+    return snapshots
+
+
+class _ScanLLMClients(dict[str, LLMClient]):
+    """Carry the session factory's accounting start through pre-modeling.
+
+    Session may compile Wiki or prepare semantics before constructing Parallel.
+    The first analyzer can claim this start once. Reusing the same mapping in
+    another analyzer starts from its current counters instead.
+    """
+
+    def __init__(self, clients: Dict[str, LLMClient]):
+        super().__init__(clients)
+        self._initial_usage = _llm_client_usage_snapshots(self)
+        self._usage_claimed = False
+        self._usage_claim_lock = threading.Lock()
+
+    def claim_initial_usage(self) -> Optional[Dict[int, Dict[str, Any]]]:
+        with self._usage_claim_lock:
+            if self._usage_claimed:
+                return None
+            self._usage_claimed = True
+            return deepcopy(self._initial_usage)
+
+
+class _InstanceEntryLookupIndex(ScopedCodeIndex):
+    """Translate one verified full entry signature to its native navigation key."""
+
+    def __init__(
+        self,
+        base: Any,
+        scope: InstanceScope,
+        entry: FunctionEntry,
+        *,
+        semantics_context: Optional["InstanceSemanticsContext"] = None,
+    ):
+        from ..snapshots.modeling_input import build_semantic_model_input
+        from .instance_semantics_context import InstanceSemanticsContext
+
+        super().__init__(base, scope)
+        if semantics_context is not None and not isinstance(
+            semantics_context, InstanceSemanticsContext
+        ):
+            raise ValueError("instance_entry_lookup_context_unverifiable")
+        self._lookup_semantics_context = semantics_context
+        self._lookup_signature = ""
+        self._lookup_index_name = ""
+        self._lookup_function_name = entry.function_name
+        self._expected_signature = ""
+        self._lookup_definition_line = 0
+        self._lookup_source = self._resolved_source(scope.source)
+        model = build_semantic_model_input(
+            self, entry.function_name, file_path=str(entry.file_path or ""), include_context=False
+        )
+        signature = FunctionEntry.normalize_signature(model.get("signature"))
+        index_name = str(model.get("index_name") or "")
+        self._expected_signature = signature
+        self._lookup_definition_line = int(model.get("start_line") or 0)
+        if (
+            not signature
+            or signature != FunctionEntry.normalize_signature(entry.signature)
+            or not index_name
+            or str(model.get("func_name") or "") != entry.function_name
+            or not self._lookup_source
+            or self._resolved_source(str(model.get("file_path") or "")) != self._lookup_source
+            or self._resolved_source(str(entry.file_path or "")) != self._lookup_source
+            or not self._native_lookup_identity_current()
+        ):
+            raise ValueError("instance_entry_lookup_identity_unverifiable")
+        self._lookup_signature = signature
+        self._lookup_index_name = index_name
+
+    def _native_lookup_identity_current(self) -> bool:
+        facts = super().get_function_program_facts(
+            self.scope.usr, self.scope.source, build_context_id=self.scope.build_context_id
+        )
+        identity = facts.get("function_identity")
+        if (
+            facts.get("complete") is not True
+            or not isinstance(identity, dict)
+            or identity.get("usr") != self.scope.usr
+            or identity.get("build_context_id") != self.scope.build_context_id
+        ):
+            return False
+        bodies = facts.get("functions")
+        if not isinstance(bodies, list) or len(bodies) != 1 or not isinstance(bodies[0], dict):
+            return False
+        body = bodies[0]
+        owner = body.get("owner")
+        callable_identity = body.get("callable")
+        body_location = body.get("location")
+        if (
+            not isinstance(owner, dict)
+            or not isinstance(callable_identity, dict)
+            or not isinstance(body_location, dict)
+        ):
+            return False
+        definitions = [
+            row
+            for row in self._context_rows(("function",), symbol=self._lookup_function_name)
+            if row.get("usr") == self.scope.usr and row.get("is_declaration") is False
+        ]
+        if len(definitions) != 1:
+            return False
+        definition = definitions[0]
+        begin = definition.get("begin")
+        end = definition.get("end")
+        location = definition.get("location")
+        callable_location = callable_identity.get("location")
+        if (
+            not isinstance(begin, dict)
+            or not isinstance(end, dict)
+            or not isinstance(location, dict)
+            or not isinstance(callable_location, dict)
+        ):
+            return False
+        # The full native declaration, name and byte coordinates bind the
+        # navigation signature to this USR even when two bodies share a line.
+        if (
+            owner.get("usr") != self.scope.usr
+            or callable_identity.get("usr") != self.scope.usr
+            or owner.get("name") != self._lookup_function_name
+            or callable_identity.get("qualified_name") != self._lookup_function_name
+            or definition.get("name") != self._lookup_function_name
+            or FunctionEntry.normalize_signature(definition.get("signature"))
+            != self._expected_signature
+            or self._lookup_definition_line <= 0
+            or begin.get("line") != self._lookup_definition_line
+            or owner.get("line") != self._lookup_definition_line
+            or self._resolved_source(str(owner.get("file") or "")) != self._lookup_source
+        ):
+            return False
+        offsets: List[int] = []
+        for coordinate in (begin, end, location, callable_location, body_location):
+            offset = coordinate.get("offset")
+            if (
+                self._resolved_source(str(coordinate.get("file") or "")) != self._lookup_source
+                or not isinstance(offset, int)
+                or isinstance(offset, bool)
+                or offset < 0
+            ):
+                return False
+            offsets.append(offset)
+        begin_offset, end_offset, location_offset, callable_offset, body_offset = offsets
+        return (
+            begin_offset <= location_offset <= end_offset
+            and location_offset == callable_offset == body_offset
+        )
+
+    def _metadata_identity_conflicts(self, info: Dict[str, Any]) -> bool:
+        identities = [info]
+        if "function_identity" in info:
+            identity = info["function_identity"]
+            if not isinstance(identity, dict):
+                return True
+            identities.append(identity)
+        return any(
+            (identity.get("usr") and identity["usr"] != self.scope.usr)
+            or (
+                identity.get("build_context_id")
+                and identity["build_context_id"] != self.scope.build_context_id
+            )
+            for identity in identities
+        )
+
+    def _scoped_function_infos(
+        self, func_name: str, file_path: str, *, include_type_context: bool = True
+    ) -> List[Dict[str, Any]]:
+        translated = bool(self._lookup_signature) and func_name == self._lookup_signature
+        query = self._lookup_index_name if translated else func_name
+        infos = super()._scoped_function_infos(
+            query, file_path, include_type_context=include_type_context
+        )
+        if any(self._metadata_identity_conflicts(info) for info in infos):
+            return []
+        if not translated:
+            return infos
+        if (
+            len(infos) != 1
+            or FunctionEntry.normalize_signature(infos[0].get("signature"))
+            != self._lookup_signature
+            or self._resolved_source(str(infos[0].get("file_path") or "")) != self._lookup_source
+            or not self._native_lookup_identity_current()
+        ):
+            return []
+        return infos
+
+    def call_model_status(self, name: str, caller: str = "", record: Any = None) -> str:
+        """Exclude only an actually called, currently authorized standard root."""
+        from ..semantics.instance_semantics import (
+            ORIGIN_SYSTEM_RECEIPT,
+            materialize_effect_semantics,
+        )
+
+        context = self._lookup_semantics_context
+        if context is None or caller not in {
+            self._lookup_function_name,
+            self._lookup_index_name,
+            self._lookup_signature,
+            self.scope.usr,
+        }:
+            return "source_unavailable"
+        snapshot = context.require(self.scope)
+        targets = []
+        if self._native_lookup_identity_current():
+            for row in self._context_rows(("call",)):
+                owner, target = row.get("owner"), row.get("target")
+                if (
+                    isinstance(owner, dict)
+                    and isinstance(target, dict)
+                    and self._owner_is_entry(owner)
+                    and owner.get("name") == self._lookup_function_name
+                    and self._target_name(target) == name
+                    and str(target.get("usr") or target.get("referenced_usr") or "")
+                    and row.get("call_type") != "indirect"
+                ):
+                    targets.append(target)
+        status = "source_unavailable"
+        if targets and not self._call_record_conflicts(record, name, targets):
+            semantics, overlay = materialize_effect_semantics(snapshot)
+            origins = overlay.get("symbol_origins")
+            if (
+                isinstance(origins, dict)
+                and origins.get(name) == ORIGIN_SYSTEM_RECEIPT
+                and semantics.contracts.find(name)
+            ):
+                status = "standard_model"
+        context.require(self.scope)
+        return status
+
+    def _call_record_conflicts(self, record: Any, name: str, targets: List[Dict[str, Any]]) -> bool:
+        """Caller hints may reject current receipts, never authorize a target."""
+        if record is None or (isinstance(record, str) and record == name):
+            return False
+        if not isinstance(record, dict):
+            return True
+        target_usrs = {target.get("usr") or target.get("referenced_usr") for target in targets}
+        target_files = {
+            self._resolved_source(str(location.get("file") or ""))
+            for target in targets
+            for field in ("declaration", "location")
+            for location in [target.get(field)]
+            if isinstance(location, dict)
+        } - {""}
+        for field in ("usr", "callee_usr", "target_usr"):
+            if record.get(field) and record[field] not in target_usrs:
+                return True
+        for field in ("owner_usr", "caller_usr"):
+            if record.get(field) and record[field] != self.scope.usr:
+                return True
+        if (
+            record.get("build_context_id")
+            and record["build_context_id"] != self.scope.build_context_id
+        ):
+            return True
+        for field in ("source", "caller_file", "file", "file_path"):
+            if (
+                record.get(field)
+                and self._resolved_source(str(record[field])) != self._lookup_source
+            ):
+                return True
+        for field in ("callee_file", "filename"):
+            if record.get(field) and self._resolved_source(str(record[field])) not in target_files:
+                return True
+        for field in ("name", "callee_name", "qualified_name"):
+            if record.get(field) and record[field] != name:
+                return True
+        for field, expected_usrs, expected_files in (
+            ("owner", {self.scope.usr}, {self._lookup_source}),
+            ("target", target_usrs, target_files),
+            (
+                "function_identity",
+                target_usrs | {self.scope.usr},
+                target_files | {self._lookup_source},
+            ),
+        ):
+            if field not in record:
+                continue
+            identity = record[field]
+            if not isinstance(identity, dict):
+                return True
+            if identity.get("usr") and identity["usr"] not in expected_usrs:
+                return True
+            expected_names = (
+                {self._lookup_function_name}
+                if field == "owner"
+                else ({name} if field == "target" else {name, self._lookup_function_name})
+            )
+            for name_field in ("name", "qualified_name"):
+                if identity.get(name_field) and identity[name_field] not in expected_names:
+                    return True
+            if (
+                identity.get("build_context_id")
+                and identity["build_context_id"] != self.scope.build_context_id
+            ):
+                return True
+            for path_field in ("file", "file_path", "source"):
+                if (
+                    identity.get(path_field)
+                    and self._resolved_source(str(identity[path_field])) not in expected_files
+                ):
+                    return True
+            for coordinate_field in ("declaration", "location"):
+                if coordinate_field not in identity:
+                    continue
+                coordinate = identity[coordinate_field]
+                if not isinstance(coordinate, dict):
+                    return True
+                if (
+                    coordinate.get("file")
+                    and self._resolved_source(str(coordinate["file"])) not in expected_files
+                ):
+                    return True
+        return False
+
+
 @dataclass
 class ParallelAnalysisResult:
     """Result of parallel analysis across multiple functions."""
@@ -135,6 +499,41 @@ class ParallelAnalysisResult:
     cumulative_total_tokens: int = 0
     diff_focus: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Instance scope: only set when the entry was dispatched for one exact
+    # ``(BuildContext, native USR)`` instance.
+    build_context_id: str = ""
+    usr: str = ""
+    instance_identity: str = ""
+    instance_scope_report: Optional[Dict[str, Any]] = None
+    instance_collection: Optional[Dict[str, Any]] = None
+    execution_completeness: str = "unknown"
+    scan_outcome: str = "unknown"
+
+
+@dataclass
+class InstanceWorkBatch:
+    """One scan-scope ledger shared across incrementally analyzed instances.
+
+    Created by :meth:`ParallelAnalyzer.open_instance_batch` and finished by
+    :meth:`ParallelAnalyzer.finish_instance_batch`; every work item in between
+    analyzes into the same ledger, caches and validation queue.
+    """
+
+    analyzer: "ParallelAnalyzer"
+    plan: Any
+    scoped_entries: List[Tuple[FunctionEntry, Optional[InstanceScope]]] = field(
+        default_factory=list
+    )
+    admission_lock: Any = field(default_factory=threading.RLock, repr=False)
+    validation_state: str = "NOT_STARTED"
+    results: Dict[str, ParallelAnalysisResult] = field(default_factory=dict)
+    settled_instances: Set[str] = field(default_factory=set)
+    restored_instances: Set[str] = field(default_factory=set)
+    executed_instances: Set[str] = field(default_factory=set)
+
+    @property
+    def instances(self) -> List[Any]:
+        return list(getattr(self.plan, "instances", []) or [])
 
 
 class ParallelAnalyzer:
@@ -165,10 +564,14 @@ class ParallelAnalyzer:
         owns_project_knowledge_service: bool = False,
         llm_clients: Optional[Dict[str, LLMClient]] = None,
         semantic_result: Any = None,
+        reproduction_service: Any = None,
     ):
         preflight_rules(config)
         self.base_config = config
         self.semantic_result = semantic_result
+        from ..core.validation.reproduction_planner import SessionReproductionPlanner
+
+        self.reproduction_service = reproduction_service or SessionReproductionPlanner(config)
         self.max_workers = config.concurrency.entry_workers
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
@@ -185,6 +588,20 @@ class ParallelAnalyzer:
         self._shared_llm_clients = (
             llm_clients if llm_clients is not None else self._build_shared_llm_clients(config)
         )
+        self._llm_usage_baseline = _llm_client_usage_snapshots(self._shared_llm_clients)
+        if isinstance(self._shared_llm_clients, _ScanLLMClients):
+            session_start = self._shared_llm_clients.claim_initial_usage()
+            if session_start is not None:
+                # A changed mapping cannot lend its factory start to a new,
+                # already-used client added by a caller afterwards.
+                self._llm_usage_baseline.update(
+                    {
+                        client_id: snapshot
+                        for client_id, snapshot in session_start.items()
+                        if client_id in self._llm_usage_baseline
+                    }
+                )
+        self._llm_usage_batch_started = False
         if project_knowledge_service is _PROJECT_KNOWLEDGE_UNSET:
             self.project_knowledge_service = Analyzer.build_project_knowledge_service(
                 config,
@@ -240,6 +657,16 @@ class ParallelAnalyzer:
         self._candidate_ir_persistence_lock = threading.Lock()
         self._last_materialized_entries: List[FunctionEntry] = []
         self._last_batch_wall_seconds = 0.0
+        # Instance-scoped batches keep the exact schedule so the post-discovery
+        # validation queue can reopen the same precise scope instead of the
+        # unwrapped base index.
+        self._batch_instance_scoped = False
+        self._instance_scopes_by_build: Dict[str, List[InstanceScope]] = {}
+        self._instance_semantics_context: Optional["InstanceSemanticsContext"] = None
+        # Only successful admission registers historical work. Keep the exact
+        # result object so a later execution at the same key cannot inherit it.
+        # This is process-local accounting, never an authority from metadata.
+        self._restored_result_costs: Dict[str, Tuple[ParallelAnalysisResult, Dict[str, Any]]] = {}
         self._last_scan_budget_metadata: Dict[str, Any] = {}
         self._last_global_model_stats: Optional[Dict[str, Any]] = None
         self._global_modeling_succeeded = False
@@ -286,10 +713,939 @@ class ParallelAnalyzer:
             if close_requested:
                 self.close()
 
+    def analyze_entry_instances(
+        self,
+        plan: Any,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ) -> InstanceAnalysisReport:
+        """Analyze every scheduled compile instance with scoped program facts.
+
+        This is the coordinator-callable execution entry point: each scheduled
+        ``EntryInstance`` becomes one real ``Analyzer`` run whose program-facts
+        queries are pinned to that instance's exact ``(build_context_id, USR)``.
+        The shared candidate ledger, validation result cache, decision-fact
+        cache and scan-level validation queue are reused, so candidates keep
+        their build identity through dedup and terminal projection.
+        """
+
+        instances = list(getattr(plan, "instances", []) or [])
+        plan_gaps = [
+            gap.to_payload() if hasattr(gap, "to_payload") else dict(gap)
+            for gap in (getattr(plan, "gaps", []) or [])
+        ]
+        plan_status = str(getattr(plan, "status", "") or "")
+        if self.base_config.project.language == "java":
+            return InstanceAnalysisReport(
+                status="not_applicable",
+                planned_instances=len(instances),
+                plan_gaps=plan_gaps,
+                reasons=["java_scan_has_no_compilation_instances"],
+            )
+        if not instances:
+            return InstanceAnalysisReport(
+                status="unavailable" if plan_status != "planned" else "empty",
+                planned_instances=0,
+                plan_gaps=plan_gaps,
+                reasons=(
+                    ["no_scheduled_instances"]
+                    if plan_status == "planned"
+                    else [f"entry_instance_plan_{plan_status or 'unavailable'}"]
+                ),
+            )
+
+        scoped_entries: List[Tuple[FunctionEntry, Optional[InstanceScope]]] = []
+        for instance in instances:
+            scope = instance_scope_from_entry_instance(instance)
+            scoped_entries.append((self._instance_entry(instance), scope))
+
+        # Public-entry lifetime: share the exact occupancy/close/interrupt
+        # contract of ``analyze_function_entries`` so a concurrent ``close()``
+        # defers owned-resource cleanup until instance analysis has drained.
+        condition = self._lifecycle_condition()
+        with condition:
+            if getattr(self, "_closed", False):
+                raise RuntimeError("ParallelAnalyzer is closed")
+            if self._active_batch_thread is not None:
+                raise RuntimeError("ParallelAnalyzer already has an active batch")
+            self._active_batch_thread = threading.get_ident()
+        try:
+            self.freeze_instance_semantics(plan)
+            scoped_entries = self._current_instance_entries(plan)
+            self._instance_entry_owners = self._current_instance_owner_aliases(
+                InstanceWorkBatch(self, plan=plan, scoped_entries=scoped_entries)
+            )
+            results = self._analyze_function_entries(
+                [entry for entry, _scope in scoped_entries],
+                progress_callback,
+                scoped_entries=scoped_entries,
+            )
+            self._last_instance_results = results
+            snapshot = self._candidate_ledger.lifecycle_snapshot()
+            outcomes: List[InstanceAnalysisOutcome] = []
+            for instance, (entry, entry_scope) in zip(instances, scoped_entries):
+                if entry_scope is None:  # every scheduled instance has an exact scope
+                    continue
+                outcomes.append(
+                    self._instance_outcome(instance, entry, entry_scope, results, snapshot)
+                )
+            return InstanceAnalysisReport(
+                status="analyzed",
+                outcomes=outcomes,
+                planned_instances=len(instances),
+                plan_gaps=plan_gaps,
+            )
+        finally:
+            with condition:
+                self._active_batch_thread = None
+                condition.notify_all()
+                close_requested = getattr(self, "_closed", False)
+            if close_requested:
+                self.close()
+
+    def last_instance_results(self) -> Dict[str, ParallelAnalysisResult]:
+        """Raw results from the last ``analyze_entry_instances`` call.
+
+        Report generation still consumes the per-entry ``results`` mapping, so
+        instance dispatch keeps both the raw results and the instance coverage
+        report available to the caller.
+        """
+
+        return dict(getattr(self, "_last_instance_results", {}))
+
+    @property
+    def cancellation_token(self) -> CancellationToken:
+        """The scan token every entry and validation run observes."""
+
+        return self._cancellation_token
+
+    # -- continuous instance batch (job-driven incremental analysis) ---------
+
+    def freeze_instance_semantics(self, plan: Any) -> "InstanceSemanticsContext":
+        """Freeze the actual workbook and each exact scope before plan identity."""
+        from .instance_semantics_context import freeze_instance_context
+
+        scopes = [
+            instance_scope_from_entry_instance(instance)
+            for instance in list(getattr(plan, "instances", ()) or ())
+        ]
+        condition = self._lifecycle_condition()
+        with condition:
+            if getattr(self, "_closed", False):
+                raise RuntimeError("ParallelAnalyzer is closed")
+            if self._active_batch_thread not in (None, threading.get_ident()):
+                raise RuntimeError("ParallelAnalyzer already has an active batch")
+            existing = self._instance_semantics_context
+            if existing is not None:
+                if existing.scopes != {scope.identity: scope for scope in scopes}:
+                    raise ValueError("instance_semantics_plan_changed_after_freeze")
+                return existing
+            context = freeze_instance_context(
+                config=self.base_config,
+                code_index=self.code_index,
+                workbook_path=self.user_config.workbook.path,
+                scopes=scopes,
+            )
+            self._instance_semantics_context = context
+            return context
+
+    def _instance_semantic_snapshot(self, scope: InstanceScope) -> "InstanceSemanticsSnapshot":
+        from .instance_semantics_context import InstanceSemanticsContext
+
+        context = getattr(self, "_instance_semantics_context", None)
+        if not isinstance(context, InstanceSemanticsContext):
+            raise ValueError("instance_semantics_batch_not_frozen")
+        return context.require(scope)
+
+    def require_current_instance_inputs(self, *, require_complete: bool = True) -> None:
+        context = getattr(self, "_instance_semantics_context", None)
+        if context is None:
+            if getattr(self, "_batch_instance_scoped", False):
+                raise ValueError("instance_semantics_batch_not_frozen")
+            return
+        if require_complete and context.unavailable:
+            raise ValueError("instance_semantics_incomplete_manifest")
+        for snapshot in context.snapshots.values():
+            context.require(snapshot.scope)
+
+    def open_instance_batch(self, plan: Any) -> "InstanceWorkBatch":
+        """Acquire the lifetime once and release it on every setup failure."""
+        condition = self._lifecycle_condition()
+        with condition:
+            if getattr(self, "_closed", False):
+                raise RuntimeError("ParallelAnalyzer is closed")
+            if self._active_batch_thread is not None:
+                raise RuntimeError("ParallelAnalyzer already has an active batch")
+            self._active_batch_thread = threading.get_ident()
+        try:
+            return self._initialize_instance_batch(plan)
+        except BaseException:
+            self._release_batch_lifetime()
+            raise
+
+    def _initialize_instance_batch(self, plan: Any) -> "InstanceWorkBatch":
+        """Open one scan-scope ledger for incremental per-instance analysis.
+
+        The candidate ledger, decision-fact cache, validation result cache and
+        scan-level scheduler are created once here and reused by every later
+        :meth:`run_instance_batch` call, so a job work item never rebuilds the
+        batch (which would reset the ledger and lose cross-instance dedup).
+        """
+
+        self._begin_llm_usage_batch()
+        instances = list(getattr(plan, "instances", []) or [])
+        scoped_entries: List[Tuple[FunctionEntry, Optional[InstanceScope]]] = [
+            (self._instance_entry(instance), instance_scope_from_entry_instance(instance))
+            for instance in instances
+        ]
+        self.freeze_instance_semantics(plan)
+        scoped_entries = self._current_instance_entries(plan)
+
+        self._last_materialized_entries = [entry for entry, _scope in scoped_entries]
+        self._restored_result_costs = {}
+        self._interrupted = False
+        self._deadline_exceeded = False
+        self._cancellation_token = CancellationToken(
+            parent=self._parent_cancellation_token,
+            timeout_seconds=None,
+        )
+        self._candidate_ledger = CandidateLedger(
+            project_id=str(
+                getattr(self.base_config.project, "project_id", "")
+                or self.base_config.project.project_root.name
+            ),
+            project_root=str(self.base_config.project.project_root),
+            revision=Analyzer._git_commit_sha(self.base_config.project.project_root),
+        )
+        self._decision_fact_cache = DecisionFactGraphCache()
+        self._validation_result_cache = ValidationResultCache(
+            max_entries=getattr(self.base_config.analysis, "validation_cache_entries", 4096)
+        )
+        self._global_validation_state = {}
+        self._global_validation_duration_seconds = 0.0
+        self._project_fact_pass_state = {
+            "enabled": False,
+            "status": "skipped",
+            "reason": "instance_scope_isolated",
+        }
+        self._shared_local_pattern_semantics = None
+        self._shared_semantic_overlay = None
+        self._active_discovery_state = {
+            "enabled": False,
+            "profile": resolve_discovery_profile(self.base_config).name,
+            "status": "skipped",
+            "reason": "instance_scope_isolated",
+        }
+        self._batch_instance_scoped = True
+        self._instance_scopes_by_build = {}
+        for _entry, scope in scoped_entries:
+            if scope is None:
+                continue
+            self._instance_scopes_by_build.setdefault(scope.build_context_id, []).append(scope)
+        self._scheduler = ScanScheduler(
+            entry_workers=self.max_workers,
+            validator_workers=self.base_config.concurrency.validator_workers,
+            investigator_workers=self.base_config.concurrency.investigator_workers,
+        )
+        batch = InstanceWorkBatch(self, plan=plan, scoped_entries=scoped_entries)
+        self._instance_entry_owners = self._current_instance_owner_aliases(batch)
+        return batch
+
+    def _current_instance_entries(
+        self, plan: Any
+    ) -> List[Tuple[FunctionEntry, Optional[InstanceScope]]]:
+        """Use the same current scoped hydration as the real entry workflow."""
+        from ..snapshots.modeling_input import build_semantic_model_input
+
+        entries: List[Tuple[FunctionEntry, Optional[InstanceScope]]] = []
+        for instance in list(getattr(plan, "instances", []) or []):
+            scope = instance_scope_from_entry_instance(instance)
+            entry = self._instance_entry(instance)
+            self._instance_semantic_snapshot(scope)
+            scoped = wrap_scoped_code_index(self.code_index, scope)
+            model = build_semantic_model_input(
+                scoped,
+                entry.lookup_query(),
+                file_path=str(entry.file_path or ""),
+                include_context=False,
+            )
+            signature = str(model.get("signature") or "")
+            if not signature or not str(model.get("file_path") or ""):
+                raise ValueError("instance_current_entry_identity_unverifiable")
+            hydrated = self._entry_from_identity_record(
+                entry,
+                {
+                    "function_name": model["func_name"],
+                    "file_path": model["file_path"],
+                    "signature": signature,
+                },
+                self.base_config.project.project_root,
+            )
+            absolute_file = scoped._resolved_source(str(model["file_path"]))
+            if not absolute_file or not Path(absolute_file).is_absolute():
+                raise ValueError("instance_current_entry_source_unverifiable")
+            hydrated = replace(hydrated, file_path=absolute_file)
+            entries.append((hydrated, scope))
+        self.require_current_instance_inputs()
+        return entries
+
+    def _current_instance_owner_aliases(
+        self, batch: "InstanceWorkBatch"
+    ) -> Dict[Tuple[str, str], Any]:
+        """No persisted USR, basename or sink may guess an entry's owner."""
+        from .jobs.instance_results import InstanceKey
+
+        aliases: Dict[Tuple[str, str], Any] = {}
+        for instance, (entry, scope) in zip(batch.instances, batch.scoped_entries):
+            if scope is None:
+                raise ValueError("instance_owner_scope_missing")
+            key = InstanceKey(
+                scope.identity, scope.build_context_id, scope.usr, str(instance.source)
+            )
+            alias = (
+                entry.identity_key(self.base_config.project.project_root),
+                scope.build_context_id,
+            )
+            if alias in aliases and aliases[alias] != key:
+                raise ValueError("instance_owner_alias_ambiguous")
+            aliases[alias] = key
+        return aliases
+
+    def run_instance_batch(
+        self,
+        batch: "InstanceWorkBatch",
+        identities: Sequence[str],
+    ) -> Dict[str, ParallelAnalysisResult]:
+        """Analyze exactly the claimed instances into the open batch ledger.
+
+        A real window/cancel that reaches the analyzer ends the batch with a
+        ``CancellationError`` instead of recording a verdict for an instance
+        that was never analyzed: the caller keeps that work item unresolved.
+        """
+
+        wanted = {str(value) for value in identities if str(value)}
+        selected = [
+            (entry, scope)
+            for entry, scope in batch.scoped_entries
+            if scope is not None and scope.identity in wanted
+        ]
+        scheduler = self._scheduler
+        if scheduler is None:
+            raise RuntimeError("no open instance batch scheduler")
+        futures = {
+            scheduler.submit(
+                ENTRY_ROLE,
+                self._analyze_single_entry,
+                entry,
+                instance_scope=scope,
+                priority=self._entry_scheduling_score(entry),
+            ): (entry, scope)
+            for entry, scope in selected
+        }
+        cancelled = False
+        try:
+            for future in concurrent.futures.as_completed(
+                futures, timeout=self._cancellation_token.remaining_seconds()
+            ):
+                entry, scope = futures[future]
+                key = self._scoped_result_key(entry, scope)
+                try:
+                    batch.results[key] = future.result()
+                    self._restored_result_costs.pop(key, None)
+                except concurrent.futures.CancelledError:
+                    logger.warning("instance analysis cancelled: %s", scope.identity)
+                    cancelled = True
+                except Exception as exc:  # one instance failure stays local
+                    if self._cancellation_token.is_cancelled():
+                        # The token stopped this instance; it is not a verdict.
+                        cancelled = True
+                        continue
+                    logger.error("instance analysis error for %s: %s", scope.identity, exc)
+                    batch.results[key] = ParallelAnalysisResult(
+                        function_name=entry.function_name,
+                        verdict="error",
+                        error=str(exc),
+                        diff_focus=entry.diff_focus,
+                    )
+                    self._restored_result_costs.pop(key, None)
+        except concurrent.futures.TimeoutError:
+            cancelled = True
+        self._last_instance_results = dict(batch.results)
+        if cancelled or self._cancellation_token.is_cancelled():
+            raise CancellationError(self._cancellation_token.reason or "cancelled")
+        return dict(batch.results)
+
+    def validate_instance_batch(self, batch: "InstanceWorkBatch") -> None:
+        """Run the scan-level validation queue once over the frozen ledger."""
+        with batch.admission_lock:
+            self.require_current_instance_inputs()
+            if batch.validation_state == "DONE":
+                return
+            if batch.validation_state != "NOT_STARTED":
+                raise ValueError("instance_validation_generation_not_restartable")
+            batch.validation_state = "RUNNING"
+            try:
+                self._run_scan_validation_queue()
+                self.require_current_instance_inputs()
+                if self._global_validation_state.get("validation_queue_drained") is not True:
+                    raise ValueError("instance_validation_queue_not_drained")
+            except BaseException:
+                batch.validation_state = "ABORTED"
+                raise
+            batch.validation_state = "DONE"
+
+    def export_instance_result(
+        self,
+        batch: "InstanceWorkBatch",
+        *,
+        identity: str,
+        recovery: "RecoveryIdentity",
+        producer_run_id: str,
+    ) -> "InstanceResultPayload | RecoveryMiss":
+        """Freeze complete neutral collection data; this never mints a receipt."""
+        from dataclasses import asdict
+        from .candidates import PENDING_WIRE_ADAPTER_VERSION
+        from .jobs.instance_results import (
+            AnalysisCompletion,
+            FrozenJSON,
+            InstanceKey,
+            InstanceResultPayload,
+            RecoveryMiss,
+        )
+        from .instance_semantics_context import canonical_bytes
+
+        instance = next((item for item in batch.instances if item.identity == identity), None)
+        if instance is None:
+            raise ValueError("instance_export_not_in_current_plan")
+        key = InstanceKey(
+            instance.identity, instance.build_context_id, instance.usr, instance.source
+        )
+        try:
+            with batch.admission_lock, self._candidate_ledger._lock:
+                if batch.analyzer is not self or batch.validation_state != "NOT_STARTED":
+                    raise ValueError("instance_export_generation_not_open")
+                self.require_current_instance_inputs()
+                context = self._instance_semantics_context
+                if context is None or recovery.semantics_digest != context.manifest_digest():
+                    raise ValueError("instance_export_semantics_manifest_mismatch")
+                entry, scope = next(
+                    (entry, scope)
+                    for entry, scope in batch.scoped_entries
+                    if scope is not None and scope.identity == identity
+                )
+                assert scope is not None
+                snapshot = context.require(scope)
+                result = batch.results.get(self._scoped_result_key(entry, scope))
+                if result is None or result.error or result.verdict == "error":
+                    raise ValueError("instance_collection_result_missing_or_error")
+                collection = result.instance_collection
+                if (
+                    not isinstance(collection, dict)
+                    or collection.get("schema") != "zscope.instance-collection-closure.v1"
+                    or collection.get("supported") is not True
+                    or collection.get("collection_closed") is not True
+                    or collection.get("input_current") is not True
+                    or collection.get("active_stage_errors") != []
+                    or collection.get("semantics_digest") != snapshot.digest
+                    or collection.get("entry_identity")
+                    != entry.identity_key(self.base_config.project.project_root)
+                    or collection.get("scope") != scope.to_payload()
+                    or result.instance_identity != identity
+                    or result.build_context_id != scope.build_context_id
+                    or result.usr != scope.usr
+                ):
+                    raise ValueError("instance_actual_collection_not_closed")
+                pending = self._candidate_ledger.pending_instance_snapshot(
+                    instance=key, entry_instances=self._instance_entry_owners
+                )
+                manifest = json.loads(pending.manifest_json)
+                # The codec's manifest counts distinct obligation UIDs across
+                # records; the locked full manifest separately retains role,
+                # build/cluster membership and every occurrence path row.
+                completion = AnalysisCompletion(
+                    schema="zscope.instance-analysis-completion.v1",
+                    state="complete",
+                    collection_closed=True,
+                    input_current=True,
+                    expected_record_count=manifest["record_count"],
+                    expected_obligation_count=len(
+                        {record.obligation_uid for record in pending.records}
+                    ),
+                    expected_occurrence_count=manifest["occurrence_count"],
+                    active_stage_errors=(),
+                )
+                gaps = deepcopy((result.instance_scope_report or {}).get("identity_gaps") or [])
+                if not isinstance(gaps, list) or any(
+                    not isinstance(gap, dict) or not str(gap.get("reason") or "") for gap in gaps
+                ):
+                    raise ValueError("instance_export_invalid_scope_diagnostics")
+                if any(gap.get("severity") == "identity" for gap in gaps):
+                    raise ValueError("instance_export_identity_gap_not_reusable")
+                gap_strings = [canonical_bytes(gap).decode("utf-8") for gap in gaps]
+                gap_strings.extend(
+                    canonical_bytes(
+                        {"channel": name, "reason": reason, "disposition": "excluded"}
+                    ).decode("utf-8")
+                    for name, reason in sorted(collection.get("excluded_subchannels", {}).items())
+                )
+                outcome = {
+                    "schema": "zscope.instance-neutral-outcome.v1",
+                    "wire_adapter": PENDING_WIRE_ADAPTER_VERSION,
+                    "entry_identity": collection["entry_identity"],
+                    "result": asdict(result),
+                    "manifest": manifest,
+                    "record_diagnostics": json.loads(pending.diagnostics_json),
+                    "diagnostic_gaps": gap_strings,
+                }
+                raw = FrozenJSON(canonical_bytes(outcome))
+                self.require_current_instance_inputs()
+                return InstanceResultPayload(
+                    schema="zscope.instance-result.v1",
+                    producer_run_id=producer_run_id,
+                    identity=recovery,
+                    instance=key,
+                    instance_semantics_digest=snapshot.digest,
+                    completion=completion,
+                    outcome_json=raw,
+                    records=pending.records,
+                )
+        except (ValueError, TypeError, KeyError, StopIteration) as exc:
+            return RecoveryMiss(instance=key, reason=str(exc) or type(exc).__name__)
+
+    def require_instance_collection_closed(
+        self, batch: "InstanceWorkBatch", *, identity: str
+    ) -> None:
+        """An executed verdict alone cannot settle an analysis work item."""
+        with batch.admission_lock:
+            if batch.analyzer is not self or batch.validation_state != "NOT_STARTED":
+                raise ValueError("instance_collection_generation_not_open")
+            self.require_current_instance_inputs()
+            entry, scope = next(
+                (entry, scope)
+                for entry, scope in batch.scoped_entries
+                if scope is not None and scope.identity == identity
+            )
+            assert scope is not None
+            snapshot = self._instance_semantic_snapshot(scope)
+            result = batch.results.get(self._scoped_result_key(entry, scope))
+            tracker = result.instance_collection if result is not None else None
+            if (
+                result is None
+                or result.error
+                or result.verdict == "error"
+                or result.instance_identity != scope.identity
+                or result.usr != scope.usr
+                or result.build_context_id != scope.build_context_id
+                or not isinstance(tracker, dict)
+                or tracker.get("supported") is not True
+                or tracker.get("collection_closed") is not True
+                or tracker.get("input_current") is not True
+                or tracker.get("active_stage_errors") != []
+                or tracker.get("semantics_digest") != snapshot.digest
+                or tracker.get("scope") != scope.to_payload()
+                or tracker.get("entry_identity")
+                != entry.identity_key(self.base_config.project.project_root)
+            ):
+                raise ValueError("instance_actual_collection_not_closed")
+
+    def restore_instance_result(
+        self, batch: "InstanceWorkBatch", *, admitted: "RecoveryAccepted"
+    ) -> None:
+        """Stage the complete ledger/result projection and commit once under locks."""
+        from dataclasses import asdict, fields
+        from .candidates import (
+            PENDING_MANIFEST_SCHEMA,
+            PENDING_WIRE_ADAPTER_VERSION,
+            _pending_bytes,
+            _pending_merge_key,
+        )
+        from .jobs.instance_results import (
+            ExpectedInstance,
+            InstanceKey,
+            RecoveryAccepted,
+            verify_instance_result,
+        )
+
+        with batch.admission_lock, self._candidate_ledger._lock:
+            if batch.analyzer is not self or batch.validation_state != "NOT_STARTED":
+                raise ValueError("instance_restore_generation_not_open")
+            self.require_current_instance_inputs()
+            context = self._instance_semantics_context
+            if context is None:
+                raise ValueError("instance_restore_semantics_missing")
+            allowed = {
+                item.identity: InstanceKey(
+                    item.identity, item.build_context_id, item.usr, item.source
+                )
+                for item in batch.instances
+            }
+            payload = admitted.payload
+            if allowed.get(payload.instance.identity) != payload.instance:
+                raise ValueError("instance_restore_not_in_current_plan")
+            scope = context.scopes[payload.instance.identity]
+            snapshot = context.require(scope)
+            if payload.identity.semantics_digest != context.manifest_digest():
+                raise ValueError("instance_restore_semantics_manifest_mismatch")
+            verified = verify_instance_result(
+                admitted.receipt,
+                expected=payload.identity,
+                instance=ExpectedInstance(payload.instance, snapshot.digest),
+            )
+            if not isinstance(verified, RecoveryAccepted) or verified.payload != payload:
+                raise ValueError("instance_restore_bytes_no_longer_match")
+            outcome = json.loads(payload.outcome_json)
+            if not isinstance(outcome, dict) or set(outcome) != {
+                "schema",
+                "wire_adapter",
+                "entry_identity",
+                "result",
+                "manifest",
+                "record_diagnostics",
+                "diagnostic_gaps",
+            }:
+                raise ValueError("instance_restore_outcome_schema_mismatch")
+            if (
+                outcome["schema"] != "zscope.instance-neutral-outcome.v1"
+                or outcome["wire_adapter"] != PENDING_WIRE_ADAPTER_VERSION
+            ):
+                raise ValueError("instance_restore_outcome_version_mismatch")
+            entry, _ = next(
+                (entry, own_scope)
+                for entry, own_scope in batch.scoped_entries
+                if own_scope is not None and own_scope.identity == scope.identity
+            )
+            alias = entry.identity_key(self.base_config.project.project_root)
+            if outcome["entry_identity"] != alias:
+                raise ValueError("instance_restore_current_entry_identity_mismatch")
+            rows = outcome["record_diagnostics"]
+            if not isinstance(rows, list):
+                raise ValueError("instance_restore_diagnostics_missing")
+            diagnostics: Dict[tuple[str, ...], int] = {}
+            for row in rows:
+                if not isinstance(row, dict) or set(row) != {"record_key", "duplicate_count"}:
+                    raise ValueError("instance_restore_diagnostics_invalid")
+                coordinates = row["record_key"]
+                count = row["duplicate_count"]
+                if (
+                    not isinstance(coordinates, list)
+                    or len(coordinates) != 6
+                    or any(type(value) is not str for value in coordinates)
+                    or type(count) is not int
+                    or count < 0
+                ):
+                    raise ValueError("instance_restore_diagnostics_invalid")
+                merged = tuple(coordinates)
+                if merged in diagnostics:
+                    raise ValueError("instance_restore_diagnostics_duplicate")
+                diagnostics[merged] = count
+            # Recreate the full logical records using only versioned derived
+            # aliases and neutral constants; no old decisions are restored.
+            projections: List[Dict[str, Any]] = []
+            members: List[Dict[str, Any]] = []
+            for pending in payload.records:
+                wire = json.loads(pending.record_json)
+                record_key = _pending_merge_key(wire)
+                if record_key not in diagnostics:
+                    raise ValueError("instance_restore_diagnostics_missing_member")
+                record = self._candidate_ledger._pending_record_from_projection(
+                    pending, duplicate_count=diagnostics[record_key]
+                )
+                projection = record.to_dict(include_context=True)
+                projection["terminal_issue"] = {}
+                projections.append(projection)
+                members.append(
+                    {
+                        name: projection[name]
+                        for name in (
+                            "build_context_id",
+                            "candidate_uid",
+                            "obligation_uid",
+                            "validation_cluster_uid",
+                            "evidence_hash",
+                            "context_signature",
+                            "record_role",
+                            "occurrence_uids",
+                            "occurrences",
+                            "duplicate_count",
+                        )
+                    }
+                    | {"owner_instances": [asdict(owner) for owner in pending.owner_instances]}
+                )
+            manifest = {
+                "schema": PENDING_MANIFEST_SCHEMA,
+                "wire_adapter": PENDING_WIRE_ADAPTER_VERSION,
+                "instance": asdict(payload.instance),
+                "record_count": len(payload.records),
+                "obligation_count": sum(
+                    record.record_role == "validation_obligation" for record in payload.records
+                ),
+                "occurrence_count": sum(len(row["occurrence_uids"]) for row in projections),
+                "occurrence_row_count": sum(len(row["occurrences"]) for row in projections),
+                "members": members,
+                "membership_sha256": hashlib.sha256(_pending_bytes(members)).hexdigest(),
+                "records_sha256": hashlib.sha256(_pending_bytes(projections)).hexdigest(),
+                "diagnostics_sha256": hashlib.sha256(_pending_bytes(rows)).hexdigest(),
+            }
+            if _pending_bytes(outcome["manifest"]) != _pending_bytes(manifest):
+                raise ValueError("instance_restore_full_manifest_mismatch")
+            raw_result = outcome["result"]
+            if not isinstance(raw_result, dict) or set(raw_result) != {
+                item.name for item in fields(ParallelAnalysisResult)
+            }:
+                raise ValueError("instance_restore_result_projection_incomplete")
+            restored = ParallelAnalysisResult(**deepcopy(raw_result))
+            if (
+                restored.instance_identity != scope.identity
+                or restored.build_context_id != scope.build_context_id
+                or restored.usr != scope.usr
+                or restored.entry_identity != alias
+                or restored.error
+                or restored.verdict == "error"
+            ):
+                raise ValueError("instance_restore_result_identity_mismatch")
+            result_key = self._scoped_result_key(entry, scope)
+            if result_key in batch.results and batch.results[result_key] != restored:
+                raise ValueError("instance_restore_result_conflict")
+            staged = self._candidate_ledger._stage_pending_instance_records(
+                records=payload.records,
+                allowed_instances=allowed,
+                diagnostics=diagnostics,
+                entry_instances=self._instance_entry_owners,
+            )
+            staged_results = dict(batch.results)
+            staged_results[result_key] = restored
+            staged_costs = dict(self._restored_result_costs)
+            staged_costs[result_key] = (
+                restored,
+                {
+                    "accounting_scope": "historical_producer_work",
+                    "entry_key": result_key,
+                    "entry_identity": alias,
+                    "instance_identity": scope.identity,
+                    "build_context_id": scope.build_context_id,
+                    "usr": scope.usr,
+                    "source": payload.instance.source,
+                    "producer_job_id": admitted.receipt.identity.job_id,
+                    "producer_run_id": admitted.receipt.producer_run_id,
+                    "producer_attempt_no": admitted.receipt.producer_attempt_no,
+                    "event_seq": admitted.receipt.event_seq,
+                    "artifact_path": str(admitted.receipt.artifact_path),
+                    "content_sha256": admitted.receipt.content_sha256,
+                    "metrics": self._result_cost_metrics(restored),
+                    "entry_budget": {
+                        "seconds": restored.entry_budget_seconds,
+                        "exceeded": restored.entry_budget_exceeded,
+                        "overrun_seconds": restored.entry_budget_overrun_seconds,
+                        "exhaustion_policy": restored.budget_exhaustion_policy,
+                    },
+                    "validation_performance": deepcopy(
+                        restored.metadata.get("validation_performance", {})
+                    ),
+                },
+            )
+            self.require_current_instance_inputs()
+            # Commit ledger, results and accounting without fallible work in between.
+            self._candidate_ledger._records = staged
+            batch.results = staged_results
+            self._restored_result_costs = staged_costs
+
+    def finish_instance_batch(self, batch: "InstanceWorkBatch") -> InstanceAnalysisReport:
+        """Project outcomes and release the batch lifetime."""
+
+        try:
+            snapshot = self._candidate_ledger.lifecycle_snapshot()
+            plan_gaps = [
+                gap.to_payload() if hasattr(gap, "to_payload") else dict(gap)
+                for gap in (getattr(batch.plan, "gaps", []) or [])
+            ]
+            outcomes: List[InstanceAnalysisOutcome] = []
+            for instance, (entry, scope) in zip(batch.instances, batch.scoped_entries):
+                if scope is None:
+                    continue
+                outcomes.append(
+                    self._instance_outcome(instance, entry, scope, batch.results, snapshot)
+                )
+            self._last_instance_results = dict(batch.results)
+            return InstanceAnalysisReport(
+                status="analyzed",
+                outcomes=outcomes,
+                planned_instances=len(batch.instances),
+                plan_gaps=plan_gaps,
+            )
+        finally:
+            self._release_batch_lifetime()
+
+    def abandon_instance_batch(self, batch: "InstanceWorkBatch") -> None:
+        """Release an open batch that stopped before its checkpoint.
+
+        A window/cancel never projects a completion, but the batch still owns
+        the scan scheduler and the analyzer's active-batch lifetime; releasing
+        it here is what lets ``close()`` actually tear the run down.  Safe to
+        call after :meth:`finish_instance_batch` (idempotent).
+        """
+
+        del batch
+        self._release_batch_lifetime()
+
+    def _release_batch_lifetime(self) -> None:
+        condition = self._lifecycle_condition()
+        scheduler = self._scheduler
+        if scheduler is None and getattr(self, "_active_batch_thread", None) is None:
+            return
+        self._scheduler = None
+        if scheduler is not None:
+            try:
+                scheduler.shutdown(wait=True, cancel_futures=True)
+            except Exception:
+                pass
+        with condition:
+            self._active_batch_thread = None
+            condition.notify_all()
+            close_requested = getattr(self, "_closed", False)
+        if close_requested:
+            self.close()
+
+    @staticmethod
+    def _symbol_leaf(usr: str) -> str:
+        text = str(usr or "")
+        if "@" in text:
+            text = text.rsplit("@", 1)[-1]
+        text = text.split("#", 1)[0]
+        return text or str(usr or "")
+
+    def _instance_entry(self, instance: Any) -> FunctionEntry:
+        names = [
+            str(name)
+            for name in (getattr(instance, "function_names", ()) or ())
+            if str(name).strip()
+        ]
+        name = names[0] if names else self._symbol_leaf(str(getattr(instance, "usr", "") or ""))
+        source = str(
+            getattr(instance, "source", "") or getattr(instance, "definition_file", "") or ""
+        )
+        return FunctionEntry(name, file_path=source or None)
+
+    def _instance_outcome(
+        self,
+        instance: Any,
+        entry: FunctionEntry,
+        scope: InstanceScope,
+        results: Dict[str, ParallelAnalysisResult],
+        snapshot: Dict[str, Any],
+    ) -> InstanceAnalysisOutcome:
+        result = results.get(self._scoped_result_key(entry, scope))
+        scope_gaps: List[Dict[str, Any]] = []
+        blocked: List[str] = []
+        semantics = ""
+        fact_queries = 0
+        context_status = ""
+        status = "analyzed"
+        verdict = ""
+        error = ""
+        duration = 0.0
+        if result is None:
+            status = "gap"
+            error = GAP_INSTANCE_NOT_ANALYZED
+            scope_gaps.append(
+                {
+                    "reason": GAP_INSTANCE_NOT_ANALYZED,
+                    "detail": "no analysis result returned for the scheduled instance",
+                    "build_context_id": scope.build_context_id,
+                    "severity": "identity",
+                }
+            )
+        else:
+            verdict = str(result.verdict or "")
+            error = str(result.error or "")
+            duration = float(result.duration_seconds or 0.0)
+            if verdict == "error" and error:
+                status = "error"
+            report = result.instance_scope_report or {}
+            scope_gaps = [dict(item) for item in (report.get("identity_gaps") or [])]
+            blocked = sorted(str(name) for name in (report.get("blocked_consumers") or []))
+            context_status = str(report.get("context_status") or "")
+            fact_queries = len(report.get("fact_queries") or [])
+            semantics = str(result.metadata.get("instance_semantics") or "")
+        candidates = self._candidates_for_instance(snapshot, entry, scope)
+        return InstanceAnalysisOutcome(
+            identity=scope.identity,
+            build_context_id=scope.build_context_id,
+            usr=scope.usr,
+            source=str(getattr(instance, "source", "") or ""),
+            function_name=entry.function_name,
+            status=status,
+            verdict=verdict,
+            entry_identity=entry.identity_key(self.base_config.project.project_root),
+            issues=candidates,
+            candidate_build_context_ids=sorted(
+                {str(item.get("build_context_id") or "") for item in candidates}
+            ),
+            scope_gaps=scope_gaps,
+            blocked_consumers=blocked,
+            context_status=context_status,
+            semantics=semantics,
+            fact_queries=fact_queries,
+            duration_seconds=duration,
+            error=error,
+        )
+
+    def _candidates_for_instance(
+        self,
+        snapshot: Dict[str, Any],
+        entry: FunctionEntry,
+        scope: InstanceScope,
+    ) -> List[Dict[str, Any]]:
+        entry_identity = entry.identity_key(self.base_config.project.project_root)
+        candidates: List[Dict[str, Any]] = []
+        for outcome in snapshot.get("outcomes") or []:
+            if not isinstance(outcome, dict):
+                continue
+            issue = outcome.get("issue") or {}
+            if str(issue.get("build_context_id") or "") != scope.build_context_id:
+                continue
+            entries = {str(value) for value in (outcome.get("entries") or []) if str(value)}
+            if entry_identity and entries and entry_identity not in entries:
+                continue
+            candidates.append(
+                {
+                    "candidate_uid": str(issue.get("candidate_uid") or ""),
+                    "validation_cluster_uid": str(issue.get("validation_cluster_uid") or ""),
+                    "rule_id": str(issue.get("rule_id") or issue.get("rule") or ""),
+                    "defect_class": str(issue.get("defect_class") or ""),
+                    "build_context_id": str(issue.get("build_context_id") or ""),
+                    "location": str(issue.get("location") or ""),
+                    "candidate_disposition": str(issue.get("candidate_disposition") or ""),
+                }
+            )
+        candidates.sort(key=lambda item: (item["validation_cluster_uid"], item["candidate_uid"]))
+        return candidates
+
+    @staticmethod
+    def _instance_scope_metadata(
+        instance_scope: Optional[InstanceScope],
+        scoped_index: Any,
+    ) -> Dict[str, Any]:
+        if instance_scope is None:
+            return {}
+        metadata: Dict[str, Any] = {
+            "build_context_id": instance_scope.build_context_id,
+            "usr": instance_scope.usr,
+            "instance_identity": instance_scope.identity,
+            # Declared: instance analysis runs with the generator's standard
+            # roots only; the project-wide model is not instance authorization.
+            "instance_semantics": "defaults_only",
+        }
+        getter = getattr(scoped_index, "scope_report", None)
+        if callable(getter):
+            value = getter()
+            if isinstance(value, dict):
+                metadata["instance_scope_report"] = value
+        return metadata
+
     def _analyze_function_entries(
         self,
         entries: List[FunctionEntry],
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        scoped_entries: Optional[List[Tuple[FunctionEntry, Optional[InstanceScope]]]] = None,
     ) -> Dict[str, ParallelAnalysisResult]:
         """
         Analyze multiple function entries with custom prompts.
@@ -297,14 +1653,23 @@ class ParallelAnalyzer:
         Args:
             entries: List of FunctionEntry objects with function names and custom prompts
             progress_callback: Optional callback(completed, total, func_name) for progress
+            scoped_entries: Optional exact ``(entry, instance_scope)`` pairs.  When
+                provided, entries are never re-materialized from the navigation
+                projection and each entry is analyzed with its own build context.
 
         Returns:
-            Dict mapping function name to analysis result
+            Dict mapping function key to analysis result
         """
-        entries = self._materialize_entry_identities(entries)
+        self._begin_llm_usage_batch()
+        if scoped_entries is None:
+            entries = self._materialize_entry_identities(entries)
+            scoped_entries = [(entry, None) for entry in entries]
+        else:
+            entries = [entry for entry, _scope in scoped_entries]
         self._last_materialized_entries = list(entries)
+        self._restored_result_costs = {}
         results = {}
-        total = len(entries)
+        total = len(scoped_entries)
         completed = 0
         batch_started = time.monotonic()
         scan_budget_seconds = getattr(
@@ -347,30 +1712,59 @@ class ParallelAnalyzer:
         logger.info(
             f"Starting parallel analysis of {total} function entries with {self.max_workers} workers"
         )
+        instance_scoped = any(scope is not None for _entry, scope in scoped_entries)
+        self._batch_instance_scoped = instance_scoped
+        self._instance_scopes_by_build = {}
+        for _entry, scope in scoped_entries:
+            if scope is None:
+                continue
+            self._instance_scopes_by_build.setdefault(scope.build_context_id, []).append(scope)
         try:
             if total:
-                if self.base_config.project.language != "java":
+                if instance_scoped:
+                    # Instance-scoped execution never runs the project-wide
+                    # semantic model, deterministic fact pass or active
+                    # discovery over the unwrapped index.  Those are stopped
+                    # here and stay declared gaps; only the scoped entry
+                    # analysis and the shared validation chain run.
+                    self._shared_local_pattern_semantics = None
+                    self._shared_semantic_overlay = None
+                    self._last_global_model_stats = None
+                    self._global_modeling_succeeded = False
+                    self._project_fact_pass_state = {
+                        "enabled": False,
+                        "status": "skipped",
+                        "reason": "instance_scope_isolated",
+                    }
+                    self._active_discovery_state = {
+                        "enabled": False,
+                        "profile": resolve_discovery_profile(self.base_config).name,
+                        "status": "skipped",
+                        "reason": "instance_scope_isolated",
+                    }
+                elif self.base_config.project.language != "java":
                     if self.semantic_result is None:
                         self._global_modeling_succeeded = self._run_global_modeling(entries)
                     if self.semantic_result is not None:
                         self._shared_local_pattern_semantics = self.semantic_result.local_semantics
                         self._shared_semantic_overlay = self.semantic_result.overlay
                         self._last_global_model_stats = self.semantic_result.stats.to_dict()
-                semantics_started = time.time()
-                logger.info("[entry-worker] shared-semantics start entries=%d", total)
-                self._prepare_shared_semantics()
-                logger.info(
-                    "[entry-worker] shared-semantics end entries=%d duration=%.2fs",
-                    total,
-                    time.time() - semantics_started,
-                )
-                self._run_project_deterministic_fact_pass(entries)
+                if not instance_scoped:
+                    semantics_started = time.time()
+                    logger.info("[entry-worker] shared-semantics start entries=%d", total)
+                    self._prepare_shared_semantics()
+                    logger.info(
+                        "[entry-worker] shared-semantics end entries=%d duration=%.2fs",
+                        total,
+                        time.time() - semantics_started,
+                    )
+                    self._run_project_deterministic_fact_pass(entries)
         except Exception:
             scheduler.shutdown(wait=True, cancel_futures=True)
             self._scheduler = None
             raise
 
-        scheduled_entries = self._prioritize_entries_for_execution(entries)
+        scheduled_entries = self._prioritize_scoped_entries(scoped_entries)
         try:
             # Submit all analysis tasks
             future_to_entry = {
@@ -378,9 +1772,10 @@ class ParallelAnalyzer:
                     ENTRY_ROLE,
                     self._analyze_single_entry,
                     entry,
+                    instance_scope=scope,
                     priority=self._entry_scheduling_score(entry),
-                ): entry
-                for entry in scheduled_entries
+                ): (entry, scope)
+                for entry, scope in scheduled_entries
             }
 
             # Collect results as they complete
@@ -389,12 +1784,12 @@ class ParallelAnalyzer:
                     future_to_entry,
                     timeout=self._cancellation_token.remaining_seconds(),
                 ):
-                    entry = future_to_entry[future]
+                    entry, scope = future_to_entry[future]
                     completed += 1
 
                     try:
                         result = future.result()
-                        results[self._entry_result_key(entry)] = result
+                        results[self._scoped_result_key(entry, scope)] = result
                         logger.info(
                             f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues, ctx ≈ {result.context_tokens:,} tokens)"
                         )
@@ -404,7 +1799,7 @@ class ParallelAnalyzer:
                         )
                     except Exception as e:
                         logger.error(f"[{completed}/{total}] {entry.function_name}: ERROR - {e}")
-                        results[self._entry_result_key(entry)] = ParallelAnalysisResult(
+                        results[self._scoped_result_key(entry, scope)] = ParallelAnalysisResult(
                             function_name=entry.function_name,
                             verdict="error",
                             error=str(e),
@@ -436,8 +1831,8 @@ class ParallelAnalyzer:
                     "Scan deadline exceeded after %.2fs; cancelling queued entry work.",
                     time.monotonic() - batch_started,
                 )
-                for future, entry in future_to_entry.items():
-                    entry_key = self._entry_result_key(entry)
+                for future, (entry, scope) in future_to_entry.items():
+                    entry_key = self._scoped_result_key(entry, scope)
                     if entry_key in results or future.done():
                         continue
                     future.cancel()
@@ -457,7 +1852,18 @@ class ParallelAnalyzer:
             ablation_disables_map = bool(
                 ablation_override is not None and not ablation_override.semantic_map_enabled
             )
-            if (
+            if instance_scoped:
+                # Active discovery reads the whole navigation projection; it is
+                # stopped for instance scope and stays a declared gap.
+                self._active_discovery_state = {
+                    "enabled": False,
+                    "profile": discovery_profile.name,
+                    "status": "skipped",
+                    "reason": "instance_scope_isolated",
+                    "llm_semantic_model_calls": 0,
+                    "llm_discovery_call_count": 0,
+                }
+            elif (
                 discovery_profile.name == "fast"
                 or (discovery_mode == "disabled" and ablation_override is None)
                 or ablation_disables_map
@@ -488,6 +1894,8 @@ class ParallelAnalyzer:
             else:
                 self._run_active_discovery(entries, discovery_profile)
 
+            if not instance_scoped:
+                self._register_snapshot_shadow_candidates()
             if self._uses_scan_validation_queue():
                 self._run_scan_validation_queue()
 
@@ -517,6 +1925,29 @@ class ParallelAnalyzer:
 
         return results
 
+    def _register_snapshot_shadow_candidates(self) -> None:
+        """Keep modeling observations outside candidate-blind discovery inputs."""
+        mode = getattr(self.base_config.analysis, "semantic_snapshot_candidate_mode", "off")
+        if mode != "shadow":
+            return
+        result = getattr(self, "semantic_result", None)
+        if result is None:
+            return
+        self._cancellation_token.raise_if_cancelled()
+        from .snapshot_candidates import register_conditional_snapshot_candidates
+
+        registrar = CandidateRegistrar(
+            self._candidate_ledger,
+            project_id=str(getattr(self.base_config.project, "project_id", "") or ""),
+            project_root=str(self.base_config.project.project_root),
+            revision=str(self._candidate_ledger.revision or ""),
+            run_id=self.run_id,
+            decision_fact_cache=getattr(self, "_decision_fact_cache", None),
+        )
+        register_conditional_snapshot_candidates(
+            result, registrar, mode=mode, project_root=self.base_config.project.project_root
+        )
+
     def _uses_scan_validation_queue(self) -> bool:
         # A few embedding and compatibility callers construct this facade with
         # ``object.__new__`` to exercise report projection only.  Those paths
@@ -535,7 +1966,10 @@ class ParallelAnalyzer:
         validation queue -> final report projection.
         """
 
-        # Active discovery is the final producer.  Seal the ledger before
+        instance_scoped = bool(getattr(self, "_batch_instance_scoped", False))
+        if instance_scoped:
+            self.require_current_instance_inputs()
+        # Discovery and optional snapshot observations are complete. Seal the ledger before
         # taking the validation snapshot so no late producer can create an
         # obligation after queue construction has begun.
         self._candidate_ledger.freeze()
@@ -609,29 +2043,15 @@ class ParallelAnalyzer:
             }
             return
 
-        helper = Analyzer(
-            self.base_config,
-            semantic_result=self.semantic_result,
-            code_index=self.code_index,
-            snapshot_store=self.snapshot_store,
-            user_config=self.user_config,
-            force_ignore_history=self.force_ignore_history,
-            maintain_mode=self.maintain_mode,
-            candidate_ledger=self._candidate_ledger,
-            # The queue only validates frozen candidate evidence.  It must not
-            # trigger a second semantic-discovery build after all entry
-            # workers have already completed one.
-            shared_local_pattern_semantics=self._shared_local_pattern_semantics,
-            shared_semantic_overlay=self._shared_semantic_overlay,
-            llm_clients=self._shared_llm_clients,
-            validation_result_cache=self._validation_result_cache,
-            cancellation_token=self._cancellation_token,
-            scheduler=self._scheduler,
-            candidate_ir_persistence_lock=self._candidate_ir_persistence_lock,
-            decision_fact_cache=self._decision_fact_cache,
-            write_root_reports=False,
-            defer_validation_to_scan=False,
-            project_knowledge_service=self.project_knowledge_service,
+        groups: List[Tuple[InstanceScope, List[Dict[str, Any]]]] = []
+        ungrouped: List[Dict[str, Any]] = []
+        if instance_scoped:
+            groups, ungrouped = self._instance_validation_groups(pending)
+
+        helper = (
+            self._instance_validation_helper(groups[0][0])
+            if groups
+            else (None if instance_scoped else self._base_validation_helper())
         )
         ledger_records = list(self._candidate_ledger.records())
         raw_occurrence_count = sum(len(record.occurrence_uids) for record in ledger_records)
@@ -650,7 +2070,7 @@ class ParallelAnalyzer:
             "entry_identity": "__batch__",
             "entry_index_name": "",
             "agent_context": {"func_name": "__batch__", "code": ""},
-            "pending_new_issues": pending,
+            "pending_new_issues": (groups[0][1] if groups else pending),
             "issues": [],
             "observations": [],
             "notes": [],
@@ -684,9 +2104,47 @@ class ParallelAnalyzer:
             len(pending),
             raw_occurrence_count,
         )
-        self._bind_ablation_validator_policy(helper.validation_runner)
-        helper.validation_runner.run(state)
-        if self.semantic_result is not None:
+        if groups:
+            # One adjudication per obligation, in its own exact build scope.
+            all_groups_drained = True
+            for index, (scope, issues) in enumerate(groups):
+                group_helper = helper if index == 0 else self._instance_validation_helper(scope)
+                assert group_helper is not None
+                self._bind_ablation_validator_policy(group_helper.validation_runner)
+                state["pending_new_issues"] = list(issues)
+                state["validation_queue_drained"] = False
+                group_helper._require_instance_semantics_current()
+                group_helper.validation_runner.run(state)
+                group_helper._require_instance_semantics_current()
+                all_groups_drained = (
+                    all_groups_drained and state.get("validation_queue_drained") is True
+                )
+            for issue in ungrouped:
+                self._candidate_ledger.mark_issue_terminal(
+                    issue, disposition="needs_review", status="unvalidated"
+                )
+            if ungrouped:
+                state["notes"].append(
+                    "instance validation gap: "
+                    f"{len(ungrouped)} obligation(s) had no exact scheduled scope"
+                )
+            state["validation_queue_drained"] = all_groups_drained
+        elif instance_scoped:
+            for issue in ungrouped:
+                self._candidate_ledger.mark_issue_terminal(
+                    issue, disposition="needs_review", status="unvalidated"
+                )
+                state["observations"].append(issue)
+            state["notes"].append("instance validation gap: no current exact scope for obligations")
+            state["pending_new_issues"] = []
+            state["validation_queue_drained"] = True
+        else:
+            assert helper is not None
+            self._bind_ablation_validator_policy(helper.validation_runner)
+            helper.validation_runner.run(state)
+        if instance_scoped:
+            self.require_current_instance_inputs()
+        if not instance_scoped and self.semantic_result is not None:
             from .snapshot_candidates import update_snapshot_outcomes
 
             update_snapshot_outcomes(self.semantic_result, self._candidate_ledger)
@@ -700,6 +2158,117 @@ class ParallelAnalyzer:
             len(state["observations"]),
             self._global_validation_duration_seconds,
         )
+
+    def _base_validation_helper(self) -> Analyzer:
+        """The scan-level validation helper for an unscoped batch."""
+
+        return Analyzer(
+            self.base_config,
+            semantic_result=self.semantic_result,
+            reproduction_service=getattr(self, "reproduction_service", None),
+            code_index=self.code_index,
+            snapshot_store=self.snapshot_store,
+            user_config=self.user_config,
+            force_ignore_history=self.force_ignore_history,
+            maintain_mode=self.maintain_mode,
+            candidate_ledger=self._candidate_ledger,
+            # The queue only validates frozen candidate evidence.  It must not
+            # trigger a second semantic-discovery build after all entry
+            # workers have already completed one.
+            shared_local_pattern_semantics=self._shared_local_pattern_semantics,
+            shared_semantic_overlay=self._shared_semantic_overlay,
+            llm_clients=self._shared_llm_clients,
+            validation_result_cache=self._validation_result_cache,
+            cancellation_token=self._cancellation_token,
+            scheduler=self._scheduler,
+            candidate_ir_persistence_lock=self._candidate_ir_persistence_lock,
+            decision_fact_cache=self._decision_fact_cache,
+            write_root_reports=False,
+            defer_validation_to_scan=False,
+            project_knowledge_service=self.project_knowledge_service,
+        )
+
+    def _instance_validation_helper(self, scope: InstanceScope) -> Analyzer:
+        """A validation helper pinned to one exact instance build scope.
+
+        The post-discovery Validator, tools and rebuttal then run against the
+        same precise ``(BuildContext, USR)`` as the entry analysis; the
+        unwrapped base index and the project-wide semantic model never
+        authorize an instance verdict.
+        """
+
+        snapshot = self._instance_semantic_snapshot(scope)
+        context = self._instance_semantics_context
+        assert context is not None
+        return Analyzer(
+            self.base_config,
+            semantic_result=None,
+            reproduction_service=getattr(self, "reproduction_service", None),
+            code_index=wrap_scoped_code_index(self.code_index, scope),
+            snapshot_store=self.snapshot_store,
+            user_config=self.user_config,
+            force_ignore_history=self.force_ignore_history,
+            maintain_mode=self.maintain_mode,
+            candidate_ledger=self._candidate_ledger,
+            shared_local_pattern_semantics=LocalPatternSemantics(),
+            shared_semantic_overlay={},
+            llm_clients=self._shared_llm_clients,
+            validation_result_cache=self._validation_result_cache,
+            cancellation_token=self._cancellation_token,
+            scheduler=self._scheduler,
+            candidate_ir_persistence_lock=self._candidate_ir_persistence_lock,
+            decision_fact_cache=self._decision_fact_cache,
+            write_root_reports=False,
+            defer_validation_to_scan=False,
+            project_knowledge_service=self.project_knowledge_service,
+            instance_scope=scope,
+            instance_semantics_snapshot=snapshot,
+            instance_semantics_current=context.is_current,
+        )
+
+    def _scope_for_pending_issue(self, issue: Dict[str, Any]) -> Optional[InstanceScope]:
+        """The exact scheduled scope an obligation belongs to, or ``None``."""
+
+        build_id = str(issue.get("build_context_id") or "")
+        if not build_id:
+            return None
+        scopes = self._instance_scopes_by_build.get(build_id) or []
+        aliases = getattr(self, "_instance_entry_owners", {})
+        cluster = str(issue.get("validation_cluster_uid") or "")
+        if not cluster or not aliases:
+            return None
+        with self._candidate_ledger._lock:
+            record = self._candidate_ledger._records.get(cluster)
+            if record is None or not record.occurrences:
+                return None
+            owners = {aliases.get((row.entry_identity, build_id)) for row in record.occurrences}
+            if None in owners or not owners:
+                return None
+            contexts = {row.context_signature for row in record.occurrences}
+            context = str(issue.get("context_signature") or "")
+            if not context or context not in contexts or context != record.context_signature:
+                return None
+        if len(owners) != 1:
+            # A shared obligation cannot select the first entry's semantic
+            # advisory. Keep it explicitly unvalidated until context splits.
+            return None
+        owner = next(iter(owners))
+        if owner is None:
+            return None
+        return next((scope for scope in scopes if scope.identity == owner.identity), None)
+
+    def _instance_validation_groups(
+        self, pending: List[Dict[str, Any]]
+    ) -> Tuple[List[Tuple[InstanceScope, List[Dict[str, Any]]]], List[Dict[str, Any]]]:
+        grouped: Dict[str, Tuple[InstanceScope, List[Dict[str, Any]]]] = {}
+        ungrouped: List[Dict[str, Any]] = []
+        for issue in pending:
+            scope = self._scope_for_pending_issue(issue)
+            if scope is None:
+                ungrouped.append(issue)
+                continue
+            grouped.setdefault(scope.identity, (scope, []))[1].append(issue)
+        return [grouped[key] for key in sorted(grouped)], ungrouped
 
     def _bind_ablation_validator_policy(self, runner: Any) -> None:
         """Make the frozen winning Validator arm control the live queue."""
@@ -788,6 +2357,7 @@ class ParallelAnalyzer:
             helper = Analyzer(
                 self.base_config,
                 semantic_result=self.semantic_result,
+                reproduction_service=getattr(self, "reproduction_service", None),
                 code_index=self.code_index,
                 snapshot_store=self.snapshot_store,
                 user_config=self.user_config,
@@ -888,6 +2458,7 @@ class ParallelAnalyzer:
         helper = Analyzer(
             self.base_config,
             semantic_result=self.semantic_result,
+            reproduction_service=getattr(self, "reproduction_service", None),
             code_index=self.code_index,
             snapshot_store=self.snapshot_store,
             user_config=self.user_config,
@@ -954,10 +2525,15 @@ class ParallelAnalyzer:
                 state["unresolved_internal_functions"] += 1
                 continue
             if impl.get("truncated") or not str(impl.get("code") or "").strip():
-                state["failures"].append({
-                    "function": function, "entry_identity": entry_identity,
-                    "reason": "source_truncated" if impl.get("truncated") else "source_unavailable",
-                })
+                state["failures"].append(
+                    {
+                        "function": function,
+                        "entry_identity": entry_identity,
+                        "reason": (
+                            "source_truncated" if impl.get("truncated") else "source_unavailable"
+                        ),
+                    }
+                )
                 continue
             index_name = str(
                 impl.get("index_name")
@@ -1207,6 +2783,12 @@ class ParallelAnalyzer:
                 store=store,
                 registrar=registrar,
                 report_runner=report_runner,
+                investigation_runner=make_investigation_runner(
+                    self.base_config,
+                    semantic_map,
+                    discovery_llm_client,
+                    cancellation=self._cancellation_token,
+                ),
                 semantic_enricher=semantic_enricher,
                 discovery_enabled=discovery_enabled,
                 visibility_mode=(
@@ -1224,7 +2806,9 @@ class ParallelAnalyzer:
             )
             planned_map, discovery_state = coordinator.run(
                 semantic_map,
-                covered_keys=candidate_coverage_keys(self._candidate_ledger),
+                covered_keys=candidate_coverage_keys(
+                    self._candidate_ledger, semantic_map=semantic_map
+                ),
                 known_variant_keys=self._historical_variant_keys_for_map(semantic_map),
                 export_path=export_path,
             )
@@ -1372,7 +2956,7 @@ class ParallelAnalyzer:
                 token_usage_ledger=token_usage_ledger,
                 llm_ref=name,
             )
-        return clients
+        return _ScanLLMClients(clients)
 
     def _prioritize_entries_for_execution(
         self, entries: List[FunctionEntry]
@@ -1463,6 +3047,28 @@ class ParallelAnalyzer:
                 key = f"{key}::{signature}"
             return key
         return entry.function_name
+
+    @staticmethod
+    def _scoped_result_key(entry: FunctionEntry, scope: Optional[InstanceScope]) -> str:
+        base = ParallelAnalyzer._entry_result_key(entry)
+        if scope is None:
+            return base
+        return f"{scope.identity}::{base}"
+
+    def _prioritize_scoped_entries(
+        self,
+        scoped_entries: List[Tuple[FunctionEntry, Optional[InstanceScope]]],
+    ) -> List[Tuple[FunctionEntry, Optional[InstanceScope]]]:
+        """Schedule likely long-running entries first, keeping each scope paired."""
+
+        if len(scoped_entries) <= 1:
+            return list(scoped_entries)
+        scored = [
+            (self._entry_scheduling_score(entry), index, entry, scope)
+            for index, (entry, scope) in enumerate(scoped_entries)
+        ]
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [(entry, scope) for _score, _index, entry, scope in scored]
 
     def _materialize_entry_identities(
         self,
@@ -1585,10 +3191,33 @@ class ParallelAnalyzer:
         entries = [FunctionEntry(function_name=name) for name in function_names]
         return self.analyze_function_entries(entries, progress_callback)
 
-    def _analyze_single_entry(self, entry: FunctionEntry) -> ParallelAnalysisResult:
+    def _analyze_single_entry(
+        self,
+        entry: FunctionEntry,
+        instance_scope: Optional[InstanceScope] = None,
+    ) -> ParallelAnalysisResult:
         """Analyze a single function entry with optional custom prompt."""
+
         start_time = time.monotonic()
         entry_key = self._entry_result_key(entry)
+        scoped_index = (
+            wrap_scoped_code_index(self.code_index, instance_scope)
+            if instance_scope is not None
+            else self.code_index
+        )
+        if instance_scope is not None:
+            # Per-instance contracts come only from the generator's standard
+            # roots.  The project-wide semantic model and overlay are never used
+            # as instance-fact authorization, and neither is built here.
+            shared_semantics: Optional[LocalPatternSemantics] = LocalPatternSemantics()
+            shared_overlay: Optional[Dict[str, Any]] = {}
+            entry_semantic_result: Any = None
+        else:
+            shared_semantics = (
+                None if self.maintain_mode else self._get_shared_local_pattern_semantics()
+            )
+            shared_overlay = None if self.maintain_mode else self._get_shared_semantic_overlay()
+            entry_semantic_result = self.semantic_result
         entry_budget_seconds = getattr(
             self.base_config.analysis,
             "entry_deadline_seconds",
@@ -1607,6 +3236,14 @@ class ParallelAnalyzer:
             # Create a config copy with this function as entry point and custom prompt
             phase_started = time.time()
             config_copy = self._create_config_for_entry(entry)
+            if instance_scope is not None:
+                self._instance_semantic_snapshot(instance_scope)
+                scoped_index = _InstanceEntryLookupIndex(
+                    self.code_index,
+                    instance_scope,
+                    entry,
+                    semantics_context=self._instance_semantics_context,
+                )
             logger.info(
                 "[entry-worker] config-ready entry=%s key=%s duration=%.2fs",
                 entry.function_name,
@@ -1616,20 +3253,22 @@ class ParallelAnalyzer:
 
             # Create analyzer and run with shared components
             phase_started = time.time()
+            instance_snapshot = (
+                self._instance_semantic_snapshot(instance_scope)
+                if instance_scope is not None
+                else None
+            )
+            instance_context = getattr(self, "_instance_semantics_context", None)
             analyzer = Analyzer(
                 config_copy,
-                code_index=self.code_index,
+                code_index=scoped_index,
                 snapshot_store=self.snapshot_store,
                 user_config=self.user_config,
                 force_ignore_history=self.force_ignore_history,
                 maintain_mode=self.maintain_mode,
                 candidate_ledger=self._candidate_ledger,
-                shared_local_pattern_semantics=(
-                    None if self.maintain_mode else self._get_shared_local_pattern_semantics()
-                ),
-                shared_semantic_overlay=(
-                    None if self.maintain_mode else self._get_shared_semantic_overlay()
-                ),
+                shared_local_pattern_semantics=shared_semantics,
+                shared_semantic_overlay=shared_overlay,
                 llm_clients=self._shared_llm_clients,
                 validation_result_cache=self._validation_result_cache,
                 cancellation_token=entry_token,
@@ -1639,7 +3278,13 @@ class ParallelAnalyzer:
                 write_root_reports=False,
                 defer_validation_to_scan=self._uses_scan_validation_queue(),
                 project_knowledge_service=self.project_knowledge_service,
-                semantic_result=self.semantic_result,
+                semantic_result=entry_semantic_result,
+                instance_scope=instance_scope,
+                reproduction_service=getattr(self, "reproduction_service", None),
+                instance_semantics_snapshot=instance_snapshot,
+                instance_semantics_current=(
+                    instance_context.is_current if instance_context is not None else None
+                ),
             )
             logger.info(
                 "[entry-worker] analyzer-ready entry=%s key=%s duration=%.2fs",
@@ -1659,6 +3304,16 @@ class ParallelAnalyzer:
                 if isinstance(report_dict.get("metadata"), dict)
                 else {}
             )
+            if instance_scope is not None and not report_dict.get("error"):
+                if FunctionEntry.normalize_signature(
+                    report_metadata.get("entry_signature")
+                ) != FunctionEntry.normalize_signature(entry.signature) or report_metadata.get(
+                    "entry_identity"
+                ) != entry.identity_key(
+                    self.base_config.project.project_root
+                ):
+                    raise ValueError("instance_entry_workflow_identity_changed")
+                self._instance_semantic_snapshot(instance_scope)
             logger.info(
                 "[entry-worker] run-end entry=%s key=%s duration=%.2fs",
                 entry.function_name,
@@ -1673,6 +3328,14 @@ class ParallelAnalyzer:
                 policy=budget_exhaustion_policy,
             )
             report_metadata.update(budget_metadata)
+            scope_metadata = self._instance_scope_metadata(instance_scope, scoped_index)
+            if instance_snapshot is not None:
+                scope_metadata.update(
+                    instance_semantics=instance_snapshot.authority_policy,
+                    instance_semantics_schema=instance_snapshot.schema,
+                    instance_semantics_digest=instance_snapshot.digest,
+                )
+            report_metadata.update(scope_metadata)
             if budget_metadata["entry_budget_exceeded"]:
                 logger.warning(
                     "[entry-worker] budget-exceeded entry=%s key=%s "
@@ -1713,6 +3376,13 @@ class ParallelAnalyzer:
                 cumulative_total_tokens=report_metadata.get("cumulative_total_tokens", 0),
                 diff_focus=entry.diff_focus,
                 metadata=report_metadata,
+                build_context_id=str(scope_metadata.get("build_context_id") or ""),
+                usr=str(scope_metadata.get("usr") or ""),
+                instance_identity=str(scope_metadata.get("instance_identity") or ""),
+                instance_scope_report=scope_metadata.get("instance_scope_report"),
+                instance_collection=deepcopy(report_metadata.get("instance_collection")),
+                execution_completeness=str(report_dict.get("completeness") or "unknown"),
+                scan_outcome=str(report_dict.get("scan_outcome") or "unknown"),
             )
 
         except CancellationError as e:
@@ -1915,6 +3585,29 @@ class ParallelAnalyzer:
         # routing remains driven by the global vulnerability scope.
         return config
 
+    @staticmethod
+    def _result_cost_metrics(result: ParallelAnalysisResult) -> Dict[str, Any]:
+        """Preserve the producer's original metric values without rounding."""
+        return {
+            "duration_seconds": result.duration_seconds,
+            "context_tokens": result.context_tokens,
+            "cumulative_prompt_tokens": result.cumulative_prompt_tokens,
+            "cumulative_completion_tokens": result.cumulative_completion_tokens,
+            "cumulative_total_tokens": result.cumulative_total_tokens,
+        }
+
+    def _historical_result_cost(
+        self, entry_key: str, result: ParallelAnalysisResult
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            registry = self._restored_result_costs
+        except AttributeError:
+            return None
+        registered = registry.get(entry_key)
+        if registered is None or registered[0] is not result:
+            return None
+        return deepcopy(registered[1])
+
     def generate_combined_report(
         self, results: Dict[str, ParallelAnalysisResult], output_path: Optional[Path] = None
     ) -> Dict[str, Any]:
@@ -1932,6 +3625,8 @@ class ParallelAnalyzer:
         all_observations: List[Dict[str, Any]] = []
         all_terminal_states: List[Dict[str, Any]] = []
         function_summaries: List[Dict[str, Any]] = []
+        historical_costs: List[Dict[str, Any]] = []
+        current_results: Dict[str, ParallelAnalysisResult] = {}
         total_duration = 0.0
         base_config = getattr(self, "base_config", None)
         project_config = getattr(base_config, "project", None)
@@ -1955,7 +3650,12 @@ class ParallelAnalyzer:
         all_terminal_states.extend(self._deferred_entry_terminal_states(project_id, project_root))
 
         for entry_key, result in results.items():
-            total_duration += result.duration_seconds
+            historical_cost = self._historical_result_cost(entry_key, result)
+            if historical_cost is None:
+                current_results[entry_key] = result
+                total_duration += result.duration_seconds
+            else:
+                historical_costs.append(historical_cost)
             result_rule_counts = (
                 result.metadata.get("rule_candidate_counts", {})
                 if isinstance(result.metadata, dict)
@@ -1978,29 +3678,45 @@ class ParallelAnalyzer:
                 else {}
             )
 
-            function_summaries.append(
-                {
-                    "function": result.function_name,
-                    "entry_key": entry_key,
-                    "entry_identity": result.entry_identity or entry_key,
-                    "entry_file_path": result.entry_file_path,
-                    "entry_signature": result.entry_signature,
-                    "verdict": result.verdict,
-                    "issue_count": len(result.issues),
-                    "audit_observation_count": len(result.audit_observations),
-                    "duration_seconds": round(result.duration_seconds, 2),
-                    "entry_budget_seconds": result.entry_budget_seconds,
-                    "entry_budget_exceeded": result.entry_budget_exceeded,
-                    "entry_budget_overrun_seconds": round(result.entry_budget_overrun_seconds, 3),
-                    "budget_exhaustion_policy": result.budget_exhaustion_policy,
-                    "context_tokens": result.context_tokens,
-                    "cumulative_prompt_tokens": result.cumulative_prompt_tokens,
-                    "cumulative_completion_tokens": result.cumulative_completion_tokens,
-                    "cumulative_total_tokens": result.cumulative_total_tokens,
-                    "validation_performance": validation_performance,
-                    "error": result.error,
-                }
-            )
+            function_summary = {
+                "function": result.function_name,
+                "entry_key": entry_key,
+                "entry_identity": result.entry_identity or entry_key,
+                "entry_file_path": result.entry_file_path,
+                "entry_signature": result.entry_signature,
+                "verdict": result.verdict,
+                "issue_count": len(result.issues),
+                "audit_observation_count": len(result.audit_observations),
+                "duration_seconds": round(result.duration_seconds, 2),
+                "entry_budget_seconds": result.entry_budget_seconds,
+                "entry_budget_exceeded": result.entry_budget_exceeded,
+                "entry_budget_overrun_seconds": round(result.entry_budget_overrun_seconds, 3),
+                "budget_exhaustion_policy": result.budget_exhaustion_policy,
+                "context_tokens": result.context_tokens,
+                "cumulative_prompt_tokens": result.cumulative_prompt_tokens,
+                "cumulative_completion_tokens": result.cumulative_completion_tokens,
+                "cumulative_total_tokens": result.cumulative_total_tokens,
+                "validation_performance": validation_performance,
+                "error": result.error,
+                "cost_provenance": "current_run",
+            }
+            if historical_cost is not None:
+                function_summary.update(
+                    {
+                        "cost_provenance": "historical_producer_work",
+                        "historical_cost": historical_cost,
+                        "duration_seconds": 0.0,
+                        "context_tokens": 0,
+                        "cumulative_prompt_tokens": 0,
+                        "cumulative_completion_tokens": 0,
+                        "cumulative_total_tokens": 0,
+                        "entry_budget_seconds": None,
+                        "entry_budget_exceeded": False,
+                        "entry_budget_overrun_seconds": 0.0,
+                        "validation_performance": {},
+                    }
+                )
+            function_summaries.append(function_summary)
 
             # Add function context to each issue
             for issue in result.issues:
@@ -2209,10 +3925,10 @@ class ParallelAnalyzer:
             if batch_wall_seconds > 0
             else 0.0
         )
-        validation_performance_summary = self._validation_performance_summary(results)
+        validation_performance_summary = self._validation_performance_summary(current_results)
         va_candidate_coverage_summary = self._va_candidate_coverage_summary(results)
-        entry_budget_summary = self._entry_budget_summary(results)
-        llm_iteration_budget_summary = self._llm_iteration_budget_summary(results)
+        entry_budget_summary = self._entry_budget_summary(current_results)
+        llm_iteration_budget_summary = self._llm_iteration_budget_summary(current_results)
         scan_budget_summary = dict(getattr(self, "_last_scan_budget_metadata", {}) or {})
         llm_usage_summary = self._llm_usage_summary()
         scan_token_usage = scan_token_usage_snapshot(base_config) if base_config is not None else {}
@@ -2237,9 +3953,11 @@ class ParallelAnalyzer:
             }
         )
         llm_usage_summary["scan_token_usage"] = scan_token_usage
-        retained_prompt_tokens = sum(r.cumulative_prompt_tokens for r in results.values())
-        retained_completion_tokens = sum(r.cumulative_completion_tokens for r in results.values())
-        retained_total_tokens = sum(r.cumulative_total_tokens for r in results.values())
+        retained_prompt_tokens = sum(r.cumulative_prompt_tokens for r in current_results.values())
+        retained_completion_tokens = sum(
+            r.cumulative_completion_tokens for r in current_results.values()
+        )
+        retained_total_tokens = sum(r.cumulative_total_tokens for r in current_results.values())
         retained_prompt_tokens += int(
             global_validation_state.get("total_cumulative_prompt_tokens", 0) or 0
         )
@@ -2256,13 +3974,36 @@ class ParallelAnalyzer:
             active_discovery_state.get("cumulative_completion_tokens", 0) or 0
         )
         retained_total_tokens += int(active_discovery_state.get("cumulative_total_tokens", 0) or 0)
-        total_context_tokens = sum(r.context_tokens for r in results.values()) + int(
+        total_context_tokens = sum(r.context_tokens for r in current_results.values()) + int(
             global_validation_state.get("total_context_tokens", 0) or 0
         )
         total_context_tokens += int(active_discovery_state.get("context_tokens", 0) or 0)
         response_prompt_tokens = int(llm_usage_summary.get("prompt_tokens") or 0)
         response_completion_tokens = int(llm_usage_summary.get("completion_tokens") or 0)
         response_total_tokens = int(llm_usage_summary.get("total_tokens") or 0)
+        # A successful response supplies one authoritative triple, including
+        # valid zero values. Retained counters are only a whole-triple fallback
+        # when no response was observed, and already exclude historical work.
+        has_response_usage = int(llm_usage_summary.get("successful_calls") or 0) > 0
+        current_prompt_tokens, current_completion_tokens, current_total_tokens = (
+            (response_prompt_tokens, response_completion_tokens, response_total_tokens)
+            if has_response_usage
+            else (retained_prompt_tokens, retained_completion_tokens, retained_total_tokens)
+        )
+        historical_cost_summary = {
+            "accounting_scope": "historical_producer_work",
+            "results": historical_costs,
+            "totals": {
+                metric: sum(item["metrics"][metric] for item in historical_costs)
+                for metric in (
+                    "duration_seconds",
+                    "context_tokens",
+                    "cumulative_prompt_tokens",
+                    "cumulative_completion_tokens",
+                    "cumulative_total_tokens",
+                )
+            },
+        }
         engine_capabilities = {
             entry_key: (
                 result.metadata.get("engine_capabilities")
@@ -2399,13 +4140,9 @@ class ParallelAnalyzer:
                 "total_duration_seconds": round(total_duration, 2),
                 "batch_wall_seconds": batch_wall_seconds,
                 "total_context_tokens": total_context_tokens,
-                "total_cumulative_prompt_tokens": (
-                    response_prompt_tokens or retained_prompt_tokens
-                ),
-                "total_cumulative_completion_tokens": (
-                    response_completion_tokens or retained_completion_tokens
-                ),
-                "total_cumulative_total_tokens": (response_total_tokens or retained_total_tokens),
+                "total_cumulative_prompt_tokens": current_prompt_tokens,
+                "total_cumulative_completion_tokens": current_completion_tokens,
+                "total_cumulative_total_tokens": current_total_tokens,
                 "retained_entry_prompt_tokens": retained_prompt_tokens,
                 "retained_entry_completion_tokens": retained_completion_tokens,
                 "retained_entry_total_tokens": retained_total_tokens,
@@ -2494,11 +4231,10 @@ class ParallelAnalyzer:
                 "diff_relevance_summary": diff_relevance_summary,
                 "diff_impact_coverage": diff_coverage,
                 "context_tokens": total_context_tokens,
-                "cumulative_prompt_tokens": (response_prompt_tokens or retained_prompt_tokens),
-                "cumulative_completion_tokens": (
-                    response_completion_tokens or retained_completion_tokens
-                ),
-                "cumulative_total_tokens": (response_total_tokens or retained_total_tokens),
+                "cumulative_prompt_tokens": current_prompt_tokens,
+                "cumulative_completion_tokens": current_completion_tokens,
+                "cumulative_total_tokens": current_total_tokens,
+                "instance_recovery_costs": historical_cost_summary,
                 "retained_entry_prompt_tokens": retained_prompt_tokens,
                 "retained_entry_completion_tokens": retained_completion_tokens,
                 "retained_entry_total_tokens": retained_total_tokens,
@@ -2585,6 +4321,14 @@ class ParallelAnalyzer:
         from ..benchmarking.protocol import candidate_funnel
 
         combined_report["metadata"]["candidate_funnel"] = candidate_funnel(combined_report)
+        from ..retrieval.build_context import scan_build_coverage
+
+        combined_report["metadata"]["build_coverage"] = scan_build_coverage(
+            # Combined coverage describes the whole stored index: resolve a
+            # scoped facade back to its base so a per-entry "instance" view can
+            # never become the scan counts of the combined report.
+            _unwrapped_coverage_source(getattr(self, "code_index", None))
+        )
         from ..snapshots.policy import SNAPSHOT_CANDIDATE_POLICY_VERSION
 
         combined_report["metadata"]["snapshot_candidate_policy"] = SNAPSHOT_CANDIDATE_POLICY_VERSION
@@ -2597,6 +4341,10 @@ class ParallelAnalyzer:
             combined_report["metadata"][
                 "semantic_snapshot_candidates"
             ] = semantic_result.suspicious_metrics
+            if getattr(semantic_result, "demand_plan", None):
+                combined_report["metadata"]["semantic_model_demand"] = deepcopy(
+                    semantic_result.demand_plan
+                )
             if semantic_result.partial:
                 combined_report["completeness"] = "partial"
                 combined_report["scan_outcome"] = "incomplete"
@@ -2805,6 +4553,72 @@ class ParallelAnalyzer:
             "observations": observations,
         }
 
+    def _begin_llm_usage_batch(self) -> None:
+        # The constructor/factory start includes this run's earlier modeling
+        # and Wiki work. Only a subsequent batch on this analyzer starts anew.
+        if getattr(self, "_llm_usage_batch_started", False):
+            self._llm_usage_baseline = _llm_client_usage_snapshots(self._shared_llm_clients)
+        self._llm_usage_batch_started = True
+
+    def _windowed_llm_usage_snapshot(
+        self, client_id: int, lifetime: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        try:
+            baselines = self._llm_usage_baseline
+        except AttributeError:
+            # Preserve the standalone projection helper for legacy callers
+            # that did not construct an analyzer or open a batch.
+            return lifetime
+        baseline = baselines.get(client_id)
+        counters = (
+            "successful_calls",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "estimated_calls",
+            "provider_reported_calls",
+        )
+        if baseline is None:
+            # A newly substituted client has no measured start. Its lifetime
+            # counters cannot prove how much belongs to the current batch.
+            return {
+                **{key: 0 for key in counters},
+                "accounting_scope": "current_analyzer_batch_response_boundary",
+                "accounting_gap": "client_added_after_usage_window_start",
+                "lifetime_usage": lifetime,
+            }
+        snapshot: Dict[str, Any] = {
+            key: max(0, int(lifetime.get(key) or 0) - int(baseline.get(key) or 0))
+            for key in counters
+        }
+        calls = snapshot["successful_calls"]
+        duration = max(
+            0.0,
+            float(lifetime.get("successful_call_wall_seconds_total") or 0.0)
+            - float(baseline.get("successful_call_wall_seconds_total") or 0.0),
+        )
+        snapshot.update(
+            {
+                "accounting_scope": "current_analyzer_batch_response_boundary",
+                "lifetime_usage": lifetime,
+                "provider_usage_coverage": (
+                    snapshot["provider_reported_calls"] / calls if calls else 0.0
+                ),
+                "successful_call_wall_seconds_total": duration,
+                "successful_call_wall_seconds_mean": duration / calls if calls else 0.0,
+            }
+        )
+        for suffix in ("p50", "p95", "max"):
+            key = f"successful_call_wall_seconds_{suffix}"
+            # Quantiles cannot be subtracted from cumulative summaries. Keep
+            # prior lifetime values explicit instead of labeling them current.
+            snapshot[key] = (
+                0.0
+                if not calls
+                else (None if int(baseline.get("successful_calls") or 0) else lifetime.get(key))
+            )
+        return snapshot
+
     def _llm_usage_summary(self) -> Dict[str, Any]:
         """Aggregate response-boundary usage without losing cancelled entry work."""
 
@@ -2834,12 +4648,19 @@ class ParallelAnalyzer:
         call_wall_seconds_p50 = 0.0
         call_wall_seconds_p95 = 0.0
         call_wall_seconds_max = 0.0
-        for row in unique.values():
+        wall_distribution_known = True
+        for client_id, row in unique.items():
             snapshotter = getattr(row["client"], "usage_snapshot", None)
             if not callable(snapshotter):
                 continue
             raw = snapshotter()
-            snapshot = dict(raw) if isinstance(raw, dict) else {}
+            lifetime = dict(raw) if isinstance(raw, dict) else {}
+            snapshot = self._windowed_llm_usage_snapshot(client_id, lifetime)
+            if any(
+                snapshot.get(f"successful_call_wall_seconds_{suffix}") is None
+                for suffix in ("p50", "p95", "max")
+            ):
+                wall_distribution_known = False
             for key in totals:
                 totals[key] += int(snapshot.get(key) or 0)
             call_wall_seconds_total += float(
@@ -2876,12 +4697,19 @@ class ParallelAnalyzer:
         )
         # Benchmarks normally use one effective profile. For multiple clients these are
         # conservative maxima; per-client distributions remain available below.
-        totals["successful_call_wall_seconds_p50"] = round(call_wall_seconds_p50, 4)
-        totals["successful_call_wall_seconds_p95"] = round(call_wall_seconds_p95, 4)
-        totals["successful_call_wall_seconds_max"] = round(call_wall_seconds_max, 4)
+        totals["successful_call_wall_seconds_p50"] = (
+            round(call_wall_seconds_p50, 4) if wall_distribution_known else None
+        )
+        totals["successful_call_wall_seconds_p95"] = (
+            round(call_wall_seconds_p95, 4) if wall_distribution_known else None
+        )
+        totals["successful_call_wall_seconds_max"] = (
+            round(call_wall_seconds_max, 4) if wall_distribution_known else None
+        )
         return {
             **totals,
             "accounting_scope": "successful_response_boundary",
+            "usage_window": "current_analyzer_batch",
             "failed_or_disconnected_request_usage": "unknown",
             "per_client": per_client,
         }

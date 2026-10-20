@@ -6,10 +6,12 @@ import hashlib
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, cast
 
 from .evidence import normalize_missing_fact_kinds
+from .execution_context import current_execution_context, rebound_execution_context
 from .proofs import deterministic_decision_proof
 
 IssueFactProvider = Callable[[Mapping[str, Any]], Optional[Dict[str, Any]]]
@@ -451,6 +453,9 @@ class EvidenceCompletionQueue:
         obligation = issue.get("security_obligation")
         obligation = obligation if isinstance(obligation, Mapping) else {}
         raw_missing = issue.get("missing_fact_kinds")
+        has_missing_contract = isinstance(raw_missing, Sequence) and not isinstance(
+            raw_missing, str
+        )
         missing = (
             list(raw_missing)
             if isinstance(raw_missing, Sequence) and not isinstance(raw_missing, str)
@@ -460,11 +465,16 @@ class EvidenceCompletionQueue:
         if isinstance(fact_slice, Mapping):
             slice_missing = fact_slice.get("missing_fact_kinds")
             if isinstance(slice_missing, Sequence) and not isinstance(slice_missing, str):
+                has_missing_contract = True
                 missing.extend(slice_missing)
         raw_required = issue.get("obligation_required_fact_kinds") or obligation.get(
             "required_fact_kinds"
         )
-        if isinstance(raw_required, Sequence) and not isinstance(raw_required, str):
+        if (
+            not has_missing_contract
+            and isinstance(raw_required, Sequence)
+            and not isinstance(raw_required, str)
+        ):
             missing.extend(raw_required)
 
         category = str(issue.get("defect_class") or issue.get("category") or "").lower()
@@ -478,6 +488,21 @@ class EvidenceCompletionQueue:
                 add("cleanup_coverage")
                 add("ownership_transfer")
                 add("caller_contract")
+            elif kind in {
+                "event:release_effect_applies",
+                "event:same_allocation_generation",
+                "event:receiver_survives_release",
+                "event:business_release_requirement",
+                "event:responsibility_endpoint",
+            }:
+                # Schedule investigation of the open protocol obligations.
+                # Generic contract/cleanup results do not themselves supply
+                # these object- and generation-specific facts.
+                add("caller_contract")
+                add("cleanup_coverage")
+            elif kind in {"event:later_slot_access", "event:feasible_lifecycle_path"}:
+                add("caller_contract")
+                add("source_sink_reachability")
             elif kind in {"source", "sink", "guard", "sanitizer"}:
                 add("source_controllability")
                 add("source_sink_reachability")
@@ -591,17 +616,34 @@ class EvidenceCompletionQueue:
         issue: Mapping[str, Any],
         validation_evidence: Optional[Mapping[str, Any]],
     ) -> tuple[str, list[Dict[str, Any]], str]:
-        """Run the named provider set behind a bounded exception-safe boundary."""
+        """Run the named provider set behind a bounded exception-safe boundary.
 
-        future = self._fact_provider_executor.submit(
-            lambda: list(
-                self._requested_completion_proofs(
-                    fact_kind,
-                    issue,
-                    validation_evidence,
+        The task runs on this queue's own provider pool, which does not
+        inherit the submitting thread's contextvars: the submitter's precise
+        execution context is captured here and explicitly rebound on the
+        provider thread with a finally-restore, so pool threads reused across
+        variants never see another instance's scope and a late (timed-out)
+        task cannot leak its binding into the next one.  The provider input
+        is frozen at submit time — a deep copy of the issue and evidence —
+        so parent-thread mutations during execution cannot cross the request
+        boundary, and provider writes land only on the frozen copy.
+        """
+
+        context = current_execution_context()
+        frozen_issue: Any = deepcopy(issue)
+        frozen_evidence: Any = deepcopy(validation_evidence)
+
+        def provider_task() -> list[Dict[str, Any]]:
+            with rebound_execution_context(context):
+                return list(
+                    self._requested_completion_proofs(
+                        fact_kind,
+                        frozen_issue,
+                        frozen_evidence,
+                    )
                 )
-            )
-        )
+
+        future = self._fact_provider_executor.submit(provider_task)
         try:
             return "completed", future.result(timeout=self.fact_timeout_seconds), ""
         except FuturesTimeoutError:
@@ -1755,61 +1797,14 @@ class EvidenceCompletionQueue:
         issue: Mapping[str, Any],
         validation_evidence: Optional[Mapping[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Refute interprocedural lock-protocol claims from caller lock state.
+        """Lexical caller summaries are context, not current instance proof.
 
-        The pack builder records, for every recorded direct caller, whether
-        the call site is lexically under a held mutex.  When every resolvable
-        caller holds the same mutex, claims such as "unlock without matching
-        lock" or "refcount updated after unlock" are balanced cross-function
-        protocols and are deterministically rejected.  Any unresolved caller
-        or any caller without a held lock keeps the claim reviewable.
+        They cover only recorded callers and the first textual call site, and
+        cannot establish all-call coverage, aliases, mode or temporal state.
+        Keep these claims reviewable until a current compiler-backed checker
+        closes the interprocedural obligation.
         """
-
-        rule = str(issue.get("rule") or "").lower()
-        if rule not in {
-            "clang_cfg_unlock_without_matching_lock",
-            "clang_cfg_refcount_update_after_unlock",
-        }:
-            return None
-        pack = _as_mapping(validation_evidence)
-        raw_states = (
-            pack.get("caller_lock_states")
-            or _as_mapping(issue.get("evidence_pack")).get("caller_lock_states")
-            or []
-        )
-        states = (
-            [state for state in raw_states if isinstance(state, Mapping)]
-            if isinstance(raw_states, (list, tuple))
-            else []
-        )
-        if not states or any(not state.get("resolved") for state in states):
-            return None
-        held = {str(state.get("held_lock") or "") for state in states}
-        if "" in held or len(held) != 1:
-            return None
-        lock_name = next(iter(held))
-        code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
-        if not code:
-            return None
-        return EvidenceCompletionQueue._proof_from_code(
-            issue,
-            outcome="reject",
-            proof_kind="caller_lock_context_dominates",
-            producer_engine="caller_lock_context_v12",
-            code=code,
-            line_numbers=[EvidenceCompletionQueue._issue_line(issue)],
-            facts=[
-                "event:shared_state_access",
-                "lockset",
-                "caller_lock_held_at_every_call_site",
-                f"caller_lock:{lock_name}",
-            ],
-            summary=(
-                f"所有已记录的调用方都在调用点持有 '{lock_name}'，与所报告的跨函数锁协议保持平衡"
-            ),
-            scope=f"{issue.get('function')} 的全部已记录调用点",
-            subject_identity=str(lock_name),
-        )
+        return None
 
     @staticmethod
     def _source_lockset_dominance_proof(
@@ -1860,6 +1855,14 @@ class EvidenceCompletionQueue:
         registry = semantics.contracts
         if re.search(r"\b(?:if|else|for|while|switch|goto)\b", code):
             return None
+        from ...semantics.contract_compiler import read_source_facts
+
+        header = re.search(r"\b([A-Za-z_]\w*)\s*\([^{};]*\)\s*\{", code)
+        if header is None:
+            return None
+        source_facts = read_source_facts({"code": code, "func_name": header[1]}, registry)
+        if not source_facts.complete or source_facts.unknown_calls:
+            return None
         held: list[tuple[str, str]] = []
         write_locks: list[str] = []
         write_lines: list[int] = []
@@ -1870,7 +1873,7 @@ class EvidenceCompletionQueue:
                 if args is None:
                     continue
                 for event in registry.match_call(name, "lock", args):
-                    if event.applicability != "applies":
+                    if event.applicability != "applies" or event.lock_mode != "exclusive":
                         return None
                     held.append((name, event.object))
                 for event in registry.match_call(name, "unlock", args):
@@ -4181,43 +4184,17 @@ class EvidenceCompletionQueue:
         if not code or not resource or len(code) > 64 * 1024:
             return None
 
-        held: list[str] = []
-        assignment_locks: list[str] = []
-        fact_ids: list[str] = []
-        for offset, line in enumerate(code.splitlines(), start=1):
-            for match in re.finditer(r"\b(?:pthread_mutex_lock)\s*\(\s*&?([^,)]+)", line):
-                held.append(match.group(1).strip())
-            if resource in line and re.search(rf"\b{re.escape(resource)}\s*=", line):
-                if not held:
-                    return None
-                assignment_locks.append(held[-1])
-                fact_ids.append(f"local_cfg:{offset}")
-            for match in re.finditer(r"\b(?:pthread_mutex_unlock)\s*\(\s*&?([^,)]+)", line):
-                lock = match.group(1).strip()
-                for index in range(len(held) - 1, -1, -1):
-                    if held[index] == lock:
-                        held.pop(index)
-                        break
-        if not assignment_locks or len(set(assignment_locks)) != 1:
+        # Reuse guarded contract resolution. A spelling-only mutex prefix
+        # cannot establish success, mode or even the current API definition.
+        adapted = dict(issue, source=resource)
+        proof = EvidenceCompletionQueue._source_lockset_dominance_proof(
+            adapted, validation_evidence
+        )
+        if proof is None:
             return None
-        lock_name = assignment_locks[0]
-        if not any(
-            lock_name in line and re.search(r"\b(?:pthread_mutex_unlock)\b", line)
-            for line in code.splitlines()
-        ):
-            return None
-        code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
-        return {
-            "outcome": "reject",
-            "proof_kind": "lock_dominates_access",
-            "producer_engine": "clang_ast_cfg_local_lockset",
-            "fact_ids": fact_ids,
-            "code_hash": code_hash,
-            "facts": ["lock_dominates_access", "all_accesses_guarded"],
-            "completeness": "complete",
-            "scope": f"{resource} 的全部本地赋值",
-            "summary": f"{resource} 的全部本地赋值都嵌套在 {lock_name} 之下",
-        }
+        return dict(
+            proof, proof_kind="lock_dominates_access", producer_engine="clang_ast_cfg_local_lockset"
+        )
 
     @staticmethod
     def _eligible(issue: Mapping[str, Any], validator_data: Mapping[str, Any]) -> bool:

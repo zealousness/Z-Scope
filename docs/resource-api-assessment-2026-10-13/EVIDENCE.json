@@ -1,0 +1,772 @@
+{
+  "schema": "zscope.independent-resource-api-assessment.v1",
+  "scope": "Read-only code/test inspection and primary-source comparison; independent planning only.",
+  "host": "CINDALA",
+  "cwd": "C:\\Users\\10273\\home\\work\\Z-Scope_1.31\\Z-Scope",
+  "branch": "v1.3.1_feat/llm-wiki",
+  "head": "010f40210b54ba0f79a088312ce5d8be3a82ace0",
+  "task_id": "01a13318-80b6-7592-bb2d-0d1296cd50aa",
+  "source_task_id": "01a11e1c-b0bf-731c-a0a7-551a6447700f",
+  "app_metadata_host_id": "durable",
+  "requested_model": "Astra",
+  "actual_model_identity": "not exposed by inspected execution/task metadata; not independently verified",
+  "first_observation_utc": "2026-10-13T02:30:31.1965960Z",
+  "hash_sampling": {
+    "start_utc": "2026-10-13T02:32:52.8733777Z",
+    "end_utc": "2026-10-13T02:53:49.3033711Z",
+    "atomic_snapshot": false,
+    "inventory_is_not_claim_of_full_review": true
+  },
+  "blockers": [
+    {
+      "command": "wsl.exe --list --verbose",
+      "raw_readable_error": "Wsl/E_ACCESSDENIED",
+      "output_prefix": "UTF-16 display corruption in tool output",
+      "recorded_after_failure_utc": "2026-10-13T02:34:29.0787732Z",
+      "exact_failure_timestamp_available": false,
+      "action": "Stopped WSL steps; no elevation, retry, alternate execution route or model/session switch."
+    }
+  ],
+  "tests_executed": [],
+  "external_llm_calls": [],
+  "other_agents_dispatched": [],
+  "changes_authored": [
+    "docs/resource-api-assessment-2026-10-13/ASSESSMENT.md",
+    "docs/resource-api-assessment-2026-10-13/EVIDENCE.json"
+  ],
+  "historical_results_authority": "Repository implementation log and parent-provided observation only; not independently rerun, not evidence of current live feedback changes passing.",
+  "git_status_at_end": [
+    " M AGENTS.md",
+    " M README.md",
+    " M docs/architecture.md",
+    " M docs/modules/README.md",
+    " M docs/modules/agent-runtime.md",
+    " M docs/modules/analysis-pipeline.md",
+    " M docs/modules/configuration-state.md",
+    " M docs/modules/execution-orchestration.md",
+    " M docs/modules/interfaces-reporting.md",
+    " M docs/modules/retrieval-backends.md",
+    " M native/clang-indexer/ProgramEvents.h",
+    " M requirements/portable/web-assets.lock.json",
+    " M tests/fixtures/tool_use_eval_v1.json",
+    " M tests/test_active_discovery.py",
+    " M tests/test_balanced_rollout.py",
+    " M tests/test_candidate_ledger.py",
+    " M tests/test_cpp_candidate_domains.py",
+    " M tests/test_knowledge_db_ir_and_config.py",
+    " M tests/test_native_model_cache.py",
+    " M tests/test_parallel_shared_semantics.py",
+    " M tests/test_pool_protocol_modeling.py",
+    " M tests/test_report_assembler.py",
+    " M tests/test_report_schema_v2.py",
+    " M tests/test_scan_session_resume_svf.py",
+    " M tests/test_security_map_contracts.py",
+    " M tests/test_semantic_contract_schema.py",
+    " M tests/test_single_entry_active_discovery.py",
+    " M tests/test_tool_use_eval.py",
+    " M tests/test_validation_pipeline.py",
+    " M zscope/agents/semantic_modeler/AGENT.md",
+    " M zscope/agents/semantic_modeler/schema.py",
+    " M zscope/cli/cli.py",
+    " M zscope/cli/config_cli.py",
+    " M zscope/cli/index_audit.py",
+    " M zscope/common/issue_identity.py",
+    " M zscope/common/validator_protocol.py",
+    " M zscope/config/config.py",
+    " M zscope/config/runtime_defaults.yaml",
+    " M zscope/config/user_config_store.py",
+    " M zscope/config/user_config_workbook.py",
+    " M zscope/config/v2.py",
+    " M zscope/core/analysis/analyzer.py",
+    " M zscope/core/candidates/clang_ast_cfg.py",
+    " M zscope/core/candidates/cpp_domains/resource_lifecycle.py",
+    " M zscope/core/candidates/decision_facts.py",
+    " M zscope/core/candidates/regex.py",
+    " M zscope/core/validation/evidence.py",
+    " M zscope/core/validation/evidence_completion.py",
+    " M zscope/core/validation/pipeline.py",
+    " M zscope/core/validation/proofs.py",
+    " M zscope/core/validation/runner.py",
+    " M zscope/mcp/http_server.py",
+    " M zscope/mcp/provider.py",
+    " M zscope/mcp/server.py",
+    " M zscope/orchestration/active_discovery.py",
+    " M zscope/orchestration/candidate_envelope.py",
+    " M zscope/orchestration/candidates.py",
+    " M zscope/orchestration/global_modeler.py",
+    " M zscope/orchestration/parallel_analyzer.py",
+    " M zscope/orchestration/scan_session.py",
+    " M zscope/orchestration/semantic_modeling.py",
+    " M zscope/orchestration/snapshot_candidates.py",
+    " M zscope/reporting/finding_roots.py",
+    " M zscope/reporting/issue_aggregation.py",
+    " M zscope/reporting/issue_markdown.py",
+    " M zscope/reporting/report.py",
+    " M zscope/reporting/schema.py",
+    " M zscope/reporting/views.py",
+    " M zscope/retrieval/clang_backend.py",
+    " M zscope/retrieval/clang_batch.py",
+    " M zscope/retrieval/code_index.py",
+    " M zscope/retrieval/indexing_inventory.py",
+    " M zscope/retrieval/knowledge_db.py",
+    " M zscope/rules/builtin_catalog.yaml",
+    " M zscope/rules/qualification_registry.yaml",
+    " M zscope/semantics/call_context.py",
+    " M zscope/semantics/compiler_fingerprint.py",
+    " M zscope/semantics/contract_compiler.py",
+    " M zscope/semantics/contract_conditions.py",
+    " M zscope/semantics/contracts.py",
+    " M zscope/semantics/models.py",
+    " M zscope/semantics/pool_protocols.py",
+    " M zscope/semantics/security_map.py",
+    " M zscope/snapshots/policy.py",
+    " M zscope/tools/read_code.py",
+    " M zscope/tools/registry.py",
+    " M zscope/tools/runtime.py",
+    " M zscope/tools/search_code.py",
+    " M zscope/tools/semantic_context.py",
+    " M zscope/tools/symbols.py",
+    " M zscope/web/review_reports.py",
+    " M zscope/web/server.py",
+    " M zscope/web/services.py",
+    " M zscope/web/static/dashboard_reports.js",
+    " M zscope/web/static/index.html",
+    "?? benchmarks/experiments/balanced_confirmed_tp/dashboard/server.pid",
+    "?? benchmarks/experiments/balanced_confirmed_tp/m5tpr_replay_results.jsonl",
+    "?? docs/Z-Scope_Agent_Implementation_Plan/",
+    "?? docs/c-ai-scanner-design/",
+    "?? docs/handoffs/",
+    "?? docs/mcp-read-only.md",
+    "?? tests/fixtures/dynamic_reproduction/",
+    "?? tests/fixtures/protocol_review_ui.cjs",
+    "?? tests/fixtures/resource_protocols/",
+    "?? tests/test_audit_coverage.py",
+    "?? tests/test_bounded_investigation.py",
+    "?? tests/test_build_context.py",
+    "?? tests/test_candidate_build_identity.py",
+    "?? tests/test_compilation_symbols.py",
+    "?? tests/test_conditional_ownership_contracts.py",
+    "?? tests/test_contract_build_scope.py",
+    "?? tests/test_contract_symbol_ambiguity.py",
+    "?? tests/test_dynamic_reproduction.py",
+    "?? tests/test_dynamic_reproduction_execution.py",
+    "?? tests/test_external_findings_import.py",
+    "?? tests/test_external_investigation.py",
+    "?? tests/test_incremental_replay.py",
+    "?? tests/test_investigation_evidence.py",
+    "?? tests/test_investigation_runtime.py",
+    "?? tests/test_lifecycle_paths.py",
+    "?? tests/test_mcp_read_only.py",
+    "?? tests/test_project_preparation.py",
+    "?? tests/test_protocol_assessment.py",
+    "?? tests/test_protocol_feedback.py",
+    "?? tests/test_protocol_review_ui.py",
+    "?? tests/test_reproduction_arguments.py",
+    "?? tests/test_reproduction_identity_acceptance.py",
+    "?? tests/test_reproduction_planner.py",
+    "?? tests/test_resource_protocol_baseline.py",
+    "?? tests/test_retained_slot_teardown.py",
+    "?? tests/test_retention_protocols.py",
+    "?? tests/test_semantic_cache_only.py",
+    "?? tests/test_semantic_demand.py",
+    "?? tests/test_single_slot_pool.py",
+    "?? tests/test_snapshot_observation_shadow.py",
+    "?? tests/test_source_search.py",
+    "?? zscope/common/readonly.py",
+    "?? zscope/config/preparation.py",
+    "?? zscope/config/protocol_feedback.py",
+    "?? zscope/core/candidates/cpp_domains/lifecycle_paths.py",
+    "?? zscope/core/candidates/cpp_domains/retained_slots.py",
+    "?? zscope/core/validation/dynamic_reproduction.py",
+    "?? zscope/core/validation/protocol_assessment.py",
+    "?? zscope/core/validation/reproduction_planner.py",
+    "?? zscope/orchestration/bounded_investigation.py",
+    "?? zscope/orchestration/external_findings.py",
+    "?? zscope/orchestration/external_investigation.py",
+    "?? zscope/orchestration/investigation.py",
+    "?? zscope/orchestration/semantic_demand.py",
+    "?? zscope/orchestration/snapshot_observations.py",
+    "?? zscope/retrieval/build_context.py",
+    "?? zscope/retrieval/cached_index.py",
+    "?? zscope/retrieval/incremental_replay.py",
+    "?? zscope/semantics/build_scope.py",
+    "?? zscope/semantics/business_assumptions.py",
+    "?? zscope/semantics/resource_identity.py",
+    "?? zscope/semantics/retention_protocols.py",
+    "?? zscope/semantics/single_slot_pool.py",
+    "?? zscope/snapshots/readonly.py",
+    "?? zscope/tools/source_access.py"
+  ],
+  "concurrent_files_changed": [
+    "zscope/reporting/report.py",
+    "zscope/reporting/issue_markdown.py",
+    "zscope/rules/builtin_catalog.yaml",
+    "zscope/rules/qualification_registry.yaml",
+    "zscope/orchestration/scan_session.py",
+    "zscope/core/validation/proofs.py",
+    "zscope/core/validation/protocol_assessment.py",
+    "zscope/core/validation/runner.py",
+    "zscope/semantics/business_assumptions.py",
+    "zscope/config/protocol_feedback.py",
+    "zscope/config/user_config_store.py",
+    "AGENTS.md",
+    "docs/modules/configuration-state.md"
+  ],
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "start_sha256": "2517ad0e2fc1aa4c0723771943e1ef7be6267ae6be52ab0e15308a1ca6b8df22",
+      "end_sha256": "960e112f2e49ecba0f445f456639c2e0daf3ec2b0b0cc38e2ce7b78af1b4c059",
+      "start_mtime_utc": "2026-10-13T02:14:31.7768856Z",
+      "end_mtime_utc": "2026-10-13T02:52:43.0099779Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/11_IMPLEMENTATION_BACKLOG.md",
+      "start_sha256": null,
+      "end_sha256": null,
+      "start_mtime_utc": null,
+      "end_mtime_utc": null,
+      "changed_between_samples": null
+    },
+    {
+      "path": "docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/21_IMPLEMENTATION_STATUS.md",
+      "start_sha256": "db64ea9241d89a1def1d84474c711393a32031731c3a72a1505d057a18039a1e",
+      "end_sha256": "db64ea9241d89a1def1d84474c711393a32031731c3a72a1505d057a18039a1e",
+      "start_mtime_utc": "2026-10-13T02:21:32.8645695Z",
+      "end_mtime_utc": "2026-10-13T02:21:32.8645695Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "docs/architecture.md",
+      "start_sha256": "d449dbe56185fb15094578a4dccbe9b8ea6d2df0c8370c4db47f5426d3f21e75",
+      "end_sha256": "d449dbe56185fb15094578a4dccbe9b8ea6d2df0c8370c4db47f5426d3f21e75",
+      "start_mtime_utc": "2026-10-12T22:47:14.7934277Z",
+      "end_mtime_utc": "2026-10-12T22:47:14.7934277Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "docs/modules/analysis-pipeline.md",
+      "start_sha256": "124fb5a43762ba8afde6667ebb13519ba0afc518c38a75dff6932cf0002d2787",
+      "end_sha256": "124fb5a43762ba8afde6667ebb13519ba0afc518c38a75dff6932cf0002d2787",
+      "start_mtime_utc": "2026-10-13T02:16:42.0395118Z",
+      "end_mtime_utc": "2026-10-13T02:16:42.0395118Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "docs/modules/configuration-state.md",
+      "start_sha256": "6021bfc599639269f304b3c4c550285d7315b4e28b1114753d40bb614146ff85",
+      "end_sha256": "afdafad343de42fd10dfd2bd780fb7275b13356df3e94666a40fbdb5248cd7a2",
+      "start_mtime_utc": "2026-10-12T23:29:07.5286848Z",
+      "end_mtime_utc": "2026-10-13T02:52:43.0121071Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "native/clang-indexer/ProgramEvents.h",
+      "start_sha256": "234d39ca1441e8092a2885917a2702f123411cb30acc6a2295c08532d01a199d",
+      "end_sha256": "234d39ca1441e8092a2885917a2702f123411cb30acc6a2295c08532d01a199d",
+      "start_mtime_utc": "2026-10-13T01:45:16.0229533Z",
+      "end_mtime_utc": "2026-10-13T01:45:16.0229533Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_acquisition_carrier_consumers.py",
+      "start_sha256": "30b6e89334cd84b51c101c5b1b6dfea843f790a12048df50508e5c15c6c55c18",
+      "end_sha256": "30b6e89334cd84b51c101c5b1b6dfea843f790a12048df50508e5c15c6c55c18",
+      "start_mtime_utc": "2026-09-16T15:13:07.1950362Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.1950362Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_conditional_ownership_contracts.py",
+      "start_sha256": "ef1bd95ea78443a84bd035729aa5d11a88fd4cdd32fb16b8dbd690314096ef09",
+      "end_sha256": "ef1bd95ea78443a84bd035729aa5d11a88fd4cdd32fb16b8dbd690314096ef09",
+      "start_mtime_utc": "2026-10-08T08:02:24.2902526Z",
+      "end_mtime_utc": "2026-10-08T08:02:24.2902526Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_contract_build_scope.py",
+      "start_sha256": "fd80671cca5eb904e59d6172304543ecf60dbe333d98dd3569b7abb768259cc7",
+      "end_sha256": "fd80671cca5eb904e59d6172304543ecf60dbe333d98dd3569b7abb768259cc7",
+      "start_mtime_utc": "2026-10-12T23:04:19.4710641Z",
+      "end_mtime_utc": "2026-10-12T23:04:19.4710641Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_contract_symbol_ambiguity.py",
+      "start_sha256": "c13c88259125dfa9118efc1d0f80158b47ee7f3358d229d906e31e7cdad61d17",
+      "end_sha256": "c13c88259125dfa9118efc1d0f80158b47ee7f3358d229d906e31e7cdad61d17",
+      "start_mtime_utc": "2026-10-12T10:19:57.1585178Z",
+      "end_mtime_utc": "2026-10-12T10:19:57.1585178Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_incremental_semantic_modeling.py",
+      "start_sha256": "a3c4690a08eea0dad308b4bc5ff7b80b18da857598c26333d44a6ff90cd44b80",
+      "end_sha256": "a3c4690a08eea0dad308b4bc5ff7b80b18da857598c26333d44a6ff90cd44b80",
+      "start_mtime_utc": "2026-09-16T15:13:07.2020427Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.2020427Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_lifecycle_obligations.py",
+      "start_sha256": "ac9994d68e15af0dadd09ecd6a0089aa98d377ed481fb214bc84982aa60c06b7",
+      "end_sha256": "ac9994d68e15af0dadd09ecd6a0089aa98d377ed481fb214bc84982aa60c06b7",
+      "start_mtime_utc": "2026-09-20T14:08:54.0056419Z",
+      "end_mtime_utc": "2026-09-20T14:08:54.0056419Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_lifecycle_paths.py",
+      "start_sha256": "e4e10cdc7a4475577018ef4c77385e594c93bc3d1891483d8e3d3faededf8eb7",
+      "end_sha256": "e4e10cdc7a4475577018ef4c77385e594c93bc3d1891483d8e3d3faededf8eb7",
+      "start_mtime_utc": "2026-10-13T01:45:16.0240281Z",
+      "end_mtime_utc": "2026-10-13T01:45:16.0240281Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_native_model_cache.py",
+      "start_sha256": "fcf7b81cd054ce84821e454c02b0b472630a75603ed2c90733726ea13569c1e3",
+      "end_sha256": "fcf7b81cd054ce84821e454c02b0b472630a75603ed2c90733726ea13569c1e3",
+      "start_mtime_utc": "2026-10-12T23:31:40.0975593Z",
+      "end_mtime_utc": "2026-10-12T23:31:40.0975593Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_pair_evidence_authority.py",
+      "start_sha256": "39a40f79a2cb2dea9233d7fb5001b48ec0dbf1fe66b6d8dda5c3bd9b295b5e6c",
+      "end_sha256": "39a40f79a2cb2dea9233d7fb5001b48ec0dbf1fe66b6d8dda5c3bd9b295b5e6c",
+      "start_mtime_utc": "2026-09-16T15:13:07.2040435Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.2040435Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_pool_protocol_modeling.py",
+      "start_sha256": "a6ccd7e943a174260643aafe1b355ec7d41f70ec9cb1c6ebe20573ee5b930394",
+      "end_sha256": "a6ccd7e943a174260643aafe1b355ec7d41f70ec9cb1c6ebe20573ee5b930394",
+      "start_mtime_utc": "2026-10-12T23:07:48.5694267Z",
+      "end_mtime_utc": "2026-10-12T23:07:48.5694267Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_protocol_assessment.py",
+      "start_sha256": "4bd1b56b5be81b37062c81f2ae2c862f1909036ad1361ca78cba991bda50e409",
+      "end_sha256": "4bd1b56b5be81b37062c81f2ae2c862f1909036ad1361ca78cba991bda50e409",
+      "start_mtime_utc": "2026-10-13T02:14:53.5495322Z",
+      "end_mtime_utc": "2026-10-13T02:14:53.5495322Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_protocol_feedback.py",
+      "start_sha256": null,
+      "end_sha256": "2777f99ebd088af833889533e9aad5503787f867eecc1cd4bfeab918db4ab709",
+      "start_mtime_utc": null,
+      "end_mtime_utc": "2026-10-13T02:49:00.6995938Z",
+      "changed_between_samples": null
+    },
+    {
+      "path": "tests/test_retained_slot_teardown.py",
+      "start_sha256": "9c9336bdda7ef961be121e513f553d4d26f9f2743c02c18974ab7b0afc09cdc1",
+      "end_sha256": "9c9336bdda7ef961be121e513f553d4d26f9f2743c02c18974ab7b0afc09cdc1",
+      "start_mtime_utc": "2026-10-13T01:08:52.9869504Z",
+      "end_mtime_utc": "2026-10-13T01:08:52.9869504Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_retention_protocols.py",
+      "start_sha256": "8467d257cea80699a6ce478cca5dd501fb23a7820bdb1e2162b4987b76665d3d",
+      "end_sha256": "8467d257cea80699a6ce478cca5dd501fb23a7820bdb1e2162b4987b76665d3d",
+      "start_mtime_utc": "2026-10-12T23:19:06.5039762Z",
+      "end_mtime_utc": "2026-10-12T23:19:06.5039762Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_security_map_contracts.py",
+      "start_sha256": "9c23bea86671f21ed3be5c5ae9715b8780e567a0561027327b626822719f8b0a",
+      "end_sha256": "9c23bea86671f21ed3be5c5ae9715b8780e567a0561027327b626822719f8b0a",
+      "start_mtime_utc": "2026-10-12T23:30:47.5356583Z",
+      "end_mtime_utc": "2026-10-12T23:30:47.5356583Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_semantic_contract_chain.py",
+      "start_sha256": "4ccd41a9294c5fef94ed3ee4319f51938416ba754ee2d8e67e08d47b9e5a1758",
+      "end_sha256": "4ccd41a9294c5fef94ed3ee4319f51938416ba754ee2d8e67e08d47b9e5a1758",
+      "start_mtime_utc": "2026-09-16T15:13:07.2066252Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.2066252Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_semantic_coordinator_effects.py",
+      "start_sha256": "9fbc675ccc70c8930feff657c8267144a4475277c7499a11589e8788fea362da",
+      "end_sha256": "9fbc675ccc70c8930feff657c8267144a4475277c7499a11589e8788fea362da",
+      "start_mtime_utc": "2026-09-16T15:13:07.2076294Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.2076294Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_semantic_next_round.py",
+      "start_sha256": "41c8e207a4e4f9e7cc5da3d1bc1cdd3e474536c061f317468a6e8d92a1f98ae3",
+      "end_sha256": "41c8e207a4e4f9e7cc5da3d1bc1cdd3e474536c061f317468a6e8d92a1f98ae3",
+      "start_mtime_utc": "2026-09-16T15:13:07.2086324Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.2086324Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_single_slot_pool.py",
+      "start_sha256": "47b477c5d3e330fd7e730e729334e4266e17f775343b166e9be3bcfd842fdda9",
+      "end_sha256": "47b477c5d3e330fd7e730e729334e4266e17f775343b166e9be3bcfd842fdda9",
+      "start_mtime_utc": "2026-10-12T23:31:39.9254393Z",
+      "end_mtime_utc": "2026-10-12T23:31:39.9254393Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_source_lifecycle_provider.py",
+      "start_sha256": "e73cc830c4d9c4de14b36bd372e448b1d7c4a9630ad6c893f874f67f3b3c6b81",
+      "end_sha256": "e73cc830c4d9c4de14b36bd372e448b1d7c4a9630ad6c893f874f67f3b3c6b81",
+      "start_mtime_utc": "2026-09-16T15:13:07.0406310Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.0406310Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_wrapper_contract_compiler.py",
+      "start_sha256": "cd65690457fde2cb5bbd1b535833a02205cce6aaa06f7647da890877c5cdde5a",
+      "end_sha256": "cd65690457fde2cb5bbd1b535833a02205cce6aaa06f7647da890877c5cdde5a",
+      "start_mtime_utc": "2026-09-16T15:13:07.2131429Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.2131429Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_wrapper_error_cleanup.py",
+      "start_sha256": "9e34ca28ab94555e53556dff1f17a498c0613b73e048b212ac016b13f27eb99f",
+      "end_sha256": "9e34ca28ab94555e53556dff1f17a498c0613b73e048b212ac016b13f27eb99f",
+      "start_mtime_utc": "2026-09-16T15:13:07.2131429Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.2131429Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_wrapper_failure_guards.py",
+      "start_sha256": "c80ffa870ecbb7b26277a7c7238ecc8f7916cce2712bfe8ad00bf72097f6a1b9",
+      "end_sha256": "c80ffa870ecbb7b26277a7c7238ecc8f7916cce2712bfe8ad00bf72097f6a1b9",
+      "start_mtime_utc": "2026-09-16T15:13:07.2141419Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.2141419Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "tests/test_wrapper_pointer_casts.py",
+      "start_sha256": "309f38d7f9695f5708fbf9db88b849feaa58af23b3ef33b66ee0aaf3e6333e82",
+      "end_sha256": "309f38d7f9695f5708fbf9db88b849feaa58af23b3ef33b66ee0aaf3e6333e82",
+      "start_mtime_utc": "2026-09-16T15:13:07.2141419Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.2141419Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/cli/cli.py",
+      "start_sha256": null,
+      "end_sha256": "0e64e70f8316b0c790dfbab6ae9062aa2642d98388e3863c8fc5bea2f6a5ef3f",
+      "start_mtime_utc": null,
+      "end_mtime_utc": "2026-10-08T06:54:17.5722520Z",
+      "changed_between_samples": null
+    },
+    {
+      "path": "zscope/config/protocol_feedback.py",
+      "start_sha256": "74a56f4ed0207694ed3c44ee77be2e396f7e10135d3b58732db06b2c1a3164c1",
+      "end_sha256": "0a986ec4a9897180efbce672dbb16738a03e2d20e65448efcccba9e1a2e09dd5",
+      "start_mtime_utc": "2026-10-13T02:29:39.4920903Z",
+      "end_mtime_utc": "2026-10-13T02:51:00.1184024Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/config/user_config_store.py",
+      "start_sha256": "dc0555663d14fb100eb229199208186585cd1a91f7a6b088578b365226aaa1d3",
+      "end_sha256": "86d5523b75905fa784a046b04b78ef2eb6dd0048577c824b0dc8dfa8c26aeb9f",
+      "start_mtime_utc": "2026-10-13T02:29:39.4930909Z",
+      "end_mtime_utc": "2026-10-13T02:48:59.1672737Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/core/analysis/analyzer.py",
+      "start_sha256": null,
+      "end_sha256": "d5bdc7ada012ab8fccadf99e75d9f5c1f26b61b221f16ea6e6981985df116e3e",
+      "start_mtime_utc": null,
+      "end_mtime_utc": "2026-10-13T02:49:00.7065908Z",
+      "changed_between_samples": null
+    },
+    {
+      "path": "zscope/core/candidates/cpp_domains/concurrency_shared_state.py",
+      "start_sha256": "9703b9efff11611b6218e93fc4c7f47e06f780aad4ec7030fd063fcac3f50845",
+      "end_sha256": "9703b9efff11611b6218e93fc4c7f47e06f780aad4ec7030fd063fcac3f50845",
+      "start_mtime_utc": "2026-09-28T03:58:50.7604171Z",
+      "end_mtime_utc": "2026-09-28T03:58:50.7604171Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/core/candidates/cpp_domains/lifecycle_paths.py",
+      "start_sha256": "5db2933edec9e4ac28d063961ac961d0a716c5a6e52ed2fe727376688c1a9a99",
+      "end_sha256": "5db2933edec9e4ac28d063961ac961d0a716c5a6e52ed2fe727376688c1a9a99",
+      "start_mtime_utc": "2026-10-13T02:04:56.9030371Z",
+      "end_mtime_utc": "2026-10-13T02:04:56.9030371Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/core/candidates/cpp_domains/resource_lifecycle.py",
+      "start_sha256": "7695622cb526705e13f7de7706d2a205c1b2244f4bd0eb7ddc87f4756316d35f",
+      "end_sha256": "7695622cb526705e13f7de7706d2a205c1b2244f4bd0eb7ddc87f4756316d35f",
+      "start_mtime_utc": "2026-10-13T02:10:58.4800736Z",
+      "end_mtime_utc": "2026-10-13T02:10:58.4800736Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/core/candidates/cpp_domains/typed_resources.py",
+      "start_sha256": "c4b2e1b61deaa8319fb184ea47f69cfb86613ff5a6966a80039bcbce54c437df",
+      "end_sha256": "c4b2e1b61deaa8319fb184ea47f69cfb86613ff5a6966a80039bcbce54c437df",
+      "start_mtime_utc": "2026-09-28T03:58:50.7574157Z",
+      "end_mtime_utc": "2026-09-28T03:58:50.7574157Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/core/candidates/graph.py",
+      "start_sha256": "cd08b211d3762a270437b5248c636dfc1e433c32a414bbaa4a2e9bb08bea53f4",
+      "end_sha256": "cd08b211d3762a270437b5248c636dfc1e433c32a414bbaa4a2e9bb08bea53f4",
+      "start_mtime_utc": "2026-09-20T13:22:50.5278299Z",
+      "end_mtime_utc": "2026-09-20T13:22:50.5278299Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/core/candidates/regex.py",
+      "start_sha256": "8c9b97771a4de1b78de909b80c8664fe5f9bc079033c09ae2e1d18b1281bec73",
+      "end_sha256": "8c9b97771a4de1b78de909b80c8664fe5f9bc079033c09ae2e1d18b1281bec73",
+      "start_mtime_utc": "2026-10-12T22:50:59.2292654Z",
+      "end_mtime_utc": "2026-10-12T22:50:59.2292654Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/core/candidates/svf_value_flow.py",
+      "start_sha256": "4059171d5da71ed0258cbe246e9131b4ad8f1df446fea2677e5e8ebaca551ef5",
+      "end_sha256": "4059171d5da71ed0258cbe246e9131b4ad8f1df446fea2677e5e8ebaca551ef5",
+      "start_mtime_utc": "2026-09-08T01:54:58.3741120Z",
+      "end_mtime_utc": "2026-09-08T01:54:58.3741120Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/core/validation/pipeline.py",
+      "start_sha256": "53206a53324baf777222a1a67936b90f489709524069d06776f45a488672f9cf",
+      "end_sha256": "53206a53324baf777222a1a67936b90f489709524069d06776f45a488672f9cf",
+      "start_mtime_utc": "2026-10-13T02:15:51.5026728Z",
+      "end_mtime_utc": "2026-10-13T02:15:51.5026728Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/core/validation/proofs.py",
+      "start_sha256": "53786cb2f966c518ce94916ff8fa33018564f4bcc558af1db9653cf23c8f19ce",
+      "end_sha256": "b7e11761c11b9c0200d46577d458ded3fed939841ef768d99ff275bad1329530",
+      "start_mtime_utc": "2026-10-13T02:30:53.8581764Z",
+      "end_mtime_utc": "2026-10-13T02:48:59.4596204Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/core/validation/protocol_assessment.py",
+      "start_sha256": "ec6977abce555e7324708612b38b2f6956e8c743beef77ac878feb7b025fdbd7",
+      "end_sha256": "935cb25f556e7828f46274501dd4946690161c3baa6493996bd2e6f98ef69281",
+      "start_mtime_utc": "2026-10-13T02:30:53.8576594Z",
+      "end_mtime_utc": "2026-10-13T02:42:22.8227995Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/core/validation/runner.py",
+      "start_sha256": "7991c86b45c03bb4dd7010ccd1165f1ce8caf0baa67bb2a96ada89d31cdfe833",
+      "end_sha256": "357536fac3d52d6b29c32170a9c06269a3c5525c2aabe9d251ade8f8acfc2ec2",
+      "start_mtime_utc": "2026-10-13T02:30:53.8603413Z",
+      "end_mtime_utc": "2026-10-13T02:48:59.4004707Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/orchestration/scan_session.py",
+      "start_sha256": "0b1b1f11b2e76acc6cb4bf3d21600d8c4e368e3d3690f761b65a51b058ccc48d",
+      "end_sha256": "23ed6bac305dcd44ae00d9559082500589b335eb51f6ce9449f46240e4cf3978",
+      "start_mtime_utc": "2026-10-13T02:32:17.7850376Z",
+      "end_mtime_utc": "2026-10-13T02:51:00.1174006Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/orchestration/semantic_modeling.py",
+      "start_sha256": "63200a00cdb9f9e8b480c7944981e348cb7422c4da4d070d85c8d025a05ccc86",
+      "end_sha256": "63200a00cdb9f9e8b480c7944981e348cb7422c4da4d070d85c8d025a05ccc86",
+      "start_mtime_utc": "2026-10-12T23:27:39.3589872Z",
+      "end_mtime_utc": "2026-10-12T23:27:39.3589872Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/reporting/issue_markdown.py",
+      "start_sha256": "1851d1e5cc087a203c2bbae41fc6ce00a407a0100f3f3b6c633585e1fd9033e5",
+      "end_sha256": "fed46731d1e068b62a5e83d53c0dd0db01495e4e095b713ae3e923e886ec0f32",
+      "start_mtime_utc": "2026-10-13T02:15:52.4035213Z",
+      "end_mtime_utc": "2026-10-13T02:49:00.2301173Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/reporting/report.py",
+      "start_sha256": "264fc3014a5ec70a9c594f26eb7b3abe46149a780aaacb4f4f3cf95362c082c1",
+      "end_sha256": "d1e3ff340c267653fd4d61efec33f086e973e31aa5dcf2b76686ca7d95f588a6",
+      "start_mtime_utc": "2026-10-13T02:08:20.3699709Z",
+      "end_mtime_utc": "2026-10-13T02:49:00.4316821Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/retrieval/build_context.py",
+      "start_sha256": "0865605638bbb7ff5963563241c2e1c174773bd6d0ae15d7bf23c6d6eb2db067",
+      "end_sha256": "0865605638bbb7ff5963563241c2e1c174773bd6d0ae15d7bf23c6d6eb2db067",
+      "start_mtime_utc": "2026-10-12T09:02:12.5517749Z",
+      "end_mtime_utc": "2026-10-12T09:02:12.5517749Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/retrieval/lifecycle_analysis.py",
+      "start_sha256": "fe2848934a0161708d38dd5cd365753dae8d5ba3e65fda024b4879798e47c6be",
+      "end_sha256": "fe2848934a0161708d38dd5cd365753dae8d5ba3e65fda024b4879798e47c6be",
+      "start_mtime_utc": "2026-09-21T01:43:26.2846361Z",
+      "end_mtime_utc": "2026-09-21T01:43:26.2846361Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/retrieval/svf_runner.py",
+      "start_sha256": "cdb928620bbbf1d9844b227ad83b00772ad912086a4c7194733780063c8101c0",
+      "end_sha256": "cdb928620bbbf1d9844b227ad83b00772ad912086a4c7194733780063c8101c0",
+      "start_mtime_utc": "2026-09-07T08:05:47.0249007Z",
+      "end_mtime_utc": "2026-09-07T08:05:47.0249007Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/rules/builtin_catalog.yaml",
+      "start_sha256": "dec2082c26a54a463f3af31b0c6e47c0dcb463ef1b5c06b06aaded35d3019cf9",
+      "end_sha256": "aa58feb61edeadfc5fa0fc1fb0a3295b32fb06322c895ba75129d255bd7f940c",
+      "start_mtime_utc": "2026-10-13T02:08:20.3679712Z",
+      "end_mtime_utc": "2026-10-13T02:41:50.7217607Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/rules/qualification_registry.yaml",
+      "start_sha256": "e3b3cdac5f2530678056b7a9aff1b52cc6b369797c5f305e8952ac3024d4e4df",
+      "end_sha256": "eff04cf753383fb7edd64ca2924bea7272fdf6aeb8c6177a99f25ceb798d4728",
+      "start_mtime_utc": "2026-10-13T02:08:20.3689727Z",
+      "end_mtime_utc": "2026-10-13T02:41:50.7223002Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/semantics/build_scope.py",
+      "start_sha256": "42a96df43fe036fc546580d54cbdee18a9d209b7278f59c381ba8bdd6941233a",
+      "end_sha256": "42a96df43fe036fc546580d54cbdee18a9d209b7278f59c381ba8bdd6941233a",
+      "start_mtime_utc": "2026-10-12T22:45:13.1557549Z",
+      "end_mtime_utc": "2026-10-12T22:45:13.1557549Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/semantics/business_assumptions.py",
+      "start_sha256": "b70ae916e8850c911a341c067a607009825f22c622fda00d780b056fa7c3853b",
+      "end_sha256": "a02258e89e08996a03b141ce74b425766f0b42637fbc5519baa0794fad625587",
+      "start_mtime_utc": "2026-10-13T02:29:39.4920903Z",
+      "end_mtime_utc": "2026-10-13T02:42:22.7406175Z",
+      "changed_between_samples": true
+    },
+    {
+      "path": "zscope/semantics/contract_compiler.py",
+      "start_sha256": "773c03e81b02be2754c8aedc009900c6e7559158dcb8009d3031c75b85c2c0f2",
+      "end_sha256": "773c03e81b02be2754c8aedc009900c6e7559158dcb8009d3031c75b85c2c0f2",
+      "start_mtime_utc": "2026-10-12T23:24:09.8866098Z",
+      "end_mtime_utc": "2026-10-12T23:24:09.8866098Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/semantics/contracts.py",
+      "start_sha256": "41ef5faafd7170304531a7f15c5e5382e104f0074282d877facedbee5b21a2e2",
+      "end_sha256": "41ef5faafd7170304531a7f15c5e5382e104f0074282d877facedbee5b21a2e2",
+      "start_mtime_utc": "2026-10-12T23:14:26.0015155Z",
+      "end_mtime_utc": "2026-10-12T23:14:26.0015155Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/semantics/defaults.py",
+      "start_sha256": "5d245eb3ae6e4fa37db81a009323fe57b2cd189de5352f5147587fd1fd729bb8",
+      "end_sha256": "5d245eb3ae6e4fa37db81a009323fe57b2cd189de5352f5147587fd1fd729bb8",
+      "start_mtime_utc": "2026-09-16T15:13:07.1015206Z",
+      "end_mtime_utc": "2026-09-16T15:13:07.1015206Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/semantics/pool_protocols.py",
+      "start_sha256": "125a3564af1f233fef65f188586fc9fa1845f882866fd7a6d8681bdf87372b29",
+      "end_sha256": "125a3564af1f233fef65f188586fc9fa1845f882866fd7a6d8681bdf87372b29",
+      "start_mtime_utc": "2026-10-12T23:15:46.2598692Z",
+      "end_mtime_utc": "2026-10-12T23:15:46.2598692Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/semantics/resource_identity.py",
+      "start_sha256": "e4272c9fc29b884302a3c66564d71aaaf11e97cbb4d3943fe1f64504a68dceda",
+      "end_sha256": "e4272c9fc29b884302a3c66564d71aaaf11e97cbb4d3943fe1f64504a68dceda",
+      "start_mtime_utc": "2026-10-12T11:01:58.4051523Z",
+      "end_mtime_utc": "2026-10-12T11:01:58.4051523Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/semantics/retention_protocols.py",
+      "start_sha256": "2a114e1e8a693418cfe366786635b3e52ab81a246bcd77d970e735dc3117ea63",
+      "end_sha256": "2a114e1e8a693418cfe366786635b3e52ab81a246bcd77d970e735dc3117ea63",
+      "start_mtime_utc": "2026-10-12T23:19:05.5802591Z",
+      "end_mtime_utc": "2026-10-12T23:19:05.5802591Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/semantics/single_slot_pool.py",
+      "start_sha256": "eff6cd8b451f449fa59dfdf42bf4f4175481ed7807c2fd0ceb445308ef586ebe",
+      "end_sha256": "eff6cd8b451f449fa59dfdf42bf4f4175481ed7807c2fd0ceb445308ef586ebe",
+      "start_mtime_utc": "2026-10-12T23:20:40.7162986Z",
+      "end_mtime_utc": "2026-10-12T23:20:40.7162986Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/semantics/standard_api.py",
+      "start_sha256": "e61ebaaf92b5cd7ebee98a1bd98ab9a2ceafd8a1b23b7af262fceab5aa77668b",
+      "end_sha256": "e61ebaaf92b5cd7ebee98a1bd98ab9a2ceafd8a1b23b7af262fceab5aa77668b",
+      "start_mtime_utc": "2026-09-28T04:01:35.8638027Z",
+      "end_mtime_utc": "2026-09-28T04:01:35.8638027Z",
+      "changed_between_samples": false
+    },
+    {
+      "path": "zscope/web/review_reports.py",
+      "start_sha256": null,
+      "end_sha256": "da8a3d4e394f1fa875ee2c1d1cfa9590cc5fe551518f9928f9e1f1b3739dde3b",
+      "start_mtime_utc": null,
+      "end_mtime_utc": "2026-10-13T02:48:59.9627834Z",
+      "changed_between_samples": null
+    }
+  ],
+  "document_checks": {
+    "checked_utc": "2026-10-13T02:55:51.6062732Z",
+    "bytes": 48107,
+    "utf8_strict": true,
+    "bom": false,
+    "cr_count": 0,
+    "final_lf": true,
+    "missing_local_links": [],
+    "report_sha256": "47a380915abf18d66c99628f6f1d44c44bd2105e5634df29c0716b2b6d8e4c56",
+    "git_status": [
+      "?? docs/resource-api-assessment-2026-10-13/"
+    ],
+    "referenced_files_count": 58
+  },
+  "sources": [
+    "https://www.ndss-symposium.org/ndss-paper/detecting-kernel-memory-leaks-in-specialized-modules-with-ownership-reasoning/",
+    "https://www.ndss-symposium.org/wp-content/uploads/ndss2021_5B-4_24416_paper.pdf",
+    "https://arxiv.org/html/2509.22530v2",
+    "https://github.com/for-just-we/WrapperDetect",
+    "https://clang.llvm.org/docs/AttributeReference.html",
+    "https://clang.llvm.org/docs/ThreadSafetyAnalysis.html",
+    "https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Common-Function-Attributes.html",
+    "https://cppcheck.sourceforge.io/manual.html",
+    "https://raw.githubusercontent.com/danmar/cppcheck/main/cfg/std.cfg",
+    "https://codeql.github.com/codeql-standard-libraries/cpp/semmle/code/cpp/models/interfaces/Allocation.qll/module.Allocation.html",
+    "https://github.com/github/codeql/blob/main/cpp/ql/lib/semmle/code/cpp/models/interfaces/Allocation.qll"
+  ]
+}

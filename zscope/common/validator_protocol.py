@@ -12,6 +12,8 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 VALIDATOR_RESULT_VERSION = "zscope.validator-result.v3"
 VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v3"
+# Runtime decision policy, separate from the model's response schema.
+VALIDATION_POLICY_VERSION = "zscope.validation-policy.v3"
 # "v2b_adjudication" is the plan M5 R3 rung: an independent audit of a
 # rejection that would otherwise park as model_rejected_unproven.
 VALIDATOR_PASSES = frozenset(

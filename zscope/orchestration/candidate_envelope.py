@@ -29,7 +29,7 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], value) if isinstance(value, Mapping) else {}
 
 
-CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.4"
+CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.5"
 DECISION_CONTEXT_VERSION = DECISION_CONTEXT_V33
 CANDIDATE_DISPOSITIONS = {
     "confirmed",
@@ -378,6 +378,7 @@ class CandidateEnvelope:
     evidence_sources: List[str] = field(default_factory=list)
     entry_paths: List[List[str]] = field(default_factory=list)
     schema_version: str = CANDIDATE_SCHEMA_VERSION
+    build_context_id: str = ""
 
     @classmethod
     def from_issue(
@@ -408,9 +409,13 @@ class CandidateEnvelope:
                 )
             )
         )
+        from ..common.issue_identity import issue_build_context_id
+
+        build_context_id = issue_build_context_id(issue)
         existing_schema = str(issue.get("candidate_schema_version") or "")
         if (
             existing_schema == CANDIDATE_SCHEMA_VERSION
+            and str(issue.get("identity_build_context_id") or "") == build_context_id
             and issue.get("candidate_uid")
             and issue.get("occurrence_uid")
             and issue.get("decision_evidence_hash")
@@ -428,6 +433,7 @@ class CandidateEnvelope:
                 else []
             )
             return cls(
+                build_context_id=build_context_id,
                 candidate_uid=str(issue["candidate_uid"]),
                 occurrence_uid=str(issue["occurrence_uid"]),
                 history_key=str(issue.get("history_key") or ""),
@@ -524,6 +530,7 @@ class CandidateEnvelope:
             project_root,
         )
         structural = {
+            "build_context_id": build_context_id,
             "schema": CANDIDATE_SCHEMA_VERSION,
             "project": normalized_project_id,
             "defect_class": defect_class,
@@ -645,6 +652,7 @@ class CandidateEnvelope:
         }
         evidence_hash = _digest(evidence, length=64)
         decision_evidence = {
+            "build_context_id": build_context_id,
             "version": requested_context_version,
             "obligation": obligation_uid,
             "obligation_shape": obligation_shape,
@@ -782,6 +790,7 @@ class CandidateEnvelope:
             "complete" if complete is True else "partial" if complete is False else "unknown"
         )
         return cls(
+            build_context_id=build_context_id,
             candidate_uid=candidate_uid,
             occurrence_uid=occurrence_uid,
             history_key=history_key,
@@ -849,6 +858,8 @@ def annotate_issue_identity(
     issue.update(
         {
             "candidate_schema_version": envelope.schema_version,
+            "build_context_id": envelope.build_context_id,
+            "identity_build_context_id": envelope.build_context_id,
             "candidate_uid": envelope.candidate_uid,
             "occurrence_uid": envelope.occurrence_uid,
             "history_key": envelope.history_key,

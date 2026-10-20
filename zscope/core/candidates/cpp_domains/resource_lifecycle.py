@@ -75,6 +75,24 @@ STAGES = (
         ("issues", "func_name", "file_path", "lines", "allowed_skills"),
     ),
     DetectorStage(
+        "clang_ast_cfg",
+        "function",
+        12,
+        "resource_lifecycle",
+        "retained_slot_teardown",
+        "_run_retained_slot_teardown",
+        ("issues", "func_name", "file_path", "lines", "allowed_skills"),
+    ),
+    DetectorStage(
+        "clang_ast_cfg",
+        "function",
+        13,
+        "resource_lifecycle",
+        "object_protocol_paths",
+        "_run_object_protocol_paths",
+        ("issues", "func_name", "file_path", "lines", "allowed_skills"),
+    ),
+    DetectorStage(
         "graph",
         "view",
         20,
@@ -147,8 +165,11 @@ class RegexResourceLifecycleRules:
                 continue
             registry = self.semantics.contracts
             args = registry.call_arguments(match.group("api"), line.text) or []
-            if (registry.reallocation_input(match.group("api"), args) != match.group("lhs")
-                    or registry.reallocation_failure_preservation(match.group("api"), args) == "does_not_apply"):
+            if (
+                registry.reallocation_input(match.group("api"), args) != match.group("lhs")
+                or registry.reallocation_failure_preservation(match.group("api"), args)
+                == "does_not_apply"
+            ):
                 continue
             emit(
                 defect_class="realloc_misuse",
@@ -248,7 +269,10 @@ class RegexResourceLifecycleRules:
 
     def _rule_stale_resources(self, lines: List[CodeLine], emit) -> None:
         for line in lines:
-            close = re.search(r"\bclose\s*\(\s*(?P<fd>[A-Za-z_]\w*)\s*\)\s*;", line.text)
+            close = re.search(
+                self._literal_api_pattern(r"\bclose\s*\(\s*(?P<fd>[A-Za-z_]\w*)\s*\)\s*;"),
+                line.text,
+            )
             if close:
                 later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 7])
                 if not self._previous_assignment_from_open(
@@ -267,7 +291,7 @@ class RegexResourceLifecycleRules:
                         positive=[f"line {line.number}: close without nearby fd=-1 assignment"],
                     )
 
-            if "munmap" in line.text:
+            if "munmap" in line.text and self._semantic_call_allowed("munmap", "io_release"):
                 later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 8])
                 if "NULL" not in later:
                     emit(
@@ -290,7 +314,9 @@ class RegexResourceLifecycleRules:
         user_open = self._names_pattern(user_open_names - _FD_OPEN_EXCLUDED_NAMES)
         return bool(
             re.search(
-                rf"\b{re.escape(fd)}\s*=\s*(?:open|socket|accept|accept4|{user_open})\s*\(",
+                self._literal_api_pattern(
+                    rf"\b{re.escape(fd)}\s*=\s*(?:open|socket|accept|accept4|{user_open})\s*\("
+                ),
                 previous,
             )
         )
@@ -369,7 +395,9 @@ class GraphResourceLifecycleRules:
                 for var in allocations:
                     if re.search(rf"\b{re.escape(var)}\b", arg):
                         released.add(var)
-            if "pthread_create" not in line.text:
+            if "pthread_create" not in line.text or not self._semantic_call_allowed(
+                "pthread_create", "thread_create"
+            ):
                 continue
             for var in allocations:
                 if re.search(rf"&\s*{re.escape(var)}\s*(?:\[|\b)", line.text):
@@ -457,7 +485,8 @@ class GraphResourceLifecycleRules:
         ]
         for contract in global_acquisitions:
             releases = {
-                name for name in self.semantics.contracts.releases(contract.symbol.name)
+                name
+                for name in self.semantics.contracts.releases(contract.symbol.name)
                 if self.semantics.contracts.allows(contract.symbol.name, name)
             }
             line = self._first_line_containing(view, contract.symbol.name) or view.lines[0]
@@ -513,8 +542,12 @@ class GraphResourceLifecycleRules:
         free_line = self._first_line_matching(view, self._free_re)
         if (
             re.search(r"pthread_mutex_init", text)
+            and self._semantic_call_allowed("pthread_mutex_init", "lock_init")
             and free_line
-            and not re.search(r"pthread_mutex_destroy", text)
+            and not (
+                re.search(r"pthread_mutex_destroy", text)
+                and self._semantic_call_allowed("pthread_mutex_destroy", "lock_destroy")
+            )
         ):
             line = free_line
             issues.append(
@@ -578,8 +611,10 @@ class GraphResourceLifecycleRules:
             return False
         events = registry.trace_calls(context)
         acquisitions = [
-            e for e in events
-            if e["symbol"] == contract.to_dict()["symbol"] and e["role"] == contract.role
+            e
+            for e in events
+            if e["symbol"] == contract.to_dict()["symbol"]
+            and e["role"] == contract.role
             and e["applicability"] != "does_not_apply"
         ]
         if len(acquisitions) != 1:
@@ -593,10 +628,14 @@ class GraphResourceLifecycleRules:
             and release["role"] in {"deallocator", "io_release"}
             and release["guard"] in ({"op": "true"}, acquire["guard"])
             and registry.release_status(
-                contract.symbol.name, release["symbol"]["name"], release["arguments"],
-                acquired_object=obj, acquired_domain=acquire["resource_domain"],
+                contract.symbol.name,
+                release["symbol"]["name"],
+                release["arguments"],
+                acquired_object=obj,
+                acquired_domain=acquire["resource_domain"],
                 acquired_family=acquire["resource_family"],
-            ) == "applies"
+            )
+            == "applies"
             for release in events
         )
 
@@ -956,13 +995,17 @@ class GraphResourceLifecycleRules:
             if not free_line:
                 continue
 
-            if not re.search(r"pthread_mutex_destroy", text):
+            if not (
+                re.search(r"pthread_mutex_destroy", text)
+                and self._semantic_call_allowed("pthread_mutex_destroy", "lock_destroy")
+            ):
                 paired_init = next(
                     (
                         creator
                         for creator in creation_views
                         if creator.name != view.name
                         and "pthread_mutex_init" in texts[creator.name]
+                        and self._semantic_call_allowed("pthread_mutex_init", "lock_init")
                         and self.semantics.contracts.allows(creator.name, view.name)
                     ),
                     None,
@@ -1041,19 +1084,18 @@ class GraphResourceLifecycleRules:
         normalized = re.sub(r"\s+", " ", str(type_name or "").replace("const", "").strip())
         return normalized in {"char*", "unsigned char*", "void*", "int*", "size_t*", "uint8_t*"}
 
-    @staticmethod
-    def _member_release_visible(text: str, owner: str, field: str) -> bool:
+    def _member_release_visible(self, text: str, owner: str, field: str) -> bool:
         owner_re = re.escape(owner)
         field_re = re.escape(field)
         direct_member = rf"\b{owner_re}\s*->\s*{field_re}\b"
         if re.search(
-            rf"\b(?:free|delete)\s*\([^;]*{direct_member}",
+            self._literal_api_pattern(rf"\b(?:free|delete)\s*\([^;]*{direct_member}"),
             text,
             re.I,
         ):
             return True
         if re.search(
-            rf"\b(?:free|delete)\s*\([^;]*\b{field_re}\b",
+            self._literal_api_pattern(rf"\b(?:free|delete)\s*\([^;]*\b{field_re}\b"),
             text,
             re.I,
         ):
@@ -1193,6 +1235,210 @@ class GraphResourceLifecycleRules:
 
 
 class ClangResourceLifecycleRules:
+
+    def _run_object_protocol_paths(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+    ) -> None:
+        from .lifecycle_paths import observation_facts
+        from .async_paths import path_interpreter
+        from .policy import rule_policy_allows_emit
+        from ....semantics.contracts import digest
+
+        rule = "zscope.c_cpp.cpp_clang_cfg.object_protocol_path"
+        if (
+            not rule_policy_allows_emit(self.rule_policy, rule)
+            or self.program_facts_provider is None
+            or (allowed_skills is not None and "ownership_contract" not in allowed_skills)
+        ):
+            return
+        result = path_interpreter(self.program_facts)(
+            self.program_facts, self.semantics.contracts, self.program_facts_provider
+        ).run()
+        self.last_object_protocol_path = result
+        resources = {r["id"]: r for r in result["resources"]}
+        descriptions = {
+            "callback_after_release": "已启动的工作者在当前调度中访问先前已 free 的对象代次；取消请求、摘除排队引用和停止接收均不保证已开始的任务完成",
+            "repeat_return": "同一获取代次在归还后再次调用归还接口",
+            "wrong_pool_return": "归还调用使用了不同的池实例",
+            "stale_generation_return": "保存的旧代次指针用于归还当前新代次对象",
+            "failed_retention_unreleased": "留存失败后对象仍处于已获取状态，入口退出前未见归还",
+            "released_reference_retained": "归还生效后接收方槽位仍保留该代次指针",
+            "release_with_live_references": "逻辑归还生效时同一对象的引用计数仍为正",
+            "zero_count_unreleased": "引用计数由 1 降到 0 后未观察到该对象的实际归还",
+            "refcount_after_return": "已归还的对象代次再次参与引用计数操作",
+            "stale_generation_refcount": "旧代次指针用于修改同地址新代次对象的引用计数",
+            "handle_left_live": "具体调用路径结束时该描述符仍有效，尚未观察到消费它的关闭",
+            "closed_handle_operation": "已消费的描述符代次再次参与 close/dup 操作",
+            "stale_handle_generation": "旧句柄数值用于操作同值重新获取的新描述符代次",
+            "wrong_handle_namespace": "句柄用于不同的命名空间，相同整数不代表相同对象",
+        }
+        for observation in result["observations"]:
+            resource = resources[observation["resource_id"]]
+            event = observation["event"]
+            calls = event.get("call_path") or []
+            location = (calls[0] if calls else event).get("location") or {}
+            line = next((item for item in lines if item.number == location.get("line")), None)
+            if line is None:
+                continue
+            line = replace(line, column=int(location.get("column") or 1))
+            facts, required = observation_facts(result, observation)
+            before = len(issues)
+            self._emit(
+                issues,
+                func_name,
+                file_path,
+                lines,
+                allowed_skills,
+                defect_class="state_inconsistency",
+                rule=rule,
+                line=line,
+                description=descriptions[observation["kind"]] + "；需要核实业务释放约定。",
+                root_cause=(
+                    "回调保存的对象在实际访问之前已被释放；需核实该调度的业务可达性及外部生命周期协调前提。"
+                    if result.get("schedule")
+                    else "当前编译实例的具体 CFG 调用路径出现对象协议不一致；业务责任和责任终点仍需独立证据。"
+                ),
+                suggested_fix=(
+                    "先停止新的提交并等待已有工作者真正完成，再释放任务对象及队列上下文；取消请求成功也不能替代完成等待。"
+                    if result.get("schedule")
+                    else "按实际成功/失败效果维护资源责任，在正确资源域和代次结束持有；句柄 close 的返回状态与消费效果需分别核对。"
+                ),
+                source=resource["id"],
+                sink=str(event.get("expression") or observation["kind"]),
+                confidence=0.8,
+                positive=[
+                    descriptions[observation["kind"]],
+                    "原生 CFG、实际参数、资源域和获取代次已在同一路径绑定。",
+                ],
+                negative=[
+                    (
+                        "仅重放一个受限调度，不覆盖所有交错或失败结果；无候选不代表并发安全。"
+                        if result.get("schedule")
+                        else "逻辑归还或描述符消费不等于物理 free；留存不证明所有权转移，计数器与句柄整数不授予缺陷证明。"
+                    )
+                ],
+                ast_cfg={"complete": True, "ordering_known": True, "events": facts},
+                validation_required=True,
+            )
+            if len(issues) == before:
+                continue
+            issue = issues[-1]
+            issue["file_path"] = file_path
+            issue["resource"] = resource["id"]
+            issue["resource_identity"] = resource["id"]
+            issue["dependency_code_hash"] = digest([result["inputs"], result["contract_inputs"]])
+            issue["obligation_shape"] = "path_sensitive"
+            issue["obligation_required_fact_kinds"] = required
+            pack = issue["evidence_pack"]
+            pack["object_protocol_path"] = {**result, "selected_observation": observation}
+            pack["path"].update(
+                {
+                    "complete": True,
+                    "complete_in_function": False,
+                    "backend": "native concrete CFG path with compilation/link receipts",
+                }
+            )
+            # Distinct acquisitions and call frames must survive same-line dedup.
+            suffix = digest([resource["id"], observation["kind"], event])[:20]
+            for key in ("id", "candidate_id", "dedup_key"):
+                issue[key] = str(issue.get(key) or rule) + ":" + suffix
+            pack["candidate_id"] = issue["candidate_id"]
+
+    def _run_retained_slot_teardown(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+    ) -> None:
+        from .policy import rule_policy_allows_emit
+        from .retained_slots import retained_slot_teardown
+
+        rule = "zscope.c_cpp.cpp_clang_cfg.retained_slot_release"
+        if not rule_policy_allows_emit(self.rule_policy, rule):
+            return
+        summary = retained_slot_teardown(
+            {
+                "func_name": self._function_name,
+                "file_path": file_path,
+                "code": "\n".join(line.raw for line in lines),
+                "program_facts": self.program_facts,
+            },
+            self.semantics.contracts,
+        )
+        if not summary or summary["slot_at_exit"] != "entry_value":
+            return
+        call = summary["release_event"]
+        location = call.get("location") or {}
+        line = next((item for item in lines if item.number == location.get("line")), None)
+        if line is None:
+            return
+        line = replace(
+            line, column=int(location.get("column") or 1), ordinal=int(call.get("ordinal") or 0)
+        )
+        before = len(issues)
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="state_inconsistency",
+            rule=rule,
+            line=line,
+            description=f"`{summary['slot']}` 在调用资源归还接口后仍保留原指针，后续访问可能使用已归还的对象。",
+            root_cause="归还路径未摘除接收方槽位；实际归还效果、对象代次和后续访问仍待验证。",
+            suggested_fix="核实 complete/cancel 的责任与调用顺序；需要结束持有时先摘除槽位，再按正确池和对象状态归还。",
+            source=f"entry value of {summary['slot']} at line {line.number}",
+            sink=str(call["expression"]),
+            confidence=0.7,
+            positive=["完整局部函数在非空分支调用已核验的池归还接口，退出时未改变原槽位。"],
+            negative=[
+                "尚未证明池成员/live 条件、同一分配代次、接收方继续存活或后续访问。",
+                "池归还是逻辑状态变化，不等于 free；局部槽位摘要不能证明业务所有权或最终资源误用。",
+            ],
+            ast_cfg={
+                "ordering_known": False,
+                "complete": False,
+                "events": [
+                    {
+                        "kind": "retained_slot_release_attempt",
+                        "object": summary["slot"],
+                        "line": line.number,
+                        "column": location.get("column"),
+                        "event_id": call["event_id"],
+                        "native_function_usr": summary["function_usr"],
+                        "block": call.get("block"),
+                        "expression": call["expression"],
+                    }
+                ],
+            },
+            validation_required=True,
+        )
+        if len(issues) != before:
+            issue = issues[-1]
+            issue["file_path"] = file_path
+            issue["resource"] = summary["slot"]
+            issue["evidence_pack"]["retained_slot_teardown"] = summary
+            issue["evidence_pack"]["path"][
+                "backend"
+            ] = "native CFG and bounded full-body slot teardown"
+            issue["obligation_shape"] = "sink_sensitive"
+            issue["obligation_required_fact_kinds"] = [
+                "event:retained_slot_release_attempt",
+                "event:release_effect_applies",
+                "event:same_allocation_generation",
+                "event:receiver_survives_release",
+                "event:later_slot_access",
+                "event:feasible_lifecycle_path",
+            ]
+
     def _run_resource_state_machines(
         self,
         issues: List[Dict[str, Any]],
@@ -1229,8 +1475,14 @@ class ClangResourceLifecycleRules:
                 if api in self._reallocator_names:
                     arguments = self._split_args(args)
                     old_object = self.semantics.contracts.reallocation_input(api, arguments)
-                    preserves = self.semantics.contracts.reallocation_failure_preservation(api, arguments)
-                    if old_object == var and preserves != "does_not_apply" and (var, line.number) not in emitted_realloc:
+                    preserves = self.semantics.contracts.reallocation_failure_preservation(
+                        api, arguments
+                    )
+                    if (
+                        old_object == var
+                        and preserves != "does_not_apply"
+                        and (var, line.number) not in emitted_realloc
+                    ):
                         self._emit(
                             issues,
                             func_name,
@@ -1811,13 +2063,17 @@ class ClangResourceLifecycleRules:
 
         for api, args in self._calls(line.text):
             split = self._split_args(args)
-            if api in self._release_names or api in {"free"}:
+            if api in self._release_names or (api == "free" and not self.restrict_to_semantics):
                 if split:
                     var = self._resource_var(split[0])
                     if var:
                         released.add(var)
                 continue
-            if api != "pthread_create" or len(split) < 4:
+            if (
+                api != "pthread_create"
+                or len(split) < 4
+                or not self._semantic_call_allowed(api, "thread_create")
+            ):
                 continue
             thread_arg = split[3]
             for var in allocations:
@@ -2286,7 +2542,9 @@ class ClangResourceLifecycleRules:
         allowed_skills: Optional[Set[str]],
         line: ClangCfgLine,
     ) -> None:
-        match = re.search(r"\bclose\s*\(\s*(?P<fd>[A-Za-z_]\w*)\s*\)\s*;", line.text)
+        match = re.search(
+            self._literal_api_pattern(r"\bclose\s*\(\s*(?P<fd>[A-Za-z_]\w*)\s*\)\s*;"), line.text
+        )
         if not match:
             return
         fd = match.group("fd")
@@ -2532,8 +2790,10 @@ class ClangResourceLifecycleRules:
         )
         return bool(
             re.search(
-                rf"\b(?:read|recv|write|send|close|dup|fcntl|ioctl|mmap|munmap|{user_io})\s*"
-                rf"\([^;]*\b{re.escape(fd)}\b",
+                self._literal_api_pattern(
+                    rf"\b(?:read|recv|write|send|close|dup|fcntl|ioctl|mmap|munmap|{user_io})\s*"
+                    rf"\([^;]*\b{re.escape(fd)}\b"
+                ),
                 later,
             )
             or re.search(rf"\bg_[A-Za-z_0-9]*fd\b", later)
@@ -2820,8 +3080,7 @@ class ClangResourceLifecycleRules:
             text, status_var
         )
 
-    @staticmethod
-    def _is_status_failure_condition(text: str, status_var: str) -> bool:
+    def _is_status_failure_condition(self, text: str, status_var: str) -> bool:
         if not status_var:
             return False
         escaped = re.escape(status_var)
@@ -2830,12 +3089,11 @@ class ClangResourceLifecycleRules:
             rf"\bif\s*\(\s*0\s*!=\s*{escaped}\s*\)",
             rf"\bif\s*\(\s*{escaped}\s*<\s*0\s*\)",
             rf"\bif\s*\(\s*{escaped}\s*\)",
-            rf"\bif\s*\(\s*(?:FAILED|IS_ERR)\s*\(\s*{escaped}\s*\)\s*\)",
+            self._literal_api_pattern(rf"\bif\s*\(\s*(?:FAILED|IS_ERR)\s*\(\s*{escaped}\s*\)\s*\)"),
         ]
         return any(re.search(pattern, text) for pattern in patterns)
 
-    @staticmethod
-    def _is_status_success_guard(text: str, status_var: str) -> bool:
+    def _is_status_success_guard(self, text: str, status_var: str) -> bool:
         if not status_var:
             return False
         escaped = re.escape(status_var)
@@ -2845,7 +3103,7 @@ class ClangResourceLifecycleRules:
             rf"\bif\s*\(\s*{escaped}\s*>=\s*0\s*\)",
             rf"\bif\s*\(\s*SUCCESS\s*==\s*{escaped}\s*\)",
             rf"\bif\s*\(\s*{escaped}\s*==\s*SUCCESS\s*\)",
-            rf"\bif\s*\(\s*(?:SUCCEEDED|OK)\s*\(\s*{escaped}\s*\)\s*\)",
+            self._literal_api_pattern(rf"\bif\s*\(\s*(?:SUCCEEDED|OK)\s*\(\s*{escaped}\s*\)\s*\)"),
         ]
         return any(re.search(pattern, text) for pattern in patterns)
 

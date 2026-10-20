@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 import re
 import shutil
+import stat
+import threading
 import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, cast
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, cast
 
 from ..config.config import ZScopeConfig
 from ..config.function_entry import FunctionEntry, FunctionListLoader
@@ -23,7 +28,8 @@ from ..snapshots.modeling_input import (
     build_semantic_model_input,
     hydrate_project_callee_summaries,
 )
-from ..retrieval.code_index import CodeIndex
+from ..retrieval.code_index import CodeIndex, _JobRuntimeOutputs
+from .entry_instances import EntryInstancePlan, plan_entry_instances
 from ..reporting.schema import (
     EXIT_POLICIES,
     exit_code_for_report,
@@ -116,6 +122,9 @@ class ScanSessionRunner:
         self.exit_policy = normalized_exit_policy
         self._budget_exhaustion_policy = "observe"
         self._cancellation_token = CancellationToken()
+        from ..core.validation.reproduction_planner import SessionReproductionPlanner
+
+        self.reproduction_service = SessionReproductionPlanner(config)
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
         self.session_progress: List[Dict[str, Any]] = []
         self.batch_progress: List[Dict[str, Any]] = []
@@ -145,7 +154,18 @@ class ScanSessionRunner:
             steps = self._selected_workflow_steps()
             self.session_executor.execute(state, steps)
             self._ensure_batch_entries(state)
-            self._ensure_semantic_phase(state)
+            self._plan_entry_instances(state)
+            state["instance_execution_mode"] = self._instance_execution_mode(state)
+            if state["instance_execution_mode"] == "legacy":
+                self._ensure_semantic_phase(state)
+            else:
+                # Instance execution consumes exact per-instance native facts.
+                # The project-wide semantic model is not built here: its global
+                # evidence must never authorize an instance-scoped result.
+                logger.info(
+                    "Instance execution mode=%s; project-wide semantic modeling is not run.",
+                    state["instance_execution_mode"],
+                )
 
             if state.get("batch_mode"):
                 return self._run_batch(state, steps)
@@ -362,6 +382,18 @@ class ScanSessionRunner:
             return False
 
         self._ensure_batch_entries(state)
+        if self.config.project.language != "java":
+            # A precise compile-instance scan never resumes from a name-only
+            # saved report, and never borrows the project-wide semantic model:
+            # its only authorization is the exact current instance plan, and a
+            # real completion can come only from a trusted instance checkpoint.
+            state.setdefault("skipped_entries", [])
+            logger.info(
+                "Resume: instance scanning ignores name-only saved reports and the "
+                "global semantic model."
+            )
+            return False
+
         self._ensure_semantic_phase(state)
         if not state.get("batch_mode"):
             return False
@@ -371,6 +403,7 @@ class ScanSessionRunner:
         code_index = self._ensure_code_index(state, defer_svf=True)
         remaining: List[FunctionEntry] = []
         skipped: List[FunctionEntry] = []
+        business_answer_store = None
 
         for entry in state["entries"]:
             saved_report = self._load_current_saved_report(
@@ -379,6 +412,12 @@ class ScanSessionRunner:
                 entry,
             )
             semantic_result = state.get("semantic_result")
+            from ..snapshots.policy import semantic_experiment_requires_scan
+
+            if semantic_experiment_requires_scan(
+                self.config.analysis, (saved_report or {}).get("metadata")
+            ):
+                saved_report = None
             if semantic_result is not None:
                 from ..snapshots.policy import SNAPSHOT_CANDIDATE_POLICY_VERSION
 
@@ -391,7 +430,25 @@ class ScanSessionRunner:
                 ):
                     saved_report = None
             if saved_report:
-                blockers = report_reuse_blockers(saved_report)
+                from ..semantics.business_assumptions import report_assessments
+
+                if business_answer_store is None and any(report_assessments(saved_report)):
+                    from ..config.user_config_store import UserConfigStore
+
+                    try:
+                        business_answer_store = UserConfigStore(
+                            Path(
+                                self.config.analysis.user_config_db
+                                or self.config.analysis.snapshot_dir
+                            )
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Business feedback unavailable; report requires revalidation: %s", exc
+                        )
+                blockers = report_reuse_blockers(
+                    saved_report, business_answer_store=business_answer_store
+                )
                 if blockers:
                     logger.info(
                         "Not auto-skipping '%s': historical report is not reusable (%s).",
@@ -414,6 +471,140 @@ class ScanSessionRunner:
             f"Skipped {len(skipped)} already-completed functions, " f"{len(remaining)} remaining."
         )
         return False
+
+    def _plan_entry_instances(self, state: Dict[str, Any]) -> None:
+        """Build the entry compile-instance plan before any analysis dispatch.
+
+        The plan is the scheduling boundary: every scheduled instance is an
+        exact ``(build_context_id, usr)`` pair, and anything unverifiable stays
+        an explicit coverage gap instead of a wildcard.
+        """
+
+        if state.get("entry_instance_plan") is not None:
+            return
+        plan = self._build_entry_instance_plan(state)
+        state["entry_instance_plan"] = plan
+        if plan.status == "planned":
+            self.emit(
+                "Entry instance planning: "
+                f"{len(plan.instances)} instance(s) for {plan.entry_count} entry(ies), "
+                f"{len(plan.gaps)} coverage gap(s)."
+            )
+            if plan.gaps:
+                self.emit(
+                    "Variant coverage incomplete: "
+                    + ", ".join(sorted({gap.reason for gap in plan.gaps}))
+                )
+        elif plan.status == "unavailable":
+            self.emit("Entry instance planning unavailable: " + ", ".join(plan.reasons))
+
+    def _build_entry_instance_plan(self, state: Dict[str, Any]) -> EntryInstancePlan:
+        if self.config.project.language == "java":
+            return EntryInstancePlan(
+                status="not_applicable",
+                reasons=["java_scan_has_no_compilation_instances"],
+            )
+        entries = list(state.get("entries") or [])
+        if not entries and self.config.project.entry_function:
+            entries = [
+                FunctionEntry(
+                    self.config.project.entry_function,
+                    file_path=self.config.project.entry_file_path,
+                    signature=self.config.project.entry_signature,
+                )
+            ]
+        if not entries:
+            return EntryInstancePlan(status="not_applicable", reasons=["no_scan_entries"])
+        code_index = self._ensure_code_index(state, defer_svf=True)
+        try:
+            # The instance plan reads the exact-context store, so the index must
+            # be materialized first (its batch extraction produces the
+            # compilation instances).  Without this the plan would look empty
+            # for a real project and the scan would fall into the coverage gap.
+            backend_name = str(getattr(code_index, "backend_name", "") or "").lower()
+            ensure_ready = getattr(code_index, "ensure_index_ready", None)
+            if backend_name in {"clang", "unified"} and callable(ensure_ready):
+                ensure_ready()
+        except Exception:
+            logger.exception("Index warm-up before instance planning failed.")
+        try:
+            return plan_entry_instances(
+                code_index,
+                entries,
+                compile_commands_path=self.config.project.compile_commands_path,
+            )
+        except Exception as exc:
+            logger.exception("Entry instance planning failed; coverage stays unknown.")
+            return EntryInstancePlan(
+                status="unavailable",
+                reasons=[f"entry_instance_planning_failed:{exc}"],
+                entry_count=len(entries),
+            )
+
+    @staticmethod
+    def _attach_entry_instance_coverage(
+        report: Dict[str, Any],
+        state: Dict[str, Any],
+    ) -> None:
+        plan = state.get("entry_instance_plan")
+        if isinstance(plan, EntryInstancePlan):
+            report.setdefault("metadata", {})["entry_instances"] = plan.to_payload(
+                state.get("instance_analysis")
+            )
+
+    def _instance_execution_mode(self, state: Dict[str, Any]) -> str:
+        """Decide whether this scan runs on exact compile instances.
+
+        ``legacy`` keeps the historical path (Java has no compilation
+        instances; a scan with no entries at all has nothing to schedule).
+        ``instances`` runs the precise ``EntryInstance`` schedule.  ``gap``
+        means the project is C/C++ and no instance could be verified: the scan
+        then reports the explicit coverage gap instead of silently falling
+        back to a name-only analysis of an unknown build.
+        """
+
+        if self.config.project.language == "java":
+            return "legacy"
+        plan = state.get("entry_instance_plan")
+        if not isinstance(plan, EntryInstancePlan):
+            return "legacy"
+        if plan.status == "not_applicable":
+            return "legacy"
+        if plan.status == "planned" and plan.instances:
+            return "instances"
+        return "gap"
+
+    def _instance_analysis_required(self, state: Dict[str, Any]) -> bool:
+        return str(state.get("instance_execution_mode") or "legacy") == "instances"
+
+    def _write_instance_gap_report(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """A report that states the uncovered instance gap without analysis."""
+
+        plan = state.get("entry_instance_plan")
+        plan_payload = plan.to_payload() if isinstance(plan, EntryInstancePlan) else {}
+        report: Dict[str, Any] = {
+            "overall_verdict": "unknown",
+            "issues": [],
+            "summary": {
+                "total_issues": 0,
+                "functions_analyzed": 0,
+                "needs_review_issues": 0,
+            },
+            "metadata": {
+                "entry_instances": plan_payload,
+                "instance_execution": {
+                    "mode": "gap",
+                    "planned_instances": len(getattr(plan, "instances", []) or []),
+                    "analyzed_instances": 0,
+                    "reason": "no_verifiable_compilation_instance",
+                },
+            },
+            "completeness": "incomplete",
+            "finding_status": "unknown",
+            "scan_outcome": "incomplete",
+        }
+        self._annotate_task_report(report)
+        return report
 
     def _ensure_semantic_phase(self, state: Dict[str, Any]) -> None:
         if self.config.project.language == "java" or state.get("semantic_result") is not None:
@@ -623,6 +814,13 @@ class ScanSessionRunner:
         state: Dict[str, Any],
         steps: List[WorkflowStep],
     ) -> ScanSessionResult:
+        mode = str(state.get("instance_execution_mode") or "legacy")
+        if mode == "gap":
+            return self._run_batch_instance_gap(state)
+        if mode == "instances":
+            job_context = self._job_context()
+            if job_context is not None:
+                return self._run_instances_via_queue(state, batch=True, context=job_context)
         entries: List[FunctionEntry] = state["entries"]
         svf_entries = self._svf_scope_entries(state, entries)
         entry_names = self._entry_names(entries) or self._entry_names(svf_entries)
@@ -649,6 +847,7 @@ class ScanSessionRunner:
 
         parallel_kwargs: Dict[str, Any] = {}
         parallel_kwargs["semantic_result"] = state.get("semantic_result")
+        parallel_kwargs["reproduction_service"] = self.reproduction_service
         if state.get("wiki_compile_completed"):
             parallel_kwargs["project_knowledge_service"] = state.get("project_knowledge_service")
             parallel_kwargs["llm_clients"] = state.get("llm_clients")
@@ -668,7 +867,16 @@ class ScanSessionRunner:
                 discovery_result.get("deferred_candidates") or []
             )
         try:
-            state["results"] = parallel_analyzer.analyze_function_entries(entries)
+            if mode == "instances":
+                # Exact per-instance dispatch: one real Analyzer run per
+                # scheduled ``(BuildContext, USR)`` instance, sharing the scan
+                # ledger, caches and the scan-level validation queue.
+                state["instance_analysis"] = parallel_analyzer.analyze_entry_instances(
+                    state.get("entry_instance_plan")
+                )
+                state["results"] = parallel_analyzer.last_instance_results()
+            else:
+                state["results"] = parallel_analyzer.analyze_function_entries(entries)
             self.batch_executor.execute(state, steps)
 
             json_report_path = self._report_path("zscope_batch_report", ".json")
@@ -686,6 +894,7 @@ class ScanSessionRunner:
             )
             report_tail_seconds = round(time.monotonic() - report_started, 4)
             self._annotate_task_report(combined_report)
+            self._attach_entry_instance_coverage(combined_report, state)
             combined_report.setdefault("summary", {})["report_tail_seconds"] = report_tail_seconds
             combined_report.setdefault("metadata", {})["report_tail_seconds"] = report_tail_seconds
             write_report_atomic(json_report_path, combined_report)
@@ -734,6 +943,11 @@ class ScanSessionRunner:
                     close_parallel_analyzer()
 
     def _run_single(self, state: Dict[str, Any]) -> ScanSessionResult:
+        mode = str(state.get("instance_execution_mode") or "legacy")
+        if mode == "gap":
+            return self._run_single_instance_gap(state)
+        if mode == "instances":
+            return self._run_single_instances(state)
         entry_function = self.config.project.entry_function
         if not entry_function:
             raise ValueError("No entry function or entry functions list provided.")
@@ -755,6 +969,7 @@ class ScanSessionRunner:
         try:
             analyzer_kwargs: Dict[str, Any] = {}
             analyzer_kwargs["semantic_result"] = state.get("semantic_result")
+            analyzer_kwargs["reproduction_service"] = self.reproduction_service
             if state.get("wiki_compile_completed"):
                 analyzer_kwargs["project_knowledge_service"] = state.get(
                     "project_knowledge_service"
@@ -785,6 +1000,7 @@ class ScanSessionRunner:
             dict(result.get("metadata") or {}) if isinstance(result.get("metadata"), dict) else {}
         )
         metadata.update(entry_budget)
+        self._attach_entry_instance_coverage({"metadata": metadata}, state)
         result["metadata"] = metadata
         if entry_budget["entry_budget_exceeded"]:
             logger.warning(
@@ -841,6 +1057,619 @@ class ScanSessionRunner:
             task_id=self.task_id,
             task_slug=self.task_slug,
         )
+
+    def _build_instance_analyzer(self, state: Dict[str, Any]) -> ParallelAnalyzer:
+        """One ParallelAnalyzer for exact-instance dispatch.
+
+        No ``semantic_result`` is passed: the instance path must not consume
+        project-wide modeling evidence, and it skips the shared semantics /
+        deterministic fact pass over the unwrapped index by itself.
+        """
+
+        entries = list(state.get("entries") or []) or list(state.get("all_entries") or [])
+        self._ensure_svf_for_entries(state, entries)
+        code_index = self._ensure_code_index(state, defer_svf=True)
+        analyzer = ParallelAnalyzer(
+            self.config,
+            code_index=code_index,
+            llm_clients=state.get("llm_clients"),
+            project_knowledge_service=state.get("project_knowledge_service"),
+            force_ignore_history=not (self.resume or self.maintain),
+            maintain_mode=self.maintain,
+            cancellation_token=self._cancellation_token,
+            benchmark_ablation_override=self._benchmark_ablation_override,
+            reproduction_service=self.reproduction_service,
+        )
+        try:
+            analyzer.freeze_instance_semantics(state.get("entry_instance_plan"))
+        except BaseException:
+            self._close_analyzer(analyzer)
+            raise
+        return analyzer
+
+    # -- job-driven instance execution (JOB04/JOB06 session wiring) ----------
+
+    @staticmethod
+    def _job_context() -> Optional[Any]:
+        """The owner-passed job attempt identity, or ``None`` when unwired."""
+
+        from .jobs.scheduler_hook import session_job_context_from_env
+
+        return session_job_context_from_env()
+
+    @staticmethod
+    def _instance_run_dir(context: Any) -> Path:
+        """This attempt's own run directory inside the job directory."""
+
+        return Path(str(context.run_dir))
+
+    @staticmethod
+    def _job_input_revision(context: Any) -> str:
+        """Read the job row's bind revision (the scheduler re-verifies binding)."""
+
+        try:
+            from .jobs.store import JobStore
+
+            row = JobStore(context.store_path).get_job(context.job_id)
+        except Exception:
+            return ""
+        if not row:
+            return ""
+        return str(row.get("input_revision") or "")
+
+    def _run_instances_via_queue(
+        self, state: Dict[str, Any], *, batch: bool, context: Any
+    ) -> ScanSessionResult:
+        previous = state.get("parallel_analyzer")
+        try:
+            return self._run_instances_via_queue_owned(state, batch=batch, context=context)
+        finally:
+            analyzer = state.get("parallel_analyzer")
+            if analyzer is not None and analyzer is not previous:
+                self._close_analyzer(analyzer)
+
+    def _run_instances_via_queue_owned(
+        self, state: Dict[str, Any], *, batch: bool, context: Any
+    ) -> ScanSessionResult:
+        """Run the instance scan through this attempt's own work queue.
+
+        The queue is per-run (``<run_dir>/work-queue.db``) so a fresh attempt
+        never inherits a crashed attempt's verdicts, while the canonical job
+        queue and its sidecars are never rewritten or removed.  The scheduler
+        publishes its real ``session_scheduler_started`` receipt naming this
+        queue, which is how the owner selects it.
+
+        Cross-run reuse is authorized only by a *bound* completion receipt for
+        this exact job/input/plan, verified against the producer's immutable
+        file; every other attempt re-analyzes the current precise plan.
+        """
+
+        from .jobs.models import JobError
+        from .jobs.scan_work import (
+            InstanceWorkHandlers,
+            compute_plan_fingerprint,
+            instance_work_items,
+        )
+        from .jobs.scheduler_hook import JobWindowHook
+        from .jobs.session_scheduler import WORK_QUEUE_FILENAME, SessionWorkScheduler
+
+        plan = state.get("entry_instance_plan")
+        run_dir = self._instance_run_dir(context)
+        queue_path = run_dir / f"{WORK_QUEUE_FILENAME}.{uuid.uuid4().hex}"
+        code_index = self._ensure_code_index(state, defer_svf=True)
+        if batch:
+            report_paths = [
+                self._report_path("zscope_batch_report", suffix) for suffix in (".json", ".md")
+            ]
+        else:
+            report_paths = [
+                self.config.project.project_root / name for name in ("report.json", "report.md")
+            ]
+            report_paths.extend(self._report_path("report", suffix) for suffix in (".json", ".md"))
+        # Pure native/namespace/physical collision checks precede every job
+        # connection: even a read connection can create SQLite WAL/SHM names.
+        runtime_outputs = code_index._prepare_job_runtime_outputs(
+            context=context, plan=plan, queue_path=queue_path, report_paths=report_paths
+        )
+        input_revision = runtime_outputs.input_revision
+        hook = JobWindowHook(
+            context.store_path,
+            job_id=context.job_id,
+            run_id=context.run_id,
+            owner_token=context.owner_token,
+            run_dir=context.run_dir,
+            input_revision=input_revision,
+        )
+        hook._bind_runtime_outputs(runtime_outputs)
+        # Verify the current job/run/owner/input binding *before* any queue,
+        # checkpoint, sidecar or report write/delete.  An invalid binding is a
+        # hard stop: it is never a licence to touch a queue that another owner
+        # may still be driving.
+        binding = hook.stand_down_reason(expected_input_revision=input_revision or None)
+        if binding is not None:
+            raise JobError(
+                binding,
+                "the instance attempt binding is not current; refusing to touch the job queue",
+                status_code=409,
+            )
+        analyzer = self._build_instance_analyzer(state)
+        state["parallel_analyzer"] = analyzer
+        semantics = analyzer.freeze_instance_semantics(plan)
+        plan_fingerprint = compute_plan_fingerprint(
+            plan, self.config, semantics_by_instance=semantics.snapshots
+        )
+
+        items = instance_work_items(plan)
+        if not items:
+            return (
+                self._run_batch_instance_gap(state)
+                if batch
+                else self._run_single_instance_gap(state)
+            )
+        # Per-attempt queue inside this run's directory: no attempt inherits
+        # another attempt's settled verdicts, the canonical job queue and its
+        # sidecars are never rewritten or removed, and the real
+        # ``session_scheduler_started`` receipt names this file for the owner.
+        with runtime_outputs.writer():
+            run_dir.mkdir(parents=True, exist_ok=True)
+        with runtime_outputs.sql_writer():
+            scheduler = SessionWorkScheduler(
+                store_path=context.store_path,
+                job_id=context.job_id,
+                run_id=context.run_id,
+                owner_token=context.owner_token,
+                run_dir=context.run_dir,
+                work_queue_path=queue_path,
+                worker_count=1,
+                claim_batch_size=1,
+                lease_seconds=max(600.0, self._instance_lease_seconds()),
+            )
+        scheduler._hook._bind_runtime_outputs(runtime_outputs)
+        # The analyzer is built with the session token before the window
+        # watcher starts; every entry and validation run then observes the same
+        # cooperative cancel/deadline instead of a token replaced after the run.
+        handlers = InstanceWorkHandlers(
+            plan=plan,
+            analyzer=analyzer,
+            run_dir=run_dir,
+            input_revision=str(getattr(scheduler, "input_revision", "") or ""),
+            store_path=context.store_path,
+            job_id=context.job_id,
+            run_id=context.run_id,
+            owner_token=context.owner_token,
+            plan_fingerprint=str(plan_fingerprint or ""),
+            hook=hook,
+            snapshot_fn=scheduler.snapshot,
+        )
+        for kind, handler in handlers.handlers().items():
+            scheduler.register_handler(kind, handler)
+        watcher = self._start_job_window_monitor(hook, self._cancellation_token)
+        try:
+            scheduler.submit(items)
+            summary = scheduler.run()
+        finally:
+            self._stop_job_window_monitor(watcher)
+            handlers.release()
+        state["job_summary"] = summary
+        state["instance_analysis"] = handlers.report_payload
+        state["instance_recovery"] = handlers.recovery_summary
+        state["results"] = analyzer.last_instance_results()
+        return self._finalize_instance_run(
+            state,
+            batch=batch,
+            context=context,
+            summary=summary,
+            completed=handlers.checkpoint_path is not None,
+            input_revision=input_revision,
+        )
+
+    def _load_bound_completion(
+        self,
+        state: Dict[str, Any],
+        *,
+        context: Any,
+        plan: Any,
+        input_revision: str,
+        plan_fingerprint: Optional[str],
+        verify: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Restore a bound cross-run completion for this exact job/input/plan.
+
+        ``JobStore.trusted_completion`` proves real coordinates only (current
+        run/owner, exact input and exact plan fingerprint — the producer may be
+        an earlier run of the same job).  The receipt's immutable file is then
+        re-read and re-checked against the current plan by ``verify``.  Any
+        missing, foreign, stale or unverifiable coordinate re-analyzes.
+        """
+
+        if not input_revision or not plan_fingerprint:
+            return None
+        try:
+            from .jobs.store import JobStore
+
+            receipt = JobStore(context.store_path).trusted_completion(
+                context.job_id,
+                run_id=context.run_id,
+                owner_token=context.owner_token,
+                input_revision=input_revision,
+                plan_fingerprint=str(plan_fingerprint),
+            )
+        except Exception:
+            logger.warning("bound completion lookup failed; re-analyzing", exc_info=True)
+            return None
+        if not receipt:
+            return None
+        restored = verify(receipt, plan=plan, input_revision=input_revision)
+        if restored is None:
+            logger.warning("bound completion receipt did not verify; re-analyzing")
+            return None
+        # The immutable file verified, but the attempt binding can flip between
+        # that read and publishing the report.  Re-check the real
+        # job/run/owner/input under the job row's write lock (store.bound_attempt
+        # raises JobError on drift) so a handoff aborts this reader instead of
+        # projecting a stale completion onto the current attempt.  Nothing is
+        # written inside the block, so no second store write can self-deadlock.
+        from .jobs.store import JobStore
+
+        with JobStore(context.store_path).bound_attempt(
+            job_id=context.job_id,
+            run_id=context.run_id,
+            owner_token=context.owner_token,
+            expected_input_revision=input_revision,
+        ):
+            pass
+        logger.info(
+            "Restoring the bound instance completion produced by run %s; "
+            "nothing is re-analyzed this run.",
+            receipt.get("run_id"),
+        )
+        state["results"] = {}
+        state["instance_analysis"] = restored.get("instance_analysis")
+        return dict(restored)
+
+    @staticmethod
+    def _start_job_window_monitor(hook: Any, token: CancellationToken) -> Any:
+        """Cooperatively cancel the scan token when the job window closes.
+
+        The owner watchdog force-terminates a scanner that ignores its window;
+        this watcher cancels the shared token instead, so the real
+        Analyzer/Validator stop at a cooperative boundary and the unfinished
+        queue is persisted before the owner's grace expires.
+        """
+
+        stopped = threading.Event()
+
+        def _watch() -> None:
+            while not stopped.wait(0.1):
+                try:
+                    if hook.cancel_requested():
+                        token.cancel("job_cancel_requested")
+                        return
+                    if hook.stop_new_work():
+                        token.cancel("job_deadline_exceeded")
+                        return
+                except Exception:
+                    return
+
+        thread = threading.Thread(target=_watch, name="zscope-job-window-monitor", daemon=True)
+        thread.start()
+        return (stopped, thread)
+
+    @staticmethod
+    def _stop_job_window_monitor(watcher: Any) -> None:
+        if not watcher:
+            return
+        stopped, thread = watcher
+        stopped.set()
+        thread.join(timeout=5.0)
+
+    @staticmethod
+    def _close_analyzer(analyzer: Any) -> None:
+        close = getattr(analyzer, "close", None)
+        if callable(close):
+            close()
+
+    def _instance_lease_seconds(self) -> float:
+        entry_deadline = getattr(self.config.analysis, "entry_deadline_seconds", None)
+        if entry_deadline is None:
+            return 1800.0
+        try:
+            return max(600.0, float(entry_deadline) * 2.0)
+        except (TypeError, ValueError):
+            return 1800.0
+
+    def _finalize_instance_run(
+        self,
+        state: Dict[str, Any],
+        *,
+        batch: bool,
+        context: Any,
+        summary: Dict[str, Any],
+        completed: bool,
+        input_revision: str = "",
+    ) -> ScanSessionResult:
+        analyzer = state.get("parallel_analyzer")
+        results = dict(state.get("results") or {})
+        if analyzer is not None:
+            combined = analyzer.generate_combined_report(results, None)
+        else:
+            combined = {
+                "summary": {"total_issues": 0, "functions_analyzed": 0, "needs_review_issues": 0},
+                "metadata": {},
+            }
+        self._annotate_task_report(combined)
+        self._attach_entry_instance_coverage(combined, state)
+        metadata = combined.setdefault("metadata", {})
+        recovery = state.get("instance_recovery") or {}
+        analyzed = int(recovery.get("analyzed_instances") or 0)
+        reused = int(recovery.get("restored_instances") or 0)
+        executed = int(recovery.get("executed_instances") or 0)
+        restored_runs = recovery.get("restored_from_run_ids") or []
+        if analyzed != reused + executed:
+            raise ValueError("instance_report_settlement_partition_invalid")
+        metadata["job"] = {
+            "schema": "zscope.scan-session-job.v1",
+            "job_id": context.job_id,
+            "run_id": context.run_id,
+            "status": summary.get("status"),
+            "counts": summary.get("counts"),
+            "remaining_count": summary.get("remaining_count"),
+            "window_closed": summary.get("window_closed"),
+            "cancel_observed": summary.get("cancel_observed"),
+            "discovery_blocked": summary.get("discovery_blocked"),
+            "pending_path": summary.get("pending_path"),
+            "checkpointed": completed,
+            # Reuse is reported separately from this run's own Analyzer work, and
+            # the producing run is named so identical content never blurs runs.
+            "restored_from_run_id": restored_runs[0] if len(restored_runs) == 1 else None,
+            "restored_from_run_ids": list(restored_runs),
+            "restored_instances": reused,
+            "cached_instances": reused,
+            "executed_instances": executed,
+            "analyzed_instances": analyzed,
+            "instance_recovery": recovery,
+        }
+        if not completed:
+            combined["completeness"] = "incomplete"
+            combined["scan_outcome"] = "partial"
+        with self._publication_fence(context, input_revision):
+            if analyzer is not None:
+                analyzer.require_current_instance_inputs(require_complete=completed)
+            runtime_outputs = (
+                getattr(analyzer.code_index, "_job_runtime_outputs", None)
+                if analyzer is not None
+                else None
+            )
+            from ..retrieval.code_index import _JobRuntimeOutputs
+
+            if not isinstance(runtime_outputs, _JobRuntimeOutputs):
+                raise ValueError("job_runtime_output_publication_scope_missing")
+            with runtime_outputs.writer():
+                report_paths = self._publish_instance_reports(
+                    batch=batch,
+                    combined=combined,
+                    results=results,
+                    analyzer=analyzer,
+                    restored_markdown=None,
+                    runtime_outputs=runtime_outputs,
+                )
+        issues_count = int(combined.get("summary", {}).get("total_issues") or 0)
+        return ScanSessionResult(
+            is_batch=batch,
+            exit_code=exit_code_for_report(
+                combined, policy=self.exit_policy, legacy_issue_count=issues_count
+            ),
+            reports=report_paths,
+            issues_count=issues_count,
+            needs_review_count=self._needs_review_count_from_report(combined),
+            unresolved_obligations_count=self._unresolved_obligations_count_from_report(combined),
+            verdict=str(combined.get("overall_verdict") or "unknown"),
+            functions_analyzed=int(combined.get("summary", {}).get("functions_analyzed") or 0),
+            project_root=self.config.project.project_root,
+            finding_status=str(combined.get("finding_status") or "unknown"),
+            completeness=str(combined.get("completeness") or "complete"),
+            scan_outcome=str(combined.get("scan_outcome") or "clean"),
+            task_id=self.task_id,
+            task_slug=self.task_slug,
+        )
+
+    @contextmanager
+    def _publication_fence(self, context: Any, input_revision: str) -> Iterator[None]:
+        """Hold the job row's write lock across the whole report publication.
+
+        A check-only transaction is not a fence: the owner can hand the attempt
+        to a newer run between an empty check and the actual file writes.  This
+        keeps the same ``BEGIN IMMEDIATE`` lock (``store.bound_attempt``) open
+        while the current/task JSON and Markdown are published, so a competing
+        job-store writer is blocked or, if it already won, this publication is
+        refused with ``JobError`` instead of rewriting the new run's report.
+        The attempt ``input_revision`` captured when this run was bound is used
+        as-is (never re-read here), and no scanner/model work runs in the block.
+        """
+
+        if context is None:
+            yield
+            return
+        from .jobs.store import JobStore
+
+        with JobStore(context.store_path).bound_attempt(
+            job_id=context.job_id,
+            run_id=context.run_id,
+            owner_token=context.owner_token,
+            expected_input_revision=input_revision or None,
+        ):
+            yield
+
+    def _publish_instance_reports(
+        self,
+        *,
+        batch: bool,
+        combined: Dict[str, Any],
+        results: Dict[str, ParallelAnalysisResult],
+        analyzer: Optional[ParallelAnalyzer],
+        restored_markdown: Optional[str],
+        runtime_outputs: Optional[_JobRuntimeOutputs] = None,
+    ) -> List[Path]:
+        """Write the current, task and Markdown reports (inside the fence)."""
+
+        report_paths: List[Path] = []
+        if batch:
+            json_report_path = self._report_path("zscope_batch_report", ".json")
+            md_report_path = self._report_path("zscope_batch_report", ".md")
+            self._backup_existing_batch_report(json_report_path, runtime_outputs=runtime_outputs)
+            if analyzer is not None:
+                analyzer.generate_combined_markdown_report(results, md_report_path)
+            elif restored_markdown:
+                md_report_path.write_text(restored_markdown, encoding="utf-8")
+            write_report_atomic(json_report_path, combined)
+            report_paths = [json_report_path, md_report_path]
+        else:
+            json_report_path = self.config.project.project_root / "report.json"
+            md_report_path = self.config.project.project_root / "report.md"
+            if analyzer is not None:
+                analyzer.generate_combined_markdown_report(results, md_report_path)
+            elif restored_markdown:
+                md_report_path.write_text(restored_markdown, encoding="utf-8")
+            write_report_atomic(json_report_path, combined)
+            report_paths = [json_report_path, md_report_path]
+            if self.task_slug:
+                task_json = self._report_path("report", ".json")
+                write_report_atomic(task_json, combined)
+                task_md = self._report_path("report", ".md")
+                if md_report_path.is_file():
+                    shutil.copy2(md_report_path, task_md)
+                    report_paths = [task_json, task_md]
+                else:
+                    report_paths = [task_json]
+        return report_paths
+
+    def _run_single_instances(self, state: Dict[str, Any]) -> ScanSessionResult:
+        plan = state.get("entry_instance_plan")
+        job_context = self._job_context()
+        if job_context is not None:
+            return self._run_instances_via_queue(state, batch=False, context=job_context)
+        logger.info(
+            "Single mode: exact compile instances = %d",
+            len(getattr(plan, "instances", []) or []),
+        )
+        parallel_analyzer = self._build_instance_analyzer(state)
+        state["parallel_analyzer"] = parallel_analyzer
+        try:
+            state["instance_analysis"] = parallel_analyzer.analyze_entry_instances(plan)
+            state["results"] = parallel_analyzer.last_instance_results()
+            combined_report = parallel_analyzer.generate_combined_report(state["results"], None)
+            self._annotate_task_report(combined_report)
+            self._attach_entry_instance_coverage(combined_report, state)
+            markdown_report_path = self.config.project.project_root / "report.md"
+            parallel_analyzer.generate_combined_markdown_report(
+                state["results"], markdown_report_path
+            )
+            persisted_report_path = self.config.project.project_root / "report.json"
+            write_report_atomic(persisted_report_path, combined_report)
+            report_paths: List[Path] = [persisted_report_path, markdown_report_path]
+            if self.task_slug:
+                task_json = self._report_path("report", ".json")
+                write_report_atomic(task_json, combined_report)
+                task_md = self._report_path("report", ".md")
+                if markdown_report_path.is_file():
+                    shutil.copy2(markdown_report_path, task_md)
+                    report_paths = [task_json, task_md]
+                else:
+                    report_paths = [task_json]
+            issues_count = int(combined_report["summary"]["total_issues"])
+            return ScanSessionResult(
+                is_batch=False,
+                exit_code=exit_code_for_report(
+                    combined_report,
+                    policy=self.exit_policy,
+                    legacy_issue_count=issues_count,
+                ),
+                reports=report_paths,
+                issues_count=issues_count,
+                needs_review_count=self._needs_review_count_from_report(combined_report),
+                unresolved_obligations_count=(
+                    self._unresolved_obligations_count_from_report(combined_report)
+                ),
+                verdict=str(combined_report.get("overall_verdict") or "unknown"),
+                functions_analyzed=int(combined_report["summary"].get("functions_analyzed") or 0),
+                project_root=self.config.project.project_root,
+                finding_status=str(combined_report.get("finding_status") or "clean"),
+                completeness=str(combined_report.get("completeness") or "complete"),
+                scan_outcome=str(combined_report.get("scan_outcome") or "clean"),
+                task_id=self.task_id,
+                task_slug=self.task_slug,
+            )
+        finally:
+            close_analyzer = getattr(parallel_analyzer, "close", None)
+            if callable(close_analyzer):
+                close_analyzer()
+
+    def _run_single_instance_gap(self, state: Dict[str, Any]) -> ScanSessionResult:
+        report = self._write_instance_gap_report(state)
+        json_path = self.config.project.project_root / "report.json"
+        write_report_atomic(json_path, report)
+        markdown_path = self.config.project.project_root / "report.md"
+        markdown_path.write_text(self._instance_gap_markdown(report), encoding="utf-8")
+        report_paths: List[Path] = [json_path, markdown_path]
+        if self.task_slug:
+            task_json = self._report_path("report", ".json")
+            write_report_atomic(task_json, report)
+            task_md = self._report_path("report", ".md")
+            shutil.copy2(markdown_path, task_md)
+            report_paths = [task_json, task_md]
+        elif report.get("error"):
+            report_paths = [json_path]
+        return ScanSessionResult(
+            is_batch=False,
+            exit_code=exit_code_for_report(report, policy=self.exit_policy, legacy_issue_count=0),
+            reports=report_paths,
+            verdict="unknown",
+            project_root=self.config.project.project_root,
+            finding_status="unknown",
+            completeness="incomplete",
+            scan_outcome="incomplete",
+            task_id=self.task_id,
+            task_slug=self.task_slug,
+        )
+
+    def _run_batch_instance_gap(self, state: Dict[str, Any]) -> ScanSessionResult:
+        report = self._write_instance_gap_report(state)
+        json_report_path = self._report_path("zscope_batch_report", ".json")
+        md_report_path = self._report_path("zscope_batch_report", ".md")
+        self._backup_existing_batch_report(json_report_path)
+        write_report_atomic(json_report_path, report)
+        md_report_path.write_text(self._instance_gap_markdown(report), encoding="utf-8")
+        return ScanSessionResult(
+            is_batch=True,
+            exit_code=exit_code_for_report(report, policy=self.exit_policy, legacy_issue_count=0),
+            reports=[json_report_path, md_report_path],
+            project_root=self.config.project.project_root,
+            finding_status="unknown",
+            completeness="incomplete",
+            scan_outcome="incomplete",
+            task_id=self.task_id,
+            task_slug=self.task_slug,
+        )
+
+    @staticmethod
+    def _instance_gap_markdown(report: Dict[str, Any]) -> str:
+        plan = (report.get("metadata") or {}).get("entry_instances") or {}
+        lines = [
+            "# Z-SCOPE report",
+            "",
+            "No verifiable compilation instance was scheduled for this scan; the",
+            "scan did not fall back to a name-only analysis of an unknown build.",
+            "",
+            f"- status: {plan.get('status')}",
+            f"- reasons: {', '.join(plan.get('reasons') or [])}",
+            f"- planned_instances: {plan.get('planned_instances')}",
+        ]
+        for gap in (plan.get("gaps") or [])[:50]:
+            lines.append(
+                f"- gap {gap.get('reason')}: {gap.get('function_name')} "
+                f"({gap.get('build_context_id')})"
+            )
+        return "\n".join(lines) + "\n"
 
     def _report_path(self, stem: str, suffix: str) -> Path:
         filename = f"{stem}_{self.task_slug}{suffix}" if self.task_slug else f"{stem}{suffix}"
@@ -945,8 +1774,23 @@ class ScanSessionRunner:
             missing.append(name)
         return missing
 
-    def _backup_existing_batch_report(self, json_report_path: Path) -> None:
+    def _backup_existing_batch_report(
+        self,
+        json_report_path: Path,
+        *,
+        runtime_outputs: Optional[_JobRuntimeOutputs] = None,
+    ) -> None:
         if not json_report_path.exists():
+            return
+        if runtime_outputs is not None:
+            backup_dir = self.config.project.project_root / ".zscope_knowledge" / "backups"
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            backup_path = backup_dir / f"zscope_batch_report_{timestamp}.json"
+            # A live job's precise target is checked by the original factory
+            # declaration before any copy or best-effort exception handler.
+            parents = runtime_outputs.prepare_backup(backup_path)
+            self._copy_job_batch_backup(json_report_path, backup_path, parents)
+            logger.info("Created failsafe backup of previous batch report at %s", backup_path)
             return
         try:
             backup_dir = self.config.project.project_root / ".zscope_knowledge" / "backups"
@@ -960,6 +1804,105 @@ class ScanSessionRunner:
             )
         except Exception as exc:
             logger.warning("Failed to create backup of batch report: %s", exc)
+
+    @staticmethod
+    def _copy_job_batch_backup(
+        source: Path, target: Path, parents: Dict[str, tuple[int, int, int, int]]
+    ) -> None:
+        """Publish through checked directory descriptors without following links.
+
+        This pure filesystem block runs inside the existing Store -> namespace
+        writer. Unpredictable temporary names remain inside that same fence;
+        they are neither registered nor ignored by a namespace wildcard.
+        """
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_fd = os.open(target.anchor, directory_flags)
+        temporary = f".batch-backup-{uuid.uuid4().hex}.tmp"
+        temporary_created = False
+        try:
+            current = Path(target.anchor)
+            for component in target.parent.parts:
+                if component == target.anchor:
+                    continue
+                current /= component
+                expected = parents.get(str(current))
+                created = False
+                try:
+                    child_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    if expected is not None:
+                        raise ValueError("job_runtime_output_backup_parent_disappeared")
+                    os.mkdir(component, mode=0o700, dir_fd=directory_fd)
+                    created = True
+                    child_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+                child = os.fstat(child_fd)
+                actual = (child.st_dev, child.st_ino, child.st_uid, child.st_mode)
+                if (expected is not None and expected != actual) or (
+                    expected is None and (not created or child.st_uid != os.geteuid())
+                ):
+                    os.close(child_fd)
+                    raise ValueError("job_runtime_output_backup_parent_changed")
+                os.close(directory_fd)
+                directory_fd = child_fd
+            actual_directory = os.fstat(directory_fd)
+            visible_directory = target.parent.lstat()
+            if (
+                actual_directory.st_dev != visible_directory.st_dev
+                or actual_directory.st_ino != visible_directory.st_ino
+                or not stat.S_ISDIR(visible_directory.st_mode)
+                or actual_directory.st_uid != os.geteuid()
+            ):
+                raise ValueError("job_runtime_output_backup_directory_not_current")
+            source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(source_fd, "rb") as original:
+                before = os.fstat(original.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid():
+                    raise ValueError("job_runtime_output_backup_source_not_regular")
+                temporary_fd = os.open(
+                    temporary,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                temporary_created = True
+                with os.fdopen(temporary_fd, "wb") as backup:
+                    shutil.copyfileobj(original, backup)
+                    backup.flush()
+                    after = os.fstat(original.fileno())
+                    if (
+                        before.st_dev,
+                        before.st_ino,
+                        before.st_size,
+                        before.st_mtime_ns,
+                        before.st_ctime_ns,
+                        before.st_mode,
+                        before.st_uid,
+                    ) != (
+                        after.st_dev,
+                        after.st_ino,
+                        after.st_size,
+                        after.st_mtime_ns,
+                        after.st_ctime_ns,
+                        after.st_mode,
+                        after.st_uid,
+                    ):
+                        raise ValueError("job_runtime_output_backup_source_changed")
+                    os.fchmod(backup.fileno(), stat.S_IMODE(before.st_mode))
+                    os.utime(backup.fileno(), ns=(before.st_atime_ns, before.st_mtime_ns))
+                    os.fsync(backup.fileno())
+                os.replace(
+                    temporary,
+                    target.name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                )
+                temporary_created = False
+        finally:
+            try:
+                if temporary_created:
+                    os.unlink(temporary, dir_fd=directory_fd)
+            finally:
+                os.close(directory_fd)
 
 
 def _task_slug(task_id: str) -> str:

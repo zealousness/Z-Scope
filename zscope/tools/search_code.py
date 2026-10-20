@@ -21,11 +21,10 @@ from .symbols import (
     project_relative_path_error,
     public_symbol,
 )
+from .source_access import ProjectSourceAccess
 
-DESCRIPTION = """Find project symbols before reading code: functions, methods, macros
-(including object-like numeric macros), types, globals, and external functions.
-Returns ranked symbol_id candidates; pass IDs unchanged. Does not return source,
-graph, or data-flow evidence."""
+DESCRIPTION = """Search symbols (default; preserve symbol_id), literal text, or file paths.
+Text/files return read_code locations; page with view_id. Hits are not flow evidence."""
 
 
 SEARCH_CONTRACT = ToolContract(
@@ -34,6 +33,8 @@ SEARCH_CONTRACT = ToolContract(
     input_schema=object_schema(
         {
             "query": {"type": "string", "minLength": 1, "maxLength": 256},
+            "scope": {"type": "string", "enum": ["symbols", "text", "files"]},
+            "view_id": {"type": ["string", "null"], "maxLength": 64},
             "kinds": {
                 "type": "array",
                 "items": {"type": "string", "enum": list(SEARCHABLE_KINDS)},
@@ -52,7 +53,24 @@ SEARCH_CONTRACT = ToolContract(
     ),
     output_schema=output_schema(
         object_schema(
-            {"symbols": {"type": "array", "items": SYMBOL_SCHEMA}},
+            {
+                "symbols": {"type": "array", "items": SYMBOL_SCHEMA},
+                "scope": {"type": "string", "enum": ["text", "files"]},
+                "view_id": {"type": "string"},
+                "matches": {
+                    "type": "array",
+                    "items": object_schema(
+                        {
+                            "file": {"type": "string"},
+                            "line": {"type": ["integer", "null"], "minimum": 1},
+                            "column": {"type": ["integer", "null"], "minimum": 1},
+                            "text": {"type": "string"},
+                            "revision": {"type": "string"},
+                        },
+                        required=["file", "line", "column", "text", "revision"],
+                    ),
+                },
+            },
             required=["symbols"],
         )
     ),
@@ -137,11 +155,29 @@ def _unsafe_regex_reason(pattern: str) -> str:
 
 
 class SearchCodeTool(ContractTool):
-    def __init__(self, catalog: SymbolCatalog) -> None:
+    def __init__(
+        self, catalog: SymbolCatalog, source_access: ProjectSourceAccess | None = None
+    ) -> None:
         super().__init__(SEARCH_CONTRACT)
         self.catalog = catalog
+        self.source_access = source_access or ProjectSourceAccess.for_index(catalog.code_index)
 
     def validate_cross_fields(self, arguments: Dict[str, Any]) -> Dict[str, Any] | None:
+        scope = arguments.get("scope", "symbols")
+        if scope != "symbols":
+            for key in ("kinds", "match_mode"):
+                if key in arguments and (key == "kinds" or arguments[key] != "substring"):
+                    return invalid_request(
+                        code="unsupported_search_option",
+                        path=key,
+                        message="text/files support only literal substring matching, without kinds.",
+                    )
+        elif arguments.get("view_id"):
+            return invalid_request(
+                code="unexpected_search_view",
+                path="view_id",
+                message="view_id is only valid for text/files.",
+            )
         if arguments.get("path_prefix"):
             path_error = project_relative_path_error(arguments["path_prefix"])
             if path_error:
@@ -167,6 +203,10 @@ class SearchCodeTool(ContractTool):
         return None
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        if arguments.get("scope", "symbols") != "symbols":
+            if self.source_access is None:
+                return tool_result(status="unavailable", data=None, missing=["project_source_root"])
+            return self.source_access.search(arguments)
         query = str(arguments["query"])
         kinds = arguments.get("kinds") or list(SEARCHABLE_KINDS)
         match_mode = str(arguments.get("match_mode") or "substring")

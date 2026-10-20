@@ -123,7 +123,7 @@ def test_rule_show_json_resolves_descriptor_and_effective_reason(tmp_path: Path)
     assert payload["rule"]["id"] == "same_pointer_freed_twice"
     assert payload["rule"]["engine"] == "cpp_regex"
     assert payload["rule"]["skill"] == "temporal_memory"
-    assert payload["rule"]["revision"] == 8
+    assert payload["rule"]["revision"] == 9
     assert payload["rule"]["effective_status"] == "disabled"
     assert payload["rule"]["effective_reason"] == "disabled_by_config"
 

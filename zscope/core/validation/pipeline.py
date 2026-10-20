@@ -7,7 +7,11 @@ import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, cast
 
 from ...common.defect_cwe_map import ensure_issue_cwes
-from ...common.issue_identity import canonical_issue_key, parse_issue_location
+from ...common.issue_identity import (
+    canonical_issue_key,
+    issue_build_context_id,
+    parse_issue_location,
+)
 from ...memory import ReviewMemory
 from .proofs import deterministic_decision_proof
 
@@ -58,6 +62,8 @@ NEEDS_REVIEW_SUB_STATES = {
     "model_uncertain",
     "model_rejected_unproven",
     "policy_pending_promotion",
+    "business_conditional",
+    "protocol_pending",
 }
 
 
@@ -84,11 +90,16 @@ def needs_review_sub_state(issue: Any) -> str:
     status = str(issue_dict.get("validation_status") or "").lower()
     if disposition != "needs_review" and status != "needs_review":
         return ""
+    from .protocol_assessment import protocol_review_state
+
+    protocol_state = protocol_review_state(issue_dict)
+    if protocol_state:
+        return protocol_state
     verdict = str(issue_dict.get("validator_verdict") or "").lower()
     if verdict == "rejected":
         return "model_rejected_unproven"
     if verdict == "uncertain":
-        if not issue_dict.get("missing_fact_kinds") and not _has_negative_evidence(issue_dict):
+        if not _has_missing_decision_facts(issue_dict) and not _has_negative_evidence(issue_dict):
             return "policy_pending_promotion"
         return "model_uncertain"
     return ""
@@ -98,6 +109,17 @@ def _has_negative_evidence(issue: Dict[str, Any]) -> bool:
     if issue.get("blocking_negative_evidence") is True:
         return True
     return bool(issue.get("negative_evidence"))
+
+
+def _has_missing_decision_facts(issue: Dict[str, Any]) -> bool:
+    """Neither a top-level empty list nor a score can hide slice obligations."""
+    from .evidence import normalize_missing_fact_kinds
+
+    fact_slice = _as_dict(issue.get("decision_fact_slice"))
+    return bool(
+        normalize_missing_fact_kinds(issue.get("missing_fact_kinds"))
+        or normalize_missing_fact_kinds(fact_slice.get("missing_fact_kinds"))
+    )
 
 
 def _score_text(score_data: Dict[str, Any], key: str) -> str:
@@ -119,6 +141,8 @@ def _confirmed_evidence_gap_texts(
     """
 
     gaps: List[str] = []
+    if _has_missing_decision_facts(issue):
+        gaps.append("关键决策义务尚未闭合，模型评分不能替代缺失事实")
     final_score = _score_text(score_data, "final_score")
     path = _score_text(score_data, "path_completeness")
     contract = _score_text(score_data, "contract_consistency")
@@ -185,6 +209,8 @@ def _uncertain_promotion_gap_texts(
     missing = issue.get("missing_fact_kinds")
     if isinstance(missing, list) and missing:
         gaps.append("仍缺少关键决策事实：" + "、".join(str(kind) for kind in missing))
+    elif _has_missing_decision_facts(issue):
+        gaps.append("决策事实切片仍包含未闭合义务")
     if issue.get("blocking_negative_evidence") is True:
         gaps.append("存在阻断性负面证据")
     elif issue.get("negative_evidence"):
@@ -216,6 +242,15 @@ def promotion_review_reason(
 
     val_data = val_data if isinstance(val_data, dict) else {}
     score_data = score_data if isinstance(score_data, dict) else {}
+    from .protocol_assessment import protocol_review_state
+
+    protocol_state = protocol_review_state(issue)
+    if kind != "evidence_conflict" and protocol_state:
+        return (
+            "具体对象路径已按当前源码与契约重新核验；若列出的业务前提成立，该路径构成协议违例。前提尚未确认，集中留待验收。"
+            if protocol_state == "business_conditional"
+            else "对象协议仍缺少当前技术证据，保留待补证；模型评分、一般补证或未复现均不能关闭这些义务。"
+        )
     if kind == "evidence_conflict":
         return (
             "完整的确定性确认证明与拒绝证明同时成立并相互冲突，无法自动裁决为"
@@ -334,13 +369,29 @@ class ValidationPipeline:
         issue: Dict[str, Any],
         issue_func: str,
     ) -> Optional[PreValidationDecision]:
+        decision = self._pre_validation_feedback(issue, issue_func)
+        if decision is not None and self._is_conditional_snapshot_shadow(issue):
+            issue["shadow_feedback_kind"] = decision.finding_kind
+            issue["validation_status"] = "shadow"
+            issue["candidate_disposition"] = "shadow_observation"
+            issue["finding_kind"] = "rollout_shadow_observation"
+            decision.report_bucket = None
+        return decision
+
+    def _pre_validation_feedback(
+        self,
+        issue: Dict[str, Any],
+        issue_func: str,
+    ) -> Optional[PreValidationDecision]:
         """Mutate and return a decision when user feedback suppresses an issue."""
         static_decision = self._apply_static_validation_gate(issue)
         if static_decision:
             return static_decision
 
         category = self.suppression_category(issue)
-        if self.review_memory.is_false_positive(
+        # Positional suppressions carry no compilation receipt. Scoped manual
+        # decisions are resolved through the build-bound baseline below.
+        if not issue_build_context_id(issue) and self.review_memory.is_false_positive(
             str(issue_func),
             str(issue.get("location") or ""),
             category,
@@ -658,7 +709,7 @@ class ValidationPipeline:
             return False
         if confidence < threshold:
             return False
-        if issue.get("missing_fact_kinds"):
+        if _has_missing_decision_facts(issue):
             return False
         if issue.get("blocking_negative_evidence") is True:
             return False
@@ -802,6 +853,25 @@ class ValidationPipeline:
                 report_bucket=None,
                 memory_status="rejected",
                 verdict=verdict,
+                final_score=final_score,
+            )
+        from .protocol_assessment import is_protocol_candidate
+
+        if is_protocol_candidate(issue):
+            # Descriptive source effects cannot supply normative business
+            # authority. Even removal of a serialized missing list cannot
+            # let a model score confirm or reject this experimental rule.
+            issue["validation_status"] = "needs_review"
+            issue["candidate_disposition"] = "needs_review"
+            issue["finding_kind"] = "needs_review"
+            issue["needs_review_sub_state"] = needs_review_sub_state(issue)
+            issue["promotion_review_reason"] = promotion_review_reason(issue, kind="protocol")
+            issue["validation_reasoning"] = val_data.get("reasoning")
+            self._copy_validator_detail_fields(issue, val_data)
+            return ValidationOutcome(
+                report_bucket="observations",
+                memory_status="needs_review",
+                verdict="needs_review",
                 final_score=final_score,
             )
         if verdict == "verified" and (final_score >= 0.6 or confirmation_proof is not None):
@@ -1035,15 +1105,29 @@ class ValidationPipeline:
         issue["record_role"] = "operational_obligation"
         issue["engine_status"] = "failed"
         issue["validation_error"] = error
+        shadow = self._is_conditional_snapshot_shadow(issue)
         return ValidationOutcome(
-            report_bucket="observations",
-            memory_status="engine_failed",
+            report_bucket=None if shadow else "observations",
+            memory_status=None if shadow else "engine_failed",
             verdict="engine_failed",
         )
 
     @staticmethod
+    def _is_conditional_snapshot_shadow(issue: Dict[str, Any]) -> bool:
+        attribution = issue.get("attribution")
+        sources = attribution.get("discovered_by") if isinstance(attribution, dict) else None
+        return bool(
+            str(issue.get("rollout_visibility") or "").lower() == "shadow"
+            and issue.get("candidate_kind") == "conditional_snapshot_observation"
+            and issue.get("candidate_source") == "semantic_snapshot"
+            and isinstance(sources, list)
+            and {str(value).strip().lower() for value in sources if str(value).strip()}
+            == {"semantic_modeling"}
+        )
+
+    @staticmethod
     def _is_rollout_shadow_candidate(issue: Dict[str, Any]) -> bool:
-        """Return true only for candidate-blind, shadow-only discoveries.
+        """Identify explicit shadow sources without suppressing mixed producers.
 
         A validation group may merge the same obligation from deterministic or
         backend producers.  Such a group must keep normal promotion authority;
@@ -1059,6 +1143,8 @@ class ValidationPipeline:
             for value in (discovered_by if isinstance(discovered_by, list) else [])
             if str(value).strip()
         }
+        if ValidationPipeline._is_conditional_snapshot_shadow(issue):
+            return True
         if sources:
             return sources == {"llm_active_discovery"}
         return str(issue.get("candidate_source") or "").lower() == "active_discovery"
@@ -1080,6 +1166,8 @@ class ValidationPipeline:
         Free-form uncertainty remains reportable evidence; it is not treated
         as a deterministic contradiction.
         """
+        if _has_missing_decision_facts(issue):
+            return False
         try:
             final_score = float(score_data.get("final_score", 0.0) or 0.0)
             path = float(score_data.get("path_completeness", 0.0) or 0.0)

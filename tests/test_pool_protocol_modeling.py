@@ -306,9 +306,13 @@ def test_llm_discovers_seed_static_wrappers_and_unreachable_counterpart(tmp_path
     assert not modeler.result.local_semantics.contracts.find("outer")[0].effects_trusted
 
 
-def test_native_code_to_real_terminal_tool_workbook_and_pool_consumers(tmp_path, monkeypatch):
+@pytest.mark.parametrize("release_pool,leaks", [("a", False), ("b", True)])
+def test_native_code_to_real_terminal_tool_workbook_and_pool_consumers(
+    tmp_path, monkeypatch, release_pool, leaks
+):
     from zscope.retrieval.clang_backend import ClangBackend
     from zscope.retrieval.code_index import CodeIndex
+    from zscope.semantics.build_scope import bind_build_scope
 
     executable = os.environ.get("Z_SCOPE_TEST_CLANG_INDEXER")
     if not executable:
@@ -321,8 +325,9 @@ def test_native_code_to_real_terminal_tool_workbook_and_pool_consumers(tmp_path,
         + "\n"
         + "Node *outer(int ignored, Pool *arena) { return alpha(arena); }\n"
         + "void drop(Pool *arena, Node *node) { omega(node, arena); }\n"
-        + "void entry(Pool *a, Pool *b) { Node *p=outer(7,a); if (!p) return; drop(b,p); }\n"
+        + "void entry(Pool *a, Pool *b) {\n Node *p=outer(7,a);\n if (!p) return;\n drop(b,p);\n}\n"
     )
+    code = code.replace("drop(b,p);", f"drop({release_pool},p);")
     (tmp_path / "pool.c").write_text(code, encoding="utf-8")
     cdb = tmp_path / "compile_commands.json"
     cdb.write_text(
@@ -347,17 +352,45 @@ def test_native_code_to_real_terminal_tool_workbook_and_pool_consumers(tmp_path,
         modeler.run([FunctionEntry("entry")])
         assert calls.count("alpha") == calls.count("omega") == 1
         assert "outer" not in calls and "drop" not in calls
-        assert modeler.result.local_semantics.contracts.allows("outer", "drop")
+        facts = index.get_function_program_facts("entry", "pool.c")
+        assert facts["complete"] and facts["build_context_id"]
+        assert not modeler.result.local_semantics.contracts.allows("outer", "drop")
+        with bind_build_scope({"program_facts": facts}):
+            assert modeler.result.local_semantics.contracts.allows("outer", "drop")
+        implementation = index.get_function_impl("entry", file_path="pool.c", include_context=False)
         for cls in (ClangAstCfgCandidateGenerator, RegexCandidateGenerator):
-            engine = cls(modeler.result.local_semantics)
-            assert any(
-                i["defect_class"] == "memory_leak"
-                for i in engine.generate_issues("entry", caller("drop(b,p);"), "pool.c")
+            engine = cls(
+                modeler.result.local_semantics,
+                program_facts_provider=index.get_function_program_facts,
             )
-            assert not any(
-                i["defect_class"] == "memory_leak"
-                for i in engine.generate_issues("entry", caller("drop(a,p);"), "pool.c")
-            )
+            candidates = engine.generate_issues("entry", implementation["code"], "pool.c")
+            assert any(i["defect_class"] == "memory_leak" for i in candidates) == leaks, {
+                "engine": cls.__name__,
+                "code": implementation["code"],
+                "fact_scope": {
+                    key: engine.program_facts.get(key)
+                    for key in ("build_context_id", "complete", "reason")
+                },
+                "contract_scopes": [
+                    (c.symbol.name, c.symbol.build_context_id)
+                    for c in engine.semantics.contracts.contracts
+                    if c.symbol.name in {"outer", "drop"}
+                ],
+                "candidates": [i["defect_class"] for i in candidates],
+                "calls": [
+                    {
+                        key: event.get(key)
+                        for key in (
+                            "role",
+                            "object",
+                            "resource_domain",
+                            "applicability",
+                            "build_context_id",
+                        )
+                    }
+                    for event in engine.last_semantic_events
+                ],
+            }
         calls.clear()
         modeler.run([FunctionEntry("entry")])
         assert calls == []

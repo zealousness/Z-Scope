@@ -25,10 +25,23 @@ from ..retrieval.svf_runner import SvfRunner
     "--config",
     "config_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
+)
+@click.option("--bitcode-dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--replay-fixture",
+    is_flag=True,
+    help="Compare incremental and clean strict-batch facts for the built-in C mutations; no LLM/SVF.",
 )
 @click.option(
-    "--bitcode-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True
+    "--work-directory",
+    type=click.Path(path_type=Path),
+    help="New directory for replay sources and independent caches; existing paths are refused.",
+)
+@click.option(
+    "--clang-indexer",
+    default="zscope-clang-indexer",
+    show_default=True,
+    help="Native indexer for --replay-fixture only; no install or fallback.",
 )
 @click.option(
     "--output",
@@ -54,15 +67,38 @@ from ..retrieval.svf_runner import SvfRunner
     help="Stop starting new tasks after this window; an active task retains its configured timeout.",
 )
 def main(
-    config_path: Path,
-    bitcode_dir: Path,
+    config_path: Optional[Path],
+    bitcode_dir: Optional[Path],
     output: Path,
     tasks: Optional[Path],
     measure_svf: bool,
     window_seconds: float,
+    replay_fixture: bool,
+    work_directory: Optional[Path],
+    clang_indexer: str,
 ) -> None:
     """Audit compilation coverage; optionally time the existing bitcode task set."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if replay_fixture:
+        if config_path or bitcode_dir or tasks or measure_svf:
+            raise click.UsageError("--replay-fixture cannot consume a project config or SVF inputs")
+        if work_directory is None:
+            raise click.UsageError("--replay-fixture requires --work-directory")
+        from ..retrieval.incremental_replay import run_fixture_replay
+
+        try:
+            replay = run_fixture_replay(work_directory, clang_indexer=clang_indexer)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        atomic_json(output, replay)
+        click.echo(f"Wrote {output.resolve()}: replay complete={replay['complete']}")
+        if not replay["complete"]:
+            raise click.ClickException("incremental replay failed; inspect preserved artifacts")
+        return
+    if work_directory is not None or clang_indexer != "zscope-clang-indexer":
+        raise click.UsageError("--work-directory/--clang-indexer require --replay-fixture")
+    if config_path is None or bitcode_dir is None:
+        raise click.UsageError("normal indexing audit requires --config and --bitcode-dir")
     config = ConfigLoader.load(str(config_path.resolve()))
     cdb = config.project.compile_commands_path
     if config.project.language != "c_cpp" or not cdb:

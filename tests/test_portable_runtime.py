@@ -196,7 +196,12 @@ def test_portable_java_requires_prebuilt_jars_without_invoking_maven(tmp_path, m
 def test_language_templates_hide_tool_configuration_and_examples(filename):
     source = (Path(__file__).parents[1] / filename).read_text(encoding="utf-8")
     parsed = yaml.safe_load(source)
-    assert "tools" not in parsed["indexing"]
+    from zscope.config.v3 import V3_TOP_LEVEL_KEYS
+
+    assert parsed["config_version"] == 3
+    assert set(parsed) <= set(V3_TOP_LEVEL_KEYS)
+    assert {"llms", "project", "scan"} <= set(parsed)
+    assert "indexing" not in parsed and "tools" not in parsed
     for text in (
         "extractor_command",
         "provider_commands",

@@ -6,6 +6,7 @@ expressions: every operand names a caller object or an anchored call result.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Mapping
 
@@ -51,6 +52,59 @@ def negate(predicate: dict[str, Any]) -> dict[str, Any]:
             ],
         }
     return {"op": "not", "item": predicate}
+
+
+def predicates_overlap(*predicates: Any) -> bool:
+    """Prove overlap for conjunctions of integer comparisons only.
+
+    This is a bounded contract sanity check, not a satisfiability solver.
+    Unsupported predicates return False (overlap not proved); consumers still
+    resolve conflicting or unknown effects conservatively at the actual call.
+    """
+    atoms: list[dict[str, Any]] = []
+    pending = list(predicates)
+    while pending:
+        if len(atoms) + len(pending) > 64:
+            return False
+        predicate = pending.pop()
+        if predicate_errors(predicate):
+            return False
+        if predicate.get("op") == "true":
+            continue
+        if predicate.get("op") == "all":
+            pending.extend(predicate["items"])
+            continue
+        if predicate.get("op") != "compare":
+            return False
+        atoms.append(predicate)
+
+    groups: dict[str, list[tuple[str, int]]] = {}
+    reverse = {"==": "==", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
+    for atom in atoms:
+        left, right, operator = atom["left"], atom["right"], atom["operator"]
+        if left.get("kind") == "literal":
+            if right.get("kind") == "literal":
+                if evaluate(atom) != "applies":
+                    return False
+                continue
+            left, right, operator = right, left, reverse[operator]
+        if right.get("kind") != "literal" or type(right.get("value")) is not int:
+            return False
+        groups.setdefault(json.dumps(left, sort_keys=True), []).append((operator, right["value"]))
+
+    # For integer comparisons, boundaries and their adjacent integers cover
+    # every region relevant to a conjunction, without a Cartesian search.
+    for constraints in groups.values():
+        values = {value + delta for _, value in constraints for delta in (-1, 0, 1)}
+        if not any(
+            all(
+                evaluate(compare({"kind": "literal", "value": candidate}, op, value)) == "applies"
+                for op, value in constraints
+            )
+            for candidate in values
+        ):
+            return False
+    return True
 
 
 def predicate_errors(value: Any, *, parameter_count: int | None = None) -> list[str]:
@@ -136,6 +190,14 @@ def predicate_errors(value: Any, *, parameter_count: int | None = None) -> list[
             errors.append("invalid_predicate_reference")
             continue
         kind = ref["kind"]
+        if "address_of" in ref and (
+            not isinstance(ref["address_of"], bool)
+            or (
+                ref["address_of"]
+                and (kind not in {"argument", "global"} or not ref.get("member_path"))
+            )
+        ):
+            errors.append("invalid_predicate_address_of")
         if kind == "argument":
             index = ref.get("index")
             if (
@@ -206,6 +268,14 @@ def _operand(
     while name.startswith("(") and name.endswith(")") and name.count("(") == 1:
         name = name[1:-1]
     name += str(ref.get("member_path") or "")
+    if ref.get("address_of"):
+        from .contracts import ObjectBinding
+
+        # Address equality needs explicit caller facts. A member's stored
+        # value is not the address of its slot; missing facts stay unknown.
+        binding = ObjectBinding.from_value(ref)
+        name = binding.resolve(arguments, returned)
+        return facts.get(name, UNKNOWN)
     if name in facts:
         return facts[name]
     if name in {"NULL", "nullptr", "(void*)0"}:

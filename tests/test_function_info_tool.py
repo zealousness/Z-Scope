@@ -1199,7 +1199,9 @@ def test_legacy_function_info_remains_internal_while_runtime_uses_search(tmp_pat
     assert tool_result["data"]["matches"][0]["index_name"] == "Target@src/target.c:1-1"
     assert set(properties) == {"func_name", "file_path"}
     assert "does not include referenced" in tool_schema["description"]
-    assert "Does not return source" in runtime_schema["description"]
+    assert "Search symbols (default; preserve symbol_id)" in runtime_schema["description"]
+    assert "Text/files return read_code locations" in runtime_schema["description"]
+    assert "Hits are not flow evidence" in runtime_schema["description"]
     assert "callers" not in tool_result["data"]["matches"][0]
     for field in (
         "referenced_globals",
@@ -1213,6 +1215,9 @@ def test_legacy_function_info_remains_internal_while_runtime_uses_search(tmp_pat
         assert field not in tool_result["data"]["matches"][0]
     assert runtime_result["success"] is True
     assert runtime_result["data"]["symbols"][0]["name"] == "Target"
+    assert {"code", "body", "full_definition", "text"}.isdisjoint(
+        runtime_result["data"]["symbols"][0]
+    )
     assert (
         runtime.execute_tool("get_function_info", {"func_name": "Target"})["status"]
         == "invalid_request"

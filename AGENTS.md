@@ -37,6 +37,7 @@ Z-SCOPE 是面向 Java 与 C/C++ 项目的 AI 静态分析平台。典型数据�
 1. 先读 `docs/architecture.md`，再按 [`docs/modules/README.md`](docs/modules/README.md) 进入对应子系统。
 2. 修改前搜索调用方、配置模型和现有测试；不要仅凭文件名推断所有权。
 3. 保持用户已有修改，不重写无关文件，不提交密钥、私有 endpoint 或本地 benchmark 配置。
+   涉及候选、证明、缓存、报告聚合或人工反馈时，同时检查 `build_context_id` 是否贯穿；未知构建不是通配符，不能将另一编译变体的证据或误报决定复用过来。身份链路回归见 `tests/test_candidate_build_identity.py`，全变体扫描覆盖仍以报告中的 `metadata.build_coverage` 为准；该覆盖逐实例复核当前输入，`status="indexed"` 不再等于输入仍 current（陈旧实例进 `uncurrent_instances`，无收据记 `unmeasured`）。SVF/Saber 信号同样按编译命令归属：生产者给 `command_id` 与 `exact/ambiguous/unattributed` 判定，实例侧只经 `ScopedCodeIndex.get_instance_backend_signals()` 读，回归见 `tests/test_svf_build_identity.py`；链接组仍是多变体合并分析，不因此变成逐变体 SVF。
 4. 优先运行与变更直接相关的测试，再按风险补充：
 
    ```bash
@@ -48,6 +49,22 @@ Z-SCOPE 是面向 Java 与 C/C++ 项目的 AI 静态分析平台。典型数据�
    测试与质量命令一律在 Linux 环境执行；Windows 上必须在 WSL Linux 用户态中运行（在 WSL 虚拟环境安装并执行），不要用原生 Windows 解释器形成测试结论。
 
 5. 仅对需要格式化的 Python 变更运行 Black，避免无关的大范围格式化。
+
+6. 资源包装器 native 核验改动运行 `tests/test_native_wrapper_inference.py`、`tests/test_resource_inference_coverage.py` 和 `tests/test_native_model_cache.py`；真实提取测试需在 Linux 设置 `Z_SCOPE_TEST_CLANG_INDEXER` 指向实际构建的批量工具。合成事实只验证隔离逻辑，不能代替 native 验收；缺收据或源码/CFG 冲突不能回退弱路径授权。覆盖诊断区分契约核验、消费者能力和规则实际执行，不能将入口外未测量 cleanup 或实验规则关闭解释为安全。
+
+7. 跨 TU 对象路径修改运行 `tests/test_link_targets.py`、`tests/test_linked_lifecycle_paths.py` 及现有 lifecycle/protocol 回归。链接归属来自 `zscope-link-record` 实际重建并链接的记录，不来自 compile_commands、文件名或相同 BuildContext。native 签名/const ops 收据改动必须重编译真实工具后验收；各 TU 保留自身身份，未知目标/选择不可推广为全部清理，实验规则仍默认关闭。准备命令会重建所列对象，普通扫描只读记录。
+
+8. 引用计数及池状态扩展运行 `tests/test_refcount_protocols.py`、`tests/test_refcount_integration.py` 和现有单槽池/路径/反馈回归。首批是 signed 32-bit 非原子计数，发布为 `standard_operation`，不能加入 deallocator 配对；零计数的 callback 必须实际重放到对应对象，逻辑归还不是物理 free。非并发执行前提独立进入验收及回答撤回链，默认实验开关不变；位宽、位域或 volatile/atomic 写入事实变化需实际重建 native 工具。
+
+9. 句柄子域修改运行 `tests/test_handle_protocols.py`、`tests/test_handle_integration.py` 及现有 native/路径/反馈回归。当前为源码核验的 2–4 槽 signed 32-bit 自定义表；描述符代次、整数值和 dup 共享的底层对象分开，close 错误的状态不替代实际消费效果。标准 close 错误保持 unknown；此子域不模拟 OS fd/dup2。命名空间顺序独占与业务责任在验收阶段核实，回答撤销必须重开缺口；实验规则默认关闭。调用结果和局部写入的 native 类型事实改动须实际重建工具。
+
+10. 锁模式或锁反证修改运行 `tests/test_lock_modes.py`、`tests/test_lock_coverage.py`、现有 review fact/契约/候选及规则治理测试。shared/exclusive/unknown 和成功条件必须随契约、转换及调用事件保留；读锁不能过滤写入候选，未知解锁及 cond_wait 不能遗留旧保护。强反证仅限当前编译事实中非逃逸 TU-static 锁与受限访问，透明 return 包装器需重新核对当前 AST；递归计数、升级、成员锁、任意辅助调用及 RAII 未支持时保持 unknown。调用方词法摘要只作上下文，不能授予强反证；实验规则默认关闭。
+
+11. 有限 RAII 改动运行 `tests/test_raii_lifecycle.py` 及现有 lifecycle/review/native/构建身份回归。当前只核验单指针成员的局部 scoped heap guard：构造映射、真实析构与受限 custom deleter 都重新读取当前 AST，并与 native 构造/析构 USR、源码位置及精确 BuildContext 核对。正常退出与函数内明确 throw→catch(...) 的展开分别解释；未知异常、move/adopt/defer/release/reset、逃逸和锁 guard 保留缺口。`implicit_release` 标签和源码注解不授权 free/unlock；不把 guard 加入全局 deallocator 配对。native 生命周期事实变化必须实际重编译；实验规则默认关闭。
+
+12. 当前协议增量修改运行 `tests/test_protocol_incremental_equivalence.py`、`tests/test_native_model_cache.py`、`tests/test_build_context.py` 及既有链接/协议反馈回归。头文件不存在、较高优先级查找及新增静态访问者也属于依赖；旧 depfile 不能证明这些否定前提仍成立。Review 热路径复核实际预处理输出后复用 AST/CFG，进程内收据同时检查当前契约版本；磁盘 JSON 不授权执行保存的命令。native `include-probes.v1` 记录存在性查询，独立于真正读取文件的摘要；查询结果进入 BuildContext，在发布/复用/消费前核对，新增或消失的文件必须失效。真实 native 改动先重建；本地受限对照不代表完整扫描、异步回调或需求调度已验收。
+
+13. pthread 回调寿命改动运行 `tests/test_async_contracts.py`、`tests/test_async_paths.py`、`tests/test_async_incremental.py`、`tests/test_async_queue.py`、`tests/test_async_queue_incremental.py`、`tests/test_async_wait.py`、`tests/test_async_wait_incremental.py`、`tests/test_async_cleanup.py`、`tests/test_async_cleanup_incremental.py`、`tests/test_async_helpers.py`、`tests/test_async_helpers_incremental.py`、`tests/test_async_wake.py`、`tests/test_async_wake_incremental.py`、`tests/test_async_clock.py`、`tests/test_async_clock_incremental.py`、`tests/test_async_drain.py`、`tests/test_async_drain_incremental.py` 及现有对象路径/反馈/构建回归。当前解释 Linux glibc LP64、同 TU、直接系统 API、默认属性的一个工作者与 malloc/calloc 对象；单槽队列可在调用方首次 unlock 后推进工作者到其首次 unlock，保留局部任务引用，随后在 join 期间继续。实际同 TU 调用方 helper 的字段写入/返回守卫决定提交、取消和停止接收效果，不按名称授予 drain。只有成功 join 与真实回调退出才闭合该等待；同锁不能消除 UAF，清空槽位不撤销已取走的对象代次。`pthread-storage.v1` 限定当前系统声明的 opaque mutex/cond 字段，不解释 libc union，改 native 后先实际重建。单等待者 cond_wait 先释放精确 mutex，匹配当前条件变量实例的通知后才重获锁并发布返回值，再由实际 CFG 重检条件。提前通知不存额度，通知不等于完成，UAF 记录实际解锁/通知/join 恢复位置。默认延迟取消仅支持 cond_wait/testcancel 和最多四层的同 TU C/glibc cleanup，重获等待锁后才 LIFO 执行注册时保存的对象；取消不返回到被中断调用，pop(0)/pop(1) 分开。`pthread-cleanup.v1` 同时核对当前系统宏和展开 AST，保持原始 CFG；原样工具也不能用缺失收据授权。改写宏、异常/C++ 变体、控制跳出和 cleanup 内任意 helper/取消点保持缺口。新增 `PthreadCleanup.h` 参与 portable 批量组件指纹。同一 C 源文件和精确构建中的工作者直接 helper 可保留有界调用帧，参数/返回值只接受已知堆根指针、空值和受限整数；unlock/cond_wait 暂停期间不发布返回值，重复调用隔离局部帧，取消按注册帧归属执行清理且不伪造 helper 返回。递归、局部/字段地址传递或返回、间接目标、cleanup 内 helper 保留缺口；物理 free 仍核对实际标准根与对象代次。未覆盖唤醒序列、一般超时/时钟、调用方超时/无通知等待、取消模式切换/任意取消点、一般工作者 helper、未知锁属性、不同锁下共享访问、多工作者、动态目标和跨 TU 异步保留缺口。默认通知路径未闭合时可额外尝试一次无通知唤醒与一次独立的 timedwait 超时路径，单条路径最多一次无通知返回。`pthread-wait.v3` 核对当前系统 timespec 的 64-bit 字段、16-byte 大小/8-byte 对齐/0 与 64-bit 字段偏移、本地截止时间和直接系统 ETIMEDOUT 宏；timedwait 使用默认 CLOCK_REALTIME，clockwait 只接受直接系统 CLOCK_REALTIME/CLOCK_MONOTONIC 常量并核对宏出处及当前数值；返回 0 不证明时间早于截止，返回前必须重获原 mutex，普通返回发布 0、超时发布核验常量并执行当前 CFG。取消优先且不伪造返回；完整探索后再次核验源码和 Registry 当前性。修改 native 后实际重建，旧工具不能授权此切片。循环与调度有界，只覆盖成功分配/创建/同步及上述有界等待结果的选定路径，首次非法访问即停止，无观察不证明安全。默认关闭的 `object_protocol_path` 复用 S04 重放和集中业务验收；helper/回调/根契约/构建/回答变化撤回旧见证，局部冷/热对照不代表全扫描或完整 RAPI09/RAPI10 完成。
 
 ### 规则开发路线
 
@@ -79,11 +96,18 @@ Z-SCOPE 是面向 Java 与 C/C++ 项目的 AI 静态分析平台。典型数据�
 
 ## 配置文件定位
 
+- 启动前可用 `zscope-config prepare --config <path>` 或 Web 项目配置页的“检查已保存配置”核对实际路径、编译变体与工具存在性；共用只读准备接口，不执行模型、索引、扩展 provider 或历史 rollout。准备视图不代表工具运行、模型连接或扫描完整性已验证。
 - 命令显式传入 `zscope -c <path>/zscope.yaml` 或 `--config` 时，以该文件为准。
 - CLI 未显式传入配置时，使用进程执行目录中的 `./zscope.yaml`；找不到时应报错，而不是回退到本仓库配置。
 - 仓库根目录的 `zscope.c_cpp.yaml` 与 `zscope.java.yaml` 只是按语言划分的参考配置，不是其他目标项目的全局配置入口；复制到目标项目后通常命名为 `zscope.yaml`。
 - 操作配置前必须确认：当前工作目录、命令中的 `-c/--config`、配置内的 `project.root`。
-- `project.root` 的相对路径按进程工作目录解析；`source_root`、`compile_commands_path`、`entry_functions_list` 等项目相对路径再依据 `project.root` 解析。跨目录运行时优先使用明确路径，避免把缓存和报告写到错误项目。
+- v2 的 `project.root` 的相对路径按进程工作目录解析；`source_root`、`compile_commands_path`、`entry_functions_list` 等项目相对路径再依据 `project.root` 解析。v3 的 `project.root` 相对配置文件目录解析，target 的 `compile_commands` 再相对工程 root。跨目录运行时核对版本及实际路径，避免把缓存和报告写到错误项目。
+
+### 当前 public config v3
+
+`zscope-init` 与两语言模板生成严格 v3。顶层仅允许 `config_version`、`llms`、`project`、`scan`、可选 `execution`；project 使用 `language/root/platform/targets`，各 target 使用 `id/compile_commands`。Java 不填写编译数据库且只接受 quick；C/C++ 使用 quick 或 overnight。llms 保留全部命名 profile，scan 使用 preset/focus/reproduction，execution 使用 timezone/stop_at/max_workers。
+
+CLI prepare 与默认 Web saved-config 准备共用只读接口；validate 区分文档有效与当前执行组合。结构化编辑复用正式 parser，多目标可保存和检查，执行仍禁启，不能偷偷选择首目标。focus/reproduction/max_workers/platform 尚未消费；配置 execution.stop_at 已由 CLI 和新建持久作业消费，显式作业窗口优先，同 request_id 重放不重解析窗口；resume 不重新套用配置窗口。解析出的配置窗口若已过期，新建持久作业（Web `/api/jobs`、MCP `zscope.scan.run`）在创建时以 `stop_window_closed` 拒绝，不接受开局即停的作业；显式请求窗口不受该检查影响。owner 启动的 CLI 仅消费当前 job/run/owner/input 与运行目录绑定核实后的持久窗口；合法空窗口不回退配置，部分或失效绑定拒绝启动。其余消费端（停止新调度后的公平批次、完整 resume 语义）仍有剩余，不把此切片视为完整 U01/S08。v2 仍严格加载，下节字段表仅用于已有 v2 文档，不可混入 v3。
 
 ### public config v2 字段清单
 
@@ -224,6 +248,19 @@ Agent 启停、分析预算、deadline、缓存与报告策略属于 RuntimeSpec
 
 ## 文档维护边界
 
+- Agent 与专业扫描后续开发以 [`docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md`](docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/README.md) 为规划入口。该包区分本地现状与待开发能力；其中新配置、命令和状态不是当前产品接口。
+- 此路线优先级为低误报、高召回、扫描性能、项目理解、使用体验；专业扫描优先，通用 Coding 后置。默认面向非工作时间运行，交互集中于启动和验收；自动复现使用独立目录，默认不改业务源码。Linux 先闭环，再扩展嵌入式/RTOS。
+- 此路线不承担旧接口兼容负担，可替换冗余实现；采用相关正反例和实际验证，不新增代码冻结、多级审批或权限/沙箱平台。产品不增加网页搜索、抓取、浏览器或任意 URL 读取能力，本地 WebUI 与已有模型连接继续保留。
+- 实施时同步用户指南、配置模板/初始化器、对应模块与必要的规则/Skill 契约；不把计划文字直接当已实现行为，不改写历史 benchmark 或发行验证结果。
+- 此计划的实际落地状态见 [实施记录](docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/21_IMPLEMENTATION_STATUS.md)。构建实例事实与旧函数导航投影必须区分；不能把新增实例存储当作全部扫描消费者已完成多变体隔离。
+- 条件资源协议维护时区分引用留存、清理责任和逻辑池归还。单槽协议的源码核验依赖当前 native 资源事实收据；修改 `native/clang-indexer/ProgramEvents.h` 后先重建再运行真实 native 正反例，不能用旧工具或仅合成事件宣布通过。相关入口和测试见配置/状态模块文档。
+- 槽位归还路径回归见 `tests/test_retained_slot_teardown.py`。本地摘除只描述槽位值，不能证明归还 guard 成立、代次一致或跨 complete/cancel 安全；未闭合义务必须传到 Validator。新增规则 `zscope.c_cpp.cpp_clang_cfg.retained_slot_release` 仍为实验性、默认关闭，不把显式启用实验的候选结果写成正式准确率。
+- 同 TU 对象路径回归见 `tests/test_lifecycle_paths.py`。`object_protocol_path` 使用 native CFG 入口/出口和 `lifecycle-value-facts.v1`，按真实调用帧、参数、字段、池实例及获取代次解释具体路径；没有入口输入、未知调用、循环或未支持的类型转换时保留缺口。获取代次复用 `ObjectRef`，不等于业务计数器永不回绕。源码留存和实际清理路径不能代替业务释放规范；业务责任、责任终点的专门义务不能被普通补证或模型高分关闭。该规则同样实验性、默认关闭。
+- S04 对象协议验收见 `tests/test_protocol_assessment.py`。Validator 使用当前 native 事实和运行时契约注册表重放路径，绑定源码/契约摘要后才投影 `business_conditional`；技术缺口、失效或未核验路径投影 `protocol_pending`。两者仍属于统一 `needs_review`。业务前提标记为分析提出的未确认要求，源码效果不代表业务规范，入口退出不自动成为责任终点。报告载入不能复用进程内重放收据，关闭模型也需重放；不要用序列化字段、模型高分或删除缺口清单授权确认。问题集中在报告验收，不新增扫描中途交互。
+
 - 模块文档记录稳定职责、入口、不变量和测试，不记录容易过期的文件数量、漏洞数量或历史 benchmark 成绩。
+- 业务前提反馈见 `tests/test_protocol_feedback.py` 和 `tests/test_protocol_review_ui.py`。Web 验收页只对服务端报告中的具体前提写入项目现有 `user_config.state.db`，保留来源、精确对象/构建/路径范围与回答版本历史，不写 suppression/baseline。全部前提明确成立且当前技术路径完整时，由专门程序检查器签发限定范围的确认；否定或撤销前提不等于代码安全。修改回答后，下次扫描按依赖重新验证并重新登记候选台账；扫描中修改也需重核验。前端草稿、版本冲突和迟到响应必须有回归，不能把普通报告导入或模型文本当业务回答来源。
 - `docs/architecture.md` 负责端到端架构，`README.md` 负责用户使用，`docs/range-benchmark.md` 负责 Range 协议；模块文档不要重复维护这些全文。
 - 新增 `zscope/` 顶层包时，必须在 `docs/modules/README.md` 和某一份模块文档的 `covers` 元数据中登记，且只能登记一次。
+
+调用方 cond_wait 的受限 drain 复用现有同 TU 队列解释器：释放精确 mutex 后推进工作者至真实通知及原锁释放，返回前重获锁并执行当前谓词 CFG；最多四次调用方等待，只有实际进入等待的调用帧获得有界循环重检。相同条件变量同时绑定不同 mutex 保持缺口；通知、清空 active 或等待返回不设置 worker complete/joined，也不授权销毁队列。调度调用路径必须保留入口到调用方 helper 的边及工作者活动帧；cleanup 根注册帧按实际调度前缀深度展开。调用方超时、无通知返回、取消与多工作者仍未支持，实验规则默认关闭；新增/删改谓词、通知、回调、根契约与释放次序沿原 S04/增量链复核。

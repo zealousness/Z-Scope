@@ -667,6 +667,7 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["properties"]["interface_contracts"] = {
                     "lock_init", "lock_destroy", "lock_state", "lock_wait",
                     "condition_init", "condition_destroy", "condition_signal",
                     "thread_create", "thread_release", "standard_operation",
+                    "reference_retention",
                 ]
             },
             "carrier": {
@@ -735,11 +736,25 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["$defs"] = {
         "type": "object",
         "required": ["kind"],
         "properties": {
-            "kind": {"enum": ["return", "argument", "global", "call_result", "literal", "constant", "target"]},
+            "kind": {
+                "enum": [
+                    "return",
+                    "argument",
+                    "global",
+                    "call_result",
+                    "literal",
+                    "constant",
+                    "target",
+                ]
+            },
             "index": {"type": "integer", "minimum": 0},
             "name": {"type": "string"},
             "value": {"type": ["string", "number", "boolean", "null"]},
             "member_path": {"type": "string"},
+            "address_of": {
+                "type": "boolean",
+                "description": "Address of a member slot, distinct from its stored value; only for argument/global member references.",
+            },
         },
         "additionalProperties": False,
     },
@@ -802,7 +817,7 @@ _interface_schema["properties"]["protocol"] = {
         "kind": {
             "type": "string",
             "minLength": 1,
-            "description": "intrusive_freelist for head/link storage; otherwise a descriptive protocol kind retained as unverified",
+              "description": "intrusive_freelist for head/link storage; single_slot_pool for an embedded slot with a live flag; single_slot_retention for conditional pointer storage (not ownership); non_atomic_refcount for signed 32-bit guarded init/retain/drop; bounded_handle_table for fixed integer descriptor slots with open/close/dup using standard_operation; other kinds remain unverified",
         },
         "head_path": {
             "type": "string",
@@ -813,6 +828,49 @@ _interface_schema["properties"]["protocol"] = {
             "type": "string",
             "pattern": r"^->[A-Za-z_]\w*$",
             "description": "Node pointer member access including ->, e.g. ->next, never bare next.",
+        },
+        "slot_path": {
+            "type": "string",
+            "pattern": r"^->[A-Za-z_]\w*$",
+            "description": "Receiver pointer slot including ->, e.g. ->pending. A stored reference alone never proves ownership transfer.",
+        },
+        "live_path": {
+            "type": "string",
+            "pattern": r"^->[A-Za-z_]\w*$",
+            "description": "Single-slot pool availability flag, e.g. ->live.",
+        },
+        "generation_path": {
+            "type": "string",
+            "pattern": r"^->[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?$",
+            "description": "Optional incremented generation counter; no assumption of nonwrapping uniqueness.",
+        },
+        "invalid_return_path": {
+            "type": "string",
+            "pattern": r"^->[A-Za-z_]\w*$",
+            "description": "Optional counter incremented on an invalid return, e.g. ->duplicate_returns.",
+        },
+        "return_status": {
+            "type": "boolean",
+            "description": "Single-slot return reports 1 on actual return, 0 on rejected membership/live guard. Omit for void APIs.",
+        },
+          "operation": {"enum": ["init", "retain", "drop", "open", "close", "dup"]},
+          "handle_slots": {
+              "type": "array", "minItems": 2, "maxItems": 4,
+              "items": {"type": "object", "required": ["value", "live_path", "object_path"],
+                        "properties": {"value": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+                            "live_path": {"type": "string", "pattern": r"^->[A-Za-z_]\w*$"},
+                            "object_path": {"type": "string", "pattern": r"^->[A-Za-z_]\w*$"}},
+                        "additionalProperties": False},
+              "description": "bounded_handle_table: fixed integer descriptors with separate live and backing object fields; standard_operation only.",
+          },
+          "sequence_path": {"type": "string", "pattern": r"^->[A-Za-z_]\w*$",
+                            "description": "Open only: guarded signed 32-bit backing identity counter."},
+          "close_failure": {"enum": ["preserves", "consumes"],
+                            "description": "Close only: effect on a valid descriptor when the explicit failure argument is nonzero, checked from source."},
+        "count_path": {
+            "type": "string",
+            "pattern": r"^->[A-Za-z_]\w*$",
+            "description": "Non-atomic signed 32-bit counter on the resource carrier; drop is not terminal destruction.",
         },
     },
     "additionalProperties": False,

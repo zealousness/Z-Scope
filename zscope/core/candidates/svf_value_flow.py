@@ -64,9 +64,23 @@ class SvfValueFlowCandidateGenerator:
         svf_group = str(bug.get("svf_group") or "default")
         svf_groups = [str(group) for group in (bug.get("svf_groups") or [svf_group]) if str(group)]
         rule = f"svf_value_flow_{self._normalize_key(bug_type)}"
-        candidate_id = self._candidate_id(
-            defect_class, func, file_path, line, rule, source_func, sink_func
-        )
+        build_context_id = str(bug.get("build_context_id") or "")
+        command_id = str(bug.get("command_id") or "")
+        identity_parts: list[Any] = [
+            defect_class,
+            func,
+            file_path,
+            line,
+            rule,
+            source_func,
+            sink_func,
+        ]
+        if build_context_id:
+            # The same Saber row can belong to two compilation variants; without
+            # the build identity in the id the second one would be deduplicated
+            # away. Legacy (unattributed) rows keep their previous ids.
+            identity_parts.append(build_context_id)
+        candidate_id = self._candidate_id(*identity_parts)
         location = f"{file_path}:{line}" if file_path else f"{func}:{line}"
         positive = [
             f"{tool} reported `{bug_type}` at {location}",
@@ -95,6 +109,8 @@ class SvfValueFlowCandidateGenerator:
             "function": func,
             "file": file_path,
             "line": line,
+            "command_id": command_id,
+            "build_context_id": build_context_id,
             "function_start": int(bug.get("func_start") or 0),
             "function_end": int(bug.get("func_end") or 0),
             "signature": str(bug.get("signature") or ""),
@@ -151,7 +167,16 @@ class SvfValueFlowCandidateGenerator:
             "evidence_refs": [],
         }
         confidence = self._confidence_for(defect_class)
-        return {
+        dedup_parts = [
+            defect_class,
+            file_path.replace("\\", "/").lower(),
+            str(line),
+            source_func,
+            sink_func,
+        ]
+        if build_context_id:
+            dedup_parts.append(build_context_id)
+        issue: Dict[str, Any] = {
             "id": candidate_id,
             "candidate_id": candidate_id,
             "function": func,
@@ -177,20 +202,18 @@ class SvfValueFlowCandidateGenerator:
             ),
             "source": source_func,
             "sink": sink_func,
-            "dedup_key": "|".join(
-                [
-                    defect_class,
-                    file_path.replace("\\", "/").lower(),
-                    str(line),
-                    source_func,
-                    sink_func,
-                ]
-            ),
+            "dedup_key": "|".join(dedup_parts),
             "positive_evidence": positive,
             "negative_evidence": negative,
             "evidence_pack": evidence_pack,
             "evidence_refs": [],
         }
+        if build_context_id:
+            # Provenance, not decoration: these rows were selected because the
+            # producer attributed them to exactly this compile command.
+            issue["build_context_id"] = build_context_id
+            evidence_pack["build_context_id"] = build_context_id
+        return issue
 
     @classmethod
     def _class_from_bug_type(cls, bug_type: str) -> str:

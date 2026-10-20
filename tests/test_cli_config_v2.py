@@ -11,6 +11,7 @@ from zscope.cli.cli import main as zscope_main
 from zscope.cli.doctor import main as doctor_main
 from zscope.cli.init import main as init_main
 from zscope.config.config import ConfigLoader
+from zscope.config.v3 import parse_user_config_v3
 
 
 def _regex_config(root: Path) -> dict:
@@ -49,8 +50,11 @@ def _regex_config(root: Path) -> dict:
     }
 
 
-def test_zscope_init_generates_detected_strict_v2_config(tmp_path: Path, monkeypatch) -> None:
+def test_zscope_init_generates_detected_strict_v3_config(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "CMakeLists.txt").write_text("project(demo C)\n", encoding="utf-8")
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "compile_commands.json").write_text("[]\n", encoding="utf-8")
     output = tmp_path / "zscope.yaml"
     monkeypatch.chdir(tmp_path)
 
@@ -66,15 +70,28 @@ def test_zscope_init_generates_detected_strict_v2_config(tmp_path: Path, monkeyp
     )
 
     assert result.exit_code == 0, result.output
+    raw = yaml.safe_load(output.read_text(encoding="utf-8"))
+    assert raw["config_version"] == 3
+    assert raw["project"]["language"] == "c_cpp"
+    assert raw["project"]["root"] == "."
+    assert raw["project"]["targets"] == [
+        {"id": "main", "compile_commands": "build/compile_commands.json"}
+    ]
+    assert raw["scan"]["preset"] == "overnight"
     monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "http://localhost/v1")
     monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "unit-model")
     monkeypatch.setenv("Z_SCOPE_API_KEY", "unit-key")
+    model = parse_user_config_v3(str(output))
+    assert model.project.root == tmp_path.resolve()
+    assert (
+        model.project.targets[0].compile_commands
+        == (tmp_path / "build" / "compile_commands.json").resolve()
+    )
     config = ConfigLoader.load(str(output))
     assert config.project.language == "c_cpp"
     assert config.indexing.backend == "unified"
-    assert config.concurrency.svf_workers == 2
-    assert config.scan.depth == "fast"
-    assert "--plan-entries" in result.output
+    assert config.scan.depth == "deep"
+    assert "zscope-config validate" in result.output
 
 
 def test_zscope_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
@@ -107,15 +124,22 @@ def test_zscope_init_generates_language_isolated_java_config(tmp_path: Path, mon
 
     assert result.exit_code == 0, result.output
     raw = yaml.safe_load(output.read_text(encoding="utf-8"))
+    assert raw["config_version"] == 3
     assert raw["project"]["language"] == "java"
-    assert raw["indexing"]["backend"] == "java_unified"
-    assert "compile_commands_path" not in raw["project"]
-    assert "svf" not in raw["indexing"]
-    assert "svf_workers" not in raw["concurrency"]
+    assert raw["project"]["targets"] == [{"id": "main"}]
+    assert raw["scan"]["preset"] == "quick"
+    assert "indexing" not in raw
+    assert "concurrency" not in raw
+    assert all("compile_commands" not in target for target in raw["project"]["targets"])
     monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "http://localhost/v1")
     monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "unit-model")
     monkeypatch.setenv("Z_SCOPE_API_KEY", "unit-key")
-    assert ConfigLoader.load(str(output)).project.language == "java"
+    model = parse_user_config_v3(str(output))
+    assert model.project.targets[0].compile_commands is None
+    assert model.scan.mapped_depth == "fast"
+    config = ConfigLoader.load(str(output))
+    assert config.project.language == "java"
+    assert config.indexing.backend == "java_unified"
 
 
 def test_doctor_checks_only_the_explicit_regex_backend(

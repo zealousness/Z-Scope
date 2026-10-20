@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING, cast
 
 from ..agents.semantic_modeler.agent import SemanticModeler
 from ..agents.semantic_modeler.retry import run_semantic_model_with_retries
@@ -33,6 +33,10 @@ from ..tools.policy import ToolPolicy
 from .scheduler import ENTRY_ROLE, ScanScheduler
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .semantic_demand import SemanticDemandHint
+    from ..semantics.security_map import AuditUnit, SecuritySemanticMap
 
 MAX_FAILED_FUNCTIONS_FOR_STAGE = 0
 
@@ -100,6 +104,7 @@ class GlobalModelStats:
     standard_model_count: int = 0
     external_model_missing: List[str] = field(default_factory=list)
     modeling_tasks: Dict[str, Any] = field(default_factory=dict)
+    resource_inference_coverage: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         from dataclasses import asdict
@@ -173,6 +178,9 @@ class GlobalModeler:
         attach_contract: Optional[AttachContract] = None,
         max_workers: Optional[int] = None,
         scheduler: Optional[ScanScheduler] = None,
+        demand_hints: Sequence["SemanticDemandHint"] = (),
+        demand_security_map: Optional["SecuritySemanticMap"] = None,
+        demand_audit_units: Sequence["AuditUnit"] = (),
     ) -> None:
         self.config = config
         self.code_index = code_index
@@ -181,6 +189,9 @@ class GlobalModeler:
         self.semantic_agent_factory = semantic_agent_factory
         self.attach_contract = attach_contract or (lambda context, agent_name: None)
         self.scheduler = scheduler
+        self.demand_hints = demand_hints
+        self.demand_security_map = demand_security_map
+        self.demand_audit_units = demand_audit_units
         configured_inflight = max(
             1,
             int(getattr(config.concurrency, "llm_max_inflight", 1) or 1),
@@ -775,9 +786,12 @@ class GlobalModeler:
                 project = list(matches[0].get("project_callees") or [])
                 # Retain external declarations for coverage accounting, while the
                 # graph classifier keeps them out of implementation modeling.
-                external = [r for r in self.code_index.get_callees(key.name, limit=limit)
-                            if isinstance(r, dict) and r.get("callee_kind") in
-                            {"system_function", "external_function"}]
+                external = [
+                    r
+                    for r in self.code_index.get_callees(key.name, limit=limit)
+                    if isinstance(r, dict)
+                    and r.get("callee_kind") in {"system_function", "external_function"}
+                ]
                 return project + external
         records = self.code_index.get_callees(
             key.signature or key.name,

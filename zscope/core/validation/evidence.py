@@ -185,15 +185,17 @@ def _caller_lock_states(
             impl = None
         code = str((impl or {}).get("code") or "")
         held_lock = ""
+        held_mode = "unknown"
         call_site_line = 0
         uncertain = False
         operations: List[Dict[str, Any]] = []
         if code:
-            stack: List[tuple[str, str]] = []
+            stack: List[tuple[str, str, str]] = []
             for line_number, text in enumerate(code.splitlines(), start=1):
                 if call_pattern.search(text):
                     call_site_line = line_number
                     held_lock = stack[-1][1] if stack else ""
+                    held_mode = stack[-1][2] if stack else "unknown"
                     break
                 for site in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", text):
                     name = site[1]
@@ -209,7 +211,7 @@ def _caller_lock_states(
                             continue
                         uncertain |= event.applicability == "unknown" or event.source.startswith("inferred")
                         if role == "lock" and event.object:
-                            stack.append((name, event.object))
+                            stack.append((name, event.object, event.lock_mode))
                         elif role == "unlock":
                             for index in range(len(stack) - 1, -1, -1):
                                 if stack[index][1] == event.object and registry.release_status(stack[index][0], name, arguments, acquired_object=event.object) == "applies":
@@ -220,6 +222,7 @@ def _caller_lock_states(
                 "caller": caller,
                 "call_site_line": call_site_line,
                 "held_lock": held_lock if not uncertain else "",
+                "held_lock_mode": held_mode if not uncertain else "unknown",
                 "possible_held_lock": held_lock if uncertain else "",
                 "call_semantics": operations,
                 "contract_version": registry.version,
@@ -879,16 +882,14 @@ def build_validator_evidence_slice_v3(
 
 
 def normalize_missing_fact_kinds(value: Any) -> List[str]:
-    """Project obligation vocabulary onto Validator/provider fact kinds.
+    """Normalize known aliases without erasing unsupported obligations.
 
-    Security obligations retain low-level event labels for provenance, while
-    evidence completion and V3 promotion operate on the fixed public fact
-    vocabulary.  Keeping this projection in one place prevents an event label
-    that no provider or Validator tool can emit from becoming an impossible
-    promotion requirement.
+    Provider dispatch validates its own fixed vocabulary. An obligation that
+    has no provider remains missing; dropping it here would turn partial
+    evidence into a complete slice and authorize an unsupported promotion.
     """
 
-    raw_values = value if isinstance(value, list) else [value]
+    raw_values = value if isinstance(value, (list, tuple)) else [value]
     result: List[str] = []
     aliases = {
         "event:shared_state_access": "lockset",
@@ -902,8 +903,6 @@ def normalize_missing_fact_kinds(value: Any) -> List[str]:
         if not text:
             continue
         normalized = aliases.get(text, text)
-        if normalized not in VALIDATOR_MISSING_FACT_KINDS:
-            continue
         if normalized not in result:
             result.append(normalized)
     return result

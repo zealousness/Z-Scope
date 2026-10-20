@@ -20,6 +20,14 @@ from ..framework.llm_usage import (
     scan_token_usage_snapshot,
 )
 from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner, _task_slug
+from ..orchestration.execution_profile import (
+    ExpiredStopWindowError,
+    InvalidJobBindingError,
+    arm_persisted_deadline,
+    arm_session_deadline,
+    session_stop_window_authority,
+    stop_window_from_config,
+)
 from ..orchestration.rollout import rollout_runtime_policy
 from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
 
@@ -113,6 +121,12 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
     "--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio."
 )
 @click.option(
+    "--mcp-profile",
+    type=click.Choice(["default", "read_only", "candidate_blind"]),
+    default="default",
+    show_default=True,
+)
+@click.option(
     "--mcp-http",
     is_flag=True,
     default=False,
@@ -179,6 +193,7 @@ def main(
     diff_path: tuple[str, ...],
     infer_user_config: bool,
     mcp_stdio: bool,
+    mcp_profile: str,
     mcp_http: bool,
     mcp_host: str,
     mcp_port: int,
@@ -195,6 +210,50 @@ def main(
     """
     setup_logging(verbose)
     logger = logging.getLogger("zscope.cli")
+
+    # Route restricted MCP before normal configuration preflight, logging
+    # recorders or any dashboard/index/model construction.
+    if mcp_profile != "default":
+        if not (mcp_stdio or mcp_http) or (mcp_stdio and mcp_http):
+            raise click.UsageError("--mcp-profile requires exactly one MCP transport")
+        if any(
+            (
+                dashboard,
+                build_index,
+                build_cpg,
+                plan_entries,
+                infer_user_config,
+                resume,
+                maintain,
+                discover_entries,
+                diff_base,
+                export_sarif,
+                task_id,
+                verbose,
+            )
+        ):
+            raise click.UsageError(
+                "Restricted MCP profiles cannot be combined with scan/build/output options"
+            )
+        config_path = str(config or Path("zscope.yaml"))
+        if mcp_stdio:
+            from ..mcp.server import run_stdio_server
+
+            run_stdio_server(config_path, scan_depth=scan_depth, profile=mcp_profile)
+        else:
+            from ..mcp.http_server import run_http_server
+
+            run_http_server(
+                config_path,
+                host=mcp_host,
+                port=mcp_port,
+                endpoint=mcp_endpoint,
+                auth_token_env=mcp_auth_token_env,
+                client_allowlist=mcp_client_allowlist,
+                scan_depth=scan_depth,
+                profile=mcp_profile,
+            )
+        return
 
     if dashboard:
         logger.info("Launching dashboard...")
@@ -707,7 +766,57 @@ def main(
             exit_policy=exit_policy,
             task_id=task_id,
         )
-        session_result = session_runner.run()
+        # Stop-window budget, exactly one authority:
+        # - a CLI started by a job owner takes the job store's persisted
+        #   window for this attempt (a legitimate cleared window — e.g. after
+        #   a resume — means no budget; the config window is never re-applied
+        #   there);
+        # - a standalone CLI arms the once-resolved config boundary as a
+        #   monotonic cooperative deadline on the real runner's shared
+        #   cancellation token (v2 and window-less v3 arm nothing).
+        # An already-passed boundary refuses the scan instead of rolling to
+        # tomorrow; a partially present or unverifiable job binding is
+        # refused rather than guessed.
+        deadline_guard = None
+        try:
+            authority = session_stop_window_authority(str(config), scan_depth=scan_depth)
+        except InvalidJobBindingError as exc:
+            logger.error("Scan not started: %s", exc)
+            click.echo(f"Error: {exc}")
+            sys.exit(2)
+        if authority is not None:
+            if authority.stop_at_epoch is not None:
+                deadline_guard = arm_persisted_deadline(
+                    session_runner,
+                    stop_at_epoch=authority.stop_at_epoch,
+                    resolved_stop_time=authority.resolved_stop_time,
+                )
+                click.echo(
+                    "Stop window armed: "
+                    f"job {authority.job_id}/{authority.run_id} -> "
+                    f"{authority.resolved_stop_time or authority.stop_at_epoch} "
+                    f"({deadline_guard.remaining_seconds:.0f}s remaining)"
+                )
+            else:
+                click.echo(
+                    "Stop window: none; this job attempt carries no persisted "
+                    "window and the config window is not applied"
+                )
+        else:
+            stop_window = stop_window_from_config(zscope_config)
+            if stop_window is not None:
+                deadline_guard = arm_session_deadline(session_runner, stop_window)
+                click.echo(
+                    "Stop window armed: "
+                    f"{stop_window.stop_at} {stop_window.timezone} -> "
+                    f"{stop_window.resolved_stop_time.isoformat()} "
+                    f"({deadline_guard.remaining_seconds:.0f}s remaining)"
+                )
+        try:
+            session_result = session_runner.run()
+        finally:
+            if deadline_guard is not None:
+                deadline_guard.release()
         if export_sarif:
             from ..reporting.sarif_exporter import save_sarif_report
 
@@ -758,6 +867,12 @@ def main(
 
         sys.exit(session_result.exit_code)
 
+    except ExpiredStopWindowError as exc:
+        logger.error("Scan not started: %s", exc)
+        click.echo(f"Error: {exc}")
+        # 1 for a standalone config refusal; a job-bound attempt whose
+        # persisted window was closed fails honestly instead of completing.
+        sys.exit(exc.exit_code)
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
         sys.exit(2)
@@ -801,9 +916,7 @@ def _write_user_config_infer_report(
         "",
     ]
     for sheet, title in (("resource", "resource 表"), ("lock", "lock 表")):
-        rows = sorted(
-            generated.get(sheet, []), key=lambda item: str(item.get("symbol_name") or "")
-        )
+        rows = sorted(generated.get(sheet, []), key=lambda item: str(item.get("symbol_name") or ""))
         lines.append(f"## {title}({len(rows)} 行)")
         lines.append("")
         lines.append("| symbol | kind | pair | confidence | source | description/notes |")

@@ -2,9 +2,10 @@
 window.ZScopeDashboardReports = {
   reportLoading: false, reportError: '', reportToc: [], reportRequest: 0,
   reportMarkdown: '', reviewPreview: false, importingReviews: false, exportingReport: false,
+  businessReview: null, businessDrafts: {}, savingBusinessReview: false,
   async loadMarkdownReport(finding) {
     const request = ++this.reportRequest;
-    this.reportLoading = true; this.reportError = ''; this.reportToc = []; this.reportMarkdown = ''; this.reviewPreview = false;
+    this.reportLoading = true; this.reportError = ''; this.reportToc = []; this.reportMarkdown = ''; this.reviewPreview = false; this.businessReview = null;
     try {
       if (!finding?.issue_id) throw new Error('报告身份缺失，请刷新页面后重试');
       const response = await fetch(`/api/issue_report?issue_id=${encodeURIComponent(finding.issue_id)}`);
@@ -12,6 +13,20 @@ window.ZScopeDashboardReports = {
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       if (request !== this.reportRequest) return;
       this.reportMarkdown = data.markdown;
+      if (data.business_review?.questions?.length) {
+        const review = data.business_review;
+        const key = `${review.report_id}:${review.issue_id}`;
+        const draft = this.businessDrafts[key];
+        if (draft && this.businessAnswersChanged(draft)) {
+          draft.stale = draft.base_revision !== review.base_revision;
+          this.businessReview = draft;
+        } else {
+          review.questions.forEach(q => { q.original_answer = q.answer; q.original_source_note = q.source_note; });
+          review.draft_key = key;
+          this.businessDrafts[key] = review;
+          this.businessReview = review;
+        }
+      }
       // Full text is authoritative. Keep an existing local review draft across issue switches.
       if (!finding._validation_dirty) {
         finding.validation_status = data.review.validation_status;
@@ -24,6 +39,35 @@ window.ZScopeDashboardReports = {
       this.$refs.reportScroll.scrollTop = 0;
     } catch (error) { if (request === this.reportRequest) this.reportError = error.message; }
     finally { if (request === this.reportRequest) this.reportLoading = false; }
+  },
+  businessAnswersChanged(review = this.businessReview) {
+    return !!review?.questions?.some(q => q.answer !== q.original_answer || q.source_note !== q.original_source_note);
+  },
+  reloadBusinessReview() {
+    if (this.businessReview) delete this.businessDrafts[this.businessReview.draft_key];
+    return this.loadMarkdownReport(this.selectedFinding);
+  },
+  async saveBusinessReview() {
+    const review = this.businessReview;
+    if (!review?.available || review.stale || this.savingBusinessReview || !this.businessAnswersChanged(review)) return;
+    const answers = review.questions.filter(q => q.answer !== q.original_answer || q.source_note !== q.original_source_note)
+      .map(({id, answer, source_note, expected_revision}) => ({id, answer, source_note, expected_revision}));
+    if (answers.some(a => !a.source_note.trim())) { this.showToast('请填写每条回答的业务约定来源或说明', 'warning'); return; }
+    this.savingBusinessReview = true;
+    try {
+      const response = await fetch('/api/business_review', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+        report_id: review.report_id, issue_id: review.issue_id, base_revision: review.base_revision, answers,
+      })});
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || '业务前提保存失败');
+      const saved = data.business_review;
+      saved.draft_key = review.draft_key;
+      saved.questions.forEach(q => { q.original_answer = q.answer; q.original_source_note = q.source_note; });
+      this.businessDrafts[review.draft_key] = saved;
+      if (this.businessReview?.draft_key === review.draft_key) this.businessReview = saved;
+      this.showToast('业务前提已保存；下次扫描将重新核验受影响结论，历史报告保持原样', 'success');
+    } catch (error) { this.showToast(error.message, 'error'); }
+    finally { this.savingBusinessReview = false; }
   },
   jumpReport(id) { if (this.$refs.markdownReport) ZScopeReport.jump(this.$refs.markdownReport, id); },
   renderReviewPreview() { return ZScopeReport.markdown(this.selectedFinding?.user_rebuttal || '*尚未填写*'); },

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, cast
 
 
-FACT_VERSION = "zscope.complete-validation-facts.v3"
+FACT_VERSION = "zscope.complete-validation-facts.v4"
 _STORE_LOCK = threading.Lock()
 
 
@@ -54,6 +54,34 @@ def digest(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def preprocessor_current(probe: Any) -> bool:
+    """Recheck positive and negative compiler lookups, not just old depfiles.
+
+    Reusing AST/CFG is allowed only while the current preprocessed input matches.
+    This also covers macro-computed includes, include_next and __has_include.
+    Probe commands come from compiler-bound facts; proof callers authenticate the
+    receipt before invoking this function. No shell or model-supplied command.
+    """
+    if not isinstance(probe, dict) or not probe.get("command") or not probe.get("sha256"):
+        return False
+    try:
+        result = subprocess.run(
+            probe["command"],
+            cwd=probe["directory"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=probe["timeout"],
+        )
+        return (
+            result.returncode == 0
+            and hashlib.sha256(result.stdout.encode()).hexdigest() == probe["sha256"]
+        )
+    except (OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError):
+        return False
 
 
 def walk_ast(node: Any) -> Iterable[Dict[str, Any]]:
@@ -376,6 +404,7 @@ class CompleteFactStore:
                     [str(source), str(self.compile_commands), str(Path(self.clang).resolve())]
                 )
                 before = self._hash_files(names)
+                pp = self._run([*args, "-E", "-dD"], cwd)
                 ast = self._run([*args, "-fsyntax-only", "-Xclang", "-ast-dump=json"], cwd)
                 cfg = self._run(
                     [
@@ -388,7 +417,6 @@ class CompleteFactStore:
                     ],
                     cwd,
                 )
-                pp = self._run([*args, "-E", "-dD"], cwd)
                 if ast.returncode or cfg.returncode or pp.returncode:
                     failed = ast if ast.returncode else cfg if cfg.returncode else pp
                     raise ValueError("compiler_fact_extraction_failed: " + failed.stderr[-1000:])
@@ -396,6 +424,14 @@ class CompleteFactStore:
                 after = self._hash_files(names)
                 if before != after or environment != self.compiler_environment():
                     raise ValueError("dependencies_changed_during_extraction")
+                probe = {
+                    "command": [self.clang, *args, "-E", "-dD"],
+                    "directory": str(cwd),
+                    "timeout": self.timeout,
+                    "sha256": hashlib.sha256(pp.stdout.encode()).hexdigest(),
+                }
+                if not preprocessor_current(probe):
+                    raise ValueError("compiler_lookups_changed_during_extraction")
                 macros: list[Dict[str, Any]] = []
                 for name in before:
                     path = Path(name)
@@ -465,6 +501,7 @@ class CompleteFactStore:
                     "cfg_raw": cfg.stderr + "\n" + cfg.stdout,
                     "macros": macros,
                     "preprocessor": pp.stdout,
+                    "preprocessor_probe": probe,
                 }
                 uid = "CF_" + digest(payload)
                 payload["fact_store_id"] = uid
@@ -487,6 +524,10 @@ class CompleteFactStore:
     def load(self, uid: str) -> Dict[str, Any]:
         if not re.fullmatch(r"CF_[0-9a-f]{64}", uid):
             return {"complete": False, "reason": "invalid_fact_store_id"}
+        # A self-consistent disk payload is not permission to run its probe.
+        # Restored evidence must be collected using this store's bound command.
+        if uid not in self._collected:
+            return {"complete": False, "reason": "compiler_lookup_requires_current_collection"}
         try:
             from ..reporting.shared_objects import ObjectEncoder, ObjectDecoder
             path = self.directory / f"{uid}.json"
@@ -510,6 +551,8 @@ class CompleteFactStore:
                 raise ValueError("stale_fact_dependencies")
             if data.get("compiler_environment") != self.compiler_environment():
                 raise ValueError("stale_compiler_environment")
+            if not preprocessor_current(data.get("preprocessor_probe")):
+                raise ValueError("stale_compiler_lookup_dependencies")
             return cast(Dict[str, Any], data)
         except (OSError, ValueError, KeyError) as exc:
             return {"complete": False, "reason": str(exc)}

@@ -99,6 +99,93 @@ class ReportReviewService:
             "base_revision": review_revision(issue),
             "markdown": build_document(issue, report_id, snippet_reader=self._snippet),
             "review": review_state(issue),
+            "business_review": self.business_review(issue, report_id, key),
+        }
+
+    def business_review(self, issue: dict[str, Any], report_id: str, key: str) -> dict[str, Any]:
+        from ..semantics.business_assumptions import assumption_key, feedback_reuse_problem
+
+        store = self.feedback.user_config_store
+        reader = getattr(store, "get_protocol_answers", None)
+        assessment = issue.get("protocol_assessment") or {}
+        assumptions = assessment.get("assumptions", []) if isinstance(assessment, dict) else []
+        questions = []
+        for assumption in assumptions:
+            subject = assumption_key(assumption)
+            questions.append(
+                {
+                    "id": assumption["id"],
+                    "subject_key": subject,
+                    "statement": assumption["statement"],
+                    "scope": assumption["scope"],
+                }
+            )
+        rows = reader([q["subject_key"] for q in questions]) if callable(reader) else {}
+        for question in questions:
+            answer = rows.get(question["subject_key"], {})
+            question.update(
+                answer=answer.get("answer", "unknown"),
+                source_note=answer.get("source_note", ""),
+                expected_revision=int(answer.get("revision", 0)),
+            )
+        return {
+            "report_id": report_id,
+            "issue_id": key,
+            "base_revision": review_revision(issue),
+            "available": callable(reader)
+            and callable(getattr(store, "save_protocol_answers", None)),
+            "questions": questions,
+            "revalidation_required": bool(feedback_reuse_problem(issue, store)),
+        }
+
+    def save_business_review(self, payload: Any) -> dict[str, Any]:
+        from ..config.protocol_feedback import ProtocolAnswerConflict
+
+        if not isinstance(payload, dict) or set(payload) != {
+            "report_id",
+            "issue_id",
+            "base_revision",
+            "answers",
+        }:
+            raise ValueError("业务前提保存参数无效")
+        self.feedback._report_cache_key = None
+        _, report_id, issues, _, ambiguous = self.catalog()
+        key = payload["issue_id"]
+        if (
+            not isinstance(key, str)
+            or key not in issues
+            or key in ambiguous
+            or payload["report_id"] != report_id
+        ):
+            raise ValueError("报告或问题已变化，请重新载入后核对")
+        issue = issues[key]
+        if payload["base_revision"] != review_revision(issue):
+            raise ProtocolAnswerConflict("报告证据已变化，保留草稿；请重新载入后核对")
+        current = self.business_review(issue, report_id, key)
+        if not current["available"]:
+            raise ValueError("项目业务反馈状态库不可用")
+        answers = payload["answers"]
+        if not isinstance(answers, list) or not answers or len(answers) > 1000:
+            raise ValueError("请选择需保存的业务前提")
+        assumptions = {a["id"]: a for a in issue["protocol_assessment"]["assumptions"]}
+        updates = []
+        for answer in answers:
+            if not isinstance(answer, dict) or set(answer) != {
+                "id",
+                "answer",
+                "source_note",
+                "expected_revision",
+            }:
+                raise ValueError("业务回答字段无效")
+            if not isinstance(answer["id"], str) or answer["id"] not in assumptions:
+                raise ValueError("业务前提不属于当前问题")
+            updates.append({**answer, "assumption": assumptions[answer["id"]]})
+        saved = self.feedback.user_config_store.save_protocol_answers(updates)
+        return {
+            "success": True,
+            "revalidation_required": True,
+            "affected_subject_keys": sorted(saved),
+            "business_review": self.business_review(issue, report_id, key),
         }
 
     def offline_report(self) -> bytes:

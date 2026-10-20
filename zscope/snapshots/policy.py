@@ -9,6 +9,23 @@ from typing import Any, Dict, List
 SNAPSHOT_CANDIDATE_POLICY_VERSION = "zscope.snapshot-candidates.disabled.v6"
 
 
+def semantic_experiment_requires_scan(analysis: Any, metadata: Any) -> bool:
+    """Live experiment accounting cannot be restored from an old report."""
+    if any(
+        getattr(analysis, name, "off") != "off"
+        for name in ("semantic_snapshot_candidate_mode", "semantic_model_demand_mode")
+    ):
+        return True
+    if not isinstance(metadata, dict):
+        return False
+    snapshots = metadata.get("semantic_snapshot_candidates")
+    return bool(
+        metadata.get("semantic_model_demand")
+        or isinstance(snapshots, dict)
+        and snapshots.get("conditional_observations")
+    )
+
+
 DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS = (
     "func_name",
     "index_name",

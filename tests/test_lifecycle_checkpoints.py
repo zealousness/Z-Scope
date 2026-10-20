@@ -74,7 +74,7 @@ def test_old_lifecycle_cache_is_not_reused(compile_facts):
     )
     cache.compute(old_key, lambda: {"schema_version": old_key[0], "constraints": [{"truth": True}]})
     current = lifecycle_facts(store, registry, data, function, path.read_text())
-    assert current["schema_version"] == "zscope.lifecycle-obligations.v2"
+    assert current["schema_version"] == "zscope.lifecycle-obligations.v3"
     assert_answer_free(current)
     assert lifecycle_facts(store, registry, data, function, path.read_text()) == current
     assert cache.computations == 2

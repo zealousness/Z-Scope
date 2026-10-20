@@ -1,3 +1,4 @@
+from zscope.common.validator_protocol import VALIDATION_POLICY_VERSION
 from zscope.orchestration.candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
     annotate_issue_identity,
@@ -522,7 +523,8 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
         "candidate_terminal_states": [],
         "run_manifest": {
             "valid": True,
-            "candidate_schema_version": "zscope.candidate.v3.4",
+            "candidate_schema_version": "zscope.candidate.v3.5",
+            "validation_policy_version": VALIDATION_POLICY_VERSION,
             "config_hash": "CONFIG",
             "model_manifest_hash": "MODEL",
             "source_revision": "REV",
@@ -571,3 +573,11 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
     }
     assert "candidate_schema_mismatch" in report_reuse_blockers(v32_candidate_schema)
     assert not report_is_reusable(v32_candidate_schema)
+
+    for policy in ("", "old-score-only-policy"):
+        old_policy = {
+            **reusable,
+            "run_manifest": {**reusable["run_manifest"], "validation_policy_version": policy},
+        }
+        assert "validation_policy_mismatch" in report_reuse_blockers(old_policy)
+        assert not report_is_reusable(old_policy)

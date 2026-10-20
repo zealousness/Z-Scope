@@ -19,7 +19,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 VENDOR = Path("zscope/web/static/vendor")
 LOCK = Path("requirements/portable/web-assets.lock.json")
-FIRST_PARTY = ("report_view.js", "report_view.css", "offline_review.js", "dashboard_reports.js")
+FIRST_PARTY = (
+    "index.html",
+    "report_view.js",
+    "report_view.css",
+    "offline_review.js",
+    "dashboard_reports.js",
+    "dashboard_config.js",
+    "dashboard_workbench.js",
+    "dashboard_workbench.css",
+)
 SOURCES = {
     "tailwind-cli": (
         "3.4.17",

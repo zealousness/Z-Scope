@@ -25,6 +25,7 @@ sources:
   - scripts/check_benchmark_hygiene.py
   - scripts/portable_release.py
   - scripts/evaluate_release_candidate.py
+  - scripts/agent_plan_evaluation.py
   - scripts/run_validator_replay.py
   - scripts/describe_validator_replay_provider.py
   - scripts/score_validator_replay_experiment.py
@@ -48,11 +49,20 @@ tests:
   - tests/test_validator_replay.py
   - tests/test_validator_experiment.py
   - tests/test_external_benchmark_oci.py
+  - tests/test_agent_plan_evaluation.py
   - tests/test_discovery_ablation.py
   - tests/test_discovery_ablation_experiment.py
 ---
 
 # Benchmark
+
+## 实施计划的开发评测准备
+
+`scripts/agent_plan_evaluation.py` 提供 `plan`、`record`、`compare`：生成无答案的冷/热/增量矩阵，冻结已产生报告与 usage 账本，再按源码、入口、构建、配置、模型、工具和 schema 身份比较。它不执行扫描或模型、不读取 truth、不评分，产物始终为 `development_only`，不具备 formal/release 资格。矩阵命令由操作者在确认实际 Linux 工具链与模型配置后执行。
+
+冻结记录的 `record_id` 在加载时重新核对内容摘要；声明了 report-manifest 绑定的身份也重新与未修改的报告核对。没有报告 manifest 的记录明确保留 declared-only 来源，不能表述为实测同版本绑定。未知值保留 null，零分母是 N/A，失败、取消与重试成本保留。此准备工具及合成用例不代表完整 S09 正式准确率/性能评测完成，正式门禁和独立评分器仍走原协议。
+
+报告读取复用正式 `read_report`，完整解码当前 `zscope.shared-json.v1` 对象图并拒绝损坏引用/对象摘要，旧普通 JSON 保留；冻结摘要始终覆盖原始工件字节。答案隔离检查作用于逻辑报告。大报告的流式读取仍需可选 benchmark 依赖；本轮环境缺少 ijson，16MiB 分支实际拒绝，未作为流式能力通过证据。
 
 ## 职责与非职责
 

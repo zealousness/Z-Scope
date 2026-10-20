@@ -7,6 +7,8 @@ from .._version import __version__
 from .dashboard_server import DashboardHttpServer
 from . import services as web_services
 from .review_reports import MAX_IMPORT_BYTES, ReportReviewService
+from .acceptance_service import AcceptanceReviewService
+from .scan_jobs_service import ScanJobsHttpService
 from ..orchestration.scan_request import ScanRequestError, ScanRequestService
 
 PORT = 8000
@@ -24,6 +26,8 @@ _cpg_service = web_services.CpgService()
 _source_snippet_service = web_services.SourceSnippetService()
 _report_feedback_service = web_services.ReportFeedbackService()
 _scan_request_service = None
+_acceptance_review_service = None
+_scan_jobs_http_service = None
 
 
 def persist_validation_feedback(updates):
@@ -56,6 +60,18 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/findings":
             self._send_json(_report_feedback_service.selected_view_payload(self.path))
+        elif parsed.path == "/api/jobs" or parsed.path.startswith("/api/jobs/"):
+            if _scan_jobs_http_service is None:
+                self._send_json({"error": "持久作业服务不可用", "code": "unavailable"}, status=503)
+                return
+            status, response = _scan_jobs_http_service.get(parsed.path, parsed.query)
+            self._send_json(response, status=status)
+        elif parsed.path == "/api/acceptance/dispositions":
+            if _acceptance_review_service is None:
+                self._send_json({"error": "项目处置服务不可用", "code": "unavailable"}, status=503)
+                return
+            status, response = _acceptance_review_service.get(parsed.query)
+            self._send_json(response, status=status)
         elif parsed.path in {"/api/issue_report", "/api/offline_report"}:
             service = ReportReviewService(_report_feedback_service, _source_snippet_service)
             try:
@@ -92,6 +108,11 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(_config_service.read_text())
             except OSError as exc:
                 self._send_json({"content": "", "error": str(exc)}, status=500)
+        elif parsed.path == "/api/scan/prepare":
+            try:
+                self._send_json(_config_service.prepare_project())
+            except (OSError, ValueError, TypeError) as exc:
+                self._send_json({"error": str(exc)}, status=400)
         elif parsed.path == "/api/scan/status":
             if _scan_request_service is None:
                 self._send_json({"error": "scan service is unavailable"}, status=503)
@@ -155,6 +176,10 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
+        if self.path.startswith("/api/jobs") and content_length > 64 * 1024:
+            self._send_json({"error": "作业请求过大", "code": "invalid_request"}, status=413)
+            self.close_connection = True
+            return
         if self.path.startswith("/api/import_reviews") and content_length > MAX_IMPORT_BYTES * 2:
             self._send_json({"error": "导入请求过大"}, status=413)
             self.close_connection = True
@@ -169,6 +194,34 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"success": False, "error": "Invalid JSON"}, status=400)
             return
 
+        if self.path == "/api/jobs" or self.path.startswith("/api/jobs/"):
+            if _scan_jobs_http_service is None:
+                self._send_json({"error": "持久作业服务不可用", "code": "unavailable"}, status=503)
+                return
+            status, response = _scan_jobs_http_service.post(self.path, payload)
+            self._send_json(response, status=status)
+            return
+
+        if self.path == "/api/business_review":
+            from ..config.protocol_feedback import ProtocolAnswerConflict
+
+            try:
+                result = ReportReviewService(_report_feedback_service).save_business_review(payload)
+                self._send_json(result)
+            except ProtocolAnswerConflict as exc:
+                self._send_json({"success": False, "error": str(exc)}, status=409)
+            except (ValueError, KeyError, TypeError) as exc:
+                self._send_json({"success": False, "error": str(exc)}, status=400)
+            except Exception as exc:
+                self._send_json({"success": False, "error": f"业务前提保存失败：{exc}"}, status=500)
+            return
+        if self.path == "/api/acceptance/dispositions":
+            if _acceptance_review_service is None:
+                self._send_json({"error": "项目处置服务不可用", "code": "unavailable"}, status=503)
+                return
+            status, response = _acceptance_review_service.post(payload)
+            self._send_json(response, status=status)
+            return
         if self.path in {"/api/import_reviews", "/api/import_reviews/resolve"}:
             try:
                 result = ReportReviewService(_report_feedback_service).import_reviews(
@@ -382,7 +435,7 @@ def run_server(
     host="0.0.0.0",
     port=PORT,
 ):
-    global _config_service, _rule_service, _wiki_control_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service, _scan_request_service
+    global _config_service, _rule_service, _wiki_control_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service, _scan_request_service, _acceptance_review_service, _scan_jobs_http_service
     config_file_path = (
         Path(config_path).resolve() if config_path else Path(CONFIG_FILENAME).resolve()
     )
@@ -424,6 +477,8 @@ def run_server(
         config_file_path,
         default_scan_depth=scan_depth,
     )
+    _acceptance_review_service = AcceptanceReviewService(_report_feedback_service, config_file_path)
+    _scan_jobs_http_service = ScanJobsHttpService(config_file_path, _report_feedback_service)
     try:
         DashboardHttpServer(handler_class=ZScopeHandler, web_dir=WEB_DIR, host=host, port=port).serve_forever()
     finally:

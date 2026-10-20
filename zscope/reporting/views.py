@@ -473,6 +473,7 @@ def _compact_observation(issue: Dict[str, Any]) -> Dict[str, Any]:
         "validation_reasoning",
         "llm_explanation",
         "promotion_review_reason",
+        "protocol_assessment",
         "review_disposition_reason",
         "review_adjudication",
         "review_fact_store",
@@ -674,7 +675,11 @@ def annotate_needs_review_sub_state(issue: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     issue["needs_review_sub_state"] = sub_state
     missing = issue.get("missing_fact_kinds") or []
-    if sub_state == "model_rejected_unproven":
+    if sub_state == "business_conditional":
+        action = "验收时集中核实下列业务前提及其适用范围；源码效果和模型意见不能替代业务约定。"
+    elif sub_state == "protocol_pending":
+        action = "补齐当前对象、调用路径或后续访问等技术证据，再核实业务前提。"
+    elif sub_state == "model_rejected_unproven":
         action = (
             "模型否决了该问题，但否决没有确定性证明支撑；补齐缺失证据并重新验证后，"
             "才能最终定论（确认或拒绝）。"
@@ -693,6 +698,10 @@ def annotate_needs_review_sub_state(issue: Dict[str, Any]) -> Dict[str, Any]:
         "suggested_action": action,
     }
     promotion_reason = str(issue.get("promotion_review_reason") or "").strip()
+    assessment = issue.get("protocol_assessment")
+    if isinstance(assessment, dict) and sub_state in {"business_conditional", "protocol_pending"}:
+        presentation["business_assumptions"] = assessment.get("assumptions", [])
+        presentation["technical_gaps"] = assessment.get("technical_gaps", [])
     if promotion_reason:
         presentation["promotion_review_reason"] = promotion_reason
     issue["needs_review_presentation"] = presentation

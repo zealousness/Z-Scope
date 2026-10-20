@@ -389,7 +389,9 @@ def test_observation_schema_requires_exact_types() -> None:
 
 
 def _persist_rollout_stage(path: Path, stage: str, *, signed: bool = True) -> None:
-    entered = _timestamp(datetime(2026, 7, 1, tzinfo=timezone.utc))
+    # Runtime policy tests need a currently valid envelope. Expiry itself is
+    # covered separately with the controller's injected deterministic clock.
+    entered = _timestamp(datetime.now(timezone.utc))
     if stage == "telemetry_only":
         action = "initialize"
         from_stage = "telemetry_only"

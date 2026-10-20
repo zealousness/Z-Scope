@@ -39,6 +39,8 @@ CONTEXT_FIELDS = (
     "reasoning_process",
     "llm_explanation",
     "promotion_review_reason",
+    "protocol_assessment",
+    "needs_review_sub_state",
     "guard_analysis",
     "path_constraints",
     "call_path",
@@ -506,6 +508,38 @@ def build_document(
         if heading == "Validator 验证结果" and verdict_chunks:
             present.append("**判定结论**：" + "；".join(verdict_chunks))
         parts.append("\n\n".join(present) if present else "未提供")
+    assessment = issue.get("protocol_assessment")
+    if isinstance(assessment, dict):
+        conditional = issue.get("needs_review_sub_state") == "business_conditional"
+        confirmed = (
+            issue.get("candidate_disposition") == "confirmed"
+            and assessment.get("state") == "established"
+        )
+        parts.extend(
+            [
+                "\n## 对象协议验收\n",
+                (
+                    "扫描时已在下列用户业务约定范围内核验确认。"
+                    if confirmed
+                    else (
+                        "条件性风险：业务前提待核实。"
+                        if conditional
+                        else "待补证：技术证据尚未闭合。"
+                    )
+                ),
+                "业务回答只适用于列出的对象、入口和源码版本；修改后需重新扫描，历史结论不自动改写。",
+            ]
+        )
+        for assumption in assessment.get("assumptions", []):
+            label = {"accepted": "用户确认的前提", "denied": "用户否定的前提"}.get(
+                assumption.get("status"), "未确认前提"
+            )
+            parts.append("- **" + label + "**：" + _text(assumption.get("statement")))
+            if assumption.get("answer"):
+                parts.append("  来源：" + _text(assumption["answer"].get("source_note")))
+        for gap in assessment.get("technical_gaps", []):
+            parts.append("- **技术缺口**：" + _text(gap))
+        parts.extend(["\n### 适用范围与来源\n", _fenced(_text(assessment), "json")])
     if pack:
         parts.extend(["\n## 结构化证据\n", _fenced(_text(pack), "json")])
     parts.extend(

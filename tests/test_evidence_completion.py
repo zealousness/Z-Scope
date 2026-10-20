@@ -44,7 +44,7 @@ def test_evidence_completion_records_missing_fact_without_inventing_proof() -> N
     assert "deterministic_proofs" not in issue
 
 
-def test_evidence_completion_derives_lock_proof_only_for_all_local_assignments() -> None:
+def test_evidence_completion_cannot_prove_unchecked_mutex_prefixes() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
@@ -71,8 +71,8 @@ pthread_mutex_unlock(&state.lock);
         validation_evidence=evidence,
     )
 
-    assert issue["evidence_completion_status"] == "completed"
-    assert issue["deterministic_proofs"][0]["proof_kind"] == "lock_dominates_access"
+    assert issue["evidence_completion_status"] == "exhausted"
+    assert "deterministic_proofs" not in issue
 
 
 def test_evidence_completion_refuses_lock_proof_when_one_write_is_unlocked() -> None:

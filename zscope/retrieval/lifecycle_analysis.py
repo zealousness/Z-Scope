@@ -15,7 +15,7 @@ from typing import Any, cast
 from ..semantics.contracts import ContractRegistry, digest
 from .validation_facts import walk_ast
 
-LIFECYCLE_FACT_VERSION = "zscope.lifecycle-obligations.v2"
+LIFECYCLE_FACT_VERSION = "zscope.lifecycle-obligations.v3"
 ACQUISITIONS = {"allocator", "calloc", "reallocator", "io_acquire"}
 
 
@@ -28,6 +28,19 @@ def lifecycle_facts(
 ) -> dict[str, Any]:
     from .analysis_facts import scan_fact_cache
 
+    # An in-memory path result cannot bypass fresh native negative-dependency
+    # checks. Failure remains uncached so a temporary outage cannot poison a
+    # later current proof of the same compilation instance.
+    if data.get("raii_native_facts"):
+        from .raii_lifecycle import bound_native_facts
+
+        if not bound_native_facts(
+            data, data["raii_native_facts"], data.get("build_context_id", "")
+        ):
+            return LifecycleAnalysis(
+                registry, {**data, "raii_native_facts": {}}, function, source
+            ).run()
+
     return cast(
         dict[str, Any],
         scan_fact_cache(store).compute(
@@ -36,6 +49,8 @@ def lifecycle_facts(
                 data["fact_store_id"],
                 str(function.get("id")),
                 registry.version,
+                data.get("build_context_id", ""),
+                digest(data.get("raii_native_facts") or {}),
             ),
             lambda: LifecycleAnalysis(registry, data, function, source).run(),
         ),
@@ -56,6 +71,7 @@ def unwrap(node: dict[str, Any]) -> dict[str, Any]:
             "NoOp",
             "BitCast",
             "NullToPointer",
+            "PointerToBoolean",
         }:
             break
         node = children[0]
@@ -133,6 +149,8 @@ class PathState:
     complete: bool = True
     exit_line: int = 0
     object_versions: dict[str, str] = field(default_factory=dict)
+    guards: dict[str, Any] = field(default_factory=dict)
+    exceptional: bool = False
 
 
 class LifecycleAnalysis:
@@ -146,6 +164,10 @@ class LifecycleAnalysis:
         source: str,
     ):
         self.registry, self.data, self.function, self.source = registry, data, function, source
+        from .raii_lifecycle import ScopedGuards
+
+        self.raii = ScopedGuards(self)
+        self.catch_depth = 0
         self.acquisitions: dict[str, dict[str, Any]] = {}
         self.uses: list[dict[str, Any]] = []
         self.events: list[dict[str, Any]] = []
@@ -168,13 +190,27 @@ class LifecycleAnalysis:
             (n for n in self.function.get("inner", []) if n.get("kind") == "CompoundStmt"), {}
         )
         initial = PathState(object_versions={p: "input:" + p for p in self.parameters})
-        if any(
+        allowed_cpp = (
+            {
+                "CXXConstructExpr",
+                "CXXTryStmt",
+                "CXXCatchStmt",
+                "CXXThrowExpr",
+                "CXXBoolLiteralExpr",
+                "CXXNullPtrLiteralExpr",
+            }
+            if self.raii.cpp
+            else set()
+        )
+        if self.raii.gaps or any(
             str(n.get("kind", "")).startswith("CXX")
+            and n.get("kind") not in allowed_cpp
             or n.get("kind") in {"ExprWithCleanups", "GCCAsmStmt", "MSAsmStmt", "SEHTryStmt"}
             for n in walk_ast(self.function)
         ):
             initial.complete = False
             self.gaps.add("cpp_cleanup_or_exception_effects_unclosed")
+            self.gaps.update(self.raii.gaps)
         states = self._statement(body, [initial]) if body else []
         obligations = []
         for uid, acquire in self.acquisitions.items():
@@ -222,6 +258,21 @@ class LifecycleAnalysis:
             "events": self.events,
             "gaps": sorted(self.gaps),
             "complete": bool(states) and all(s.complete for s in states),
+            "raii": {
+                "scope": "single_pointer_scoped_heap_guard",
+                "manager_count": len(self.raii.models),
+                "build_context_id": self.data.get("build_context_id", ""),
+                "unsupported": [
+                    "move",
+                    "adopt",
+                    "defer",
+                    "release",
+                    "reset",
+                    "lock_guard",
+                    "implicit_call_exception",
+                    "uncaught_throw",
+                ],
+            },
         }
 
     def _resource(self, node: dict[str, Any], state: PathState) -> str:
@@ -294,6 +345,14 @@ class LifecycleAnalysis:
         self, node: dict[str, Any], state: PathState, target: str = "", target_text: str = ""
     ) -> str:
         name, args = invocation(node)
+        if self.raii.cpp:
+            callee = unwrap(node.get("inner", [{}])[0]).get("referencedDecl", {})
+            if not self.raii.nonthrowing(callee):
+                state.complete = False
+                self.gaps.add("raii_call_exception_effects_unclosed")
+            if name in {"malloc", "calloc", "free"} and not self.raii.standard_root(node, name):
+                state.complete = False
+                self.gaps.add("raii_standard_symbol_unbound")
         contracts = [
             c
             for c in self.registry.find(name)
@@ -301,6 +360,8 @@ class LifecycleAnalysis:
         ]
         actual = [expression(arg) for arg in args]
         if not name or not contracts:
+            if self.raii.cpp:
+                state.complete = False
             affected = {self._resource(n, state) for arg in args for n in walk_ast(arg)} - {""}
             self._unknown(state, "opaque_call_argument_effects", affected=affected)
             for argument in args:
@@ -496,6 +557,7 @@ class LifecycleAnalysis:
             "StmtExpr",
             "CXXNewExpr",
             "CXXDeleteExpr",
+            "CXXConstructExpr",
         }:
             state.complete = False
             self._unknown(state, "unsupported_expression_control_flow:" + str(kind))
@@ -633,14 +695,53 @@ class LifecycleAnalysis:
                 self._unknown(state, "path_budget_incomplete")
             return states
         if kind == "CompoundStmt":
+            managers = [
+                str(d["id"])
+                for c in children
+                if c.get("kind") == "DeclStmt"
+                for d in c.get("inner", [])
+                if str(d.get("id")) in self.raii.models
+            ]
             for child in children:
                 states = self._statement(child, states)
+            for state in states:
+                self.raii.cleanup(managers, state)
             return states
         result = []
         for state in states:
             if state.terminated:
                 result.append(state)
                 continue
+            if kind == "CXXTryStmt" and self.raii.cpp:
+                catches = children[1:]
+                if (
+                    len(catches) == 1
+                    and catches[0].get("kind") == "CXXCatchStmt"
+                    and len(catches[0].get("inner", [])) == 2
+                    and not catches[0]["inner"][0].get("kind")
+                    and catches[0]["inner"][0].get("id", "0x0") == "0x0"
+                    and catches[0]["inner"][1].get("kind") == "CompoundStmt"
+                ):
+                    self.catch_depth += 1
+                    branches = self._statement(children[0], [state])
+                    self.catch_depth -= 1
+                    for branch in branches:
+                        if branch.exceptional:
+                            branch.exceptional = branch.terminated = False
+                            result.extend(self._statement(catches[0]["inner"][1], [branch]))
+                        else:
+                            result.append(branch)
+                    continue
+            if kind == "CXXThrowExpr" and self.raii.cpp:
+                if (
+                    self.catch_depth
+                    and len(children) == 1
+                    and children[0].get("kind") in {"IntegerLiteral", "CXXBoolLiteralExpr"}
+                ):
+                    state.exceptional = state.terminated = True
+                    state.exit_line = location(node, self.source)[0]
+                    result.append(state)
+                    continue
             if kind == "IfStmt" and len(children) in {2, 3} and not node.get("hasInit"):
                 self._eval(children[0], state)
                 for truth in (True, False):
@@ -663,6 +764,11 @@ class LifecycleAnalysis:
             if kind == "DeclStmt":
                 for decl in children:
                     if decl.get("kind") == "VarDecl" and decl.get("inner"):
+                        if self.raii.construct(decl, state):
+                            continue
+                        if decl["inner"][-1].get("kind") == "CXXConstructExpr":
+                            state.complete = False
+                            self.gaps.add("raii_construction_unverified")
                         self._eval(decl["inner"][-1], state, identity(decl), expression(decl))
                         self._assign_version(identity(decl), decl["inner"][-1], state)
                         uid = self._resource(decl["inner"][-1], state)

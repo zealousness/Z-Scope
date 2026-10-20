@@ -151,3 +151,12 @@ entry_functions_diff*.json
 
 # local acceptance-run artifacts
 artifacts/
+
+# local coordinator scratch: workspace snapshots, bridge transcripts, run state
+.coordination/
+
+# coordination run state: dispatch journals and job-runtime databases are
+# mutable execution records, not source, and were never tracked
+docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/**/*.sqlite
+docs/Z-Scope_Agent_Implementation_Plan/zscope-agent-implementation-plan/coordination/**/*.db
+.zscope_jobs/

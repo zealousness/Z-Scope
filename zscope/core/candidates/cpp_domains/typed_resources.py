@@ -34,6 +34,17 @@ class ClangTypedResourceRules:
             for family in ("file", "directory", "malloc")
             for api in families[family]["release"]
         }
+        if self.restrict_to_semantics:
+            acquire = {
+                api: family
+                for api, family in acquire.items()
+                if self._semantic_call_allowed(api, "io_acquire")
+            }
+            release = {
+                api: family
+                for api, family in release.items()
+                if self._semantic_call_allowed(api, "io_release", "deallocator")
+            }
         # Wrapper roles come from the existing semantic contract. The family
         # can be declared explicitly, or inferred from a FILE*/DIR* carrier.
         for row in self.semantic_overlay.get("resource_models", []):
@@ -69,7 +80,7 @@ class ClangTypedResourceRules:
         }
         close_pattern = re.compile(
             r"\b("
-            + "|".join(map(re.escape, sorted(set(release) | self._io_release_names)))
+            + self._names_pattern(set(release) | self._io_release_names)
             + r")\s*\(\s*([A-Za-z_]\w*)\s*\)"
         )
 
@@ -90,13 +101,20 @@ class ClangTypedResourceRules:
                     call = re.match(r"(?:(?:std)::)?(\w+)\s*\(", value)
                     if call:
                         family = acquire.get(call[1], "")
-                        if not family and call[1] in {
-                            "malloc",
-                            "calloc",
-                            "realloc",
-                            "strdup",
-                            "strndup",
-                        }:
+                        if (
+                            not family
+                            and call[1]
+                            in {
+                                "malloc",
+                                "calloc",
+                                "realloc",
+                                "strdup",
+                                "strndup",
+                            }
+                            and self._semantic_call_allowed(
+                                call[1], "allocator", "calloc", "reallocator"
+                            )
+                        ):
                             family = "malloc"
                         if not family and call[1] in self._io_acquire_names:
                             declared = re.search(r"\b(FILE|DIR)\s*\*", text[: assignment.start()])
@@ -106,7 +124,11 @@ class ClangTypedResourceRules:
                     if var in custom_allocations:
                         family = "custom"
                     reopened = re.search(r"\bfreopen\s*\([^,]*,[^,]*,\s*(\w+)\s*\)", value)
-                    if reopened and reopened[1] in aliases:
+                    if (
+                        reopened
+                        and reopened[1] in aliases
+                        and self._semantic_call_allowed("freopen", "io_acquire")
+                    ):
                         resources[aliases[reopened[1]]]["transferred"] = True
                     resources[line.index] = dict(
                         var=var,
@@ -134,7 +156,10 @@ class ClangTypedResourceRules:
                     if (
                         closed
                         and state.get("acquire_api")
-                        and self.semantics.contracts.release_in_text(state["acquire_api"], closed[1], text, var) != "applies"
+                        and self.semantics.contracts.release_in_text(
+                            state["acquire_api"], closed[1], text, var
+                        )
+                        != "applies"
                     ):
                         state["uncertain_release"] = line
                         continue
@@ -187,8 +212,13 @@ class ClangTypedResourceRules:
                 state = resources[key]
                 if re.search(rf"\breturn\s+{re.escape(var)}\s*;", text):
                     state["transferred"] = True
-                if re.search(r"\b(?:unique_ptr|shared_ptr)\s*<", text) and re.search(
-                    rf"[({{]\s*{re.escape(var)}\s*[)}}]", text
+                # Template spelling alone cannot authorize an exact-instance
+                # transfer. Verified constructor/destructor paths are consumed
+                # separately; this lexical shortcut is legacy-only.
+                if (
+                    not self.restrict_to_semantics
+                    and re.search(r"\b(?:unique_ptr|shared_ptr)\s*<", text)
+                    and re.search(rf"[({{]\s*{re.escape(var)}\s*[)}}]", text)
                 ):
                     state["transferred"] = True
                 if re.search(rf"(?:->|\.)\w+\s*=\s*{re.escape(var)}\s*;", text):

@@ -752,6 +752,8 @@ class ClangBackend(CodeBackend):
                     "UPDATE metadata SET value='' WHERE key LIKE 'clang_batch_base:%' OR key='clang_batch_input'"
                 )
                 stage.set_metadata("clang_fact_frontend", "lsp", commit=False)
+                stage._conn.execute("DELETE FROM compilation_facts")
+                stage._conn.execute("DELETE FROM compilation_instances")
                 stage.mark_derived_indexes_dirty(reason="compiler_frontend_changed", commit=False)
                 stage.commit()
                 self._db, self._frontend = stage, "lsp"
@@ -1099,26 +1101,74 @@ class ClangBackend(CodeBackend):
     def get_global_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
         return self._db.get_global_definitions_batch(names) if self._db else []
 
-    def get_function_program_facts(self, func_name: str, file_path: str = "") -> Dict[str, Any]:
+    def get_build_contexts(self, file_path: str = "") -> List[Dict[str, Any]]:
+        return self._db.get_build_contexts(file_path) if self._db else []
+
+    def get_function_program_facts(
+        self, func_name: str, file_path: str = "", *, build_context_id: str = ""
+    ) -> Dict[str, Any]:
         if not self._db:
             return {"complete": False, "events": [], "accesses": []}
         import json
+        from .build_context import program_facts_result
 
-        query = "SELECT data FROM function_program_facts WHERE function=?"
+        if build_context_id:
+            # An explicit identity may name a variant where the function does
+            # not exist. Report missing evidence, never borrow another variant.
+            selected_context = self._db.get_build_context(build_context_id)
+            if selected_context is None:
+                return {
+                    "complete": False,
+                    "events": [],
+                    "accesses": [],
+                    "functions": [],
+                    "reason": "build_context_not_found",
+                    "build_context_id": build_context_id,
+                }
+            values = self._db.get_compilation_facts(
+                build_context_id,
+                symbol=func_name,
+                file_path=file_path,
+                kinds=("program_function", "program_access"),
+            )
+            return program_facts_result(values, context=selected_context)
+        contexts = self._db.get_function_build_contexts(func_name, file_path)
+        by_id = {context["build_context_id"]: context for context in contexts}
+        sources = {context["source"] for context in contexts}
+        if file_path:
+            sources.add(file_path)
+        for source in sources:
+            for context in self._db.get_build_contexts(source):
+                by_id[context["build_context_id"]] = context
+        if len(by_id) > 1:
+            return {
+                "complete": False,
+                "events": [],
+                "accesses": [],
+                "functions": [],
+                "reason": "ambiguous_build_context",
+                "build_contexts": list(by_id.values()),
+            }
+        if by_id:
+            context = next(iter(by_id.values()))
+            values = self._db.get_compilation_facts(
+                context["build_context_id"],
+                symbol=func_name,
+                file_path=file_path,
+                kinds=("program_function", "program_access"),
+            )
+            return program_facts_result(values, context=context)
+
+        selector = (
+            "json_extract(data, '$.owner.usr')=?" if func_name.startswith("c:") else "function=?"
+        )
+        query = "SELECT data FROM function_program_facts WHERE " + selector
         args: list[Any] = [func_name]
         if file_path:
             query += " AND file_path=?"
             args.append(file_path)
         values = [json.loads(row[0]) for row in self._db._conn.execute(query, args)]
-        bodies = [row for row in values if row["kind"] == "program_function"]
-        accesses = [row for row in values if row["kind"] == "program_access"]
-        return {
-            "complete": len(bodies) == 1 and bool(bodies[0].get("complete")),
-            "fact_version": (bodies[0].get("fact_version") if len(bodies) == 1 else None),
-            "functions": bodies,
-            "accesses": accesses,
-            "events": [event for row in bodies for event in row.get("events", [])],
-        }
+        return program_facts_result(values)
 
     def get_function_symbol_context(
         self,

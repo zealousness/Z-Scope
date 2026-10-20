@@ -297,18 +297,51 @@ zscope -c zscope.yaml --plan-entries
 zscope -c zscope.yaml
 ```
 
+首次扫描前可以运行 `zscope-config prepare --config zscope.yaml`，或在 Web“项目配置”页保存配置后点击“检查已保存配置”。两处显示相同的实际配置/工程路径、编译实例数量、本地工具存在性、扫描深度、自动复现状态及产物目录；`--json` 提供相同结构化结果。检查只读，不启动模型、索引、扩展规则或加载历史运行策略；工具可执行性和模型连接仍由 doctor/实际运行确认。编译数据库有多个同源变体时会提示覆盖限制，不把命令数量当作完整扫描覆盖。
+
 `--plan-entries` 只构建配置后端的索引，输出入口候选并写入项目根目录的
 `entry_functions.discovered.json`；它不会调用 LLM 或执行漏洞扫描。若
 `unified` / `java_unified` 缺少配置要求的深度工具链，doctor 和实际索引都会明确失败，不会静默降级到 regex。
 
-#### public config v2
+#### public config v3
 
-运行时只接受 `config_version: 2`。顶层允许
+`zscope-init` 和两语言模板生成严格的 `config_version: 3`。C/C++ 最小结构如下：
+
+```yaml
+config_version: 3
+llms:
+  default:
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
+    models: ["${Z_SCOPE_LLM_MODEL}"]
+    api_key: "${Z_SCOPE_API_KEY}"
+project:
+  language: c_cpp
+  root: .
+  targets:
+    - id: main
+      compile_commands: build/compile_commands.json
+scan:
+  preset: overnight
+```
+
+`root` 相对配置文件目录解析，目标的编译数据库相对 `root`。Java 使用
+[`zscope.java.yaml`](zscope.java.yaml)，不填写编译数据库，预设为 `quick`。
+`zscope-init --preset quick|overnight --target-id main` 可选择生成的预设和目标；
+Java 只接受 `quick`。路径和目标标识按 YAML 字符串序列化，包含空格、`#` 或冒号的目录也可往返读取。
+
+`zscope-config validate` 区分文档有效性与执行能力；多个 target 可完整校验、保存和逐项准备，
+当前执行链一次只支持一个 target。focus、reproduction、platform 和 max_workers
+仍是未消费的声明。配置 execution.stop_at 已由 CLI 和新建持久作业消费；显式作业窗口优先，
+同 request_id 重放保留原窗口，resume 不重新套用配置窗口。作业启动的 CLI 采用该 attempt 保存的窗口；恢复后保存的空窗口表示本轮没有停止窗口。身份或输入已失效时拒绝启动。独立 CLI 仍使用配置窗口。这不表示完整 U01/S08 已完成。
+
+#### 现有 public config v2
+
+已有 v2 配置仍由同一加载器严格校验。v2 顶层允许
 `config_version`、`llms`、`project`、`scan`、`indexing`、
 `concurrency` 和可选 `rules`；未知键、重复 YAML 键、错误类型、跨语言字段和未展开的必需环境变量都会报出完整字段路径。
 
-最小公共结构如下；两份语言模板内含逐字段注释，全部可配置字段、默认值与约束见下方
-“配置字段参考”一节：
+下方保留 v2 最小结构；v2 的全部字段、默认值与约束见“配置字段参考”一节，
+不要把 v2 的 indexing/concurrency 等字段直接混入严格 v3 文档：
 
 ```yaml
 config_version: 2
@@ -393,7 +426,9 @@ SVF、clangd 或 compile database 字段，使用 `indexing.java` 声明结构�
 
 #### 配置字段参考
 
-public config v2 的全部字段如下。两份语言模板只展示常用子集，未列出的字段同样合法。
+v3 的 CLI prepare/validate、初始化器和语言模板使用当前正式模型；结构化配置接口按正式 parser 校验文档，允许保存全部 targets，执行组合仍明确拒绝多目标。工程根目录相对配置文件目录解析；时窗解析为一次绝对边界。focus、reproduction、max_workers 和平台意图尚未消费，配置时窗已由 CLI 和新建持久作业消费，resume 不重新套用配置窗口；MCP 与其他消费端迁移仍有剩余，不能把其他已解析意图当作已执行能力。模型与接线边界见[配置模块](docs/modules/configuration-state.md)。
+
+public config v2 的全部字段如下；此表描述已有 v2 文档，不是 v3 的字段扩展。
 所有字符串值支持 `${VAR}` / `$VAR` 环境变量展开，缺失变量在加载时即报错；
 `project.root` 相对进程工作目录解析，其余项目相对路径依据 `project.root` 或
 `source_root` 解析（表中注明）。Agent 启停、分析预算、deadline、缓存与报告策略不在
@@ -575,6 +610,33 @@ zscope -c zscope.yaml
 有效 RuntimeSpec 的版本、来源路径和 SHA-256 会进入配置哈希、缓存身份和最终报告 metadata。
 知识库、快照和默认 `user_config.xlsx` 路径均相对 `project.root` 解析；如需指定工作簿，可设置 `project.user_config_file`。
 
+资源接口未识别或未参与检测时，可查看快照目录中的 `.semantic-modeling/publication.json` 的 `resource_inference_coverage`；报告 metadata 同时提供统计摘要。诊断区分未核验、条件未满足/未检查、缺 native 事实、消费者未支持的载体等原因，实际规则启用/执行情况仍见 rule catalog / engine coverage。其范围是本轮已调度函数；入口外清理路径未测量，零告警不代表全部资源接口已覆盖。此功能无需新增用户配置。
+
+受限跨 TU 对象协议分析需要实际链接记录。在 Linux/WSL 中，可在项目目录显式执行以下准备命令，将参数替换为目标真实使用的对象文件与输出路径：
+
+```bash
+python -m zscope.cli.link_record --project-root . \
+  --compile-commands build/compile_commands.json -- \
+  clang build/a.o build/b.o -o build/app
+# 更新安装后也可使用 zscope-link-record，参数相同。
+```
+
+此命令会按编译数据库重建所列对象并完成链接，记录保存在 `.zscope-link-targets/`；夜间扫描只读记录，不自动重建。当前支持同版本 Clang 编译和 native SDK、相容 ABI/编译参数的 C 对象直接链接；archive、shared library、LTO、复杂链接参数和未核验编译器仍显示缺口。源码、头文件、对象、产物或目标表改变后需重新记录并索引。记录不会开启实验规则；现有对象协议规则仍默认关闭。具体支持范围见[代码检索模块](docs/modules/retrieval-backends.md#已观察链接目标与受限跨-tu)。
+
+资源建模也可核验受限的非原子引用计数，以及成功返回 1、失败返回 0 的单槽池归还接口，无需增加 YAML 字段。当前引用计数限 signed 32-bit 成员和已支持的池对象；drop 不直接表示 free，零计数后会检查实际清理对象与调用路径。显式启用对象协议实验规则时，相关报告会分别列出清理约定和非并发执行前提，集中在验收阶段核实；未知回调、原子/并发计数及未支持协议继续保留缺口。
+
+自定义整数句柄表也支持受限源码核验：2–4 个固定槽，区分 close 失败前未消费与消费后报错、dup 共享底层对象但各自关闭，以及同一整数重开的新代次。句柄 0 可以有效；复制整数不等于 dup，关闭一个副本也不等于销毁底层对象。该能力复用已有实验规则，默认关闭；显式启用后的命名空间顺序独占、关闭责任及责任终点集中在验收时核实，无需新增 YAML。普通 OS fd、dup2/dup3 和并发关闭仍未纳入此具体路径；缺少平台证据时，标准 close 错误后的释放状态保持未知。
+
+锁分析区分读锁与排他锁，并保留 try-lock 成功条件和 EOWNERDEAD 获取效果。读锁不作为写保护；对非逃逸静态锁和受限透明包装器，验证阶段可用当前编译事实核对全部本地访问。重复获取、锁升级、cond_wait、成员/动态锁及 C++ 锁 guard 暂留未决，不从“出现加锁调用”推断安全。相关实验规则仍默认关闭，无新增配置或夜间交互。
+
+有限 C++ RAII 清理可用于核验泄漏候选：单一指针成员的局部 guard，从 malloc/calloc 对象接收指针，在析构中直接 free 或经当前源码核验的简单 deleter 清理。验证同时检查 native 构造/析构身份和当前 AST，区分空 guard、正常退出及函数内明确捕获的 throw；构建不明、move、release/reset、逃逸、未知 deleter 和未知异常仍待验证。它不授予锁保护或通用智能指针能力，也不要求新增 YAML 配置。相关候选规则仍默认关闭，实际核验依赖已有 checked-proofs 运行策略及匹配的 Clang 工具链。
+
+实验性对象路径规则可检查受限 pthread 回调与单工作者队列：工作者取走任务并解锁后，调用方清空队列、停止接收或发出取消请求，仍可能在 join 等待期间访问已释放的旧对象。成功 join 后再释放的路径与之分开；即使两次操作使用同一 mutex，也不能排除串行发生的释放后访问。当前限 Linux glibc LP64、同 TU、默认属性、堆上下文及单槽队列的一个有界调度，按当前源码重放提交/取消 helper。已支持单等待者条件等待：释放锁、匹配通知、重新加锁，再按源码检查队列条件；提前通知不会累积成下一轮可用的通知。默认延迟取消可在 cond_wait/testcancel 处触发受限 C/glibc cleanup：等待锁先重获，清理按后进先出顺序运行，保留注册时的对象代次；pop(0) 仅移除、pop(1) 实际执行。同一 C 文件中的工作者直接 helper 可传递已知堆对象及受限整数，保留嵌套调用和暂停状态；取消时区分实际取消点与注册清理的调用层。缺通知、未取得 mutex、一般唤醒/超时场景、取消模式切换/任意取消点、一般 helper、多工作者或通用 drain 仍保留缺口，无告警不代表并发安全。沿用 `object_protocol_path` 的显式实验启用方式和集中验收页，不新增配置字段，实验规则默认关闭。
+
+复查会重新核对头文件查找结果和当前资源契约。新增可选头文件、替换较高优先级头文件或增加共享变量访问者后，旧的排除结论不能直接沿用；资料不完整时回到待验证。热复查可复用有效 AST/CFG，但仍会运行预处理检查，离线历史报告不自动获得当前代码的证明资格。
+
+动态复现当前仍默认关闭。开发模式启用 `runtime.analysis.dynamic_reproduction_mode` 后，会话服务可尝试唯一编译实例中包含自身 `main` 的原程序入口；计划、二进制及结果位于快照目录的 `reproductions/<session>/<candidate>/`。`shadow` 保存证据但不确认，`on` 也仅接受通过对象/站点/构建身份和独立重放核对的见证。多 TU 链接和通用输入生成尚未完成；构建失败、环境不可用或未复现都不表示程序安全。执行边界见[分析流水线](docs/modules/analysis-pipeline.md)。
+
 #### scan.task 语义
 
 `scan.task: ""` 会启用当前语言全部适用的漏洞 Skill。非空文本只用于表达本次审计重点，
@@ -656,6 +718,9 @@ zscope -c zscope.yaml --infer-user-config
 # 作为本地 MCP Server 运行（配合 Claude Desktop 等 MCP 客户端使用）
 zscope -c zscope.yaml --mcp-stdio
 
+# Coding Agent 只读盲调查（不初始化后端、不刷新语义、不允许扫描或报告访问）
+zscope -c zscope.yaml --mcp-stdio --mcp-profile candidate_blind
+
 # 作为实验性 Streamable HTTP MCP Server 运行（远程绑定必须提供 token 与 allowlist）
 export ZSCOPE_MCP_TOKEN="replace-me"
 zscope -c zscope.yaml --mcp-http --mcp-host 127.0.0.1 --mcp-port 8765 \
@@ -694,12 +759,16 @@ zscope --build-index -c zscope.yaml
 | `.zscope_snapshots/security_semantic_map.json` | 本轮安全语义地图、coverage、unknown/conflict 与 audit unit 的只读导出（balanced/deep；实际目录取 `runtime.analysis.snapshot_dir`） |
 | `.zscope_snapshots/user_config.xlsx` | `--infer-user-config` 生成的人工可审阅用户配置工作簿（含 README sheet） |
 | `.zscope_snapshots/user_config.infer_report.md` | 推理报告：全部 resource/lock 推理行、需人工复核清单、工作簿告警与统计 |
-| `.zscope_snapshots/user_config.state.db` | 配置告警、finding suppression 与 baseline 的旁路状态库（若 `project.user_config_file` 指向其他 workbook，则与该 workbook 同名） |
+| `.zscope_snapshots/user_config.state.db` | 配置告警、finding suppression、baseline 与版本化业务前提回答（若 `project.user_config_file` 指向其他 workbook，则与该 workbook 同名） |
 | `.zscope_knowledge/code_knowledge.db` | 代码索引、SVF/Saber 信号和候选证据 IR |
 | `.zscope_knowledge/wiki/` | `project.wiki` 启用后的 Wiki revision 状态库与审计事件链（默认关闭；目录由 `project.wiki.state_dir` 决定） |
 | `.zscope/review-memory/` | 人工 rejected finding、模式 proposal、审计和 replay 状态；不属于 Wiki constraint |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划，记录选中的源码、bitcode、可达函数、link variants、重复符号和回退原因；WSL/NTFS 场景可能重定向到 Linux 原生临时目录 |
 | `.zscope_bc/entry_cluster_layout_<group>.json` / `bitcode_manifest.json` | SVF 入口聚类布局与 bitcode/link 缓存 manifest，用于复用未变化的聚类和构建产物 |
+
+显式启用实验性 `object_protocol_path` 规则后，部分报告会列出尚待核实的业务前提。在 WebUI 打开该问题的“业务前提验收”，选择“成立／不成立／尚不确定”并填写接口规范或业务约定来源，即可一起保存该问题的回答。回答仅适用于列出的对象、入口、构建和源码版本；不新增 YAML 配置，也不会自动创建误报规则。保存后页面提示待重新核验，下次扫描会检查当前源码和回答版本；历史报告保持扫描时的结果。只有全部必要前提成立且技术证据完整时才能确认，否定前提不代表已证明代码安全。普通离线复核说明和状态修改不会被自动解析为业务回答。
+
+集中验收按服务端证据展示已确认、条件性、待验证、已排除与覆盖缺口；未知覆盖显示未测。独立的重复标记、风险接受、后续待办和撤回记录保存在工程 `.zscope_acceptance/dispositions.sqlite3`，不改变验证结论、业务回答或误报规则。重复目标必须属于当前报告和同一构建；风险接受可过期，后续待办只保存在本地。报告证据或对象变化时，保存返回冲突并保留草稿，重新载入核对后再提交。
 
 单函数最终报告的 `metadata` 会记录 effective scan depth、实际 consumed token、按 agent/stage 的 usage、finish reason、候选漏斗、发现/决策归因、Validator verdict transition、Security Semantic Map coverage、主动发现单元，以及现有 rule/candidate/diff/report-view 统计。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。没有确定性反证时，LLM 的 rejected 也只能成为 needs-review，不能被静默隐藏。
 
@@ -712,13 +781,17 @@ zscope --dashboard -c zscope.yaml
 # 可选：zscope --dashboard -c zscope.yaml --dashboard-host 127.0.0.1 --dashboard-port 8000
 ```
 
-Dashboard 的 `POST /api/scan` 可按请求传入 `scan_depth`，并以 `GET /api/scan/status?scan_id=...` 查询 effective depth、实际 token usage 与最终 completeness；服务拒绝任意命令、环境或输出路径字段。MCP 对应提供 `zscope.scan.run` / `zscope.scan.status`，以及只读的 `zscope://reports/latest` 与 `zscope://rules/effective`。
+Dashboard 当前作业入口为 `GET/POST /api/jobs`，复用工程侧持久 `ScanJobService`。Linux 上 MCP 的 `zscope.scan.run` 同样创建持久作业，必需 `request_id`，可选 `scan_depth`、带时区的绝对 `stop_at`；返回 `job_id`、`run_id`、`revision` 和输入绑定，重复请求重放同一作业。`zscope.scan.status` 必需 `job_id`。旧 Web `/api/scan` 的内存状态不能替代持久作业状态。接口不接受任意命令、环境、cwd 或输出路径。只读资源 `zscope://reports/latest`、`zscope://rules/effective` 保留。
+
+持久作业使用 `GET/POST /api/jobs` 与 detail/events/result/cancel/resume，SQLite 状态和独立 owner 支持页面断开后重新读取真实作业。结果核对每次运行绑定的报告，未知分母/覆盖保持未测；重新尝试会重核输入，不保证只运行剩余队列，也不沿用旧停止时间。目前窗口是进程级停止，完整协作调度和公平剩余队列尚未接入。
+
+v3 配置页可编辑工程、全部 targets、模型 profiles、preset 和执行意图；保存保留相对路径、环境变量引用及未编辑字段，空密码保留已有设置。保存失败时保留草稿，保存后重新检查配置。准备视图完整列出 targets、preset 映射与未消费设置；多目标可保存但禁止启动。单目标启动默认沿用保存的 preset。配置中的 execution.stop_at 作用于 CLI 和新建持久作业，任务的显式 stop_at 优先；同 request_id 重放保留原窗口，resume 不重新套用配置窗口。focus/reproduction/max_workers/platform 尚不代表已执行。
 
 仪表盘提供五个主要页面：
 
 - **审计发现**：查看缺陷列表、报告视图和 evidence，支持六种验证状态标记，并将 `rejected` 反馈持久化为误报抑制和 baseline
 - **规则目录**：只读查看 canonical ID、CWE、engine、Skill、revision、来源、能力要求和当前启停原因，支持语言/engine/Skill/状态筛选
-- **项目配置**：按 v2 schema 和语言编辑项目、入口发现、审计重点、后端与并发；SVF pool、Java provider 和工具路径位于高级配置
+- **项目配置**：按实际 v2/v3 版本编辑并检查保存的配置；v3 保留全部目标和模型 profiles，v2 高级配置仍提供 SVF pool、Java provider 与工具路径
 - **用户配置**：以 `user_config.xlsx` 为入口维护 resource、lock、dispatcher、module lifecycle、pointer targets 和 function intents，支持保存、导入与下载
 - **看板**：展示验证状态分布、风险概览、配置告警和审计进度
 
@@ -741,16 +814,18 @@ Dashboard 的 `POST /api/scan` 可按请求传入 `scan_depth`，并以 `GET /ap
 
 | Agent 工具 | MCP 名称 | 用途 |
 |---|---|---|
-| `search_code` | `zscope.code.search` | 搜索函数、方法、函数式或 object-like 宏、类型、全局变量和配置的外部函数，返回稳定 `symbol_id` |
+| `search_code` | `zscope.code.search` | 默认搜索符号并返回稳定 `symbol_id`；`scope=text/files` 独立检索字面内容或文件路径 |
 | `read_code` | `zscope.code.read` | 按 `symbol_id` 或明确的项目相对文件行范围读取带绝对行号的源码 |
-| `get_semantic_context` | `zscope.semantic.context` | 读取或按需重建函数快照，并查询 Claim、Audit Unit 与 Semantic Map 摘要 |
+| `get_semantic_context` | `zscope.semantic.context` | 读取或按需重建函数快照；`refresh_policy=cache_only` 禁止刷新；也可查询 Claim、Audit Unit、Semantic Map 摘要、编译实例及对应程序事实 |
 | `query_code_graph` | `zscope.graph.query` | 查询 call、reference、callback 和 resolved indirect-call 关系 |
 | `trace_data_flow` | `zscope.flow.trace` | 基于真实 def-use/CFG 或 Joern 证据追踪有界 source-to-sink 路径 |
 | `query_static_findings` | `zscope.findings.query` | 查询 frozen CandidateLedger 和已持久化 backend signal，不启动新扫描 |
 
 推荐调用链是 `search_code → symbol_id → read/semantic/graph/flow`；已有 `symbol_id` 时必须原样复用。列表结果按 `page.next_offset` 分页。所有调用返回统一的 `success/status/data/coverage/page/warnings/next_actions/error` 信封；`partial`、`unsupported` 和 `unavailable` 都不能解释为“没有问题”，`may` 路径和未验证 finding 也不能提升为已证明结论。
 
-MCP 只暴露上表中的 namespaced 名称，不再暴露 raw 名称或重复 alias。管理工具固定为 `zscope.knowledge.query`、`zscope.entries.discover`、`zscope.scan.run`、`zscope.scan.status`、`zscope.wiki.status` 和 `zscope.wiki.query`。MCP `2025-06-18` 返回 `outputSchema` 与 `structuredContent`；兼容 `2024-11-05` 时仍使用原生 `name/inputSchema`，但结果仅保留 text content。此次工具面切换是 breaking change，不提供旧名称兼容层。
+text/files 检索按返回 file/line 续读，分页还需原样携带 view_id；语料扫描完整度独立于结果页。只读消费可选择服务端 read_only/candidate_blind profile，具体语料许可、缓存限制、权限表与 Windows→WSL 项目级 Codex 配置见 [只读 MCP 接入](docs/mcp-read-only.md)。
+
+MCP 的证据工具使用上表中的 namespaced 名称；管理工具按下列接口提供，不暴露 raw 名称或重复 alias。管理工具包括 `zscope.knowledge.query`、`zscope.entries.discover`、`zscope.scan.run`、`zscope.scan.status`、`zscope.wiki.status`、`zscope.wiki.query`，以及 `zscope.jobs.list`、`zscope.jobs.events`、`zscope.jobs.result`、`zscope.jobs.cancel`、`zscope.jobs.resume`。作业工具仅在 `default` profile 提供，要求 Linux 后台和已保存配置；`read_only`、`candidate_blind` 不构造作业服务。events 使用 `job_id` 和可选非负 `after_seq`；cancel/resume 必需 `job_id`、`base_revision`、`request_id`，冲突语义与 Web 相同。显式 null 不是省略字段。result 目前提供本轮报告绑定，尚无 MCP findings 投影。多目标配置仍可编辑、不可执行；完整扫描队列接线和只执行剩余项仍未完成。MCP `2025-06-18` 返回 `outputSchema` 与 `structuredContent`；兼容 `2024-11-05` 时仍使用原生 `name/inputSchema`，但结果仅保留 text content。此次工具面切换是 breaking change，不提供旧名称兼容层。
 
 示例：先找数值宏，再按返回 ID 读取完整定义。
 
@@ -761,6 +836,8 @@ MCP 只暴露上表中的 namespaced 名称，不再暴露 raw 名称或重复 a
 ```json
 {"symbol_id":"zs1:macro:<search_code 返回的摘要>","max_lines":200}
 ```
+
+使用 native batch 索引时，可先向 `zscope.semantic.context` 传入 `{"kind":"build_contexts"}` 枚举编译实例，再传入 `kind=program_facts`、精确函数名 `query` 和原样返回的 `build_context_id` 读取该实例的程序事实。同名重载返回分页 `function_choice`，将选项的 native `usr` 原样作为 `query` 即可精确读取，不混合不同函数的事件。两种查询只读，不调用 LLM；输入变动时返回需重建索引的原因。同源多变体已独立存储，但完整扫描仍有按文件组织的消费者，不能把当前结果当成所有构建目标均已扫描。详见[构建实例边界](docs/modules/retrieval-backends.md#编译实例事实与导航投影)。
 
 ## 用户辅助配置
 
@@ -847,6 +924,8 @@ zscope-benchmark run --language c_cpp --mode formal --runs 5
 # 外部 benchmark 协议：新结果输出 zscope.benchmark.v4，formal 聚合为 zscope.formal-benchmark.v3
 python scripts/external_benchmark.py run-prepared --suite-root benchmarks/external/workspace/<suite> --condition candidate_layer --run-kind smoke
 ```
+
+Agent 实施计划的开发评测准备使用 `python scripts/agent_plan_evaluation.py --help`。`plan` 生成无答案的冷/热/增量矩阵，`record` 冻结既有报告与用量账本，`compare` 核对源码、入口、构建、模型、配置与工具身份后比较。工具不启动扫描、不读取 truth、不评分；未知值保留 null、零分母显示 N/A，失败和重试成本保留。声明身份与报告实测绑定会明确区分；冻结记录内容变化会被拒绝。它不替代正式 benchmark 或完整 S09 验收，详情见 [Benchmark 模块说明](docs/modules/benchmarking.md)。
 
 ## 更新日志
 
@@ -984,3 +1063,7 @@ zscope-report export --input report.json --output report.legacy.json --format le
 ```
 
 语义工作簿的 `contract_review` 页列出无法由实现证据消解的根协议。检查源码依据、建议 contract 和适用条件后，可将 status 改为 `confirmed`；下一次扫描导入为人工契约，并沿已经核验的 wrapper 映射静态传播。`pending`、`rejected` 不生效。修改为 pending 会撤销该审核行导入的契约。确认角色不能替代运行时调用成功证据。
+
+条件等待的受限分析还会在默认通知路径未闭合时，尝试最多一次无通知唤醒或 `pthread_cond_timedwait`/`pthread_cond_clockwait` 超时。只处理当前 native 核验的函数局部 timespec、有效纳秒范围，以及 timedwait 默认 CLOCK_REALTIME 或 clockwait 直接系统 CLOCK_REALTIME/CLOCK_MONOTONIC 常量；返回前重获锁，之后按源码检查返回值和队列条件。报告保留选中分支、尝试范围及截止时间/时钟前提，在现有验收页集中确认。自定义时钟、任意截止时间来源、多次唤醒序列和一般错误结果仍未覆盖。
+
+受限单工作者队列分析现可跟踪调用方通过条件变量等待活动任务退出：只接受匹配通知、原锁重获和源码条件重检。报告仍会指出提前清零活动标志、收到通知后工作者继续访问对象，以及 free 后才开始等待的问题；等待返回不会自动视为线程已结束或 join。调用方超时/无通知返回、取消和通用注销协议继续保留覆盖缺口，业务前提仍在现有验收页集中确认，实验规则默认关闭。

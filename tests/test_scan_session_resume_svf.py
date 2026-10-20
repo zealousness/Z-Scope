@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+from zscope.common.validator_protocol import VALIDATION_POLICY_VERSION
+
 from zscope.config.config import (
     AnalysisConfig,
     IndexingConfig,
@@ -437,6 +439,7 @@ def test_batch_task_id_writes_task_identified_reports(
     assert json_report.exists()
     assert md_report.exists()
     from zscope.reporting.json_io import read_report
+
     payload = read_report(json_report)
     assert payload["task_id"] == "release/scan 42"
     assert payload["task_slug"] == "release_scan_42"
@@ -507,8 +510,23 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
 
 
 @pytest.mark.parametrize("current_policy", [True, False])
-def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path, current_policy: bool) -> None:
+@pytest.mark.parametrize(
+    "experiment", ["off", "snapshot", "demand", "saved_snapshot", "saved_demand"]
+)
+@pytest.mark.parametrize("language", ["c_cpp", "java"])
+def test_resume_merges_duplicate_function_reports_by_entry_path(
+    tmp_path: Path,
+    current_policy: bool,
+    experiment: str,
+    language: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cfg = _config(tmp_path)
+    cfg.project.language = language
+    if experiment == "snapshot":
+        cfg.analysis.semantic_snapshot_candidate_mode = "shadow"
+    if experiment == "demand":
+        cfg.analysis.semantic_model_demand_mode = "shadow"
     store = SnapshotStore.from_config(cfg)
     reports = {
         "src/a.c": {
@@ -518,7 +536,8 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path, 
             "completeness": "complete",
             "run_manifest": {
                 "valid": True,
-                "candidate_schema_version": "zscope.candidate.v3.4",
+                "candidate_schema_version": "zscope.candidate.v3.5",
+                "validation_policy_version": VALIDATION_POLICY_VERSION,
             },
             "issues": [{"source": "a"}],
         },
@@ -529,15 +548,29 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path, 
             "completeness": "complete",
             "run_manifest": {
                 "valid": True,
-                "candidate_schema_version": "zscope.candidate.v3.4",
+                "candidate_schema_version": "zscope.candidate.v3.5",
+                "validation_policy_version": VALIDATION_POLICY_VERSION,
             },
             "issues": [{"source": "b"}],
         },
     }
     for file_path, report in reports.items():
         from zscope.snapshots.policy import SNAPSHOT_CANDIDATE_POLICY_VERSION
-        report["metadata"] = {"semantic_contract_version": "published",
-                              "snapshot_candidate_policy": SNAPSHOT_CANDIDATE_POLICY_VERSION if current_policy else "old-snapshot-candidates-enabled"}
+
+        report["metadata"] = {
+            "semantic_contract_version": "published",
+            "snapshot_candidate_policy": (
+                SNAPSHOT_CANDIDATE_POLICY_VERSION
+                if current_policy
+                else "old-snapshot-candidates-enabled"
+            ),
+        }
+        if experiment == "saved_snapshot":
+            report["metadata"]["semantic_snapshot_candidates"] = {
+                "conditional_observations": {"mode": "shadow"}
+            }
+        if experiment == "saved_demand":
+            report["metadata"]["semantic_model_demand"] = {"mode": "shadow"}
         index_name = f"handle_request@{file_path}:10-10"
         store.save_snapshot(
             index_name,
@@ -562,6 +595,12 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path, 
         FunctionEntry("handle_request", file_path="src/b.c"),
     ]
     runner = ScanSessionRunner(cfg, resume=True)
+    if language == "c_cpp":
+
+        def forbidden_name_resume(*args, **kwargs):
+            pytest.fail("C/C++ resume borrowed a name-only saved report")
+
+        monkeypatch.setattr(runner, "_load_current_saved_report", forbidden_name_resume)
     state = {
         "entries_loaded": True,
         "batch_mode": True,
@@ -586,8 +625,9 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path, 
     runner._handle_merge_skipped_reports(state, None)  # type: ignore[arg-type]
 
     expected_keys = {ParallelAnalyzer._entry_result_key(entry) for entry in entries}
-    if not current_policy:
+    if language == "c_cpp" or not current_policy or experiment != "off":
         assert state["entries"] == entries
+        assert state["skipped_entries"] == []
         assert state["results"] == {}
         return
     assert state["entries"] == []

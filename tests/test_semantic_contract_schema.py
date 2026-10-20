@@ -39,6 +39,48 @@ def errors(raw):
     return schema_errors(raw, schema["properties"]["interface_contracts"]["items"], root=schema)
 
 
+def test_retention_schema_keeps_resource_and_receiver_slot_distinct():
+    raw = contract({"kind": "single_slot_retention", "slot_path": "->pending"})
+    raw["role"] = "reference_retention"
+    raw["carrier"] = {"kind": "argument", "argument_index": 1}
+    raw["resource_domain"] = {"kind": "argument", "argument_index": 0}
+    assert errors(raw) == []
+    raw["protocol"]["slot_path"] = "queue->pending"
+    assert errors(raw)
+
+
+def test_single_slot_pool_schema_carries_fields_and_address_guard():
+    raw = contract(
+        {
+            "kind": "single_slot_pool",
+            "slot_path": "->slot",
+            "live_path": "->live",
+            "generation_path": "->slot.generation",
+            "invalid_return_path": "->duplicates",
+        }
+    )
+    raw["resource_domain"] = {"kind": "argument", "argument_index": 0}
+    raw["effect_cases"] = [
+        {
+            "when": {
+                "op": "compare",
+                "operator": "!=",
+                "left": {
+                    "kind": "argument",
+                    "index": 0,
+                    "member_path": "->slot",
+                    "address_of": True,
+                },
+                "right": {"kind": "literal", "value": None},
+            },
+            "effect": "applies",
+        }
+    ]
+    assert errors(raw) == []
+    raw["protocol"]["live_path"] = "pool->live"
+    assert errors(raw)
+
+
 @pytest.mark.parametrize("protocol", [None, {}])
 @pytest.mark.parametrize("envelope", [None, "payload", "function_snapshot"])
 def test_nullable_optionals_finalize_once_then_compile_from_source(monkeypatch, protocol, envelope):

@@ -72,16 +72,33 @@ class LocalPatternSemantics:
             return
         if not re.fullmatch(r"[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*", clean):
             return
-        known = self.contracts.find(clean, category)
-        if category in {"allocator", "calloc", "reallocator", "deallocator", "lock", "unlock",
-                        "io_acquire", "io_release", "ownership_transfer"} and known and not any(
-            c.effects_trusted for c in known
+        # Publication enumerates declarations from every build. Scoped effect
+        # lookup here would hide them outside a scan context and manufacture an
+        # unscoped alias, later making the real call ambiguous (or overbroad).
+        known = [
+            c for c in self.contracts.contracts if c.symbol.name == clean and c.role == category
+        ]
+        if (
+            category
+            in {
+                "allocator",
+                "calloc",
+                "reallocator",
+                "deallocator",
+                "lock",
+                "unlock",
+                "io_acquire",
+                "io_release",
+                "ownership_transfer",
+            }
+            and known
+            and not any(c.effects_trusted for c in known)
         ):
             return
         sources = target.setdefault(clean, [])
         if source and source not in sources:
             sources.append(source)
-        if not self.contracts.find(clean, category):
+        if not known:
             from .contracts import ApiContract
 
             contract = ApiContract.from_row(
@@ -93,11 +110,7 @@ class LocalPatternSemantics:
     def merge(self, other: "LocalPatternSemantics") -> None:
         self.type_aliases.update(other.type_aliases)
         self.contracts.shadowed_symbols.update(other.contracts.shadowed_symbols)
-        for attr in MERGE_ATTRS:
-            bucket = getattr(self, attr)
-            for name in self.contracts.shadowed_symbols:
-                if name in bucket and all(s == DEFAULT_SEMANTICS_SOURCE for s in bucket[name]):
-                    bucket.pop(name)
+        self._prune_shadowed_defaults()
         for contract in other.contracts.contracts:
             self.contracts.add(contract)
         for pair in other.contracts.pairs:
@@ -107,6 +120,14 @@ class LocalPatternSemantics:
             for name, sources in getattr(other, attr).items():
                 for source in sources:
                     self.add_api(CATEGORY_BY_ATTR[attr], name, source)
+
+    def _prune_shadowed_defaults(self) -> None:
+        """Keep raw role consumers consistent with the contract deny set."""
+        for attr in MERGE_ATTRS:
+            bucket = getattr(self, attr)
+            for name in self.contracts.shadowed_symbols:
+                if name in bucket and all(s == DEFAULT_SEMANTICS_SOURCE for s in bucket[name]):
+                    bucket.pop(name)
 
     def names_from_nondefault_sources(self, attr: str) -> Set[str]:
         """Return names under ``attr`` that did not come from the builtin defaults.
@@ -129,6 +150,7 @@ class LocalPatternSemantics:
         from .contracts import ApiContract, ApiPair, SymbolIdentity
 
         self.contracts.shadowed_symbols.update(overlay.get("shadowed_symbols", []))
+        self._prune_shadowed_defaults()
         for row in overlay.get("api_contracts", []):
             contract = ApiContract.from_row({"contract": row, "kind": row.get("role")})
             if contract:
@@ -234,7 +256,10 @@ def classify_api_name(name: str) -> str:
         return "io_release"
     if "printf" in lower or last_token_is(tokens, {"log", "print", "syslog"}):
         return "format_sink"
-    if last_token_is(tokens, {"register", "subscribe", "hook", "install"}) and "unregister" not in lower:
+    if (
+        last_token_is(tokens, {"register", "subscribe", "hook", "install"})
+        and "unregister" not in lower
+    ):
         return "callback_register"
     return ""
 
